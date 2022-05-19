@@ -706,7 +706,7 @@ mod tests {
 
         let scan = ctx
             .read_csv(
-                "../../../datafusion/core/tests/customer.csv",
+                "tests/customer.csv",
                 CsvReadOptions::default(),
             )
             .await?
