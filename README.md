@@ -74,7 +74,6 @@ Ballista implements a similar design to Apache Spark, but there are some key dif
 - The use of Apache Arrow as the memory model and network protocol means that data can be exchanged between executors
   in any programming language with minimal serialization overhead.
 
-
 ## Architecture Overview
 
 There is no formal document describing Ballista's architecture yet, but the following presentation offers a good overview of its different components and how they interact together.
