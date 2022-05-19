@@ -35,7 +35,7 @@ Ballista can be deployed as a standalone cluster and also supports [Kubernetes](
 case, the scheduler can be configured to use [etcd](https://etcd.io/) as a backing store to (eventually) provide
 redundancy in the case of a scheduler failing.
 
-## Rust Version Compatbility
+## Rust Version Compatibility
 
 This crate is tested with the latest stable version of Rust. We do not currrently test against other, older versions of the Rust compiler.
 

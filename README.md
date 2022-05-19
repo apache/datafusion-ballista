@@ -17,79 +17,68 @@
   under the License.
 -->
 
-# DataFusion
+_Please note that Ballista development is still happening in the
+[DataFusion repository](https://github.com/apache/arrow-datafusion) but we are in the
+process of migrating to this new repository._
 
-<img src="docs/source/_static/images/DataFusion-Logo-Background-White.svg" width="256"/>
+# Ballista: Distributed Compute with Rust, Apache Arrow, and DataFusion
 
-DataFusion is an extensible query execution framework, written in
-Rust, that uses [Apache Arrow](https://arrow.apache.org) as its
-in-memory format.
+Ballista is a distributed compute platform primarily implemented in Rust, and powered by Apache Arrow and
+DataFusion. It is built on an architecture that allows other programming languages (such as Python, C++, and
+Java) to be supported as first-class citizens without paying a penalty for serialization costs.
 
-DataFusion supports both an SQL and a DataFrame API for building
-logical query plans as well as a query optimizer and execution engine
-capable of parallel execution against partitioned data sources (CSV
-and Parquet) using threads.
+The foundational technologies in Ballista are:
 
-DataFusion also supports distributed query execution via the
-[Ballista](ballista/README.md) crate.
+- [Apache Arrow](https://arrow.apache.org/) memory model and compute kernels for efficient processing of data.
+- [Apache Arrow Flight Protocol](https://arrow.apache.org/blog/2019/10/13/introducing-arrow-flight/) for efficient
+  data transfer between processes.
+- [Google Protocol Buffers](https://developers.google.com/protocol-buffers) for serializing query plans.
+- [Docker](https://www.docker.com/) for packaging up executors along with user-defined code.
 
-## Use Cases
+Ballista can be deployed as a standalone cluster and also supports [Kubernetes](https://kubernetes.io/). In either
+case, the scheduler can be configured to use [etcd](https://etcd.io/) as a backing store to (eventually) provide
+redundancy in the case of a scheduler failing.
 
-DataFusion is used to create modern, fast and efficient data
-pipelines, ETL processes, and database systems, which need the
-performance of Rust and Apache Arrow and want to provide their users
-the convenience of an SQL interface or a DataFrame API.
+# Getting Started
 
-## Why DataFusion?
+Refer to the core [Ballista crate README](ballista/rust/client/README.md) for the Getting Started guide.
 
-- _High Performance_: Leveraging Rust and Arrow's memory model, DataFusion achieves very high performance
-- _Easy to Connect_: Being part of the Apache Arrow ecosystem (Arrow, Parquet and Flight), DataFusion works well with the rest of the big data ecosystem
-- _Easy to Embed_: Allowing extension at almost any point in its design, DataFusion can be tailored for your specific usecase
-- _High Quality_: Extensively tested, both by itself and with the rest of the Arrow ecosystem, DataFusion can be used as the foundation for production systems.
+## Distributed Scheduler Overview
 
-## Known Uses
+Ballista uses the DataFusion query execution framework to create a physical plan and then transforms it into a
+distributed physical plan by breaking the query down into stages whenever the partitioning scheme changes.
 
-Projects that adapt to or serve as plugins to DataFusion:
+Specifically, any `RepartitionExec` operator is replaced with an `UnresolvedShuffleExec` and the child operator
+of the repartition operator is wrapped in a `ShuffleWriterExec` operator and scheduled for execution.
 
-- [datafusion-python](https://github.com/datafusion-contrib/datafusion-python)
-- [datafusion-java](https://github.com/datafusion-contrib/datafusion-java)
-- [datafusion-objectstore-s3](https://github.com/datafusion-contrib/datafusion-objectstore-s3)
-- [datafusion-objectstore-hdfs](https://github.com/datafusion-contrib/datafusion-objectstore-hdfs)
-- [datafusion-bigtable](https://github.com/datafusion-contrib/datafusion-bigtable)
-- [datafusion-objectstore-azure](https://github.com/datafusion-contrib/datafusion-objectstore-azure)
+Each executor polls the scheduler for the next task to run. Tasks are currently always `ShuffleWriterExec` operators
+and each task represents one _input_ partition that will be executed. The resulting batches are repartitioned
+according to the shuffle partitioning scheme and each _output_ partition is streamed to disk in Arrow IPC format.
 
-Here are some of the projects known to use DataFusion:
+The scheduler will replace `UnresolvedShuffleExec` operators with `ShuffleReaderExec` operators once all shuffle
+tasks have completed. The `ShuffleReaderExec` operator connects to other executors as required using the Flight
+interface, and streams the shuffle IPC files.
 
-- [Ballista](ballista) Distributed Compute Platform
-- [Cloudfuse Buzz](https://github.com/cloudfuse-io/buzz-rust)
-- [Cube Store](https://github.com/cube-js/cube.js/tree/master/rust)
-- [delta-rs](https://github.com/delta-io/delta-rs)
-- [Flock](https://github.com/flock-lab/flock)
-- [InfluxDB IOx](https://github.com/influxdata/influxdb_iox) Time Series Database
-- [ROAPI](https://github.com/roapi/roapi)
-- [Tensorbase](https://github.com/tensorbase/tensorbase)
-- [VegaFusion](https://vegafusion.io/) Server-side acceleration for the [Vega](https://vega.github.io/) visualization grammar
+# How does this compare to Apache Spark?
 
-(if you know of another project, please submit a PR to add a link!)
+Ballista implements a similar design to Apache Spark, but there are some key differences.
 
-## Example Usage
-
-Please see [example usage](https://arrow.apache.org/datafusion/user-guide/example-usage.html) to find how to use DataFusion.
-
-## Roadmap
-
-Please see [Roadmap](docs/source/specification/roadmap.md) for information of where the project is headed.
+- The choice of Rust as the main execution language means that memory usage is deterministic and avoids the overhead of
+  GC pauses.
+- Ballista is designed from the ground up to use columnar data, enabling a number of efficiencies such as vectorized
+  processing (SIMD and GPU) and efficient compression. Although Spark does have some columnar support, it is still
+  largely row-based today.
+- The combination of Rust and Arrow provides excellent memory efficiency and memory usage can be 5x - 10x lower than
+  Apache Spark in some cases, which means that more processing can fit on a single node, reducing the overhead of
+  distributed compute.
+- The use of Apache Arrow as the memory model and network protocol means that data can be exchanged between executors
+  in any programming language with minimal serialization overhead.
 
 ## Architecture Overview
 
-There is no formal document describing DataFusion's architecture yet, but the following presentations offer a good overview of its different components and how they interact together.
+There is no formal document describing Ballista's architecture yet, but the following presentation offers a good overview of its different components and how they interact together.
 
-- (March 2021): The DataFusion architecture is described in _Query Engine Design and the Rust-Based DataFusion in Apache Arrow_: [recording](https://www.youtube.com/watch?v=K6eCAVEk4kU) (DataFusion content starts [~ 15 minutes in](https://www.youtube.com/watch?v=K6eCAVEk4kU&t=875s)) and [slides](https://www.slideshare.net/influxdata/influxdb-iox-tech-talks-query-engine-design-and-the-rustbased-datafusion-in-apache-arrow-244161934)
-- (February 2021): How DataFusion is used within the Ballista Project is described in \*Ballista: Distributed Compute with Rust and Apache Arrow: [recording](https://www.youtube.com/watch?v=ZZHQaOap9pQ)
-
-## User's guide
-
-Please see [User Guide](https://arrow.apache.org/datafusion/) for more information about DataFusion.
+- (February 2021): Ballista: Distributed Compute with Rust and Apache Arrow: [recording](https://www.youtube.com/watch?v=ZZHQaOap9pQ)
 
 ## Contribution Guide
 
