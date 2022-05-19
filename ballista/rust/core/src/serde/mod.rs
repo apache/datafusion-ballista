@@ -705,10 +705,7 @@ mod tests {
         let ctx = SessionContext::with_state(session_state);
 
         let scan = ctx
-            .read_csv(
-                "../../../datafusion/core/tests/customer.csv",
-                CsvReadOptions::default(),
-            )
+            .read_csv("tests/customer.csv", CsvReadOptions::default())
             .await?
             .to_logical_plan()?;
 

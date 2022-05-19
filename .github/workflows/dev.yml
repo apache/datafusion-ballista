@@ -66,8 +66,8 @@ jobs:
           #
           # ignore subproject CHANGELOG.md because they are machine generated
           npx prettier@2.3.2 --write \
-            '{ballista,datafusion,datafusion-examples,docs,python}/**/*.md' \
-            '!{ballista,datafusion,python}/CHANGELOG.md' \
+            '{ballista,docs,python}/**/*.md' \
+            '!{ballista,python}/CHANGELOG.md' \
             README.md \
             CONTRIBUTING.md \
             'ballista/**/*.{ts,tsx}'
