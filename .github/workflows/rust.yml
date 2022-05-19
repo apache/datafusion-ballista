@@ -109,7 +109,7 @@ jobs:
         run: |
           export ARROW_TEST_DATA=$(pwd)/testing/data
           export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
-          cargo test --features avro
+          cargo test
           cd ../ballista-examples
           cargo run --example test_sql --features=ballista/standalone
         env:
