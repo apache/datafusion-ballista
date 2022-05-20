@@ -23,7 +23,7 @@ use datafusion::prelude::{col, lit, ParquetReadOptions};
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitcargo run --example test_sql --features=ballista/standaloneions", "4")
+        .set("ballista.shuffle.partitions", "4")
         .build()?;
     let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
 
