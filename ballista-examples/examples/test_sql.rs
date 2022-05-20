@@ -18,28 +18,24 @@
 use ballista::prelude::{BallistaConfig, BallistaContext, Result};
 use datafusion::prelude::CsvReadOptions;
 
-/// This example show the udf plugin is work
-///
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = BallistaConfig::builder()
         .set("ballista.shuffle.partitions", "1")
         .build()?;
 
-    let ctx = BallistaContext::standalone(&config, 10).await.unwrap();
-
-    let testdata = datafusion::test_util::arrow_test_data();
+    let ctx = BallistaContext::standalone(&config, 2).await.unwrap();
 
     // register csv file with the execution context
     ctx.register_csv(
-        "aggregate_test_100",
-        &format!("{}/csv/aggregate_test_100.csv", testdata),
+        "test",
+     "testdata/alltypes_plain.parquet",
         CsvReadOptions::new(),
     )
     .await?;
 
     // test udf
-    let df = ctx.sql("select count(1) from aggregate_test_100").await?;
+    let df = ctx.sql("select count(1) from test").await?;
 
     df.show().await?;
     Ok(())

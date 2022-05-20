@@ -566,7 +566,7 @@ mod tests {
         context
             .register_parquet(
                 "single_nan",
-                &format!("{}/single_nan.parquet", testdata),
+                "ballista/testdata/alltypes_plain.parquet",
                 ParquetReadOptions::default(),
             )
             .await
@@ -716,7 +716,7 @@ mod tests {
         context
             .register_parquet(
                 "test",
-                &format!("{}/alltypes_plain.parquet", testdata),
+                "ballista/testdata/alltypes_plain.parquet",
                 ParquetReadOptions::default(),
             )
             .await
