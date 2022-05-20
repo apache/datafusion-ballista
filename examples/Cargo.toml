@@ -31,7 +31,7 @@ rust-version = "1.59"
 
 [[example]]
 name = "test_sql"
-path = "examples/test_sql.rs"
+path = "src/bin/ballista-standalone.rs"
 required-features = ["ballista/standalone"]
 
 [dependencies]

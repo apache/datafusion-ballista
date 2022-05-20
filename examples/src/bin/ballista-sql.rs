@@ -27,12 +27,11 @@ async fn main() -> Result<()> {
         .build()?;
     let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
 
-    let testdata = datafusion::test_util::arrow_test_data();
-
     // register csv file with the execution context
+    let filename = "testdata/aggregate_test_100.csv";
     ctx.register_csv(
-        "aggregate_test_100",
-        &format!("{}/csv/aggregate_test_100.csv", testdata),
+        "test",
+        filename,
         CsvReadOptions::new(),
     )
     .await?;
@@ -41,7 +40,7 @@ async fn main() -> Result<()> {
     let df = ctx
         .sql(
             "SELECT c1, MIN(c12), MAX(c12) \
-        FROM aggregate_test_100 \
+        FROM test \
         WHERE c11 > 0.1 AND c11 < 0.9 \
         GROUP BY c1",
         )
