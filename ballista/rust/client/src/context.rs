@@ -711,7 +711,6 @@ mod tests {
             .unwrap();
         let context = BallistaContext::standalone(&config, 1).await.unwrap();
 
-        let testdata = datafusion::test_util::parquet_test_data();
         context
             .register_parquet(
                 "test",
