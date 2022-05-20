@@ -27,12 +27,10 @@ async fn main() -> Result<()> {
         .build()?;
     let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
 
-    let testdata = datafusion::test_util::arrow_test_data();
-
     // register csv file with the execution context
     ctx.register_csv(
         "aggregate_test_100",
-        &format!("{}/csv/aggregate_test_100.csv", testdata),
+        "testdata/aggregate_test_100.csv",
         CsvReadOptions::new(),
     )
     .await?;

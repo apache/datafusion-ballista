@@ -27,9 +27,7 @@ async fn main() -> Result<()> {
         .build()?;
     let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
 
-    let testdata = datafusion::test_util::parquet_test_data();
-
-    let filename = &format!("{}/alltypes_plain.parquet", testdata);
+    let filename = "testdata/alltypes_plain.parquet";
 
     // define the query using the DataFrame trait
     let df = ctx

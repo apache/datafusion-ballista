@@ -28,12 +28,10 @@ async fn main() -> Result<()> {
 
     let ctx = BallistaContext::standalone(&config, 10).await.unwrap();
 
-    let testdata = datafusion::test_util::arrow_test_data();
-
     // register csv file with the execution context
     ctx.register_csv(
         "aggregate_test_100",
-        &format!("{}/csv/aggregate_test_100.csv", testdata),
+        "testdata/aggregate_test_100.csv",
         CsvReadOptions::new(),
     )
     .await?;
