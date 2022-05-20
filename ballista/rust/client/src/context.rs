@@ -562,11 +562,10 @@ mod tests {
             .unwrap();
         let context = BallistaContext::standalone(&config, 1).await.unwrap();
 
-        let testdata = datafusion::test_util::parquet_test_data();
         context
             .register_parquet(
                 "single_nan",
-                &format!("{}/single_nan.parquet", testdata),
+                "testdata/single_nan.parquet",
                 ParquetReadOptions::default(),
             )
             .await
@@ -716,7 +715,7 @@ mod tests {
         context
             .register_parquet(
                 "test",
-                &format!("{}/alltypes_plain.parquet", testdata),
+                "testdata/alltypes_plain.parquet",
                 ParquetReadOptions::default(),
             )
             .await
