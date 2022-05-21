@@ -32,7 +32,7 @@ ballista-core = { path = "../core", version = "0.7.0" }
 ballista-executor = { path = "../executor", version = "0.7.0", optional = true }
 ballista-scheduler = { path = "../scheduler", version = "0.7.0", optional = true }
 
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "a08d26eef39bcb2adac527e5c260d31f473fca79" }
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "cb84504fed4e613c9ed18c4e2a2022c701add2d9" }
 futures = "0.3"
 log = "0.4"
 parking_lot = "0.12"
