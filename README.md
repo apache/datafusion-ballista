@@ -41,7 +41,8 @@ redundancy in the case of a scheduler failing.
 
 # Getting Started
 
-Refer to the core [Ballista crate README](ballista/rust/client/README.md) for the Getting Started guide.
+The easiest way to get started is to run one of the standalone or distributed [examples](./examples/README.md). After 
+that, refer to the [Getting Started](ballista/rust/client/README.md).
 
 ## Distributed Scheduler Overview
 
