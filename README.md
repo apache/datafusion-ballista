@@ -32,7 +32,7 @@ The foundational technologies in Ballista are:
 - [Google Protocol Buffers](https://developers.google.com/protocol-buffers) for serializing query plans, with [plans to 
  eventually use substrait.io here](https://github.com/apache/arrow-ballista/issues/32).
 
-Ballista can be deployed as a standalone cluster and also supports Kubernetes](https://kubernetes.io/). In either
+Ballista can be deployed as a standalone cluster and also supports [Kubernetes](https://kubernetes.io/). In either
 case, the scheduler can be configured to use [etcd](https://etcd.io/) as a backing store to (eventually) provide
 redundancy in the case of a scheduler failing.
 
