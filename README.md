@@ -32,17 +32,28 @@ The foundational technologies in Ballista are:
 - [Google Protocol Buffers](https://developers.google.com/protocol-buffers) for serializing query plans, with [plans to 
  eventually use substrait.io here](https://github.com/apache/arrow-ballista/issues/32).
 
+Ballista implements a similar design to Apache Spark, but there are some key differences.
+
+- The choice of Rust as the main execution language avoids the overhead of GC pauses.
+- Ballista is designed from the ground up to use columnar data, enabling a number of efficiencies such as vectorized
+  processing (SIMD and GPU) and efficient compression. Although Spark does have some columnar support, it is still
+  largely row-based today.
+- The combination of Rust and Arrow provides excellent memory efficiency and memory usage can be 5x - 10x lower than
+  Apache Spark in some cases, which means that more processing can fit on a single node, reducing the overhead of
+  distributed compute.
+- The use of Apache Arrow as the memory model and network protocol means that data can be exchanged between executors
+  in any programming language with minimal serialization overhead.
+
 Ballista can be deployed as a standalone cluster and also supports [Kubernetes](https://kubernetes.io/). In either
 case, the scheduler can be configured to use [etcd](https://etcd.io/) as a backing store to (eventually) provide
 redundancy in the case of a scheduler failing.
 
 # Project Status and Roadmap
 
-Ballista is currently a proof-of-concept and provides batch execution of SQL queries with a design that is heavily 
-based on Apache Spark.
+Ballista is currently a proof-of-concept and provides batch execution of SQL queries.
 
 There is an excellent discussion in https://github.com/apache/arrow-ballista/issues/30 about the future of the project
-and we encourage you to participate and your feedback there.
+and we encourage you to participate and add your feedback there.
 
 The current initiatives being considered are:
 
@@ -54,42 +65,11 @@ The current initiatives being considered are:
 
 Refer to the core [Ballista crate README](ballista/rust/client/README.md) for the Getting Started guide.
 
-## Distributed Scheduler Overview
-
-Ballista uses the DataFusion query execution framework to create a physical plan and then transforms it into a
-distributed physical plan by breaking the query down into stages whenever the partitioning scheme changes.
-
-Specifically, any `RepartitionExec` operator is replaced with an `UnresolvedShuffleExec` and the child operator
-of the repartition operator is wrapped in a `ShuffleWriterExec` operator and scheduled for execution.
-
-Each executor polls the scheduler for the next task to run. Tasks are currently always `ShuffleWriterExec` operators
-and each task represents one _input_ partition that will be executed. The resulting batches are repartitioned
-according to the shuffle partitioning scheme and each _output_ partition is streamed to disk in Arrow IPC format.
-
-The scheduler will replace `UnresolvedShuffleExec` operators with `ShuffleReaderExec` operators once all shuffle
-tasks have completed. The `ShuffleReaderExec` operator connects to other executors as required using the Flight
-interface, and streams the shuffle IPC files.
-
-# How does this compare to Apache Spark?
-
-Ballista implements a similar design to Apache Spark, but there are some key differences.
-
-- The choice of Rust as the main execution language means that memory usage is deterministic and avoids the overhead of
-  GC pauses.
-- Ballista is designed from the ground up to use columnar data, enabling a number of efficiencies such as vectorized
-  processing (SIMD and GPU) and efficient compression. Although Spark does have some columnar support, it is still
-  largely row-based today.
-- The combination of Rust and Arrow provides excellent memory efficiency and memory usage can be 5x - 10x lower than
-  Apache Spark in some cases, which means that more processing can fit on a single node, reducing the overhead of
-  distributed compute.
-- The use of Apache Arrow as the memory model and network protocol means that data can be exchanged between executors
-  in any programming language with minimal serialization overhead.
-
 ## Architecture Overview
 
-There is no formal document describing Ballista's architecture yet, but the following presentation offers a good overview of its different components and how they interact together.
-
-- (February 2021): Ballista: Distributed Compute with Rust and Apache Arrow: [recording](https://www.youtube.com/watch?v=ZZHQaOap9pQ)
+- [Architecture Overview](ballista/docs/architecture.md)
+- ["Ballista: Distributed Compute with Rust and Apache Arrow"](https://www.youtube.com/watch?v=ZZHQaOap9pQ) talk at 
+- the New York Open Statistical Programming Meetup (Feb 2021)
 
 ## Contribution Guide
 
