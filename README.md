@@ -17,10 +17,6 @@
   under the License.
 -->
 
-_Please note that Ballista development is still happening in the
-[DataFusion repository](https://github.com/apache/arrow-datafusion) but we are in the
-process of migrating to this new repository._
-
 # Ballista: Distributed Compute with Rust, Apache Arrow, and DataFusion
 
 Ballista is a distributed compute platform primarily implemented in Rust, and powered by Apache Arrow and
@@ -30,14 +26,29 @@ Java) to be supported as first-class citizens without paying a penalty for seria
 The foundational technologies in Ballista are:
 
 - [Apache Arrow](https://arrow.apache.org/) memory model and compute kernels for efficient processing of data.
+- [Apache Arrow DataFusion Query Engine](https://github.com/apache/arrow-datafusion) for query execution
 - [Apache Arrow Flight Protocol](https://arrow.apache.org/blog/2019/10/13/introducing-arrow-flight/) for efficient
   data transfer between processes.
-- [Google Protocol Buffers](https://developers.google.com/protocol-buffers) for serializing query plans.
-- [Docker](https://www.docker.com/) for packaging up executors along with user-defined code.
+- [Google Protocol Buffers](https://developers.google.com/protocol-buffers) for serializing query plans, with [plans to 
+ eventually use substrait.io here](https://github.com/apache/arrow-ballista/issues/32).
 
-Ballista can be deployed as a standalone cluster and also supports [Kubernetes](https://kubernetes.io/). In either
+Ballista can be deployed as a standalone cluster and also supports Kubernetes](https://kubernetes.io/). In either
 case, the scheduler can be configured to use [etcd](https://etcd.io/) as a backing store to (eventually) provide
 redundancy in the case of a scheduler failing.
+
+# Project Status and Roadmap
+
+Ballista is currently a proof-of-concept and provides batch execution of SQL queries with a design that is heavily 
+based on Apache Spark.
+
+There is an excellent discussion in https://github.com/apache/arrow-ballista/issues/30 about the future of the project
+and we encourage you to participate and your feedback there.
+
+The current initiatives being considered are:
+
+- Continue to improve the current batch-based execution
+- Add support for low-latency query execution based on a streaming model
+- Move to substrait.io to allow other query engines to be integrated
 
 # Getting Started
 
