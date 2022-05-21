@@ -39,6 +39,22 @@ executors in the cluster. This is the basic unit of scalability in Ballista.
 The following diagram shows the flow of requests and responses between the client, scheduler, and executor
 processes.
 
+## Distributed Scheduler Overview
+
+Ballista uses the DataFusion query execution framework to create a physical plan and then transforms it into a
+distributed physical plan by breaking the query down into stages whenever the partitioning scheme changes.
+
+Specifically, any `RepartitionExec` operator is replaced with an `UnresolvedShuffleExec` and the child operator
+of the repartition operator is wrapped in a `ShuffleWriterExec` operator and scheduled for execution.
+
+Each executor polls the scheduler for the next task to run. Tasks are currently always `ShuffleWriterExec` operators
+and each task represents one _input_ partition that will be executed. The resulting batches are repartitioned
+according to the shuffle partitioning scheme and each _output_ partition is streamed to disk in Arrow IPC format.
+
+The scheduler will replace `UnresolvedShuffleExec` operators with `ShuffleReaderExec` operators once all shuffle
+tasks have completed. The `ShuffleReaderExec` operator connects to other executors as required using the Flight
+interface, and streams the shuffle IPC files.
+
 ![Query Execution Flow](images/query-execution.png)
 
 ## Scheduler Process
