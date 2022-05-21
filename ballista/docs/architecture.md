@@ -55,7 +55,6 @@ The scheduler will replace `UnresolvedShuffleExec` operators with `ShuffleReader
 tasks have completed. The `ShuffleReaderExec` operator connects to other executors as required using the Flight
 interface, and streams the shuffle IPC files.
 
-
 ![Query Execution Flow](images/query-execution.png)
 
 ## Scheduler Process
