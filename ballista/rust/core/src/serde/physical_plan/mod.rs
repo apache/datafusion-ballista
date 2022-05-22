@@ -41,6 +41,7 @@ use datafusion::physical_plan::file_format::{
 };
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::hash_join::{HashJoinExec, PartitionMode};
+use datafusion::physical_plan::join_utils::{ColumnIndex, JoinFilter};
 use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
@@ -430,6 +431,40 @@ impl AsExecutionPlan for PhysicalPlanNode {
                             hashjoin.join_type
                         ))
                     })?;
+                let filter = hashjoin
+                    .filter
+                    .as_ref()
+                    .map(|f| {
+                        let expression = parse_physical_expr(
+                            f.expression.as_ref().ok_or_else(|| {
+                                proto_error("Unexpected empty filter expression")
+                            })?,
+                            registry,
+                        )?;
+                        let column_indices = f.column_indices
+                            .iter()
+                            .map(|i| {
+                                let side = protobuf::JoinSide::from_i32(i.side)
+                                    .ok_or_else(|| proto_error(format!(
+                                        "Received a HashJoinNode message with JoinSide in Filter {}",
+                                        i.side))
+                                    )?;
+
+                                Ok(ColumnIndex{
+                                    index: i.index as usize,
+                                    side: side.into(),
+                                })
+                            })
+                            .collect::<Result<Vec<_>, BallistaError>>()?;
+                        let schema = f
+                            .schema
+                            .as_ref()
+                            .ok_or_else(|| proto_error("Missing JoinFilter schema"))?
+                            .try_into()?;
+
+                        Ok(JoinFilter::new(expression, column_indices, schema))
+                    })
+                    .map_or(Ok(None), |v: Result<JoinFilter, BallistaError>| v.map(Some))?;
 
                 let partition_mode =
                     protobuf::PartitionMode::from_i32(hashjoin.partition_mode)
@@ -447,6 +482,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     left,
                     right,
                     on,
+                    filter,
                     &join_type.into(),
                     partition_mode,
                     &hashjoin.null_equals_null,
@@ -697,6 +733,33 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 })
                 .collect();
             let join_type: protobuf::JoinType = exec.join_type().to_owned().into();
+            let filter = exec
+                .filter()
+                .as_ref()
+                .map(|f| {
+                    let expression = f.expression().to_owned().try_into()?;
+                    let column_indices = f
+                        .column_indices()
+                        .iter()
+                        .map(|i| {
+                            let side: protobuf::JoinSide = i.side.to_owned().into();
+                            protobuf::ColumnIndex {
+                                index: i.index as u32,
+                                side: side.into(),
+                            }
+                        })
+                        .collect();
+                    let schema = f.schema().into();
+                    Ok(protobuf::JoinFilter {
+                        expression: Some(expression),
+                        column_indices,
+                        schema: Some(schema),
+                    })
+                })
+                .map_or(
+                    Ok(None),
+                    |v: Result<protobuf::JoinFilter, BallistaError>| v.map(Some),
+                )?;
 
             let partition_mode = match exec.partition_mode() {
                 PartitionMode::CollectLeft => protobuf::PartitionMode::CollectLeft,
@@ -712,6 +775,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         join_type: join_type.into(),
                         partition_mode: partition_mode.into(),
                         null_equals_null: *exec.null_equals_null(),
+                        filter,
                     },
                 ))),
             })
@@ -1204,6 +1268,7 @@ mod roundtrip_tests {
                     Arc::new(EmptyExec::new(false, schema_left.clone())),
                     Arc::new(EmptyExec::new(false, schema_right.clone())),
                     on.clone(),
+                    None,
                     join_type,
                     *partition_mode,
                     &false,

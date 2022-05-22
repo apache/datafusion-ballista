@@ -32,6 +32,7 @@ use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::logical_plan::plan::Extension;
+use datafusion::physical_plan::join_utils::JoinSide;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use prost::Message;
@@ -311,6 +312,24 @@ impl From<JoinType> for protobuf::JoinType {
             JoinType::Full => protobuf::JoinType::Full,
             JoinType::Semi => protobuf::JoinType::Semi,
             JoinType::Anti => protobuf::JoinType::Anti,
+        }
+    }
+}
+
+impl From<protobuf::JoinSide> for JoinSide {
+    fn from(t: protobuf::JoinSide) -> Self {
+        match t {
+            protobuf::JoinSide::LeftSide => JoinSide::Left,
+            protobuf::JoinSide::RightSide => JoinSide::Right,
+        }
+    }
+}
+
+impl From<JoinSide> for protobuf::JoinSide {
+    fn from(t: JoinSide) -> Self {
+        match t {
+            JoinSide::Left => protobuf::JoinSide::LeftSide,
+            JoinSide::Right => protobuf::JoinSide::RightSide,
         }
     }
 }

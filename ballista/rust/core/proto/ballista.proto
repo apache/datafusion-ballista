@@ -236,6 +236,7 @@ message JoinNode {
   repeated datafusion.Column left_join_column = 5;
   repeated datafusion.Column right_join_column = 6;
   bool null_equals_null = 7;
+  datafusion.LogicalExprNode filter = 8;
 }
 
 message UnionNode {
@@ -481,6 +482,7 @@ message HashJoinExecNode {
   JoinType join_type = 4;
   PartitionMode partition_mode = 6;
   bool null_equals_null = 7;
+  JoinFilter filter = 8;
 }
 
 message UnionExecNode {
@@ -598,6 +600,22 @@ message RepartitionExecNode{
     PhysicalHashRepartition hash = 3;
     uint64 unknown = 4;
   }
+}
+
+message JoinFilter{
+  PhysicalExprNode expression = 1;
+  repeated ColumnIndex column_indices = 2;
+  datafusion.Schema schema = 3;
+}
+
+message ColumnIndex{
+  uint32 index = 1;
+  JoinSide side = 2;
+}
+
+enum JoinSide{
+  LEFT_SIDE = 0;
+  RIGHT_SIDE = 1;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
