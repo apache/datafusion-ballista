@@ -16,13 +16,13 @@
 # under the License.
 
 [package]
-name = "arrow-benchmarks"
-description = "Apache Arrow Benchmarks"
+name = "ballista-benchmarks"
+description = "Ballista Benchmarks"
 version = "5.0.0"
 edition = "2021"
 authors = ["Apache Arrow <dev@arrow.apache.org>"]
-homepage = "https://github.com/apache/arrow-datafusion"
-repository = "https://github.com/apache/arrow-datafusion"
+homepage = "https://github.com/apache/arrow-ballista"
+repository = "https://github.com/apache/arrow-ballista"
 license = "Apache-2.0"
 publish = false
 rust-version = "1.59"
