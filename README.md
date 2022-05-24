@@ -70,7 +70,7 @@ that, refer to the [Getting Started Guide](ballista/rust/client/README.md).
 
 ## Architecture Overview
 
-- Refer to the [developer documentation](docs/developer) for the [Architecture Overview](ballista/docs/architecture.md)
+- Refer to the [developer documentation](docs/developer) for the [Architecture Overview](/docs/developer/architecture.md)
 - Watch the [Ballista: Distributed Compute with Rust and Apache Arrow](https://www.youtube.com/watch?v=ZZHQaOap9pQ)
   talk from the New York Open Statistical Programming Meetup (Feb 2021)
 
