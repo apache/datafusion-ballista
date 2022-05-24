@@ -23,7 +23,7 @@ This directory contains examples for executing distributed queries with Ballista
 
 # Standalone Examples
 
-The standalone example is the easiest to get started with. Ballista supports a standalone mode where a scheduler 
+The standalone example is the easiest to get started with. Ballista supports a standalone mode where a scheduler
 and executor are started in-process.
 
 ```bash
@@ -56,7 +56,6 @@ async fn main() -> Result<()> {
 
 ```
 
-
 # Distributed Examples
 
 For background information on the Ballista architecture, refer to
@@ -76,7 +75,7 @@ Start a Ballista scheduler process in a new terminal session.
 RUST_LOG=info ./target/release/ballista-scheduler
 ```
 
-Start one or more Ballista executor processes in new terminal sessions. When starting more than one 
+Start one or more Ballista executor processes in new terminal sessions. When starting more than one
 executor, a unique port number must be specified for each executor.
 
 ```bash
@@ -86,7 +85,7 @@ RUST_LOG=info ./target/release/ballista-executor -c 2 -p 50052
 
 ## Running the examples
 
-The examples can be run using the `cargo run --bin` syntax. 
+The examples can be run using the `cargo run --bin` syntax.
 
 ## Distributed SQL Example
 

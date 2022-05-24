@@ -27,7 +27,7 @@ end-user documentation for a published release, please start with the
 
 - Read the [Architecture Overview](architecture.md) to get an understanding of the scheduler and executor
   processes and how distributed query execution works.
-- Watch the [Ballista: Distributed Compute with Rust and Apache Arrow](https://www.youtube.com/watch?v=ZZHQaOap9pQ) 
+- Watch the [Ballista: Distributed Compute with Rust and Apache Arrow](https://www.youtube.com/watch?v=ZZHQaOap9pQ)
   talk from the New York Open Statistical Programming Meetup (Feb 2021)
 
 ## Build, Test, Release

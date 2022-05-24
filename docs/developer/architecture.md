@@ -35,9 +35,9 @@ stage cannot start until its child query stages have completed.
 Each query stage has one or more partitions that can be processed in parallel by the available
 executors in the cluster. This is the basic unit of scalability in Ballista.
 
-The output of each query stage is persisted to disk and future query stages will request this data from the executors 
-that produced it. The persisted output will be partitioned according to the partitioning scheme that was defined for 
-the query stage and this typically differs from the partitioning scheme of the query stage that will consume this 
+The output of each query stage is persisted to disk and future query stages will request this data from the executors
+that produced it. The persisted output will be partitioned according to the partitioning scheme that was defined for
+the query stage and this typically differs from the partitioning scheme of the query stage that will consume this
 intermediate output since it is the changes in partitioning in the plan that define the query stage boundaries.
 
 This exchange of data between query stages is called a "shuffle exchange" in Apache Spark.
@@ -68,12 +68,12 @@ The executor process implements the Apache Arrow Flight gRPC interface and is re
 
 - Connecting to the scheduler and requesting tasks to execute
 - Executing tasks within a query stage and persisting the results to disk in Apache Arrow IPC Format
-- Making query stage output partitions available as "Flights" so that they can be retrieved by other executors as well 
- as by clients
+- Making query stage output partitions available as "Flights" so that they can be retrieved by other executors as well
+  as by clients
 
 ## Rust Client
 
-The Rust client provides a `BallistaContext` that allows queries to be built using DataFrames or SQL (or both). 
+The Rust client provides a `BallistaContext` that allows queries to be built using DataFrames or SQL (or both).
 
 The client executes the query plan by submitting an `ExecuteLogicalPlan` request to the scheduler and then calls
 `GetJobStatus` to check for completion. On completion, the client receives a list of locations for the Flights
