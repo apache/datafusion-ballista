@@ -40,7 +40,7 @@ async-trait = "0.1.41"
 ballista-core = { path = "../core", version = "0.7.0" }
 chrono = { version = "0.4", default-features = false }
 configure_me = "0.4.0"
-datafusion = { git = "https://github.com/korowa/arrow-datafusion", rev = "59920d99ec35e134ba241c83a4c98b2a2576d56d" }
+datafusion = { git = "https://github.com/korowa/arrow-datafusion", rev = "1a3b2887dc69a4cafec708b1e04172a559b0398f" }
 env_logger = "0.9"
 futures = "0.3"
 hyper = "0.14.4"
