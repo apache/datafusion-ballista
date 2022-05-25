@@ -35,11 +35,7 @@ required-features = ["ballista/standalone"]
 
 [dependencies]
 ballista = { path = "../ballista/rust/client", version = "0.7.0" }
-<<<<<<< HEAD:ballista-examples/Cargo.toml
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "844bcda2664a04685b865afe7ff159c0648d2860" }
-=======
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "9ea7dc6036a7b1d28c7450db4f26720b732a50de" }
->>>>>>> upstream/master:examples/Cargo.toml
+datafusion = { git = "https://github.com/korowa/arrow-datafusion", rev = "59920d99ec35e134ba241c83a4c98b2a2576d56d" }
 futures = "0.3"
 num_cpus = "1.13.0"
 prost = "0.10"
