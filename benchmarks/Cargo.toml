@@ -16,13 +16,13 @@
 # under the License.
 
 [package]
-name = "arrow-benchmarks"
-description = "Apache Arrow Benchmarks"
+name = "ballista-benchmarks"
+description = "Ballista Benchmarks"
 version = "5.0.0"
 edition = "2021"
 authors = ["Apache Arrow <dev@arrow.apache.org>"]
-homepage = "https://github.com/apache/arrow-datafusion"
-repository = "https://github.com/apache/arrow-datafusion"
+homepage = "https://github.com/apache/arrow-ballista"
+repository = "https://github.com/apache/arrow-ballista"
 license = "Apache-2.0"
 publish = false
 rust-version = "1.59"
@@ -33,7 +33,11 @@ snmalloc = ["snmalloc-rs"]
 
 [dependencies]
 ballista = { path = "../ballista/rust/client" }
+<<<<<<< HEAD
 datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "844bcda2664a04685b865afe7ff159c0648d2860" }
+=======
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "9ea7dc6036a7b1d28c7450db4f26720b732a50de" }
+>>>>>>> upstream/master
 env_logger = "0.9"
 futures = "0.3"
 mimalloc = { version = "0.1", optional = true, default-features = false }

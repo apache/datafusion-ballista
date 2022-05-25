@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
 
     // register csv file with the execution context
     ctx.register_csv(
-        "aggregate_test_100",
+        "test",
         "testdata/aggregate_test_100.csv",
         CsvReadOptions::new(),
     )
@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
     let df = ctx
         .sql(
             "SELECT c1, MIN(c12), MAX(c12) \
-        FROM aggregate_test_100 \
+        FROM test \
         WHERE c11 > 0.1 AND c11 < 0.9 \
         GROUP BY c1",
         )
