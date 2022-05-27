@@ -214,7 +214,6 @@ dependencies = [
 name = "ballista-cli"
 version = "0.7.0"
 dependencies = [
- "arrow",
  "ballista",
  "clap",
  "datafusion",
