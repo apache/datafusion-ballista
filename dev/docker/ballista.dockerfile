@@ -22,34 +22,38 @@
 # as a mounted directory.
 
 ARG RELEASE_FLAG=--release
-FROM ballista-base:0.6.0 AS base
+ARG VERSION=0.7.0
+
+FROM ballista-base:$VERSION AS base
 WORKDIR /tmp/ballista
 RUN apt-get -y install cmake
 RUN cargo install cargo-chef --version 0.1.34
 
-FROM base as planner
-ADD Cargo.toml .
-COPY ballista ./ballista/
-COPY ballista-cli ./ballista-cli/
-COPY ballista-examples ./ballista-examples/
-COPY benchmarks ./benchmarks/
-RUN cargo chef prepare --recipe-path recipe.json
+# this does not seem to work and we end up downloading and compiling everything twice
 
-FROM base as cacher
-COPY --from=planner /tmp/ballista/recipe.json recipe.json
-RUN cargo chef cook $RELEASE_FLAG --recipe-path recipe.json
+#FROM base as planner
+#ADD Cargo.toml .
+#COPY ballista ./ballista/
+#COPY ballista-cli ./ballista-cli/
+#COPY examples ./examples/
+#COPY benchmarks ./benchmarks/
+#RUN cargo chef prepare --recipe-path recipe.json
+#
+#FROM base as cacher
+#COPY --from=planner /tmp/ballista/recipe.json recipe.json
+#RUN cargo chef cook $RELEASE_FLAG --recipe-path recipe.json
 
 FROM base as builder
 RUN mkdir /tmp/ballista/ballista
 RUN mkdir /tmp/ballista/ballista-cli
-RUN mkdir /tmp/ballista/ballista-examples
+RUN mkdir /tmp/ballista/examples
 RUN mkdir /tmp/ballista/benchmarks
 ADD Cargo.toml .
 COPY ballista ./ballista/
 COPY ballista-cli ./ballista-cli/
-COPY ballista-examples ./ballista-examples/
+COPY examples ./examples/
 COPY benchmarks ./benchmarks/
-COPY --from=cacher /tmp/ballista/target target
+#COPY --from=cacher /tmp/ballista/target target
 ARG RELEASE_FLAG=--release
 
 # force build.rs to run to generate configure_me code.
@@ -69,7 +73,7 @@ ENV RELEASE_FLAG=${RELEASE_FLAG}
 RUN if [ -z "$RELEASE_FLAG" ]; then mv /tmp/ballista/target/debug/tpch /tpch; else mv /tmp/ballista/target/release/tpch /tpch; fi
 
 # Copy the binary into a new container for a smaller docker image
-FROM ballista-base:0.6.0
+FROM ballista-base:$VERSION
 
 COPY --from=builder /executor /
 
