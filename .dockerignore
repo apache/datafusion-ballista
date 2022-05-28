@@ -1,2 +1,10 @@
 .git
-**target
+ballista/ui/*
+ci
+conbench
+dev
+**/docs
+**/target
+**/CHANGELOG.md
+**/tests
+**/data
