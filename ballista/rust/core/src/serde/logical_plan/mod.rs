@@ -434,6 +434,11 @@ impl AsLogicalPlan for LogicalPlanNode {
                         join.join_constraint
                     ))
                 })?;
+                let filter: Option<Expr> = join
+                    .filter
+                    .as_ref()
+                    .map(|expr| parse_expr(expr, ctx))
+                    .map_or(Ok(None), |v| v.map(Some))?;
 
                 let builder = LogicalPlanBuilder::from(into_logical_plan!(
                     join.left,
@@ -445,6 +450,7 @@ impl AsLogicalPlan for LogicalPlanNode {
                         &into_logical_plan!(join.right, ctx, extension_codec)?,
                         join_type.into(),
                         (left_keys, right_keys),
+                        filter,
                     )?,
                     JoinConstraint::Using => builder.join_using(
                         &into_logical_plan!(join.right, ctx, extension_codec)?,
@@ -695,6 +701,7 @@ impl AsLogicalPlan for LogicalPlanNode {
                 left,
                 right,
                 on,
+                filter,
                 join_type,
                 join_constraint,
                 null_equals_null,
@@ -715,6 +722,11 @@ impl AsLogicalPlan for LogicalPlanNode {
                 let join_type: protobuf::JoinType = join_type.to_owned().into();
                 let join_constraint: protobuf::JoinConstraint =
                     join_constraint.to_owned().into();
+                let filter = filter
+                    .as_ref()
+                    .map(|e| e.try_into())
+                    .map_or(Ok(None), |v| v.map(Some))?;
+
                 Ok(protobuf::LogicalPlanNode {
                     logical_plan_type: Some(LogicalPlanType::Join(Box::new(
                         protobuf::JoinNode {
@@ -725,6 +737,7 @@ impl AsLogicalPlan for LogicalPlanNode {
                             left_join_column,
                             right_join_column,
                             null_equals_null: *null_equals_null,
+                            filter,
                         },
                     ))),
                 })
@@ -1053,8 +1066,8 @@ mod roundtrip_tests {
         },
         datasource::listing::ListingTable,
         logical_plan::{
-            col, CreateExternalTable, Expr, FileType, LogicalPlan, LogicalPlanBuilder,
-            Repartition, ToDFSchema,
+            binary_expr, col, CreateExternalTable, Expr, FileType, LogicalPlan,
+            LogicalPlanBuilder, Operator, Repartition, ToDFSchema,
         },
         prelude::*,
     };
@@ -1280,10 +1293,16 @@ mod roundtrip_tests {
         let scan_plan = test_scan_csv("employee1", Some(vec![0, 3, 4]))
             .await?
             .build()?;
+        let filter = binary_expr(col("employee1.x"), Operator::Gt, col("employee2.y"));
 
         let plan = test_scan_csv("employee2", Some(vec![0, 3, 4]))
             .await?
-            .join(&scan_plan, JoinType::Inner, (vec!["id"], vec!["id"]))?
+            .join(
+                &scan_plan,
+                JoinType::Inner,
+                (vec!["id"], vec!["id"]),
+                Some(filter),
+            )?
             .build()?;
 
         roundtrip_test!(plan);
