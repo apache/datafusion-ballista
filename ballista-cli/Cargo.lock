@@ -611,7 +611,10 @@ name = "datafusion-proto"
 version = "8.0.0"
 source = "git+https://github.com/apache/arrow-datafusion?rev=df2094ff5169119cbf93ee47c7a9ab2e629737b5#df2094ff5169119cbf93ee47c7a9ab2e629737b5"
 dependencies = [
+ "arrow",
  "datafusion",
+ "datafusion-common",
+ "datafusion-expr",
  "prost",
  "tonic-build",
 ]
