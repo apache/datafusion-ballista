@@ -69,16 +69,7 @@ Ballista CLI v0.6.0
 
 ## Ballista-Cli
 
-Build the `ballista-cli` without the feature of ballista.
-
-```bash
-cd arrow-datafusion/ballista-cli
-cargo build
-```
-
-## Ballista
-
-If you want to execute the SQL in ballista by `ballista-cli`, you must build/compile the `ballista-cli` with features of "ballista" first.
+If you want to execute the SQL in ballista by `ballista-cli`, you must build/compile `ballista-cli` first.
 
 ```bash
 cd arrow-datafusion/ballista-cli
