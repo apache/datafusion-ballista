@@ -447,6 +447,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     left,
                     right,
                     on,
+                    None, // optional filter
                     &join_type.into(),
                     partition_mode,
                     &hashjoin.null_equals_null,
@@ -1204,6 +1205,7 @@ mod roundtrip_tests {
                     Arc::new(EmptyExec::new(false, schema_left.clone())),
                     Arc::new(EmptyExec::new(false, schema_right.clone())),
                     on.clone(),
+                    None,
                     join_type,
                     *partition_mode,
                     &false,

@@ -445,6 +445,7 @@ impl AsLogicalPlan for LogicalPlanNode {
                         &into_logical_plan!(join.right, ctx, extension_codec)?,
                         join_type.into(),
                         (left_keys, right_keys),
+                        None // optional filter
                     )?,
                     JoinConstraint::Using => builder.join_using(
                         &into_logical_plan!(join.right, ctx, extension_codec)?,
@@ -1283,7 +1284,7 @@ mod roundtrip_tests {
 
         let plan = test_scan_csv("employee2", Some(vec![0, 3, 4]))
             .await?
-            .join(&scan_plan, JoinType::Inner, (vec!["id"], vec!["id"]))?
+            .join(&scan_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)?
             .build()?;
 
         roundtrip_test!(plan);
