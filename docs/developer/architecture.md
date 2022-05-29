@@ -26,7 +26,7 @@ more scheduler processes and one or more executor processes.
 
 The scheduler accepts logical query plans and translates them into physical query plans using DataFusion and then
 runs a secondary planning process to translate the physical query plan into a _distributed_ physical
-query plan by replacing any operator in the DataFusion plan which performs a repartition with a stage boundary 
+query plan by replacing any operator in the DataFusion plan which performs a repartition with a stage boundary
 (i.e. a shuffle exchange).
 
 This results in a plan that contains a number of query stages that can be executed independently. There are
