@@ -30,13 +30,6 @@ import "datafusion.proto";
 // Ballista Logical Plan
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-// LogicalPlan is a nested type
-message LogicalPlanNode {
-  oneof LogicalPlanType {
-    OffsetNode offset = 23;
-  }
-}
-
 message Statistics {
   int64 num_rows = 1;
   int64 total_byte_size = 2;
@@ -57,7 +50,6 @@ message PartitionedFile {
   FileRange range = 5;
 }
 
-
 enum FileType {
   NdJson = 0;
   Parquet = 1;
@@ -77,11 +69,6 @@ enum JoinType {
 enum JoinConstraint {
   ON = 0;
   USING = 1;
-}
-
-message OffsetNode {
-  LogicalPlanNode input = 1;
-  uint32 offset = 2;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
