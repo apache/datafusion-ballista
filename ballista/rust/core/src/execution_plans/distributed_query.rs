@@ -45,6 +45,7 @@ use datafusion::arrow::error::{ArrowError, Result as ArrowResult};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion_proto::bytes::logical_plan_to_bytes_with_extension_codec;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use log::{error, info};
@@ -168,22 +169,19 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     ) -> Result<SendableRecordBatchStream> {
         assert_eq!(0, partition);
 
-        let mut buf: Vec<u8> = vec![];
-        let plan_message =
-            T::try_from_logical_plan(&self.plan, self.extension_codec.as_ref()).map_err(
-                |e| {
-                    DataFusionError::Internal(format!(
-                        "failed to serialize logical plan: {:?}",
-                        e
-                    ))
-                },
-            )?;
-        plan_message.try_encode(&mut buf).map_err(|e| {
-            DataFusionError::Execution(format!("failed to encode logical plan: {:?}", e))
+        let plan_message = logical_plan_to_bytes_with_extension_codec(
+            &self.plan,
+            self.extension_codec.as_ref(),
+        )
+        .map_err(|e| {
+            DataFusionError::Internal(format!(
+                "failed to serialize logical plan: {:?}",
+                e
+            ))
         })?;
 
         let query = ExecuteQueryParams {
-            query: Some(Query::LogicalPlan(buf)),
+            query: Some(Query::LogicalPlan((&plan_message).to_vec())),
             settings: self
                 .config
                 .settings()
