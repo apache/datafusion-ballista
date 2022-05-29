@@ -592,7 +592,7 @@ mod tests {
 
                     let config = ListingTableConfig::new(
                         listing_table.object_store().clone(),
-                        listing_table.table_path().to_string(),
+                        listing_table.table_path().clone(),
                     )
                     .with_schema(Arc::new(Schema::new(vec![])))
                     .with_listing_options(error_options);
