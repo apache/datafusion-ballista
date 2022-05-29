@@ -562,12 +562,13 @@ mod test {
     use crate::state::{backend::standalone::StandaloneClient, SchedulerState};
     use ballista_core::error::BallistaError;
     use ballista_core::serde::protobuf::{
-        executor_registration::OptionalHost, ExecutorRegistration, LogicalPlanNode,
-        PhysicalPlanNode, PollWorkParams,
+        executor_registration::OptionalHost, ExecutorRegistration, PhysicalPlanNode,
+        PollWorkParams,
     };
     use ballista_core::serde::scheduler::ExecutorSpecification;
     use ballista_core::serde::BallistaCodec;
     use datafusion::execution::context::default_session_builder;
+    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use super::{SchedulerGrpc, SchedulerServer};
 

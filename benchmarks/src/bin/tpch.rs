@@ -1477,7 +1477,7 @@ mod tests {
                 .with_batch_size(10);
             let ctx = SessionContext::with_config(config);
             let codec: BallistaCodec<
-                protobuf::LogicalPlanNode,
+                datafusion_proto::protobuf::LogicalPlanNode,
                 protobuf::PhysicalPlanNode,
             > = BallistaCodec::default();
 

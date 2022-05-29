@@ -408,13 +408,12 @@ mod test {
     use crate::state::persistent_state::PersistentSchedulerState;
 
     use ballista_core::serde::protobuf::job_status::Status;
-    use ballista_core::serde::protobuf::{
-        JobStatus, LogicalPlanNode, PhysicalPlanNode, QueuedJob,
-    };
+    use ballista_core::serde::protobuf::{JobStatus, PhysicalPlanNode, QueuedJob};
     use ballista_core::serde::BallistaCodec;
     use datafusion::execution::context::default_session_builder;
     use datafusion::logical_plan::LogicalPlanBuilder;
     use datafusion::prelude::SessionContext;
+    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use std::sync::Arc;
 

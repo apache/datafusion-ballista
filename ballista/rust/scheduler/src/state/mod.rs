@@ -181,11 +181,12 @@ mod test {
 
     use ballista_core::error::BallistaError;
     use ballista_core::serde::protobuf::{
-        job_status, JobStatus, LogicalPlanNode, PhysicalPlanNode, QueuedJob,
+        job_status, JobStatus, PhysicalPlanNode, QueuedJob,
     };
     use ballista_core::serde::scheduler::{ExecutorMetadata, ExecutorSpecification};
     use ballista_core::serde::BallistaCodec;
     use datafusion::execution::context::default_session_builder;
+    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use super::{backend::standalone::StandaloneClient, SchedulerState};
 
