@@ -26,9 +26,10 @@ more scheduler processes and one or more executor processes.
 
 The scheduler accepts logical query plans and translates them into physical query plans using DataFusion and then
 runs a secondary planning process to translate the physical query plan into a _distributed_ physical
-query plan.
+query plan by replacing any operator in the DataFusion plan which performs a repartition with a stage boundary 
+(i.e. a shuffle exchange).
 
-This process breaks a query down into a number of query stages that can be executed independently. There are
+This results in a plan that contains a number of query stages that can be executed independently. There are
 dependencies between query stages and these dependencies form a directionally-acyclic graph (DAG) because a query
 stage cannot start until its child query stages have completed.
 
@@ -75,7 +76,7 @@ The executor process implements the Apache Arrow Flight gRPC interface and is re
 
 The Rust client provides a `BallistaContext` that allows queries to be built using DataFrames or SQL (or both).
 
-The client executes the query plan by submitting an `ExecuteLogicalPlan` request to the scheduler and then calls
+The client executes the query plan by submitting an `ExecuteQuery` request to the scheduler and then calls
 `GetJobStatus` to check for completion. On completion, the client receives a list of locations for the Flights
 containing the results for the query and will then connect to the appropriate executor processes to retrieve
 those results.
