@@ -1463,10 +1463,12 @@ mod tests {
 
     mod ballista_round_trip {
         use super::*;
-        use ballista_core::serde::{
-            protobuf, AsExecutionPlan, AsLogicalPlan, BallistaCodec,
-        };
+        use ballista_core::serde::{protobuf, AsExecutionPlan, BallistaCodec};
         use datafusion::physical_plan::ExecutionPlan;
+        use datafusion_proto::bytes::{
+            logical_plan_from_bytes, logical_plan_from_bytes_with_extension_codec,
+            logical_plan_to_bytes, logical_plan_to_bytes_with_extension_codec,
+        };
         use std::ops::Deref;
 
         async fn round_trip_query(n: usize) -> Result<()> {
@@ -1505,15 +1507,9 @@ mod tests {
             // test logical plan round trip
             let plans = create_logical_plans(&ctx, n)?;
             for plan in plans {
-                let proto: protobuf::LogicalPlanNode =
-                    protobuf::LogicalPlanNode::try_from_logical_plan(
-                        &plan,
-                        codec.logical_extension_codec(),
-                    )
-                    .unwrap();
-                let round_trip: LogicalPlan = (&proto)
-                    .try_into_logical_plan(&ctx, codec.logical_extension_codec())
-                    .unwrap();
+                let bytes = logical_plan_to_bytes(&plan)?;
+
+                let round_trip = logical_plan_from_bytes(&bytes, &ctx)?;
                 assert_eq!(
                     format!("{:?}", plan),
                     format!("{:?}", round_trip),
@@ -1522,15 +1518,15 @@ mod tests {
 
                 // test optimized logical plan round trip
                 let plan = ctx.optimize(&plan)?;
-                let proto: protobuf::LogicalPlanNode =
-                    protobuf::LogicalPlanNode::try_from_logical_plan(
-                        &plan,
-                        codec.logical_extension_codec(),
-                    )
-                    .unwrap();
-                let round_trip: LogicalPlan = (&proto)
-                    .try_into_logical_plan(&ctx, codec.logical_extension_codec())
-                    .unwrap();
+                let bytes = logical_plan_to_bytes_with_extension_codec(
+                    &plan,
+                    codec.logical_extension_codec(),
+                )?;
+                let round_trip = logical_plan_from_bytes_with_extension_codec(
+                    &bytes,
+                    &ctx,
+                    codec.logical_extension_codec(),
+                )?;
                 assert_eq!(
                     format!("{:?}", plan),
                     format!("{:?}", round_trip),

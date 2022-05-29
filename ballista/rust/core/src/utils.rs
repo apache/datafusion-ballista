@@ -29,7 +29,7 @@ use crate::execution_plans::{
 use crate::serde::scheduler::PartitionStats;
 
 use crate::config::BallistaConfig;
-use crate::serde::{AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec};
+use crate::serde::{AsLogicalPlan, DefaultLogicalExtensionCodec};
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::{ipc::writer::FileWriter, record_batch::RecordBatch};
@@ -38,6 +38,7 @@ use datafusion::execution::context::{
     QueryPlanner, SessionConfig, SessionContext, SessionState,
 };
 use datafusion::logical_plan::LogicalPlan;
+use datafusion_proto::logical_plan::LogicalExtensionCodec;
 
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;

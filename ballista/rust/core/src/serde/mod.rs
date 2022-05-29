@@ -18,6 +18,7 @@
 //! This crate contains code generated from the Ballista Protocol Buffer Definition as well
 //! as convenience code for interacting with the generated code.
 
+use datafusion::common::DataFusionError;
 use prost::bytes::BufMut;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -35,6 +36,7 @@ use datafusion::logical_plan::plan::Extension;
 use datafusion::physical_plan::join_utils::JoinSide;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
+use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use prost::Message;
 
 // include the generated protobuf source as a submodule
@@ -83,21 +85,6 @@ pub trait AsLogicalPlan: Debug + Send + Sync + Clone {
         Self: Sized;
 }
 
-pub trait LogicalExtensionCodec: Debug + Send + Sync {
-    fn try_decode(
-        &self,
-        buf: &[u8],
-        inputs: &[LogicalPlan],
-        ctx: &SessionContext,
-    ) -> Result<Extension, BallistaError>;
-
-    fn try_encode(
-        &self,
-        node: &Extension,
-        buf: &mut Vec<u8>,
-    ) -> Result<(), BallistaError>;
-}
-
 #[derive(Debug, Clone)]
 pub struct DefaultLogicalExtensionCodec {}
 
@@ -107,8 +94,8 @@ impl LogicalExtensionCodec for DefaultLogicalExtensionCodec {
         _buf: &[u8],
         _inputs: &[LogicalPlan],
         _ctx: &SessionContext,
-    ) -> Result<Extension, BallistaError> {
-        Err(BallistaError::NotImplemented(
+    ) -> Result<Extension, DataFusionError> {
+        Err(DataFusionError::NotImplemented(
             "LogicalExtensionCodec is not provided".to_string(),
         ))
     }
@@ -117,8 +104,8 @@ impl LogicalExtensionCodec for DefaultLogicalExtensionCodec {
         &self,
         _node: &Extension,
         _buf: &mut Vec<u8>,
-    ) -> Result<(), BallistaError> {
-        Err(BallistaError::NotImplemented(
+    ) -> Result<(), DataFusionError> {
+        Err(DataFusionError::NotImplemented(
             "LogicalExtensionCodec is not provided".to_string(),
         ))
     }
@@ -620,10 +607,10 @@ mod tests {
             buf: &[u8],
             inputs: &[LogicalPlan],
             ctx: &SessionContext,
-        ) -> Result<Extension, BallistaError> {
+        ) -> Result<Extension, DataFusionError> {
             if let Some((input, _)) = inputs.split_first() {
                 let proto = TopKPlanProto::decode(buf).map_err(|e| {
-                    BallistaError::Internal(format!(
+                    DataFusionError::Internal(format!(
                         "failed to decode logical plan: {:?}",
                         e
                     ))
@@ -640,10 +627,14 @@ mod tests {
                         node: Arc::new(node),
                     })
                 } else {
-                    Err(BallistaError::from("invalid plan, no expr".to_string()))
+                    Err(DataFusionError::Internal(
+                        "invalid plan, no expr".to_string(),
+                    ))
                 }
             } else {
-                Err(BallistaError::from("invalid plan, no input".to_string()))
+                Err(DataFusionError::Internal(
+                    "invalid plan, no input".to_string(),
+                ))
             }
         }
 
@@ -651,7 +642,7 @@ mod tests {
             &self,
             node: &Extension,
             buf: &mut Vec<u8>,
-        ) -> Result<(), BallistaError> {
+        ) -> Result<(), DataFusionError> {
             if let Some(exec) = node.node.as_any().downcast_ref::<TopKPlanNode>() {
                 let proto = TopKPlanProto {
                     k: exec.k as u64,
@@ -659,7 +650,7 @@ mod tests {
                 };
 
                 proto.encode(buf).map_err(|e| {
-                    BallistaError::Internal(format!(
+                    DataFusionError::Internal(format!(
                         "failed to encode logical plan: {:?}",
                         e
                     ))
@@ -667,7 +658,9 @@ mod tests {
 
                 Ok(())
             } else {
-                Err(BallistaError::from("unsupported plan type".to_string()))
+                Err(DataFusionError::Internal(
+                    "unsupported plan type".to_string(),
+                ))
             }
         }
     }

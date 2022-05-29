@@ -40,11 +40,12 @@ use datafusion::physical_plan::{
 };
 
 use crate::serde::protobuf::execute_query_params::OptionalSessionId;
-use crate::serde::{AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec};
+use crate::serde::{AsLogicalPlan, DefaultLogicalExtensionCodec};
 use datafusion::arrow::error::{ArrowError, Result as ArrowResult};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use log::{error, info};
 
