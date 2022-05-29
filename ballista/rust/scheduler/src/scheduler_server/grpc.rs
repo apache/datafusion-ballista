@@ -38,6 +38,7 @@ use datafusion::datafusion_data_access::object_store::{
 };
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::file_format::FileFormat;
+use datafusion_proto::bytes::logical_plan_from_bytes_with_extension_codec;
 use futures::TryStreamExt;
 use log::{debug, error, info, trace, warn};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
@@ -46,7 +47,6 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
-use datafusion_proto::bytes::logical_plan_from_bytes_with_extension_codec;
 use tonic::{Request, Response, Status};
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
@@ -376,16 +376,17 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
             let plan = match query {
                 Query::LogicalPlan(message) => {
-                    logical_plan_from_bytes_with_extension_codec(message.as_slice(),
-                                df_session.deref(),
-                                self.codec.logical_extension_codec(),
-                            )
-                        .map_err(|e| {
-                            let msg = format!("Could not parse logical plan protobuf: {}", e);
-                            error!("{}", msg);
-                            tonic::Status::internal(msg)
-                        })?
-                },
+                    logical_plan_from_bytes_with_extension_codec(
+                        message.as_slice(),
+                        df_session.deref(),
+                        self.codec.logical_extension_codec(),
+                    )
+                    .map_err(|e| {
+                        let msg = format!("Could not parse logical plan protobuf: {}", e);
+                        error!("{}", msg);
+                        tonic::Status::internal(msg)
+                    })?
+                }
                 Query::Sql(sql) => df_session
                     .sql(&sql)
                     .await

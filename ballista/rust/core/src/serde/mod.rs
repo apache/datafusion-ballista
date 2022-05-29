@@ -70,19 +70,6 @@ pub trait AsLogicalPlan: Debug + Send + Sync + Clone {
     where
         B: BufMut,
         Self: Sized;
-
-    fn try_into_logical_plan(
-        &self,
-        ctx: &SessionContext,
-        extension_codec: &dyn LogicalExtensionCodec,
-    ) -> Result<LogicalPlan, BallistaError>;
-
-    fn try_from_logical_plan(
-        plan: &LogicalPlan,
-        extension_codec: &dyn LogicalExtensionCodec,
-    ) -> Result<Self, BallistaError>
-    where
-        Self: Sized;
 }
 
 #[derive(Debug, Clone)]
@@ -374,6 +361,10 @@ mod tests {
     use prost::Message;
     use std::any::Any;
 
+    use datafusion_proto::bytes::{
+        logical_plan_from_bytes_with_extension_codec,
+        logical_plan_to_bytes_with_extension_codec,
+    };
     use datafusion_proto::from_proto::parse_expr;
     use std::convert::TryInto;
     use std::fmt;
@@ -399,10 +390,8 @@ mod tests {
     }
 
     use crate::error::BallistaError;
-    use crate::serde::protobuf::{LogicalPlanNode, PhysicalPlanNode};
-    use crate::serde::{
-        AsExecutionPlan, AsLogicalPlan, LogicalExtensionCodec, PhysicalExtensionCodec,
-    };
+    use crate::serde::protobuf::PhysicalPlanNode;
+    use crate::serde::{AsExecutionPlan, LogicalExtensionCodec, PhysicalExtensionCodec};
     use proto::{TopKExecProto, TopKPlanProto};
 
     struct TopKPlanNode {
@@ -729,8 +718,10 @@ mod tests {
 
         let extension_codec = TopKExtensionCodec {};
 
-        let proto = LogicalPlanNode::try_from_logical_plan(&topk_plan, &extension_codec)?;
-        let logical_round_trip = proto.try_into_logical_plan(&ctx, &extension_codec)?;
+        let bytes =
+            logical_plan_to_bytes_with_extension_codec(&topk_plan, &extension_codec)?;
+        let logical_round_trip =
+            logical_plan_from_bytes_with_extension_codec(&bytes, &ctx, &extension_codec)?;
 
         assert_eq!(
             format!("{:?}", topk_plan),

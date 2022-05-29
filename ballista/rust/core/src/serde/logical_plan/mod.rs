@@ -16,9 +16,7 @@
 // under the License.
 
 use crate::error::BallistaError;
-use crate::serde::{protobuf, AsLogicalPlan, LogicalExtensionCodec};
-use datafusion::logical_plan::LogicalPlan;
-use datafusion::prelude::SessionContext;
+use crate::serde::{protobuf, AsLogicalPlan};
 
 use prost::bytes::BufMut;
 use prost::Message;
@@ -45,24 +43,6 @@ impl AsLogicalPlan for LogicalPlanNode {
             BallistaError::Internal(format!("failed to encode logical plan: {:?}", e))
         })
     }
-
-    fn try_into_logical_plan(
-        &self,
-        _ctx: &SessionContext,
-        _extension_codec: &dyn LogicalExtensionCodec,
-    ) -> Result<LogicalPlan, BallistaError> {
-        unimplemented!()
-    }
-
-    fn try_from_logical_plan(
-        _plan: &LogicalPlan,
-        _extension_codec: &dyn LogicalExtensionCodec,
-    ) -> Result<Self, BallistaError>
-    where
-        Self: Sized,
-    {
-        unimplemented!()
-    }
 }
 
 #[macro_export]
@@ -80,7 +60,7 @@ macro_rules! into_logical_plan {
 mod roundtrip_tests {
 
     use super::super::{super::error::Result, protobuf};
-    use crate::serde::{AsLogicalPlan, BallistaCodec};
+    use crate::serde::BallistaCodec;
     use async_trait::async_trait;
     use core::panic;
     use datafusion::common::DFSchemaRef;
@@ -402,15 +382,17 @@ mod roundtrip_tests {
             .await?
             .to_logical_plan()?;
 
-        let proto: protobuf::LogicalPlanNode =
-            protobuf::LogicalPlanNode::try_from_logical_plan(
-                &plan,
-                codec.logical_extension_codec(),
-            )
-            .expect("from logical plan");
-        let round_trip: LogicalPlan = proto
-            .try_into_logical_plan(&ctx, codec.logical_extension_codec())
-            .expect("to logical plan");
+        let bytes = logical_plan_to_bytes_with_extension_codec(
+            &plan,
+            codec.logical_extension_codec(),
+        )
+        .expect("from logical plan");
+        let round_trip = logical_plan_from_bytes_with_extension_codec(
+            &bytes,
+            &ctx,
+            codec.logical_extension_codec(),
+        )
+        .expect("to logical plan");
 
         assert_eq!(format!("{:?}", plan), format!("{:?}", round_trip));
 
