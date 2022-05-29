@@ -31,6 +31,7 @@ use datafusion::datafusion_data_access::{
     object_store::local::LocalFileSystem, FileMeta, SizedFile,
 };
 use datafusion::datasource::listing::{FileRange, PartitionedFile};
+use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::execution::context::ExecutionProps;
 use datafusion::logical_plan::FunctionRegistry;
 
@@ -381,6 +382,7 @@ impl TryInto<FileScanConfig> for &protobuf::FileScanExecConf {
 
         Ok(FileScanConfig {
             object_store: Arc::new(LocalFileSystem {}),
+            object_store_url: ObjectStoreUrl::parse(&self.object_store_url)?,
             file_schema: schema,
             file_groups: self
                 .file_groups
