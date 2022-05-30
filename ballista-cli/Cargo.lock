@@ -63,9 +63,9 @@ checksum = "8da52d66c7071e2e3fa2a1e5c6d088fec47b593032b254f5e980de8ea54454d6"
 
 [[package]]
 name = "arrow"
-version = "14.0.0"
+version = "15.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0612b6a634de6c3f5e63fdaa6932f7bc598f92de0462ac6e69b0aebd77e093aa"
+checksum = "6510d919fa4c27880f54430510d09327d7c86699c3692664bc0bb7c314f71385"
 dependencies = [
  "bitflags",
  "chrono",
@@ -88,9 +88,9 @@ dependencies = [
 
 [[package]]
 name = "arrow-flight"
-version = "14.0.0"
+version = "15.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce7b7cfa8eb0dcb0691f18b6a1d9c81cfe3c42726c254be5128d15ebe7580a1d"
+checksum = "3683337e9a7a300ae42355c96a2e5d421cf9dbe16f09ce8a6475157fe69dc92d"
 dependencies = [
  "arrow",
  "base64",
@@ -500,7 +500,7 @@ dependencies = [
 [[package]]
 name = "datafusion"
 version = "8.0.0"
-source = "git+https://github.com/apache/arrow-datafusion?rev=9ea7dc6036a7b1d28c7450db4f26720b732a50de#9ea7dc6036a7b1d28c7450db4f26720b732a50de"
+source = "git+https://github.com/tustvold/arrow-datafusion?rev=63b03371393521cad687754180f9472b42d0e0c3#63b03371393521cad687754180f9472b42d0e0c3"
 dependencies = [
  "ahash",
  "arrow",
@@ -534,7 +534,7 @@ dependencies = [
 [[package]]
 name = "datafusion-cli"
 version = "8.0.0"
-source = "git+https://github.com/apache/arrow-datafusion?rev=9ea7dc6036a7b1d28c7450db4f26720b732a50de#9ea7dc6036a7b1d28c7450db4f26720b732a50de"
+source = "git+https://github.com/tustvold/arrow-datafusion?rev=63b03371393521cad687754180f9472b42d0e0c3#63b03371393521cad687754180f9472b42d0e0c3"
 dependencies = [
  "arrow",
  "clap",
@@ -549,7 +549,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common"
 version = "8.0.0"
-source = "git+https://github.com/apache/arrow-datafusion?rev=9ea7dc6036a7b1d28c7450db4f26720b732a50de#9ea7dc6036a7b1d28c7450db4f26720b732a50de"
+source = "git+https://github.com/tustvold/arrow-datafusion?rev=63b03371393521cad687754180f9472b42d0e0c3#63b03371393521cad687754180f9472b42d0e0c3"
 dependencies = [
  "arrow",
  "ordered-float 3.0.0",
@@ -560,7 +560,7 @@ dependencies = [
 [[package]]
 name = "datafusion-data-access"
 version = "8.0.0"
-source = "git+https://github.com/apache/arrow-datafusion?rev=9ea7dc6036a7b1d28c7450db4f26720b732a50de#9ea7dc6036a7b1d28c7450db4f26720b732a50de"
+source = "git+https://github.com/tustvold/arrow-datafusion?rev=63b03371393521cad687754180f9472b42d0e0c3#63b03371393521cad687754180f9472b42d0e0c3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -574,7 +574,7 @@ dependencies = [
 [[package]]
 name = "datafusion-expr"
 version = "8.0.0"
-source = "git+https://github.com/apache/arrow-datafusion?rev=9ea7dc6036a7b1d28c7450db4f26720b732a50de#9ea7dc6036a7b1d28c7450db4f26720b732a50de"
+source = "git+https://github.com/tustvold/arrow-datafusion?rev=63b03371393521cad687754180f9472b42d0e0c3#63b03371393521cad687754180f9472b42d0e0c3"
 dependencies = [
  "ahash",
  "arrow",
@@ -585,7 +585,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr"
 version = "8.0.0"
-source = "git+https://github.com/apache/arrow-datafusion?rev=9ea7dc6036a7b1d28c7450db4f26720b732a50de#9ea7dc6036a7b1d28c7450db4f26720b732a50de"
+source = "git+https://github.com/tustvold/arrow-datafusion?rev=63b03371393521cad687754180f9472b42d0e0c3#63b03371393521cad687754180f9472b42d0e0c3"
 dependencies = [
  "ahash",
  "arrow",
@@ -609,9 +609,12 @@ dependencies = [
 [[package]]
 name = "datafusion-proto"
 version = "8.0.0"
-source = "git+https://github.com/apache/arrow-datafusion?rev=9ea7dc6036a7b1d28c7450db4f26720b732a50de#9ea7dc6036a7b1d28c7450db4f26720b732a50de"
+source = "git+https://github.com/tustvold/arrow-datafusion?rev=63b03371393521cad687754180f9472b42d0e0c3#63b03371393521cad687754180f9472b42d0e0c3"
 dependencies = [
+ "arrow",
  "datafusion",
+ "datafusion-common",
+ "datafusion-expr",
  "prost",
  "tonic-build",
 ]
@@ -619,7 +622,7 @@ dependencies = [
 [[package]]
 name = "datafusion-row"
 version = "8.0.0"
-source = "git+https://github.com/apache/arrow-datafusion?rev=9ea7dc6036a7b1d28c7450db4f26720b732a50de#9ea7dc6036a7b1d28c7450db4f26720b732a50de"
+source = "git+https://github.com/tustvold/arrow-datafusion?rev=63b03371393521cad687754180f9472b42d0e0c3#63b03371393521cad687754180f9472b42d0e0c3"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -630,7 +633,7 @@ dependencies = [
 [[package]]
 name = "datafusion-sql"
 version = "8.0.0"
-source = "git+https://github.com/apache/arrow-datafusion?rev=9ea7dc6036a7b1d28c7450db4f26720b732a50de#9ea7dc6036a7b1d28c7450db4f26720b732a50de"
+source = "git+https://github.com/tustvold/arrow-datafusion?rev=63b03371393521cad687754180f9472b42d0e0c3#63b03371393521cad687754180f9472b42d0e0c3"
 dependencies = [
  "ahash",
  "arrow",
@@ -1548,9 +1551,9 @@ dependencies = [
 
 [[package]]
 name = "parquet"
-version = "14.0.0"
+version = "15.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba1185ee1da5091e40b86519265a44d2704e3916ff867059c915141cab14d413"
+checksum = "94d31dde60b151ef88ec2c847e3a8f66d42d7dbdaeefd05d13d79db676b0b56f"
 dependencies = [
  "arrow",
  "base64",

@@ -33,7 +33,7 @@ snmalloc = ["snmalloc-rs"]
 
 [dependencies]
 ballista = { path = "../ballista/rust/client" }
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "b6fb0dd52c2abd0f8e134aa46cc1571cc6a0971b" }
+datafusion = { git = "https://github.com/tustvold/arrow-datafusion", rev = "63b03371393521cad687754180f9472b42d0e0c3" }
 env_logger = "0.9"
 futures = "0.3"
 mimalloc = { version = "0.1", optional = true, default-features = false }
