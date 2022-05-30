@@ -37,7 +37,6 @@ use ballista_scheduler::api::{get_routes, EitherBody, Error};
 use ballista_scheduler::state::backend::etcd::EtcdClient;
 #[cfg(feature = "sled")]
 use ballista_scheduler::state::backend::standalone::StandaloneClient;
-use datafusion_proto::protobuf::LogicalPlanNode;
 
 use ballista_scheduler::scheduler_server::SchedulerServer;
 use ballista_scheduler::state::backend::{StateBackend, StateBackendClient};
@@ -77,21 +76,20 @@ async fn start_server(
         "Starting Scheduler grpc server with task scheduling policy of {:?}",
         policy
     );
-    let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-        match policy {
-            TaskSchedulingPolicy::PushStaged => SchedulerServer::new_with_policy(
-                config_backend.clone(),
-                namespace.clone(),
-                policy,
-                BallistaCodec::default(),
-                default_session_builder,
-            ),
-            _ => SchedulerServer::new(
-                config_backend.clone(),
-                namespace.clone(),
-                BallistaCodec::default(),
-            ),
-        };
+    let mut scheduler_server: SchedulerServer<PhysicalPlanNode> = match policy {
+        TaskSchedulingPolicy::PushStaged => SchedulerServer::new_with_policy(
+            config_backend.clone(),
+            namespace.clone(),
+            policy,
+            BallistaCodec::default(),
+            default_session_builder,
+        ),
+        _ => SchedulerServer::new(
+            config_backend.clone(),
+            namespace.clone(),
+            BallistaCodec::default(),
+        ),
+    };
 
     scheduler_server.init().await?;
 

@@ -20,7 +20,7 @@ use std::sync::Arc;
 use arrow_flight::flight_service_server::FlightServiceServer;
 
 use ballista_core::serde::scheduler::ExecutorSpecification;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan, BallistaCodec};
+use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use ballista_core::{
     error::Result,
     serde::protobuf::executor_registration::OptionalHost,
@@ -37,13 +37,10 @@ use uuid::Uuid;
 use crate::metrics::LoggingMetricsCollector;
 use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightService};
 
-pub async fn new_standalone_executor<
-    T: 'static + AsLogicalPlan,
-    U: 'static + AsExecutionPlan,
->(
+pub async fn new_standalone_executor<U: 'static + AsExecutionPlan>(
     scheduler: SchedulerGrpcClient<Channel>,
     concurrent_tasks: usize,
-    codec: BallistaCodec<T, U>,
+    codec: BallistaCodec<U>,
 ) -> Result<()> {
     // Let the OS assign a random, free port
     let listener = TcpListener::bind("localhost:0").await?;

@@ -1164,15 +1164,13 @@ mod roundtrip_tests {
     use crate::execution_plans::ShuffleWriterExec;
     use crate::serde::protobuf::PhysicalPlanNode;
     use crate::serde::{AsExecutionPlan, BallistaCodec};
-    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use super::super::super::error::Result;
     use super::super::protobuf;
 
     fn roundtrip_test(exec_plan: Arc<dyn ExecutionPlan>) -> Result<()> {
         let ctx = SessionContext::new();
-        let codec: BallistaCodec<LogicalPlanNode, PhysicalPlanNode> =
-            BallistaCodec::default();
+        let codec: BallistaCodec<PhysicalPlanNode> = BallistaCodec::default();
         let proto: protobuf::PhysicalPlanNode =
             protobuf::PhysicalPlanNode::try_from_physical_plan(
                 exec_plan.clone(),
@@ -1198,8 +1196,7 @@ mod roundtrip_tests {
         exec_plan: Arc<dyn ExecutionPlan>,
         ctx: SessionContext,
     ) -> Result<()> {
-        let codec: BallistaCodec<LogicalPlanNode, PhysicalPlanNode> =
-            BallistaCodec::default();
+        let codec: BallistaCodec<PhysicalPlanNode> = BallistaCodec::default();
         let proto: protobuf::PhysicalPlanNode =
             protobuf::PhysicalPlanNode::try_from_physical_plan(
                 exec_plan.clone(),

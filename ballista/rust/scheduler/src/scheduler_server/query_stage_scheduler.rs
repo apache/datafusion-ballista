@@ -31,7 +31,7 @@ use ballista_core::serde::protobuf::{
     JobStatus, RunningJob, TaskStatus,
 };
 use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionStats};
-use ballista_core::serde::{protobuf, AsExecutionPlan, AsLogicalPlan};
+use ballista_core::serde::{protobuf, AsExecutionPlan};
 use datafusion::physical_plan::ExecutionPlan;
 
 use crate::planner::{
@@ -40,17 +40,14 @@ use crate::planner::{
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SchedulerServerEvent};
 use crate::state::SchedulerState;
 
-pub(crate) struct QueryStageScheduler<
-    T: 'static + AsLogicalPlan,
-    U: 'static + AsExecutionPlan,
-> {
-    state: Arc<SchedulerState<T, U>>,
+pub(crate) struct QueryStageScheduler<U: 'static + AsExecutionPlan> {
+    state: Arc<SchedulerState<U>>,
     event_sender: Option<EventSender<SchedulerServerEvent>>,
 }
 
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageScheduler<T, U> {
+impl<U: 'static + AsExecutionPlan> QueryStageScheduler<U> {
     pub(crate) fn new(
-        state: Arc<SchedulerState<T, U>>,
+        state: Arc<SchedulerState<U>>,
         event_sender: Option<EventSender<SchedulerServerEvent>>,
     ) -> Self {
         Self {
@@ -313,8 +310,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
 }
 
 #[async_trait]
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
-    EventAction<QueryStageSchedulerEvent> for QueryStageScheduler<T, U>
+impl<U: 'static + AsExecutionPlan> EventAction<QueryStageSchedulerEvent>
+    for QueryStageScheduler<U>
 {
     // TODO
     fn on_start(&self) {}

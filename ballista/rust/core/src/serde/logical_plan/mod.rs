@@ -140,10 +140,8 @@ mod roundtrip_tests {
         };
         ($initial_struct:ident) => {
             let ctx = SessionContext::new();
-            let codec: BallistaCodec<
-                datafusion_proto::protobuf::LogicalPlanNode,
-                protobuf::PhysicalPlanNode,
-            > = BallistaCodec::default();
+            let codec: BallistaCodec<protobuf::PhysicalPlanNode> =
+                BallistaCodec::default();
             let bytes = logical_plan_to_bytes_with_extension_codec(
                 &$initial_struct,
                 codec.logical_extension_codec(),
@@ -363,10 +361,7 @@ mod roundtrip_tests {
     #[tokio::test]
     async fn roundtrip_logical_plan_custom_ctx() -> Result<()> {
         let ctx = SessionContext::new();
-        let codec: BallistaCodec<
-            datafusion_proto::protobuf::LogicalPlanNode,
-            protobuf::PhysicalPlanNode,
-        > = BallistaCodec::default();
+        let codec: BallistaCodec<protobuf::PhysicalPlanNode> = BallistaCodec::default();
         let custom_object_store = Arc::new(TestObjectStore {});
         ctx.runtime_env()
             .register_object_store("test", custom_object_store.clone());

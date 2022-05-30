@@ -35,13 +35,13 @@ use crate::executor::Executor;
 use ballista_core::error::BallistaError;
 use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
 use ballista_core::serde::scheduler::ExecutorSpecification;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan, BallistaCodec};
+use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use datafusion::execution::context::TaskContext;
 
-pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
+pub async fn poll_loop<U: 'static + AsExecutionPlan>(
     mut scheduler: SchedulerGrpcClient<Channel>,
     executor: Arc<Executor>,
-    codec: BallistaCodec<T, U>,
+    codec: BallistaCodec<U>,
 ) {
     let executor_specification: ExecutorSpecification = executor
         .metadata
@@ -112,12 +112,12 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     }
 }
 
-async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
+async fn run_received_tasks<U: 'static + AsExecutionPlan>(
     executor: Arc<Executor>,
     available_tasks_slots: Arc<AtomicUsize>,
     task_status_sender: Sender<TaskStatus>,
     task: TaskDefinition,
-    codec: &BallistaCodec<T, U>,
+    codec: &BallistaCodec<U>,
 ) -> Result<(), BallistaError> {
     let task_id = task.task_id.unwrap();
     let task_id_log = format!(

@@ -26,27 +26,19 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventAction;
 use ballista_core::serde::protobuf::{LaunchTaskParams, TaskDefinition};
 use ballista_core::serde::scheduler::ExecutorDataChange;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan};
+use ballista_core::serde::AsExecutionPlan;
 
 use crate::scheduler_server::ExecutorsClient;
 use crate::state::task_scheduler::TaskScheduler;
 use crate::state::SchedulerState;
 
-pub(crate) struct SchedulerServerEventAction<
-    T: 'static + AsLogicalPlan,
-    U: 'static + AsExecutionPlan,
-> {
-    state: Arc<SchedulerState<T, U>>,
+pub(crate) struct SchedulerServerEventAction<U: 'static + AsExecutionPlan> {
+    state: Arc<SchedulerState<U>>,
     executors_client: ExecutorsClient,
 }
 
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
-    SchedulerServerEventAction<T, U>
-{
-    pub fn new(
-        state: Arc<SchedulerState<T, U>>,
-        executors_client: ExecutorsClient,
-    ) -> Self {
+impl<U: 'static + AsExecutionPlan> SchedulerServerEventAction<U> {
+    pub fn new(state: Arc<SchedulerState<U>>, executors_client: ExecutorsClient) -> Self {
         Self {
             state,
             executors_client,
@@ -146,8 +138,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 }
 
 #[async_trait]
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
-    EventAction<SchedulerServerEvent> for SchedulerServerEventAction<T, U>
+impl<U: 'static + AsExecutionPlan> EventAction<SchedulerServerEvent>
+    for SchedulerServerEventAction<U>
 {
     // TODO
     fn on_start(&self) {}

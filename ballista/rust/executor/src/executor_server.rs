@@ -37,7 +37,7 @@ use ballista_core::serde::protobuf::{
     StopExecutorParams, StopExecutorResult, TaskDefinition, UpdateTaskStatusParams,
 };
 use ballista_core::serde::scheduler::ExecutorState;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan, BallistaCodec};
+use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 
@@ -45,10 +45,10 @@ use crate::as_task_status;
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
 
-pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
+pub async fn startup<U: 'static + AsExecutionPlan>(
     mut scheduler: SchedulerGrpcClient<Channel>,
     executor: Arc<Executor>,
-    codec: BallistaCodec<T, U>,
+    codec: BallistaCodec<U>,
 ) {
     // TODO make the buffer size configurable
     let (tx_task, rx_task) = mpsc::channel::<TaskDefinition>(1000);
@@ -126,12 +126,12 @@ async fn register_executor(
 }
 
 #[derive(Clone)]
-pub struct ExecutorServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
+pub struct ExecutorServer<U: 'static + AsExecutionPlan> {
     _start_time: u128,
     executor: Arc<Executor>,
     scheduler: SchedulerGrpcClient<Channel>,
     executor_env: ExecutorEnv,
-    codec: BallistaCodec<T, U>,
+    codec: BallistaCodec<U>,
 }
 
 #[derive(Clone)]
@@ -141,12 +141,12 @@ struct ExecutorEnv {
 
 unsafe impl Sync for ExecutorEnv {}
 
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T, U> {
+impl<U: 'static + AsExecutionPlan> ExecutorServer<U> {
     fn new(
         scheduler: SchedulerGrpcClient<Channel>,
         executor: Arc<Executor>,
         executor_env: ExecutorEnv,
-        codec: BallistaCodec<T, U>,
+        codec: BallistaCodec<U>,
     ) -> Self {
         Self {
             _start_time: SystemTime::now()
@@ -260,12 +260,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
     }
 }
 
-struct Heartbeater<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
-    executor_server: Arc<ExecutorServer<T, U>>,
+struct Heartbeater<U: 'static + AsExecutionPlan> {
+    executor_server: Arc<ExecutorServer<U>>,
 }
 
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> Heartbeater<T, U> {
-    fn new(executor_server: Arc<ExecutorServer<T, U>>) -> Self {
+impl<U: 'static + AsExecutionPlan> Heartbeater<U> {
+    fn new(executor_server: Arc<ExecutorServer<U>>) -> Self {
         Self { executor_server }
     }
 
@@ -281,12 +281,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> Heartbeater<T, U>
     }
 }
 
-struct TaskRunnerPool<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
-    executor_server: Arc<ExecutorServer<T, U>>,
+struct TaskRunnerPool<U: 'static + AsExecutionPlan> {
+    executor_server: Arc<ExecutorServer<U>>,
 }
 
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T, U> {
-    fn new(executor_server: Arc<ExecutorServer<T, U>>) -> Self {
+impl<U: 'static + AsExecutionPlan> TaskRunnerPool<U> {
+    fn new(executor_server: Arc<ExecutorServer<U>>) -> Self {
         Self { executor_server }
     }
 
@@ -329,9 +329,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
 }
 
 #[tonic::async_trait]
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
-    for ExecutorServer<T, U>
-{
+impl<U: 'static + AsExecutionPlan> ExecutorGrpc for ExecutorServer<U> {
     async fn launch_task(
         &self,
         request: Request<LaunchTaskParams>,

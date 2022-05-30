@@ -32,7 +32,7 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::scheduler::{
     ExecutorData, ExecutorDataChange, ExecutorMetadata,
 };
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan};
+use ballista_core::serde::AsExecutionPlan;
 use datafusion::datafusion_data_access::object_store::{
     local::LocalFileSystem, ObjectStore,
 };
@@ -56,9 +56,7 @@ use crate::scheduler_server::{
 use crate::state::task_scheduler::TaskScheduler;
 
 #[tonic::async_trait]
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
-    for SchedulerServer<T, U>
-{
+impl<U: 'static + AsExecutionPlan> SchedulerGrpc for SchedulerServer<U> {
     async fn poll_work(
         &self,
         request: Request<PollWorkParams>,
@@ -568,7 +566,6 @@ mod test {
     use ballista_core::serde::scheduler::ExecutorSpecification;
     use ballista_core::serde::BallistaCodec;
     use datafusion::execution::context::default_session_builder;
-    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use super::{SchedulerGrpc, SchedulerServer};
 
@@ -576,12 +573,11 @@ mod test {
     async fn test_poll_work() -> Result<(), BallistaError> {
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
         let namespace = "default";
-        let scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                state_storage.clone(),
-                namespace.to_owned(),
-                BallistaCodec::default(),
-            );
+        let scheduler: SchedulerServer<PhysicalPlanNode> = SchedulerServer::new(
+            state_storage.clone(),
+            namespace.to_owned(),
+            BallistaCodec::default(),
+        );
         let exec_meta = ExecutorRegistration {
             id: "abc".to_owned(),
             optional_host: Some(OptionalHost::Host("".to_owned())),
@@ -601,13 +597,12 @@ mod test {
             .into_inner();
         // no response task since we told the scheduler we didn't want to accept one
         assert!(response.task.is_none());
-        let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerState::new(
-                state_storage.clone(),
-                namespace.to_string(),
-                default_session_builder,
-                BallistaCodec::default(),
-            );
+        let state: SchedulerState<PhysicalPlanNode> = SchedulerState::new(
+            state_storage.clone(),
+            namespace.to_string(),
+            default_session_builder,
+            BallistaCodec::default(),
+        );
         state.init().await?;
         // executor should be registered
         assert_eq!(state.get_executors_metadata().await.unwrap().len(), 1);
@@ -624,13 +619,12 @@ mod test {
             .into_inner();
         // still no response task since there are no tasks in the scheduelr
         assert!(response.task.is_none());
-        let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerState::new(
-                state_storage.clone(),
-                namespace.to_string(),
-                default_session_builder,
-                BallistaCodec::default(),
-            );
+        let state: SchedulerState<PhysicalPlanNode> = SchedulerState::new(
+            state_storage.clone(),
+            namespace.to_string(),
+            default_session_builder,
+            BallistaCodec::default(),
+        );
         state.init().await?;
         // executor should be registered
         assert_eq!(state.get_executors_metadata().await.unwrap().len(), 1);

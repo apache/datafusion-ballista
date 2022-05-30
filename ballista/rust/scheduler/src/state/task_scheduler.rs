@@ -26,7 +26,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
 use ballista_core::serde::scheduler::{ExecutorData, PartitionId};
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan};
+use ballista_core::serde::AsExecutionPlan;
 use log::{debug, info};
 
 #[async_trait]
@@ -46,9 +46,7 @@ pub trait StageScheduler {
 }
 
 #[async_trait]
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskScheduler
-    for SchedulerState<T, U>
-{
+impl<U: 'static + AsExecutionPlan> TaskScheduler for SchedulerState<U> {
     async fn fetch_schedulable_tasks(
         &self,
         available_executors: &mut [ExecutorData],

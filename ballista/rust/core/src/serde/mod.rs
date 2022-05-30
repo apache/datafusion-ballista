@@ -165,27 +165,23 @@ impl PhysicalExtensionCodec for DefaultPhysicalExtensionCodec {
 }
 
 #[derive(Clone, Debug)]
-pub struct BallistaCodec<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
+pub struct BallistaCodec<U: 'static + AsExecutionPlan> {
     logical_extension_codec: Arc<dyn LogicalExtensionCodec>,
     physical_extension_codec: Arc<dyn PhysicalExtensionCodec>,
-    logical_plan_repr: PhantomData<T>,
     physical_plan_repr: PhantomData<U>,
 }
 
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> Default
-    for BallistaCodec<T, U>
-{
+impl<U: 'static + AsExecutionPlan> Default for BallistaCodec<U> {
     fn default() -> Self {
         Self {
             logical_extension_codec: Arc::new(DefaultLogicalExtensionCodec {}),
             physical_extension_codec: Arc::new(DefaultPhysicalExtensionCodec {}),
-            logical_plan_repr: PhantomData,
             physical_plan_repr: PhantomData,
         }
     }
 }
 
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> BallistaCodec<T, U> {
+impl<U: 'static + AsExecutionPlan> BallistaCodec<U> {
     pub fn new(
         logical_extension_codec: Arc<dyn LogicalExtensionCodec>,
         physical_extension_codec: Arc<dyn PhysicalExtensionCodec>,
@@ -193,7 +189,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> BallistaCodec<T, 
         Self {
             logical_extension_codec,
             physical_extension_codec,
-            logical_plan_repr: PhantomData,
             physical_plan_repr: PhantomData,
         }
     }

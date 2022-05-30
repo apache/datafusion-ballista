@@ -20,16 +20,14 @@ use crate::scheduler_server::externalscaler::{
     GetMetricsResponse, IsActiveResponse, MetricSpec, MetricValue, ScaledObjectRef,
 };
 use crate::scheduler_server::SchedulerServer;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan};
+use ballista_core::serde::AsExecutionPlan;
 use log::debug;
 use tonic::{Request, Response};
 
 const INFLIGHT_TASKS_METRIC_NAME: &str = "inflight_tasks";
 
 #[tonic::async_trait]
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExternalScaler
-    for SchedulerServer<T, U>
-{
+impl<U: 'static + AsExecutionPlan> ExternalScaler for SchedulerServer<U> {
     async fn is_active(
         &self,
         _request: Request<ScaledObjectRef>,

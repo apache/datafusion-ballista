@@ -288,7 +288,6 @@ mod test {
     use std::ops::Deref;
 
     use ballista_core::serde::protobuf::PhysicalPlanNode;
-    use datafusion_proto::protobuf::LogicalPlanNode;
     use std::sync::Arc;
     use uuid::Uuid;
 
@@ -602,8 +601,7 @@ order by
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
         let ctx = SessionContext::new();
-        let codec: BallistaCodec<LogicalPlanNode, PhysicalPlanNode> =
-            BallistaCodec::default();
+        let codec: BallistaCodec<PhysicalPlanNode> = BallistaCodec::default();
         let proto: protobuf::PhysicalPlanNode =
             protobuf::PhysicalPlanNode::try_from_physical_plan(
                 plan.clone(),

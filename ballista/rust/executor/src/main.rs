@@ -45,7 +45,6 @@ use ballista_executor::flight_service::BallistaFlightService;
 use ballista_executor::metrics::LoggingMetricsCollector;
 use config::prelude::*;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
-use datafusion_proto::protobuf::LogicalPlanNode;
 
 #[macro_use]
 extern crate configure_me;
@@ -133,8 +132,7 @@ async fn main() -> Result<()> {
         .await
         .context("Could not connect to scheduler")?;
 
-    let default_codec: BallistaCodec<LogicalPlanNode, PhysicalPlanNode> =
-        BallistaCodec::default();
+    let default_codec: BallistaCodec<PhysicalPlanNode> = BallistaCodec::default();
 
     let scheduler_policy = opt.task_scheduling_policy;
     let cleanup_ttl = opt.executor_cleanup_ttl;

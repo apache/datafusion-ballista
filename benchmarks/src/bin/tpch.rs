@@ -1476,10 +1476,8 @@ mod tests {
                 .with_target_partitions(1)
                 .with_batch_size(10);
             let ctx = SessionContext::with_config(config);
-            let codec: BallistaCodec<
-                datafusion_proto::protobuf::LogicalPlanNode,
-                protobuf::PhysicalPlanNode,
-            > = BallistaCodec::default();
+            let codec: BallistaCodec<protobuf::PhysicalPlanNode> =
+                BallistaCodec::default();
 
             // set tpch_data_path to dummy value and skip physical plan serde test when TPCH_DATA
             // is not set.

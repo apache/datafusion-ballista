@@ -27,7 +27,7 @@ use ballista_core::error::Result;
 use ballista_core::event_loop::EventLoop;
 use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 use ballista_core::serde::protobuf::TaskStatus;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan, BallistaCodec};
+use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use datafusion::execution::context::{default_session_builder, SessionState};
 use datafusion::prelude::{SessionConfig, SessionContext};
 
@@ -53,23 +53,23 @@ type ExecutorsClient = Arc<RwLock<HashMap<String, ExecutorGrpcClient<Channel>>>>
 pub(crate) type SessionBuilder = fn(SessionConfig) -> SessionState;
 
 #[derive(Clone)]
-pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
-    pub(crate) state: Arc<SchedulerState<T, U>>,
+pub struct SchedulerServer<U: 'static + AsExecutionPlan> {
+    pub(crate) state: Arc<SchedulerState<U>>,
     pub start_time: u128,
     policy: TaskSchedulingPolicy,
     executors_client: Option<ExecutorsClient>,
     event_loop: Option<EventLoop<SchedulerServerEvent>>,
     query_stage_event_loop: EventLoop<QueryStageSchedulerEvent>,
-    codec: BallistaCodec<T, U>,
+    codec: BallistaCodec<U>,
     /// SessionState Builder
     session_builder: SessionBuilder,
 }
 
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
+impl<U: 'static + AsExecutionPlan> SchedulerServer<U> {
     pub fn new(
         config: Arc<dyn StateBackendClient>,
         namespace: String,
-        codec: BallistaCodec<T, U>,
+        codec: BallistaCodec<U>,
     ) -> Self {
         SchedulerServer::new_with_policy(
             config,
@@ -83,7 +83,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     pub fn new_with_builder(
         config: Arc<dyn StateBackendClient>,
         namespace: String,
-        codec: BallistaCodec<T, U>,
+        codec: BallistaCodec<U>,
         session_builder: SessionBuilder,
     ) -> Self {
         SchedulerServer::new_with_policy(
@@ -99,7 +99,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         config: Arc<dyn StateBackendClient>,
         namespace: String,
         policy: TaskSchedulingPolicy,
-        codec: BallistaCodec<T, U>,
+        codec: BallistaCodec<U>,
         session_builder: SessionBuilder,
     ) -> Self {
         let state = Arc::new(SchedulerState::new(
@@ -112,7 +112,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         let (executors_client, event_loop) =
             if matches!(policy, TaskSchedulingPolicy::PushStaged) {
                 let executors_client = Arc::new(RwLock::new(HashMap::new()));
-                let event_action: Arc<SchedulerServerEventAction<T, U>> =
+                let event_action: Arc<SchedulerServerEventAction<U>> =
                     Arc::new(SchedulerServerEventAction::new(
                         state.clone(),
                         executors_client.clone(),
@@ -297,7 +297,6 @@ mod test {
     use datafusion::logical_plan::{col, sum, LogicalPlan};
     use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion::test_util::scan_empty;
-    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use crate::scheduler_server::event::QueryStageSchedulerEvent;
     use crate::scheduler_server::SchedulerServer;
@@ -525,7 +524,7 @@ mod test {
     }
 
     async fn test_complete_stage(
-        scheduler: &SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
+        scheduler: &SchedulerServer<PhysicalPlanNode>,
         job_id: &str,
         stage_id: u32,
         num_tasks: usize,
@@ -549,9 +548,9 @@ mod test {
 
     async fn test_scheduler(
         policy: TaskSchedulingPolicy,
-    ) -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
+    ) -> Result<SchedulerServer<PhysicalPlanNode>> {
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+        let mut scheduler: SchedulerServer<PhysicalPlanNode> =
             SchedulerServer::new_with_policy(
                 state_storage.clone(),
                 "default".to_owned(),
@@ -582,7 +581,7 @@ mod test {
     }
 
     fn test_get_job_stage_task_num(
-        scheduler: &SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
+        scheduler: &SchedulerServer<PhysicalPlanNode>,
         job_id: &str,
     ) -> Vec<u32> {
         let mut ret = vec![0, 1];

@@ -34,18 +34,15 @@ use crate::scheduler_server::{
 use crate::state::backend::StateBackendClient;
 use crate::state::stage_manager::StageKey;
 use ballista_core::serde::scheduler::ExecutorMetadata;
-use ballista_core::serde::{protobuf, AsExecutionPlan, AsLogicalPlan, BallistaCodec};
+use ballista_core::serde::{protobuf, AsExecutionPlan, BallistaCodec};
 use datafusion::physical_plan::ExecutionPlan;
 
 #[derive(Clone)]
-pub(crate) struct PersistentSchedulerState<
-    T: 'static + AsLogicalPlan,
-    U: 'static + AsExecutionPlan,
-> {
+pub(crate) struct PersistentSchedulerState<U: 'static + AsExecutionPlan> {
     // for db
     config_client: Arc<dyn StateBackendClient>,
     namespace: String,
-    pub(crate) codec: BallistaCodec<T, U>,
+    pub(crate) codec: BallistaCodec<U>,
 
     // for in-memory cache
     executors_metadata: Arc<RwLock<HashMap<String, ExecutorMetadata>>>,
@@ -61,14 +58,12 @@ pub(crate) struct PersistentSchedulerState<
     session_builder: SessionBuilder,
 }
 
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
-    PersistentSchedulerState<T, U>
-{
+impl<U: 'static + AsExecutionPlan> PersistentSchedulerState<U> {
     pub(crate) fn new(
         config_client: Arc<dyn StateBackendClient>,
         namespace: String,
         session_builder: SessionBuilder,
-        codec: BallistaCodec<T, U>,
+        codec: BallistaCodec<U>,
     ) -> Self {
         Self {
             config_client,
@@ -413,7 +408,6 @@ mod test {
     use datafusion::execution::context::default_session_builder;
     use datafusion::logical_plan::LogicalPlanBuilder;
     use datafusion::prelude::SessionContext;
-    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use std::sync::Arc;
 
@@ -462,15 +456,13 @@ mod test {
             StandaloneClient::try_new_temporary().expect("creating config client"),
         );
 
-        let persistent_state: PersistentSchedulerState<
-            LogicalPlanNode,
-            PhysicalPlanNode,
-        > = PersistentSchedulerState::new(
-            config_client.clone(),
-            "default".to_string(),
-            default_session_builder,
-            BallistaCodec::default(),
-        );
+        let persistent_state: PersistentSchedulerState<PhysicalPlanNode> =
+            PersistentSchedulerState::new(
+                config_client.clone(),
+                "default".to_string(),
+                default_session_builder,
+                BallistaCodec::default(),
+            );
 
         persistent_state
             .save_job_session(&job_id, &session_id, vec![])
@@ -501,15 +493,13 @@ mod test {
             Some("session-id".to_string())
         );
 
-        let persistent_state: PersistentSchedulerState<
-            LogicalPlanNode,
-            PhysicalPlanNode,
-        > = PersistentSchedulerState::new(
-            config_client.clone(),
-            "default".to_string(),
-            default_session_builder,
-            BallistaCodec::default(),
-        );
+        let persistent_state: PersistentSchedulerState<PhysicalPlanNode> =
+            PersistentSchedulerState::new(
+                config_client.clone(),
+                "default".to_string(),
+                default_session_builder,
+                BallistaCodec::default(),
+            );
 
         persistent_state.init().await.expect("initializing state");
 

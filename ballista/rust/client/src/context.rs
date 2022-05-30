@@ -187,8 +187,7 @@ impl BallistaContext {
             )
         };
 
-        let default_codec: BallistaCodec<LogicalPlanNode, PhysicalPlanNode> =
-            BallistaCodec::default();
+        let default_codec: BallistaCodec<PhysicalPlanNode> = BallistaCodec::default();
 
         ballista_executor::new_standalone_executor(
             scheduler,

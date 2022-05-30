@@ -21,7 +21,6 @@ use ballista_core::{
     error::Result, serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer,
     BALLISTA_VERSION,
 };
-use datafusion_proto::protobuf::LogicalPlanNode;
 use log::info;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
@@ -34,12 +33,11 @@ use crate::{
 pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
     let client = StandaloneClient::try_new_temporary()?;
 
-    let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-        SchedulerServer::new(
-            Arc::new(client),
-            "ballista".to_string(),
-            BallistaCodec::default(),
-        );
+    let mut scheduler_server: SchedulerServer<PhysicalPlanNode> = SchedulerServer::new(
+        Arc::new(client),
+        "ballista".to_string(),
+        BallistaCodec::default(),
+    );
     scheduler_server.init().await?;
     let server = SchedulerGrpcServer::new(scheduler_server.clone());
     // Let the OS assign a random, free port

@@ -26,7 +26,7 @@ use ballista_core::error::Result;
 use crate::scheduler_server::{SessionBuilder, SessionContextRegistry};
 use ballista_core::serde::protobuf::{ExecutorHeartbeat, JobStatus, KeyValuePair};
 use ballista_core::serde::scheduler::ExecutorMetadata;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan, BallistaCodec};
+use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 
 use crate::state::backend::StateBackendClient;
 use crate::state::executor_manager::ExecutorManager;
@@ -40,19 +40,18 @@ mod stage_manager;
 pub mod task_scheduler;
 
 #[derive(Clone)]
-pub(super) struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
-{
-    persistent_state: PersistentSchedulerState<T, U>,
+pub(super) struct SchedulerState<U: 'static + AsExecutionPlan> {
+    persistent_state: PersistentSchedulerState<U>,
     pub executor_manager: ExecutorManager,
     pub stage_manager: StageManager,
 }
 
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T, U> {
+impl<U: 'static + AsExecutionPlan> SchedulerState<U> {
     pub fn new(
         config_client: Arc<dyn StateBackendClient>,
         namespace: String,
         session_builder: SessionBuilder,
-        codec: BallistaCodec<T, U>,
+        codec: BallistaCodec<U>,
     ) -> Self {
         Self {
             persistent_state: PersistentSchedulerState::new(
@@ -72,7 +71,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         Ok(())
     }
 
-    pub fn get_codec(&self) -> &BallistaCodec<T, U> {
+    pub fn get_codec(&self) -> &BallistaCodec<U> {
         &self.persistent_state.codec
     }
 
@@ -186,19 +185,17 @@ mod test {
     use ballista_core::serde::scheduler::{ExecutorMetadata, ExecutorSpecification};
     use ballista_core::serde::BallistaCodec;
     use datafusion::execution::context::default_session_builder;
-    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use super::{backend::standalone::StandaloneClient, SchedulerState};
 
     #[tokio::test]
     async fn executor_metadata() -> Result<(), BallistaError> {
-        let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerState::new(
-                Arc::new(StandaloneClient::try_new_temporary()?),
-                "test".to_string(),
-                default_session_builder,
-                BallistaCodec::default(),
-            );
+        let state: SchedulerState<PhysicalPlanNode> = SchedulerState::new(
+            Arc::new(StandaloneClient::try_new_temporary()?),
+            "test".to_string(),
+            default_session_builder,
+            BallistaCodec::default(),
+        );
         let meta = ExecutorMetadata {
             id: "123".to_owned(),
             host: "localhost".to_owned(),
@@ -219,13 +216,12 @@ mod test {
 
     #[tokio::test]
     async fn job_metadata() -> Result<(), BallistaError> {
-        let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerState::new(
-                Arc::new(StandaloneClient::try_new_temporary()?),
-                "test".to_string(),
-                default_session_builder,
-                BallistaCodec::default(),
-            );
+        let state: SchedulerState<PhysicalPlanNode> = SchedulerState::new(
+            Arc::new(StandaloneClient::try_new_temporary()?),
+            "test".to_string(),
+            default_session_builder,
+            BallistaCodec::default(),
+        );
         let meta = JobStatus {
             status: Some(job_status::Status::Queued(QueuedJob {})),
         };
@@ -241,13 +237,12 @@ mod test {
 
     #[tokio::test]
     async fn job_metadata_non_existant() -> Result<(), BallistaError> {
-        let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerState::new(
-                Arc::new(StandaloneClient::try_new_temporary()?),
-                "test".to_string(),
-                default_session_builder,
-                BallistaCodec::default(),
-            );
+        let state: SchedulerState<PhysicalPlanNode> = SchedulerState::new(
+            Arc::new(StandaloneClient::try_new_temporary()?),
+            "test".to_string(),
+            default_session_builder,
+            BallistaCodec::default(),
+        );
         let meta = JobStatus {
             status: Some(job_status::Status::Queued(QueuedJob {})),
         };
