@@ -27,7 +27,9 @@ use datafusion::datasource::file_format::avro::AvroFormat;
 use datafusion::datasource::file_format::csv::CsvFormat;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::file_format::FileFormat;
-use datafusion::datasource::listing::{ListingOptions, ListingTable, ListingTableConfig};
+use datafusion::datasource::listing::{
+    ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
+};
 use datafusion::logical_plan::plan::{
     Aggregate, EmptyRelation, Filter, Join, Projection, Sort, SubqueryAlias, Window,
 };
@@ -219,6 +221,7 @@ impl AsLogicalPlan for LogicalPlanNode {
                         FileFormatType::Avro(..) => Arc::new(AvroFormat::default()),
                     };
 
+                let url = ListingTableUrl::parse(&scan.path)?;
                 let options = ListingOptions {
                     file_extension: scan.file_extension.clone(),
                     format: file_format,
@@ -227,16 +230,12 @@ impl AsLogicalPlan for LogicalPlanNode {
                     target_partitions: scan.target_partitions as usize,
                 };
 
-                let object_store = ctx
-                    .runtime_env()
-                    .object_store(scan.path.as_str())
-                    .map_err(|e| {
-                        BallistaError::NotImplemented(format!(
-                            "No object store is registered for path {}: {:?}",
-                            scan.path, e
-                        ))
-                    })?
-                    .0;
+                let object_store = ctx.runtime_env().object_store(&url).map_err(|e| {
+                    BallistaError::NotImplemented(format!(
+                        "No object store is registered for path {}: {:?}",
+                        scan.path, e
+                    ))
+                })?;
 
                 println!(
                     "Found object store {:?} for path {}",
@@ -244,7 +243,7 @@ impl AsLogicalPlan for LogicalPlanNode {
                     scan.path.as_str()
                 );
 
-                let config = ListingTableConfig::new(object_store, scan.path.as_str())
+                let config = ListingTableConfig::new(object_store, url)
                     .with_listing_options(options)
                     .with_schema(Arc::new(schema));
 
@@ -595,7 +594,7 @@ impl AsLogicalPlan for LogicalPlanNode {
                                     .options()
                                     .table_partition_cols
                                     .clone(),
-                                path: listing_table.table_path().to_owned(),
+                                path: listing_table.table_path().to_string(),
                                 schema: Some(schema),
                                 projection,
                                 filters,
@@ -1056,6 +1055,7 @@ mod roundtrip_tests {
     use async_trait::async_trait;
     use core::panic;
     use datafusion::common::DFSchemaRef;
+    use datafusion::datasource::listing::ListingTableUrl;
     use datafusion::logical_plan::source_as_provider;
     use datafusion::{
         arrow::datatypes::{DataType, Field, Schema},
@@ -1176,7 +1176,7 @@ mod roundtrip_tests {
             vec![col("c1") + col("c2"), Expr::Literal((4.0).into())];
 
         let plan = std::sync::Arc::new(
-            test_scan_csv("employee.csv", Some(vec![3, 4]))
+            test_scan_csv("employee", Some(vec![3, 4]))
                 .await?
                 .sort(vec![col("salary")])?
                 .build()?,
@@ -1248,13 +1248,13 @@ mod roundtrip_tests {
 
     #[tokio::test]
     async fn roundtrip_analyze() -> Result<()> {
-        let verbose_plan = test_scan_csv("employee.csv", Some(vec![3, 4]))
+        let verbose_plan = test_scan_csv("employee", Some(vec![3, 4]))
             .await?
             .sort(vec![col("salary")])?
             .explain(true, true)?
             .build()?;
 
-        let plan = test_scan_csv("employee.csv", Some(vec![3, 4]))
+        let plan = test_scan_csv("employee", Some(vec![3, 4]))
             .await?
             .sort(vec![col("salary")])?
             .explain(false, true)?
@@ -1269,13 +1269,13 @@ mod roundtrip_tests {
 
     #[tokio::test]
     async fn roundtrip_explain() -> Result<()> {
-        let verbose_plan = test_scan_csv("employee.csv", Some(vec![3, 4]))
+        let verbose_plan = test_scan_csv("employee", Some(vec![3, 4]))
             .await?
             .sort(vec![col("salary")])?
             .explain(true, false)?
             .build()?;
 
-        let plan = test_scan_csv("employee.csv", Some(vec![3, 4]))
+        let plan = test_scan_csv("employee", Some(vec![3, 4]))
             .await?
             .sort(vec![col("salary")])?
             .explain(false, false)?
@@ -1311,7 +1311,7 @@ mod roundtrip_tests {
 
     #[tokio::test]
     async fn roundtrip_sort() -> Result<()> {
-        let plan = test_scan_csv("employee.csv", Some(vec![3, 4]))
+        let plan = test_scan_csv("employee", Some(vec![3, 4]))
             .await?
             .sort(vec![col("salary")])?
             .build()?;
@@ -1335,7 +1335,7 @@ mod roundtrip_tests {
 
     #[tokio::test]
     async fn roundtrip_logical_plan() -> Result<()> {
-        let plan = test_scan_csv("employee.csv", Some(vec![3, 4]))
+        let plan = test_scan_csv("employee", Some(vec![3, 4]))
             .await?
             .aggregate(vec![col("state")], vec![max(col("salary"))])?
             .build()?;
@@ -1355,9 +1355,10 @@ mod roundtrip_tests {
         ctx.runtime_env()
             .register_object_store("test", custom_object_store.clone());
 
-        let (os, uri) = ctx.runtime_env().object_store("test://foo.csv")?;
+        let url = ListingTableUrl::parse("test://foo.csv").unwrap();
+        let os = ctx.runtime_env().object_store(&url)?;
         assert_eq!("TestObjectStore", &format!("{:?}", os));
-        assert_eq!("foo.csv", uri);
+        assert_eq!("test://foo.csv", &url.to_string());
 
         let schema = test_schema();
         let plan = ctx
@@ -1415,7 +1416,11 @@ mod roundtrip_tests {
         let schema = test_schema();
         let ctx = SessionContext::new();
         let options = CsvReadOptions::new().schema(&schema);
-        let df = ctx.read_csv(table_name, options).await?;
+
+        let uri = format!("file:///{}.csv", table_name);
+        ctx.register_csv(table_name, &uri, options).await?;
+
+        let df = ctx.table(table_name)?;
         let plan = match df.to_logical_plan()? {
             LogicalPlan::TableScan(ref scan) => {
                 let mut scan = scan.clone();

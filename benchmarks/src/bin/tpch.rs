@@ -58,6 +58,7 @@ use datafusion::{
 
 use datafusion::datasource::file_format::csv::DEFAULT_CSV_EXTENSION;
 use datafusion::datasource::file_format::parquet::DEFAULT_PARQUET_EXTENSION;
+use datafusion::datasource::listing::ListingTableUrl;
 use serde::Serialize;
 use structopt::StructOpt;
 
@@ -767,7 +768,8 @@ fn get_table(
         table_partition_cols: vec![],
     };
 
-    let config = ListingTableConfig::new(Arc::new(LocalFileSystem {}), path)
+    let url = ListingTableUrl::parse(path)?;
+    let config = ListingTableConfig::new(Arc::new(LocalFileSystem {}), url)
         .with_listing_options(options)
         .with_schema(schema);
 
@@ -1466,6 +1468,7 @@ mod tests {
         use ballista_core::serde::{
             protobuf, AsExecutionPlan, AsLogicalPlan, BallistaCodec,
         };
+        use datafusion::datasource::listing::ListingTableUrl;
         use datafusion::physical_plan::ExecutionPlan;
         use std::ops::Deref;
 
@@ -1483,6 +1486,7 @@ mod tests {
             // is not set.
             let tpch_data_path =
                 env::var("TPCH_DATA").unwrap_or_else(|_| "./".to_string());
+            let path = ListingTableUrl::parse(tpch_data_path)?;
 
             for &table in TABLES {
                 let schema = get_schema(table);
@@ -1492,12 +1496,10 @@ mod tests {
                     .has_header(false)
                     .file_extension(".tbl");
                 let listing_options = options.to_listing_options(1);
-                let config = ListingTableConfig::new(
-                    Arc::new(LocalFileSystem {}),
-                    tpch_data_path.clone(),
-                )
-                .with_listing_options(listing_options)
-                .with_schema(Arc::new(schema));
+                let config =
+                    ListingTableConfig::new(Arc::new(LocalFileSystem {}), path.clone())
+                        .with_listing_options(listing_options)
+                        .with_schema(Arc::new(schema));
                 let provider = ListingTable::try_new(config)?;
                 ctx.register_table(table, Arc::new(provider))?;
             }
