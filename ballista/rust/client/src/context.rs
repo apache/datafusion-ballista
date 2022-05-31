@@ -590,12 +590,10 @@ mod tests {
                         target_partitions: x.target_partitions,
                     };
 
-                    let config = ListingTableConfig::new(
-                        listing_table.object_store().clone(),
-                        listing_table.table_path().clone(),
-                    )
-                    .with_schema(Arc::new(Schema::new(vec![])))
-                    .with_listing_options(error_options);
+                    let config =
+                        ListingTableConfig::new(listing_table.table_path().clone())
+                            .with_schema(Arc::new(Schema::new(vec![])))
+                            .with_listing_options(error_options);
 
                     let error_table = ListingTable::try_new(config).unwrap();
 
@@ -612,7 +610,7 @@ mod tests {
             .await
             .unwrap();
         let results = df.collect().await.unwrap();
-        pretty::print_batches(&results);
+        pretty::print_batches(&results).unwrap();
     }
 
     #[tokio::test]

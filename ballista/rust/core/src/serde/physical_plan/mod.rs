@@ -23,7 +23,6 @@ use prost::Message;
 
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::datafusion_data_access::object_store::local::LocalFileSystem;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -154,7 +153,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 Ok(Arc::new(FilterExec::try_new(predicate, input)?))
             }
             PhysicalPlanType::CsvScan(scan) => Ok(Arc::new(CsvExec::new(
-                decode_scan_config(scan.base_conf.as_ref().unwrap(), runtime)?,
+                decode_scan_config(scan.base_conf.as_ref().unwrap())?,
                 scan.has_header,
                 str_to_byte(&scan.delimiter)?,
             ))),
@@ -165,12 +164,12 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     .map(|expr| parse_expr(expr, registry))
                     .transpose()?;
                 Ok(Arc::new(ParquetExec::new(
-                    decode_scan_config(scan.base_conf.as_ref().unwrap(), runtime)?,
+                    decode_scan_config(scan.base_conf.as_ref().unwrap())?,
                     predicate,
                 )))
             }
             PhysicalPlanType::AvroScan(scan) => Ok(Arc::new(AvroExec::new(
-                decode_scan_config(scan.base_conf.as_ref().unwrap(), runtime)?,
+                decode_scan_config(scan.base_conf.as_ref().unwrap())?,
             ))),
             PhysicalPlanType::CoalesceBatches(coalesce_batches) => {
                 let input: Arc<dyn ExecutionPlan> = into_physical_plan!(
@@ -1073,7 +1072,6 @@ impl AsExecutionPlan for PhysicalPlanNode {
 
 fn decode_scan_config(
     proto: &protobuf::FileScanExecConf,
-    runtime: &RuntimeEnv,
 ) -> Result<FileScanConfig, BallistaError> {
     let schema = Arc::new(convert_required!(proto.schema)?);
     let projection = proto
@@ -1094,20 +1092,12 @@ fn decode_scan_config(
         .map(|f| f.try_into())
         .collect::<Result<Vec<_>, _>>()?;
 
-    let (object_store, object_store_url) = match proto.object_store_url.is_empty() {
-        false => {
-            let object_store_url = ObjectStoreUrl::parse(&proto.object_store_url)?;
-            let object_store = runtime.object_store(&object_store_url)?;
-            (object_store, object_store_url)
-        }
-        true => (
-            Arc::new(LocalFileSystem {}) as _,
-            ObjectStoreUrl::local_filesystem(),
-        ),
+    let object_store_url = match proto.object_store_url.is_empty() {
+        false => ObjectStoreUrl::parse(&proto.object_store_url)?,
+        true => ObjectStoreUrl::local_filesystem(),
     };
 
     Ok(FileScanConfig {
-        object_store,
         object_store_url,
         file_schema: schema,
         file_groups,
@@ -1151,7 +1141,6 @@ mod roundtrip_tests {
             compute::kernels::sort::SortOptions,
             datatypes::{DataType, Field, Schema},
         },
-        datafusion_data_access::object_store::local::LocalFileSystem,
         datasource::listing::PartitionedFile,
         logical_plan::{JoinType, Operator},
         physical_plan::{
@@ -1378,7 +1367,6 @@ mod roundtrip_tests {
     #[test]
     fn roundtrip_parquet_exec_with_pruning_predicate() -> Result<()> {
         let scan_config = FileScanConfig {
-            object_store: Arc::new(LocalFileSystem {}),
             object_store_url: ObjectStoreUrl::local_filesystem(),
             file_schema: Arc::new(Schema::new(vec![Field::new(
                 "col",
