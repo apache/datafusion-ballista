@@ -23,16 +23,16 @@ authors = ["Apache Arrow <dev@arrow.apache.org>"]
 edition = "2021"
 keywords = [ "ballista", "cli", ]
 license = "Apache-2.0"
-homepage = "https://github.com/apache/arrow-ballista"
-repository = "https://github.com/apache/arrow-ballista"
+homepage = "https://github.com/tustvold/arrow-ballista"
+repository = "https://github.com/tustvold/arrow-ballista"
 rust-version = "1.59"
 readme = "README.md"
 
 [dependencies]
 ballista = { path = "../ballista/rust/client", version = "0.7.0" }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "9bf8bfbab47823effcbc78f98a675be64221f7cf" }
-datafusion-cli = { git = "https://github.com/apache/arrow-datafusion", rev = "9bf8bfbab47823effcbc78f98a675be64221f7cf" }
+datafusion = { git = "https://github.com/tustvold/arrow-datafusion", rev = "4e59381b43ab0a36f1b2e1c57c4ca7a846708ad7" }
+datafusion-cli = { git = "https://github.com/tustvold/arrow-datafusion", rev = "4e59381b43ab0a36f1b2e1c57c4ca7a846708ad7" }
 dirs = "4.0.0"
 env_logger = "0.9"
 mimalloc = { version = "0.1", default-features = false }

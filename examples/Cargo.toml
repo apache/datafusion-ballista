@@ -19,8 +19,8 @@
 name = "ballista-examples"
 description = "Ballista usage examples"
 version = "0.6.0"
-homepage = "https://github.com/apache/arrow-ballista"
-repository = "https://github.com/apache/arrow-ballista"
+homepage = "https://github.com/tustvold/arrow-ballista"
+repository = "https://github.com/tustvold/arrow-ballista"
 authors = ["Apache Arrow <dev@arrow.apache.org>"]
 license = "Apache-2.0"
 keywords = [ "arrow", "distributed", "query", "sql" ]
@@ -35,7 +35,7 @@ required-features = ["ballista/standalone"]
 
 [dependencies]
 ballista = { path = "../ballista/rust/client", version = "0.7.0" }
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "9bf8bfbab47823effcbc78f98a675be64221f7cf" }
+datafusion = { git = "https://github.com/tustvold/arrow-datafusion", rev = "4e59381b43ab0a36f1b2e1c57c4ca7a846708ad7" }
 futures = "0.3"
 num_cpus = "1.13.0"
 prost = "0.10"
