@@ -31,8 +31,8 @@ readme = "README.md"
 [dependencies]
 ballista = { path = "../ballista/rust/client", version = "0.7.0" }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = { git = "https://github.com/tustvold/arrow-datafusion", rev = "9244547848cf2533d86d2ddab7c8ec3268560f10" }
-datafusion-cli = { git = "https://github.com/tustvold/arrow-datafusion", rev = "9244547848cf2533d86d2ddab7c8ec3268560f10" }
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "9bf8bfbab47823effcbc78f98a675be64221f7cf" }
+datafusion-cli = { git = "https://github.com/apache/arrow-datafusion", rev = "9bf8bfbab47823effcbc78f98a675be64221f7cf" }
 dirs = "4.0.0"
 env_logger = "0.9"
 mimalloc = { version = "0.1", default-features = false }
