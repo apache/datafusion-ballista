@@ -441,6 +441,7 @@ impl TryFrom<&FileScanConfig> for protobuf::FileScanExecConf {
                 .collect(),
             schema: Some(conf.file_schema.as_ref().into()),
             table_partition_cols: conf.table_partition_cols.to_vec(),
+            object_store_url: conf.object_store_url.to_string(),
         })
     }
 }

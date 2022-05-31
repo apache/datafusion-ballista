@@ -453,6 +453,7 @@ message FileScanExecConf {
   ScanLimit limit = 5;
   Statistics statistics = 6;
   repeated string table_partition_cols = 7;
+  string object_store_url = 8;
 }
 
 message ParquetScanExecNode {

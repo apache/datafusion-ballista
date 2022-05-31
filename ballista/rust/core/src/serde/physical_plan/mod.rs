@@ -25,6 +25,7 @@ use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::datafusion_data_access::object_store::local::LocalFileSystem;
 use datafusion::datasource::listing::PartitionedFile;
+use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::logical_plan::window_frames::WindowFrame;
 use datafusion::logical_plan::FunctionRegistry;
@@ -1093,14 +1094,21 @@ fn decode_scan_config(
         .map(|f| f.try_into())
         .collect::<Result<Vec<_>, _>>()?;
 
-    let object_store = if let Some(file) = file_groups.get(0).and_then(|h| h.get(0)) {
-        runtime.object_store(file.file_meta.path())?.0
-    } else {
-        Arc::new(LocalFileSystem {})
+    let (object_store, object_store_url) = match proto.object_store_url.is_empty() {
+        false => {
+            let object_store_url = ObjectStoreUrl::parse(&proto.object_store_url)?;
+            let object_store = runtime.object_store(&object_store_url)?;
+            (object_store, object_store_url)
+        }
+        true => (
+            Arc::new(LocalFileSystem {}) as _,
+            ObjectStoreUrl::local_filesystem(),
+        ),
     };
 
     Ok(FileScanConfig {
         object_store,
+        object_store_url,
         file_schema: schema,
         file_groups,
         statistics,
@@ -1129,6 +1137,7 @@ mod roundtrip_tests {
     use std::sync::Arc;
 
     use datafusion::arrow::array::ArrayRef;
+    use datafusion::datasource::object_store::ObjectStoreUrl;
     use datafusion::execution::context::ExecutionProps;
     use datafusion::logical_expr::{BuiltinScalarFunction, Volatility};
     use datafusion::logical_plan::create_udf;
@@ -1370,6 +1379,7 @@ mod roundtrip_tests {
     fn roundtrip_parquet_exec_with_pruning_predicate() -> Result<()> {
         let scan_config = FileScanConfig {
             object_store: Arc::new(LocalFileSystem {}),
+            object_store_url: ObjectStoreUrl::local_filesystem(),
             file_schema: Arc::new(Schema::new(vec![Field::new(
                 "col",
                 DataType::Utf8,
