@@ -21,8 +21,8 @@ description = "Ballista Benchmarks"
 version = "5.0.0"
 edition = "2021"
 authors = ["Apache Arrow <dev@arrow.apache.org>"]
-homepage = "https://github.com/tustvold/arrow-ballista"
-repository = "https://github.com/tustvold/arrow-ballista"
+homepage = "https://github.com/apache/arrow-ballista"
+repository = "https://github.com/apache/arrow-ballista"
 license = "Apache-2.0"
 publish = false
 rust-version = "1.59"
@@ -33,7 +33,7 @@ snmalloc = ["snmalloc-rs"]
 
 [dependencies]
 ballista = { path = "../ballista/rust/client" }
-datafusion = { git = "https://github.com/tustvold/arrow-datafusion", rev = "4e59381b43ab0a36f1b2e1c57c4ca7a846708ad7" }
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "8f514f9748a7526ad0d1e55c8fe3772c93c14726" }
 env_logger = "0.9"
 futures = "0.3"
 mimalloc = { version = "0.1", optional = true, default-features = false }

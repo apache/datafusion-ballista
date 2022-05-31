@@ -20,8 +20,8 @@ name = "ballista"
 description = "Ballista Distributed Compute"
 license = "Apache-2.0"
 version = "0.7.0"
-homepage = "https://github.com/tustvold/arrow-ballista"
-repository = "https://github.com/tustvold/arrow-ballista"
+homepage = "https://github.com/apache/arrow-ballista"
+repository = "https://github.com/apache/arrow-ballista"
 readme = "README.md"
 authors = ["Apache Arrow <dev@arrow.apache.org>"]
 edition = "2021"
@@ -32,7 +32,7 @@ ballista-core = { path = "../core", version = "0.7.0" }
 ballista-executor = { path = "../executor", version = "0.7.0", optional = true }
 ballista-scheduler = { path = "../scheduler", version = "0.7.0", optional = true }
 
-datafusion = { git = "https://github.com/tustvold/arrow-datafusion", rev = "4e59381b43ab0a36f1b2e1c57c4ca7a846708ad7" }
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "8f514f9748a7526ad0d1e55c8fe3772c93c14726" }
 futures = "0.3"
 log = "0.4"
 parking_lot = "0.12"
