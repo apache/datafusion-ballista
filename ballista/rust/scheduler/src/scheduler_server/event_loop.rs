@@ -15,21 +15,22 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
-use log::{debug, warn};
+use log::{error, info};
 
 use crate::scheduler_server::event::SchedulerServerEvent;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventAction;
-use ballista_core::serde::protobuf::{LaunchTaskParams, TaskDefinition};
-use ballista_core::serde::scheduler::ExecutorDataChange;
+
+use ballista_core::serde::scheduler::ExecutorMetadata;
 use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan};
 
-use crate::scheduler_server::ExecutorsClient;
-use crate::state::task_scheduler::TaskScheduler;
+use crate::state::execution_graph::Task;
+use crate::state::executor_manager::ExecutorReservation;
+// use crate::state::task_scheduler::TaskScheduler;
 use crate::state::SchedulerState;
 
 pub(crate) struct SchedulerServerEventAction<
@@ -37,7 +38,7 @@ pub(crate) struct SchedulerServerEventAction<
     U: 'static + AsExecutionPlan,
 > {
     state: Arc<SchedulerState<T, U>>,
-    executors_client: ExecutorsClient,
+    // executors_client: ExecutorsClient,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
@@ -45,103 +46,65 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 {
     pub fn new(
         state: Arc<SchedulerState<T, U>>,
-        executors_client: ExecutorsClient,
+        // executors_client: ExecutorsClient,
     ) -> Self {
         Self {
             state,
-            executors_client,
+            // executors_client,
         }
     }
 
-    #[allow(unused_variables)]
-    async fn offer_resources(&self, n: u32) -> Result<Option<SchedulerServerEvent>> {
-        let mut available_executors =
-            self.state.executor_manager.get_available_executors_data();
-        // In case of there's no enough resources, reschedule the tasks of the job
-        if available_executors.is_empty() {
-            // TODO Maybe it's better to use an exclusive runtime for this kind task scheduling
-            warn!("Not enough available executors for task running");
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            return Ok(Some(SchedulerServerEvent::ReviveOffers(1)));
-        }
-
-        let mut executors_data_change: Vec<ExecutorDataChange> = available_executors
-            .iter()
-            .map(|executor_data| ExecutorDataChange {
-                executor_id: executor_data.executor_id.clone(),
-                task_slots: executor_data.available_task_slots as i32,
-            })
-            .collect();
-
-        let (tasks_assigment, num_tasks) = self
+    async fn offer_reservation(
+        &self,
+        reservations: Vec<ExecutorReservation>,
+    ) -> Result<Option<SchedulerServerEvent>> {
+        let free_list = match self
             .state
-            .fetch_schedulable_tasks(&mut available_executors, n)
-            .await?;
-        for (data_change, data) in executors_data_change
-            .iter_mut()
-            .zip(available_executors.iter())
+            .task_manager
+            .fill_reservations(&reservations)
+            .await
         {
-            data_change.task_slots =
-                data.available_task_slots as i32 - data_change.task_slots;
-        }
+            Ok((assignments, mut unassigned_reservations)) => {
+                for (executor_id, task) in assignments.into_iter() {
+                    match self
+                        .state
+                        .executor_manager
+                        .get_executor_metadata(&executor_id)
+                        .await
+                    {
+                        Ok(executor) => {
+                            if let Err(e) =
+                                self.state.task_manager.launch_task(&executor, task).await
+                            {
+                                error!("Failed to launch new task: {:?}", e);
+                                unassigned_reservations.push(
+                                    ExecutorReservation::new_free(executor_id.clone()),
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to launch new task, could not get executor metadata: {:?}", e);
+                            unassigned_reservations
+                                .push(ExecutorReservation::new_free(executor_id.clone()));
+                        }
+                    }
+                }
+                unassigned_reservations
+            }
+            Err(e) => {
+                error!("Error filling reservations: {:?}", e);
+                reservations
+            }
+        };
 
-        #[cfg(not(test))]
-        if num_tasks > 0 {
-            self.launch_tasks(&executors_data_change, tasks_assigment)
+        // If any reserved slots remain, return them to the pool
+        if free_list.len() > 0 {
+            self.state
+                .executor_manager
+                .cancel_reservations(free_list)
                 .await?;
         }
-
         Ok(None)
-    }
-
-    #[allow(dead_code)]
-    async fn launch_tasks(
-        &self,
-        executors: &[ExecutorDataChange],
-        tasks_assigment: Vec<Vec<TaskDefinition>>,
-    ) -> Result<()> {
-        for (idx_executor, tasks) in tasks_assigment.into_iter().enumerate() {
-            if !tasks.is_empty() {
-                let executor_data_change = &executors[idx_executor];
-                debug!(
-                    "Start to launch tasks {:?} to executor {:?}",
-                    tasks
-                        .iter()
-                        .map(|task| {
-                            if let Some(task_id) = task.task_id.as_ref() {
-                                format!(
-                                    "{}/{}/{}",
-                                    task_id.job_id,
-                                    task_id.stage_id,
-                                    task_id.partition_id
-                                )
-                            } else {
-                                "".to_string()
-                            }
-                        })
-                        .collect::<Vec<String>>(),
-                    executor_data_change.executor_id
-                );
-                let mut client = {
-                    let clients = self.executors_client.read().await;
-                    clients
-                        .get(&executor_data_change.executor_id)
-                        .unwrap()
-                        .clone()
-                };
-                // TODO check whether launching task is successful or not
-                client.launch_task(LaunchTaskParams { task: tasks }).await?;
-                self.state
-                    .executor_manager
-                    .update_executor_data(executor_data_change);
-            } else {
-                // Since the task assignment policy is round robin,
-                // if find tasks for one executor is empty, just break fast
-                break;
-            }
-        }
-
-        Ok(())
     }
 }
 
@@ -150,20 +113,86 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     EventAction<SchedulerServerEvent> for SchedulerServerEventAction<T, U>
 {
     // TODO
-    fn on_start(&self) {}
+    fn on_start(&self) {
+        info!("Starting SchedulerServerEvent handler")
+    }
 
     // TODO
-    fn on_stop(&self) {}
+    fn on_stop(&self) {
+        info!("Stopping SchedulerServerEvent handler")
+    }
 
     async fn on_receive(
         &self,
         event: SchedulerServerEvent,
     ) -> Result<Option<SchedulerServerEvent>> {
         match event {
-            SchedulerServerEvent::ReviveOffers(n) => self.offer_resources(n).await,
+            SchedulerServerEvent::Offer(reservations) => {
+                self.offer_reservation(reservations).await
+            }
         }
     }
 
     // TODO
-    fn on_error(&self, _error: BallistaError) {}
+    fn on_error(&self, error: BallistaError) {
+        error!("Error in SchedulerServerEvent handler: {:?}", error);
+    }
 }
+
+pub(crate) async fn offer_reservations<
+    T: 'static + AsLogicalPlan,
+    U: 'static + AsExecutionPlan,
+    Fut,
+    F: FnOnce(&ExecutorMetadata, Task) -> Fut,
+>(
+    state: &SchedulerState<T, U>,
+    reservations: Vec<ExecutorReservation>,
+    _launch_fn: F,
+) -> Result<Option<SchedulerServerEvent>>
+where
+    Fut: Future,
+{
+    let free_list = match state.task_manager.fill_reservations(&reservations).await {
+        Ok((assignments, mut unassigned_reservations)) => {
+            for (executor_id, task) in assignments.into_iter() {
+                match state
+                    .executor_manager
+                    .get_executor_metadata(&executor_id)
+                    .await
+                {
+                    Ok(executor) => {
+                        if let Err(e) =
+                            state.task_manager.launch_task(&executor, task).await
+                        {
+                            error!("Failed to launch new task: {:?}", e);
+                            unassigned_reservations
+                                .push(ExecutorReservation::new_free(executor_id.clone()));
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to launch new task, could not get executor metadata: {:?}", e);
+                        unassigned_reservations
+                            .push(ExecutorReservation::new_free(executor_id.clone()));
+                    }
+                }
+            }
+            unassigned_reservations
+        }
+        Err(e) => {
+            error!("Error filling reservations: {:?}", e);
+            reservations
+        }
+    };
+
+    // If any reserved slots remain, return them to the pool
+    if free_list.len() > 0 {
+        state
+            .executor_manager
+            .cancel_reservations(free_list)
+            .await?;
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+mod test {}

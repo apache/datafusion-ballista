@@ -15,15 +15,57 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista_core::error::Result;
+use ballista_core::error::{BallistaError, Result};
+
+use crate::scheduler_server::event::SchedulerServerEvent;
+
+use async_trait::async_trait;
+use ballista_core::event_loop::EventAction;
 
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::execution::context::{SessionConfig, SessionContext};
 use datafusion::prelude::CsvReadOptions;
+use tokio::sync::mpsc::Sender;
 
 pub const TPCH_TABLES: &[&str] = &[
     "part", "supplier", "partsupp", "customer", "orders", "lineitem", "nation", "region",
 ];
+
+/// Test utility that allows observing scheduler events.
+pub struct SchedulerEventObserver {
+    sender: Sender<SchedulerServerEvent>,
+    errors: Sender<BallistaError>,
+}
+
+impl SchedulerEventObserver {
+    pub fn new(
+        sender: Sender<SchedulerServerEvent>,
+        errors: Sender<BallistaError>,
+    ) -> Self {
+        Self { sender, errors }
+    }
+}
+
+#[async_trait]
+impl EventAction<SchedulerServerEvent> for SchedulerEventObserver {
+    fn on_start(&self) {}
+
+    fn on_stop(&self) {}
+
+    async fn on_receive(
+        &self,
+        event: SchedulerServerEvent,
+    ) -> Result<Option<SchedulerServerEvent>> {
+        self.sender.send(event).await.unwrap();
+
+        Ok(None)
+    }
+
+    fn on_error(&self, error: BallistaError) {
+        let errors = self.errors.clone();
+        tokio::task::spawn(async move { errors.send(error).await.unwrap() });
+    }
+}
 
 pub async fn datafusion_test_context(path: &str) -> Result<SessionContext> {
     let default_shuffle_partitions = 2;

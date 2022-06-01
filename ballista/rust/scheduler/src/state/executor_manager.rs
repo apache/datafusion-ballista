@@ -15,32 +15,301 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::state::backend::{Keyspace, StateBackendClient};
+
+use crate::state::{decode_into, encode_protobuf};
+use ballista_core::error::{BallistaError, Result};
+use ballista_core::serde::protobuf;
+
+use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 use ballista_core::serde::protobuf::ExecutorHeartbeat;
-use ballista_core::serde::scheduler::{ExecutorData, ExecutorDataChange};
-use log::{error, info, warn};
+use ballista_core::serde::scheduler::{
+    ExecutorData, ExecutorDataChange, ExecutorMetadata,
+};
+use log::{debug, error, info, warn};
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+/// Represents a task slot that is reserved (i.e. available for scheduling but not visible to the
+/// rest of the system).
+/// When tasks finish we want to preferentially assign new tasks from the same job, so the reservation
+/// can already be assigned to a particular job ID. In that case, the scheduler will try to schedule
+/// available tasks for that job to the reserved task slot.
+#[derive(Clone, Debug)]
+pub struct ExecutorReservation {
+    pub executor_id: String,
+    pub job_id: Option<String>,
+}
+
+impl ExecutorReservation {
+    pub fn new_free(executor_id: String) -> Self {
+        Self {
+            executor_id,
+            job_id: None,
+        }
+    }
+
+    pub fn new_assigned(executor_id: String, job_id: String) -> Self {
+        Self {
+            executor_id,
+            job_id: Some(job_id),
+        }
+    }
+
+    pub fn assign(mut self, job_id: String) -> Self {
+        self.job_id = Some(job_id);
+        self
+    }
+
+    pub fn assigned(&self) -> bool {
+        self.job_id.is_some()
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ExecutorManager {
+    state: Arc<dyn StateBackendClient>,
+    executor_metadata: Arc<RwLock<HashMap<String, ExecutorMetadata>>>,
     executors_heartbeat: Arc<RwLock<HashMap<String, ExecutorHeartbeat>>>,
     executors_data: Arc<RwLock<HashMap<String, ExecutorData>>>,
 }
 
 impl ExecutorManager {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(state: Arc<dyn StateBackendClient>) -> Self {
         Self {
+            state,
+            executor_metadata: Arc::new(RwLock::new(HashMap::new())),
             executors_heartbeat: Arc::new(RwLock::new(HashMap::new())),
             executors_data: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    pub(crate) fn save_executor_heartbeat(&self, heartbeat: ExecutorHeartbeat) {
+    pub async fn init(&self) -> Result<()> {
+        todo!()
+    }
+
+    /// Reserve up to n executor task slots. Once reserved these slots will not be available
+    /// for scheduling.
+    /// This operation is atomic, so if this method return an Err, no slots have been reserved.
+    pub async fn reserve_slots(&self, n: u32) -> Result<Vec<ExecutorReservation>> {
+        debug!("Attempting to reserve {} executor slots", n);
+        let start = Instant::now();
+        let _lock = self.state.lock(Keyspace::Slots, "global").await?;
+        let mut reservations: Vec<ExecutorReservation> = vec![];
+        let mut desired: u32 = n;
+
+        let executor_slots = self.state.scan(Keyspace::Slots, None).await?;
+
+        let mut txn_ops: Vec<(Keyspace, String, Vec<u8>)> = vec![];
+
+        for (key, value) in executor_slots {
+            let mut data = decode_into::<protobuf::ExecutorData, ExecutorData>(&value)?;
+            let executor_id = data.executor_id.clone();
+            let take = std::cmp::min(data.available_task_slots, desired);
+
+            for _ in 0..take {
+                reservations.push(ExecutorReservation::new_free(executor_id.clone()));
+                data.available_task_slots -= 1;
+                desired -= 1;
+            }
+
+            let proto: protobuf::ExecutorData = data.into();
+            let new_data = encode_protobuf(&proto)?;
+            txn_ops.push((Keyspace::Slots, key, new_data));
+
+            if desired <= 0 {
+                break;
+            }
+        }
+
+        self.state.put_txn(txn_ops).await?;
+
+        let elapsed = start.elapsed();
+        info!(
+            "Reserved {} executor slots in {:?}",
+            reservations.len(),
+            elapsed
+        );
+
+        Ok(reservations)
+    }
+
+    /// Returned reserved task slots to the pool of available slots. This operation is atomic
+    /// so either the entire pool of reserved task slots it returned or none are.
+    pub async fn cancel_reservations(
+        &self,
+        reservations: Vec<ExecutorReservation>,
+    ) -> Result<()> {
+        let num_reservations = reservations.len();
+        debug!("Cancelling {} reservations", num_reservations);
+        let start = Instant::now();
+
+        let _lock = self.state.lock(Keyspace::Slots, "global").await?;
+
+        let mut executor_slots: HashMap<String, ExecutorData> = HashMap::new();
+
+        for reservation in reservations {
+            let executor_id = &reservation.executor_id;
+            if let Some(data) = executor_slots.get_mut(executor_id) {
+                data.available_task_slots += 1;
+            } else {
+                let value = self.state.get(Keyspace::Slots, executor_id).await?;
+                let mut data =
+                    decode_into::<protobuf::ExecutorData, ExecutorData>(&value)?;
+                data.available_task_slots += 1;
+                executor_slots.insert(executor_id.clone(), data);
+            }
+        }
+
+        let txn_ops: Vec<(Keyspace, String, Vec<u8>)> = executor_slots
+            .into_iter()
+            .map(|(executor_id, data)| {
+                let proto: protobuf::ExecutorData = data.into();
+                let new_data = encode_protobuf(&proto)?;
+                Ok((Keyspace::Slots, executor_id, new_data))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        self.state.put_txn(txn_ops).await?;
+
+        let elapsed = start.elapsed();
+        info!(
+            "Cancelled {} reservations in {:?}",
+            num_reservations, elapsed
+        );
+
+        Ok(())
+    }
+
+    pub async fn get_executor_state(&self) -> Result<Vec<(ExecutorMetadata, Duration)>> {
+        todo!()
+    }
+
+    pub async fn get_executor_metadata(
+        &self,
+        executor_id: &str,
+    ) -> Result<ExecutorMetadata> {
+        {
+            let metadata_cache = self.executor_metadata.read();
+            if let Some(cached) = metadata_cache.get(executor_id) {
+                return Ok(cached.clone());
+            }
+        }
+
+        let value = self.state.get(Keyspace::Executors, executor_id).await?;
+
+        let decoded =
+            decode_into::<protobuf::ExecutorMetadata, ExecutorMetadata>(&value)?;
+        Ok(decoded)
+    }
+
+    pub async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()> {
+        let executor_id = metadata.id.clone();
+        let proto: protobuf::ExecutorMetadata = metadata.into();
+        let value = encode_protobuf(&proto)?;
+
+        self.state
+            .put(Keyspace::Executors, executor_id, value)
+            .await
+    }
+
+    /// Register the executor with the scheduler. This will save the executor metadata and the
+    /// executor data to persistent state.
+    ///
+    /// If `reserve` is true, then any available task slots will be reserved and dispatched for scheduling.
+    /// If `reserve` is false, then the executor data will be saved as is.
+    ///
+    /// In general, reserve should be true is the scheduler is using push-based scheduling and false
+    /// if the scheduler is using poll-based scheduling.
+    pub async fn register_executor(
+        &self,
+        metadata: ExecutorMetadata,
+        specification: ExecutorData,
+        reserve: bool,
+    ) -> Result<Vec<ExecutorReservation>> {
+        // Validate that we can connect to the executor on the advertised host and port
+        // let executor_url = format!("http://{}:{}", metadata.host, metadata.grpc_port);
+        // debug!("Connecting to executor {:?}", executor_url);
+        // let _ = ExecutorGrpcClient::connect(executor_url)
+        //     .await
+        //     .map_err(|e| {
+        //         BallistaError::Internal(format!(
+        //             "Failed to register executor at {}:{}, could not connect: {:?}",
+        //             metadata.host, metadata.grpc_port, e
+        //         ))
+        //     })?;
+        self.test_scheduler_connectivity(&metadata).await?;
+
+        let executor_id = metadata.id.clone();
+
+        //TODO this should be in a transaction
+        // Now that we know we can connect, save the metadata and slots
+        self.save_executor_metadata(metadata).await?;
+
+        if !reserve {
+            let proto: protobuf::ExecutorData = specification.into();
+            let value = encode_protobuf(&proto)?;
+            self.state.put(Keyspace::Slots, executor_id, value).await?;
+            Ok(vec![])
+        } else {
+            let mut specification = specification;
+            let num_slots = specification.available_task_slots as usize;
+            let mut reservations: Vec<ExecutorReservation> = vec![];
+            for _ in 0..num_slots {
+                reservations.push(ExecutorReservation::new_free(executor_id.clone()));
+            }
+
+            specification.available_task_slots = 0;
+            let proto: protobuf::ExecutorData = specification.into();
+            let value = encode_protobuf(&proto)?;
+            self.state.put(Keyspace::Slots, executor_id, value).await?;
+            Ok(vec![])
+        }
+    }
+
+    #[cfg(not(test))]
+    async fn test_scheduler_connectivity(
+        &self,
+        metadata: &ExecutorMetadata,
+    ) -> Result<()> {
+        let executor_url = format!("http://{}:{}", metadata.host, metadata.grpc_port);
+        debug!("Connecting to executor {:?}", executor_url);
+        let _ = ExecutorGrpcClient::connect(executor_url)
+            .await
+            .map_err(|e| {
+                BallistaError::Internal(format!(
+                    "Failed to register executor at {}:{}, could not connect: {:?}",
+                    metadata.host, metadata.grpc_port, e
+                ))
+            })?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    async fn test_scheduler_connectivity(
+        &self,
+        _metadata: &ExecutorMetadata,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    pub(crate) async fn save_executor_heartbeat(
+        &self,
+        heartbeat: ExecutorHeartbeat,
+    ) -> Result<()> {
+        let executor_id = heartbeat.executor_id.clone();
+        let value = encode_protobuf(&heartbeat)?;
+        self.state
+            .put(Keyspace::Heartbeats, executor_id, value)
+            .await?;
+
         let mut executors_heartbeat = self.executors_heartbeat.write();
         executors_heartbeat.insert(heartbeat.executor_id.clone(), heartbeat);
+
+        Ok(())
     }
 
     pub(crate) fn get_executors_heartbeat(&self) -> Vec<ExecutorHeartbeat> {

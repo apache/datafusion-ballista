@@ -15,19 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::state::executor_manager::ExecutorReservation;
+
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 
-#[derive(Clone)]
-pub(crate) enum SchedulerServerEvent {
+#[derive(Clone, Debug)]
+pub enum SchedulerServerEvent {
     // number of offer rounds
-    ReviveOffers(u32),
+    // ReviveOffers(u32),
+    Offer(Vec<ExecutorReservation>),
 }
 
 #[derive(Clone)]
 pub enum QueryStageSchedulerEvent {
     JobSubmitted(String, Arc<dyn ExecutionPlan>),
-    StageFinished(String, u32),
     JobFinished(String),
     JobFailed(String, u32, String),
 }
