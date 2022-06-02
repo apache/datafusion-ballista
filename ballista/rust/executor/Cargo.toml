@@ -46,7 +46,7 @@ futures = "0.3"
 hyper = "0.14.4"
 log = "0.4"
 parking_lot = "0.12"
-snmalloc-rs = { version = "0.2", optional = true }
+snmalloc-rs = { version = "0.3", optional = true }
 tempfile = "3"
 tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "parking_lot"] }
 tokio-stream = { version = "0.1", features = ["net"] }
