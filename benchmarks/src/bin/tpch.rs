@@ -52,7 +52,6 @@ use datafusion::{
 };
 use datafusion::{
     arrow::util::pretty,
-    datafusion_data_access::object_store::local::LocalFileSystem,
     datasource::listing::{ListingOptions, ListingTable, ListingTableConfig},
 };
 
@@ -295,9 +294,9 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
         if opt.mem_table {
             println!("Loading table '{}' into memory", table);
             let start = Instant::now();
-            let task_ctx = ctx.task_ctx();
             let memtable =
-                MemTable::load(table_provider, Some(opt.partitions), task_ctx).await?;
+                MemTable::load(table_provider, Some(opt.partitions), &ctx.state())
+                    .await?;
             println!(
                 "Loaded table '{}' into memory in {} ms",
                 table,
@@ -769,7 +768,7 @@ fn get_table(
     };
 
     let url = ListingTableUrl::parse(path)?;
-    let config = ListingTableConfig::new(Arc::new(LocalFileSystem {}), url)
+    let config = ListingTableConfig::new(url)
         .with_listing_options(options)
         .with_schema(schema);
 
@@ -1496,10 +1495,9 @@ mod tests {
                     .has_header(false)
                     .file_extension(".tbl");
                 let listing_options = options.to_listing_options(1);
-                let config =
-                    ListingTableConfig::new(Arc::new(LocalFileSystem {}), path.clone())
-                        .with_listing_options(listing_options)
-                        .with_schema(Arc::new(schema));
+                let config = ListingTableConfig::new(path.clone())
+                    .with_listing_options(listing_options)
+                    .with_schema(Arc::new(schema));
                 let provider = ListingTable::try_new(config)?;
                 ctx.register_table(table, Arc::new(provider))?;
             }

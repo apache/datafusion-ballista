@@ -230,20 +230,7 @@ impl AsLogicalPlan for LogicalPlanNode {
                     target_partitions: scan.target_partitions as usize,
                 };
 
-                let object_store = ctx.runtime_env().object_store(&url).map_err(|e| {
-                    BallistaError::NotImplemented(format!(
-                        "No object store is registered for path {}: {:?}",
-                        scan.path, e
-                    ))
-                })?;
-
-                println!(
-                    "Found object store {:?} for path {}",
-                    object_store,
-                    scan.path.as_str()
-                );
-
-                let config = ListingTableConfig::new(object_store, url)
+                let config = ListingTableConfig::new(url)
                     .with_listing_options(options)
                     .with_schema(Arc::new(schema));
 
@@ -1355,15 +1342,16 @@ mod roundtrip_tests {
         ctx.runtime_env()
             .register_object_store("test", custom_object_store.clone());
 
-        let url = ListingTableUrl::parse("test://foo.csv").unwrap();
+        let table_path = "test:///employee.csv";
+        let url = ListingTableUrl::parse(table_path).unwrap();
         let os = ctx.runtime_env().object_store(&url)?;
         assert_eq!("TestObjectStore", &format!("{:?}", os));
-        assert_eq!("test://foo.csv", &url.to_string());
+        assert_eq!(table_path, &url.to_string());
 
         let schema = test_schema();
         let plan = ctx
             .read_csv(
-                "test://employee.csv",
+                table_path,
                 CsvReadOptions::new().schema(&schema).has_header(true),
             )
             .await?
@@ -1381,20 +1369,18 @@ mod roundtrip_tests {
 
         assert_eq!(format!("{:?}", plan), format!("{:?}", round_trip));
 
-        let round_trip_store = match round_trip {
+        let table_path = match round_trip {
             LogicalPlan::TableScan(scan) => {
                 let source = source_as_provider(&scan.source)?;
                 match source.as_ref().as_any().downcast_ref::<ListingTable>() {
-                    Some(listing_table) => {
-                        format!("{:?}", listing_table.object_store())
-                    }
+                    Some(listing_table) => listing_table.table_path().clone(),
                     _ => panic!("expected a ListingTable"),
                 }
             }
             _ => panic!("expected a TableScan"),
         };
 
-        assert_eq!(round_trip_store, format!("{:?}", custom_object_store));
+        assert_eq!(table_path.as_str(), url.as_str());
 
         Ok(())
     }

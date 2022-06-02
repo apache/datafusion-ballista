@@ -27,9 +27,7 @@ use crate::convert_required;
 use crate::serde::{from_proto_binary_op, proto_error, protobuf};
 use chrono::{TimeZone, Utc};
 
-use datafusion::datafusion_data_access::{
-    object_store::local::LocalFileSystem, FileMeta, SizedFile,
-};
+use datafusion::datafusion_data_access::{FileMeta, SizedFile};
 use datafusion::datasource::listing::{FileRange, PartitionedFile};
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::execution::context::ExecutionProps;
@@ -381,7 +379,6 @@ impl TryInto<FileScanConfig> for &protobuf::FileScanExecConf {
         let statistics = convert_required!(self.statistics)?;
 
         Ok(FileScanConfig {
-            object_store: Arc::new(LocalFileSystem {}),
             object_store_url: ObjectStoreUrl::parse(&self.object_store_url)?,
             file_schema: schema,
             file_groups: self
