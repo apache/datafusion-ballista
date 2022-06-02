@@ -118,7 +118,7 @@ impl ExecutorManager {
 
             let proto: protobuf::ExecutorData = data.into();
             let new_data = encode_protobuf(&proto)?;
-            txn_ops.push((Keyspace::Slots, key, new_data));
+            txn_ops.push((Keyspace::Slots, executor_id, new_data));
 
             if desired <= 0 {
                 break;
@@ -230,17 +230,6 @@ impl ExecutorManager {
         specification: ExecutorData,
         reserve: bool,
     ) -> Result<Vec<ExecutorReservation>> {
-        // Validate that we can connect to the executor on the advertised host and port
-        // let executor_url = format!("http://{}:{}", metadata.host, metadata.grpc_port);
-        // debug!("Connecting to executor {:?}", executor_url);
-        // let _ = ExecutorGrpcClient::connect(executor_url)
-        //     .await
-        //     .map_err(|e| {
-        //         BallistaError::Internal(format!(
-        //             "Failed to register executor at {}:{}, could not connect: {:?}",
-        //             metadata.host, metadata.grpc_port, e
-        //         ))
-        //     })?;
         self.test_scheduler_connectivity(&metadata).await?;
 
         let executor_id = metadata.id.clone();
@@ -410,5 +399,156 @@ impl ExecutorManager {
             self.executors_data.read().values().cloned().collect();
         res.sort_by(|a, b| Ord::cmp(&b.available_task_slots, &a.available_task_slots));
         res
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::state::backend::standalone::StandaloneClient;
+    use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
+    use ballista_core::error::Result;
+    use ballista_core::serde::scheduler::{
+        ExecutorData, ExecutorMetadata, ExecutorSpecification,
+    };
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_reserve_and_cancel() -> Result<()> {
+        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+
+        let executor_manager = ExecutorManager::new(state_storage);
+
+        let executors = test_executors(10, 4);
+
+        for (executor_metadata, executor_data) in executors {
+            executor_manager
+                .register_executor(executor_metadata, executor_data, false)
+                .await?;
+        }
+
+        // Reserve all the slots
+        let reservations = executor_manager.reserve_slots(40).await?;
+
+        assert_eq!(reservations.len(), 40);
+
+        // Now cancel them
+        executor_manager.cancel_reservations(reservations).await?;
+
+        // Now reserve again
+        let reservations = executor_manager.reserve_slots(40).await?;
+
+        assert_eq!(reservations.len(), 40);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reserve_partial() -> Result<()> {
+        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+
+        let executor_manager = ExecutorManager::new(state_storage);
+
+        let executors = test_executors(10, 4);
+
+        for (executor_metadata, executor_data) in executors {
+            executor_manager
+                .register_executor(executor_metadata, executor_data, false)
+                .await?;
+        }
+
+        // Reserve all the slots
+        let reservations = executor_manager.reserve_slots(30).await?;
+
+        assert_eq!(reservations.len(), 30);
+
+        // Try to reserve 30 more. Only ten are available though so we should only get 10
+        let more_reservations = executor_manager.reserve_slots(30).await?;
+
+        assert_eq!(more_reservations.len(), 10);
+
+        // Now cancel them
+        executor_manager.cancel_reservations(reservations).await?;
+        executor_manager
+            .cancel_reservations(more_reservations)
+            .await?;
+
+        // Now reserve again
+        let reservations = executor_manager.reserve_slots(40).await?;
+
+        assert_eq!(reservations.len(), 40);
+
+        let more_reservations = executor_manager.reserve_slots(30).await?;
+
+        assert_eq!(more_reservations.len(), 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reserve_concurrent() -> Result<()> {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<Result<Vec<ExecutorReservation>>>(1000);
+
+        let executors = test_executors(10, 4);
+
+        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+
+        let executor_manager = ExecutorManager::new(state_storage);
+
+
+        for (executor_metadata, executor_data) in executors {
+            executor_manager
+                .register_executor(executor_metadata, executor_data, false)
+                .await?;
+        }
+
+        {
+            let sender = sender;
+            for _ in 0..20 {
+                let executor_manager = executor_manager.clone();
+                let sender = sender.clone();
+                tokio::task::spawn(async move {
+                    let reservations = executor_manager.reserve_slots(40).await;
+                    sender.send(reservations).await.unwrap();
+                });
+            }
+        }
+
+        let mut total_reservations: Vec<ExecutorReservation> = vec![];
+
+        while let Some(Ok(reservations)) = receiver.recv().await {
+            total_reservations.extend(reservations);
+        }
+
+        assert_eq!(total_reservations.len(), 40);
+
+        Ok(())
+    }
+
+    fn test_executors(
+        total_executors: usize,
+        slots_per_executor: u32,
+    ) -> Vec<(ExecutorMetadata, ExecutorData)> {
+        let mut result: Vec<(ExecutorMetadata, ExecutorData)> = vec![];
+
+        for i in 0..total_executors {
+            result.push((
+                ExecutorMetadata {
+                    id: format!("executor-{}", i),
+                    host: format!("host-{}", i),
+                    port: 8080,
+                    grpc_port: 9090,
+                    specification: ExecutorSpecification {
+                        task_slots: slots_per_executor,
+                    },
+                },
+                ExecutorData {
+                    executor_id: format!("executor-{}", i),
+                    total_task_slots: slots_per_executor,
+                    available_task_slots: slots_per_executor,
+                },
+            ));
+        }
+
+        result
     }
 }
