@@ -38,6 +38,7 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
 
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use std::sync::Arc;
 
 /// A single stage in the ExecutionGraph
@@ -66,6 +67,19 @@ pub struct ExecutionStage {
     /// Flag indicating whether all input partitions have been resolved and the plan
     /// has UnresovledShuffleExec operators resolved to ShuffleReadExec operators.
     pub(crate) resolved: bool,
+}
+
+impl Debug for ExecutionStage {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent();
+        let running_tasks = self
+            .task_statuses
+            .iter()
+            .filter(|t| t.is_some())
+            .collect::<Vec<_>>()
+            .len();
+        write!(f, "Stage[id={}, output_partitions={}, input_partition_count={}, resolved={}, scheduled_tasks={}, available_tasks={}]\n{}", self.stage_id, self.output_partitions, self.input_partition_count, self.resolved, running_tasks, self.available_tasks(), plan)
+    }
 }
 
 impl ExecutionStage {
@@ -483,6 +497,18 @@ impl ExecutionGraph {
 
     pub fn output_locations(&self) -> Vec<PartitionLocation> {
         self.output_locations.clone()
+    }
+}
+
+impl Debug for ExecutionGraph {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let stages = self
+            .stages
+            .iter()
+            .map(|(_, stage)| format!("{:?}", stage))
+            .collect::<Vec<String>>()
+            .join("\n");
+        write!(f, "ExecutionGraph[job_id={}, session_id={}, available_tasks={}, complete={}]\n{}", self.job_id, self.session_id, self.available_tasks(), self.complete(), stages)
     }
 }
 

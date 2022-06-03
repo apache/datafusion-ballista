@@ -329,16 +329,3 @@ impl Lock for EtcdLockGuard {
         self.etcd.unlock(self.lock.key()).await.unwrap();
     }
 }
-
-impl Drop for EtcdLockGuard {
-    fn drop(&mut self) {
-        let client = self.etcd.clone();
-        let lock_key = self.lock.key().to_vec();
-        tokio::task::spawn_local(async move {
-            let mut client = client;
-            if let Err(e) = client.unlock(lock_key).await {
-                error!("Failed to drop lock!");
-            }
-        });
-    }
-}
