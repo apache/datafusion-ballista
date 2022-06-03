@@ -222,8 +222,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                             .push(ExecutorReservation::new_free(executor_id.clone()));
                     }
                 } else {
-                    let mut graph = self.get_execution_graph(job_id).await?;
                     let lock = self.state.lock(Keyspace::ActiveJobs, job_id).await?;
+                    let mut graph = self.get_execution_graph(job_id).await?;
 
                     if let Ok(Some(next_task)) = graph.pop_next_task(executor_id) {
                         debug!(
@@ -268,10 +268,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 assigned = true;
             } else {
                 // Otherwise start searching through other active jobs.
+                debug!(
+                    "Filling free reservation for executor {} from active jobs {:?}",
+                    reservation.executor_id, other_jobs
+                );
                 while let Some(job_id) = other_jobs.pop() {
                     if graphs.get(&job_id).is_none() {
-                        let mut graph = self.get_execution_graph(&job_id).await?;
                         let lock = self.state.lock(Keyspace::ActiveJobs, &job_id).await?;
+                        let mut graph = self.get_execution_graph(&job_id).await?;
 
                         if let Ok(Some(task)) = graph.pop_next_task(&executor_id) {
                             debug!(
@@ -283,6 +287,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                             graphs.insert(job_id, graph);
                             assigned = true;
                             break;
+                        } else {
+                            debug!("No available tasks for job {}", job_id);
                         }
                     }
                 }

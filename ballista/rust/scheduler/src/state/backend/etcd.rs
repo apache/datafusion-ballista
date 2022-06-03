@@ -108,7 +108,7 @@ impl StateBackendClient for EtcdClient {
     async fn scan_keys(&self, keyspace: Keyspace) -> Result<HashSet<String>> {
         let prefix = format!("/{}/{:?}/", self.namespace, keyspace);
 
-        let options = GetOptions::new().with_keys_only();
+        let options = GetOptions::new().with_prefix().with_keys_only();
 
         Ok(self
             .etcd
