@@ -38,20 +38,13 @@ pub(crate) struct SchedulerServerEventAction<
     U: 'static + AsExecutionPlan,
 > {
     state: Arc<SchedulerState<T, U>>,
-    // executors_client: ExecutorsClient,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     SchedulerServerEventAction<T, U>
 {
-    pub fn new(
-        state: Arc<SchedulerState<T, U>>,
-        // executors_client: ExecutorsClient,
-    ) -> Self {
-        Self {
-            state,
-            // executors_client,
-        }
+    pub fn new(state: Arc<SchedulerState<T, U>>) -> Self {
+        Self { state }
     }
 
     async fn offer_reservation(
