@@ -11,8 +11,9 @@
 // limitations under the License.
 
 use crate::scheduler_server::SchedulerServer;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan};
+use ballista_core::serde::AsExecutionPlan;
 use ballista_core::BALLISTA_VERSION;
+use datafusion_proto::logical_plan::AsLogicalPlan;
 use warp::Rejection;
 
 #[derive(Debug, serde::Serialize)]

@@ -26,7 +26,8 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
 use ballista_core::serde::scheduler::{ExecutorData, PartitionId};
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan};
+use ballista_core::serde::AsExecutionPlan;
+use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::{debug, info};
 
 #[async_trait]

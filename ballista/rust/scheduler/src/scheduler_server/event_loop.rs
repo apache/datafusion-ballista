@@ -22,15 +22,15 @@ use async_trait::async_trait;
 use log::{debug, warn};
 
 use crate::scheduler_server::event::SchedulerServerEvent;
+use crate::scheduler_server::ExecutorsClient;
+use crate::state::task_scheduler::TaskScheduler;
+use crate::state::SchedulerState;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventAction;
 use ballista_core::serde::protobuf::{LaunchTaskParams, TaskDefinition};
 use ballista_core::serde::scheduler::ExecutorDataChange;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan};
-
-use crate::scheduler_server::ExecutorsClient;
-use crate::state::task_scheduler::TaskScheduler;
-use crate::state::SchedulerState;
+use ballista_core::serde::AsExecutionPlan;
+use datafusion_proto::logical_plan::AsLogicalPlan;
 
 pub(crate) struct SchedulerServerEventAction<
     T: 'static + AsLogicalPlan,

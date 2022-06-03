@@ -15,38 +15,35 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::any::Any;
-
-use std::fmt::Debug;
-use std::marker::PhantomData;
-
-use std::sync::Arc;
-use std::time::Duration;
-
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
+use crate::serde::protobuf::execute_query_params::OptionalSessionId;
 use crate::serde::protobuf::{
     execute_query_params::Query, job_status, scheduler_grpc_client::SchedulerGrpcClient,
     ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
     PartitionLocation,
 };
-
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::error::{ArrowError, Result as ArrowResult};
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError, Result};
+use datafusion::execution::context::TaskContext;
 use datafusion::logical_plan::LogicalPlan;
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream, Statistics,
 };
-
-use crate::serde::protobuf::execute_query_params::OptionalSessionId;
-use crate::serde::{AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec};
-use datafusion::arrow::error::{ArrowError, Result as ArrowResult};
-use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::execution::context::TaskContext;
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion_proto::logical_plan::{
+    AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
+};
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use log::{error, info};
+use std::any::Any;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::time::Duration;
 
 /// This operator sends a logical plan to a Ballista scheduler for execution and
 /// polls the scheduler until the query is complete and then fetches the resulting

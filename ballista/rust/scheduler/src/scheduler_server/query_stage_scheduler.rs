@@ -15,15 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-
+use crate::planner::{
+    find_unresolved_shuffles, remove_unresolved_shuffles, DistributedPlanner,
+};
+use crate::scheduler_server::event::{QueryStageSchedulerEvent, SchedulerServerEvent};
+use crate::state::SchedulerState;
 use async_recursion::async_recursion;
 use async_trait::async_trait;
-use log::{debug, error, info, warn};
-
 use ballista_core::error::{BallistaError, Result};
-
 use ballista_core::event_loop::{EventAction, EventSender};
 use ballista_core::execution_plans::UnresolvedShuffleExec;
 use ballista_core::serde::protobuf::{
@@ -31,14 +30,12 @@ use ballista_core::serde::protobuf::{
     JobStatus, RunningJob, TaskStatus,
 };
 use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionStats};
-use ballista_core::serde::{protobuf, AsExecutionPlan, AsLogicalPlan};
+use ballista_core::serde::{protobuf, AsExecutionPlan};
 use datafusion::physical_plan::ExecutionPlan;
-
-use crate::planner::{
-    find_unresolved_shuffles, remove_unresolved_shuffles, DistributedPlanner,
-};
-use crate::scheduler_server::event::{QueryStageSchedulerEvent, SchedulerServerEvent};
-use crate::state::SchedulerState;
+use datafusion_proto::logical_plan::AsLogicalPlan;
+use log::{debug, error, info, warn};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 pub(crate) struct QueryStageScheduler<
     T: 'static + AsLogicalPlan,
