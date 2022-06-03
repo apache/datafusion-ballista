@@ -22,12 +22,13 @@ use std::collections::HashSet;
 use std::task::Poll;
 
 use ballista_core::error::{ballista_error, Result};
+use std::time::Instant;
 
 use etcd_client::{
     GetOptions, LockOptions, LockResponse, Txn, TxnOp, WatchOptions, WatchStream, Watcher,
 };
 use futures::{FutureExt, Stream, StreamExt};
-use log::{error, warn};
+use log::{debug, error, warn};
 
 use crate::state::backend::{Keyspace, Lock, StateBackendClient, Watch, WatchEvent};
 
@@ -198,6 +199,7 @@ impl StateBackendClient for EtcdClient {
     }
 
     async fn lock(&self, keyspace: Keyspace, key: &str) -> Result<Box<dyn Lock>> {
+        let start = Instant::now();
         let mut etcd = self.etcd.clone();
 
         let lock_id = format!("/{}/mutex/{:?}/{}", self.namespace, keyspace, key);
@@ -218,10 +220,16 @@ impl StateBackendClient for EtcdClient {
 
         let lock_options = LockOptions::new().with_lease(lease_id);
 
-        let lock = etcd.lock(lock_id, Some(lock_options)).await.map_err(|e| {
-            warn!("etcd lock failed: {}", e);
-            ballista_error("etcd lock failed")
-        })?;
+        let lock = etcd
+            .lock(lock_id.as_str(), Some(lock_options))
+            .await
+            .map_err(|e| {
+                warn!("etcd lock failed: {}", e);
+                ballista_error("etcd lock failed")
+            })?;
+
+        let elapsed = start.elapsed();
+        debug!("Acquired lock {} in {:?}", lock_id, elapsed);
         Ok(Box::new(EtcdLockGuard { etcd, lock }))
     }
 
