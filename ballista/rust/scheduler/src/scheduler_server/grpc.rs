@@ -346,29 +346,36 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 Status::internal(msg)
             })?;
 
-            let session_ctx = match optional_session_id {
-                Some(OptionalSessionId::SessionId(session_id)) => self
-                    .state
-                    .session_manager
-                    .update_session(&session_id, &config)
-                    .await
-                    .map_err(|e| {
-                        Status::internal(format!(
-                            "Failed to load SessionContext for session ID {}: {:?}",
-                            session_id, e
-                        ))
-                    })?,
-                _ => self
-                    .state
-                    .session_manager
-                    .create_session(&config)
-                    .await
-                    .map_err(|e| {
-                        Status::internal(format!(
-                            "Failed to create SessionContext: {:?}",
-                            e
-                        ))
-                    })?,
+            let (session_id, session_ctx) = match optional_session_id {
+                Some(OptionalSessionId::SessionId(session_id)) => {
+                    let ctx = self
+                        .state
+                        .session_manager
+                        .update_session(&session_id, &config)
+                        .await
+                        .map_err(|e| {
+                            Status::internal(format!(
+                                "Failed to load SessionContext for session ID {}: {:?}",
+                                session_id, e
+                            ))
+                        })?;
+                    (session_id, ctx)
+                }
+                _ => {
+                    let ctx = self
+                        .state
+                        .session_manager
+                        .create_session(&config)
+                        .await
+                        .map_err(|e| {
+                            Status::internal(format!(
+                                "Failed to create SessionContext: {:?}",
+                                e
+                            ))
+                        })?;
+
+                    (ctx.session_id(), ctx)
+                }
             };
 
             let plan = match query {
@@ -397,8 +404,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             debug!("Received plan for execution: {:?}", plan);
 
             let job_id = self.state.task_manager.generate_job_id();
-            let session_id = session_ctx.session_id();
-            // let state = self.state.clone();
+
             let query_stage_event_sender =
                 self.query_stage_event_loop.get_sender().map_err(|e| {
                     Status::internal(format!(
