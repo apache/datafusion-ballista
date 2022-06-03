@@ -20,7 +20,7 @@ use crate::scheduler_server::SessionBuilder;
 use crate::state::backend::{Keyspace, Lock, StateBackendClient};
 use crate::state::execution_graph::{ExecutionGraph, ExecutionStage, Task};
 use crate::state::executor_manager::ExecutorReservation;
-use crate::state::{decode_protobuf, encode_protobuf};
+use crate::state::{decode_protobuf, encode_protobuf, with_lock};
 use ballista_core::config::BallistaConfig;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
@@ -117,68 +117,73 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         executor: &ExecutorMetadata,
         task_status: Vec<TaskStatus>,
     ) -> Result<(Vec<QueryStageSchedulerEvent>, Vec<ExecutorReservation>)> {
-        let mut events: Vec<QueryStageSchedulerEvent> = vec![];
-        let mut reservation: Vec<ExecutorReservation> = vec![];
+        let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
 
-        let mut job_updates: HashMap<String, Vec<TaskStatus>> = HashMap::new();
+        with_lock(lock, async {
+            let mut events: Vec<QueryStageSchedulerEvent> = vec![];
+            let mut reservation: Vec<ExecutorReservation> = vec![];
 
-        for status in task_status {
-            if let Some(job_id) = status.task_id.as_ref().map(|id| &id.job_id) {
-                if let Some(statuses) = job_updates.get_mut(job_id) {
-                    statuses.push(status)
+            let mut job_updates: HashMap<String, Vec<TaskStatus>> = HashMap::new();
+
+            for status in task_status {
+                if let Some(job_id) = status.task_id.as_ref().map(|id| &id.job_id) {
+                    if let Some(statuses) = job_updates.get_mut(job_id) {
+                        statuses.push(status)
+                    } else {
+                        job_updates.insert(job_id.clone(), vec![status]);
+                    }
                 } else {
-                    job_updates.insert(job_id.clone(), vec![status]);
-                }
-            } else {
-                warn!("Received task with no job ID");
-            }
-        }
-
-        // We need to acquire a lock on each job before updating it. We
-        // collect locks here and they will be dropped when we are done.
-        let mut locks: Vec<Box<dyn Lock>> = vec![];
-
-        let mut txn_ops: Vec<(Keyspace, String, Vec<u8>)> = vec![];
-
-        for (job_id, statuses) in job_updates {
-            let num_tasks = statuses.len();
-            debug!("Updating {} tasks in job {}", num_tasks, job_id);
-
-            let job_lock = self.state.lock(Keyspace::ActiveJobs, &job_id).await?;
-            locks.push(job_lock);
-
-            let mut graph = self.get_execution_graph(&job_id).await?;
-
-            graph.update_task_status(&executor, statuses)?;
-
-            if graph.complete() {
-                // If this ExecutionGraph is complete, finalize it
-                info!(
-                    "Job {} is complete, finalizing output partitions",
-                    graph.job_id()
-                );
-                graph.finalize()?;
-                events.push(QueryStageSchedulerEvent::JobFinished(job_id.clone()));
-            } else {
-                // Otherwise keep the task slots reserved for this job
-                for _ in 0..num_tasks {
-                    reservation.push(ExecutorReservation::new_assigned(
-                        executor.id.to_owned(),
-                        job_id.clone(),
-                    ));
+                    warn!("Received task with no job ID");
                 }
             }
 
-            txn_ops.push((
-                Keyspace::ActiveJobs,
-                job_id.clone(),
-                self.encode_execution_graph(graph)?,
-            ));
-        }
+            // We need to acquire a lock on each job before updating it. We
+            // collect locks here and they will be dropped when we are done.
+            // let mut locks: Vec<Box<dyn Lock>> = vec![];
 
-        self.state.put_txn(txn_ops).await?;
+            let mut txn_ops: Vec<(Keyspace, String, Vec<u8>)> = vec![];
 
-        Ok((events, reservation))
+            for (job_id, statuses) in job_updates {
+                let num_tasks = statuses.len();
+                debug!("Updating {} tasks in job {}", num_tasks, job_id);
+
+                // let job_lock = self.state.lock(Keyspace::ActiveJobs, &job_id).await?;
+                // locks.push(job_lock);
+
+                let mut graph = self.get_execution_graph(&job_id).await?;
+
+                graph.update_task_status(&executor, statuses)?;
+
+                if graph.complete() {
+                    // If this ExecutionGraph is complete, finalize it
+                    info!(
+                        "Job {} is complete, finalizing output partitions",
+                        graph.job_id()
+                    );
+                    graph.finalize()?;
+                    events.push(QueryStageSchedulerEvent::JobFinished(job_id.clone()));
+                } else {
+                    // Otherwise keep the task slots reserved for this job
+                    for _ in 0..num_tasks {
+                        reservation.push(ExecutorReservation::new_assigned(
+                            executor.id.to_owned(),
+                            job_id.clone(),
+                        ));
+                    }
+                }
+
+                txn_ops.push((
+                    Keyspace::ActiveJobs,
+                    job_id.clone(),
+                    self.encode_execution_graph(graph)?,
+                ));
+            }
+
+            self.state.put_txn(txn_ops).await?;
+
+            Ok((events, reservation))
+        })
+        .await
     }
 
     /// Take a list of executor reservations and fill them with tasks that are ready
@@ -189,141 +194,144 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         &self,
         reservations: &[ExecutorReservation],
     ) -> Result<(Vec<(String, Task)>, Vec<ExecutorReservation>)> {
-        // We need to acquire a lock on each job before updating it. We
-        // collect locks here and they will be dropped when this method returns
-        let mut locks: Vec<Box<dyn Lock>> = vec![];
+        let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
 
-        let mut assignments: Vec<(String, Task)> = vec![];
-        let mut free_reservations: Vec<ExecutorReservation> = vec![];
-        let _txn_ops: Vec<(Keyspace, String, Vec<u8>)> = vec![];
+        with_lock(lock, async {
+            let mut assignments: Vec<(String, Task)> = vec![];
+            let mut free_reservations: Vec<ExecutorReservation> = vec![];
+            // let _txn_ops: Vec<(Keyspace, String, Vec<u8>)> = vec![];
 
-        // Need to collect graphs we update so we can update them in storage when we are done
-        let mut graphs: HashMap<String, ExecutionGraph> = HashMap::new();
+            // Need to collect graphs we update so we can update them in storage when we are done
+            let mut graphs: HashMap<String, ExecutionGraph> = HashMap::new();
 
-        // First try and fill reservations for particular jobs. If the job has no more tasks
-        // free the reservation.
-        for reservation in reservations {
-            debug!(
+            // First try and fill reservations for particular jobs. If the job has no more tasks
+            // free the reservation.
+            for reservation in reservations {
+                debug!(
                 "Filling reservation for executor {} from job {:?}",
                 reservation.executor_id, reservation.job_id
             );
-            let executor_id = &reservation.executor_id;
-            if let Some(job_id) = &reservation.job_id {
-                if let Some(graph) = graphs.get_mut(job_id) {
-                    if let Ok(Some(next_task)) = graph.pop_next_task(executor_id) {
-                        debug!(
+                let executor_id = &reservation.executor_id;
+                if let Some(job_id) = &reservation.job_id {
+                    if let Some(graph) = graphs.get_mut(job_id) {
+                        if let Ok(Some(next_task)) = graph.pop_next_task(executor_id) {
+                            debug!(
                             "Filled reservation for executor {} with task {:?}",
                             executor_id, next_task
                         );
-                        assignments.push((executor_id.clone(), next_task));
+                            assignments.push((executor_id.clone(), next_task));
+                        } else {
+                            debug!("Cannot fill reservation for executor {} from job {}, freeing reservation", executor_id, job_id);
+                            free_reservations
+                                .push(ExecutorReservation::new_free(executor_id.clone()));
+                        }
                     } else {
-                        debug!("Cannot fill reservation for executor {} from job {}, freeing reservation", executor_id, job_id);
-                        free_reservations
-                            .push(ExecutorReservation::new_free(executor_id.clone()));
+                        // let lock = self.state.lock(Keyspace::ActiveJobs, job_id).await?;
+                        let mut graph = self.get_execution_graph(job_id).await?;
+
+                        if let Ok(Some(next_task)) = graph.pop_next_task(executor_id) {
+                            debug!(
+                            "Filled reservation for executor {} with task {:?}",
+                            executor_id, next_task
+                        );
+                            assignments.push((executor_id.clone(), next_task));
+                            graphs.insert(job_id.clone(), graph);
+                            // locks.push(lock);
+                        } else {
+                            debug!("Cannot fill reservation for executor {} from job {}, freeing reservation", executor_id, job_id);
+                            free_reservations
+                                .push(ExecutorReservation::new_free(executor_id.clone()));
+                        }
                     }
                 } else {
-                    let lock = self.state.lock(Keyspace::ActiveJobs, job_id).await?;
-                    let mut graph = self.get_execution_graph(job_id).await?;
-
-                    if let Ok(Some(next_task)) = graph.pop_next_task(executor_id) {
-                        debug!(
-                            "Filled reservation for executor {} with task {:?}",
-                            executor_id, next_task
-                        );
-                        assignments.push((executor_id.clone(), next_task));
-                        graphs.insert(job_id.clone(), graph);
-                        locks.push(lock);
-                    } else {
-                        debug!("Cannot fill reservation for executor {} from job {}, freeing reservation", executor_id, job_id);
-                        free_reservations
-                            .push(ExecutorReservation::new_free(executor_id.clone()));
-                    }
+                    free_reservations.push(reservation.clone());
                 }
-            } else {
-                free_reservations.push(reservation.clone());
             }
-        }
 
-        let mut other_jobs: Vec<String> =
-            self.get_active_jobs().await?.into_iter().collect();
+            let mut other_jobs: Vec<String> =
+                self.get_active_jobs().await?.into_iter().collect();
 
-        let mut unassigned: Vec<ExecutorReservation> = vec![];
-        // Now try and find tasks for free reservations from current set of graphs
-        for reservation in free_reservations {
-            debug!(
+            let mut unassigned: Vec<ExecutorReservation> = vec![];
+            // Now try and find tasks for free reservations from current set of graphs
+            for reservation in free_reservations {
+                debug!(
                 "Filling free reservation for executor {}",
                 reservation.executor_id
             );
-            let mut assigned = false;
-            let executor_id = reservation.executor_id.clone();
+                let mut assigned = false;
+                let executor_id = reservation.executor_id.clone();
 
-            // Try and find a task in the graphs we already have locks on
-            if let Ok(Some(assignment)) = find_next_task(&executor_id, &mut graphs) {
-                debug!(
+                // Try and find a task in the graphs we already have locks on
+                if let Ok(Some(assignment)) = find_next_task(&executor_id, &mut graphs) {
+                    debug!(
                     "Filled free reservation for executor {} with task {:?}",
                     reservation.executor_id, assignment.1
                 );
-                // First check if we can find another task
-                assignments.push(assignment);
-                assigned = true;
-            } else {
-                // Otherwise start searching through other active jobs.
-                debug!(
+                    // First check if we can find another task
+                    assignments.push(assignment);
+                    assigned = true;
+                } else {
+                    // Otherwise start searching through other active jobs.
+                    debug!(
                     "Filling free reservation for executor {} from active jobs {:?}",
                     reservation.executor_id, other_jobs
                 );
-                while let Some(job_id) = other_jobs.pop() {
-                    if graphs.get(&job_id).is_none() {
-                        let lock = self.state.lock(Keyspace::ActiveJobs, &job_id).await?;
-                        let mut graph = self.get_execution_graph(&job_id).await?;
+                    while let Some(job_id) = other_jobs.pop() {
+                        if graphs.get(&job_id).is_none() {
+                            // let lock = self.state.lock(Keyspace::ActiveJobs, &job_id).await?;
+                            let mut graph = self.get_execution_graph(&job_id).await?;
 
-                        if let Ok(Some(task)) = graph.pop_next_task(&executor_id) {
-                            debug!(
+                            if let Ok(Some(task)) = graph.pop_next_task(&executor_id) {
+                                debug!(
                                 "Filled free reservation for executor {} with task {:?}",
                                 reservation.executor_id, task
                             );
-                            assignments.push((executor_id.clone(), task));
-                            locks.push(lock);
-                            graphs.insert(job_id, graph);
-                            assigned = true;
-                            break;
-                        } else {
-                            debug!("No available tasks for job {}", job_id);
+                                assignments.push((executor_id.clone(), task));
+                                // locks.push(lock);
+                                graphs.insert(job_id, graph);
+                                assigned = true;
+                                break;
+                            } else {
+                                debug!("No available tasks for job {}", job_id);
+                            }
                         }
                     }
                 }
-            }
 
-            if !assigned {
-                debug!(
+                if !assigned {
+                    debug!(
                     "Unable to fill reservation for executor {}, no tasks available",
                     executor_id
                 );
-                unassigned.push(reservation);
+                    unassigned.push(reservation);
+                }
             }
-        }
 
-        // Transactional update graphs now that we have assigned tasks
-        let txn_ops: Vec<(Keyspace, String, Vec<u8>)> = graphs
-            .into_iter()
-            .map(|(job_id, graph)| {
-                let value = self.encode_execution_graph(graph)?;
-                Ok((Keyspace::ActiveJobs, job_id, value))
-            })
-            .collect::<Result<Vec<_>>>()?;
+            // Transactional update graphs now that we have assigned tasks
+            let txn_ops: Vec<(Keyspace, String, Vec<u8>)> = graphs
+                .into_iter()
+                .map(|(job_id, graph)| {
+                    let value = self.encode_execution_graph(graph)?;
+                    Ok((Keyspace::ActiveJobs, job_id, value))
+                })
+                .collect::<Result<Vec<_>>>()?;
 
-        self.state.put_txn(txn_ops).await?;
+            self.state.put_txn(txn_ops).await?;
 
-        Ok((assignments, unassigned))
+            Ok((assignments, unassigned))
+        }).await
     }
 
     /// Move the given job to the CompletedJobs keyspace in persistent storage.
     pub async fn complete_job(&self, job_id: &str) -> Result<()> {
         debug!("Moving job {} from Active to Completed", job_id);
-        let _lock = self.state.lock(Keyspace::ActiveJobs, job_id).await?;
-        self.state
-            .mv(Keyspace::ActiveJobs, Keyspace::CompletedJobs, job_id)
-            .await
+        let lock = self.state.lock(Keyspace::ActiveJobs, job_id).await?;
+        with_lock(
+            lock,
+            self.state
+                .mv(Keyspace::ActiveJobs, Keyspace::CompletedJobs, job_id),
+        )
+        .await
     }
 
     #[cfg(not(test))]

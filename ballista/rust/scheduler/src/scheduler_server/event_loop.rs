@@ -25,6 +25,7 @@ use crate::scheduler_server::event::SchedulerServerEvent;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventAction;
 
+use crate::state::backend::Keyspace;
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan};
 
@@ -97,6 +98,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 .cancel_reservations(free_list)
                 .await?;
         }
+
         Ok(None)
     }
 }
@@ -130,61 +132,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     fn on_error(&self, error: BallistaError) {
         error!("Error in SchedulerServerEvent handler: {:?}", error);
     }
-}
-
-pub(crate) async fn offer_reservations<
-    T: 'static + AsLogicalPlan,
-    U: 'static + AsExecutionPlan,
-    Fut,
-    F: FnOnce(&ExecutorMetadata, Task) -> Fut,
->(
-    state: &SchedulerState<T, U>,
-    reservations: Vec<ExecutorReservation>,
-    _launch_fn: F,
-) -> Result<Option<SchedulerServerEvent>>
-where
-    Fut: Future,
-{
-    let free_list = match state.task_manager.fill_reservations(&reservations).await {
-        Ok((assignments, mut unassigned_reservations)) => {
-            for (executor_id, task) in assignments.into_iter() {
-                match state
-                    .executor_manager
-                    .get_executor_metadata(&executor_id)
-                    .await
-                {
-                    Ok(executor) => {
-                        if let Err(e) =
-                            state.task_manager.launch_task(&executor, task).await
-                        {
-                            error!("Failed to launch new task: {:?}", e);
-                            unassigned_reservations
-                                .push(ExecutorReservation::new_free(executor_id.clone()));
-                        }
-                    }
-                    Err(e) => {
-                        error!("Failed to launch new task, could not get executor metadata: {:?}", e);
-                        unassigned_reservations
-                            .push(ExecutorReservation::new_free(executor_id.clone()));
-                    }
-                }
-            }
-            unassigned_reservations
-        }
-        Err(e) => {
-            error!("Error filling reservations: {:?}", e);
-            reservations
-        }
-    };
-
-    // If any reserved slots remain, return them to the pool
-    if free_list.len() > 0 {
-        state
-            .executor_manager
-            .cancel_reservations(free_list)
-            .await?;
-    }
-    Ok(None)
 }
 
 #[cfg(test)]

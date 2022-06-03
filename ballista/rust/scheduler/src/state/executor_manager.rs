@@ -19,7 +19,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::state::backend::{Keyspace, StateBackendClient, WatchEvent};
 
-use crate::state::{decode_into, decode_protobuf, encode_protobuf};
+use crate::state::{decode_into, decode_protobuf, encode_protobuf, with_lock};
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf;
 
@@ -97,46 +97,51 @@ impl ExecutorManager {
     /// for scheduling.
     /// This operation is atomic, so if this method return an Err, no slots have been reserved.
     pub async fn reserve_slots(&self, n: u32) -> Result<Vec<ExecutorReservation>> {
-        debug!("Attempting to reserve {} executor slots", n);
-        let start = Instant::now();
-        let _lock = self.state.lock(Keyspace::Slots, "global").await?;
-        let mut reservations: Vec<ExecutorReservation> = vec![];
-        let mut desired: u32 = n;
+        let lock = self.state.lock(Keyspace::Slots, "global").await?;
 
-        let alive_executors = self.get_alive_executors_within_one_minute();
+        with_lock(lock, async {
+            debug!("Attempting to reserve {} executor slots", n);
+            let start = Instant::now();
+            let mut reservations: Vec<ExecutorReservation> = vec![];
+            let mut desired: u32 = n;
 
-        let mut txn_ops: Vec<(Keyspace, String, Vec<u8>)> = vec![];
+            let alive_executors = self.get_alive_executors_within_one_minute();
 
-        for executor_id in alive_executors {
-            let value = self.state.get(Keyspace::Slots, &executor_id).await?;
-            let mut data = decode_into::<protobuf::ExecutorData, ExecutorData>(&value)?;
-            let take = std::cmp::min(data.available_task_slots, desired);
+            let mut txn_ops: Vec<(Keyspace, String, Vec<u8>)> = vec![];
 
-            for _ in 0..take {
-                reservations.push(ExecutorReservation::new_free(executor_id.clone()));
-                data.available_task_slots -= 1;
-                desired -= 1;
+            for executor_id in alive_executors {
+                let value = self.state.get(Keyspace::Slots, &executor_id).await?;
+                let mut data =
+                    decode_into::<protobuf::ExecutorData, ExecutorData>(&value)?;
+                let take = std::cmp::min(data.available_task_slots, desired);
+
+                for _ in 0..take {
+                    reservations.push(ExecutorReservation::new_free(executor_id.clone()));
+                    data.available_task_slots -= 1;
+                    desired -= 1;
+                }
+
+                let proto: protobuf::ExecutorData = data.into();
+                let new_data = encode_protobuf(&proto)?;
+                txn_ops.push((Keyspace::Slots, executor_id, new_data));
+
+                if desired <= 0 {
+                    break;
+                }
             }
 
-            let proto: protobuf::ExecutorData = data.into();
-            let new_data = encode_protobuf(&proto)?;
-            txn_ops.push((Keyspace::Slots, executor_id, new_data));
+            self.state.put_txn(txn_ops).await?;
 
-            if desired <= 0 {
-                break;
-            }
-        }
+            let elapsed = start.elapsed();
+            info!(
+                "Reserved {} executor slots in {:?}",
+                reservations.len(),
+                elapsed
+            );
 
-        self.state.put_txn(txn_ops).await?;
-
-        let elapsed = start.elapsed();
-        info!(
-            "Reserved {} executor slots in {:?}",
-            reservations.len(),
-            elapsed
-        );
-
-        Ok(reservations)
+            Ok(reservations)
+        })
+        .await
     }
 
     /// Returned reserved task slots to the pool of available slots. This operation is atomic
@@ -145,45 +150,48 @@ impl ExecutorManager {
         &self,
         reservations: Vec<ExecutorReservation>,
     ) -> Result<()> {
-        let num_reservations = reservations.len();
-        debug!("Cancelling {} reservations", num_reservations);
-        let start = Instant::now();
+        let lock = self.state.lock(Keyspace::Slots, "global").await?;
 
-        let _lock = self.state.lock(Keyspace::Slots, "global").await?;
+        with_lock(lock, async {
+            let num_reservations = reservations.len();
+            debug!("Cancelling {} reservations", num_reservations);
+            let start = Instant::now();
 
-        let mut executor_slots: HashMap<String, ExecutorData> = HashMap::new();
+            let mut executor_slots: HashMap<String, ExecutorData> = HashMap::new();
 
-        for reservation in reservations {
-            let executor_id = &reservation.executor_id;
-            if let Some(data) = executor_slots.get_mut(executor_id) {
-                data.available_task_slots += 1;
-            } else {
-                let value = self.state.get(Keyspace::Slots, executor_id).await?;
-                let mut data =
-                    decode_into::<protobuf::ExecutorData, ExecutorData>(&value)?;
-                data.available_task_slots += 1;
-                executor_slots.insert(executor_id.clone(), data);
+            for reservation in reservations {
+                let executor_id = &reservation.executor_id;
+                if let Some(data) = executor_slots.get_mut(executor_id) {
+                    data.available_task_slots += 1;
+                } else {
+                    let value = self.state.get(Keyspace::Slots, executor_id).await?;
+                    let mut data =
+                        decode_into::<protobuf::ExecutorData, ExecutorData>(&value)?;
+                    data.available_task_slots += 1;
+                    executor_slots.insert(executor_id.clone(), data);
+                }
             }
-        }
 
-        let txn_ops: Vec<(Keyspace, String, Vec<u8>)> = executor_slots
-            .into_iter()
-            .map(|(executor_id, data)| {
-                let proto: protobuf::ExecutorData = data.into();
-                let new_data = encode_protobuf(&proto)?;
-                Ok((Keyspace::Slots, executor_id, new_data))
-            })
-            .collect::<Result<Vec<_>>>()?;
+            let txn_ops: Vec<(Keyspace, String, Vec<u8>)> = executor_slots
+                .into_iter()
+                .map(|(executor_id, data)| {
+                    let proto: protobuf::ExecutorData = data.into();
+                    let new_data = encode_protobuf(&proto)?;
+                    Ok((Keyspace::Slots, executor_id, new_data))
+                })
+                .collect::<Result<Vec<_>>>()?;
 
-        self.state.put_txn(txn_ops).await?;
+            self.state.put_txn(txn_ops).await?;
 
-        let elapsed = start.elapsed();
-        info!(
-            "Cancelled {} reservations in {:?}",
-            num_reservations, elapsed
-        );
+            let elapsed = start.elapsed();
+            info!(
+                "Cancelled {} reservations in {:?}",
+                num_reservations, elapsed
+            );
 
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
     pub async fn get_executor_state(&self) -> Result<Vec<(ExecutorMetadata, Duration)>> {

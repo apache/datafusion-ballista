@@ -16,7 +16,9 @@
 // under the License.
 
 use std::any::type_name;
+use std::future::Future;
 
+use log::error;
 use std::sync::Arc;
 
 use prost::Message;
@@ -27,7 +29,7 @@ use crate::scheduler_server::SessionBuilder;
 
 use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan, BallistaCodec};
 
-use crate::state::backend::StateBackendClient;
+use crate::state::backend::{Keyspace, Lock, StateBackendClient};
 
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::session_manager::SessionManager;
@@ -81,6 +83,7 @@ pub(super) struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExec
     pub task_manager: TaskManager<T, U>,
     pub session_manager: SessionManager,
     codec: BallistaCodec<T, U>,
+    config_client: Arc<dyn StateBackendClient>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T, U> {
@@ -99,6 +102,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             ),
             session_manager: SessionManager::new(config_client.clone(), session_builder),
             codec,
+            config_client,
         }
     }
 
@@ -109,6 +113,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     pub fn get_codec(&self) -> &BallistaCodec<T, U> {
         &self.codec
     }
+}
+
+pub async fn with_lock<Out, F: Future<Output = Out>>(lock: Box<dyn Lock>, op: F) -> Out {
+    let mut lock = lock;
+    let result = op.await;
+    lock.unlock().await;
+
+    result
 }
 
 #[cfg(all(test, feature = "sled"))]

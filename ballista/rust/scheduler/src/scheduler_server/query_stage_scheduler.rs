@@ -35,6 +35,7 @@ use ballista_core::serde::{protobuf, AsExecutionPlan, AsLogicalPlan};
 use datafusion::physical_plan::ExecutionPlan;
 
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SchedulerServerEvent};
+use crate::state::backend::Keyspace;
 
 use crate::state::executor_manager::ExecutorReservation;
 use crate::state::SchedulerState;
