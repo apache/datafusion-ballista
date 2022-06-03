@@ -1160,8 +1160,9 @@ mod roundtrip_tests {
     };
 
     use crate::execution_plans::ShuffleWriterExec;
-    use crate::serde::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+    use crate::serde::protobuf::PhysicalPlanNode;
     use crate::serde::{AsExecutionPlan, BallistaCodec};
+    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use super::super::super::error::Result;
     use super::super::protobuf;

@@ -288,8 +288,7 @@ mod test {
     use ballista_core::error::{BallistaError, Result};
     use ballista_core::execution_plans::ShuffleWriterExec;
     use ballista_core::serde::protobuf::{
-        job_status, task_status, CompletedTask, LogicalPlanNode, PartitionId,
-        PhysicalPlanNode, TaskStatus,
+        job_status, task_status, CompletedTask, PartitionId, PhysicalPlanNode, TaskStatus,
     };
     use ballista_core::serde::scheduler::ExecutorData;
     use ballista_core::serde::BallistaCodec;
@@ -298,6 +297,7 @@ mod test {
     use datafusion::logical_plan::{col, sum, LogicalPlan};
     use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion::test_util::scan_empty;
+    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use crate::scheduler_server::event::QueryStageSchedulerEvent;
     use crate::scheduler_server::SchedulerServer;

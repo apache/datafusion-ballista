@@ -16,10 +16,8 @@
 // under the License.
 
 use crate::error::BallistaError;
-use crate::serde::protobuf::LogicalExtensionNode;
 use crate::serde::{
-    byte_to_string, proto_error, protobuf, str_to_byte, AsLogicalPlan,
-    LogicalExtensionCodec,
+    byte_to_string, proto_error, str_to_byte, AsLogicalPlan, LogicalExtensionCodec,
 };
 use crate::{convert_required, into_logical_plan};
 use datafusion::arrow::datatypes::Schema;
@@ -39,13 +37,13 @@ use datafusion::logical_plan::{
     LogicalPlanBuilder, Offset, Repartition, TableScan, Values,
 };
 use datafusion::prelude::SessionContext;
-
 use datafusion_proto::from_proto::parse_expr;
+use datafusion_proto::protobuf::{
+    self, logical_plan_node::LogicalPlanType, LogicalExtensionNode, LogicalPlanNode,
+};
 use prost::bytes::BufMut;
 use prost::Message;
 use protobuf::listing_table_scan_node::FileFormatType;
-use protobuf::logical_plan_node::LogicalPlanType;
-use protobuf::LogicalPlanNode;
 use std::convert::TryInto;
 use std::sync::Arc;
 
@@ -1116,11 +1114,11 @@ mod roundtrip_tests {
         ($initial_struct:ident) => {
             let ctx = SessionContext::new();
             let codec: BallistaCodec<
-                protobuf::LogicalPlanNode,
+                datafusion_proto::protobuf::LogicalPlanNode,
                 protobuf::PhysicalPlanNode,
             > = BallistaCodec::default();
-            let proto: protobuf::LogicalPlanNode =
-                protobuf::LogicalPlanNode::try_from_logical_plan(
+            let proto: datafusion_proto::protobuf::LogicalPlanNode =
+                datafusion_proto::protobuf::LogicalPlanNode::try_from_logical_plan(
                     &$initial_struct,
                     codec.logical_extension_codec(),
                 )
@@ -1139,7 +1137,7 @@ mod roundtrip_tests {
                 protobuf::LogicalPlanNode,
                 protobuf::PhysicalPlanNode,
             > = BallistaCodec::default();
-            let proto: protobuf::LogicalPlanNode =
+            let proto: datafusion_proto::protobuf::LogicalPlanNode =
                 protobuf::LogicalPlanNode::try_from_logical_plan(&$initial_struct)
                     .expect("from logical plan");
             let round_trip: LogicalPlan = proto
@@ -1336,8 +1334,10 @@ mod roundtrip_tests {
     #[tokio::test]
     async fn roundtrip_logical_plan_custom_ctx() -> Result<()> {
         let ctx = SessionContext::new();
-        let codec: BallistaCodec<protobuf::LogicalPlanNode, protobuf::PhysicalPlanNode> =
-            BallistaCodec::default();
+        let codec: BallistaCodec<
+            datafusion_proto::protobuf::LogicalPlanNode,
+            protobuf::PhysicalPlanNode,
+        > = BallistaCodec::default();
         let custom_object_store = Arc::new(TestObjectStore {});
         ctx.runtime_env()
             .register_object_store("test", custom_object_store.clone());
@@ -1357,8 +1357,8 @@ mod roundtrip_tests {
             .await?
             .to_logical_plan()?;
 
-        let proto: protobuf::LogicalPlanNode =
-            protobuf::LogicalPlanNode::try_from_logical_plan(
+        let proto: datafusion_proto::protobuf::LogicalPlanNode =
+            datafusion_proto::protobuf::LogicalPlanNode::try_from_logical_plan(
                 &plan,
                 codec.logical_extension_codec(),
             )

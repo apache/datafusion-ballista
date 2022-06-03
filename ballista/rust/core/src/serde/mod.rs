@@ -412,10 +412,11 @@ mod tests {
     }
 
     use crate::error::BallistaError;
-    use crate::serde::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+    use crate::serde::protobuf::PhysicalPlanNode;
     use crate::serde::{
         AsExecutionPlan, AsLogicalPlan, LogicalExtensionCodec, PhysicalExtensionCodec,
     };
+    use datafusion_proto::protobuf::LogicalPlanNode;
     use proto::{TopKExecProto, TopKPlanProto};
 
     struct TopKPlanNode {
