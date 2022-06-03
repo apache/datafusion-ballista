@@ -37,6 +37,7 @@ pub mod backend;
 pub mod execution_graph;
 pub mod executor_manager;
 pub mod session_manager;
+pub mod session_registry;
 mod task_manager;
 
 pub fn decode_protobuf<T: Message + Default>(bytes: &[u8]) -> Result<T> {
@@ -76,9 +77,7 @@ pub fn encode_protobuf<T: Message + Default>(msg: &T) -> Result<Vec<u8>> {
 #[derive(Clone)]
 pub(super) struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 {
-    // persistent_state: PersistentSchedulerState<T, U>,
     pub executor_manager: ExecutorManager,
-    // pub stage_manager: StageManager,
     pub task_manager: TaskManager<T, U>,
     pub session_manager: SessionManager,
     codec: BallistaCodec<T, U>,
@@ -104,8 +103,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     }
 
     pub async fn init(&self) -> Result<()> {
-        // TODO, can probably pre-load some cacheable data here.
-        Ok(())
+        self.executor_manager.init().await
     }
 
     pub fn get_codec(&self) -> &BallistaCodec<T, U> {
@@ -114,72 +112,4 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 }
 
 #[cfg(all(test, feature = "sled"))]
-mod test {
-
-    // #[tokio::test]
-    // async fn executor_metadata() -> Result<(), BallistaError> {
-    //     let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-    //         SchedulerState::new(
-    //             Arc::new(StandaloneClient::try_new_temporary()?),
-    //             "test".to_string(),
-    //             default_session_builder,
-    //             BallistaCodec::default(),
-    //         );
-    //     let meta = ExecutorMetadata {
-    //         id: "123".to_owned(),
-    //         host: "localhost".to_owned(),
-    //         port: 123,
-    //         grpc_port: 124,
-    //         specification: ExecutorSpecification { task_slots: 2 },
-    //     };
-    //     state.save_executor_metadata(meta.clone()).await?;
-    //     let result: Vec<_> = state
-    //         .get_executors_metadata()
-    //         .await?
-    //         .into_iter()
-    //         .map(|(meta, _)| meta)
-    //         .collect();
-    //     assert_eq!(vec![meta], result);
-    //     Ok(())
-    // }
-    //
-    // #[tokio::test]
-    // async fn job_metadata() -> Result<(), BallistaError> {
-    //     let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-    //         SchedulerState::new(
-    //             Arc::new(StandaloneClient::try_new_temporary()?),
-    //             "test".to_string(),
-    //             default_session_builder,
-    //             BallistaCodec::default(),
-    //         );
-    //     let meta = JobStatus {
-    //         status: Some(job_status::Status::Queued(QueuedJob {})),
-    //     };
-    //     state.save_job_metadata("job", &meta).await?;
-    //     let result = state.get_job_metadata("job").unwrap();
-    //     assert!(result.status.is_some());
-    //     match result.status.unwrap() {
-    //         job_status::Status::Queued(_) => (),
-    //         _ => panic!("Unexpected status"),
-    //     }
-    //     Ok(())
-    // }
-    //
-    // #[tokio::test]
-    // async fn job_metadata_non_existant() -> Result<(), BallistaError> {
-    //     let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-    //         SchedulerState::new(
-    //             Arc::new(StandaloneClient::try_new_temporary()?),
-    //             "test".to_string(),
-    //             default_session_builder,
-    //             BallistaCodec::default(),
-    //         );
-    //     let meta = JobStatus {
-    //         status: Some(job_status::Status::Queued(QueuedJob {})),
-    //     };
-    //     state.save_job_metadata("job", &meta).await?;
-    //     let result = state.get_job_metadata("job2");
-    //     assert!(result.is_none());
-    //     Ok(())
-    // }
-}
+mod test {}

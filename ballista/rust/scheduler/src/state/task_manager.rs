@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use crate::scheduler_server::{create_datafusion_context, SessionBuilder};
+use crate::scheduler_server::SessionBuilder;
 use crate::state::backend::{Keyspace, Lock, StateBackendClient};
 use crate::state::execution_graph::{ExecutionGraph, ExecutionStage, Task};
 use crate::state::executor_manager::ExecutorReservation;
@@ -26,14 +26,15 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
 use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 
+use crate::state::session_manager::create_datafusion_context;
 use ballista_core::serde::protobuf::{
-    task_status, JobStatus, LaunchTaskParams, PartitionId, TaskDefinition, TaskStatus,
+    self, task_status, JobStatus, PartitionId, TaskDefinition, TaskStatus,
 };
 use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
 use ballista_core::serde::scheduler::{
     ExecutorMetadata, PartitionLocation, PartitionStats,
 };
-use ballista_core::serde::{protobuf, AsExecutionPlan, AsLogicalPlan, BallistaCodec};
+use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan, BallistaCodec};
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion::prelude::SessionContext;
 use log::{debug, info, warn};
@@ -331,7 +332,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         let mut clients = self.clients.write().await;
         if let Some(client) = clients.get_mut(&executor.id) {
             client
-                .launch_task(LaunchTaskParams {
+                .launch_task(protobuf::LaunchTaskParams {
                     task: vec![task_definition],
                 })
                 .await
@@ -347,7 +348,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let mut client = ExecutorGrpcClient::connect(executor_url).await?;
             clients.insert(executor_id, client.clone());
             client
-                .launch_task(LaunchTaskParams {
+                .launch_task(protobuf::LaunchTaskParams {
                     task: vec![task_definition],
                 })
                 .await

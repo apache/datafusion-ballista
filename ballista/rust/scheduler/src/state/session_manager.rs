@@ -15,13 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::scheduler_server::{create_datafusion_context, SessionBuilder};
+use crate::scheduler_server::SessionBuilder;
 use crate::state::backend::{Keyspace, StateBackendClient};
 use crate::state::{decode_protobuf, encode_protobuf};
 use ballista_core::config::BallistaConfig;
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf::{self, KeyValuePair};
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{SessionConfig, SessionContext};
 
 use std::sync::Arc;
 
@@ -106,4 +106,37 @@ impl SessionManager {
 
         Ok(create_datafusion_context(&config, self.session_builder))
     }
+}
+
+/// Create a DataFusion session context that is compatible with Ballista Configuration
+pub fn create_datafusion_context(
+    config: &BallistaConfig,
+    session_builder: SessionBuilder,
+) -> Arc<SessionContext> {
+    let config = SessionConfig::new()
+        .with_target_partitions(config.default_shuffle_partitions())
+        .with_batch_size(config.default_batch_size())
+        .with_repartition_joins(config.repartition_joins())
+        .with_repartition_aggregations(config.repartition_aggregations())
+        .with_repartition_windows(config.repartition_windows())
+        .with_parquet_pruning(config.parquet_pruning());
+    let session_state = session_builder(config);
+    Arc::new(SessionContext::with_state(session_state))
+}
+
+/// Update the existing DataFusion session context with Ballista Configuration
+pub fn update_datafusion_context(
+    session_ctx: Arc<SessionContext>,
+    config: &BallistaConfig,
+) -> Arc<SessionContext> {
+    {
+        let mut mut_state = session_ctx.state.write();
+        mut_state.config.target_partitions = config.default_shuffle_partitions();
+        mut_state.config.batch_size = config.default_batch_size();
+        mut_state.config.repartition_joins = config.repartition_joins();
+        mut_state.config.repartition_aggregations = config.repartition_aggregations();
+        mut_state.config.repartition_windows = config.repartition_windows();
+        mut_state.config.parquet_pruning = config.parquet_pruning();
+    }
+    session_ctx
 }
