@@ -14,7 +14,8 @@ mod handlers;
 
 use crate::scheduler_server::SchedulerServer;
 use anyhow::Result;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan};
+use ballista_core::serde::AsExecutionPlan;
+use datafusion_proto::logical_plan::AsLogicalPlan;
 use std::{
     pin::Pin,
     task::{Context as TaskContext, Poll},

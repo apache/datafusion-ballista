@@ -15,23 +15,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-use datafusion::physical_plan::ExecutionPlan;
-
-use ballista_core::error::Result;
-
 use crate::scheduler_server::{SessionBuilder, SessionContextRegistry};
-use ballista_core::serde::protobuf::{ExecutorHeartbeat, JobStatus, KeyValuePair};
-use ballista_core::serde::scheduler::ExecutorMetadata;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan, BallistaCodec};
-
 use crate::state::backend::StateBackendClient;
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::persistent_state::PersistentSchedulerState;
 use crate::state::stage_manager::StageManager;
+use ballista_core::error::Result;
+use ballista_core::serde::protobuf::{ExecutorHeartbeat, JobStatus, KeyValuePair};
+use ballista_core::serde::scheduler::ExecutorMetadata;
+use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion_proto::logical_plan::AsLogicalPlan;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub mod backend;
 mod executor_manager;
@@ -181,11 +178,12 @@ mod test {
 
     use ballista_core::error::BallistaError;
     use ballista_core::serde::protobuf::{
-        job_status, JobStatus, LogicalPlanNode, PhysicalPlanNode, QueuedJob,
+        job_status, JobStatus, PhysicalPlanNode, QueuedJob,
     };
     use ballista_core::serde::scheduler::{ExecutorMetadata, ExecutorSpecification};
     use ballista_core::serde::BallistaCodec;
     use datafusion::execution::context::default_session_builder;
+    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use super::{backend::standalone::StandaloneClient, SchedulerState};
 

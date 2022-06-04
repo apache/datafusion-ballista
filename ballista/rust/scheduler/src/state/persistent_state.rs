@@ -15,7 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::scheduler_server::{
+    create_datafusion_context, SessionBuilder, SessionContextRegistry,
+};
+use crate::state::backend::StateBackendClient;
+use crate::state::stage_manager::StageKey;
 use ballista_core::config::BallistaConfig;
+use ballista_core::error::{BallistaError, Result};
+use ballista_core::serde::protobuf::{JobSessionConfig, JobStatus, KeyValuePair};
+use ballista_core::serde::scheduler::ExecutorMetadata;
+use ballista_core::serde::{protobuf, AsExecutionPlan, BallistaCodec};
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::{debug, error};
 use parking_lot::RwLock;
 use prost::Message;
@@ -23,19 +34,6 @@ use std::any::type_name;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
-
-use ballista_core::error::{BallistaError, Result};
-
-use ballista_core::serde::protobuf::{JobSessionConfig, JobStatus, KeyValuePair};
-
-use crate::scheduler_server::{
-    create_datafusion_context, SessionBuilder, SessionContextRegistry,
-};
-use crate::state::backend::StateBackendClient;
-use crate::state::stage_manager::StageKey;
-use ballista_core::serde::scheduler::ExecutorMetadata;
-use ballista_core::serde::{protobuf, AsExecutionPlan, AsLogicalPlan, BallistaCodec};
-use datafusion::physical_plan::ExecutionPlan;
 
 #[derive(Clone)]
 pub(crate) struct PersistentSchedulerState<
@@ -408,13 +406,12 @@ mod test {
     use crate::state::persistent_state::PersistentSchedulerState;
 
     use ballista_core::serde::protobuf::job_status::Status;
-    use ballista_core::serde::protobuf::{
-        JobStatus, LogicalPlanNode, PhysicalPlanNode, QueuedJob,
-    };
+    use ballista_core::serde::protobuf::{JobStatus, PhysicalPlanNode, QueuedJob};
     use ballista_core::serde::BallistaCodec;
     use datafusion::execution::context::default_session_builder;
     use datafusion::logical_plan::LogicalPlanBuilder;
     use datafusion::prelude::SessionContext;
+    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use std::sync::Arc;
 

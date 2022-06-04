@@ -15,12 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista_core::serde::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+use ballista_core::serde::protobuf::PhysicalPlanNode;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::{
     error::Result, serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer,
     BALLISTA_VERSION,
 };
+use datafusion_proto::protobuf::LogicalPlanNode;
 use log::info;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;

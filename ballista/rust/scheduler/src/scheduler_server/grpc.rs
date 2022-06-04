@@ -15,6 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use crate::scheduler_server::{
+    create_datafusion_context, update_datafusion_context, SchedulerServer,
+};
+use crate::state::task_scheduler::TaskScheduler;
 use anyhow::Context;
 use ballista_core::config::{BallistaConfig, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
@@ -32,12 +37,13 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::scheduler::{
     ExecutorData, ExecutorDataChange, ExecutorMetadata,
 };
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan};
+use ballista_core::serde::AsExecutionPlan;
 use datafusion::datafusion_data_access::object_store::{
     local::LocalFileSystem, ObjectStore,
 };
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::file_format::FileFormat;
+use datafusion_proto::logical_plan::AsLogicalPlan;
 use futures::TryStreamExt;
 use log::{debug, error, info, trace, warn};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
@@ -47,12 +53,6 @@ use std::sync::Arc;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
-
-use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use crate::scheduler_server::{
-    create_datafusion_context, update_datafusion_context, SchedulerServer,
-};
-use crate::state::task_scheduler::TaskScheduler;
 
 #[tonic::async_trait]
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
@@ -561,12 +561,13 @@ mod test {
     use crate::state::{backend::standalone::StandaloneClient, SchedulerState};
     use ballista_core::error::BallistaError;
     use ballista_core::serde::protobuf::{
-        executor_registration::OptionalHost, ExecutorRegistration, LogicalPlanNode,
-        PhysicalPlanNode, PollWorkParams,
+        executor_registration::OptionalHost, ExecutorRegistration, PhysicalPlanNode,
+        PollWorkParams,
     };
     use ballista_core::serde::scheduler::ExecutorSpecification;
     use ballista_core::serde::BallistaCodec;
     use datafusion::execution::context::default_session_builder;
+    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use super::{SchedulerGrpc, SchedulerServer};
 

@@ -15,28 +15,26 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::as_task_status;
+use crate::executor::Executor;
+use ballista_core::error::BallistaError;
+use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
+use ballista_core::serde::protobuf::{
+    scheduler_grpc_client::SchedulerGrpcClient, PollWorkParams, PollWorkResult,
+    TaskDefinition, TaskStatus,
+};
+use ballista_core::serde::scheduler::ExecutorSpecification;
+use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use datafusion::execution::context::TaskContext;
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion_proto::logical_plan::AsLogicalPlan;
+use log::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::{sync::Arc, time::Duration};
-
-use datafusion::physical_plan::ExecutionPlan;
-use log::{debug, error, info, warn};
 use tonic::transport::Channel;
-
-use ballista_core::serde::protobuf::{
-    scheduler_grpc_client::SchedulerGrpcClient, PollWorkParams, PollWorkResult,
-    TaskDefinition, TaskStatus,
-};
-
-use crate::as_task_status;
-use crate::executor::Executor;
-use ballista_core::error::BallistaError;
-use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
-use ballista_core::serde::scheduler::ExecutorSpecification;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan, BallistaCodec};
-use datafusion::execution::context::TaskContext;
 
 pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     mut scheduler: SchedulerGrpcClient<Channel>,

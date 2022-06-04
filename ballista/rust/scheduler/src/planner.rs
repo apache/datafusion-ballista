@@ -287,7 +287,8 @@ mod test {
     use datafusion::prelude::SessionContext;
     use std::ops::Deref;
 
-    use ballista_core::serde::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+    use ballista_core::serde::protobuf::PhysicalPlanNode;
+    use datafusion_proto::protobuf::LogicalPlanNode;
     use std::sync::Arc;
     use uuid::Uuid;
 
