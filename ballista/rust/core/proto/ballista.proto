@@ -641,9 +641,9 @@ message StageInputPartition {
 
 message ExecutionGraphStage {
   uint64 stage_id = 1;
-  uint64 output_partitions = 2;
+  repeated uint64 output_partitions = 2;
   PhysicalHashRepartition output_partitioning = 3;
-  uint64 input_partition_count = 4;
+  repeated uint64 input_partition_count = 4;
   bytes plan = 5;
   repeated StageInputPartition input_locations = 6;
   repeated OutputPartitionStats partition_stats = 7;

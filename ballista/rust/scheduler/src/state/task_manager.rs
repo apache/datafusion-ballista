@@ -481,7 +481,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             )?;
 
             let stage_id = stage.stage_id as usize;
-            let output_partitions = stage.output_partitions as usize;
+            let output_partitions: Vec<usize> = stage
+                .output_partitions
+                .into_iter()
+                .map(|n| n as usize)
+                .collect();
 
             let mut partitions_stats: HashMap<usize, Vec<PartitionStats>> =
                 HashMap::new();
@@ -505,7 +509,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             }
 
             let mut task_statuses: Vec<Option<task_status::Status>> =
-                vec![None; output_partitions];
+                vec![None; output_partitions.len()];
 
             for status in stage.task_statuses {
                 if let Some(task_id) = status.task_id.as_ref() {
@@ -532,7 +536,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 stage_id: stage.stage_id as usize,
                 output_partitions,
                 output_partitioning,
-                input_partition_count: stage.input_partition_count as usize,
+                input_partition_count: stage
+                    .input_partition_count
+                    .into_iter()
+                    .map(|n| n as usize)
+                    .collect(),
                 plan,
                 input_locations,
                 partitions_stats,
@@ -639,9 +647,17 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
                 Ok(protobuf::ExecutionGraphStage {
                     stage_id: stage_id as u64,
-                    output_partitions: stage.output_partitions as u64,
+                    output_partitions: stage
+                        .output_partitions
+                        .into_iter()
+                        .map(|n| n as u64)
+                        .collect(),
                     output_partitioning,
-                    input_partition_count: stage.input_partition_count as u64,
+                    input_partition_count: stage
+                        .input_partition_count
+                        .into_iter()
+                        .map(|n| n as u64)
+                        .collect(),
                     plan,
                     input_locations,
                     partition_stats,
