@@ -130,10 +130,6 @@ impl ExecutionStage {
     /// UnresolvedShuffleExec operators to ShuffleReadExec
     pub fn resolvable(&self) -> bool {
         self.input_locations.len() == self.input_partition_count.len()
-            && self
-                .input_locations
-                .iter()
-                .all(|(idx, parts)| parts.len() == self.input_partition_count[*idx])
     }
 
     /// Returns true if the stage plan has all UnresolvedShuffleExec operators resolved to
@@ -156,7 +152,8 @@ impl ExecutionStage {
 
     /// Resolve any UnresolvedShuffleExec operators within this stage's plan
     pub fn resolve_shuffles(&mut self) -> Result<()> {
-        if self.input_partition_count.is_empty() {
+        println!("Resolving shuffles\n{:?}", self);
+        if self.input_partition_count.is_empty() || self.resolved {
             // If this stage has no input shuffles, then it is already resolved
             Ok(())
         } else {
@@ -602,16 +599,18 @@ mod test {
     use ballista_core::serde::protobuf::{self, job_status, task_status};
     use ballista_core::serde::scheduler::{ExecutorMetadata, ExecutorSpecification};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::logical_expr::{col, sum};
+    use datafusion::logical_expr::{col, Expr, sum};
 
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
-    use datafusion::prelude::SessionContext;
+    use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion::test_util::scan_empty;
     use std::sync::Arc;
+    use datafusion::logical_plan::JoinType;
+    use rand::{Rng, thread_rng};
 
     #[tokio::test]
     async fn test_drain_tasks() -> Result<()> {
-        let mut agg_graph = test_aggregation_plan().await;
+        let mut agg_graph = test_aggregation_plan(4).await;
 
         println!("Graph: {:?}", agg_graph);
 
@@ -619,7 +618,7 @@ mod test {
 
         assert!(agg_graph.complete(), "Failed to complete aggregation plan");
 
-        let mut coalesce_graph = test_coalesce_plan().await;
+        let mut coalesce_graph = test_coalesce_plan(4).await;
 
         drain_tasks(&mut coalesce_graph)?;
 
@@ -628,12 +627,21 @@ mod test {
             "Failed to complete coalesce plan"
         );
 
+        let mut join_graph = test_join_plan(4).await;
+
+        drain_tasks(&mut join_graph)?;
+
+        assert!(
+            join_graph.complete(),
+            "Failed to complete join plan"
+        );
+
         Ok(())
     }
 
     #[tokio::test]
     async fn test_finalize() -> Result<()> {
-        let mut agg_graph = test_aggregation_plan().await;
+        let mut agg_graph = test_aggregation_plan(4).await;
 
         drain_tasks(&mut agg_graph)?;
         agg_graph.finalize()?;
@@ -658,7 +666,41 @@ mod test {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn test_partition_counts() -> Result<()> {
+        let mut agg_graph = test_aggregation_plan(4).await;
+
+        assert_eq!(agg_graph.output_partitions, 4);
+
+        let stage_1_out = agg_graph
+            .stages
+            .get(&1)
+            .cloned()
+            .map(|first_stage| first_stage.output_partitions)
+            .unwrap();
+        assert_eq!(stage_1_out, vec![4]);
+
+        let stage_1_in = agg_graph
+            .stages
+            .get(&2)
+            .cloned()
+            .map(|stage| stage.input_partition_count)
+            .unwrap();
+        assert_eq!(stage_1_in, vec![4]);
+
+        let stage_2_out = agg_graph
+            .stages
+            .get(&2)
+            .cloned()
+            .map(|first_stage| first_stage.output_partitions)
+            .unwrap();
+        assert_eq!(stage_2_out, vec![1, 1, 1, 1]);
+
+        Ok(())
+    }
+
     fn drain_tasks(graph: &mut ExecutionGraph) -> Result<()> {
+        let mut rng = thread_rng();
         let executor = test_executor();
         let job_id = graph.job_id().to_owned();
         while let Some(task) = graph.pop_next_task("executor-id")? {
@@ -668,6 +710,8 @@ mod test {
                 .output_partitioning
                 .map(|p| p.partition_count())
                 .unwrap_or(1);
+
+
             for partition_id in 0..num_partitions {
                 partitions.push(protobuf::ShuffleWritePartition {
                     partition_id: partition_id as u64,
@@ -697,8 +741,9 @@ mod test {
         Ok(())
     }
 
-    async fn test_aggregation_plan() -> ExecutionGraph {
-        let ctx = Arc::new(SessionContext::new());
+    async fn test_aggregation_plan(partition: usize) -> ExecutionGraph {
+        let config = SessionConfig::new().with_target_partitions(partition);
+        let ctx = Arc::new(SessionContext::with_config(config));
 
         let schema = Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
@@ -716,13 +761,12 @@ mod test {
 
         let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
 
-        println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
-
         ExecutionGraph::new("job", "session", plan).unwrap()
     }
 
-    async fn test_coalesce_plan() -> ExecutionGraph {
-        let ctx = Arc::new(SessionContext::new());
+    async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
+        let config = SessionConfig::new().with_target_partitions(partition);
+        let ctx = Arc::new(SessionContext::with_config(config));
 
         let schema = Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
@@ -741,6 +785,53 @@ mod test {
         let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
 
         ExecutionGraph::new("job", "session", plan).unwrap()
+    }
+
+    async fn test_join_plan(partition: usize) -> ExecutionGraph {
+        let config = SessionConfig::new().with_target_partitions(partition);
+        let ctx = Arc::new(SessionContext::with_config(config));
+
+
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("gmv", DataType::UInt64, false),
+        ]);
+
+
+        let left_plan = scan_empty(Some("left"), &schema, None)
+            .unwrap();
+
+        let right_plan = scan_empty(Some("right"), &schema, None)
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let sort_expr = Expr::Sort {
+            expr: Box::new(col("id")),
+            asc: false,
+            nulls_first: false
+        };
+
+        let logical_plan = left_plan
+            .join(&right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
+            .unwrap()
+            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
+            .unwrap()
+            .sort(vec![sort_expr])
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+
+        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+
+        println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
+
+        let graph = ExecutionGraph::new("job", "session", plan).unwrap();
+
+        println!("{:?}", graph);
+        graph
     }
 
     fn test_executor() -> ExecutorMetadata {
