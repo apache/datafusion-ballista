@@ -28,7 +28,8 @@ use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 
 use crate::state::session_manager::create_datafusion_context;
 use ballista_core::serde::protobuf::{
-    self, task_status, JobStatus, PartitionId, TaskDefinition, TaskStatus,
+    self, task_status, JobStatus, PartitionId, StageInputPartition, TaskDefinition,
+    TaskStatus,
 };
 use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
 use ballista_core::serde::scheduler::{
@@ -489,8 +490,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
             let mut partitions_stats: HashMap<usize, Vec<PartitionStats>> =
                 HashMap::new();
-            let mut input_locations: HashMap<usize, Vec<PartitionLocation>> =
-                HashMap::new();
+            let mut input_locations: HashMap<
+                usize,
+                HashMap<usize, Vec<PartitionLocation>>,
+            > = HashMap::new();
 
             for part in stage.partition_stats {
                 let partition_id = part.partition as usize;
@@ -499,13 +502,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             }
 
             for loc in stage.input_locations {
-                let partition_id = loc.partition as usize;
-                let locations = loc
-                    .partition_location
-                    .into_iter()
-                    .map(|l| l.try_into())
-                    .collect::<Result<Vec<_>>>()?;
-                input_locations.insert(partition_id, locations);
+                let stage_id = loc.stage_id as usize;
+                let mut stage_locations: HashMap<usize, Vec<PartitionLocation>> =
+                    HashMap::new();
+
+                for task_inputs in loc.task_inputs {
+                    let partition_id = task_inputs.partition as usize;
+                    let locations = task_inputs
+                        .partition_location
+                        .into_iter()
+                        .map(|l| l.try_into())
+                        .collect::<Result<Vec<_>>>()?;
+
+                    stage_locations.insert(partition_id, locations);
+                }
+
+                input_locations.insert(stage_id, stage_locations);
             }
 
             let mut task_statuses: Vec<Option<task_status::Status>> =
@@ -595,22 +607,52 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 )
                 .and_then(|proto| proto.try_encode(&mut plan))?;
 
-                let input_locations = stage
-                    .input_locations
-                    .into_iter()
-                    .map(|(partition, location)| {
-                        let partition_location: Vec<protobuf::PartitionLocation> =
-                            location
-                                .into_iter()
-                                .map(|loc| loc.try_into())
-                                .collect::<Result<Vec<_>>>()?;
+                let mut input_locations: Vec<StageInputPartition> = vec![];
 
-                        Ok(protobuf::StageInputPartition {
-                            partition: partition as u32,
-                            partition_location,
+                for (stage, location) in stage.input_locations {
+                    let task_inputs = location
+                        .into_iter()
+                        .map(|(partition, locations)| {
+                            Ok(protobuf::TaskInputPartitions {
+                                partition: partition as u32,
+                                partition_location: locations
+                                    .into_iter()
+                                    .map(|l| l.try_into())
+                                    .collect::<Result<Vec<_>>>()?,
+                            })
                         })
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                        .collect::<Result<Vec<_>>>()?;
+                    input_locations.push(protobuf::StageInputPartition {
+                        stage_id: stage as u32,
+                        task_inputs,
+                    });
+                }
+
+                // let input_locations = stage
+                //     .input_locations
+                //     .into_iter()
+                //     .map(|(stage, location)| {
+                //         let partition_location: Vec<protobuf::PartitionLocation> =
+                //             location
+                //                 .into_iter()
+                //                 .map(|(partition, loc)| {
+                //                     protobuf::StageInputPartition {
+                //                         stage_id: stage as u32,
+                //                         partition: partition as u32,
+                //                         partition_location,
+                //                     }
+                //                 })
+                //                 .collect::<Result<Vec<_>>>()?;
+                //
+                //         Ok(partition_location)
+                //
+                //         // Ok(protobuf::StageInputPartition {
+                //         //     partition: partition as u32,
+                //         //     partition_location,
+                //         // })
+                //     })
+                //     .flatten()
+                //     .collect::<Result<Vec<_>>>()?;
 
                 let partition_stats: Vec<protobuf::OutputPartitionStats> = stage
                     .partitions_stats

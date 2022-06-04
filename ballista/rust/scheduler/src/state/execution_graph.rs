@@ -62,7 +62,7 @@ pub struct ExecutionStage {
     /// Execution Plan for this stage
     pub(crate) plan: Arc<dyn ExecutionPlan>,
     /// Locations of input partitions for this stage.
-    pub(crate) input_locations: HashMap<usize, Vec<PartitionLocation>>,
+    pub(crate) input_locations: HashMap<usize, HashMap<usize, Vec<PartitionLocation>>>,
     /// Statistics for output partitions from this stage,
     pub(crate) partitions_stats: HashMap<usize, Vec<PartitionStats>>,
     /// Status of each already scheduled task. If status is None, the partition has not yet been scheduled
@@ -94,6 +94,7 @@ impl ExecutionStage {
         output_partitioning: Option<Partitioning>,
         input_partition_count: Vec<usize>,
         output_link: Option<usize>,
+        child_stages: Vec<usize>,
     ) -> Self {
         let mut output_partitions = vec![];
         let num_tasks = plan.output_partitioning().partition_count();
@@ -107,6 +108,13 @@ impl ExecutionStage {
             )
         }
 
+        let mut input_locations: HashMap<usize, HashMap<usize, Vec<PartitionLocation>>> =
+            HashMap::new();
+
+        for child_stage_id in child_stages {
+            input_locations.insert(child_stage_id, HashMap::new());
+        }
+
         let resolved = if input_partition_count.len() == 0 {
             true
         } else {
@@ -118,7 +126,7 @@ impl ExecutionStage {
             output_partitioning,
             input_partition_count,
             plan,
-            input_locations: HashMap::with_capacity(num_tasks),
+            input_locations,
             partitions_stats: HashMap::with_capacity(num_tasks),
             task_statuses: vec![None; num_tasks],
             output_link,
@@ -129,7 +137,10 @@ impl ExecutionStage {
     /// Returns true if all input partitions are present and we can resolve the stage plans
     /// UnresolvedShuffleExec operators to ShuffleReadExec
     pub fn resolvable(&self) -> bool {
-        self.input_locations.len() == self.input_partition_count.len()
+        self.input_locations.iter().all(|(_, stage_inputs)| {
+            stage_inputs.len() == self.input_partition_count.len()
+        })
+        // self.input_locations.len() == self.input_partition_count.len()
     }
 
     /// Returns true if the stage plan has all UnresolvedShuffleExec operators resolved to
@@ -158,8 +169,10 @@ impl ExecutionStage {
             Ok(())
         } else {
             // Otherwise, rewrite the plan to replace UnresolvedShuffleExec with ShuffleReadExec
-            let new_plan =
-                remove_unresolved_shuffles(self.plan.clone(), &self.input_locations)?;
+            let new_plan = crate::planner::remove_unresolved_shuffles(
+                self.plan.clone(),
+                &self.input_locations,
+            )?;
             self.plan = new_plan;
             self.resolved = true;
             Ok(())
@@ -172,15 +185,25 @@ impl ExecutionStage {
         self.task_statuses[partition] = Some(status);
     }
 
-    pub fn add_input_partitions(&mut self, partitions: Vec<PartitionLocation>) {
+    pub fn add_input_partitions(
+        &mut self,
+        partitions: Vec<PartitionLocation>,
+    ) -> Result<()> {
         for partition in partitions {
+            let stage_id = partition.partition_id.stage_id;
             let partition_id = partition.partition_id.partition_id;
-            if let Some(parts) = self.input_locations.get_mut(&partition_id) {
-                parts.push(partition)
+
+            if let Some(stage_inputs) = self.input_locations.get_mut(&stage_id) {
+                if let Some(parts) = stage_inputs.get_mut(&partition_id) {
+                    parts.push(partition)
+                } else {
+                    stage_inputs.insert(partition_id, vec![partition]);
+                }
             } else {
-                self.input_locations.insert(partition_id, vec![partition]);
+                return Err(BallistaError::Internal(format!("Error adding input partitions to stage {}, {} is not a valid child stage ID", self.stage_id, stage_id)));
             }
         }
+        Ok(())
     }
 }
 
@@ -188,6 +211,7 @@ struct ExecutionStageBuilder {
     /// Stage ID which is currently being visited
     current_stage_id: usize,
     input_partition_counts: HashMap<usize, Vec<usize>>,
+    stage_dependencies: HashMap<usize, Vec<usize>>,
     /// Map from Stage ID -> output link
     output_links: HashMap<usize, usize>,
 }
@@ -197,6 +221,7 @@ impl ExecutionStageBuilder {
         Self {
             current_stage_id: 0,
             input_partition_counts: HashMap::new(),
+            stage_dependencies: HashMap::new(),
             output_links: HashMap::new(),
         }
     }
@@ -221,6 +246,9 @@ impl ExecutionStageBuilder {
                 .remove(&stage_id)
                 .unwrap_or(vec![0; 0]);
 
+            let child_stages =
+                self.stage_dependencies.remove(&stage_id).unwrap_or(vec![]);
+
             execution_stages.insert(
                 stage_id,
                 ExecutionStage::new(
@@ -229,6 +257,7 @@ impl ExecutionStageBuilder {
                     partitioning,
                     input_partition_count,
                     output_link,
+                    child_stages,
                 ),
             );
         }
@@ -257,6 +286,13 @@ impl ExecutionPlanVisitor for ExecutionStageBuilder {
                 self.current_stage_id,
                 vec![partitions_per_task; num_input_tasks],
             );
+
+            if let Some(deps) = self.stage_dependencies.get_mut(&self.current_stage_id) {
+                deps.push(unresolved_shuffle.stage_id)
+            } else {
+                self.stage_dependencies
+                    .insert(self.current_stage_id, vec![unresolved_shuffle.stage_id]);
+            }
         }
         Ok(true)
     }
@@ -599,14 +635,14 @@ mod test {
     use ballista_core::serde::protobuf::{self, job_status, task_status};
     use ballista_core::serde::scheduler::{ExecutorMetadata, ExecutorSpecification};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::logical_expr::{col, Expr, sum};
+    use datafusion::logical_expr::{col, sum, Expr};
 
+    use datafusion::logical_plan::JoinType;
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion::test_util::scan_empty;
+    use rand::{thread_rng, Rng};
     use std::sync::Arc;
-    use datafusion::logical_plan::JoinType;
-    use rand::{Rng, thread_rng};
 
     #[tokio::test]
     async fn test_drain_tasks() -> Result<()> {
@@ -631,10 +667,9 @@ mod test {
 
         drain_tasks(&mut join_graph)?;
 
-        assert!(
-            join_graph.complete(),
-            "Failed to complete join plan"
-        );
+        println!("{:?}", join_graph);
+
+        assert!(join_graph.complete(), "Failed to complete join plan");
 
         Ok(())
     }
@@ -688,6 +723,16 @@ mod test {
             .unwrap();
         assert_eq!(stage_1_in, vec![4]);
 
+        let stage_2_children = agg_graph
+            .stages
+            .get(&2)
+            .cloned()
+            .unwrap()
+            .input_locations
+            .len();
+
+        assert_eq!(stage_2_children, 1);
+
         let stage_2_out = agg_graph
             .stages
             .get(&2)
@@ -711,11 +756,15 @@ mod test {
                 .map(|p| p.partition_count())
                 .unwrap_or(1);
 
-
             for partition_id in 0..num_partitions {
                 partitions.push(protobuf::ShuffleWritePartition {
                     partition_id: partition_id as u64,
-                    path: "path".to_string(),
+                    path: format!(
+                        "/{}/{}/{}",
+                        task.partition.job_id,
+                        task.partition.stage_id,
+                        task.partition.partition_id
+                    ),
                     num_batches: 1,
                     num_rows: 1,
                     num_bytes: 1,
@@ -791,15 +840,12 @@ mod test {
         let config = SessionConfig::new().with_target_partitions(partition);
         let ctx = Arc::new(SessionContext::with_config(config));
 
-
         let schema = Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
             Field::new("gmv", DataType::UInt64, false),
         ]);
 
-
-        let left_plan = scan_empty(Some("left"), &schema, None)
-            .unwrap();
+        let left_plan = scan_empty(Some("left"), &schema, None).unwrap();
 
         let right_plan = scan_empty(Some("right"), &schema, None)
             .unwrap()
@@ -809,7 +855,7 @@ mod test {
         let sort_expr = Expr::Sort {
             expr: Box::new(col("id")),
             asc: false,
-            nulls_first: false
+            nulls_first: false,
         };
 
         let logical_plan = left_plan
@@ -831,6 +877,7 @@ mod test {
         let graph = ExecutionGraph::new("job", "session", plan).unwrap();
 
         println!("{:?}", graph);
+
         graph
     }
 

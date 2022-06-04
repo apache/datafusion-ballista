@@ -635,9 +635,16 @@ message OutputPartitionStats {
 
 
 message StageInputPartition {
+  uint32 stage_id = 1;
+  repeated TaskInputPartitions task_inputs = 2;
+}
+
+message TaskInputPartitions {
   uint32 partition = 1;
   repeated PartitionLocation partition_location = 2;
 }
+
+
 
 message ExecutionGraphStage {
   uint64 stage_id = 1;
