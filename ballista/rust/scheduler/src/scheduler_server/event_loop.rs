@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::future::Future;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -25,11 +24,8 @@ use crate::scheduler_server::event::SchedulerServerEvent;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventAction;
 
-use crate::state::backend::Keyspace;
-use ballista_core::serde::scheduler::ExecutorMetadata;
 use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan};
 
-use crate::state::execution_graph::Task;
 use crate::state::executor_manager::ExecutorReservation;
 // use crate::state::task_scheduler::TaskScheduler;
 use crate::state::SchedulerState;

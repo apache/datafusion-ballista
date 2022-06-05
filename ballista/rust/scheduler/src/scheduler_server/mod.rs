@@ -35,7 +35,7 @@ use log::error;
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SchedulerServerEvent};
 use crate::scheduler_server::event_loop::SchedulerServerEventAction;
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
-use crate::state::backend::{Keyspace, StateBackendClient};
+use crate::state::backend::StateBackendClient;
 use crate::state::SchedulerState;
 
 // include the generated protobuf source as a submodule
@@ -275,7 +275,6 @@ mod test {
     };
     use crate::scheduler_server::SchedulerServer;
     use crate::state::backend::standalone::StandaloneClient;
-    use crate::state::backend::Keyspace;
 
     use crate::state::executor_manager::ExecutorReservation;
     use crate::test_utils::SchedulerEventObserver;

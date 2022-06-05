@@ -41,30 +41,52 @@ use std::fmt::{Debug, Formatter};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use std::sync::Arc;
 
+#[derive(Clone, Debug)]
+pub struct StageOutput {
+    pub(crate) partition_locations: HashMap<usize, Vec<PartitionLocation>>,
+    pub(crate) complete: bool,
+}
+
+impl StageOutput {
+    pub fn new() -> Self {
+        Self {
+            partition_locations: HashMap::new(),
+            complete: false,
+        }
+    }
+
+    pub fn add_partition(&mut self, partition_location: PartitionLocation) {
+        if let Some(parts) = self
+            .partition_locations
+            .get_mut(&partition_location.partition_id.partition_id)
+        {
+            parts.push(partition_location)
+        } else {
+            self.partition_locations.insert(
+                partition_location.partition_id.partition_id,
+                vec![partition_location],
+            );
+        }
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.complete
+    }
+}
+
 /// A single stage in the ExecutionGraph
 #[derive(Clone)]
 pub struct ExecutionStage {
     /// Stage ID
     pub(crate) stage_id: usize,
     /// Total number of output partitions from this stage per task
-    pub(crate) output_partitions: Vec<usize>,
+    pub(crate) partitions: usize,
     /// Output partitioning for this stage.
     pub(crate) output_partitioning: Option<Partitioning>,
-    /// The number of output partitions from the previous stage for each input partition. In the case of a repartition
-    /// operation, the child stage may produce multiple partitions that need to be aggregated
-    /// in the parent stage.
-    /// For example, if the child stage has 10 partitions and does a hash repartition (i.e. for groupBy aggregation)
-    /// then `input_partition_count` would be vec![10; 10]. However if the child stage has only 1 partition
-    /// and does a hash repartition then  `input_partition_count` would be vec![10; 1]. This can happen
-    /// when the child stage partition count is determined by the number of underlying files it needs to scan,
-    /// in which case the overall queries desired partitioning can differ from the individual stage partitioning.
-    pub(crate) input_partition_count: Vec<usize>,
-    /// Execution Plan for this stage
+    /// Inputs created by child stages
+    pub(crate) inputs: HashMap<usize, StageOutput>,
+    // Execution plan for this stage
     pub(crate) plan: Arc<dyn ExecutionPlan>,
-    /// Locations of input partitions for this stage.
-    pub(crate) input_locations: HashMap<usize, HashMap<usize, Vec<PartitionLocation>>>,
-    /// Statistics for output partitions from this stage,
-    pub(crate) partitions_stats: HashMap<usize, Vec<PartitionStats>>,
     /// Status of each already scheduled task. If status is None, the partition has not yet been scheduled
     pub(crate) task_statuses: Vec<Option<task_status::Status>>,
     /// Stage ID of the stage that will take this stages outputs as inputs.
@@ -77,13 +99,26 @@ pub struct ExecutionStage {
 impl Debug for ExecutionStage {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent();
-        let running_tasks = self
+        let scheduled_tasks = self
             .task_statuses
             .iter()
             .filter(|t| t.is_some())
             .collect::<Vec<_>>()
             .len();
-        write!(f, "Stage[id={}, output_partitions={:?}, input_partition_count={:?}, resolved={}, scheduled_tasks={}, available_tasks={}]\n{}", self.stage_id, self.output_partitions, self.input_partition_count, self.resolved, running_tasks, self.available_tasks(), plan)
+
+        write!(
+            f,
+            "Stage[id={}, partitions={:?}, children={}, completed_tasks={}, resolved={}, scheduled_tasks={}, available_tasks={}]\nInputs{:?}\n\n{}",
+            self.stage_id,
+            self.partitions,
+            self.inputs.len(),
+            self.completed_tasks(),
+            self.resolved,
+            scheduled_tasks,
+            self.available_tasks(),
+            self.inputs,
+            plan
+        )
     }
 }
 
@@ -92,42 +127,25 @@ impl ExecutionStage {
         stage_id: usize,
         plan: Arc<dyn ExecutionPlan>,
         output_partitioning: Option<Partitioning>,
-        input_partition_count: Vec<usize>,
         output_link: Option<usize>,
         child_stages: Vec<usize>,
     ) -> Self {
-        let mut output_partitions = vec![];
         let num_tasks = plan.output_partitioning().partition_count();
 
-        for _ in 0..num_tasks {
-            output_partitions.push(
-                output_partitioning
-                    .as_ref()
-                    .map(|p| p.partition_count())
-                    .unwrap_or(1),
-            )
+        let resolved = if child_stages.len() == 0 { true } else { false };
+
+        let mut inputs: HashMap<usize, StageOutput> = HashMap::new();
+
+        for input_stage_id in &child_stages {
+            inputs.insert(*input_stage_id, StageOutput::new());
         }
 
-        let mut input_locations: HashMap<usize, HashMap<usize, Vec<PartitionLocation>>> =
-            HashMap::new();
-
-        for child_stage_id in child_stages {
-            input_locations.insert(child_stage_id, HashMap::new());
-        }
-
-        let resolved = if input_partition_count.len() == 0 {
-            true
-        } else {
-            false
-        };
         Self {
             stage_id,
-            output_partitions,
+            partitions: num_tasks,
             output_partitioning,
-            input_partition_count,
+            inputs,
             plan,
-            input_locations,
-            partitions_stats: HashMap::with_capacity(num_tasks),
             task_statuses: vec![None; num_tasks],
             output_link,
             resolved,
@@ -137,10 +155,26 @@ impl ExecutionStage {
     /// Returns true if all input partitions are present and we can resolve the stage plans
     /// UnresolvedShuffleExec operators to ShuffleReadExec
     pub fn resolvable(&self) -> bool {
-        self.input_locations.iter().all(|(_, stage_inputs)| {
-            stage_inputs.len() == self.input_partition_count.len()
-        })
-        // self.input_locations.len() == self.input_partition_count.len()
+        self.inputs.iter().all(|(_, outputs)| outputs.is_complete())
+    }
+
+    pub fn complete(&self) -> bool {
+        self.task_statuses
+            .iter()
+            .all(|status| matches!(status, Some(task_status::Status::Completed(_))))
+    }
+
+    pub fn completed_tasks(&self) -> usize {
+        self.task_statuses
+            .iter()
+            .filter(|status| matches!(status, Some(task_status::Status::Completed(_))))
+            .count()
+    }
+
+    pub fn complete_input(&mut self, stage_id: usize) {
+        if let Some(input) = self.inputs.get_mut(&stage_id) {
+            input.complete = true;
+        }
     }
 
     /// Returns true if the stage plan has all UnresolvedShuffleExec operators resolved to
@@ -164,14 +198,19 @@ impl ExecutionStage {
     /// Resolve any UnresolvedShuffleExec operators within this stage's plan
     pub fn resolve_shuffles(&mut self) -> Result<()> {
         println!("Resolving shuffles\n{:?}", self);
-        if self.input_partition_count.is_empty() || self.resolved {
+        if self.resolved {
             // If this stage has no input shuffles, then it is already resolved
             Ok(())
         } else {
+            let input_locations = self
+                .inputs
+                .iter()
+                .map(|(stage, outputs)| (*stage, outputs.partition_locations.clone()))
+                .collect();
             // Otherwise, rewrite the plan to replace UnresolvedShuffleExec with ShuffleReadExec
             let new_plan = crate::planner::remove_unresolved_shuffles(
                 self.plan.clone(),
-                &self.input_locations,
+                &input_locations,
             )?;
             self.plan = new_plan;
             self.resolved = true;
@@ -187,22 +226,18 @@ impl ExecutionStage {
 
     pub fn add_input_partitions(
         &mut self,
-        partitions: Vec<PartitionLocation>,
+        stage_id: usize,
+        _partition_id: usize,
+        locations: Vec<PartitionLocation>,
     ) -> Result<()> {
-        for partition in partitions {
-            let stage_id = partition.partition_id.stage_id;
-            let partition_id = partition.partition_id.partition_id;
-
-            if let Some(stage_inputs) = self.input_locations.get_mut(&stage_id) {
-                if let Some(parts) = stage_inputs.get_mut(&partition_id) {
-                    parts.push(partition)
-                } else {
-                    stage_inputs.insert(partition_id, vec![partition]);
-                }
-            } else {
-                return Err(BallistaError::Internal(format!("Error adding input partitions to stage {}, {} is not a valid child stage ID", self.stage_id, stage_id)));
+        if let Some(stage_inputs) = self.inputs.get_mut(&stage_id) {
+            for partition in locations {
+                stage_inputs.add_partition(partition);
             }
+        } else {
+            return Err(BallistaError::Internal(format!("Error adding input partitions to stage {}, {} is not a valid child stage ID", self.stage_id, stage_id)));
         }
+
         Ok(())
     }
 }
@@ -241,10 +276,6 @@ impl ExecutionStageBuilder {
             let partitioning = stage.shuffle_output_partitioning().cloned();
             let stage_id = stage.stage_id();
             let output_link = self.output_links.remove(&stage_id);
-            let input_partition_count = self
-                .input_partition_counts
-                .remove(&stage_id)
-                .unwrap_or(vec![0; 0]);
 
             let child_stages =
                 self.stage_dependencies.remove(&stage_id).unwrap_or(vec![]);
@@ -255,7 +286,6 @@ impl ExecutionStageBuilder {
                     stage_id,
                     stage,
                     partitioning,
-                    input_partition_count,
                     output_link,
                     child_stages,
                 ),
@@ -275,17 +305,19 @@ impl ExecutionPlanVisitor for ExecutionStageBuilder {
     ) -> std::result::Result<bool, Self::Error> {
         if let Some(shuffle_write) = plan.as_any().downcast_ref::<ShuffleWriterExec>() {
             self.current_stage_id = shuffle_write.stage_id();
+
+            let partitions = shuffle_write.output_partitioning().partition_count();
+            let input_counts = shuffle_write
+                .shuffle_output_partitioning()
+                .map(|p| p.partition_count())
+                .unwrap_or(1);
+            self.input_partition_counts
+                .insert(shuffle_write.stage_id(), vec![input_counts; partitions]);
         } else if let Some(unresolved_shuffle) =
             plan.as_any().downcast_ref::<UnresolvedShuffleExec>()
         {
-            let num_input_tasks = unresolved_shuffle.input_partition_count;
-            let partitions_per_task = unresolved_shuffle.output_partition_count;
             self.output_links
                 .insert(unresolved_shuffle.stage_id, self.current_stage_id);
-            self.input_partition_counts.insert(
-                self.current_stage_id,
-                vec![partitions_per_task; num_input_tasks],
-            );
 
             if let Some(deps) = self.stage_dependencies.get_mut(&self.current_stage_id) {
                 deps.push(unresolved_shuffle.stage_id)
@@ -308,13 +340,15 @@ pub struct Task {
 
 impl Debug for Task {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent();
         write!(
             f,
-            "Task[session_id: {}, job: {}, stage: {}, partition: {}]",
+            "Task[session_id: {}, job: {}, stage: {}, partition: {}]\n{}",
             self.session_id,
             self.partition.job_id,
             self.partition.stage_id,
-            self.partition.partition_id
+            self.partition.partition_id,
+            plan
         )
     }
 }
@@ -403,6 +437,7 @@ impl ExecutionGraph {
                 let partition = partition_id as usize;
                 if let Some(stage) = self.stages.get_mut(&stage_id) {
                     stage.update_task_status(partition, task_status.clone());
+                    let stage_complete = stage.complete();
 
                     // TODO Should be able to reschedule this task.
                     if let task_status::Status::Failed(failed_task) = task_status {
@@ -428,7 +463,13 @@ impl ExecutionGraph {
 
                         if let Some(link) = stage.output_link {
                             if let Some(linked_stage) = self.stages.get_mut(&link) {
-                                linked_stage.add_input_partitions(locations);
+                                linked_stage.add_input_partitions(
+                                    stage_id, partition, locations,
+                                )?;
+
+                                if stage_complete {
+                                    linked_stage.complete_input(stage_id);
+                                }
 
                                 // If all input partitions are ready, we can resolve any UnresolvedShuffleExec in the stage plan
                                 if linked_stage.resolvable() {
@@ -641,7 +682,7 @@ mod test {
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion::test_util::scan_empty;
-    use rand::{thread_rng, Rng};
+
     use std::sync::Arc;
 
     #[tokio::test]
@@ -701,51 +742,7 @@ mod test {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn test_partition_counts() -> Result<()> {
-        let mut agg_graph = test_aggregation_plan(4).await;
-
-        assert_eq!(agg_graph.output_partitions, 4);
-
-        let stage_1_out = agg_graph
-            .stages
-            .get(&1)
-            .cloned()
-            .map(|first_stage| first_stage.output_partitions)
-            .unwrap();
-        assert_eq!(stage_1_out, vec![4]);
-
-        let stage_1_in = agg_graph
-            .stages
-            .get(&2)
-            .cloned()
-            .map(|stage| stage.input_partition_count)
-            .unwrap();
-        assert_eq!(stage_1_in, vec![4]);
-
-        let stage_2_children = agg_graph
-            .stages
-            .get(&2)
-            .cloned()
-            .unwrap()
-            .input_locations
-            .len();
-
-        assert_eq!(stage_2_children, 1);
-
-        let stage_2_out = agg_graph
-            .stages
-            .get(&2)
-            .cloned()
-            .map(|first_stage| first_stage.output_partitions)
-            .unwrap();
-        assert_eq!(stage_2_out, vec![1, 1, 1, 1]);
-
-        Ok(())
-    }
-
     fn drain_tasks(graph: &mut ExecutionGraph) -> Result<()> {
-        let mut rng = thread_rng();
         let executor = test_executor();
         let job_id = graph.job_id().to_owned();
         while let Some(task) = graph.pop_next_task("executor-id")? {

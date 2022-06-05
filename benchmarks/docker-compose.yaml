@@ -25,7 +25,7 @@ services:
     image: ballista:0.7.0
     command: "/scheduler --config-backend etcd --etcd-urls etcd:2379 --bind-host 0.0.0.0 --bind-port 50050"
     environment:
-      - RUST_LOG=ballista=debug,info
+      - RUST_LOG=info
     volumes:
       - ./data:/data
     depends_on:

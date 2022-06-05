@@ -622,41 +622,27 @@ enum JoinSide{
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Ballista Scheduling
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-
-message InputPartition {
-  uint32 partition = 1;
-  repeated ShuffleWritePartition shuffle_write_partition = 2;
-}
-
-message OutputPartitionStats {
-  uint32 partition = 1;
-  repeated PartitionStats partition_stats = 2;
-}
-
-
-message StageInputPartition {
-  uint32 stage_id = 1;
-  repeated TaskInputPartitions task_inputs = 2;
-}
-
 message TaskInputPartitions {
   uint32 partition = 1;
   repeated PartitionLocation partition_location = 2;
 }
 
+message GraphStageInput {
+  uint32 stage_id = 1;
+  repeated TaskInputPartitions partition_locations = 2;
+  bool complete = 3;
+}
 
 
 message ExecutionGraphStage {
   uint64 stage_id = 1;
-  repeated uint64 output_partitions = 2;
+  uint32 partitions = 2;
   PhysicalHashRepartition output_partitioning = 3;
-  repeated uint64 input_partition_count = 4;
+  repeated  GraphStageInput inputs = 4;
   bytes plan = 5;
-  repeated StageInputPartition input_locations = 6;
-  repeated OutputPartitionStats partition_stats = 7;
-  repeated TaskStatus task_statuses = 8;
-  uint32 output_link = 9;
-  bool resolved = 10;
+  repeated TaskStatus task_statuses = 6;
+  uint32 output_link = 7;
+  bool resolved = 8;
 }
 
 message ExecutionGraph {

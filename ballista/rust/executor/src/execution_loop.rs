@@ -22,7 +22,7 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::{sync::Arc, time::Duration};
 
 use datafusion::physical_plan::ExecutionPlan;
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use tonic::transport::Channel;
 
 use ballista_core::serde::protobuf::{
@@ -56,7 +56,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         std::sync::mpsc::channel::<TaskStatus>();
 
     loop {
-        debug!("Starting registration loop with scheduler");
+        trace!("Starting registration loop with scheduler");
 
         let task_status: Vec<TaskStatus> =
             sample_tasks_status(&mut task_status_receiver).await;

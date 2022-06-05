@@ -18,7 +18,6 @@
 use std::any::type_name;
 use std::future::Future;
 
-use log::error;
 use std::sync::Arc;
 
 use prost::Message;
@@ -29,7 +28,7 @@ use crate::scheduler_server::SessionBuilder;
 
 use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan, BallistaCodec};
 
-use crate::state::backend::{Keyspace, Lock, StateBackendClient};
+use crate::state::backend::{Lock, StateBackendClient};
 
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::session_manager::SessionManager;
