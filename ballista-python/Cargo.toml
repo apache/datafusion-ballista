@@ -27,25 +27,25 @@ license = "Apache-2.0"
 edition = "2021"
 rust-version = "1.57"
 
-[dependencies]
-tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "sync"] }
-rand = "0.7"
-pyo3 = { version = "~0.16.5", features = ["extension-module", "abi3", "abi3-py37"] }
-datafusion = {git="https://github.com/apache/arrow-datafusion", rev = "585bc3a629b92ea7a86ebfe8bf762dbef4155710", features=["pyarrow"]}
-datafusion-expr = {git="https://github.com/apache/arrow-datafusion", rev = "585bc3a629b92ea7a86ebfe8bf762dbef4155710"}
-datafusion-common = {git="https://github.com/apache/arrow-datafusion", rev = "585bc3a629b92ea7a86ebfe8bf762dbef4155710"}
-uuid = { version = "0.8", features = ["v4"] }
-
-mimalloc = { version = "*", default-features = false }
-ballista = { git = "https://github.com/apache/arrow-ballista", rev = "9e78b8ecd55cc3e9d46387c87098c4e6625294eb"}
-
-[lib]
-name = "ballista_python"
-crate-type = ["cdylib", "rlib"]
-
 [package.metadata.maturin]
 name = "ballista._internal"
 
+[dependencies]
+ballista = { git = "https://github.com/apache/arrow-ballista", rev = "9e78b8ecd55cc3e9d46387c87098c4e6625294eb" }
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "585bc3a629b92ea7a86ebfe8bf762dbef4155710", features = ["pyarrow"] }
+datafusion-common = { git = "https://github.com/apache/arrow-datafusion", rev = "585bc3a629b92ea7a86ebfe8bf762dbef4155710" }
+datafusion-expr = { git = "https://github.com/apache/arrow-datafusion", rev = "585bc3a629b92ea7a86ebfe8bf762dbef4155710" }
+
+mimalloc = { version = "*", default-features = false }
+pyo3 = { version = "~0.16.5", features = ["extension-module", "abi3", "abi3-py37"] }
+rand = "0.7"
+tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "sync"] }
+uuid = { version = "0.8", features = ["v4"] }
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "ballista_python"
+
 [profile.release]
-lto = true
 codegen-units = 1
+lto = true
