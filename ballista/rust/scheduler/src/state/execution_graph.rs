@@ -96,12 +96,7 @@ pub struct ExecutionStage {
 impl Debug for ExecutionStage {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent();
-        let scheduled_tasks = self
-            .task_statuses
-            .iter()
-            .filter(|t| t.is_some())
-            .collect::<Vec<_>>()
-            .len();
+        let scheduled_tasks = self.task_statuses.iter().filter(|t| t.is_some()).count();
 
         write!(
             f,
@@ -129,7 +124,7 @@ impl ExecutionStage {
     ) -> Self {
         let num_tasks = plan.output_partitioning().partition_count();
 
-        let resolved = if child_stages.len() == 0 { true } else { false };
+        let resolved = child_stages.is_empty();
 
         let mut inputs: HashMap<usize, StageOutput> = HashMap::new();
 
@@ -182,11 +177,7 @@ impl ExecutionStage {
 
     pub fn available_tasks(&self) -> usize {
         if self.resolved {
-            self.task_statuses
-                .iter()
-                .filter(|s| s.is_none())
-                .collect::<Vec<&Option<_>>>()
-                .len()
+            self.task_statuses.iter().filter(|s| s.is_none()).count()
         } else {
             0
         }
@@ -272,8 +263,10 @@ impl ExecutionStageBuilder {
             let stage_id = stage.stage_id();
             let output_link = self.output_links.remove(&stage_id);
 
-            let child_stages =
-                self.stage_dependencies.remove(&stage_id).unwrap_or(vec![]);
+            let child_stages = self
+                .stage_dependencies
+                .remove(&stage_id)
+                .unwrap_or_default();
 
             execution_stages.insert(
                 stage_id,
@@ -412,7 +405,7 @@ impl ExecutionGraph {
                 status: Some(task_status),
             } = status
             {
-                if &job_id != self.job_id() {
+                if job_id != self.job_id() {
                     return Err(BallistaError::Internal(format!(
                         "Error updating job {}: Invalid task status job ID {}",
                         self.job_id(),

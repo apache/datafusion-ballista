@@ -146,7 +146,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
                 let mut graph = self.get_execution_graph(&job_id).await?;
 
-                graph.update_task_status(&executor, statuses)?;
+                graph.update_task_status(executor, statuses)?;
 
                 if graph.complete() {
                     // If this ExecutionGraph is complete, finalize it
@@ -680,7 +680,7 @@ fn find_next_task(
     executor_id: &str,
     graphs: &mut HashMap<String, ExecutionGraph>,
 ) -> Result<Option<(String, Task)>> {
-    for (_, graph) in graphs {
+    for graph in graphs.values_mut() {
         if let Ok(Some(task)) = graph.pop_next_task(executor_id) {
             return Ok(Some((executor_id.to_owned(), task)));
         }

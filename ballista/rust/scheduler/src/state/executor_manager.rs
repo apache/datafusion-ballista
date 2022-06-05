@@ -125,7 +125,7 @@ impl ExecutorManager {
                 let new_data = encode_protobuf(&proto)?;
                 txn_ops.push((Keyspace::Slots, executor_id, new_data));
 
-                if desired <= 0 {
+                if desired == 0 {
                     break;
                 }
             }
@@ -400,18 +400,15 @@ impl ExecutorHeartbeatListener {
         let heartbeats = self.executors_heartbeat.clone();
         tokio::task::spawn(async move {
             while let Some(event) = watch.next().await {
-                match event {
-                    WatchEvent::Put(_, value) => {
-                        if let Ok(data) =
-                            decode_protobuf::<protobuf::ExecutorHeartbeat>(&value)
-                        {
-                            let executor_id = data.executor_id.clone();
-                            let mut heartbeats = heartbeats.write();
+                if let WatchEvent::Put(_, value) = event {
+                    if let Ok(data) =
+                        decode_protobuf::<protobuf::ExecutorHeartbeat>(&value)
+                    {
+                        let executor_id = data.executor_id.clone();
+                        let mut heartbeats = heartbeats.write();
 
-                            heartbeats.insert(executor_id, data);
-                        }
+                        heartbeats.insert(executor_id, data);
                     }
-                    _ => (),
                 }
             }
         });

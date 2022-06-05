@@ -61,7 +61,7 @@ impl SessionManager {
             .put(Keyspace::Sessions, session_id.to_owned(), value)
             .await?;
 
-        Ok(create_datafusion_context(&config, self.session_builder))
+        Ok(create_datafusion_context(config, self.session_builder))
     }
 
     pub async fn create_session(

@@ -88,7 +88,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         };
 
         // If any reserved slots remain, return them to the pool
-        if free_list.len() > 0 {
+        if !free_list.is_empty() {
             self.state
                 .executor_manager
                 .cancel_reservations(free_list)
