@@ -18,24 +18,20 @@
 //! This crate contains code generated from the Ballista Protocol Buffer Definition as well
 //! as convenience code for interacting with the generated code.
 
+use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
+use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::logical_plan::{FunctionRegistry, JoinConstraint, JoinType, Operator};
+use datafusion::physical_plan::join_utils::JoinSide;
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion_proto::logical_plan::{
+    AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
+};
 use prost::bytes::BufMut;
+use prost::Message;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::{convert::TryInto, io::Cursor};
-
-use datafusion::logical_plan::{
-    FunctionRegistry, JoinConstraint, JoinType, LogicalPlan, Operator,
-};
-
-use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
-
-use datafusion::execution::runtime_env::RuntimeEnv;
-use datafusion::logical_plan::plan::Extension;
-use datafusion::physical_plan::join_utils::JoinSide;
-use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::SessionContext;
-use prost::Message;
 
 // include the generated protobuf source as a submodule
 #[allow(clippy::all)]
@@ -57,71 +53,6 @@ pub fn decode_protobuf(bytes: &[u8]) -> Result<BallistaAction, BallistaError> {
 
 pub(crate) fn proto_error<S: Into<String>>(message: S) -> BallistaError {
     BallistaError::General(message.into())
-}
-
-pub trait AsLogicalPlan: Debug + Send + Sync + Clone {
-    fn try_decode(buf: &[u8]) -> Result<Self, BallistaError>
-    where
-        Self: Sized;
-
-    fn try_encode<B>(&self, buf: &mut B) -> Result<(), BallistaError>
-    where
-        B: BufMut,
-        Self: Sized;
-
-    fn try_into_logical_plan(
-        &self,
-        ctx: &SessionContext,
-        extension_codec: &dyn LogicalExtensionCodec,
-    ) -> Result<LogicalPlan, BallistaError>;
-
-    fn try_from_logical_plan(
-        plan: &LogicalPlan,
-        extension_codec: &dyn LogicalExtensionCodec,
-    ) -> Result<Self, BallistaError>
-    where
-        Self: Sized;
-}
-
-pub trait LogicalExtensionCodec: Debug + Send + Sync {
-    fn try_decode(
-        &self,
-        buf: &[u8],
-        inputs: &[LogicalPlan],
-        ctx: &SessionContext,
-    ) -> Result<Extension, BallistaError>;
-
-    fn try_encode(
-        &self,
-        node: &Extension,
-        buf: &mut Vec<u8>,
-    ) -> Result<(), BallistaError>;
-}
-
-#[derive(Debug, Clone)]
-pub struct DefaultLogicalExtensionCodec {}
-
-impl LogicalExtensionCodec for DefaultLogicalExtensionCodec {
-    fn try_decode(
-        &self,
-        _buf: &[u8],
-        _inputs: &[LogicalPlan],
-        _ctx: &SessionContext,
-    ) -> Result<Extension, BallistaError> {
-        Err(BallistaError::NotImplemented(
-            "LogicalExtensionCodec is not provided".to_string(),
-        ))
-    }
-
-    fn try_encode(
-        &self,
-        _node: &Extension,
-        _buf: &mut Vec<u8>,
-    ) -> Result<(), BallistaError> {
-        Err(BallistaError::NotImplemented(
-            "LogicalExtensionCodec is not provided".to_string(),
-        ))
-    }
 }
 
 pub trait AsExecutionPlan: Debug + Send + Sync + Clone {
@@ -412,10 +343,11 @@ mod tests {
     }
 
     use crate::error::BallistaError;
-    use crate::serde::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+    use crate::serde::protobuf::PhysicalPlanNode;
     use crate::serde::{
         AsExecutionPlan, AsLogicalPlan, LogicalExtensionCodec, PhysicalExtensionCodec,
     };
+    use datafusion_proto::protobuf::LogicalPlanNode;
     use proto::{TopKExecProto, TopKPlanProto};
 
     struct TopKPlanNode {
@@ -620,10 +552,10 @@ mod tests {
             buf: &[u8],
             inputs: &[LogicalPlan],
             ctx: &SessionContext,
-        ) -> Result<Extension, BallistaError> {
+        ) -> Result<Extension, DataFusionError> {
             if let Some((input, _)) = inputs.split_first() {
                 let proto = TopKPlanProto::decode(buf).map_err(|e| {
-                    BallistaError::Internal(format!(
+                    DataFusionError::Internal(format!(
                         "failed to decode logical plan: {:?}",
                         e
                     ))
@@ -640,10 +572,10 @@ mod tests {
                         node: Arc::new(node),
                     })
                 } else {
-                    Err(BallistaError::from("invalid plan, no expr".to_string()))
+                    Err(DataFusionError::Plan("invalid plan, no expr".to_string()))
                 }
             } else {
-                Err(BallistaError::from("invalid plan, no input".to_string()))
+                Err(DataFusionError::Plan("invalid plan, no input".to_string()))
             }
         }
 
@@ -651,7 +583,7 @@ mod tests {
             &self,
             node: &Extension,
             buf: &mut Vec<u8>,
-        ) -> Result<(), BallistaError> {
+        ) -> Result<(), DataFusionError> {
             if let Some(exec) = node.node.as_any().downcast_ref::<TopKPlanNode>() {
                 let proto = TopKPlanProto {
                     k: exec.k as u64,
@@ -659,7 +591,7 @@ mod tests {
                 };
 
                 proto.encode(buf).map_err(|e| {
-                    BallistaError::Internal(format!(
+                    DataFusionError::Internal(format!(
                         "failed to encode logical plan: {:?}",
                         e
                     ))
@@ -667,7 +599,7 @@ mod tests {
 
                 Ok(())
             } else {
-                Err(BallistaError::from("unsupported plan type".to_string()))
+                Err(DataFusionError::Plan("unsupported plan type".to_string()))
             }
         }
     }

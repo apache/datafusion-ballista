@@ -35,8 +35,9 @@ use crate::executor::Executor;
 use ballista_core::error::BallistaError;
 use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
 use ballista_core::serde::scheduler::ExecutorSpecification;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan, BallistaCodec};
+use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use datafusion::execution::context::TaskContext;
+use datafusion_proto::logical_plan::AsLogicalPlan;
 
 pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     mut scheduler: SchedulerGrpcClient<Channel>,

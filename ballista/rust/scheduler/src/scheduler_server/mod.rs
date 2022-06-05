@@ -22,9 +22,10 @@ use ballista_core::config::TaskSchedulingPolicy;
 use ballista_core::error::Result;
 use ballista_core::event_loop::{EventAction, EventLoop};
 use ballista_core::serde::protobuf::TaskStatus;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan, BallistaCodec};
+use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use datafusion::execution::context::{default_session_builder, SessionState};
 use datafusion::prelude::SessionConfig;
+use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::error;
 
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SchedulerServerEvent};
@@ -251,7 +252,7 @@ mod test {
     use ballista_core::event_loop::EventAction;
 
     use ballista_core::serde::protobuf::{
-        task_status, CompletedTask, LogicalPlanNode, PartitionId, PhysicalPlanNode,
+        job_status, task_status, CompletedTask, PartitionId, PhysicalPlanNode,
         ShuffleWritePartition, TaskStatus,
     };
     use ballista_core::serde::scheduler::{
@@ -263,6 +264,7 @@ mod test {
     use datafusion::logical_plan::{col, sum, LogicalPlan};
 
     use datafusion::test_util::scan_empty;
+    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use crate::scheduler_server::event::{
         QueryStageSchedulerEvent, SchedulerServerEvent,

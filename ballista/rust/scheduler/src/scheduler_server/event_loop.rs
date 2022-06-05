@@ -24,10 +24,10 @@ use crate::scheduler_server::event::SchedulerServerEvent;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventAction;
 
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan};
+use ballista_core::serde::AsExecutionPlan;
+use datafusion_proto::logical_plan::AsLogicalPlan;
 
 use crate::state::executor_manager::ExecutorReservation;
-// use crate::state::task_scheduler::TaskScheduler;
 use crate::state::SchedulerState;
 
 pub(crate) struct SchedulerServerEventAction<

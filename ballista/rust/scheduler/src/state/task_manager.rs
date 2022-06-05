@@ -32,9 +32,10 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
 use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan, BallistaCodec};
+use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion::prelude::SessionContext;
+use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::{debug, info, warn};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
@@ -107,9 +108,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// 2. A list of reservations that can now be offered.
     ///
     /// When a task is updated, there may or may not be more tasks pending for its job. If there are more
-    /// tasks pending then we want to reschedule one of those tasks on the same task slot. In the former case
-    /// we will "move" that task slot to the ExecutorReservation where it can be dealt with by the scheduler appropriately, either
-    /// scheduling a task from another job on it or simply returning it to the pool of available executors.
+    /// tasks pending then we want to reschedule one of those tasks on the same task slot. In that case
+    /// we will set the `job_id` on the `ExecutorReservation` so the scheduler attempts to assign tasks from
+    /// the same job. Note that when the scheduler attempts to fill the reservation, there is no guarantee
+    /// that the available task is still available.
     pub(crate) async fn update_task_statuses(
         &self,
         executor: &ExecutorMetadata,
@@ -182,6 +184,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// to be scheduled. When the reservation is filled, the underlying stage task in the
     /// `ExecutionGraph` will be set to a status of Running, so if the task is not subsequently launched
     /// we must ensure that the task status is reset.
+    ///
+    /// Here we use the following  algorithm:
+    ///
+    /// 1. For each reservation with a `job_id` assigned try and assign another task from the same job.
+    /// 2. If a reservation either does not have a `job_id` or there are no available tasks for its `job_id`,
+    ///    add it to a list of "free" reservations.
+    /// 3. For each free reservation, try to assign a task from one of the jobs we have already considered.
+    /// 4. If we cannot find a task, then looks for a task among all active jobs
+    /// 5. If we cannot find a task in all active jobs, then add the reservation to the list of unassigned reservations
+    ///
+    /// Finally, we return two lists:
+    /// 1. A list of assignments which is a (Executor ID, Task) tuple
+    /// 2. A list of unassigned reservations which we could not find tasks for
     pub async fn fill_reservations(
         &self,
         reservations: &[ExecutorReservation],
@@ -368,6 +383,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(())
     }
 
+    /// In unit tests, we do not have actual executors running, so it simplifies things to just noop.
     #[cfg(test)]
     pub async fn launch_task(
         &self,
@@ -410,7 +426,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(task_definition)
     }
 
-    // Return a set of active job IDs.
+    ///  Return a set of active job IDs. This will return all keys
+    /// in the `ActiveJobs` keyspace stripped of any prefixes used for
+    /// the storage layer (i.e. just the Job IDs).
     async fn get_active_jobs(&self) -> Result<HashSet<String>> {
         debug!("Scanning for active job IDs");
         self.state.scan_keys(Keyspace::ActiveJobs).await
@@ -429,6 +447,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .await
     }
 
+    /// Get the `ExecutionGraph` for the given job ID. This will search fist in the `ActiveJobs`
+    /// keyspace and then, if it doesn't find anything, search the `CompletedJobs` keyspace.
     pub(crate) async fn get_execution_graph(
         &self,
         job_id: &str,
@@ -655,6 +675,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 }
 
+/// Find the next available task in a set of `ExecutionGraph`s
 fn find_next_task(
     executor_id: &str,
     graphs: &mut HashMap<String, ExecutionGraph>,

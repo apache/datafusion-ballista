@@ -30,15 +30,14 @@ use tower::Service;
 use ballista_core::BALLISTA_VERSION;
 use ballista_core::{
     print_version,
-    serde::protobuf::{
-        scheduler_grpc_server::SchedulerGrpcServer, LogicalPlanNode, PhysicalPlanNode,
-    },
+    serde::protobuf::{scheduler_grpc_server::SchedulerGrpcServer, PhysicalPlanNode},
 };
 use ballista_scheduler::api::{get_routes, EitherBody, Error};
 #[cfg(feature = "etcd")]
 use ballista_scheduler::state::backend::etcd::EtcdClient;
 #[cfg(feature = "sled")]
 use ballista_scheduler::state::backend::standalone::StandaloneClient;
+use datafusion_proto::protobuf::LogicalPlanNode;
 
 use ballista_scheduler::scheduler_server::SchedulerServer;
 use ballista_scheduler::state::backend::{StateBackend, StateBackendClient};
