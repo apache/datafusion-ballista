@@ -48,7 +48,6 @@ use tonic::{Request, Response, Status};
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SchedulerServerEvent};
 use crate::scheduler_server::SchedulerServer;
 use crate::state::executor_manager::ExecutorReservation;
-// use crate::state::task_scheduler::TaskScheduler;
 
 #[tonic::async_trait]
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
