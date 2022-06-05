@@ -17,9 +17,7 @@
 
 use crate::planner::DistributedPlanner;
 use ballista_core::error::{BallistaError, Result};
-use ballista_core::execution_plans::{
-    ShuffleReaderExec, ShuffleWriterExec, UnresolvedShuffleExec,
-};
+use ballista_core::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
 
 use ballista_core::serde::protobuf::{
     self, CompletedJob, JobStatus, QueuedJob, TaskStatus,
@@ -30,10 +28,9 @@ use ballista_core::serde::scheduler::{
     ExecutorMetadata, PartitionId, PartitionLocation, PartitionStats,
 };
 use datafusion::physical_plan::{
-    accept, with_new_children_if_necessary, ExecutionPlan, ExecutionPlanVisitor,
-    Partitioning,
+    accept, ExecutionPlan, ExecutionPlanVisitor, Partitioning,
 };
-use log::{debug, info};
+use log::debug;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
@@ -245,7 +242,6 @@ impl ExecutionStage {
 struct ExecutionStageBuilder {
     /// Stage ID which is currently being visited
     current_stage_id: usize,
-    input_partition_counts: HashMap<usize, Vec<usize>>,
     stage_dependencies: HashMap<usize, Vec<usize>>,
     /// Map from Stage ID -> output link
     output_links: HashMap<usize, usize>,
@@ -255,7 +251,6 @@ impl ExecutionStageBuilder {
     pub fn new() -> Self {
         Self {
             current_stage_id: 0,
-            input_partition_counts: HashMap::new(),
             stage_dependencies: HashMap::new(),
             output_links: HashMap::new(),
         }
@@ -305,14 +300,6 @@ impl ExecutionPlanVisitor for ExecutionStageBuilder {
     ) -> std::result::Result<bool, Self::Error> {
         if let Some(shuffle_write) = plan.as_any().downcast_ref::<ShuffleWriterExec>() {
             self.current_stage_id = shuffle_write.stage_id();
-
-            let partitions = shuffle_write.output_partitioning().partition_count();
-            let input_counts = shuffle_write
-                .shuffle_output_partitioning()
-                .map(|p| p.partition_count())
-                .unwrap_or(1);
-            self.input_partition_counts
-                .insert(shuffle_write.stage_id(), vec![input_counts; partitions]);
         } else if let Some(unresolved_shuffle) =
             plan.as_any().downcast_ref::<UnresolvedShuffleExec>()
         {
@@ -496,13 +483,10 @@ impl ExecutionGraph {
     }
 
     pub fn available_tasks(&self) -> usize {
-        let mut available = 0;
-
-        for (_, stage) in &self.stages {
-            available += stage.available_tasks();
-        }
-
-        available
+        self.stages
+            .iter()
+            .map(|(_, stage)| stage.available_tasks())
+            .sum()
     }
 
     /// Get next task that can be assigned to the given executor.
@@ -576,7 +560,7 @@ impl ExecutionGraph {
     /// Reset the status for the given task. This should be called is a task failed to
     /// launch and it needs to be returned to the set of available tasks and be
     /// re-scheduled.
-    pub fn reset_task_status(&mut self, task: Task, _status: task_status::Status) {
+    pub fn reset_task_status(&mut self, task: Task) {
         let stage_id = task.partition.stage_id;
         let partition = task.partition.partition_id;
 
@@ -626,47 +610,6 @@ fn partition_to_location(
             path: shuffle.path,
         })
         .collect()
-}
-
-fn remove_unresolved_shuffles(
-    plan: Arc<dyn ExecutionPlan>,
-    input_locations: &HashMap<usize, Vec<PartitionLocation>>,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    let mut new_children: Vec<Arc<dyn ExecutionPlan>> = vec![];
-    for child in plan.children() {
-        if let Some(unresolved_shuffle) =
-            child.as_any().downcast_ref::<UnresolvedShuffleExec>()
-        {
-            let mut relevant_locations = vec![];
-
-            for i in 0..unresolved_shuffle.output_partition_count {
-                if let Some(x) = input_locations.get(&i) {
-                    relevant_locations.push(x.to_owned());
-                } else {
-                    relevant_locations.push(vec![]);
-                }
-            }
-            info!(
-                "Creating shuffle reader: {}",
-                relevant_locations
-                    .iter()
-                    .map(|c| c
-                        .iter()
-                        .map(|l| l.path.clone())
-                        .collect::<Vec<_>>()
-                        .join(", "))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            );
-            new_children.push(Arc::new(ShuffleReaderExec::try_new(
-                relevant_locations,
-                unresolved_shuffle.schema().clone(),
-            )?))
-        } else {
-            new_children.push(remove_unresolved_shuffles(child, &input_locations)?);
-        }
-    }
-    Ok(with_new_children_if_necessary(plan, new_children)?)
 }
 
 #[cfg(test)]

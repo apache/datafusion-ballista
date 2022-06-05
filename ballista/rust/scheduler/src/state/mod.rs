@@ -81,8 +81,7 @@ pub(super) struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExec
     pub executor_manager: ExecutorManager,
     pub task_manager: TaskManager<T, U>,
     pub session_manager: SessionManager,
-    codec: BallistaCodec<T, U>,
-    config_client: Arc<dyn StateBackendClient>,
+    _codec: BallistaCodec<T, U>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T, U> {
@@ -99,9 +98,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 session_builder,
                 codec.clone(),
             ),
-            session_manager: SessionManager::new(config_client.clone(), session_builder),
-            codec,
-            config_client,
+            session_manager: SessionManager::new(config_client, session_builder),
+            _codec: codec,
         }
     }
 
@@ -110,7 +108,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     }
 
     pub fn get_codec(&self) -> &BallistaCodec<T, U> {
-        &self.codec
+        &self._codec
     }
 }
 

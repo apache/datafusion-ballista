@@ -27,7 +27,7 @@ use std::time::Instant;
 use etcd_client::{
     GetOptions, LockOptions, LockResponse, Txn, TxnOp, WatchOptions, WatchStream, Watcher,
 };
-use futures::{FutureExt, Stream, StreamExt};
+use futures::{Stream, StreamExt};
 use log::{debug, error, warn};
 
 use crate::state::backend::{Keyspace, Lock, StateBackendClient, Watch, WatchEvent};

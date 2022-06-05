@@ -15,8 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::collections::HashMap;
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -26,13 +24,7 @@ use ballista_core::error::{BallistaError, Result};
 
 use ballista_core::event_loop::{EventAction, EventSender};
 
-use ballista_core::serde::protobuf::{
-    job_status, task_status, CompletedJob, CompletedTask, FailedJob, FailedTask,
-    JobStatus, RunningJob, TaskStatus,
-};
-use ballista_core::serde::scheduler::ExecutorMetadata;
-use ballista_core::serde::{protobuf, AsExecutionPlan, AsLogicalPlan};
-use datafusion::physical_plan::ExecutionPlan;
+use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan};
 
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SchedulerServerEvent};
 
@@ -57,30 +49,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
             event_sender,
         }
     }
-
-    async fn submit_job(
-        &self,
-        job_id: &str,
-        session_id: &str,
-        plan: Arc<dyn ExecutionPlan>,
-    ) -> Result<()> {
-        self.state
-            .task_manager
-            .submit_job(job_id, session_id, plan)
-            .await
-    }
 }
 
 #[async_trait]
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     EventAction<QueryStageSchedulerEvent> for QueryStageScheduler<T, U>
 {
-    // TODO
     fn on_start(&self) {
         info!("Starting QueryStageScheduler");
     }
 
-    // TODO
     fn on_stop(&self) {
         info!("Stopping QueryStageScheduler")
     }
@@ -142,67 +120,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         Ok(None)
     }
 
-    // TODO
     fn on_error(&self, error: BallistaError) {
         error!("Error received by QueryStageScheduler: {:?}", error);
-    }
-}
-
-fn get_job_status_from_tasks(
-    tasks: &[Arc<TaskStatus>],
-    executors: &HashMap<String, ExecutorMetadata>,
-) -> JobStatus {
-    let mut job_status = tasks
-        .iter()
-        .map(|task| match &task.status {
-            Some(task_status::Status::Completed(CompletedTask {
-                executor_id,
-                partitions,
-            })) => Ok((task, executor_id, partitions)),
-            _ => Err(BallistaError::General("Task not completed".to_string())),
-        })
-        .collect::<Result<Vec<_>>>()
-        .ok()
-        .map(|info| {
-            let mut partition_location = vec![];
-            for (status, executor_id, partitions) in info {
-                let input_partition_id = status.task_id.as_ref().unwrap(); // TODO unwrap
-                let executor_meta = executors.get(executor_id).map(|e| e.clone().into());
-                for shuffle_write_partition in partitions {
-                    let shuffle_input_partition_id = Some(protobuf::PartitionId {
-                        job_id: input_partition_id.job_id.clone(),
-                        stage_id: input_partition_id.stage_id,
-                        partition_id: input_partition_id.partition_id,
-                    });
-                    partition_location.push(protobuf::PartitionLocation {
-                        partition_id: shuffle_input_partition_id.clone(),
-                        executor_meta: executor_meta.clone(),
-                        partition_stats: Some(protobuf::PartitionStats {
-                            num_batches: shuffle_write_partition.num_batches as i64,
-                            num_rows: shuffle_write_partition.num_rows as i64,
-                            num_bytes: shuffle_write_partition.num_bytes as i64,
-                            column_stats: vec![],
-                        }),
-                        path: shuffle_write_partition.path.clone(),
-                    });
-                }
-            }
-            job_status::Status::Completed(CompletedJob { partition_location })
-        });
-
-    if job_status.is_none() {
-        // Update other statuses
-        for task in tasks.iter() {
-            if let Some(task_status::Status::Failed(FailedTask { error })) = &task.status
-            {
-                let error = error.clone();
-                job_status = Some(job_status::Status::Failed(FailedJob { error }));
-                break;
-            }
-        }
-    }
-
-    JobStatus {
-        status: Some(job_status.unwrap_or(job_status::Status::Running(RunningJob {}))),
     }
 }
