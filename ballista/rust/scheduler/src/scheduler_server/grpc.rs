@@ -40,10 +40,11 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use futures::TryStreamExt;
 use log::{debug, error, info, trace, warn};
 
+// use http_body::Body;
 use std::convert::TryInto;
 use std::ops::Deref;
 use std::sync::Arc;
-use std::time::Instant;
+
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
@@ -402,9 +403,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                         Status::internal(msg)
                     })?,
             };
+
             debug!("Received plan for execution: {:?}", plan);
 
             let job_id = self.state.task_manager.generate_job_id();
+
+            self.state
+                .task_manager
+                .queue_job(&job_id)
+                .await
+                .map_err(|e| {
+                    let msg = format!("Failed to queue job {}: {:?}", job_id, e);
+                    error!("{}", msg);
+
+                    Status::internal(msg)
+                })?;
 
             let query_stage_event_sender =
                 self.query_stage_event_loop.get_sender().map_err(|e| {
@@ -414,54 +427,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     ))
                 })?;
 
-            let _start = Instant::now();
-            let optimized_plan = session_ctx.optimize(&plan).map_err(|e| {
-                let msg = format!("Could not create optimized logical plan: {}", e);
-                error!("{}", msg);
-
-                Status::internal(msg)
-            })?;
-
-            debug!("Calculated optimized plan: {:?}", optimized_plan);
-
-            let plan = session_ctx
-                .create_physical_plan(&optimized_plan)
-                .await
-                .map_err(|e| {
-                    let msg = format!("Could not create physical plan: {}", e);
-                    error!("{}", msg);
-
-                    Status::internal(msg)
-                })?;
-
-            self.state
-                .task_manager
-                .submit_job(&job_id, &session_id, plan.clone())
-                .await
-                .map_err(|e| {
-                    let msg = format!(
-                        "Failed to submit ExecutionGraph for job {}: {:?}",
-                        job_id, e
-                    );
-                    error!("{}", msg);
-
-                    Status::internal(msg)
-                })?;
-
             query_stage_event_sender
-                .post_event(QueryStageSchedulerEvent::JobSubmitted(job_id.clone(), plan))
+                .post_event(QueryStageSchedulerEvent::JobQueued {
+                    job_id: job_id.clone(),
+                    session_id: session_id.clone(),
+                    session_ctx,
+                    plan: Box::new(plan),
+                })
                 .await
                 .map_err(|e| {
-                    let msg = format!(
-                        "Failed to publish job submission for job {}: {:?}",
-                        job_id, e
-                    );
+                    let msg =
+                        format!("Failed to send JobQueued event for {}: {:?}", job_id, e);
                     error!("{}", msg);
 
                     Status::internal(msg)
                 })?;
-
-            info!("Successfully submitted job {}", job_id);
 
             Ok(Response::new(ExecuteQueryResult { job_id, session_id }))
         } else if let ExecuteQueryParams {

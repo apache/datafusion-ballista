@@ -28,7 +28,8 @@ use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 
 use crate::state::session_manager::create_datafusion_context;
 use ballista_core::serde::protobuf::{
-    self, task_status, JobStatus, PartitionId, TaskDefinition, TaskStatus,
+    self, job_status, task_status, FailedJob, JobStatus, PartitionId, QueuedJob,
+    TaskDefinition, TaskStatus,
 };
 use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
 use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
@@ -88,10 +89,39 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .await
     }
 
-    pub async fn get_job_status(&self, job_id: &str) -> Result<JobStatus> {
-        let graph = self.get_execution_graph(job_id).await?;
+    /// Queue a job. When a batch job is submitted we do the physical planning asynchronously so we
+    /// need to add a marker so we can report on its status.
+    pub async fn queue_job(&self, job_id: &str) -> Result<()> {
+        self.state
+            .put(Keyspace::QueuedJobs, job_id.to_owned(), vec![0x0])
+            .await
+    }
 
-        Ok(graph.status())
+    /// Get the status of of a job. First look in Active/Completed jobs, and then in Queued jobs, and
+    /// finally in FailedJobs.
+    pub async fn get_job_status(&self, job_id: &str) -> Result<JobStatus> {
+        if let Ok(graph) = self.get_execution_graph(job_id).await {
+            return Ok(graph.status());
+        } else {
+            let queue_marker = self.state.get(Keyspace::QueuedJobs, job_id).await?;
+            if !queue_marker.is_empty() {
+                return Ok(JobStatus {
+                    status: Some(job_status::Status::Queued(QueuedJob {})),
+                });
+            } else {
+                let failure_message =
+                    self.state.get(Keyspace::FailedJobs, job_id).await?;
+                if let Ok(failure_message) = String::from_utf8(failure_message) {
+                    return Ok(JobStatus {
+                        status: Some(job_status::Status::Failed(FailedJob {
+                            error: failure_message,
+                        })),
+                    });
+                }
+            }
+        }
+
+        Err(BallistaError::General(format!("job {} not found", job_id)))
     }
 
     /// Generate a new random Job ID

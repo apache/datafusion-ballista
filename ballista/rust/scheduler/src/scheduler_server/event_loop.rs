@@ -30,6 +30,9 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use crate::state::executor_manager::ExecutorReservation;
 use crate::state::SchedulerState;
 
+/// EventAction which will process `SchedulerServerEvent`s.
+/// In push-based scheduling, this is the primary mechanism for scheduling tasks
+/// on executors.
 pub(crate) struct SchedulerServerEventAction<
     T: 'static + AsLogicalPlan,
     U: 'static + AsExecutionPlan,
@@ -44,6 +47,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         Self { state }
     }
 
+    /// Process reservations which are offered. The basic process is
+    /// 1. Attempt to fill the offered reservations with available tasks
+    /// 2. For any reservation that filled, launch the assigned task on the executor.
+    /// 3. For any reservations that could not be filled, cancel the reservation (i.e. return the
+    ///    task slot back to the pool of available task slots).
+    ///
+    /// NOTE Error handling in this method is very important. No matter what we need to ensure
+    /// that unfilled reservations are cancelled or else they could become permanently "invisible"
+    /// to the scheduler.
     async fn offer_reservation(
         &self,
         reservations: Vec<ExecutorReservation>,
@@ -103,12 +115,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     EventAction<SchedulerServerEvent> for SchedulerServerEventAction<T, U>
 {
-    // TODO
     fn on_start(&self) {
         info!("Starting SchedulerServerEvent handler")
     }
 
-    // TODO
     fn on_stop(&self) {
         info!("Stopping SchedulerServerEvent handler")
     }
@@ -124,7 +134,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         }
     }
 
-    // TODO
     fn on_error(&self, error: BallistaError) {
         error!("Error in SchedulerServerEvent handler: {:?}", error);
     }

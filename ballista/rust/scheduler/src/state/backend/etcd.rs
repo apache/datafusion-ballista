@@ -248,6 +248,19 @@ impl StateBackendClient for EtcdClient {
             buffered_events: Vec::new(),
         }))
     }
+
+    async fn delete(&self, keyspace: Keyspace, key: &str) -> Result<()> {
+        let key = format!("/{}/{:?}/{}", self.namespace, keyspace, key);
+
+        let mut etcd = self.etcd.clone();
+
+        etcd.delete(key, None).await.map_err(|e| {
+            warn!("etcd delete failed: {:?}", e);
+            ballista_error("etcd delete failed")
+        })?;
+
+        Ok(())
+    }
 }
 
 struct EtcdWatch {

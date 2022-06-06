@@ -16,8 +16,11 @@
 // under the License.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
+use datafusion::logical_plan::LogicalPlan;
+use datafusion::prelude::SessionContext;
 use log::{debug, error, info};
 
 use ballista_core::error::{BallistaError, Result};
@@ -49,6 +52,37 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
             event_sender,
         }
     }
+
+    async fn submit_job(
+        &self,
+        job_id: String,
+        session_id: String,
+        session_ctx: Arc<SessionContext>,
+        plan: &LogicalPlan,
+    ) -> Result<()> {
+        let start = Instant::now();
+        let optimized_plan = session_ctx.optimize(plan)?;
+
+        debug!("Calculated optimized plan: {:?}", optimized_plan);
+
+        let plan = session_ctx.create_physical_plan(&optimized_plan).await?;
+
+        self.state
+            .task_manager
+            .submit_job(&job_id, &session_id, plan.clone())
+            .await?;
+
+        self.state
+            .task_manager
+            .submit_job(&job_id, &session_id, plan.clone())
+            .await?;
+
+        let elapsed = start.elapsed();
+
+        info!("Planned job {} in {:?}", job_id, elapsed);
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -68,7 +102,25 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         event: QueryStageSchedulerEvent,
     ) -> Result<Option<QueryStageSchedulerEvent>> {
         match event {
-            QueryStageSchedulerEvent::JobSubmitted(job_id, _plan) => {
+            QueryStageSchedulerEvent::JobQueued {
+                job_id,
+                session_id,
+                session_ctx,
+                plan,
+            } => {
+                info!("Job {} queued", job_id);
+                return if let Err(e) = self
+                    .submit_job(job_id.clone(), session_id, session_ctx, &plan)
+                    .await
+                {
+                    let msg = format!("Error submitting job {}: {:?}", job_id, e);
+                    error!("{}", msg);
+                    Ok(Some(QueryStageSchedulerEvent::JobFailed(job_id, 0, msg)))
+                } else {
+                    Ok(Some(QueryStageSchedulerEvent::JobSubmitted(job_id)))
+                };
+            }
+            QueryStageSchedulerEvent::JobSubmitted(job_id) => {
                 info!("Job {} submitted", job_id);
                 if let Some(sender) = &self.event_sender {
                     let available_tasks = self

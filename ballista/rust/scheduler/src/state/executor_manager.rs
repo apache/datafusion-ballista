@@ -71,7 +71,6 @@ pub(crate) struct ExecutorManager {
     state: Arc<dyn StateBackendClient>,
     executor_metadata: Arc<RwLock<HashMap<String, ExecutorMetadata>>>,
     executors_heartbeat: Arc<RwLock<HashMap<String, protobuf::ExecutorHeartbeat>>>,
-    executors_data: Arc<RwLock<HashMap<String, ExecutorData>>>,
 }
 
 impl ExecutorManager {
@@ -80,10 +79,11 @@ impl ExecutorManager {
             state,
             executor_metadata: Arc::new(RwLock::new(HashMap::new())),
             executors_heartbeat: Arc::new(RwLock::new(HashMap::new())),
-            executors_data: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
+    /// Initialize the `ExecutorManager` state. This will fill the `executor_heartbeats` value
+    /// with existing heartbeats. Then new updates will be consumed through the `ExecutorHeartbeatListener`
     pub async fn init(&self) -> Result<()> {
         self.init_executor_heartbeats().await?;
         let heartbeat_listener = ExecutorHeartbeatListener::new(
@@ -194,8 +194,29 @@ impl ExecutorManager {
         .await
     }
 
+    /// Get a list of all executors along with the timestamp of their last recorded heartbeat
     pub async fn get_executor_state(&self) -> Result<Vec<(ExecutorMetadata, Duration)>> {
-        todo!()
+        let heartbeat_timestamps: Vec<(String, u64)> = {
+            let heartbeats = self.executors_heartbeat.read();
+
+            heartbeats
+                .iter()
+                .map(|(executor_id, heartbeat)| {
+                    (executor_id.clone(), heartbeat.timestamp)
+                })
+                .collect()
+        };
+
+        let mut state: Vec<(ExecutorMetadata, Duration)> = vec![];
+        for (executor_id, ts) in heartbeat_timestamps {
+            let duration = Duration::from_secs(ts);
+
+            let metadata = self.get_executor_metadata(&executor_id).await?;
+
+            state.push((metadata, duration));
+        }
+
+        Ok(state)
     }
 
     pub async fn get_executor_metadata(
@@ -233,7 +254,7 @@ impl ExecutorManager {
     /// If `reserve` is false, then the executor data will be saved as is.
     ///
     /// In general, reserve should be true is the scheduler is using push-based scheduling and false
-    /// if the scheduler is using poll-based scheduling.
+    /// if the scheduler is using pull-based scheduling.
     pub async fn register_executor(
         &self,
         metadata: ExecutorMetadata,
@@ -327,14 +348,7 @@ impl ExecutorManager {
         Ok(())
     }
 
-    pub(crate) fn get_executors_heartbeat(&self) -> Vec<protobuf::ExecutorHeartbeat> {
-        let executors_heartbeat = self.executors_heartbeat.read();
-        executors_heartbeat
-            .iter()
-            .map(|(_exec, heartbeat)| heartbeat.clone())
-            .collect()
-    }
-
+    /// Initialize the set of executor heartbeats from storage
     pub(crate) async fn init_executor_heartbeats(&self) -> Result<()> {
         let heartbeats = self.state.scan(Keyspace::Slots, None).await?;
         let mut cache = self.executors_heartbeat.write();
@@ -347,7 +361,8 @@ impl ExecutorManager {
         Ok(())
     }
 
-    /// last_seen_ts_threshold is in seconds
+    /// Retrieve the set of all executor IDs where the executor has been observed in the last
+    /// `last_seen_ts_threshold` seconds.
     pub(crate) fn get_alive_executors(
         &self,
         last_seen_ts_threshold: u64,
@@ -392,6 +407,8 @@ impl ExecutorHeartbeatListener {
         }
     }
 
+    /// Spawn an sync task which will watch the the Heartbeats keyspace and insert
+    /// new heartbeats in the `executors_heartbeat` cache.
     pub async fn start(&self) -> Result<()> {
         let mut watch = self
             .state
@@ -518,6 +535,7 @@ mod test {
 
         {
             let sender = sender;
+            // Spawn 20 async tasks to each try and reserve all 40 slots
             for _ in 0..20 {
                 let executor_manager = executor_manager.clone();
                 let sender = sender.clone();
@@ -534,6 +552,7 @@ mod test {
             total_reservations.extend(reservations);
         }
 
+        // The total number of reservations should never exceed the number of slots
         assert_eq!(total_reservations.len(), 40);
 
         Ok(())

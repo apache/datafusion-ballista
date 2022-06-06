@@ -24,8 +24,10 @@ use ballista_core::event_loop::{EventAction, EventLoop};
 use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use datafusion::execution::context::{default_session_builder, SessionState};
+
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::logical_plan::AsLogicalPlan;
+
 use log::error;
 
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SchedulerServerEvent};
@@ -423,44 +425,19 @@ mod test {
             .create_session(&config)
             .await?;
 
-        let plan = async {
-            let optimized_plan = ctx.optimize(&plan).map_err(|e| {
-                BallistaError::General(format!(
-                    "Could not create optimized logical plan: {}",
-                    e
-                ))
-            })?;
-
-            ctx.create_physical_plan(&optimized_plan)
-                .await
-                .map_err(|e| {
-                    BallistaError::General(format!(
-                        "Could not create physical plan: {}",
-                        e
-                    ))
-                })
-        }
-        .await?;
-
         let job_id = "job";
         let session_id = ctx.session_id();
 
-        // Submit job
-        scheduler
-            .state
-            .task_manager
-            .submit_job(job_id, &session_id, plan.clone())
-            .await
-            .expect("submitting plan");
-
-        // Send JobSubmitted event to kick off the event loop
+        // Send JobQueued event to kick off the event loop
         scheduler
             .query_stage_event_loop
             .get_sender()?
-            .post_event(QueryStageSchedulerEvent::JobSubmitted(
-                job_id.to_owned(),
-                plan,
-            ))
+            .post_event(QueryStageSchedulerEvent::JobQueued {
+                job_id: job_id.to_owned(),
+                session_id,
+                session_ctx: ctx,
+                plan: Box::new(plan),
+            })
             .await?;
 
         // Complete tasks that are offered through scheduler events

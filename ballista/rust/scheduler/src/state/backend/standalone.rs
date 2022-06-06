@@ -227,6 +227,15 @@ impl StateBackendClient for StandaloneClient {
             subscriber: self.db.watch_prefix(prefix),
         }))
     }
+
+    async fn delete(&self, keyspace: Keyspace, key: &str) -> Result<()> {
+        let key = format!("/{:?}/{}", keyspace, key);
+        self.db.remove(key).map_err(|e| {
+            warn!("sled delete failed: {:?}", e);
+            ballista_error("sled delete failed")
+        })?;
+        Ok(())
+    }
 }
 
 struct SledWatch {

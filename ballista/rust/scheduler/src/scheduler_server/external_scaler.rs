@@ -35,8 +35,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExternalScaler
         &self,
         _request: Request<ScaledObjectRef>,
     ) -> Result<Response<IsActiveResponse>, tonic::Status> {
-        // let result = self.state.stage_manager.has_running_tasks();
-        // debug!("Are there active tasks? {}", result);
         Ok(Response::new(IsActiveResponse { result: true }))
     }
 

@@ -54,6 +54,8 @@ pub enum Keyspace {
     Executors,
     ActiveJobs,
     CompletedJobs,
+    QueuedJobs,
+    FailedJobs,
     Slots,
     Sessions,
     Heartbeats,
@@ -105,6 +107,9 @@ pub trait StateBackendClient: Send + Sync {
 
     /// Watch all events that happen on a specific prefix.
     async fn watch(&self, keyspace: Keyspace, prefix: String) -> Result<Box<dyn Watch>>;
+
+    /// Permanently delete a key from state
+    async fn delete(&self, keyspace: Keyspace, key: &str) -> Result<()>;
 }
 
 /// A Watch is a cancelable stream of put or delete events in the [StateBackendClient]

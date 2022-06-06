@@ -17,19 +17,26 @@
 
 use crate::state::executor_manager::ExecutorReservation;
 
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::logical_plan::LogicalPlan;
+
+use datafusion::prelude::SessionContext;
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub enum SchedulerServerEvent {
-    // number of offer rounds
-    // ReviveOffers(u32),
+    /// Offer a list of executor reservations (representing executor task slots available for scheduling)
     Offer(Vec<ExecutorReservation>),
 }
 
 #[derive(Clone)]
 pub enum QueryStageSchedulerEvent {
-    JobSubmitted(String, Arc<dyn ExecutionPlan>),
+    JobQueued {
+        job_id: String,
+        session_id: String,
+        session_ctx: Arc<SessionContext>,
+        plan: Box<LogicalPlan>,
+    },
+    JobSubmitted(String),
     JobFinished(String),
     JobFailed(String, u32, String),
 }
