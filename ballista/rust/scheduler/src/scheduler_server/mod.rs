@@ -243,6 +243,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
 #[cfg(all(test, feature = "sled"))]
 mod test {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use ballista_core::config::{
         BallistaConfig, TaskSchedulingPolicy, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
@@ -272,7 +273,9 @@ mod test {
     use crate::state::backend::standalone::StandaloneClient;
 
     use crate::state::executor_manager::ExecutorReservation;
-    use crate::test_utils::SchedulerEventObserver;
+    use crate::test_utils::{
+        await_condition, ExplodingTableProvider, SchedulerEventObserver,
+    };
 
     #[tokio::test]
     async fn test_pull_scheduling() -> Result<()> {
@@ -669,6 +672,69 @@ mod test {
             ),
             "Expected job status to be failed"
         );
+
+        Ok(())
+    }
+
+    // If the physical planning fails, the job should be marked as failed.
+    // Here we simulate a planning failure using ExplodingTableProvider to test this.
+    #[tokio::test]
+    async fn test_planning_failure() -> Result<()> {
+        let task_slots = 4;
+
+        let (sender, _event_receiver) =
+            tokio::sync::mpsc::channel::<SchedulerServerEvent>(1000);
+        let (error_sender, _) = tokio::sync::mpsc::channel::<BallistaError>(1000);
+
+        let event_action = SchedulerEventObserver::new(sender, error_sender);
+
+        let scheduler = test_scheduler_with_event_action(Arc::new(event_action)).await?;
+
+        let config = test_session(task_slots);
+
+        let ctx = scheduler
+            .state
+            .session_manager
+            .create_session(&config)
+            .await?;
+
+        ctx.register_table("explode", Arc::new(ExplodingTableProvider))?;
+
+        let plan = ctx.sql("SELECT * FROM explode").await?.to_logical_plan()?;
+
+        let job_id = "job";
+        let session_id = ctx.session_id();
+
+        // Send JobQueued event to kick off the event loop
+        // This should fail when we try and create the physical plan
+        scheduler
+            .query_stage_event_loop
+            .get_sender()?
+            .post_event(QueryStageSchedulerEvent::JobQueued {
+                job_id: job_id.to_owned(),
+                session_id,
+                session_ctx: ctx,
+                plan: Box::new(plan),
+            })
+            .await?;
+
+        let scheduler = scheduler.clone();
+
+        let check = || async {
+            let status = scheduler.state.task_manager.get_job_status(job_id).await?;
+
+            Ok(matches!(
+                status,
+                JobStatus {
+                    status: Some(job_status::Status::Failed(_))
+                }
+            ))
+        };
+
+        // Sine this happens in an event loop, we need to check a few times.
+        let job_failed = await_condition(Duration::from_millis(100), 10, check).await?;
+
+        assert!(job_failed, "Job status not failed after 1 second");
 
         Ok(())
     }
