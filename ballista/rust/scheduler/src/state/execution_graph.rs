@@ -516,7 +516,6 @@ impl ExecutionGraph {
                         let locations = partition_to_location(
                             self.job_id.as_str(),
                             stage_id,
-                            partition,
                             executor,
                             completed_task.partitions,
                         );
@@ -666,7 +665,6 @@ impl Debug for ExecutionGraph {
 fn partition_to_location(
     job_id: &str,
     stage_id: usize,
-    partition_id: usize,
     executor: &ExecutorMetadata,
     shuffles: Vec<ShuffleWritePartition>,
 ) -> Vec<PartitionLocation> {
@@ -676,7 +674,7 @@ fn partition_to_location(
             partition_id: PartitionId {
                 job_id: job_id.to_owned(),
                 stage_id,
-                partition_id,
+                partition_id: shuffle.partition_id as usize,
             },
             executor_meta: executor.clone(),
             partition_stats: PartitionStats::new(
