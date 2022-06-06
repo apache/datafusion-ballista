@@ -38,9 +38,14 @@ use std::fmt::{Debug, Formatter};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use std::sync::Arc;
 
-#[derive(Clone, Debug)]
+/// This data structure collects the partition locations for an `ExecutionStage`.
+/// Each `ExecutionStage` will hold a `StageOutput`s for each of its child stages.
+/// When all tasks for the child stage are complete, it will mark the `StageOutput`
+#[derive(Clone, Debug, Default)]
 pub struct StageOutput {
+    /// Map from partition -> partition locations
     pub(crate) partition_locations: HashMap<usize, Vec<PartitionLocation>>,
+    /// Flag indicating whether all tasks are complete
     pub(crate) complete: bool,
 }
 
@@ -52,6 +57,7 @@ impl StageOutput {
         }
     }
 
+    /// Add a `PartitionLocation` to the `StageOutput`
     pub fn add_partition(&mut self, partition_location: PartitionLocation) {
         if let Some(parts) = self
             .partition_locations
@@ -71,22 +77,28 @@ impl StageOutput {
     }
 }
 
-/// A single stage in the ExecutionGraph
+/// A stage in the ExecutionGraph.
+///
+/// This represents a set of tasks (one per each `partition`) which can
+/// be executed concurrently.
 #[derive(Clone)]
 pub struct ExecutionStage {
     /// Stage ID
     pub(crate) stage_id: usize,
-    /// Total number of output partitions from this stage per task
+    /// Total number of output partitions for this stage.
+    /// This stage will produce on task for partition.
     pub(crate) partitions: usize,
     /// Output partitioning for this stage.
     pub(crate) output_partitioning: Option<Partitioning>,
-    /// Inputs created by child stages
+    /// Represents the outputs from this stage's child stages.
+    /// This stage can only be resolved an executed once all child stages are completed.
     pub(crate) inputs: HashMap<usize, StageOutput>,
-    // Execution plan for this stage
+    // `ExecutionPlan` for this stage
     pub(crate) plan: Arc<dyn ExecutionPlan>,
     /// Status of each already scheduled task. If status is None, the partition has not yet been scheduled
     pub(crate) task_statuses: Vec<Option<task_status::Status>>,
     /// Stage ID of the stage that will take this stages outputs as inputs.
+    /// If `output_link` is `None` then this the final stage in the `ExecutionGraph`
     pub(crate) output_link: Option<usize>,
     /// Flag indicating whether all input partitions have been resolved and the plan
     /// has UnresovledShuffleExec operators resolved to ShuffleReadExec operators.
@@ -144,18 +156,20 @@ impl ExecutionStage {
         }
     }
 
-    /// Returns true if all input partitions are present and we can resolve the stage plans
+    /// Returns true if all inputs are complete and we can resolve all
     /// UnresolvedShuffleExec operators to ShuffleReadExec
     pub fn resolvable(&self) -> bool {
         self.inputs.iter().all(|(_, outputs)| outputs.is_complete())
     }
 
+    /// Returns `true` if all tasks for this stage are complete
     pub fn complete(&self) -> bool {
         self.task_statuses
             .iter()
             .all(|status| matches!(status, Some(task_status::Status::Completed(_))))
     }
 
+    /// Returns the number of tasks
     pub fn completed_tasks(&self) -> usize {
         self.task_statuses
             .iter()
@@ -163,6 +177,7 @@ impl ExecutionStage {
             .count()
     }
 
+    /// Marks the input stage ID as complete.
     pub fn complete_input(&mut self, stage_id: usize) {
         if let Some(input) = self.inputs.get_mut(&stage_id) {
             input.complete = true;
@@ -175,6 +190,9 @@ impl ExecutionStage {
         self.resolved
     }
 
+    /// Returns the number of tasks in this stage which are available for scheduling.
+    /// If the stage is not yet resolved, then this will return `0`, otherwise it will
+    /// return the number of tasks where the task status is not yet set.
     pub fn available_tasks(&self) -> usize {
         if self.resolved {
             self.task_statuses.iter().filter(|s| s.is_none()).count()
@@ -212,6 +230,7 @@ impl ExecutionStage {
         self.task_statuses[partition] = Some(status);
     }
 
+    /// Add input partitions published from an input stage.
     pub fn add_input_partitions(
         &mut self,
         stage_id: usize,
@@ -230,9 +249,15 @@ impl ExecutionStage {
     }
 }
 
+/// Utility for building a set of `ExecutionStage`s from
+/// a list of `ShuffleWriterExec`.
+///
+/// This will infer the dependency structure for the stages
+/// so that we can construct a DAG from the stages.
 struct ExecutionStageBuilder {
     /// Stage ID which is currently being visited
     current_stage_id: usize,
+    /// Map from stage ID -> List of child stage IDs
     stage_dependencies: HashMap<usize, Vec<usize>>,
     /// Map from Stage ID -> output link
     output_links: HashMap<usize, usize>,
@@ -310,6 +335,8 @@ impl ExecutionPlanVisitor for ExecutionStageBuilder {
     }
 }
 
+/// Represents the basic unit of work for the Ballista executor. Will execute
+/// one partition of one stage on one task slot.
 #[derive(Clone)]
 pub struct Task {
     pub session_id: String,
@@ -333,14 +360,66 @@ impl Debug for Task {
     }
 }
 
-/// Represents the graph for a distributed query plan.
+/// Represents the DAG for a distributed query plan.
+///
+/// A distributed query plan consists of a set of stages which must be executed sequentially.
+///
+/// Each stage consists of a set of partitions which can be executed in parallel, where each partition
+/// represents a `Task`, which is the basic unit of scheduling in Ballista.
+///
+/// As an example, consider a SQL query which performs a simple aggregation:
+///
+/// `SELECT id, SUM(gmv) FROM some_table GROUP BY id`
+///
+/// This will produce a DataFusion execution plan that looks something like
+///
+/// ```
+///   CoalesceBatchesExec: target_batch_size=4096
+///     RepartitionExec: partitioning=Hash([Column { name: "id", index: 0 }], 4)
+///       AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[SUM(some_table.gmv)]
+///         TableScan: some_table
+/// ```
+/// The Ballista `DistributedPlanner` will turn this into a distributed plan by creating a shuffle
+/// boundary (called a "Stage") whenever the underlying plan needs to perform a repartition.
+/// In this case we end up with a distributed plan with two stages:
+///
+/// ```
+/// ExecutionGraph[job_id=job, session_id=session, available_tasks=1, complete=false]
+/// Stage[id=2, partitions=4, children=1, completed_tasks=0, resolved=false, scheduled_tasks=0, available_tasks=0]
+/// Inputs{1: StageOutput { partition_locations: {}, complete: false }}
+///
+/// ShuffleWriterExec: None
+///   AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[SUM(?table?.gmv)]
+///     CoalesceBatchesExec: target_batch_size=4096
+///       UnresolvedShuffleExec
+///
+/// Stage[id=1, partitions=1, children=0, completed_tasks=0, resolved=true, scheduled_tasks=0, available_tasks=1]
+/// Inputs{}
+///
+/// ShuffleWriterExec: Some(Hash([Column { name: "id", index: 0 }], 4))
+///   AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[SUM(?table?.gmv)]
+///     TableScan: some_table
+/// ```
+///
+/// The DAG structure of this `ExecutionGraph` is encoded in the stages. Each stage's `input` field
+/// will indicate which stages it depends on, and each stage's `output_link` will indicate which
+/// stage it needs to publish its output to.
+///
+/// If a stage has `output_link == None` then it is the final stage in this query, and it should
+/// publish its outputs to the `ExecutionGraph`s `output_locations` representing the final query results.
 #[derive(Clone)]
 pub struct ExecutionGraph {
+    /// ID for this job
     pub(crate) job_id: String,
+    /// Session ID for this job
     pub(crate) session_id: String,
+    /// Status of this job
     pub(crate) status: JobStatus,
+    /// Map from Stage ID -> ExecutionStage
     pub(crate) stages: HashMap<usize, ExecutionStage>,
+    /// Total number fo output partitions
     pub(crate) output_partitions: usize,
+    /// Locations of this `ExecutionGraph` final output locations
     pub(crate) output_locations: Vec<PartitionLocation>,
 }
 
@@ -442,16 +521,18 @@ impl ExecutionGraph {
                         );
 
                         if let Some(link) = stage.output_link {
+                            // If this is an intermediate stage, we need to push its `PartitionLocation`s to the parent stage
                             if let Some(linked_stage) = self.stages.get_mut(&link) {
                                 linked_stage.add_input_partitions(
                                     stage_id, partition, locations,
                                 )?;
 
+                                // If all tasks for this stage are complete, mark the input complete in the parent stage
                                 if stage_complete {
                                     linked_stage.complete_input(stage_id);
                                 }
 
-                                // If all input partitions are ready, we can resolve any UnresolvedShuffleExec in the stage plan
+                                // If all input partitions are ready, we can resolve any UnresolvedShuffleExec in the parent stage plan
                                 if linked_stage.resolvable() {
                                     linked_stage.resolve_shuffles()?;
                                 }
@@ -459,6 +540,7 @@ impl ExecutionGraph {
                                 return Err(BallistaError::Internal(format!("Error updating job {}: Invalid output link {} for stage {}", job_id, stage_id, link)));
                             }
                         } else {
+                            // If `output_link` is `None`, then this is a final stage
                             self.output_locations.extend(locations);
                         }
                     }
@@ -475,6 +557,7 @@ impl ExecutionGraph {
         Ok(())
     }
 
+    /// Total number of tasks in this plan that are ready for scheduling
     pub fn available_tasks(&self) -> usize {
         self.stages
             .iter()
@@ -486,7 +569,7 @@ impl ExecutionGraph {
     /// This method should only be called when the resulting task is immediately
     /// being launched as the status will be set to Running and it will not be
     /// available to the scheduler.
-    /// If the task is not launch the status must be reset to allow the task to
+    /// If the task is not launched the status must be reset to allow the task to
     /// be scheduled elsewhere.
     pub fn pop_next_task(&mut self, executor_id: &str) -> Result<Option<Task>> {
         let job_id = self.job_id.clone();
@@ -742,6 +825,8 @@ mod test {
         let optimized_plan = ctx.optimize(&logical_plan).unwrap();
 
         let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+
+        println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
         ExecutionGraph::new("job", "session", plan).unwrap()
     }

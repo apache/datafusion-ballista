@@ -51,6 +51,7 @@ type ExecutorClients = Arc<RwLock<HashMap<String, ExecutorGrpcClient<Channel>>>>
 #[derive(Clone)]
 pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
     state: Arc<dyn StateBackendClient>,
+    #[allow(dead_code)]
     clients: ExecutorClients,
     session_builder: SessionBuilder,
     codec: BallistaCodec<T, U>,
@@ -432,19 +433,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     async fn get_active_jobs(&self) -> Result<HashSet<String>> {
         debug!("Scanning for active job IDs");
         self.state.scan_keys(Keyspace::ActiveJobs).await
-    }
-
-    async fn save_execution_graph(&self, graph: ExecutionGraph) -> Result<()> {
-        let job_id = graph.job_id().to_owned();
-        debug!("Saving ExecutionGraph for job {}", job_id);
-
-        self.state
-            .put(
-                Keyspace::ActiveJobs,
-                job_id,
-                self.encode_execution_graph(graph)?,
-            )
-            .await
     }
 
     /// Get the `ExecutionGraph` for the given job ID. This will search fist in the `ActiveJobs`

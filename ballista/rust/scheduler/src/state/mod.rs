@@ -107,10 +107,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     pub async fn init(&self) -> Result<()> {
         self.executor_manager.init().await
     }
-
-    pub fn get_codec(&self) -> &BallistaCodec<T, U> {
-        &self._codec
-    }
 }
 
 pub async fn with_lock<Out, F: Future<Output = Out>>(lock: Box<dyn Lock>, op: F) -> Out {

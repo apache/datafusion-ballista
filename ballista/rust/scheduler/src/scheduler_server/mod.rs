@@ -56,8 +56,6 @@ pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     event_loop: Option<EventLoop<SchedulerServerEvent>>,
     pub(crate) query_stage_event_loop: EventLoop<QueryStageSchedulerEvent>,
     codec: BallistaCodec<T, U>,
-    /// SessionState Builder
-    session_builder: SessionBuilder,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
@@ -126,7 +124,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             event_loop,
             query_stage_event_loop,
             codec,
-            session_builder,
+            // session_builder,
         }
     }
 
@@ -159,7 +157,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             event_loop: Some(event_loop),
             query_stage_event_loop,
             codec,
-            session_builder,
         }
     }
 
@@ -252,8 +249,8 @@ mod test {
     use ballista_core::event_loop::EventAction;
 
     use ballista_core::serde::protobuf::{
-        job_status, task_status, CompletedTask, PartitionId, PhysicalPlanNode,
-        ShuffleWritePartition, TaskStatus,
+        task_status, CompletedTask, PartitionId, PhysicalPlanNode, ShuffleWritePartition,
+        TaskStatus,
     };
     use ballista_core::serde::scheduler::{
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
