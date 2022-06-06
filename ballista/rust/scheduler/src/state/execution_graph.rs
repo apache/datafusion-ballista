@@ -462,8 +462,9 @@ impl ExecutionGraph {
         self.status.clone()
     }
 
+    /// An ExecutionGraph is complete if all its stages are complete
     pub fn complete(&self) -> bool {
-        self.output_partitions == self.output_locations.len()
+        self.stages.values().all(|s| s.complete())
     }
 
     /// Update task statuses in the graph. This will push shuffle partitions to their
@@ -731,6 +732,22 @@ mod test {
 
         assert!(join_graph.complete(), "Failed to complete join plan");
 
+        let mut union_all_graph = test_union_all_plan(4).await;
+
+        drain_tasks(&mut union_all_graph)?;
+
+        println!("{:?}", union_all_graph);
+
+        assert!(union_all_graph.complete(), "Failed to complete union plan");
+
+        let mut union_graph = test_union_plan(4).await;
+
+        drain_tasks(&mut union_graph)?;
+
+        println!("{:?}", union_graph);
+
+        assert!(union_graph.complete(), "Failed to complete union plan");
+
         Ok(())
     }
 
@@ -884,6 +901,54 @@ mod test {
             .sort(vec![sort_expr])
             .unwrap()
             .build()
+            .unwrap();
+
+        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+
+        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+
+        println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
+
+        let graph = ExecutionGraph::new("job", "session", plan).unwrap();
+
+        println!("{:?}", graph);
+
+        graph
+    }
+
+    async fn test_union_all_plan(partition: usize) -> ExecutionGraph {
+        let config = SessionConfig::new().with_target_partitions(partition);
+        let ctx = Arc::new(SessionContext::with_config(config));
+
+        let logical_plan = ctx
+            .sql("SELECT 1 as NUMBER union all SELECT 1 as NUMBER;")
+            .await
+            .unwrap()
+            .to_logical_plan()
+            .unwrap();
+
+        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+
+        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+
+        println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
+
+        let graph = ExecutionGraph::new("job", "session", plan).unwrap();
+
+        println!("{:?}", graph);
+
+        graph
+    }
+
+    async fn test_union_plan(partition: usize) -> ExecutionGraph {
+        let config = SessionConfig::new().with_target_partitions(partition);
+        let ctx = Arc::new(SessionContext::with_config(config));
+
+        let logical_plan = ctx
+            .sql("SELECT 1 as NUMBER union SELECT 1 as NUMBER;")
+            .await
+            .unwrap()
+            .to_logical_plan()
             .unwrap();
 
         let optimized_plan = ctx.optimize(&logical_plan).unwrap();
