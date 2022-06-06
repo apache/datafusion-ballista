@@ -251,8 +251,8 @@ mod test {
     use ballista_core::event_loop::EventAction;
 
     use ballista_core::serde::protobuf::{
-        task_status, CompletedTask, PartitionId, PhysicalPlanNode, ShuffleWritePartition,
-        TaskStatus,
+        job_status, task_status, CompletedTask, FailedTask, JobStatus, PartitionId,
+        PhysicalPlanNode, ShuffleWritePartition, TaskStatus,
     };
     use ballista_core::serde::scheduler::{
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
@@ -530,6 +530,145 @@ mod test {
 
         assert!(final_graph.complete());
         assert_eq!(final_graph.output_locations().len(), 4);
+
+        Ok(())
+    }
+
+    // Simulate a task failure and ensure the job status is updated correctly
+    #[tokio::test]
+    async fn test_job_failure() -> Result<()> {
+        let plan = test_plan();
+        let task_slots = 4;
+
+        let (sender, mut event_receiver) =
+            tokio::sync::mpsc::channel::<SchedulerServerEvent>(1000);
+        let (error_sender, _) = tokio::sync::mpsc::channel::<BallistaError>(1000);
+
+        let event_action = SchedulerEventObserver::new(sender, error_sender);
+
+        let scheduler = test_scheduler_with_event_action(Arc::new(event_action)).await?;
+
+        let executors = test_executors(task_slots);
+        for (executor_metadata, executor_data) in executors {
+            scheduler
+                .state
+                .executor_manager
+                .register_executor(executor_metadata, executor_data, false)
+                .await?;
+        }
+
+        let config = test_session(task_slots);
+
+        let ctx = scheduler
+            .state
+            .session_manager
+            .create_session(&config)
+            .await?;
+
+        let job_id = "job";
+        let session_id = ctx.session_id();
+
+        // Send JobQueued event to kick off the event loop
+        scheduler
+            .query_stage_event_loop
+            .get_sender()?
+            .post_event(QueryStageSchedulerEvent::JobQueued {
+                job_id: job_id.to_owned(),
+                session_id,
+                session_ctx: ctx,
+                plan: Box::new(plan),
+            })
+            .await?;
+
+        // Complete tasks that are offered through scheduler events
+        if let Some(SchedulerServerEvent::Offer(reservations)) =
+            event_receiver.recv().await
+        {
+            let free_list = match scheduler
+                .state
+                .task_manager
+                .fill_reservations(&reservations)
+                .await
+            {
+                Ok((assignments, mut unassigned_reservations)) => {
+                    for (executor_id, task) in assignments.into_iter() {
+                        match scheduler
+                            .state
+                            .executor_manager
+                            .get_executor_metadata(&executor_id)
+                            .await
+                        {
+                            Ok(executor) => {
+                                let mut partitions: Vec<ShuffleWritePartition> = vec![];
+
+                                let num_partitions = task
+                                    .output_partitioning
+                                    .map(|p| p.partition_count())
+                                    .unwrap_or(1);
+
+                                for partition_id in 0..num_partitions {
+                                    partitions.push(ShuffleWritePartition {
+                                        partition_id: partition_id as u64,
+                                        path: "some/path".to_string(),
+                                        num_batches: 1,
+                                        num_rows: 1,
+                                        num_bytes: 1,
+                                    })
+                                }
+
+                                // Complete the task
+                                let task_status = TaskStatus {
+                                    status: Some(task_status::Status::Failed(
+                                        FailedTask {
+                                            error: "".to_string(),
+                                        },
+                                    )),
+                                    task_id: Some(PartitionId {
+                                        job_id: job_id.to_owned(),
+                                        stage_id: task.partition.stage_id as u32,
+                                        partition_id: task.partition.partition_id as u32,
+                                    }),
+                                };
+
+                                scheduler
+                                    .update_task_status(&executor.id, vec![task_status])
+                                    .await?;
+                            }
+                            Err(_e) => {
+                                unassigned_reservations.push(
+                                    ExecutorReservation::new_free(executor_id.clone()),
+                                );
+                            }
+                        }
+                    }
+                    unassigned_reservations
+                }
+                Err(_e) => reservations,
+            };
+
+            // If any reserved slots remain, return them to the pool
+            if !free_list.is_empty() {
+                scheduler
+                    .state
+                    .executor_manager
+                    .cancel_reservations(free_list)
+                    .await?;
+            }
+        } else {
+            panic!("No reservations offered");
+        }
+
+        let status = scheduler.state.task_manager.get_job_status(job_id).await?;
+
+        assert!(
+            matches!(
+                status,
+                JobStatus {
+                    status: Some(job_status::Status::Failed(_))
+                }
+            ),
+            "Expected job status to be failed"
+        );
 
         Ok(())
     }

@@ -72,11 +72,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
             .submit_job(&job_id, &session_id, plan.clone())
             .await?;
 
-        self.state
-            .task_manager
-            .submit_job(&job_id, &session_id, plan.clone())
-            .await?;
-
         let elapsed = start.elapsed();
 
         info!("Planned job {} in {:?}", job_id, elapsed);

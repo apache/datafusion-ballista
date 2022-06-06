@@ -86,7 +86,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 job_id.to_owned(),
                 self.encode_execution_graph(graph)?,
             )
-            .await
+            .await?;
+
+        if let Err(e) = self.state.delete(Keyspace::QueuedJobs, job_id).await {
+            warn!("Failed to remove key in QueuedJobs for {}: {:?}", job_id, e);
+        }
+
+        Ok(())
     }
 
     /// Queue a job. When a batch job is submitted we do the physical planning asynchronously so we
