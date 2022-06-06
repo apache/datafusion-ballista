@@ -113,9 +113,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .submit_job(job_id.clone(), session_id, session_ctx, &plan)
                     .await
                 {
-                    let msg = format!("Error submitting job {}: {:?}", job_id, e);
+                    let msg = format!("Error planning job {}: {:?}", job_id, e);
                     error!("{}", msg);
-                    Ok(Some(QueryStageSchedulerEvent::JobFailed(job_id, 0, msg)))
+                    Ok(Some(QueryStageSchedulerEvent::JobFailed(job_id, msg)))
                 } else {
                     Ok(Some(QueryStageSchedulerEvent::JobSubmitted(job_id)))
                 };
@@ -160,12 +160,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 info!("Job {} complete", job_id);
                 self.state.task_manager.complete_job(&job_id).await?;
             }
-            QueryStageSchedulerEvent::JobFailed(job_id, stage_id, fail_message) => {
-                error!(
-                    "Job {} failed at stage {}: {}",
-                    job_id, stage_id, fail_message
-                );
-                self.state.task_manager.complete_job(&job_id).await?;
+            QueryStageSchedulerEvent::JobFailed(job_id, fail_message) => {
+                error!("Job {} failed: {}", job_id, fail_message);
+                self.state
+                    .task_manager
+                    .fail_job(&job_id, fail_message)
+                    .await?;
             }
         }
 

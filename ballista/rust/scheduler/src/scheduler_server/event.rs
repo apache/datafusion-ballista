@@ -38,5 +38,5 @@ pub enum QueryStageSchedulerEvent {
     },
     JobSubmitted(String),
     JobFinished(String),
-    JobFailed(String, u32, String),
+    JobFailed(String, String),
 }

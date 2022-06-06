@@ -101,27 +101,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// finally in FailedJobs.
     pub async fn get_job_status(&self, job_id: &str) -> Result<JobStatus> {
         if let Ok(graph) = self.get_execution_graph(job_id).await {
-            return Ok(graph.status());
+            Ok(graph.status())
         } else {
             let queue_marker = self.state.get(Keyspace::QueuedJobs, job_id).await?;
             if !queue_marker.is_empty() {
-                return Ok(JobStatus {
+                Ok(JobStatus {
                     status: Some(job_status::Status::Queued(QueuedJob {})),
-                });
+                })
             } else {
-                let failure_message =
-                    self.state.get(Keyspace::FailedJobs, job_id).await?;
-                if let Ok(failure_message) = String::from_utf8(failure_message) {
-                    return Ok(JobStatus {
-                        status: Some(job_status::Status::Failed(FailedJob {
-                            error: failure_message,
-                        })),
-                    });
-                }
+                let value = self.state.get(Keyspace::FailedJobs, job_id).await?;
+                let status = decode_protobuf(&value)?;
+                Ok(status)
             }
         }
-
-        Err(BallistaError::General(format!("job {} not found", job_id)))
     }
 
     /// Generate a new random Job ID
@@ -187,6 +179,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     );
                     graph.finalize()?;
                     events.push(QueryStageSchedulerEvent::JobFinished(job_id.clone()));
+                } else if let Some(job_status::Status::Failed(failure)) =
+                    graph.status().status
+                {
+                    events.push(QueryStageSchedulerEvent::JobFailed(
+                        job_id.clone(),
+                        failure.error,
+                    ));
                 } else {
                     // Otherwise keep the task slots reserved for this job
                     for _ in 0..num_tasks {
@@ -370,6 +369,27 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 .mv(Keyspace::ActiveJobs, Keyspace::CompletedJobs, job_id),
         )
         .await
+    }
+
+    /// Mark a job as failed. This will create a key under the FailedJobs keyspace
+    /// and remove the job from ActiveJobs or QueuedJobs
+    /// TODO this should be atomic
+    pub async fn fail_job(&self, job_id: &str, error_message: String) -> Result<()> {
+        let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
+        with_lock(lock, self.state.delete(Keyspace::ActiveJobs, job_id)).await?;
+
+        self.state.delete(Keyspace::QueuedJobs, job_id).await?;
+
+        let status = JobStatus {
+            status: Some(job_status::Status::Failed(FailedJob {
+                error: error_message,
+            })),
+        };
+        let value = encode_protobuf(&status)?;
+
+        self.state
+            .put(Keyspace::FailedJobs, job_id.to_owned(), value)
+            .await
     }
 
     #[cfg(not(test))]
