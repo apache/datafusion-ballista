@@ -373,17 +373,17 @@ impl Debug for Task {
 ///
 /// This will produce a DataFusion execution plan that looks something like
 ///
-/// ```
+///
 ///   CoalesceBatchesExec: target_batch_size=4096
 ///     RepartitionExec: partitioning=Hash([Column { name: "id", index: 0 }], 4)
 ///       AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[SUM(some_table.gmv)]
 ///         TableScan: some_table
-/// ```
+///
 /// The Ballista `DistributedPlanner` will turn this into a distributed plan by creating a shuffle
 /// boundary (called a "Stage") whenever the underlying plan needs to perform a repartition.
 /// In this case we end up with a distributed plan with two stages:
 ///
-/// ```
+///
 /// ExecutionGraph[job_id=job, session_id=session, available_tasks=1, complete=false]
 /// Stage[id=2, partitions=4, children=1, completed_tasks=0, resolved=false, scheduled_tasks=0, available_tasks=0]
 /// Inputs{1: StageOutput { partition_locations: {}, complete: false }}
@@ -399,7 +399,7 @@ impl Debug for Task {
 /// ShuffleWriterExec: Some(Hash([Column { name: "id", index: 0 }], 4))
 ///   AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[SUM(?table?.gmv)]
 ///     TableScan: some_table
-/// ```
+///
 ///
 /// The DAG structure of this `ExecutionGraph` is encoded in the stages. Each stage's `input` field
 /// will indicate which stages it depends on, and each stage's `output_link` will indicate which
