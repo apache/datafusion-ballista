@@ -31,8 +31,3 @@ exclude = ["ballista-cli"]
 inherits = "release"
 codegen-units = 1
 lto = true
-
-[patch."https://github.com/apache/arrow-datafusion.git"]
-datafusion = { git = "https://github.com/coralogix/arrow-datafusion.git", branch = "dev" }
-datafusion-expr = { git = "https://github.com/coralogix/arrow-datafusion.git", branch = "dev" }
-datafusion-proto = { git = "https://github.com/coralogix/arrow-datafusion.git", branch = "dev" }
