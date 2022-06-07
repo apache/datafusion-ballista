@@ -31,7 +31,7 @@ rust-version = "1.57"
 name = "datafusion._internal"
 
 [dependencies]
-datafusion = { path = "../datafusion", version = "6.0.0", features = ["pyarrow"] }
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "7607ace992a5a42840bf546221a8635e70e10885" }
 pyo3 = { version = "0.14", features = ["extension-module", "abi3", "abi3-py36"] }
 rand = "0.7"
 tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "sync"] }
