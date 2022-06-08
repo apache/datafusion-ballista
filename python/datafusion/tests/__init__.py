@@ -14,21 +14,3 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-
-[workspace]
-members = [
-    "benchmarks",
-    "ballista/rust/client",
-    "ballista/rust/core",
-    "ballista/rust/executor",
-    "ballista/rust/scheduler",
-    "examples",
-]
-exclude = ["ballista-cli", "python"]
-
-# cargo build --profile release-lto
-[profile.release-lto]
-inherits = "release"
-codegen-units = 1
-lto = true
-
