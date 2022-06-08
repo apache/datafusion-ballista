@@ -16,16 +16,16 @@
 # under the License.
 
 [build-system]
-requires = ["maturin>=0.11,<0.12"]
+requires = ["maturin>=0.11,<0.13"]
 build-backend = "maturin"
 
 [project]
-name = "datafusion"
+name = "ballista"
 description = "Build and run queries against data"
 readme = "README.md"
 license = {file = "LICENSE.txt"}
 requires-python = ">=3.6"
-keywords = ["datafusion", "dataframe", "rust", "query-engine"]
+keywords = ["ballista", "datafusion", "dataframe", "rust", "query-engine"]
 classifier = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Developers",
@@ -35,7 +35,6 @@ classifier = [
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.6",
     "Programming Language :: Python :: 3.7",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
@@ -44,12 +43,16 @@ classifier = [
     "Programming Language :: Rust",
 ]
 dependencies = [
+    "datafusion>=0.5.2",
     "pyarrow>=1",
 ]
 
 [project.urls]
-documentation = "https://arrow.apache.org/datafusion/python"
-repository = "https://github.com/apache/arrow-datafusion"
+documentation = "https://arrow.apache.org/ballista/python"
+repository = "https://github.com/apache/arrow-ballista"
 
 [tool.isort]
 profile = "black"
+
+[tool.maturin]
+sdist-include = ["Cargo.lock"]

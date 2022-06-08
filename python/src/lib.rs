@@ -15,17 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use mimalloc::MiMalloc;
 use pyo3::prelude::*;
 
-mod catalog;
-mod context;
+mod ballista_context;
 mod dataframe;
-mod errors;
+pub mod errors;
 mod expression;
 mod functions;
-mod udaf;
-mod udf;
-mod utils;
+pub mod utils;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 /// Low-level DataFusion internal package.
 ///
@@ -34,14 +35,9 @@ mod utils;
 #[pymodule]
 fn _internal(py: Python, m: &PyModule) -> PyResult<()> {
     // Register the python classes
-    m.add_class::<catalog::PyCatalog>()?;
-    m.add_class::<catalog::PyDatabase>()?;
-    m.add_class::<catalog::PyTable>()?;
-    m.add_class::<context::PyExecutionContext>()?;
+    m.add_class::<ballista_context::PyBallistaContext>()?;
     m.add_class::<dataframe::PyDataFrame>()?;
     m.add_class::<expression::PyExpr>()?;
-    m.add_class::<udf::PyScalarUDF>()?;
-    m.add_class::<udaf::PyAggregateUDF>()?;
 
     // Register the functions as a submodule
     let funcs = PyModule::new(py, "functions")?;

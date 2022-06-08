@@ -15,36 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::future::Future;
-
 use pyo3::prelude::*;
+use std::future::Future;
 use tokio::runtime::Runtime;
 
-use datafusion::physical_plan::functions::Volatility;
-
-use crate::errors::DataFusionError;
-
 /// Utility to collect rust futures with GIL released
-pub(crate) fn wait_for_future<F: Future>(py: Python, f: F) -> F::Output
+pub fn wait_for_future<F: Future>(py: Python, f: F) -> F::Output
 where
     F: Send,
     F::Output: Send,
 {
     let rt = Runtime::new().unwrap();
     py.allow_threads(|| rt.block_on(f))
-}
-
-pub(crate) fn parse_volatility(value: &str) -> Result<Volatility, DataFusionError> {
-    Ok(match value {
-        "immutable" => Volatility::Immutable,
-        "stable" => Volatility::Stable,
-        "volatile" => Volatility::Volatile,
-        value => {
-            return Err(DataFusionError::Common(format!(
-                "Unsupportad volatility type: `{}`, supported \
-                 values are: immutable, stable and volatile.",
-                value
-            )))
-        }
-    })
 }

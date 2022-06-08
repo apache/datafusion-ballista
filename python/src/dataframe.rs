@@ -15,40 +15,65 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::Arc;
-
-use pyo3::prelude::*;
-
+use crate::errors::DataFusionError;
+use crate::expression::PyExpr;
+use crate::utils::wait_for_future;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::pyarrow::PyArrowConvert;
 use datafusion::arrow::util::pretty;
 use datafusion::dataframe::DataFrame;
 use datafusion::logical_plan::JoinType;
-
-use crate::utils::wait_for_future;
-use crate::{errors::DataFusionError, expression::PyExpr};
+use pyo3::exceptions::PyTypeError;
+use pyo3::prelude::*;
+use pyo3::types::PyTuple;
+use std::sync::Arc;
 
 /// A PyDataFrame is a representation of a logical plan and an API to compose statements.
 /// Use it to build a plan and `.collect()` to execute the plan and collect the result.
 /// The actual execution of a plan runs natively on Rust and Arrow on a multi-threaded environment.
-#[pyclass(name = "DataFrame", module = "datafusion", subclass)]
+#[pyclass(name = "DataFrame", module = "ballista", subclass)]
 #[derive(Clone)]
 pub(crate) struct PyDataFrame {
-    df: Arc<dyn DataFrame>,
+    df: Arc<DataFrame>,
 }
 
 impl PyDataFrame {
     /// creates a new PyDataFrame
-    pub fn new(df: Arc<dyn DataFrame>) -> Self {
+    pub fn new(df: Arc<DataFrame>) -> Self {
         Self { df }
     }
 }
 
 #[pymethods]
 impl PyDataFrame {
+    fn __getitem__(&self, key: PyObject) -> PyResult<Self> {
+        Python::with_gil(|py| {
+            if let Ok(key) = key.extract::<&str>(py) {
+                self.select_columns(vec![key])
+            } else if let Ok(tuple) = key.extract::<&PyTuple>(py) {
+                let keys = tuple
+                    .iter()
+                    .map(|item| item.extract::<&str>())
+                    .collect::<PyResult<Vec<&str>>>()?;
+                self.select_columns(keys)
+            } else if let Ok(keys) = key.extract::<Vec<&str>>(py) {
+                self.select_columns(keys)
+            } else {
+                let message = "DataFrame can only be indexed by string index or indices";
+                Err(PyTypeError::new_err(message))
+            }
+        })
+    }
+
     /// Returns the schema from the logical plan
     fn schema(&self) -> Schema {
         self.df.schema().into()
+    }
+
+    #[args(args = "*")]
+    fn select_columns(&self, args: Vec<&str>) -> PyResult<Self> {
+        let df = self.df.select_columns(&args)?;
+        Ok(Self::new(df))
     }
 
     #[args(args = "*")]
@@ -124,7 +149,15 @@ impl PyDataFrame {
 
         let df = self
             .df
-            .join(right.df, join_type, &join_keys.0, &join_keys.1)?;
+            .join(right.df, join_type, &join_keys.0, &join_keys.1, None)?;
         Ok(Self::new(df))
+    }
+
+    /// Print the query plan
+    #[args(verbose = false, analyze = false)]
+    fn explain(&self, py: Python, verbose: bool, analyze: bool) -> PyResult<()> {
+        let df = self.df.explain(verbose, analyze)?;
+        let batches = wait_for_future(py, df.collect())?;
+        Ok(pretty::print_batches(&batches)?)
     }
 }

@@ -16,14 +16,6 @@
 # under the License.
 
 import pyarrow as pa
-import pytest
-
-from datafusion import ExecutionContext
-
-
-@pytest.fixture
-def ctx():
-    return ExecutionContext()
 
 
 def test_register_record_batches(ctx):
@@ -61,3 +53,22 @@ def test_create_dataframe_registers_unique_table_name(ctx):
     # only hexadecimal numbers
     for c in tables[0][1:]:
         assert c in "0123456789abcdef"
+
+
+def test_register_table(ctx, database):
+    default = ctx.catalog()
+    public = default.database("public")
+    assert public.names() == {"csv", "csv1", "csv2"}
+    table = public.table("csv")
+
+    ctx.register_table("csv3", table)
+    assert public.names() == {"csv", "csv1", "csv2", "csv3"}
+
+
+def test_deregister_table(ctx, database):
+    default = ctx.catalog()
+    public = default.database("public")
+    assert public.names() == {"csv", "csv1", "csv2"}
+
+    ctx.deregister_table("csv")
+    assert public.names() == {"csv1", "csv2"}

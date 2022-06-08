@@ -15,8 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use pyo3::PyMappingProtocol;
-use pyo3::{basic::CompareOp, prelude::*, PyNumberProtocol, PyObjectProtocol};
+use pyo3::{basic::CompareOp, prelude::*};
 use std::convert::{From, Into};
 
 use datafusion::arrow::datatypes::DataType;
@@ -25,7 +24,7 @@ use datafusion::logical_plan::{col, lit, Expr};
 use datafusion::scalar::ScalarValue;
 
 /// An PyExpr that can be used on a DataFrame
-#[pyclass(name = "Expression", module = "datafusion", subclass)]
+#[pyclass(name = "Expression", module = "ballista", subclass)]
 #[derive(Debug, Clone)]
 pub(crate) struct PyExpr {
     pub(crate) expr: Expr,
@@ -37,49 +36,14 @@ impl From<PyExpr> for Expr {
     }
 }
 
-impl Into<PyExpr> for Expr {
-    fn into(self) -> PyExpr {
-        PyExpr { expr: self }
+impl From<Expr> for PyExpr {
+    fn from(expr: Expr) -> PyExpr {
+        PyExpr { expr }
     }
 }
 
-#[pyproto]
-impl PyNumberProtocol for PyExpr {
-    fn __add__(lhs: PyExpr, rhs: PyExpr) -> PyResult<PyExpr> {
-        Ok((lhs.expr + rhs.expr).into())
-    }
-
-    fn __sub__(lhs: PyExpr, rhs: PyExpr) -> PyResult<PyExpr> {
-        Ok((lhs.expr - rhs.expr).into())
-    }
-
-    fn __truediv__(lhs: PyExpr, rhs: PyExpr) -> PyResult<PyExpr> {
-        Ok((lhs.expr / rhs.expr).into())
-    }
-
-    fn __mul__(lhs: PyExpr, rhs: PyExpr) -> PyResult<PyExpr> {
-        Ok((lhs.expr * rhs.expr).into())
-    }
-
-    fn __mod__(lhs: PyExpr, rhs: PyExpr) -> PyResult<PyExpr> {
-        Ok(lhs.expr.clone().modulus(rhs.expr).into())
-    }
-
-    fn __and__(lhs: PyExpr, rhs: PyExpr) -> PyResult<PyExpr> {
-        Ok(lhs.expr.clone().and(rhs.expr).into())
-    }
-
-    fn __or__(lhs: PyExpr, rhs: PyExpr) -> PyResult<PyExpr> {
-        Ok(lhs.expr.clone().or(rhs.expr).into())
-    }
-
-    fn __invert__(&self) -> PyResult<PyExpr> {
-        Ok(self.expr.clone().not().into())
-    }
-}
-
-#[pyproto]
-impl PyObjectProtocol for PyExpr {
+#[pymethods]
+impl PyExpr {
     fn __richcmp__(&self, other: PyExpr, op: CompareOp) -> PyExpr {
         let expr = match op {
             CompareOp::Lt => self.expr.clone().lt(other.expr),
@@ -95,10 +59,47 @@ impl PyObjectProtocol for PyExpr {
     fn __str__(&self) -> PyResult<String> {
         Ok(format!("{}", self.expr))
     }
-}
 
-#[pymethods]
-impl PyExpr {
+    fn __add__(&self, rhs: PyExpr) -> PyResult<PyExpr> {
+        Ok((self.expr.clone() + rhs.expr).into())
+    }
+
+    fn __sub__(&self, rhs: PyExpr) -> PyResult<PyExpr> {
+        Ok((self.expr.clone() - rhs.expr).into())
+    }
+
+    fn __truediv__(&self, rhs: PyExpr) -> PyResult<PyExpr> {
+        Ok((self.expr.clone() / rhs.expr).into())
+    }
+
+    fn __mul__(&self, rhs: PyExpr) -> PyResult<PyExpr> {
+        Ok((self.expr.clone() * rhs.expr).into())
+    }
+
+    fn __mod__(&self, rhs: PyExpr) -> PyResult<PyExpr> {
+        Ok(self.expr.clone().modulus(rhs.expr).into())
+    }
+
+    fn __and__(&self, rhs: PyExpr) -> PyResult<PyExpr> {
+        Ok(self.expr.clone().and(rhs.expr).into())
+    }
+
+    fn __or__(&self, rhs: PyExpr) -> PyResult<PyExpr> {
+        Ok(self.expr.clone().or(rhs.expr).into())
+    }
+
+    fn __invert__(&self) -> PyResult<PyExpr> {
+        Ok(self.expr.clone().not().into())
+    }
+
+    fn __getitem__(&self, key: &str) -> PyResult<PyExpr> {
+        Ok(Expr::GetIndexedField {
+            expr: Box::new(self.expr.clone()),
+            key: ScalarValue::Utf8(Some(key.to_string())),
+        }
+        .into())
+    }
+
     #[staticmethod]
     pub fn literal(value: ScalarValue) -> PyExpr {
         lit(value).into()
@@ -132,16 +133,5 @@ impl PyExpr {
             data_type: to,
         };
         expr.into()
-    }
-}
-
-#[pyproto]
-impl PyMappingProtocol for PyExpr {
-    fn __getitem__(&self, key: &str) -> PyResult<PyExpr> {
-        Ok(Expr::GetIndexedField {
-            expr: Box::new(self.expr.clone()),
-            key: ScalarValue::Utf8(Some(key.to_string()).to_owned()),
-        }
-        .into())
     }
 }

@@ -19,12 +19,12 @@ import pyarrow as pa
 import pytest
 
 from datafusion import functions as f
-from datafusion import DataFrame, ExecutionContext, column, literal, udf
+from datafusion import DataFrame, SessionContext, column, literal, udf
 
 
 @pytest.fixture
 def df():
-    ctx = ExecutionContext()
+    ctx = SessionContext()
 
     # create a RecordBatch and a new DataFrame from it
     batch = pa.RecordBatch.from_arrays(
@@ -37,7 +37,7 @@ def df():
 
 @pytest.fixture
 def struct_df():
-    ctx = ExecutionContext()
+    ctx = SessionContext()
 
     # create a RecordBatch and a new DataFrame from it
     batch = pa.RecordBatch.from_arrays(
@@ -59,6 +59,16 @@ def test_select(df):
 
     assert result.column(0) == pa.array([5, 7, 9])
     assert result.column(1) == pa.array([-3, -3, -3])
+
+
+def test_select_columns(df):
+    df = df.select_columns("b", "a")
+
+    # execute and collect the first (and only) batch
+    result = df.collect()[0]
+
+    assert result.column(0) == pa.array([4, 5, 6])
+    assert result.column(1) == pa.array([1, 2, 3])
 
 
 def test_filter(df):
@@ -109,7 +119,7 @@ def test_udf(df):
 
 
 def test_join():
-    ctx = ExecutionContext()
+    ctx = SessionContext()
 
     batch = pa.RecordBatch.from_arrays(
         [pa.array([1, 2, 3]), pa.array([4, 5, 6])],
@@ -149,7 +159,7 @@ def test_window_lead(df):
 
 
 def test_get_dataframe(tmp_path):
-    ctx = ExecutionContext()
+    ctx = SessionContext()
 
     path = tmp_path / "test.csv"
     table = pa.Table.from_arrays(
@@ -179,3 +189,11 @@ def test_struct_select(struct_df):
 
     assert result.column(0) == pa.array([5, 7, 9])
     assert result.column(1) == pa.array([-3, -3, -3])
+
+
+def test_explain(df):
+    df = df.select(
+        column("a") + column("b"),
+        column("a") - column("b"),
+    )
+    df.explain()

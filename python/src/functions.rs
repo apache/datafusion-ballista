@@ -18,10 +18,8 @@
 use pyo3::{prelude::*, wrap_pyfunction};
 
 use datafusion::logical_plan;
-
-use datafusion::physical_plan::{
-    aggregates::AggregateFunction, functions::BuiltinScalarFunction,
-};
+use datafusion::physical_plan::aggregates::AggregateFunction;
+use datafusion_expr::BuiltinScalarFunction;
 
 use crate::errors;
 use crate::expression::PyExpr;
@@ -88,11 +86,7 @@ fn concat_ws(sep: String, args: Vec<PyExpr>) -> PyResult<PyExpr> {
 
 /// Creates a new Sort expression
 #[pyfunction]
-fn order_by(
-    expr: PyExpr,
-    asc: Option<bool>,
-    nulls_first: Option<bool>,
-) -> PyResult<PyExpr> {
+fn order_by(expr: PyExpr, asc: Option<bool>, nulls_first: Option<bool>) -> PyResult<PyExpr> {
     Ok(PyExpr {
         expr: datafusion::logical_plan::Expr::Sort {
             expr: Box::new(expr.expr),
@@ -106,10 +100,7 @@ fn order_by(
 #[pyfunction]
 fn alias(expr: PyExpr, name: &str) -> PyResult<PyExpr> {
     Ok(PyExpr {
-        expr: datafusion::logical_plan::Expr::Alias(
-            Box::new(expr.expr),
-            String::from(name),
-        ),
+        expr: datafusion::logical_plan::Expr::Alias(Box::new(expr.expr), String::from(name)),
     })
 }
 
@@ -122,19 +113,19 @@ fn window(
     order_by: Option<Vec<PyExpr>>,
 ) -> PyResult<PyExpr> {
     use std::str::FromStr;
-    let fun = datafusion::physical_plan::window_functions::WindowFunction::from_str(name)
+    let fun = datafusion_expr::window_function::WindowFunction::from_str(name)
         .map_err(|e| -> errors::DataFusionError { e.into() })?;
     Ok(PyExpr {
         expr: datafusion::logical_plan::Expr::WindowFunction {
             fun,
             args: args.into_iter().map(|x| x.expr).collect::<Vec<_>>(),
             partition_by: partition_by
-                .unwrap_or(vec![])
+                .unwrap_or_default()
                 .into_iter()
                 .map(|x| x.expr)
                 .collect::<Vec<_>>(),
             order_by: order_by
-                .unwrap_or(vec![])
+                .unwrap_or_default()
                 .into_iter()
                 .map(|x| x.expr)
                 .collect::<Vec<_>>(),
@@ -244,7 +235,11 @@ scalar_function!(sha384, SHA384);
 scalar_function!(sha512, SHA512);
 scalar_function!(signum, Signum);
 scalar_function!(sin, Sin);
-scalar_function!(split_part, SplitPart, "Splits string at occurrences of delimiter and returns the n'th field (counting from one).");
+scalar_function!(
+    split_part,
+    SplitPart,
+    "Splits string at occurrences of delimiter and returns the n'th field (counting from one)."
+);
 scalar_function!(sqrt, Sqrt);
 scalar_function!(
     starts_with,

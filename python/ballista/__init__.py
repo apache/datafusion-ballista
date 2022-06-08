@@ -18,20 +18,29 @@
 from abc import ABCMeta, abstractmethod
 from typing import List
 
+try:
+    import importlib.metadata as importlib_metadata
+except ImportError:
+    import importlib_metadata
+
+
+import datafusion
+
 import pyarrow as pa
 
 from ._internal import (
-    AggregateUDF,
     DataFrame,
-    ExecutionContext,
+    BallistaContext,
     Expression,
-    ScalarUDF,
 )
+
+
+__version__ = importlib_metadata.version(__name__)
 
 
 __all__ = [
     "DataFrame",
-    "ExecutionContext",
+    "BallistaContext",
     "Expression",
     "AggregateUDF",
     "ScalarUDF",
@@ -82,7 +91,7 @@ def udf(func, input_types, return_type, volatility, name=None):
         raise TypeError("`func` argument must be callable")
     if name is None:
         name = func.__qualname__
-    return ScalarUDF(
+    return datafusion.ScalarUDF(
         name=name,
         func=func,
         input_types=input_types,
@@ -101,7 +110,7 @@ def udaf(accum, input_type, return_type, state_type, volatility, name=None):
         )
     if name is None:
         name = accum.__qualname__
-    return AggregateUDF(
+    return datafusion.AggregateUDF(
         name=name,
         accumulator=accum,
         input_type=input_type,

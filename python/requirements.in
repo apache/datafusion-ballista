@@ -21,7 +21,7 @@ isort
 maturin
 mypy
 numpy
-pandas
 pyarrow
 pytest
 toml
+importlib_metadata; python_version < "3.8"

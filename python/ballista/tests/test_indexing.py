@@ -18,13 +18,12 @@
 import pyarrow as pa
 import pytest
 
-from datafusion import ExecutionContext, column
-from datafusion import functions as f
+from datafusion import SessionContext
 
 
 @pytest.fixture
 def df():
-    ctx = ExecutionContext()
+    ctx = SessionContext()
 
     # create a RecordBatch and a new DataFrame from it
     batch = pa.RecordBatch.from_arrays(
@@ -34,15 +33,23 @@ def df():
     return ctx.create_dataframe([[batch]])
 
 
-def test_built_in_aggregation(df):
-    col_a = column("a")
-    col_b = column("b")
-    df = df.aggregate(
-        [],
-        [f.max(col_a), f.min(col_a), f.count(col_a), f.approx_distinct(col_b)],
+def test_indexing(df):
+    assert df["a"] is not None
+    assert df["a", "b"] is not None
+    assert df[("a", "b")] is not None
+    assert df[["a"]] is not None
+
+
+def test_err(df):
+    with pytest.raises(Exception) as e_info:
+        df["c"]
+
+    assert "Schema error: No field named 'c'" in e_info.value.args[0]
+
+    with pytest.raises(Exception) as e_info:
+        df[1]
+
+    assert (
+        "DataFrame can only be indexed by string index or indices"
+        in e_info.value.args[0]
     )
-    result = df.collect()[0]
-    assert result.column(0) == pa.array([3])
-    assert result.column(1) == pa.array([1])
-    assert result.column(2) == pa.array([3], type=pa.uint64())
-    assert result.column(3) == pa.array([2], type=pa.uint64())

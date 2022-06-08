@@ -19,14 +19,9 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from datafusion import ExecutionContext, udf
+from datafusion import udf
 
 from . import generic as helpers
-
-
-@pytest.fixture
-def ctx():
-    return ExecutionContext()
 
 
 def test_no_table(ctx):
