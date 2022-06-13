@@ -235,12 +235,12 @@ impl AsExecutionPlan for PhysicalPlanNode {
             PhysicalPlanType::GlobalLimit(limit) => {
                 let input: Arc<dyn ExecutionPlan> =
                     into_physical_plan!(limit.input, registry, runtime, extension_codec)?;
-                Ok(Arc::new(GlobalLimitExec::new(input, limit.limit as usize)))
+                Ok(Arc::new(GlobalLimitExec::new(input, None, Some(limit.limit as usize))))
             }
             PhysicalPlanType::LocalLimit(limit) => {
                 let input: Arc<dyn ExecutionPlan> =
                     into_physical_plan!(limit.input, registry, runtime, extension_codec)?;
-                Ok(Arc::new(LocalLimitExec::new(input, limit.limit as usize)))
+                Ok(Arc::new(GlobalLimitExec::new(input, None, Some(limit.limit as usize))))
             }
             PhysicalPlanType::Window(window_agg) => {
                 let input: Arc<dyn ExecutionPlan> = into_physical_plan!(
@@ -692,7 +692,11 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::GlobalLimit(Box::new(
                     protobuf::GlobalLimitExecNode {
                         input: Some(Box::new(input)),
-                        limit: limit.limit() as u32,
+                        // TODO: add skip
+                        limit: match limit.fetch() {
+                            Some(v) => *v as u32,
+                            None => 0,
+                        }
                     },
                 ))),
             })
@@ -705,7 +709,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::LocalLimit(Box::new(
                     protobuf::LocalLimitExecNode {
                         input: Some(Box::new(input)),
-                        limit: limit.limit() as u32,
+                        limit: limit.fetch() as u32,
                     },
                 ))),
             })
