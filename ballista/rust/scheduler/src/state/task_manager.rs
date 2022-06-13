@@ -230,13 +230,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// 4. If we cannot find a task, then looks for a task among all active jobs
     /// 5. If we cannot find a task in all active jobs, then add the reservation to the list of unassigned reservations
     ///
-    /// Finally, we return two lists:
+    /// Finally, we return:
     /// 1. A list of assignments which is a (Executor ID, Task) tuple
     /// 2. A list of unassigned reservations which we could not find tasks for
+    /// 3. The number of pending tasks across active jobs
     pub async fn fill_reservations(
         &self,
         reservations: &[ExecutorReservation],
-    ) -> Result<(Vec<(String, Task)>, Vec<ExecutorReservation>)> {
+    ) -> Result<(Vec<(String, Task)>, Vec<ExecutorReservation>, usize)> {
         let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
 
         with_lock(lock, async {
@@ -350,10 +351,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 }
             }
 
+            let mut pending_tasks = 0;
+
             // Transactional update graphs now that we have assigned tasks
             let txn_ops: Vec<(Keyspace, String, Vec<u8>)> = graphs
                 .into_iter()
                 .map(|(job_id, graph)| {
+                    pending_tasks += graph.available_tasks();
                     let value = self.encode_execution_graph(graph)?;
                     Ok((Keyspace::ActiveJobs, job_id, value))
                 })
@@ -361,7 +365,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
             self.state.put_txn(txn_ops).await?;
 
-            Ok((assignments, unassigned))
+            Ok((assignments, unassigned, pending_tasks))
         }).await
     }
 
