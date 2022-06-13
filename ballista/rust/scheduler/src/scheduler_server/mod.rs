@@ -453,7 +453,7 @@ mod test {
                 .fill_reservations(&reservations)
                 .await
             {
-                Ok((assignments, mut unassigned_reservations)) => {
+                Ok((assignments, mut unassigned_reservations, _)) => {
                     // Break when we are no longer assigning tasks
                     if unassigned_reservations.len() == reservations.len() {
                         break;
@@ -593,7 +593,7 @@ mod test {
                 .fill_reservations(&reservations)
                 .await
             {
-                Ok((assignments, mut unassigned_reservations)) => {
+                Ok((assignments, mut unassigned_reservations, _)) => {
                     for (executor_id, task) in assignments.into_iter() {
                         match scheduler
                             .state

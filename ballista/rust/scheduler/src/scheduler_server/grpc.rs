@@ -130,7 +130,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             let next_task = if can_accept_task {
                 let reservations =
                     vec![ExecutorReservation::new_free(metadata.id.clone())];
-                if let Ok((mut assignments, _)) = self
+                if let Ok((mut assignments, _, _)) = self
                     .state
                     .task_manager
                     .fill_reservations(&reservations)

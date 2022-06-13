@@ -60,13 +60,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         &self,
         reservations: Vec<ExecutorReservation>,
     ) -> Result<Option<SchedulerServerEvent>> {
-        let free_list = match self
+        let (free_list, pending_tasks) = match self
             .state
             .task_manager
             .fill_reservations(&reservations)
             .await
         {
-            Ok((assignments, mut unassigned_reservations)) => {
+            Ok((assignments, mut unassigned_reservations, pending_tasks)) => {
                 for (executor_id, task) in assignments.into_iter() {
                     match self
                         .state
@@ -91,11 +91,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         }
                     }
                 }
-                unassigned_reservations
+                (unassigned_reservations, pending_tasks)
             }
             Err(e) => {
                 error!("Error filling reservations: {:?}", e);
-                reservations
+                (reservations, 0)
             }
         };
 
@@ -105,9 +105,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 .executor_manager
                 .cancel_reservations(free_list)
                 .await?;
+            Ok(None)
+        } else if pending_tasks > 0 {
+            // If there are pending tasks available, try and schedule them
+            let new_reservations = self.state.executor_manager.reserve_slots(pending_tasks as u32).await?;
+            Ok(Some(SchedulerServerEvent::Offer(new_reservations)))
+        } else {
+            Ok(None)
         }
-
-        Ok(None)
     }
 }
 
