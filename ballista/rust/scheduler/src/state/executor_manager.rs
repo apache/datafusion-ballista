@@ -302,7 +302,7 @@ impl ExecutorManager {
             let proto: protobuf::ExecutorData = specification.into();
             let value = encode_protobuf(&proto)?;
             self.state.put(Keyspace::Slots, executor_id, value).await?;
-            Ok(vec![])
+            Ok(reservations)
         }
     }
 
@@ -554,6 +554,30 @@ mod test {
 
         // The total number of reservations should never exceed the number of slots
         assert_eq!(total_reservations.len(), 40);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_register_reserve() -> Result<()> {
+        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+
+        let executor_manager = ExecutorManager::new(state_storage);
+
+        let executors = test_executors(10, 4);
+
+        for (executor_metadata, executor_data) in executors {
+            let reservations = executor_manager
+                .register_executor(executor_metadata, executor_data, true)
+                .await?;
+
+            assert_eq!(reservations.len(), 4);
+        }
+
+        // All slots should be reserved
+        let reservations = executor_manager.reserve_slots(1).await?;
+
+        assert_eq!(reservations.len(), 0);
 
         Ok(())
     }
