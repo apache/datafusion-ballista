@@ -42,9 +42,10 @@ use datafusion::physical_plan::{
         BinaryExpr, CaseExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr,
         Literal, NegativeExpr, NotExpr, TryCastExpr, DEFAULT_DATAFUSION_CAST_OPTIONS,
     },
-    functions::{self, ScalarFunctionExpr},
+    functions::{self},
     Partitioning,
 };
+use datafusion::physical_expr::ScalarFunctionExpr;
 use datafusion::physical_plan::{ColumnStatistics, PhysicalExpr, Statistics};
 
 use protobuf::physical_expr_node::ExprType;
