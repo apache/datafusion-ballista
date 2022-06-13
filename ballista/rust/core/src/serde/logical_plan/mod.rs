@@ -46,9 +46,10 @@ mod roundtrip_tests {
             SizedFile,
         },
         datasource::listing::ListingTable,
+        logical_expr::binary_expr,
         logical_plan::{
-            binary_expr, col, CreateExternalTable, Expr, FileType, LogicalPlan,
-            LogicalPlanBuilder, Operator, Repartition, ToDFSchema,
+            col, CreateExternalTable, Expr, FileType, LogicalPlan, LogicalPlanBuilder,
+            Operator, Repartition, ToDFSchema,
         },
         prelude::*,
     };

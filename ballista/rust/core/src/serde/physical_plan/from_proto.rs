@@ -37,13 +37,13 @@ use datafusion::physical_plan::file_format::FileScanConfig;
 
 use datafusion::logical_expr::window_function::WindowFunction;
 
+use datafusion::physical_expr::ScalarFunctionExpr;
 use datafusion::physical_plan::{
     expressions::{
         BinaryExpr, CaseExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr,
         Literal, NegativeExpr, NotExpr, TryCastExpr, DEFAULT_DATAFUSION_CAST_OPTIONS,
     },
-    functions::{self, ScalarFunctionExpr},
-    Partitioning,
+    functions, Partitioning,
 };
 use datafusion::physical_plan::{ColumnStatistics, PhysicalExpr, Statistics};
 
