@@ -15,15 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::collections::HashMap;
-use std::ops::Deref;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use std::{sync::Arc, time::Duration};
-
 use datafusion::physical_plan::ExecutionPlan;
-use log::{debug, error, info, trace, warn};
-use tonic::transport::Channel;
 
 use ballista_core::serde::protobuf::{
     scheduler_grpc_client::SchedulerGrpcClient, PollWorkParams, PollWorkResult,
@@ -39,7 +31,7 @@ use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use datafusion::execution::context::TaskContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use futures::FutureExt;
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use std::any::Any;
 use std::collections::HashMap;
 use std::error::Error;
