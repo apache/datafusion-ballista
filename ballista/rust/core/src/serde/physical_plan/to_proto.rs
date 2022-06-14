@@ -46,7 +46,7 @@ use datafusion::physical_plan::{AggregateExpr, PhysicalExpr};
 use crate::serde::{protobuf, BallistaError};
 
 use datafusion::logical_expr::BuiltinScalarFunction;
-use datafusion::physical_plan::functions::ScalarFunctionExpr;
+use datafusion::physical_expr::ScalarFunctionExpr;
 
 impl TryInto<protobuf::PhysicalExprNode> for Arc<dyn AggregateExpr> {
     type Error = BallistaError;

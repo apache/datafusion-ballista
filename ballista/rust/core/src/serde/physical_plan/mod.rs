@@ -28,8 +28,8 @@ use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::logical_plan::window_frames::WindowFrame;
 use datafusion::logical_plan::FunctionRegistry;
-use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::aggregates::{create_aggregate_expr, AggregateMode};
+use datafusion::physical_plan::aggregates::{AggregateExec, PhysicalGroupBy};
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::cross_join::CrossJoinExec;
@@ -235,7 +235,11 @@ impl AsExecutionPlan for PhysicalPlanNode {
             PhysicalPlanType::GlobalLimit(limit) => {
                 let input: Arc<dyn ExecutionPlan> =
                     into_physical_plan!(limit.input, registry, runtime, extension_codec)?;
-                Ok(Arc::new(GlobalLimitExec::new(input, limit.limit as usize)))
+                Ok(Arc::new(GlobalLimitExec::new(
+                    input,
+                    None,
+                    Some(limit.limit as usize),
+                )))
             }
             PhysicalPlanType::LocalLimit(limit) => {
                 let input: Arc<dyn ExecutionPlan> =
@@ -396,7 +400,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
 
                 Ok(Arc::new(AggregateExec::try_new(
                     agg_mode,
-                    group,
+                    PhysicalGroupBy::new_single(group),
                     physical_aggr_expr,
                     input,
                     Arc::new((&input_schema).try_into()?),
@@ -692,7 +696,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::GlobalLimit(Box::new(
                     protobuf::GlobalLimitExecNode {
                         input: Some(Box::new(input)),
-                        limit: limit.limit() as u32,
+                        limit: *limit.fetch().unwrap() as u32,
                     },
                 ))),
             })
@@ -705,7 +709,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::LocalLimit(Box::new(
                     protobuf::LocalLimitExecNode {
                         input: Some(Box::new(input)),
-                        limit: limit.limit() as u32,
+                        limit: limit.fetch() as u32,
                     },
                 ))),
             })
@@ -799,11 +803,13 @@ impl AsExecutionPlan for PhysicalPlanNode {
         } else if let Some(exec) = plan.downcast_ref::<AggregateExec>() {
             let groups = exec
                 .group_expr()
+                .expr()
                 .iter()
                 .map(|expr| expr.0.to_owned().try_into())
                 .collect::<Result<Vec<_>, BallistaError>>()?;
             let group_names = exec
                 .group_expr()
+                .expr()
                 .iter()
                 .map(|expr| expr.1.to_owned())
                 .collect();
@@ -1131,10 +1137,10 @@ mod roundtrip_tests {
     use datafusion::execution::context::ExecutionProps;
     use datafusion::logical_expr::{BuiltinScalarFunction, Volatility};
     use datafusion::logical_plan::create_udf;
+    use datafusion::physical_expr::ScalarFunctionExpr;
+    use datafusion::physical_plan::aggregates::PhysicalGroupBy;
     use datafusion::physical_plan::functions;
-    use datafusion::physical_plan::functions::{
-        make_scalar_function, ScalarFunctionExpr,
-    };
+    use datafusion::physical_plan::functions::make_scalar_function;
     use datafusion::physical_plan::projection::ProjectionExec;
     use datafusion::{
         arrow::{
@@ -1236,7 +1242,8 @@ mod roundtrip_tests {
     fn roundtrip_global_limit() -> Result<()> {
         roundtrip_test(Arc::new(GlobalLimitExec::new(
             Arc::new(EmptyExec::new(false, Arc::new(Schema::empty()))),
-            25,
+            None,
+            Some(25),
         )))
     }
 
@@ -1294,7 +1301,7 @@ mod roundtrip_tests {
 
         roundtrip_test(Arc::new(AggregateExec::try_new(
             AggregateMode::Final,
-            groups.clone(),
+            PhysicalGroupBy::new_single(groups.clone()),
             aggregates.clone(),
             Arc::new(EmptyExec::new(false, schema.clone())),
             schema,
