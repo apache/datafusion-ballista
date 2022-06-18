@@ -836,7 +836,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 .groups()
                 .iter()
                 .flatten()
-                .map(|b| *b)
+                .copied()
                 .collect();
 
             let group_names = exec
