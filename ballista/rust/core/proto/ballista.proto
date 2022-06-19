@@ -544,6 +544,8 @@ message AggregateExecNode {
   repeated string aggr_expr_name = 6;
   // we need the input schema to the partial aggregate to pass to the final aggregate
   datafusion.Schema input_schema = 7;
+  repeated PhysicalExprNode null_expr = 8;
+  repeated bool groups = 9;
 }
 
 message ShuffleWriterExecNode {
@@ -567,12 +569,13 @@ message ShuffleReaderPartition {
 
 message GlobalLimitExecNode {
   PhysicalPlanNode input = 1;
-  uint32 limit = 2;
+  uint32 skip = 2;
+  uint32 fetch = 3;
 }
 
 message LocalLimitExecNode {
   PhysicalPlanNode input = 1;
-  uint32 limit = 2;
+  uint32 fetch = 2;
 }
 
 message SortExecNode {

@@ -40,15 +40,20 @@ mod roundtrip_tests {
     use datafusion::logical_plan::source_as_provider;
     use datafusion::{
         arrow::datatypes::{DataType, Field, Schema},
+        common::ToDFSchema,
         datafusion_data_access::{
             self,
             object_store::{FileMetaStream, ListEntryStream, ObjectReader, ObjectStore},
             SizedFile,
         },
         datasource::listing::ListingTable,
-        logical_plan::{
-            binary_expr, col, CreateExternalTable, Expr, FileType, LogicalPlan,
-            LogicalPlanBuilder, Operator, Repartition, ToDFSchema,
+        logical_expr::{
+            binary_expr, col,
+            logical_plan::{
+                CreateExternalTable, FileType, LogicalPlan, LogicalPlanBuilder,
+                Repartition,
+            },
+            Expr, Operator,
         },
         prelude::*,
     };

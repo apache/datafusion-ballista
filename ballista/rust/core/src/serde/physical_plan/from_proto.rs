@@ -31,19 +31,16 @@ use datafusion::datafusion_data_access::{FileMeta, SizedFile};
 use datafusion::datasource::listing::{FileRange, PartitionedFile};
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::execution::context::ExecutionProps;
-use datafusion::logical_plan::FunctionRegistry;
-
-use datafusion::physical_plan::file_format::FileScanConfig;
-
 use datafusion::logical_expr::window_function::WindowFunction;
-
+use datafusion::logical_plan::FunctionRegistry;
+use datafusion::physical_expr::ScalarFunctionExpr;
+use datafusion::physical_plan::file_format::FileScanConfig;
 use datafusion::physical_plan::{
     expressions::{
         BinaryExpr, CaseExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr,
         Literal, NegativeExpr, NotExpr, TryCastExpr, DEFAULT_DATAFUSION_CAST_OPTIONS,
     },
-    functions::{self, ScalarFunctionExpr},
-    Partitioning,
+    functions, Partitioning,
 };
 use datafusion::physical_plan::{ColumnStatistics, PhysicalExpr, Statistics};
 
