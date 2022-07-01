@@ -18,7 +18,9 @@
 use anyhow::Context;
 use ballista_core::config::{BallistaConfig, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
-use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
+use ballista_core::serde::protobuf::execute_query_params::{
+    OptionalJobId, OptionalSessionId, Query,
+};
 use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
@@ -331,7 +333,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             query: Some(query),
             settings,
             optional_session_id,
-            job_id,
+            optional_job_id,
         } = query_params
         {
             // parse config
@@ -398,7 +400,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
             // Generate job id.
             // TODO Maybe the format will be changed in the future
-            let job_id = job_id.unwrap_or(generate_job_id());
+            let job_id = match optional_job_id {
+                Some(OptionalJobId::JobId(job_id)) => job_id,
+                _ => generate_job_id(),
+            };
             let session_id = df_session.session_id();
             let state = self.state.clone();
             let query_stage_event_sender =
@@ -502,7 +507,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             query: None,
             settings,
             optional_session_id: None,
-            job_id: None,
+            optional_job_id: None,
         } = query_params
         {
             // parse config for new session
