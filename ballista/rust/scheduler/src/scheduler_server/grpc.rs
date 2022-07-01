@@ -353,6 +353,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             query: Some(query),
             settings,
             optional_session_id,
+            job_id,
         } = query_params
         {
             // parse config
@@ -424,7 +425,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
             debug!("Received plan for execution: {:?}", plan);
 
-            let job_id = self.state.task_manager.generate_job_id();
+            let job_id =
+                job_id.unwrap_or_else(|| self.state.task_manager.generate_job_id());
 
             self.submit_job(&job_id, session_ctx, &plan)
                 .await
@@ -441,6 +443,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             query: None,
             settings,
             optional_session_id: None,
+            job_id: None,
         } = query_params
         {
             // parse config for new session
