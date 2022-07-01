@@ -236,6 +236,7 @@ message JoinNode {
   repeated datafusion.Column left_join_column = 5;
   repeated datafusion.Column right_join_column = 6;
   bool null_equals_null = 7;
+  datafusion.LogicalExprNode filter = 8;
 }
 
 message UnionNode {
@@ -452,6 +453,7 @@ message FileScanExecConf {
   ScanLimit limit = 5;
   Statistics statistics = 6;
   repeated string table_partition_cols = 7;
+  string object_store_url = 8;
 }
 
 message ParquetScanExecNode {
@@ -481,6 +483,7 @@ message HashJoinExecNode {
   JoinType join_type = 4;
   PartitionMode partition_mode = 6;
   bool null_equals_null = 7;
+  JoinFilter filter = 8;
 }
 
 message UnionExecNode {
@@ -541,6 +544,8 @@ message AggregateExecNode {
   repeated string aggr_expr_name = 6;
   // we need the input schema to the partial aggregate to pass to the final aggregate
   datafusion.Schema input_schema = 7;
+  repeated PhysicalExprNode null_expr = 8;
+  repeated bool groups = 9;
 }
 
 message ShuffleWriterExecNode {
@@ -564,12 +569,13 @@ message ShuffleReaderPartition {
 
 message GlobalLimitExecNode {
   PhysicalPlanNode input = 1;
-  uint32 limit = 2;
+  uint32 skip = 2;
+  uint32 fetch = 3;
 }
 
 message LocalLimitExecNode {
   PhysicalPlanNode input = 1;
-  uint32 limit = 2;
+  uint32 fetch = 2;
 }
 
 message SortExecNode {
@@ -600,9 +606,56 @@ message RepartitionExecNode{
   }
 }
 
+message JoinFilter{
+  PhysicalExprNode expression = 1;
+  repeated ColumnIndex column_indices = 2;
+  datafusion.Schema schema = 3;
+}
+
+message ColumnIndex{
+  uint32 index = 1;
+  JoinSide side = 2;
+}
+
+enum JoinSide{
+  LEFT_SIDE = 0;
+  RIGHT_SIDE = 1;
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Ballista Scheduling
 ///////////////////////////////////////////////////////////////////////////////////////////////////
+message TaskInputPartitions {
+  uint32 partition = 1;
+  repeated PartitionLocation partition_location = 2;
+}
+
+message GraphStageInput {
+  uint32 stage_id = 1;
+  repeated TaskInputPartitions partition_locations = 2;
+  bool complete = 3;
+}
+
+
+message ExecutionGraphStage {
+  uint64 stage_id = 1;
+  uint32 partitions = 2;
+  PhysicalHashRepartition output_partitioning = 3;
+  repeated  GraphStageInput inputs = 4;
+  bytes plan = 5;
+  repeated TaskStatus task_statuses = 6;
+  uint32 output_link = 7;
+  bool resolved = 8;
+}
+
+message ExecutionGraph {
+  string job_id = 1;
+  string session_id = 2;
+  JobStatus status = 3;
+  repeated ExecutionGraphStage stages = 4;
+  uint64 output_partitions = 5;
+  repeated PartitionLocation output_locations = 6;
+}
 
 message KeyValuePair {
   string key = 1;
@@ -774,6 +827,10 @@ message TaskDefinition {
   PhysicalHashRepartition output_partitioning = 3;
   string session_id = 4;
   repeated KeyValuePair props = 5;
+}
+
+message SessionSettings {
+  repeated KeyValuePair configs = 1;
 }
 
 message JobSessionConfig {

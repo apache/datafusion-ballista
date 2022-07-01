@@ -15,12 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::Arc;
-
+use crate::metrics::LoggingMetricsCollector;
+use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightService};
 use arrow_flight::flight_service_server::FlightServiceServer;
-
 use ballista_core::serde::scheduler::ExecutorSpecification;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan, BallistaCodec};
+use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use ballista_core::{
     error::Result,
     serde::protobuf::executor_registration::OptionalHost,
@@ -28,14 +27,13 @@ use ballista_core::{
     BALLISTA_VERSION,
 };
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
+use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::info;
+use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tonic::transport::{Channel, Server};
 use uuid::Uuid;
-
-use crate::metrics::LoggingMetricsCollector;
-use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightService};
 
 pub async fn new_standalone_executor<
     T: 'static + AsLogicalPlan,

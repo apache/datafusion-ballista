@@ -18,6 +18,7 @@
 use ballista_core::error::Result;
 use clap::ArgEnum;
 use futures::Stream;
+use std::collections::HashSet;
 use std::fmt;
 use tokio::sync::OwnedMutexGuard;
 
@@ -48,24 +49,67 @@ impl parse_arg::ParseArgFromStr for StateBackend {
     }
 }
 
+#[derive(Debug, Eq, PartialEq, Hash)]
+pub enum Keyspace {
+    Executors,
+    ActiveJobs,
+    CompletedJobs,
+    QueuedJobs,
+    FailedJobs,
+    Slots,
+    Sessions,
+    Heartbeats,
+}
+
 /// A trait that contains the necessary methods to save and retrieve the state and configuration of a cluster.
 #[tonic::async_trait]
 pub trait StateBackendClient: Send + Sync {
-    /// Retrieve the data associated with a specific key.
+    /// Retrieve the data associated with a specific key in a given keyspace.
     ///
     /// An empty vec is returned if the key does not exist.
-    async fn get(&self, key: &str) -> Result<Vec<u8>>;
+    async fn get(&self, keyspace: Keyspace, key: &str) -> Result<Vec<u8>>;
 
-    /// Retrieve all data associated with a specific key.
-    async fn get_from_prefix(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>>;
+    /// Retrieve all key/value pairs in given keyspace matching a given key prefix.
+    async fn get_from_prefix(
+        &self,
+        keyspace: Keyspace,
+        prefix: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>>;
+
+    /// Retrieve all key/value pairs in a given keyspace. If a limit is specified, will return at
+    /// most `limit` key-value pairs.
+    async fn scan(
+        &self,
+        keyspace: Keyspace,
+        limit: Option<usize>,
+    ) -> Result<Vec<(String, Vec<u8>)>>;
+
+    /// Retrieve all keys from a given keyspace (without their values). The implementations
+    /// should handle stripping any prefixes it may add.
+    async fn scan_keys(&self, keyspace: Keyspace) -> Result<HashSet<String>>;
 
     /// Saves the value into the provided key, overriding any previous data that might have been associated to that key.
-    async fn put(&self, key: String, value: Vec<u8>) -> Result<()>;
+    async fn put(&self, keyspace: Keyspace, key: String, value: Vec<u8>) -> Result<()>;
 
-    async fn lock(&self) -> Result<Box<dyn Lock>>;
+    /// Save multiple values in a single transaction. Either all values should be saved, or all should fail
+    async fn put_txn(&self, ops: Vec<(Keyspace, String, Vec<u8>)>) -> Result<()>;
+
+    /// Atomically move the given key from one keyspace to another
+    async fn mv(
+        &self,
+        from_keyspace: Keyspace,
+        to_keyspace: Keyspace,
+        key: &str,
+    ) -> Result<()>;
+
+    /// Acquire mutex with specified ID.
+    async fn lock(&self, keyspace: Keyspace, key: &str) -> Result<Box<dyn Lock>>;
 
     /// Watch all events that happen on a specific prefix.
-    async fn watch(&self, prefix: String) -> Result<Box<dyn Watch>>;
+    async fn watch(&self, keyspace: Keyspace, prefix: String) -> Result<Box<dyn Watch>>;
+
+    /// Permanently delete a key from state
+    async fn delete(&self, keyspace: Keyspace, key: &str) -> Result<()>;
 }
 
 /// A Watch is a cancelable stream of put or delete events in the [StateBackendClient]

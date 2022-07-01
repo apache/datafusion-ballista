@@ -16,13 +16,13 @@
 # under the License.
 
 [package]
-name = "arrow-benchmarks"
-description = "Apache Arrow Benchmarks"
+name = "ballista-benchmarks"
+description = "Ballista Benchmarks"
 version = "5.0.0"
 edition = "2021"
 authors = ["Apache Arrow <dev@arrow.apache.org>"]
-homepage = "https://github.com/apache/arrow-datafusion"
-repository = "https://github.com/apache/arrow-datafusion"
+homepage = "https://github.com/apache/arrow-ballista"
+repository = "https://github.com/apache/arrow-ballista"
 license = "Apache-2.0"
 publish = false
 rust-version = "1.59"
@@ -33,7 +33,8 @@ snmalloc = ["snmalloc-rs"]
 
 [dependencies]
 ballista = { path = "../ballista/rust/client" }
-datafusion = { git = "https://github.com/coralogix/arrow-datafusion", branch = "master" }
+datafusion = { git = "https://github.com/coralogix/arrow-datafusion", branch = "dev" }
+datafusion-proto = { git = "https://github.com/coralogix/arrow-datafusion", branch = "dev" }
 env_logger = "0.9"
 futures = "0.3"
 mimalloc = { version = "0.1", optional = true, default-features = false }
@@ -41,7 +42,7 @@ num_cpus = "1.13.0"
 rand = "0.8.4"
 serde = "1.0.136"
 serde_json = "1.0.78"
-snmalloc-rs = { version = "0.2", optional = true }
+snmalloc-rs = { version = "0.3", optional = true }
 structopt = { version = "0.3", default-features = false }
 tokio = { version = "^1.0", features = ["macros", "rt", "rt-multi-thread", "parking_lot"] }
 

@@ -17,23 +17,13 @@
 
 //! Benchmark derived from TPC-H. This is not an official TPC-H benchmark.
 
-use futures::future::join_all;
-use rand::prelude::*;
-use std::ops::Div;
-use std::{
-    fs::{self, File},
-    io::Write,
-    iter::Iterator,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::{Instant, SystemTime},
-};
-
 use ballista::context::BallistaContext;
 use ballista::prelude::{
     BallistaConfig, BALLISTA_DEFAULT_BATCH_SIZE, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
 };
-
+use datafusion::datasource::file_format::csv::DEFAULT_CSV_EXTENSION;
+use datafusion::datasource::file_format::parquet::DEFAULT_PARQUET_EXTENSION;
+use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_plan::LogicalPlan;
@@ -52,13 +42,20 @@ use datafusion::{
 };
 use datafusion::{
     arrow::util::pretty,
-    datafusion_data_access::object_store::local::LocalFileSystem,
     datasource::listing::{ListingOptions, ListingTable, ListingTableConfig},
 };
-
-use datafusion::datasource::file_format::csv::DEFAULT_CSV_EXTENSION;
-use datafusion::datasource::file_format::parquet::DEFAULT_PARQUET_EXTENSION;
+use futures::future::join_all;
+use rand::prelude::*;
 use serde::Serialize;
+use std::ops::Div;
+use std::{
+    fs::{self, File},
+    io::Write,
+    iter::Iterator,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Instant, SystemTime},
+};
 use structopt::StructOpt;
 
 #[cfg(feature = "snmalloc")]
@@ -294,9 +291,9 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
         if opt.mem_table {
             println!("Loading table '{}' into memory", table);
             let start = Instant::now();
-            let task_ctx = ctx.task_ctx();
             let memtable =
-                MemTable::load(table_provider, Some(opt.partitions), task_ctx).await?;
+                MemTable::load(table_provider, Some(opt.partitions), &ctx.state())
+                    .await?;
             println!(
                 "Loaded table '{}' into memory in {} ms",
                 table,
@@ -767,7 +764,8 @@ fn get_table(
         table_partition_cols: vec![],
     };
 
-    let config = ListingTableConfig::new(Arc::new(LocalFileSystem {}), path)
+    let url = ListingTableUrl::parse(path)?;
+    let config = ListingTableConfig::new(url)
         .with_listing_options(options)
         .with_schema(schema);
 
@@ -920,13 +918,12 @@ struct QueryResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
-    use std::sync::Arc;
-
     use datafusion::arrow::array::*;
     use datafusion::arrow::util::display::array_value_to_string;
     use datafusion::logical_plan::Expr;
     use datafusion::logical_plan::Expr::Cast;
+    use std::env;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn q1() -> Result<()> {
@@ -1463,10 +1460,10 @@ mod tests {
 
     mod ballista_round_trip {
         use super::*;
-        use ballista_core::serde::{
-            protobuf, AsExecutionPlan, AsLogicalPlan, BallistaCodec,
-        };
+        use ballista_core::serde::{protobuf, AsExecutionPlan, BallistaCodec};
+        use datafusion::datasource::listing::ListingTableUrl;
         use datafusion::physical_plan::ExecutionPlan;
+        use datafusion_proto::logical_plan::AsLogicalPlan;
         use std::ops::Deref;
 
         async fn round_trip_query(n: usize) -> Result<()> {
@@ -1475,7 +1472,7 @@ mod tests {
                 .with_batch_size(10);
             let ctx = SessionContext::with_config(config);
             let codec: BallistaCodec<
-                protobuf::LogicalPlanNode,
+                datafusion_proto::protobuf::LogicalPlanNode,
                 protobuf::PhysicalPlanNode,
             > = BallistaCodec::default();
 
@@ -1483,6 +1480,7 @@ mod tests {
             // is not set.
             let tpch_data_path =
                 env::var("TPCH_DATA").unwrap_or_else(|_| "./".to_string());
+            let path = ListingTableUrl::parse(tpch_data_path)?;
 
             for &table in TABLES {
                 let schema = get_schema(table);
@@ -1492,12 +1490,9 @@ mod tests {
                     .has_header(false)
                     .file_extension(".tbl");
                 let listing_options = options.to_listing_options(1);
-                let config = ListingTableConfig::new(
-                    Arc::new(LocalFileSystem {}),
-                    tpch_data_path.clone(),
-                )
-                .with_listing_options(listing_options)
-                .with_schema(Arc::new(schema));
+                let config = ListingTableConfig::new(path.clone())
+                    .with_listing_options(listing_options)
+                    .with_schema(Arc::new(schema));
                 let provider = ListingTable::try_new(config)?;
                 ctx.register_table(table, Arc::new(provider))?;
             }
@@ -1505,8 +1500,8 @@ mod tests {
             // test logical plan round trip
             let plans = create_logical_plans(&ctx, n)?;
             for plan in plans {
-                let proto: protobuf::LogicalPlanNode =
-                    protobuf::LogicalPlanNode::try_from_logical_plan(
+                let proto: datafusion_proto::protobuf::LogicalPlanNode =
+                    datafusion_proto::protobuf::LogicalPlanNode::try_from_logical_plan(
                         &plan,
                         codec.logical_extension_codec(),
                     )
@@ -1522,8 +1517,8 @@ mod tests {
 
                 // test optimized logical plan round trip
                 let plan = ctx.optimize(&plan)?;
-                let proto: protobuf::LogicalPlanNode =
-                    protobuf::LogicalPlanNode::try_from_logical_plan(
+                let proto: datafusion_proto::protobuf::LogicalPlanNode =
+                    datafusion_proto::protobuf::LogicalPlanNode::try_from_logical_plan(
                         &plan,
                         codec.logical_extension_codec(),
                     )

@@ -46,7 +46,7 @@ use datafusion::physical_plan::{AggregateExpr, PhysicalExpr};
 use crate::serde::{protobuf, BallistaError};
 
 use datafusion::logical_expr::BuiltinScalarFunction;
-use datafusion::physical_plan::functions::ScalarFunctionExpr;
+use datafusion::physical_expr::ScalarFunctionExpr;
 
 impl TryInto<protobuf::PhysicalExprNode> for Arc<dyn AggregateExpr> {
     type Error = BallistaError;
@@ -441,6 +441,7 @@ impl TryFrom<&FileScanConfig> for protobuf::FileScanExecConf {
                 .collect(),
             schema: Some(conf.file_schema.as_ref().into()),
             table_partition_cols: conf.table_partition_cols.to_vec(),
+            object_store_url: conf.object_store_url.to_string(),
         })
     }
 }

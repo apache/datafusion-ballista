@@ -35,7 +35,7 @@ use ballista_core::config::TaskSchedulingPolicy;
 use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf::{
     executor_registration, scheduler_grpc_client::SchedulerGrpcClient,
-    ExecutorRegistration, LogicalPlanNode, PhysicalPlanNode,
+    ExecutorRegistration, PhysicalPlanNode,
 };
 use ballista_core::serde::scheduler::ExecutorSpecification;
 use ballista_core::serde::BallistaCodec;
@@ -45,6 +45,7 @@ use ballista_executor::flight_service::BallistaFlightService;
 use ballista_executor::metrics::LoggingMetricsCollector;
 use config::prelude::*;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
+use datafusion_proto::protobuf::LogicalPlanNode;
 
 #[macro_use]
 extern crate configure_me;

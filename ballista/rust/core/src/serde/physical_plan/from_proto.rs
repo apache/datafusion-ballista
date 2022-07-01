@@ -27,10 +27,9 @@ use crate::convert_required;
 use crate::serde::{from_proto_binary_op, proto_error, protobuf};
 use chrono::{TimeZone, Utc};
 
-use datafusion::datafusion_data_access::{
-    object_store::local::LocalFileSystem, FileMeta, SizedFile,
-};
+use datafusion::datafusion_data_access::{FileMeta, SizedFile};
 use datafusion::datasource::listing::{FileRange, PartitionedFile};
+use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::execution::context::ExecutionProps;
 use datafusion::logical_plan::FunctionRegistry;
 
@@ -38,13 +37,13 @@ use datafusion::physical_plan::file_format::FileScanConfig;
 
 use datafusion::logical_expr::window_function::WindowFunction;
 
+use datafusion::physical_expr::ScalarFunctionExpr;
 use datafusion::physical_plan::{
     expressions::{
         BinaryExpr, CaseExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr,
         Literal, NegativeExpr, NotExpr, TryCastExpr, DEFAULT_DATAFUSION_CAST_OPTIONS,
     },
-    functions::{self, ScalarFunctionExpr},
-    Partitioning,
+    functions, Partitioning,
 };
 use datafusion::physical_plan::{ColumnStatistics, PhysicalExpr, Statistics};
 
@@ -380,7 +379,7 @@ impl TryInto<FileScanConfig> for &protobuf::FileScanExecConf {
         let statistics = convert_required!(self.statistics)?;
 
         Ok(FileScanConfig {
-            object_store: Arc::new(LocalFileSystem {}),
+            object_store_url: ObjectStoreUrl::parse(&self.object_store_url)?,
             file_schema: schema,
             file_groups: self
                 .file_groups

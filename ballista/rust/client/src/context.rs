@@ -27,8 +27,9 @@ use std::sync::Arc;
 
 use ballista_core::config::BallistaConfig;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
-use ballista_core::serde::protobuf::{ExecuteQueryParams, KeyValuePair, LogicalPlanNode};
+use ballista_core::serde::protobuf::{ExecuteQueryParams, KeyValuePair};
 use ballista_core::utils::create_df_ctx_with_ballista_query_planner;
+use datafusion_proto::protobuf::LogicalPlanNode;
 
 use datafusion::catalog::TableReference;
 use datafusion::dataframe::DataFrame;
@@ -320,8 +321,7 @@ impl BallistaContext {
         }
 
         if let DFStatement::Statement(s) = &statements[0] {
-            let st: &Statement = s;
-            match st {
+            match s.as_ref() {
                 Statement::ShowVariable { .. } => {
                     is_show_variable = true;
                 }
@@ -592,12 +592,10 @@ mod tests {
                         target_partitions: x.target_partitions,
                     };
 
-                    let config = ListingTableConfig::new(
-                        listing_table.object_store().clone(),
-                        listing_table.table_path().to_string(),
-                    )
-                    .with_schema(Arc::new(Schema::new(vec![])))
-                    .with_listing_options(error_options);
+                    let config =
+                        ListingTableConfig::new(listing_table.table_path().clone())
+                            .with_schema(Arc::new(Schema::new(vec![])))
+                            .with_listing_options(error_options);
 
                     let error_table = ListingTable::try_new(config).unwrap();
 
@@ -614,7 +612,7 @@ mod tests {
             .await
             .unwrap();
         let results = df.collect().await.unwrap();
-        pretty::print_batches(&results);
+        pretty::print_batches(&results).unwrap();
     }
 
     #[tokio::test]

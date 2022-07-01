@@ -63,9 +63,9 @@ checksum = "8da52d66c7071e2e3fa2a1e5c6d088fec47b593032b254f5e980de8ea54454d6"
 
 [[package]]
 name = "arrow"
-version = "13.0.0"
+version = "15.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c6bee230122beb516ead31935a61f683715f987c6f003eff44ad6986624105a"
+checksum = "6510d919fa4c27880f54430510d09327d7c86699c3692664bc0bb7c314f71385"
 dependencies = [
  "bitflags",
  "chrono",
@@ -88,9 +88,9 @@ dependencies = [
 
 [[package]]
 name = "arrow-flight"
-version = "13.0.0"
+version = "15.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a3666d2dbc637fa979d1f0bf3031d39a80e709f3b9ec88e3d573c1d666bf553"
+checksum = "3683337e9a7a300ae42355c96a2e5d421cf9dbe16f09ce8a6475157fe69dc92d"
 dependencies = [
  "arrow",
  "base64",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "ballista"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "ballista-core",
  "datafusion",
@@ -212,9 +212,8 @@ dependencies = [
 
 [[package]]
 name = "ballista-cli"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
- "arrow",
  "ballista",
  "clap",
  "datafusion",
@@ -228,7 +227,7 @@ dependencies = [
 
 [[package]]
 name = "ballista-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "ahash",
  "arrow-flight",
@@ -500,7 +499,8 @@ dependencies = [
 
 [[package]]
 name = "datafusion"
-version = "7.0.0"
+version = "8.0.0"
+source = "git+https://github.com/tustvold/arrow-datafusion?rev=57a88f1f93c7d2a582f71aa040190ad79a231a7c#57a88f1f93c7d2a582f71aa040190ad79a231a7c"
 dependencies = [
  "ahash",
  "arrow",
@@ -511,8 +511,11 @@ dependencies = [
  "datafusion-expr",
  "datafusion-physical-expr",
  "datafusion-row",
+ "datafusion-sql",
  "futures",
+ "glob",
  "hashbrown 0.12.1",
+ "itertools",
  "lazy_static",
  "log",
  "num_cpus",
@@ -527,12 +530,14 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-stream",
+ "url",
  "uuid",
 ]
 
 [[package]]
 name = "datafusion-cli"
-version = "7.0.0"
+version = "8.0.0"
+source = "git+https://github.com/tustvold/arrow-datafusion?rev=57a88f1f93c7d2a582f71aa040190ad79a231a7c#57a88f1f93c7d2a582f71aa040190ad79a231a7c"
 dependencies = [
  "arrow",
  "clap",
@@ -546,7 +551,8 @@ dependencies = [
 
 [[package]]
 name = "datafusion-common"
-version = "7.0.0"
+version = "8.0.0"
+source = "git+https://github.com/tustvold/arrow-datafusion?rev=57a88f1f93c7d2a582f71aa040190ad79a231a7c#57a88f1f93c7d2a582f71aa040190ad79a231a7c"
 dependencies = [
  "arrow",
  "ordered-float 3.0.0",
@@ -556,12 +562,12 @@ dependencies = [
 
 [[package]]
 name = "datafusion-data-access"
-version = "7.0.0"
+version = "8.0.0"
+source = "git+https://github.com/tustvold/arrow-datafusion?rev=57a88f1f93c7d2a582f71aa040190ad79a231a7c#57a88f1f93c7d2a582f71aa040190ad79a231a7c"
 dependencies = [
  "async-trait",
  "chrono",
  "futures",
- "glob",
  "parking_lot",
  "tempfile",
  "tokio",
@@ -569,7 +575,8 @@ dependencies = [
 
 [[package]]
 name = "datafusion-expr"
-version = "7.0.0"
+version = "8.0.0"
+source = "git+https://github.com/tustvold/arrow-datafusion?rev=57a88f1f93c7d2a582f71aa040190ad79a231a7c#57a88f1f93c7d2a582f71aa040190ad79a231a7c"
 dependencies = [
  "ahash",
  "arrow",
@@ -579,7 +586,8 @@ dependencies = [
 
 [[package]]
 name = "datafusion-physical-expr"
-version = "7.0.0"
+version = "8.0.0"
+source = "git+https://github.com/tustvold/arrow-datafusion?rev=57a88f1f93c7d2a582f71aa040190ad79a231a7c#57a88f1f93c7d2a582f71aa040190ad79a231a7c"
 dependencies = [
  "ahash",
  "arrow",
@@ -602,21 +610,40 @@ dependencies = [
 
 [[package]]
 name = "datafusion-proto"
-version = "7.0.0"
+version = "8.0.0"
+source = "git+https://github.com/tustvold/arrow-datafusion?rev=57a88f1f93c7d2a582f71aa040190ad79a231a7c#57a88f1f93c7d2a582f71aa040190ad79a231a7c"
 dependencies = [
+ "arrow",
  "datafusion",
+ "datafusion-common",
+ "datafusion-expr",
  "prost",
  "tonic-build",
 ]
 
 [[package]]
 name = "datafusion-row"
-version = "7.0.0"
+version = "8.0.0"
+source = "git+https://github.com/tustvold/arrow-datafusion?rev=57a88f1f93c7d2a582f71aa040190ad79a231a7c#57a88f1f93c7d2a582f71aa040190ad79a231a7c"
 dependencies = [
  "arrow",
  "datafusion-common",
  "paste",
  "rand",
+]
+
+[[package]]
+name = "datafusion-sql"
+version = "8.0.0"
+source = "git+https://github.com/tustvold/arrow-datafusion?rev=57a88f1f93c7d2a582f71aa040190ad79a231a7c#57a88f1f93c7d2a582f71aa040190ad79a231a7c"
+dependencies = [
+ "ahash",
+ "arrow",
+ "datafusion-common",
+ "datafusion-expr",
+ "hashbrown 0.12.1",
+ "sqlparser",
+ "tokio",
 ]
 
 [[package]]
@@ -781,6 +808,16 @@ name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
+
+[[package]]
+name = "form_urlencoded"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fc25a87fa4fd2094bffb06925852034d90a17f0d1e05197d4956d3555752191"
+dependencies = [
+ "matches",
+ "percent-encoding",
+]
 
 [[package]]
 name = "futures"
@@ -1051,6 +1088,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "idna"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "418a0a6fab821475f634efe3ccc45c013f742efe03d853e8d3355d5cb850ecf8"
+dependencies = [
+ "matches",
+ "unicode-bidi",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "indexmap"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1250,6 +1298,12 @@ dependencies = [
  "cc",
  "libc",
 ]
+
+[[package]]
+name = "matches"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3e378b66a060d48947b590737b30a1be76706c8dd7b8ba0f2fe3989c68a853f"
 
 [[package]]
 name = "matchit"
@@ -1526,14 +1580,15 @@ dependencies = [
 
 [[package]]
 name = "parquet"
-version = "13.0.0"
+version = "15.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c6d737baed48775e87a69aa262f1fa2f1d6bd074dedbe9cac244b9aabf2a0b4"
+checksum = "94d31dde60b151ef88ec2c847e3a8f66d42d7dbdaeefd05d13d79db676b0b56f"
 dependencies = [
  "arrow",
  "base64",
  "brotli",
  "byteorder",
+ "bytes",
  "chrono",
  "flate2",
  "lz4",
@@ -2112,6 +2167,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinyvec"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87cc5ceb3875bb20c2890005a4e226a4651264a5c75edb2421b52861a0a0cb50"
+dependencies = [
+ "tinyvec_macros",
+]
+
+[[package]]
+name = "tinyvec_macros"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cda74da7e1a664f795bb1f8a87ec406fb89a02522cf6e50620d016add6dbbf5c"
+
+[[package]]
 name = "tokio"
 version = "1.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2328,6 +2398,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dcf81ac59edc17cc8697ff311e8f5ef2d99fcbd9817b34cec66f90b6c3dfd987"
 
 [[package]]
+name = "unicode-bidi"
+version = "0.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "099b7128301d285f79ddd55b9a83d5e6b9e97c92e0ea0daebee7263e932de992"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d54590932941a9e9266f0832deed84ebe1bf2e4c9e4a3554d393d18f5e854bf9"
+dependencies = [
+ "tinyvec",
+]
+
+[[package]]
 name = "unicode-segmentation"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2344,6 +2429,18 @@ name = "unicode-xid"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "957e51f3646910546462e67d5f7599b9e4fb8acdd304b087a6494730f9eebf04"
+
+[[package]]
+name = "url"
+version = "2.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a507c383b2d33b5fc35d1861e77e6b383d158b2da5e14fe51b83dfedf6fd578c"
+dependencies = [
+ "form_urlencoded",
+ "idna",
+ "matches",
+ "percent-encoding",
+]
 
 [[package]]
 name = "utf8parse"
