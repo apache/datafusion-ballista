@@ -115,9 +115,9 @@ impl BallistaConfig {
         for (name, entry) in &supported_entries {
             if let Some(v) = settings.get(name) {
                 // validate that we can parse the user-supplied value
-                let _ = Self::parse_value(v.as_str(), entry._data_type.clone()).map_err(|e| BallistaError::General(format!("Failed to parse user-supplied value '{}' for configuration setting '{}': {}", name, v, e)))?;
+                Self::parse_value(v.as_str(), entry._data_type.clone()).map_err(|e| BallistaError::General(format!("Failed to parse user-supplied value '{}' for configuration setting '{}': {}", name, v, e)))?;
             } else if let Some(v) = entry.default_value.clone() {
-                let _ = Self::parse_value(v.as_str(), entry._data_type.clone()).map_err(|e| BallistaError::General(format!("Failed to parse default value '{}' for configuration setting '{}': {}", name, v, e)))?;
+                Self::parse_value(v.as_str(), entry._data_type.clone()).map_err(|e| BallistaError::General(format!("Failed to parse default value '{}' for configuration setting '{}': {}", name, v, e)))?;
             } else {
                 return Err(BallistaError::General(format!(
                     "No value specified for mandatory configuration setting '{}'",
