@@ -331,6 +331,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             query: Some(query),
             settings,
             optional_session_id,
+            job_id,
         } = query_params
         {
             // parse config
@@ -397,7 +398,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
             // Generate job id.
             // TODO Maybe the format will be changed in the future
-            let job_id = generate_job_id();
+            let job_id = job_id.unwrap_or(generate_job_id());
             let session_id = df_session.session_id();
             let state = self.state.clone();
             let query_stage_event_sender =
@@ -501,6 +502,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             query: None,
             settings,
             optional_session_id: None,
+            job_id: None,
         } = query_params
         {
             // parse config for new session

@@ -828,6 +828,7 @@ message ExecuteQueryParams {
     string session_id = 3;
   }
   repeated KeyValuePair settings = 4;
+  optional string job_id = 5;
 }
 
 message ExecuteSqlParams {
