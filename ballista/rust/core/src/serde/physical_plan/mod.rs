@@ -831,7 +831,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 .groups()
                 .iter()
                 .flatten()
-                .map(|b| *b)
+                .cloned()
                 .collect();
 
             let null_expr = exec
@@ -1363,7 +1363,7 @@ mod roundtrip_tests {
 
         let null_expr: Vec<(Arc<dyn PhysicalExpr>, String)> = vec![
             (lit(ScalarValue::Int64(None)), "a".to_string()),
-            ((lit(ScalarValue::Int64(None)), "b".to_string())),
+            (lit(ScalarValue::Int64(None)), "b".to_string()),
         ];
 
         let aggregates: Vec<Arc<dyn AggregateExpr>> = vec![Arc::new(Avg::new(
