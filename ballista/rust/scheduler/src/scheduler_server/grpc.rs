@@ -508,7 +508,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let job_id = request.into_inner().job_id;
         debug!("Received get_job_status request for job {}", job_id);
         match self.state.task_manager.get_job_status(&job_id).await {
-            Ok(status) => Ok(Response::new(GetJobStatusResult { status })),
+            Ok(Some(status)) => Ok(Response::new(GetJobStatusResult {
+                status: Some(status),
+            })),
+            Ok(None) => {
+                let msg = format!("Job {} not found", job_id);
+                Err(Status::not_found(msg))
+            }
             Err(e) => {
                 let msg = format!("Error getting status for job {}: {:?}", job_id, e);
                 error!("{}", msg);
