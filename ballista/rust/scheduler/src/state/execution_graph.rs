@@ -857,7 +857,7 @@ mod test {
 
         let logical_plan = scan_empty(None, &schema, Some(vec![0, 1]))
             .unwrap()
-            .limit(1)
+            .limit(None, Some(1))
             .unwrap()
             .build()
             .unwrap();
