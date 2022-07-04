@@ -28,8 +28,8 @@ use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::logical_plan::window_frames::WindowFrame;
 use datafusion::logical_plan::FunctionRegistry;
-use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::aggregates::{create_aggregate_expr, AggregateMode};
+use datafusion::physical_plan::aggregates::{AggregateExec, PhysicalGroupBy};
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::cross_join::CrossJoinExec;
@@ -235,12 +235,22 @@ impl AsExecutionPlan for PhysicalPlanNode {
             PhysicalPlanType::GlobalLimit(limit) => {
                 let input: Arc<dyn ExecutionPlan> =
                     into_physical_plan!(limit.input, registry, runtime, extension_codec)?;
-                Ok(Arc::new(GlobalLimitExec::new(input, limit.limit as usize)))
+                let skip = if limit.skip > 0 {
+                    Some(limit.skip as usize)
+                } else {
+                    None
+                };
+                let fetch = if limit.fetch > 0 {
+                    Some(limit.fetch as usize)
+                } else {
+                    None
+                };
+                Ok(Arc::new(GlobalLimitExec::new(input, skip, fetch)))
             }
             PhysicalPlanType::LocalLimit(limit) => {
                 let input: Arc<dyn ExecutionPlan> =
                     into_physical_plan!(limit.input, registry, runtime, extension_codec)?;
-                Ok(Arc::new(LocalLimitExec::new(input, limit.limit as usize)))
+                Ok(Arc::new(LocalLimitExec::new(input, limit.fetch as usize)))
             }
             PhysicalPlanType::Window(window_agg) => {
                 let input: Arc<dyn ExecutionPlan> = into_physical_plan!(
@@ -329,7 +339,10 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         AggregateMode::FinalPartitioned
                     }
                 };
-                let group = hash_agg
+
+                let num_expr = hash_agg.group_expr.len();
+
+                let group_expr = hash_agg
                     .group_expr
                     .iter()
                     .zip(hash_agg.group_expr_name.iter())
@@ -338,6 +351,26 @@ impl AsExecutionPlan for PhysicalPlanNode {
                             .map(|expr| (expr, name.to_string()))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+
+                let null_expr = hash_agg
+                    .null_expr
+                    .iter()
+                    .zip(hash_agg.group_expr_name.iter())
+                    .map(|(expr, name)| {
+                        parse_physical_expr(expr, registry)
+                            .map(|expr| (expr, name.to_string()))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let groups: Vec<Vec<bool>> = if !hash_agg.groups.is_empty() {
+                    hash_agg
+                        .groups
+                        .chunks(num_expr)
+                        .map(|g| g.to_vec())
+                        .collect::<Vec<Vec<bool>>>()
+                } else {
+                    vec![]
+                };
 
                 let input_schema = hash_agg
                     .input_schema
@@ -396,7 +429,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
 
                 Ok(Arc::new(AggregateExec::try_new(
                     agg_mode,
-                    group,
+                    PhysicalGroupBy::new(group_expr, null_expr, groups),
                     physical_aggr_expr,
                     input,
                     Arc::new((&input_schema).try_into()?),
@@ -692,7 +725,8 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::GlobalLimit(Box::new(
                     protobuf::GlobalLimitExecNode {
                         input: Some(Box::new(input)),
-                        limit: limit.limit() as u32,
+                        skip: *limit.skip().unwrap_or(&0) as u32,
+                        fetch: *limit.fetch().unwrap_or(&0) as u32,
                     },
                 ))),
             })
@@ -705,7 +739,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::LocalLimit(Box::new(
                     protobuf::LocalLimitExecNode {
                         input: Some(Box::new(input)),
-                        limit: limit.limit() as u32,
+                        fetch: limit.fetch() as u32,
                     },
                 ))),
             })
@@ -797,16 +831,21 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 ))),
             })
         } else if let Some(exec) = plan.downcast_ref::<AggregateExec>() {
-            let groups = exec
+            let groups: Vec<bool> = exec
                 .group_expr()
+                .groups()
                 .iter()
-                .map(|expr| expr.0.to_owned().try_into())
-                .collect::<Result<Vec<_>, BallistaError>>()?;
+                .flatten()
+                .copied()
+                .collect();
+
             let group_names = exec
                 .group_expr()
+                .expr()
                 .iter()
                 .map(|expr| expr.1.to_owned())
                 .collect();
+
             let agg = exec
                 .aggr_expr()
                 .iter()
@@ -833,16 +872,33 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 exec.input().to_owned(),
                 extension_codec,
             )?;
+
+            let null_expr = exec
+                .group_expr()
+                .null_expr()
+                .iter()
+                .map(|expr| expr.0.to_owned().try_into())
+                .collect::<Result<Vec<_>, BallistaError>>()?;
+
+            let group_expr = exec
+                .group_expr()
+                .expr()
+                .iter()
+                .map(|expr| expr.0.to_owned().try_into())
+                .collect::<Result<Vec<_>, BallistaError>>()?;
+
             Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Aggregate(Box::new(
                     protobuf::AggregateExecNode {
-                        group_expr: groups,
+                        group_expr,
                         group_expr_name: group_names,
                         aggr_expr: agg,
                         aggr_expr_name: agg_names,
                         mode: agg_mode as i32,
                         input: Some(Box::new(input)),
                         input_schema: Some(input_schema.as_ref().into()),
+                        null_expr,
+                        groups,
                     },
                 ))),
             })
@@ -1131,10 +1187,10 @@ mod roundtrip_tests {
     use datafusion::execution::context::ExecutionProps;
     use datafusion::logical_expr::{BuiltinScalarFunction, Volatility};
     use datafusion::logical_plan::create_udf;
+    use datafusion::physical_expr::ScalarFunctionExpr;
+    use datafusion::physical_plan::aggregates::PhysicalGroupBy;
     use datafusion::physical_plan::functions;
-    use datafusion::physical_plan::functions::{
-        make_scalar_function, ScalarFunctionExpr,
-    };
+    use datafusion::physical_plan::functions::make_scalar_function;
     use datafusion::physical_plan::projection::ProjectionExec;
     use datafusion::{
         arrow::{
@@ -1236,7 +1292,8 @@ mod roundtrip_tests {
     fn roundtrip_global_limit() -> Result<()> {
         roundtrip_test(Arc::new(GlobalLimitExec::new(
             Arc::new(EmptyExec::new(false, Arc::new(Schema::empty()))),
-            25,
+            None,
+            Some(25),
         )))
     }
 
@@ -1294,7 +1351,7 @@ mod roundtrip_tests {
 
         roundtrip_test(Arc::new(AggregateExec::try_new(
             AggregateMode::Final,
-            groups.clone(),
+            PhysicalGroupBy::new_single(groups.clone()),
             aggregates.clone(),
             Arc::new(EmptyExec::new(false, schema.clone())),
             schema,

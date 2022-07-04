@@ -35,7 +35,7 @@ required-features = ["ballista/standalone"]
 
 [dependencies]
 ballista = { path = "../ballista/rust/client", version = "0.7.0" }
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "3c1c188e1476575f113a511789e398fdd5c009cd" }
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "0289bfe6a98bdae371eee29d3f257b173ddb4437" }
 futures = "0.3"
 num_cpus = "1.13.0"
 prost = "0.10"
