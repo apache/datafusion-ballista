@@ -429,9 +429,28 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             debug!("Received plan for execution: {:?}", plan);
 
             let job_id = match optional_job_id {
-                Some(OptionalJobId::JobId(job_id)) => job_id,
-                _ => self.state.task_manager.generate_job_id(),
-            };
+                // job_id was provided by the caller, lets check that the job_id is unique
+                Some(OptionalJobId::JobId(job_id)) => {
+                    match self.state.task_manager.get_job_status(&job_id).await {
+                        // not job found for this job id, we are good to go
+                        Ok(None) => Ok(job_id),
+                        // job with such job_id already exists, fail-fast
+                        Ok(Some(_)) => {
+                            let msg = format!("JobId: {:?} already exists", job_id);
+                            Err(Status::internal(msg))
+                        }
+                        Err(e) => {
+                            let msg = format!(
+                                "Error getting status for job {}: {:?}",
+                                job_id, e
+                            );
+                            error!("{}", msg);
+                            Err(Status::internal(msg))
+                        }
+                    }
+                }
+                _ => Ok(self.state.task_manager.generate_job_id()),
+            }?;
 
             self.submit_job(&job_id, session_ctx, &plan)
                 .await
