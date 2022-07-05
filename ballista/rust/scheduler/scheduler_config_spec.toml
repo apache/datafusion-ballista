@@ -71,3 +71,9 @@ name = "plugin_dir"
 type = "String"
 doc = "plugin dir"
 default = "std::string::String::from(\"\")"
+
+[[param]]
+name = "sled_dir"
+type = "String"
+doc = "Sled dir: Opens a Db for saving schduler metadata at the specified path. This will create a new storage directory at the specified path if it does not already exist."
+default = "std::string::String::from(\"\")"

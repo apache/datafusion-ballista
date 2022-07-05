@@ -54,8 +54,8 @@ mod config {
     // Ideally we would use the include_config macro from configure_me, but then we cannot use
     // #[allow(clippy::all)] to silence clippy warnings from the generated code
     include!(concat!(
-        env!("OUT_DIR"),
-        "/scheduler_configure_me_config.rs"
+    env!("OUT_DIR"),
+    "/scheduler_configure_me_config.rs"
     ));
 }
 
@@ -178,11 +178,18 @@ async fn main() -> Result<()> {
         }
         #[cfg(feature = "sled")]
         StateBackend::Standalone => {
-            // TODO: Use a real file and make path is configurable
-            Arc::new(
-                StandaloneClient::try_new_temporary()
-                    .context("Could not create standalone config backend")?,
-            )
+            if opt.sled_dir.is_empty() {
+                Arc::new(
+                    StandaloneClient::try_new_temporary()
+                        .context("Could not create standalone config backend")?,
+                )
+            } else {
+                println!("{}", opt.sled_dir);
+                Arc::new(
+                    StandaloneClient::try_new(opt.sled_dir)
+                        .context("Could not create standalone config backend")?,
+                )
+            }
         }
         #[cfg(not(feature = "sled"))]
         StateBackend::Standalone => {
