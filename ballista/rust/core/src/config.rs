@@ -115,9 +115,9 @@ impl BallistaConfig {
         for (name, entry) in &supported_entries {
             if let Some(v) = settings.get(name) {
                 // validate that we can parse the user-supplied value
-                let _ = Self::parse_value(v.as_str(), entry._data_type.clone()).map_err(|e| BallistaError::General(format!("Failed to parse user-supplied value '{}' for configuration setting '{}': {}", name, v, e)))?;
+                Self::parse_value(v.as_str(), entry._data_type.clone()).map_err(|e| BallistaError::General(format!("Failed to parse user-supplied value '{}' for configuration setting '{}': {}", name, v, e)))?;
             } else if let Some(v) = entry.default_value.clone() {
-                let _ = Self::parse_value(v.as_str(), entry._data_type.clone()).map_err(|e| BallistaError::General(format!("Failed to parse default value '{}' for configuration setting '{}': {}", name, v, e)))?;
+                Self::parse_value(v.as_str(), entry._data_type.clone()).map_err(|e| BallistaError::General(format!("Failed to parse default value '{}' for configuration setting '{}': {}", name, v, e)))?;
             } else {
                 return Err(BallistaError::General(format!(
                     "No value specified for mandatory configuration setting '{}'",
@@ -156,8 +156,8 @@ impl BallistaConfig {
     pub fn valid_entries() -> HashMap<String, ConfigEntry> {
         let entries = vec![
             ConfigEntry::new(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS.to_string(),
-                "Sets the default number of partitions to create when repartitioning query stages".to_string(),
-                DataType::UInt16, Some("2".to_string())),
+                             "Sets the default number of partitions to create when repartitioning query stages".to_string(),
+                             DataType::UInt16, Some("2".to_string())),
             ConfigEntry::new(BALLISTA_DEFAULT_BATCH_SIZE.to_string(),
                              "Sets the default batch size".to_string(),
                              DataType::UInt16, Some("8192".to_string())),
@@ -166,19 +166,19 @@ impl BallistaConfig {
                              DataType::Boolean, Some("true".to_string())),
             ConfigEntry::new(BALLISTA_REPARTITION_AGGREGATIONS.to_string(),
                              "Configuration for repartition aggregations".to_string(),
-                             DataType::Boolean,Some("true".to_string())),
+                             DataType::Boolean, Some("true".to_string())),
             ConfigEntry::new(BALLISTA_REPARTITION_WINDOWS.to_string(),
                              "Configuration for repartition windows".to_string(),
-                             DataType::Boolean,Some("true".to_string())),
+                             DataType::Boolean, Some("true".to_string())),
             ConfigEntry::new(BALLISTA_PARQUET_PRUNING.to_string(),
                              "Configuration for parquet prune".to_string(),
-                             DataType::Boolean,Some("true".to_string())),
+                             DataType::Boolean, Some("true".to_string())),
             ConfigEntry::new(BALLISTA_WITH_INFORMATION_SCHEMA.to_string(),
-                "Sets whether enable information_schema".to_string(),
-                DataType::Boolean,Some("false".to_string())),
+                             "Sets whether enable information_schema".to_string(),
+                             DataType::Boolean, Some("false".to_string())),
             ConfigEntry::new(BALLISTA_PLUGIN_DIR.to_string(),
                              "Sets the plugin dir".to_string(),
-                             DataType::Utf8,Some("".to_string())),
+                             DataType::Utf8, Some("".to_string())),
         ];
         entries
             .iter()
