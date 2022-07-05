@@ -54,8 +54,8 @@ mod config {
     // Ideally we would use the include_config macro from configure_me, but then we cannot use
     // #[allow(clippy::all)] to silence clippy warnings from the generated code
     include!(concat!(
-    env!("OUT_DIR"),
-    "/scheduler_configure_me_config.rs"
+        env!("OUT_DIR"),
+        "/scheduler_configure_me_config.rs"
     ));
 }
 
