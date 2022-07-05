@@ -109,6 +109,7 @@ impl BallistaContext {
                     })
                     .collect::<Vec<_>>(),
                 optional_session_id: None,
+                optional_job_id: None,
             })
             .await
             .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?
@@ -168,6 +169,7 @@ impl BallistaContext {
                     })
                     .collect::<Vec<_>>(),
                 optional_session_id: None,
+                optional_job_id: None,
             })
             .await
             .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?

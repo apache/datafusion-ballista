@@ -17,7 +17,9 @@
 
 use ballista_core::config::{BallistaConfig, TaskSchedulingPolicy};
 
-use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
+use ballista_core::serde::protobuf::execute_query_params::{
+    OptionalJobId, OptionalSessionId, Query,
+};
 
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
@@ -335,6 +337,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             query: Some(query),
             settings,
             optional_session_id,
+            optional_job_id,
         } = query_params
         {
             // parse config
@@ -406,7 +409,29 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
             debug!("Received plan for execution: {:?}", plan);
 
-            let job_id = self.state.task_manager.generate_job_id();
+            let job_id = match optional_job_id {
+                // job_id was provided by the caller, lets check that the job_id is unique
+                Some(OptionalJobId::JobId(job_id)) => {
+                    match self.state.task_manager.get_job_status(&job_id).await {
+                        // not job found for this job id, we are good to go
+                        Ok(None) => Ok(job_id),
+                        // job with such job_id already exists, fail-fast
+                        Ok(Some(_)) => {
+                            let msg = format!("JobId: {:?} already exists", job_id);
+                            Err(Status::internal(msg))
+                        }
+                        Err(e) => {
+                            let msg = format!(
+                                "Error getting status for job {}: {:?}",
+                                job_id, e
+                            );
+                            error!("{}", msg);
+                            Err(Status::internal(msg))
+                        }
+                    }
+                }
+                _ => Ok(self.state.task_manager.generate_job_id()),
+            }?;
 
             self.state
                 .task_manager
@@ -448,6 +473,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             query: None,
             settings,
             optional_session_id: None,
+            optional_job_id: None,
         } = query_params
         {
             // parse config for new session
@@ -488,9 +514,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let job_id = request.into_inner().job_id;
         debug!("Received get_job_status request for job {}", job_id);
         match self.state.task_manager.get_job_status(&job_id).await {
-            Ok(status) => Ok(Response::new(GetJobStatusResult {
-                status: Some(status),
-            })),
+            Ok(None) => {
+                let msg = format!("Job {} not found", job_id);
+                Err(Status::not_found(msg))
+            }
+            Ok(status) => Ok(Response::new(GetJobStatusResult { status })),
             Err(e) => {
                 let msg = format!("Error getting status for job {}: {:?}", job_id, e);
                 error!("{}", msg);

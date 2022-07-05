@@ -192,6 +192,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             optional_session_id: Some(OptionalSessionId::SessionId(
                 self.session_id.clone(),
             )),
+            optional_job_id: None,
         };
 
         let stream = futures::stream::once(

@@ -99,8 +99,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             }
         };
 
-        dbg!(free_list.clone());
-        dbg!(pending_tasks);
         // If any reserved slots remain, return them to the pool
         if !free_list.is_empty() {
             self.state

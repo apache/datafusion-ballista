@@ -361,11 +361,15 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
 
-                let groups: Vec<Vec<bool>> = hash_agg
-                    .groups
-                    .chunks(num_expr)
-                    .map(|g| g.to_vec())
-                    .collect::<Vec<Vec<bool>>>();
+                let groups: Vec<Vec<bool>> = if hash_agg.groups.is_empty() {
+                    vec![]
+                } else {
+                    hash_agg
+                        .groups
+                        .chunks(num_expr)
+                        .map(|g| g.to_vec())
+                        .collect::<Vec<Vec<bool>>>()
+                };
 
                 let input_schema = hash_agg
                     .input_schema
@@ -831,7 +835,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 .groups()
                 .iter()
                 .flatten()
-                .map(|b| *b)
+                .copied()
                 .collect();
 
             let null_expr = exec
@@ -1363,7 +1367,7 @@ mod roundtrip_tests {
 
         let null_expr: Vec<(Arc<dyn PhysicalExpr>, String)> = vec![
             (lit(ScalarValue::Int64(None)), "a".to_string()),
-            ((lit(ScalarValue::Int64(None)), "b".to_string())),
+            (lit(ScalarValue::Int64(None)), "b".to_string()),
         ];
 
         let aggregates: Vec<Arc<dyn AggregateExpr>> = vec![Arc::new(Avg::new(
