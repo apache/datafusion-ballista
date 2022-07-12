@@ -135,7 +135,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
                     if reservations.is_empty() {
                         debug!("Resubmitting job {}", job_id);
-                        return Ok(Some(QueryStageSchedulerEvent::JobSubmitted(job_id)))
+                        return Ok(Some(QueryStageSchedulerEvent::JobSubmitted(job_id)));
                     }
 
                     debug!(

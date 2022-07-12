@@ -111,18 +111,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             Ok(Some(JobStatus {
                 status: Some(job_status::Status::Queued(QueuedJob {})),
             }))
+        } else if let Ok(graph) = self.get_execution_graph(job_id).await {
+            Ok(Some(graph.status()))
         } else {
-            if let Ok(graph) = self.get_execution_graph(job_id).await {
-                Ok(Some(graph.status()))
-            } else {
-                let value = self.state.get(Keyspace::FailedJobs, job_id).await?;
+            let value = self.state.get(Keyspace::FailedJobs, job_id).await?;
 
-                if !value.is_empty() {
-                    let status = decode_protobuf(&value)?;
-                    Ok(Some(status))
-                } else {
-                    Ok(None)
-                }
+            if !value.is_empty() {
+                let status = decode_protobuf(&value)?;
+                Ok(Some(status))
+            } else {
+                Ok(None)
             }
         }
     }
@@ -191,9 +189,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     graph.finalize()?;
                     events.push(QueryStageSchedulerEvent::JobFinished(job_id.clone()));
                     for _ in 0..num_tasks {
-                        reservation.push(ExecutorReservation::new_free(
-                            executor.id.to_owned(),
-                        ));
+                        reservation
+                            .push(ExecutorReservation::new_free(executor.id.to_owned()));
                     }
                 } else if let Some(job_status::Status::Failed(failure)) =
                     graph.status().status
