@@ -106,14 +106,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Get the status of of a job. First look in Active/Completed jobs, and then in Queued jobs, and
     /// finally in FailedJobs.
     pub async fn get_job_status(&self, job_id: &str) -> Result<Option<JobStatus>> {
-        if let Ok(graph) = self.get_execution_graph(job_id).await {
-            Ok(Some(graph.status()))
+        let queue_marker = self.state.get(Keyspace::QueuedJobs, job_id).await?;
+        if !queue_marker.is_empty() {
+            Ok(Some(JobStatus {
+                status: Some(job_status::Status::Queued(QueuedJob {})),
+            }))
         } else {
-            let queue_marker = self.state.get(Keyspace::QueuedJobs, job_id).await?;
-            if !queue_marker.is_empty() {
-                Ok(Some(JobStatus {
-                    status: Some(job_status::Status::Queued(QueuedJob {})),
-                }))
+            if let Ok(graph) = self.get_execution_graph(job_id).await {
+                Ok(Some(graph.status()))
             } else {
                 let value = self.state.get(Keyspace::FailedJobs, job_id).await?;
 
