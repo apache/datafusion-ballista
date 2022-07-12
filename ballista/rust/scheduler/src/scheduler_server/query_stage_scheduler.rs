@@ -133,6 +133,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .map(|res| res.assign(job_id.clone()))
                         .collect();
 
+                    if reservations.is_empty() {
+                        debug!("Resubmitting job {}", job_id);
+                        return Ok(Some(QueryStageSchedulerEvent::JobSubmitted(job_id)))
+                    }
+
                     debug!(
                         "Reserved {} task slots for submitted job {}",
                         reservations.len(),
