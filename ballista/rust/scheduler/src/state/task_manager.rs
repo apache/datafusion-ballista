@@ -188,6 +188,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     );
                     graph.finalize()?;
                     events.push(QueryStageSchedulerEvent::JobFinished(job_id.clone()));
+
                     for _ in 0..num_tasks {
                         reservation
                             .push(ExecutorReservation::new_free(executor.id.to_owned()));
@@ -199,6 +200,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                         job_id.clone(),
                         failure.error,
                     ));
+
+                    for _ in 0..num_tasks {
+                        reservation
+                            .push(ExecutorReservation::new_free(executor.id.to_owned()));
+                    }
                 } else {
                     // Otherwise keep the task slots reserved for this job
                     for _ in 0..num_tasks {
