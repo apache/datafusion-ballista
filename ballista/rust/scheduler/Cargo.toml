@@ -61,6 +61,7 @@ tokio-stream = { version = "0.1", features = ["net"], optional = true }
 tonic = "0.7"
 tower = { version = "0.4" }
 warp = "0.3"
+object_store = "0.3.0"
 
 [dev-dependencies]
 ballista-core = { path = "../core", version = "0.7.0" }
