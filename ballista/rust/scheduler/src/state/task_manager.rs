@@ -190,6 +190,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     );
                     graph.finalize()?;
                     events.push(QueryStageSchedulerEvent::JobFinished(job_id.clone()));
+                    for _ in 0..num_tasks {
+                        reservation.push(ExecutorReservation::new_free(
+                            executor.id.to_owned(),
+                        ));
+                    }
                 } else if let Some(job_status::Status::Failed(failure)) =
                     graph.status().status
                 {
