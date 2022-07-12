@@ -105,19 +105,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     /// Get the status of of a job. First look in Active/Completed jobs, and then in Queued jobs, and
     /// finally in FailedJobs.
-    pub async fn get_job_status(&self, job_id: &str) -> Result<JobStatus> {
-        if let Ok(graph) = self.get_execution_graph(job_id).await {
-            Ok(graph.status())
+    pub async fn get_job_status(&self, job_id: &str) -> Result<Option<JobStatus>> {
+        let queue_marker = self.state.get(Keyspace::QueuedJobs, job_id).await?;
+        if !queue_marker.is_empty() {
+            Ok(Some(JobStatus {
+                status: Some(job_status::Status::Queued(QueuedJob {})),
+            }))
+        } else if let Ok(graph) = self.get_execution_graph(job_id).await {
+            Ok(Some(graph.status()))
         } else {
-            let queue_marker = self.state.get(Keyspace::QueuedJobs, job_id).await?;
-            if !queue_marker.is_empty() {
-                Ok(JobStatus {
-                    status: Some(job_status::Status::Queued(QueuedJob {})),
-                })
-            } else {
-                let value = self.state.get(Keyspace::FailedJobs, job_id).await?;
+            let value = self.state.get(Keyspace::FailedJobs, job_id).await?;
+
+            if !value.is_empty() {
                 let status = decode_protobuf(&value)?;
-                Ok(status)
+                Ok(Some(status))
+            } else {
+                Ok(None)
             }
         }
     }
@@ -185,6 +188,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     );
                     graph.finalize()?;
                     events.push(QueryStageSchedulerEvent::JobFinished(job_id.clone()));
+
+                    for _ in 0..num_tasks {
+                        reservation
+                            .push(ExecutorReservation::new_free(executor.id.to_owned()));
+                    }
                 } else if let Some(job_status::Status::Failed(failure)) =
                     graph.status().status
                 {
@@ -192,6 +200,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                         job_id.clone(),
                         failure.error,
                     ));
+
+                    for _ in 0..num_tasks {
+                        reservation
+                            .push(ExecutorReservation::new_free(executor.id.to_owned()));
+                    }
                 } else {
                     // Otherwise keep the task slots reserved for this job
                     for _ in 0..num_tasks {
