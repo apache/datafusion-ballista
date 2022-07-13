@@ -350,7 +350,7 @@ impl ExecutorManager {
 
     /// Initialize the set of executor heartbeats from storage
     pub(crate) async fn init_executor_heartbeats(&self) -> Result<()> {
-        let heartbeats = self.state.scan(Keyspace::Slots, None).await?;
+        let heartbeats = self.state.scan(Keyspace::Heartbeats, None).await?;
         let mut cache = self.executors_heartbeat.write();
 
         for (_, value) in heartbeats {
