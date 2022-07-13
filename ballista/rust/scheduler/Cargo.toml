@@ -41,8 +41,8 @@ async-trait = "0.1.41"
 ballista-core = { path = "../core", version = "0.7.0" }
 clap = { version = "3", features = ["derive", "cargo"] }
 configure_me = "0.4.0"
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "d0d5564b8f689a01e542b8c1df829d74d0fab2b0" }
-datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "d0d5564b8f689a01e542b8c1df829d74d0fab2b0" }
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "6a5de4fe08597896ab6375e3e4b76c5744dcfba7" }
+datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "6a5de4fe08597896ab6375e3e4b76c5744dcfba7" }
 env_logger = "0.9"
 etcd-client = { version = "0.9", optional = true }
 futures = "0.3"
