@@ -21,7 +21,7 @@ syntax = "proto3";
 package datafusion;
 
 option java_multiple_files = true;
-option java_package = "org.datafusioncompute.protobuf";
+option java_package = "org.apache.arrow.datafusion.protobuf";
 option java_outer_classname = "DatafusionProto";
 
 message ColumnRelation {
@@ -40,6 +40,228 @@ message DfField{
 
 message DfSchema {
   repeated DfField columns = 1;
+  map<string, string> metadata = 2;
+}
+
+// logical plan
+// LogicalPlan is a nested type
+message LogicalPlanNode {
+  oneof LogicalPlanType {
+    ListingTableScanNode listing_scan = 1;
+    ProjectionNode projection = 3;
+    SelectionNode selection = 4;
+    LimitNode limit = 5;
+    AggregateNode aggregate = 6;
+    JoinNode join = 7;
+    SortNode sort = 8;
+    RepartitionNode repartition = 9;
+    EmptyRelationNode empty_relation = 10;
+    CreateExternalTableNode create_external_table = 11;
+    ExplainNode explain = 12;
+    WindowNode window = 13;
+    AnalyzeNode analyze = 14;
+    CrossJoinNode cross_join = 15;
+    ValuesNode values = 16;
+    LogicalExtensionNode extension = 17;
+    CreateCatalogSchemaNode create_catalog_schema = 18;
+    UnionNode union = 19;
+    CreateCatalogNode create_catalog = 20;
+    SubqueryAliasNode subquery_alias = 21;
+    CreateViewNode create_view = 22;
+    DistinctNode distinct = 23;
+  }
+}
+
+message LogicalExtensionNode {
+  bytes node = 1;
+  repeated LogicalPlanNode inputs = 2;
+}
+
+message ProjectionColumns {
+  repeated string columns = 1;
+}
+
+message CsvFormat {
+  bool has_header = 1;
+  string delimiter = 2;
+}
+
+message ParquetFormat {
+  bool enable_pruning = 1;
+}
+
+message AvroFormat {}
+
+message ListingTableScanNode {
+  string table_name = 1;
+  repeated string paths = 2;
+  string file_extension = 3;
+  ProjectionColumns projection = 4;
+  datafusion.Schema schema = 5;
+  repeated datafusion.LogicalExprNode filters = 6;
+  repeated string table_partition_cols = 7;
+  bool collect_stat = 8;
+  uint32 target_partitions = 9;
+  oneof FileFormatType {
+    CsvFormat csv = 10;
+    ParquetFormat parquet = 11;
+    AvroFormat avro = 12;
+  }
+}
+
+message ProjectionNode {
+  LogicalPlanNode input = 1;
+  repeated datafusion.LogicalExprNode expr = 2;
+  oneof optional_alias {
+    string alias = 3;
+  }
+}
+
+message SelectionNode {
+  LogicalPlanNode input = 1;
+  datafusion.LogicalExprNode expr = 2;
+}
+
+message SortNode {
+  LogicalPlanNode input = 1;
+  repeated datafusion.LogicalExprNode expr = 2;
+}
+
+message RepartitionNode {
+  LogicalPlanNode input = 1;
+  oneof partition_method {
+    uint64 round_robin = 2;
+    HashRepartition hash = 3;
+  }
+}
+
+message HashRepartition {
+  repeated datafusion.LogicalExprNode hash_expr = 1;
+  uint64 partition_count = 2;
+}
+
+message EmptyRelationNode {
+  bool produce_one_row = 1;
+}
+
+message CreateExternalTableNode {
+  string name = 1;
+  string location = 2;
+  FileType file_type = 3;
+  bool has_header = 4;
+  datafusion.DfSchema schema = 5;
+  repeated string table_partition_cols = 6;
+  bool if_not_exists = 7;
+  string delimiter = 8;
+}
+
+message CreateCatalogSchemaNode {
+  string schema_name = 1;
+  bool if_not_exists = 2;
+  datafusion.DfSchema schema = 3;
+}
+
+message CreateCatalogNode {
+  string catalog_name = 1;
+  bool if_not_exists = 2;
+  datafusion.DfSchema schema = 3;
+}
+
+message CreateViewNode {
+  string name = 1;
+  LogicalPlanNode input = 2;
+  bool or_replace = 3;
+  string definition = 4;
+}
+
+// a node containing data for defining values list. unlike in SQL where it's two dimensional, here
+// the list is flattened, and with the field n_cols it can be parsed and partitioned into rows
+message ValuesNode {
+  uint64 n_cols = 1;
+  repeated datafusion.LogicalExprNode values_list = 2;
+}
+
+enum FileType {
+  NdJson = 0;
+  Parquet = 1;
+  CSV = 2;
+  Avro = 3;
+}
+
+message AnalyzeNode {
+  LogicalPlanNode input = 1;
+  bool verbose = 2;
+}
+
+message ExplainNode {
+  LogicalPlanNode input = 1;
+  bool verbose = 2;
+}
+
+message AggregateNode {
+  LogicalPlanNode input = 1;
+  repeated datafusion.LogicalExprNode group_expr = 2;
+  repeated datafusion.LogicalExprNode aggr_expr = 3;
+}
+
+message WindowNode {
+  LogicalPlanNode input = 1;
+  repeated datafusion.LogicalExprNode window_expr = 2;
+}
+
+enum JoinType {
+  INNER = 0;
+  LEFT = 1;
+  RIGHT = 2;
+  FULL = 3;
+  SEMI = 4;
+  ANTI = 5;
+}
+
+enum JoinConstraint {
+  ON = 0;
+  USING = 1;
+}
+
+message JoinNode {
+  LogicalPlanNode left = 1;
+  LogicalPlanNode right = 2;
+  JoinType join_type = 3;
+  JoinConstraint join_constraint = 4;
+  repeated datafusion.Column left_join_column = 5;
+  repeated datafusion.Column right_join_column = 6;
+  bool null_equals_null = 7;
+  LogicalExprNode filter = 8;
+}
+
+message DistinctNode {
+  LogicalPlanNode input = 1;
+}
+
+message UnionNode {
+  repeated LogicalPlanNode inputs = 1;
+}
+
+message CrossJoinNode {
+  LogicalPlanNode left = 1;
+  LogicalPlanNode right = 2;
+}
+
+message LimitNode {
+  LogicalPlanNode input = 1;
+  // The number of rows to skip before fetch; non-positive means don't skip any
+  int64 skip = 2;
+  // Maximum number of rows to fetch; negative means no limit
+  int64 fetch = 3;
+}
+
+message SelectionExecNode {
+  datafusion.LogicalExprNode expr = 1;
+}
+
+message SubqueryAliasNode {
+  LogicalPlanNode input = 1;
+  string alias = 2;
 }
 
 // logical expressions
@@ -76,7 +298,44 @@ message LogicalExprNode {
 
     // window expressions
     WindowExprNode window_expr = 18;
+
+    // AggregateUDF expressions
+    AggregateUDFExprNode aggregate_udf_expr = 19;
+
+    // Scalar UDF expressions
+    ScalarUDFExprNode scalar_udf_expr = 20;
+
+    GetIndexedField get_indexed_field = 21;
+
+    GroupingSetNode grouping_set = 22;
+
+    CubeNode cube = 23;
+
+    RollupNode rollup = 24;
   }
+}
+
+message LogicalExprList {
+  repeated LogicalExprNode expr = 1;
+}
+
+message GroupingSetNode {
+  repeated LogicalExprList expr = 1;
+}
+
+message CubeNode {
+  repeated LogicalExprNode expr = 1;
+}
+
+message RollupNode {
+  repeated LogicalExprNode expr = 1;
+}
+
+
+
+message GetIndexedField {
+  LogicalExprNode expr = 1;
+  ScalarValue key = 2;
 }
 
 message IsNull {
@@ -177,6 +436,8 @@ enum ScalarFunction {
   Trim=61;
   Upper=62;
   Coalesce=63;
+  Power=64;
+  StructFun=65;
 }
 
 message ScalarFunctionNode {
@@ -202,11 +463,22 @@ enum AggregateFunction {
   APPROX_PERCENTILE_CONT = 14;
   APPROX_MEDIAN=15;
   APPROX_PERCENTILE_CONT_WITH_WEIGHT = 16;
+  GROUPING = 17;
 }
 
 message AggregateExprNode {
   AggregateFunction aggr_function = 1;
   repeated LogicalExprNode expr = 2;
+}
+
+message AggregateUDFExprNode {
+  string fun_name = 1;
+  repeated LogicalExprNode args = 2;
+}
+
+message ScalarUDFExprNode {
+  string fun_name = 1;
+  repeated LogicalExprNode args = 2;
 }
 
 enum BuiltInWindowFunction {
@@ -321,53 +593,53 @@ message Field {
 }
 
 message FixedSizeBinary{
-    int32 length = 1;
+  int32 length = 1;
 }
 
 message Timestamp{
-    TimeUnit time_unit = 1;
-    string timezone = 2;
+  TimeUnit time_unit = 1;
+  string timezone = 2;
 }
 
 enum DateUnit{
-    Day = 0;
-    DateMillisecond = 1;
+  Day = 0;
+  DateMillisecond = 1;
 }
 
 enum TimeUnit{
-    Second = 0;
-    TimeMillisecond = 1;
-    Microsecond = 2;
-    Nanosecond = 3;
+  Second = 0;
+  TimeMillisecond = 1;
+  Microsecond = 2;
+  Nanosecond = 3;
 }
 
 enum IntervalUnit{
-    YearMonth = 0;
-    DayTime = 1;
-    MonthDayNano = 2;
+  YearMonth = 0;
+  DayTime = 1;
+  MonthDayNano = 2;
 }
 
 message Decimal{
-    uint64 whole = 1;
-    uint64 fractional = 2;
+  uint64 whole = 1;
+  uint64 fractional = 2;
 }
 
 message List{
-    Field field_type = 1;
+  Field field_type = 1;
 }
 
 message FixedSizeList{
-    Field field_type = 1;
-    int32 list_size = 2;
+  Field field_type = 1;
+  int32 list_size = 2;
 }
 
 message Dictionary{
-    ArrowType key = 1;
-    ArrowType value = 2;
+  ArrowType key = 1;
+  ArrowType value = 2;
 }
 
 message Struct{
-    repeated Field sub_field_types = 1;
+  repeated Field sub_field_types = 1;
 }
 
 enum UnionMode{
@@ -376,45 +648,53 @@ enum UnionMode{
 }
 
 message Union{
-    repeated Field union_types = 1;
-    UnionMode union_mode = 2;
+  repeated Field union_types = 1;
+  UnionMode union_mode = 2;
+  repeated int32 type_ids = 3;
 }
 
 message ScalarListValue{
-    ScalarType datatype = 1;
-    repeated ScalarValue values = 2;
+  ScalarType datatype = 1;
+  repeated ScalarValue values = 2;
+}
+
+message ScalarTimestampValue {
+  oneof value {
+    int64  time_microsecond_value = 1;
+    int64  time_nanosecond_value = 2;
+    int64 time_second_value = 3;
+    int64 time_millisecond_value = 4;
+  };
+  string timezone = 5;
 }
 
 message ScalarValue{
-    oneof value {
-        bool   bool_value = 1;
-        string utf8_value = 2;
-        string large_utf8_value = 3;
-        int32  int8_value = 4;
-        int32  int16_value = 5;
-        int32  int32_value = 6;
-        int64  int64_value = 7;
-        uint32 uint8_value = 8;
-        uint32 uint16_value = 9;
-        uint32 uint32_value = 10;
-        uint64 uint64_value = 11;
-        float  float32_value = 12;
-        double float64_value = 13;
-        //Literal Date32 value always has a unit of day
-        int32  date_32_value = 14;
-        int64  time_microsecond_value = 15;
-        int64  time_nanosecond_value = 16;
-        ScalarListValue list_value = 17;
-        ScalarType null_list_value = 18;
+  oneof value {
+    bool   bool_value = 1;
+    string utf8_value = 2;
+    string large_utf8_value = 3;
+    int32  int8_value = 4;
+    int32  int16_value = 5;
+    int32  int32_value = 6;
+    int64  int64_value = 7;
+    uint32 uint8_value = 8;
+    uint32 uint16_value = 9;
+    uint32 uint32_value = 10;
+    uint64 uint64_value = 11;
+    float  float32_value = 12;
+    double float64_value = 13;
+    //Literal Date32 value always has a unit of day
+    int32  date_32_value = 14;
+    ScalarListValue list_value = 17;
+    ScalarType null_list_value = 18;
 
-        PrimitiveScalarType null_value = 19;
-        Decimal128 decimal128_value = 20;
-        int64 date_64_value = 21;
-        int64 time_second_value = 22;
-        int64 time_millisecond_value = 23;
-        int32 interval_yearmonth_value = 24;
-        int64 interval_daytime_value = 25;
-    }
+    PrimitiveScalarType null_value = 19;
+    Decimal128 decimal128_value = 20;
+    int64 date_64_value = 21;
+    int32 interval_yearmonth_value = 24;
+    int64 interval_daytime_value = 25;
+    ScalarTimestampValue timestamp_value = 26;
+  }
 }
 
 message Decimal128{
@@ -427,42 +707,42 @@ message Decimal128{
 // List
 enum PrimitiveScalarType{
 
-    BOOL = 0;     // arrow::Type::BOOL
-    UINT8 = 1;    // arrow::Type::UINT8
-    INT8 = 2;     // arrow::Type::INT8
-    UINT16 = 3;   // represents arrow::Type fields in src/arrow/type.h
-    INT16 = 4;
-    UINT32 = 5;
-    INT32 = 6;
-    UINT64 = 7;
-    INT64 = 8;
-    FLOAT32 = 9;
-    FLOAT64 = 10;
-    UTF8 = 11;
-    LARGE_UTF8 = 12;
-    DATE32 = 13;
-    TIME_MICROSECOND = 14;
-    TIME_NANOSECOND = 15;
-    NULL = 16;
+  BOOL = 0;     // arrow::Type::BOOL
+  UINT8 = 1;    // arrow::Type::UINT8
+  INT8 = 2;     // arrow::Type::INT8
+  UINT16 = 3;   // represents arrow::Type fields in src/arrow/type.h
+  INT16 = 4;
+  UINT32 = 5;
+  INT32 = 6;
+  UINT64 = 7;
+  INT64 = 8;
+  FLOAT32 = 9;
+  FLOAT64 = 10;
+  UTF8 = 11;
+  LARGE_UTF8 = 12;
+  DATE32 = 13;
+  TIME_MICROSECOND = 14;
+  TIME_NANOSECOND = 15;
+  NULL = 16;
 
-    DECIMAL128 = 17;
-    DATE64 = 20;
-    TIME_SECOND = 21;
-    TIME_MILLISECOND = 22;
-    INTERVAL_YEARMONTH = 23;
-    INTERVAL_DAYTIME = 24;
+  DECIMAL128 = 17;
+  DATE64 = 20;
+  TIME_SECOND = 21;
+  TIME_MILLISECOND = 22;
+  INTERVAL_YEARMONTH = 23;
+  INTERVAL_DAYTIME = 24;
 }
 
 message ScalarType{
-    oneof datatype{
-        PrimitiveScalarType scalar = 1;
-        ScalarListType list = 2;
-    }
+  oneof datatype{
+    PrimitiveScalarType scalar = 1;
+    ScalarListType list = 2;
+  }
 }
 
 message ScalarListType{
-    repeated string field_names = 3;
-    PrimitiveScalarType deepest_type = 2;
+  repeated string field_names = 3;
+  PrimitiveScalarType deepest_type = 2;
 }
 
 // Broke out into multiple message types so that type
@@ -470,40 +750,40 @@ message ScalarListType{
 //All types that are of the empty message types contain no additional metadata
 // about the type
 message ArrowType{
-    oneof arrow_type_enum{
-        EmptyMessage NONE = 1;     // arrow::Type::NA
-        EmptyMessage BOOL =  2;     // arrow::Type::BOOL
-        EmptyMessage UINT8 = 3;    // arrow::Type::UINT8
-        EmptyMessage INT8 =  4;     // arrow::Type::INT8
-        EmptyMessage UINT16 =5;   // represents arrow::Type fields in src/arrow/type.h
-        EmptyMessage INT16 = 6;
-        EmptyMessage UINT32 =7;
-        EmptyMessage INT32 = 8;
-        EmptyMessage UINT64 =9;
-        EmptyMessage INT64 =10 ;
-        EmptyMessage FLOAT16 =11 ;
-        EmptyMessage FLOAT32 =12 ;
-        EmptyMessage FLOAT64 =13 ;
-        EmptyMessage UTF8 =14 ;
-        EmptyMessage LARGE_UTF8 = 32;
-        EmptyMessage BINARY =15 ;
-        int32 FIXED_SIZE_BINARY =16 ;
-        EmptyMessage LARGE_BINARY = 31;
-        EmptyMessage DATE32 =17 ;
-        EmptyMessage DATE64 =18 ;
-        TimeUnit DURATION = 19;
-        Timestamp TIMESTAMP =20 ;
-        TimeUnit TIME32 =21 ;
-        TimeUnit TIME64 =22 ;
-        IntervalUnit INTERVAL =23 ;
-        Decimal DECIMAL =24 ;
-        List LIST =25;
-        List LARGE_LIST = 26;
-        FixedSizeList FIXED_SIZE_LIST = 27;
-        Struct STRUCT =28;
-        Union UNION =29;
-        Dictionary DICTIONARY =30;
-    }
+  oneof arrow_type_enum{
+    EmptyMessage NONE = 1;     // arrow::Type::NA
+    EmptyMessage BOOL =  2;     // arrow::Type::BOOL
+    EmptyMessage UINT8 = 3;    // arrow::Type::UINT8
+    EmptyMessage INT8 =  4;     // arrow::Type::INT8
+    EmptyMessage UINT16 =5;   // represents arrow::Type fields in src/arrow/type.h
+    EmptyMessage INT16 = 6;
+    EmptyMessage UINT32 =7;
+    EmptyMessage INT32 = 8;
+    EmptyMessage UINT64 =9;
+    EmptyMessage INT64 =10 ;
+    EmptyMessage FLOAT16 =11 ;
+    EmptyMessage FLOAT32 =12 ;
+    EmptyMessage FLOAT64 =13 ;
+    EmptyMessage UTF8 =14 ;
+    EmptyMessage LARGE_UTF8 = 32;
+    EmptyMessage BINARY =15 ;
+    int32 FIXED_SIZE_BINARY =16 ;
+    EmptyMessage LARGE_BINARY = 31;
+    EmptyMessage DATE32 =17 ;
+    EmptyMessage DATE64 =18 ;
+    TimeUnit DURATION = 19;
+    Timestamp TIMESTAMP =20 ;
+    TimeUnit TIME32 =21 ;
+    TimeUnit TIME64 =22 ;
+    IntervalUnit INTERVAL =23 ;
+    Decimal DECIMAL =24 ;
+    List LIST =25;
+    List LARGE_LIST = 26;
+    FixedSizeList FIXED_SIZE_LIST = 27;
+    Struct STRUCT =28;
+    Union UNION =29;
+    Dictionary DICTIONARY =30;
+  }
 }
 
 //Useful for representing an empty enum variant in rust

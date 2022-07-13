@@ -15,12 +15,25 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use crate::scheduler_server::{
-    create_datafusion_context, update_datafusion_context, SchedulerServer,
-};
-use crate::state::task_scheduler::TaskScheduler;
+use std::convert::TryInto;
+use std::ops::Deref;
+use std::sync::Arc;
+use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use anyhow::Context;
+use datafusion::datasource::file_format::parquet::ParquetFormat;
+use datafusion::datasource::file_format::FileFormat;
+use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::protobuf::FileType;
+use futures::TryStreamExt;
+use log::{debug, error, info, trace, warn};
+use object_store::local::LocalFileSystem;
+use object_store::path::Path;
+use object_store::ObjectStore;
+use rand::{distributions::Alphanumeric, thread_rng, Rng};
+use tonic::{Request, Response, Status};
+
 use ballista_core::config::{BallistaConfig, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
@@ -29,30 +42,21 @@ use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
     job_status, ExecuteQueryParams, ExecuteQueryResult, ExecutorHeartbeat, FailedJob,
-    FileType, GetFileMetadataParams, GetFileMetadataResult, GetJobStatusParams,
-    GetJobStatusResult, HeartBeatParams, HeartBeatResult, JobStatus, PollWorkParams,
-    PollWorkResult, QueuedJob, RegisterExecutorParams, RegisterExecutorResult,
-    UpdateTaskStatusParams, UpdateTaskStatusResult,
+    GetFileMetadataParams, GetFileMetadataResult, GetJobStatusParams, GetJobStatusResult,
+    HeartBeatParams, HeartBeatResult, JobStatus, PollWorkParams, PollWorkResult,
+    QueuedJob, RegisterExecutorParams, RegisterExecutorResult, UpdateTaskStatusParams,
+    UpdateTaskStatusResult,
 };
 use ballista_core::serde::scheduler::{
     ExecutorData, ExecutorDataChange, ExecutorMetadata,
 };
 use ballista_core::serde::AsExecutionPlan;
-use datafusion::datafusion_data_access::object_store::{
-    local::LocalFileSystem, ObjectStore,
+
+use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use crate::scheduler_server::{
+    create_datafusion_context, update_datafusion_context, SchedulerServer,
 };
-use datafusion::datasource::file_format::parquet::ParquetFormat;
-use datafusion::datasource::file_format::FileFormat;
-use datafusion_proto::logical_plan::AsLogicalPlan;
-use futures::TryStreamExt;
-use log::{debug, error, info, trace, warn};
-use rand::{distributions::Alphanumeric, thread_rng, Rng};
-use std::convert::TryInto;
-use std::ops::Deref;
-use std::sync::Arc;
-use std::time::Instant;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tonic::{Request, Response, Status};
+use crate::state::task_scheduler::TaskScheduler;
 
 #[tonic::async_trait]
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
@@ -281,7 +285,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         request: Request<GetFileMetadataParams>,
     ) -> std::result::Result<Response<GetFileMetadataResult>, tonic::Status> {
         // TODO support multiple object stores
-        let obj_store = Arc::new(LocalFileSystem {}) as Arc<dyn ObjectStore>;
+        let obj_store: Arc<dyn ObjectStore> = Arc::new(LocalFileSystem::new());
         // TODO shouldn't this take a ListingOption object as input?
 
         let GetFileMetadataParams { path, file_type } = request.into_inner();
@@ -300,8 +304,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             )),
         }?;
 
+        let path = Path::from(path.as_str());
         let file_metas: Vec<_> = obj_store
-            .list_file(&path)
+            .list(Some(&path))
             .await
             .map_err(|e| {
                 let msg = format!("Error listing files: {}", e);
@@ -309,7 +314,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 tonic::Status::internal(msg)
             })?
             .try_collect()
-            .await?;
+            .await
+            .map_err(|e| {
+                let msg = format!("Error listing files: {}", e);
+                error!("{}", msg);
+                tonic::Status::internal(msg)
+            })?;
 
         let schema = file_format
             .infer_schema(&obj_store, &file_metas)
@@ -556,9 +566,10 @@ fn generate_job_id() -> String {
 mod test {
     use std::sync::Arc;
 
+    use datafusion::execution::context::default_session_builder;
+    use datafusion_proto::protobuf::LogicalPlanNode;
     use tonic::Request;
 
-    use crate::state::{backend::standalone::StandaloneClient, SchedulerState};
     use ballista_core::error::BallistaError;
     use ballista_core::serde::protobuf::{
         executor_registration::OptionalHost, ExecutorRegistration, PhysicalPlanNode,
@@ -566,8 +577,8 @@ mod test {
     };
     use ballista_core::serde::scheduler::ExecutorSpecification;
     use ballista_core::serde::BallistaCodec;
-    use datafusion::execution::context::default_session_builder;
-    use datafusion_proto::protobuf::LogicalPlanNode;
+
+    use crate::state::{backend::standalone::StandaloneClient, SchedulerState};
 
     use super::{SchedulerGrpc, SchedulerServer};
 

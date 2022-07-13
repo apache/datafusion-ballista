@@ -15,25 +15,28 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::scheduler_server::event::{QueryStageSchedulerEvent, SchedulerServerEvent};
-use crate::scheduler_server::event_loop::SchedulerServerEventAction;
-use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
-use crate::state::backend::StateBackendClient;
-use crate::state::SchedulerState;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use datafusion::execution::context::{default_session_builder, SessionState};
+use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion_proto::logical_plan::AsLogicalPlan;
+use tokio::sync::RwLock;
+use tonic::transport::Channel;
+
 use ballista_core::config::{BallistaConfig, TaskSchedulingPolicy};
 use ballista_core::error::Result;
 use ballista_core::event_loop::EventLoop;
 use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
-use datafusion::execution::context::{default_session_builder, SessionState};
-use datafusion::prelude::{SessionConfig, SessionContext};
-use datafusion_proto::logical_plan::AsLogicalPlan;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::RwLock;
-use tonic::transport::Channel;
+
+use crate::scheduler_server::event::{QueryStageSchedulerEvent, SchedulerServerEvent};
+use crate::scheduler_server::event_loop::SchedulerServerEventAction;
+use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
+use crate::state::backend::StateBackendClient;
+use crate::state::SchedulerState;
 
 // include the generated protobuf source as a submodule
 #[allow(clippy::all)]
@@ -221,12 +224,14 @@ pub fn update_datafusion_context(
 ) -> Arc<SessionContext> {
     {
         let mut mut_state = session_ctx.state.write();
-        mut_state.config.target_partitions = config.default_shuffle_partitions();
-        mut_state.config.batch_size = config.default_batch_size();
-        mut_state.config.repartition_joins = config.repartition_joins();
-        mut_state.config.repartition_aggregations = config.repartition_aggregations();
-        mut_state.config.repartition_windows = config.repartition_windows();
-        mut_state.config.parquet_pruning = config.parquet_pruning();
+        // TODO Currently we have to start from default session config due to the interface not support update
+        mut_state.config = SessionConfig::default()
+            .with_target_partitions(config.default_shuffle_partitions())
+            .with_batch_size(config.default_batch_size())
+            .with_repartition_joins(config.repartition_joins())
+            .with_repartition_aggregations(config.repartition_aggregations())
+            .with_repartition_windows(config.repartition_windows())
+            .with_parquet_pruning(config.parquet_pruning());
     }
     session_ctx
 }
@@ -277,10 +282,18 @@ impl SessionContextRegistry {
         sessions.remove(session_id)
     }
 }
+
 #[cfg(all(test, feature = "sled"))]
 mod test {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::execution::context::default_session_builder;
+    use datafusion::logical_plan::{col, sum, LogicalPlan};
+    use datafusion::prelude::{SessionConfig, SessionContext};
+    use datafusion::test_util::scan_empty;
+    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::{BallistaError, Result};
@@ -290,12 +303,6 @@ mod test {
     };
     use ballista_core::serde::scheduler::ExecutorData;
     use ballista_core::serde::BallistaCodec;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::execution::context::default_session_builder;
-    use datafusion::logical_plan::{col, sum, LogicalPlan};
-    use datafusion::prelude::{SessionConfig, SessionContext};
-    use datafusion::test_util::scan_empty;
-    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use crate::scheduler_server::event::QueryStageSchedulerEvent;
     use crate::scheduler_server::SchedulerServer;

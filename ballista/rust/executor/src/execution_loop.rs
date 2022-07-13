@@ -178,6 +178,7 @@ async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecution
     let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
         task.output_partitioning.as_ref(),
         task_context.as_ref(),
+        plan.schema().as_ref(),
     )?;
 
     tokio::spawn(async move {

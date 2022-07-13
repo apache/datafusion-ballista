@@ -127,7 +127,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     .expr
                     .iter()
                     .zip(projection.expr_name.iter())
-                    .map(|(expr, name)| Ok((parse_physical_expr(expr,registry)?, name.to_string())))
+                    .map(|(expr, name)| Ok((parse_physical_expr(expr,registry, input.schema().as_ref())?, name.to_string())))
                     .collect::<Result<Vec<(Arc<dyn PhysicalExpr>, String)>, BallistaError>>(
                     )?;
                 Ok(Arc::new(ProjectionExec::try_new(exprs, input)?))
@@ -142,7 +142,9 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 let predicate = filter
                     .expr
                     .as_ref()
-                    .map(|expr| parse_physical_expr(expr, registry))
+                    .map(|expr| {
+                        parse_physical_expr(expr, registry, input.schema().as_ref())
+                    })
                     .transpose()?
                     .ok_or_else(|| {
                         BallistaError::General(
@@ -200,7 +202,9 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         let expr = hash_part
                             .hash_expr
                             .iter()
-                            .map(|e| parse_physical_expr(e, registry))
+                            .map(|e| {
+                                parse_physical_expr(e, registry, input.schema().as_ref())
+                            })
                             .collect::<Result<Vec<Arc<dyn PhysicalExpr>>, _>>()?;
 
                         Ok(Arc::new(RepartitionExec::try_new(
@@ -285,7 +289,13 @@ impl AsExecutionPlan for PhysicalPlanNode {
                                 let window_node_expr = window_node
                                     .expr
                                     .as_ref()
-                                    .map(|e| parse_physical_expr(e.as_ref(), registry))
+                                    .map(|e| {
+                                        parse_physical_expr(
+                                            e.as_ref(),
+                                            registry,
+                                            &physical_schema,
+                                        )
+                                    })
                                     .transpose()?
                                     .ok_or_else(|| {
                                         proto_error(
@@ -347,7 +357,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     .iter()
                     .zip(hash_agg.group_expr_name.iter())
                     .map(|(expr, name)| {
-                        parse_physical_expr(expr, registry)
+                        parse_physical_expr(expr, registry, input.schema().as_ref())
                             .map(|expr| (expr, name.to_string()))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
@@ -357,7 +367,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     .iter()
                     .zip(hash_agg.group_expr_name.iter())
                     .map(|(expr, name)| {
-                        parse_physical_expr(expr, registry)
+                        parse_physical_expr(expr, registry, input.schema().as_ref())
                             .map(|expr| (expr, name.to_string()))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
@@ -409,7 +419,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                                         )?;
 
                                 let input_phy_expr: Vec<Arc<dyn PhysicalExpr>> = agg_node.expr.iter()
-                                    .map(|e| parse_physical_expr(e, registry).unwrap()).collect();
+                                    .map(|e| parse_physical_expr(e, registry, &physical_schema).unwrap()).collect();
 
                                 Ok(create_aggregate_expr(
                                     &aggr_function.into(),
@@ -457,22 +467,29 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         Ok((left, right))
                     })
                     .collect::<Result<_, BallistaError>>()?;
-                let join_type = protobuf::JoinType::from_i32(hashjoin.join_type)
-                    .ok_or_else(|| {
-                        proto_error(format!(
+                let join_type =
+                    datafusion_proto::protobuf::JoinType::from_i32(hashjoin.join_type)
+                        .ok_or_else(|| {
+                            proto_error(format!(
                             "Received a HashJoinNode message with unknown JoinType {}",
                             hashjoin.join_type
                         ))
-                    })?;
+                        })?;
                 let filter = hashjoin
                     .filter
                     .as_ref()
                     .map(|f| {
+                        let schema = f
+                            .schema
+                            .as_ref()
+                            .ok_or_else(|| proto_error("Missing JoinFilter schema"))?
+                            .try_into()?;
+
                         let expression = parse_physical_expr(
                             f.expression.as_ref().ok_or_else(|| {
                                 proto_error("Unexpected empty filter expression")
                             })?,
-                            registry,
+                            registry, &schema
                         )?;
                         let column_indices = f.column_indices
                             .iter()
@@ -489,11 +506,6 @@ impl AsExecutionPlan for PhysicalPlanNode {
                                 })
                             })
                             .collect::<Result<Vec<_>, BallistaError>>()?;
-                        let schema = f
-                            .schema
-                            .as_ref()
-                            .ok_or_else(|| proto_error("Missing JoinFilter schema"))?
-                            .try_into()?;
 
                         Ok(JoinFilter::new(expression, column_indices, schema))
                     })
@@ -558,6 +570,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 let output_partitioning = parse_protobuf_hash_partitioning(
                     shuffle_writer.output_partitioning.as_ref(),
                     registry,
+                    input.schema().as_ref(),
                 )?;
 
                 Ok(Arc::new(ShuffleWriterExec::try_new(
@@ -613,7 +626,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                                 })?
                                 .as_ref();
                             Ok(PhysicalSortExpr {
-                                expr: parse_physical_expr(expr,registry)?,
+                                expr: parse_physical_expr(expr,registry, input.schema().as_ref())?,
                                 options: SortOptions {
                                     descending: !sort_expr.asc,
                                     nulls_first: sort_expr.nulls_first,
@@ -766,7 +779,8 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     }),
                 })
                 .collect();
-            let join_type: protobuf::JoinType = exec.join_type().to_owned().into();
+            let join_type: datafusion_proto::protobuf::JoinType =
+                exec.join_type().to_owned().into();
             let filter = exec
                 .filter()
                 .as_ref()
@@ -1372,6 +1386,7 @@ mod roundtrip_tests {
                 lit(ScalarValue::Int64(Some(2))),
             ],
             false,
+            schema.as_ref(),
         ));
         let and = binary(not, Operator::And, in_list, &schema)?;
         roundtrip_test(Arc::new(FilterExec::try_new(

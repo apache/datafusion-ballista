@@ -28,7 +28,7 @@ exclude = ["ballista-cli", "python"]
 
 # cargo build --profile release-lto
 [profile.release-lto]
-inherits = "release"
 codegen-units = 1
+inherits = "release"
 lto = true
 
