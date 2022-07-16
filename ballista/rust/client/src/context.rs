@@ -440,6 +440,8 @@ impl BallistaContext {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "standalone")]
+    use datafusion::datasource::listing::ListingTableUrl;
 
     #[tokio::test]
     #[cfg(feature = "standalone")]
@@ -591,10 +593,14 @@ mod tests {
                         target_partitions: x.target_partitions,
                     };
 
-                    let config =
-                        ListingTableConfig::new(listing_table.table_path().clone())
-                            .with_schema(Arc::new(Schema::new(vec![])))
-                            .with_listing_options(error_options);
+                    let table_paths = listing_table
+                        .table_paths()
+                        .iter()
+                        .map(|t| ListingTableUrl::parse(t).unwrap())
+                        .collect();
+                    let config = ListingTableConfig::new_with_multi_paths(table_paths)
+                        .with_schema(Arc::new(Schema::new(vec![])))
+                        .with_listing_options(error_options);
 
                     let error_table = ListingTable::try_new(config).unwrap();
 

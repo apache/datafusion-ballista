@@ -20,7 +20,7 @@
 
 use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 use datafusion::execution::runtime_env::RuntimeEnv;
-use datafusion::logical_plan::{FunctionRegistry, JoinConstraint, JoinType, Operator};
+use datafusion::logical_plan::{FunctionRegistry, Operator};
 use datafusion::physical_plan::join_utils::JoinSide;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::{
@@ -39,7 +39,6 @@ pub mod protobuf {
     include!(concat!(env!("OUT_DIR"), "/ballista.protobuf.rs"));
 }
 
-pub mod logical_plan;
 pub mod physical_plan;
 pub mod scheduler;
 
@@ -221,32 +220,6 @@ pub(crate) fn from_proto_binary_op(op: &str) -> Result<Operator, BallistaError> 
     }
 }
 
-impl From<protobuf::JoinType> for JoinType {
-    fn from(t: protobuf::JoinType) -> Self {
-        match t {
-            protobuf::JoinType::Inner => JoinType::Inner,
-            protobuf::JoinType::Left => JoinType::Left,
-            protobuf::JoinType::Right => JoinType::Right,
-            protobuf::JoinType::Full => JoinType::Full,
-            protobuf::JoinType::Semi => JoinType::Semi,
-            protobuf::JoinType::Anti => JoinType::Anti,
-        }
-    }
-}
-
-impl From<JoinType> for protobuf::JoinType {
-    fn from(t: JoinType) -> Self {
-        match t {
-            JoinType::Inner => protobuf::JoinType::Inner,
-            JoinType::Left => protobuf::JoinType::Left,
-            JoinType::Right => protobuf::JoinType::Right,
-            JoinType::Full => protobuf::JoinType::Full,
-            JoinType::Semi => protobuf::JoinType::Semi,
-            JoinType::Anti => protobuf::JoinType::Anti,
-        }
-    }
-}
-
 impl From<protobuf::JoinSide> for JoinSide {
     fn from(t: protobuf::JoinSide) -> Self {
         match t {
@@ -261,24 +234,6 @@ impl From<JoinSide> for protobuf::JoinSide {
         match t {
             JoinSide::Left => protobuf::JoinSide::LeftSide,
             JoinSide::Right => protobuf::JoinSide::RightSide,
-        }
-    }
-}
-
-impl From<protobuf::JoinConstraint> for JoinConstraint {
-    fn from(t: protobuf::JoinConstraint) -> Self {
-        match t {
-            protobuf::JoinConstraint::On => JoinConstraint::On,
-            protobuf::JoinConstraint::Using => JoinConstraint::Using,
-        }
-    }
-}
-
-impl From<JoinConstraint> for protobuf::JoinConstraint {
-    fn from(t: JoinConstraint) -> Self {
-        match t {
-            JoinConstraint::On => protobuf::JoinConstraint::On,
-            JoinConstraint::Using => protobuf::JoinConstraint::Using,
         }
     }
 }
@@ -397,7 +352,7 @@ mod tests {
             &self,
             exprs: &[Expr],
             inputs: &[LogicalPlan],
-        ) -> Arc<dyn UserDefinedLogicalNode + Send + Sync> {
+        ) -> Arc<dyn UserDefinedLogicalNode> {
             assert_eq!(inputs.len(), 1, "input size inconsistent");
             assert_eq!(exprs.len(), 1, "expression size inconsistent");
             Arc::new(TopKPlanNode {
@@ -494,9 +449,10 @@ mod tests {
 
     struct TopKPlanner {}
 
+    #[async_trait]
     impl ExtensionPlanner for TopKPlanner {
         /// Create a physical plan for an extension node
-        fn plan_extension(
+        async fn plan_extension(
             &self,
             _planner: &dyn PhysicalPlanner,
             node: &dyn UserDefinedLogicalNode,
