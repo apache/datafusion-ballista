@@ -168,7 +168,7 @@ async fn main() -> Result<()> {
             let etcd = etcd_client::Client::connect(&[opt.etcd_urls], None)
                 .await
                 .context("Could not connect to etcd")?;
-            Arc::new(EtcdClient::new(etcd))
+            Arc::new(EtcdClient::new(namespace.clone(), etcd))
         }
         #[cfg(not(feature = "etcd"))]
         StateBackend::Etcd => {

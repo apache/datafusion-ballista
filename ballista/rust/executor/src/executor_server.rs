@@ -71,7 +71,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
                 .map(|h| match h {
                     OptionalHost::Host(host) => host,
                 })
-                .unwrap_or_else(|| String::from("127.0.0.1")),
+                .unwrap_or_else(|| String::from("0.0.0.0")),
             executor_meta.grpc_port
         );
         let addr = addr.parse().unwrap();

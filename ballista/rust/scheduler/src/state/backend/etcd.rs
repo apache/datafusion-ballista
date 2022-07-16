@@ -17,31 +17,39 @@
 
 //! Etcd config backend.
 
+use std::collections::HashSet;
+
 use std::task::Poll;
 
 use ballista_core::error::{ballista_error, Result};
+use std::time::Instant;
 
-use etcd_client::{GetOptions, LockResponse, WatchOptions, WatchStream, Watcher};
+use etcd_client::{
+    GetOptions, LockOptions, LockResponse, Txn, TxnOp, WatchOptions, WatchStream, Watcher,
+};
 use futures::{Stream, StreamExt};
-use log::warn;
+use log::{debug, error, warn};
 
-use crate::state::backend::{Lock, StateBackendClient, Watch, WatchEvent};
+use crate::state::backend::{Keyspace, Lock, StateBackendClient, Watch, WatchEvent};
 
 /// A [`StateBackendClient`] implementation that uses etcd to save cluster configuration.
 #[derive(Clone)]
 pub struct EtcdClient {
+    namespace: String,
     etcd: etcd_client::Client,
 }
 
 impl EtcdClient {
-    pub fn new(etcd: etcd_client::Client) -> Self {
-        Self { etcd }
+    pub fn new(namespace: String, etcd: etcd_client::Client) -> Self {
+        Self { namespace, etcd }
     }
 }
 
 #[tonic::async_trait]
 impl StateBackendClient for EtcdClient {
-    async fn get(&self, key: &str) -> Result<Vec<u8>> {
+    async fn get(&self, keyspace: Keyspace, key: &str) -> Result<Vec<u8>> {
+        let key = format!("/{}/{:?}/{}", self.namespace, keyspace, key);
+
         Ok(self
             .etcd
             .clone()
@@ -54,7 +62,13 @@ impl StateBackendClient for EtcdClient {
             .unwrap_or_default())
     }
 
-    async fn get_from_prefix(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>> {
+    async fn get_from_prefix(
+        &self,
+        keyspace: Keyspace,
+        prefix: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>> {
+        let prefix = format!("/{}/{:?}/{}", self.namespace, keyspace, prefix);
+
         Ok(self
             .etcd
             .clone()
@@ -67,9 +81,59 @@ impl StateBackendClient for EtcdClient {
             .collect())
     }
 
-    async fn put(&self, key: String, value: Vec<u8>) -> Result<()> {
+    async fn scan(
+        &self,
+        keyspace: Keyspace,
+        limit: Option<usize>,
+    ) -> Result<Vec<(String, Vec<u8>)>> {
+        let prefix = format!("/{}/{:?}/", self.namespace, keyspace);
+
+        let options = if let Some(limit) = limit {
+            GetOptions::new().with_prefix().with_limit(limit as i64)
+        } else {
+            GetOptions::new().with_prefix()
+        };
+
+        Ok(self
+            .etcd
+            .clone()
+            .get(prefix, Some(options))
+            .await
+            .map_err(|e| ballista_error(&format!("etcd error {:?}", e)))?
+            .kvs()
+            .iter()
+            .map(|kv| (kv.key_str().unwrap().to_owned(), kv.value().to_owned()))
+            .collect())
+    }
+
+    async fn scan_keys(&self, keyspace: Keyspace) -> Result<HashSet<String>> {
+        let prefix = format!("/{}/{:?}/", self.namespace, keyspace);
+
+        let options = GetOptions::new().with_prefix().with_keys_only();
+
+        Ok(self
+            .etcd
+            .clone()
+            .get(prefix.clone(), Some(options))
+            .await
+            .map_err(|e| ballista_error(&format!("etcd error {:?}", e)))?
+            .kvs()
+            .iter()
+            .map(|kv| {
+                kv.key_str()
+                    .unwrap()
+                    .strip_prefix(&prefix)
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect())
+    }
+
+    async fn put(&self, keyspace: Keyspace, key: String, value: Vec<u8>) -> Result<()> {
+        let key = format!("/{}/{:?}/{}", self.namespace, keyspace, key);
+
         let mut etcd = self.etcd.clone();
-        etcd.put(key.clone(), value.clone(), None)
+        etcd.put(key, value.clone(), None)
             .await
             .map_err(|e| {
                 warn!("etcd put failed: {}", e);
@@ -78,20 +142,100 @@ impl StateBackendClient for EtcdClient {
             .map(|_| ())
     }
 
-    async fn lock(&self) -> Result<Box<dyn Lock>> {
+    async fn put_txn(&self, ops: Vec<(Keyspace, String, Vec<u8>)>) -> Result<()> {
         let mut etcd = self.etcd.clone();
-        // TODO: make this a namespaced-lock
+
+        let txn_ops: Vec<TxnOp> = ops
+            .into_iter()
+            .map(|(ks, key, value)| {
+                let key = format!("/{}/{:?}/{}", self.namespace, ks, key);
+                TxnOp::put(key, value, None)
+            })
+            .collect();
+
+        let txn = Txn::new().and_then(txn_ops);
+
+        etcd.txn(txn)
+            .await
+            .map_err(|e| {
+                error!("etcd put failed: {}", e);
+                ballista_error("etcd transaction put failed")
+            })
+            .map(|_| ())
+    }
+
+    async fn mv(
+        &self,
+        from_keyspace: Keyspace,
+        to_keyspace: Keyspace,
+        key: &str,
+    ) -> Result<()> {
+        let mut etcd = self.etcd.clone();
+        let from_key = format!("/{}/{:?}/{}", self.namespace, from_keyspace, key);
+        let to_key = format!("/{}/{:?}/{}", self.namespace, to_keyspace, key);
+
+        let current_value = etcd
+            .get(from_key.as_str(), None)
+            .await
+            .map_err(|e| ballista_error(&format!("etcd error {:?}", e)))?
+            .kvs()
+            .get(0)
+            .map(|kv| kv.value().to_owned());
+
+        if let Some(value) = current_value {
+            let txn = Txn::new().and_then(vec![
+                TxnOp::delete(from_key.as_str(), None),
+                TxnOp::put(to_key.as_str(), value, None),
+            ]);
+            etcd.txn(txn).await.map_err(|e| {
+                error!("etcd put failed: {}", e);
+                ballista_error("etcd move failed")
+            })?;
+        } else {
+            warn!("Cannot move value at {}, does not exist", from_key);
+        }
+
+        Ok(())
+    }
+
+    async fn lock(&self, keyspace: Keyspace, key: &str) -> Result<Box<dyn Lock>> {
+        let start = Instant::now();
+        let mut etcd = self.etcd.clone();
+
+        let lock_id = format!("/{}/mutex/{:?}/{}", self.namespace, keyspace, key);
+
+        // Create a lease which expires after 30 seconds. We then associate this lease with the lock
+        // acquired below. This protects against a scheduler dying unexpectedly while holding locks
+        // on shared resources. In that case, those locks would expire once the lease expires.
+        // TODO This is not great to do for every lock. We should have a single lease per scheduler instance
+        let lease_id = etcd
+            .lease_client()
+            .grant(30, None)
+            .await
+            .map_err(|e| {
+                warn!("etcd lease failed: {}", e);
+                ballista_error("etcd lease failed")
+            })?
+            .id();
+
+        let lock_options = LockOptions::new().with_lease(lease_id);
+
         let lock = etcd
-            .lock("/ballista_global_lock", None)
+            .lock(lock_id.as_str(), Some(lock_options))
             .await
             .map_err(|e| {
                 warn!("etcd lock failed: {}", e);
                 ballista_error("etcd lock failed")
             })?;
+
+        let elapsed = start.elapsed();
+        debug!("Acquired lock {} in {:?}", lock_id, elapsed);
         Ok(Box::new(EtcdLockGuard { etcd, lock }))
     }
 
-    async fn watch(&self, prefix: String) -> Result<Box<dyn Watch>> {
+    async fn watch(&self, keyspace: Keyspace, prefix: String) -> Result<Box<dyn Watch>> {
+        let prefix = format!("/{}/{:?}/{}", self.namespace, keyspace, prefix);
+
         let mut etcd = self.etcd.clone();
         let options = WatchOptions::new().with_prefix();
         let (watcher, stream) = etcd.watch(prefix, Some(options)).await.map_err(|e| {
@@ -103,6 +247,19 @@ impl StateBackendClient for EtcdClient {
             stream,
             buffered_events: Vec::new(),
         }))
+    }
+
+    async fn delete(&self, keyspace: Keyspace, key: &str) -> Result<()> {
+        let key = format!("/{}/{:?}/{}", self.namespace, keyspace, key);
+
+        let mut etcd = self.etcd.clone();
+
+        etcd.delete(key, None).await.map_err(|e| {
+            warn!("etcd delete failed: {:?}", e);
+            ballista_error("etcd delete failed")
+        })?;
+
+        Ok(())
     }
 }
 

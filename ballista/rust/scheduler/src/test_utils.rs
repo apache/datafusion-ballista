@@ -15,15 +15,120 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista_core::error::Result;
+use ballista_core::error::{BallistaError, Result};
+use std::any::Any;
+use std::future::Future;
+use std::sync::Arc;
+use std::time::Duration;
 
-use datafusion::arrow::datatypes::{DataType, Field, Schema};
-use datafusion::execution::context::{SessionConfig, SessionContext};
+use crate::scheduler_server::event::SchedulerServerEvent;
+
+use async_trait::async_trait;
+use ballista_core::event_loop::EventAction;
+
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::common::DataFusionError;
+use datafusion::datasource::{TableProvider, TableType};
+use datafusion::execution::context::{SessionConfig, SessionContext, SessionState};
+use datafusion::logical_expr::Expr;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::CsvReadOptions;
+use tokio::sync::mpsc::Sender;
 
 pub const TPCH_TABLES: &[&str] = &[
     "part", "supplier", "partsupp", "customer", "orders", "lineitem", "nation", "region",
 ];
+
+/// Test utility that allows observing scheduler events.
+pub struct SchedulerEventObserver {
+    sender: Sender<SchedulerServerEvent>,
+    errors: Sender<BallistaError>,
+}
+
+impl SchedulerEventObserver {
+    pub fn new(
+        sender: Sender<SchedulerServerEvent>,
+        errors: Sender<BallistaError>,
+    ) -> Self {
+        Self { sender, errors }
+    }
+}
+
+#[async_trait]
+impl EventAction<SchedulerServerEvent> for SchedulerEventObserver {
+    fn on_start(&self) {}
+
+    fn on_stop(&self) {}
+
+    async fn on_receive(
+        &self,
+        event: SchedulerServerEvent,
+    ) -> Result<Option<SchedulerServerEvent>> {
+        self.sender.send(event).await.unwrap();
+
+        Ok(None)
+    }
+
+    fn on_error(&self, error: BallistaError) {
+        let errors = self.errors.clone();
+        tokio::task::spawn(async move { errors.send(error).await.unwrap() });
+    }
+}
+
+/// Sometimes we need to construct logical plans that will produce errors
+/// when we try and create physical plan. A scan using `ExplodingTableProvider`
+/// will do the trick
+pub struct ExplodingTableProvider;
+
+#[async_trait]
+impl TableProvider for ExplodingTableProvider {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        Arc::new(Schema::empty())
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        _ctx: &SessionState,
+        _projection: &Option<Vec<usize>>,
+        _filters: &[Expr],
+        _limit: Option<usize>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        Err(DataFusionError::Plan(
+            "ExplodingTableProvider just throws an error!".to_owned(),
+        ))
+    }
+}
+
+/// Utility for running some async check multiple times to verify a condition. It will run the check
+/// at the specified interval up to a maximum of the specified iterations.
+pub async fn await_condition<Fut: Future<Output = Result<bool>>, F: Fn() -> Fut>(
+    interval: Duration,
+    iterations: usize,
+    cond: F,
+) -> Result<bool> {
+    let mut iteration = 0;
+
+    while iteration < iterations {
+        let check = cond().await?;
+
+        if check {
+            return Ok(true);
+        } else {
+            iteration += 1;
+            tokio::time::sleep(interval).await;
+        }
+    }
+
+    Ok(false)
+}
 
 pub async fn datafusion_test_context(path: &str) -> Result<SessionContext> {
     let default_shuffle_partitions = 2;

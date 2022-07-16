@@ -15,21 +15,23 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::as_task_status;
-use crate::executor::Executor;
-use ballista_core::error::BallistaError;
-use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
+use datafusion::physical_plan::ExecutionPlan;
+
 use ballista_core::serde::protobuf::{
     scheduler_grpc_client::SchedulerGrpcClient, PollWorkParams, PollWorkResult,
     TaskDefinition, TaskStatus,
 };
+
+use crate::as_task_status;
+use crate::executor::Executor;
+use ballista_core::error::BallistaError;
+use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
 use ballista_core::serde::scheduler::ExecutorSpecification;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use datafusion::execution::context::TaskContext;
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use futures::FutureExt;
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use std::any::Any;
 use std::collections::HashMap;
 use std::error::Error;
@@ -57,7 +59,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         std::sync::mpsc::channel::<TaskStatus>();
 
     loop {
-        debug!("Starting registration loop with scheduler");
+        trace!("Starting registration loop with scheduler");
 
         let task_status: Vec<TaskStatus> =
             sample_tasks_status(&mut task_status_receiver).await;
