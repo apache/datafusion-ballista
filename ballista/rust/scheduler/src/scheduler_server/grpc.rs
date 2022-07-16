@@ -22,21 +22,20 @@ use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Qu
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
-    ExecuteQueryParams, ExecuteQueryResult, ExecutorHeartbeat, FileType,
-    GetFileMetadataParams, GetFileMetadataResult, GetJobStatusParams, GetJobStatusResult,
-    HeartBeatParams, HeartBeatResult, PollWorkParams, PollWorkResult,
-    RegisterExecutorParams, RegisterExecutorResult, UpdateTaskStatusParams,
-    UpdateTaskStatusResult,
+    ExecuteQueryParams, ExecuteQueryResult, ExecutorHeartbeat, GetFileMetadataParams,
+    GetFileMetadataResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
+    HeartBeatResult, PollWorkParams, PollWorkResult, RegisterExecutorParams,
+    RegisterExecutorResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::serde::AsExecutionPlan;
 
-use datafusion::datafusion_data_access::object_store::{
-    local::LocalFileSystem, ObjectStore,
-};
+use object_store::{local::LocalFileSystem, path::Path, ObjectStore};
+
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::file_format::FileFormat;
 use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::protobuf::FileType;
 use futures::TryStreamExt;
 use log::{debug, error, info, trace, warn};
 
@@ -494,9 +493,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let job_id = request.into_inner().job_id;
         debug!("Received get_job_status request for job {}", job_id);
         match self.state.task_manager.get_job_status(&job_id).await {
-            Ok(status) => Ok(Response::new(GetJobStatusResult {
-                status,
-            })),
+            Ok(status) => Ok(Response::new(GetJobStatusResult { status })),
             Err(e) => {
                 let msg = format!("Error getting status for job {}: {:?}", job_id, e);
                 error!("{}", msg);

@@ -578,6 +578,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 parse_protobuf_hash_partitioning(
                     stage.output_partitioning.as_ref(),
                     session_ctx.as_ref(),
+                    plan.schema().as_ref(),
                 )?;
 
             let mut inputs: HashMap<usize, StageOutput> = HashMap::new();

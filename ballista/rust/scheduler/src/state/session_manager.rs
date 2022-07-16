@@ -131,12 +131,14 @@ pub fn update_datafusion_context(
 ) -> Arc<SessionContext> {
     {
         let mut mut_state = session_ctx.state.write();
-        mut_state.config.target_partitions = config.default_shuffle_partitions();
-        mut_state.config.batch_size = config.default_batch_size();
-        mut_state.config.repartition_joins = config.repartition_joins();
-        mut_state.config.repartition_aggregations = config.repartition_aggregations();
-        mut_state.config.repartition_windows = config.repartition_windows();
-        mut_state.config.parquet_pruning = config.parquet_pruning();
+        // TODO Currently we have to start from default session config due to the interface not support update
+        mut_state.config = SessionConfig::default()
+            .with_target_partitions(config.default_shuffle_partitions())
+            .with_batch_size(config.default_batch_size())
+            .with_repartition_joins(config.repartition_joins())
+            .with_repartition_aggregations(config.repartition_aggregations())
+            .with_repartition_windows(config.repartition_windows())
+            .with_parquet_pruning(config.parquet_pruning());
     }
     session_ctx
 }

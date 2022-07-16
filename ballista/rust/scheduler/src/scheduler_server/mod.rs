@@ -240,88 +240,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     }
 }
 
-/// Create a DataFusion session context that is compatible with Ballista Configuration
-pub fn create_datafusion_context(
-    config: &BallistaConfig,
-    session_builder: SessionBuilder,
-) -> Arc<SessionContext> {
-    let config = SessionConfig::new()
-        .with_target_partitions(config.default_shuffle_partitions())
-        .with_batch_size(config.default_batch_size())
-        .with_repartition_joins(config.repartition_joins())
-        .with_repartition_aggregations(config.repartition_aggregations())
-        .with_repartition_windows(config.repartition_windows())
-        .with_parquet_pruning(config.parquet_pruning());
-    let session_state = session_builder(config);
-    Arc::new(SessionContext::with_state(session_state))
-}
-
-/// Update the existing DataFusion session context with Ballista Configuration
-pub fn update_datafusion_context(
-    session_ctx: Arc<SessionContext>,
-    config: &BallistaConfig,
-) -> Arc<SessionContext> {
-    {
-        let mut mut_state = session_ctx.state.write();
-        // TODO Currently we have to start from default session config due to the interface not support update
-        mut_state.config = SessionConfig::default()
-            .with_target_partitions(config.default_shuffle_partitions())
-            .with_batch_size(config.default_batch_size())
-            .with_repartition_joins(config.repartition_joins())
-            .with_repartition_aggregations(config.repartition_aggregations())
-            .with_repartition_windows(config.repartition_windows())
-            .with_parquet_pruning(config.parquet_pruning());
-    }
-    session_ctx
-}
-
-/// A Registry holds all the datafusion session contexts
-pub struct SessionContextRegistry {
-    /// A map from session_id to SessionContext
-    pub running_sessions: RwLock<HashMap<String, Arc<SessionContext>>>,
-}
-
-impl Default for SessionContextRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SessionContextRegistry {
-    /// Create the registry that session contexts can registered into.
-    /// ['LocalFileSystem'] store is registered in by default to support read local files natively.
-    pub fn new() -> Self {
-        Self {
-            running_sessions: RwLock::new(HashMap::new()),
-        }
-    }
-
-    /// Adds a new session to this registry.
-    pub async fn register_session(
-        &self,
-        session_ctx: Arc<SessionContext>,
-    ) -> Option<Arc<SessionContext>> {
-        let session_id = session_ctx.session_id();
-        let mut sessions = self.running_sessions.write().await;
-        sessions.insert(session_id, session_ctx)
-    }
-
-    /// Lookup the session context registered
-    pub async fn lookup_session(&self, session_id: &str) -> Option<Arc<SessionContext>> {
-        let sessions = self.running_sessions.read().await;
-        sessions.get(session_id).cloned()
-    }
-
-    /// Remove a session from this registry.
-    pub async fn unregister_session(
-        &self,
-        session_id: &str,
-    ) -> Option<Arc<SessionContext>> {
-        let mut sessions = self.running_sessions.write().await;
-        sessions.remove(session_id)
-    }
-}
-
 #[cfg(all(test, feature = "sled"))]
 mod test {
     use std::sync::Arc;
@@ -330,11 +248,10 @@ mod test {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::execution::context::default_session_builder;
     use datafusion::logical_plan::{col, sum, LogicalPlan};
-    use datafusion::prelude::{SessionConfig, SessionContext};
+
     use datafusion::test_util::scan_empty;
     use datafusion_proto::protobuf::LogicalPlanNode;
 
-    use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::config::{
         BallistaConfig, TaskSchedulingPolicy, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
     };
@@ -349,12 +266,6 @@ mod test {
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
     };
     use ballista_core::serde::BallistaCodec;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::execution::context::default_session_builder;
-    use datafusion::logical_plan::{col, sum, LogicalPlan};
-
-    use datafusion::test_util::scan_empty;
-    use datafusion_proto::protobuf::LogicalPlanNode;
 
     use crate::scheduler_server::event::{
         QueryStageSchedulerEvent, SchedulerServerEvent,
