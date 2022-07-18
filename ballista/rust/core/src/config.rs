@@ -156,8 +156,8 @@ impl BallistaConfig {
     pub fn valid_entries() -> HashMap<String, ConfigEntry> {
         let entries = vec![
             ConfigEntry::new(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS.to_string(),
-                "Sets the default number of partitions to create when repartitioning query stages".to_string(),
-                DataType::UInt16, Some("2".to_string())),
+                             "Sets the default number of partitions to create when repartitioning query stages".to_string(),
+                             DataType::UInt16, Some("2".to_string())),
             ConfigEntry::new(BALLISTA_DEFAULT_BATCH_SIZE.to_string(),
                              "Sets the default batch size".to_string(),
                              DataType::UInt16, Some("8192".to_string())),
@@ -166,19 +166,19 @@ impl BallistaConfig {
                              DataType::Boolean, Some("true".to_string())),
             ConfigEntry::new(BALLISTA_REPARTITION_AGGREGATIONS.to_string(),
                              "Configuration for repartition aggregations".to_string(),
-                             DataType::Boolean,Some("true".to_string())),
+                             DataType::Boolean, Some("true".to_string())),
             ConfigEntry::new(BALLISTA_REPARTITION_WINDOWS.to_string(),
                              "Configuration for repartition windows".to_string(),
-                             DataType::Boolean,Some("true".to_string())),
+                             DataType::Boolean, Some("true".to_string())),
             ConfigEntry::new(BALLISTA_PARQUET_PRUNING.to_string(),
                              "Configuration for parquet prune".to_string(),
-                             DataType::Boolean,Some("true".to_string())),
+                             DataType::Boolean, Some("true".to_string())),
             ConfigEntry::new(BALLISTA_WITH_INFORMATION_SCHEMA.to_string(),
-                "Sets whether enable information_schema".to_string(),
-                DataType::Boolean,Some("false".to_string())),
+                             "Sets whether enable information_schema".to_string(),
+                             DataType::Boolean, Some("false".to_string())),
             ConfigEntry::new(BALLISTA_PLUGIN_DIR.to_string(),
                              "Sets the plugin dir".to_string(),
-                             DataType::Utf8,Some("".to_string())),
+                             DataType::Utf8, Some("".to_string())),
         ];
         entries
             .iter()

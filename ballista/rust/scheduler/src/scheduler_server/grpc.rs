@@ -36,6 +36,9 @@ use ballista_core::serde::AsExecutionPlan;
 use datafusion::datafusion_data_access::object_store::{
     local::LocalFileSystem, ObjectStore,
 };
+
+use object_store::{local::LocalFileSystem, path::Path, ObjectStore};
+
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::file_format::FileFormat;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -284,7 +287,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         request: Request<GetFileMetadataParams>,
     ) -> Result<Response<GetFileMetadataResult>, Status> {
         // TODO support multiple object stores
-        let obj_store = Arc::new(LocalFileSystem {}) as Arc<dyn ObjectStore>;
+        let obj_store: Arc<dyn ObjectStore> = Arc::new(LocalFileSystem::new());
         // TODO shouldn't this take a ListingOption object as input?
 
         let GetFileMetadataParams { path, file_type } = request.into_inner();
@@ -303,8 +306,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             )),
         }?;
 
+        let path = Path::from(path.as_str());
         let file_metas: Vec<_> = obj_store
-            .list_file(&path)
+            .list(Some(&path))
             .await
             .map_err(|e| {
                 let msg = format!("Error listing files: {}", e);
@@ -312,7 +316,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 tonic::Status::internal(msg)
             })?
             .try_collect()
-            .await?;
+            .await
+            .map_err(|e| {
+                let msg = format!("Error listing files: {}", e);
+                error!("{}", msg);
+                tonic::Status::internal(msg)
+            })?;
 
         let schema = file_format
             .infer_schema(&obj_store, &file_metas)
@@ -532,9 +541,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 mod test {
     use std::sync::Arc;
 
+    use datafusion::execution::context::default_session_builder;
+    use datafusion_proto::protobuf::LogicalPlanNode;
     use tonic::Request;
 
-    use crate::state::{backend::standalone::StandaloneClient, SchedulerState};
     use ballista_core::error::BallistaError;
     use ballista_core::serde::protobuf::{
         executor_registration::OptionalHost, ExecutorRegistration, PhysicalPlanNode,
@@ -542,8 +552,8 @@ mod test {
     };
     use ballista_core::serde::scheduler::ExecutorSpecification;
     use ballista_core::serde::BallistaCodec;
-    use datafusion::execution::context::default_session_builder;
-    use datafusion_proto::protobuf::LogicalPlanNode;
+
+    use crate::state::{backend::standalone::StandaloneClient, SchedulerState};
 
     use super::{SchedulerGrpc, SchedulerServer};
 

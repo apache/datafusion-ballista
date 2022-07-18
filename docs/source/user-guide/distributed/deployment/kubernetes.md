@@ -55,8 +55,8 @@ There is no officially published Docker image so it is currently necessary to bu
 Run the following commands to clone the source repository and build the Docker image.
 
 ```bash
-git clone git@github.com:apache/arrow-datafusion.git -b 8.0.0
-cd arrow-datafusion
+git clone git@github.com:apache/arrow-ballista.git
+cd arrow-ballista
 ./dev/build-ballista-docker.sh
 ```
 
@@ -271,7 +271,7 @@ executors down to 0 if there is no activity in the cluster.
 Keda can be installed in your kubernetes cluster through a single command line:
 
 ```bash
-kubectl apply -f https://github.com/kedacore/keda/releases/download/v2.3.0/keda-2.3.0.yaml
+kubectl apply -f https://github.com/kedacore/keda/releases/download/v2.7.1/keda-2.7.1.yaml
 ```
 
 Once you have deployed Keda on your cluster, you can now deploy a new kubernetes object called `ScaledObject`
@@ -305,4 +305,4 @@ If the cluster is inactive, Keda will now scale the number of executors down to 
 you launch a query. Please note that Keda will perform a scan once every 30 seconds, so it might take a bit to
 scale the executors.
 
-Please visit Keda's [documentation page](https://keda.sh/docs/2.3/concepts/scaling-deployments/) for more information.
+Please visit Keda's [documentation page](https://keda.sh/docs/2.7/concepts/scaling-deployments/) for more information.
