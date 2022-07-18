@@ -24,18 +24,13 @@ use ballista_core::serde::protobuf::execute_query_params::{
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
-    ExecuteQueryParams, ExecuteQueryResult, ExecutorHeartbeat, FileType,
-    GetFileMetadataParams, GetFileMetadataResult, GetJobStatusParams, GetJobStatusResult,
-    HeartBeatParams, HeartBeatResult, PollWorkParams, PollWorkResult,
-    RegisterExecutorParams, RegisterExecutorResult, UpdateTaskStatusParams,
-    UpdateTaskStatusResult,
+    ExecuteQueryParams, ExecuteQueryResult, ExecutorHeartbeat, GetFileMetadataParams,
+    GetFileMetadataResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
+    HeartBeatResult, PollWorkParams, PollWorkResult, RegisterExecutorParams,
+    RegisterExecutorResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::serde::AsExecutionPlan;
-
-use datafusion::datafusion_data_access::object_store::{
-    local::LocalFileSystem, ObjectStore,
-};
 
 use object_store::{local::LocalFileSystem, path::Path, ObjectStore};
 
@@ -50,6 +45,7 @@ use std::convert::TryInto;
 use std::ops::Deref;
 use std::sync::Arc;
 
+use datafusion_proto::protobuf::FileType;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
