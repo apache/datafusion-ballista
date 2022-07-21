@@ -33,6 +33,6 @@ inherits = "release"
 lto = true
 
 [patch.crates-io]
-arrow = { git = "https://github.com/coralogix/arrow-rs", branch = "issue-2110" }
-arrow-flight = { git = "https://github.com/coralogix/arrow-rs", branch = "issue-2110" }
-parquet = { git = "https://github.com/coralogix/arrow-rs", branch = "issue-2110" }
+arrow = { git = "https://github.com/apache/arrow-rs", rev = "576069a3111094b63d39c3c3973b7cebc90b5a94" }
+arrow-flight = { git = "https://github.com/apache/arrow-rs", rev = "576069a3111094b63d39c3c3973b7cebc90b5a94" }
+parquet = { git = "https://github.com/apache/arrow-rs", rev = "576069a3111094b63d39c3c3973b7cebc90b5a94" }
