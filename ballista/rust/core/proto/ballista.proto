@@ -250,6 +250,7 @@ message FileScanExecConf {
 message ParquetScanExecNode {
   FileScanExecConf base_conf = 1;
   datafusion.LogicalExprNode pruning_predicate = 2;
+  uint64 metadata_size_hint = 3;
 }
 
 message CsvScanExecNode {

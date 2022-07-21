@@ -33,3 +33,7 @@ codegen-units = 1
 inherits = "release"
 lto = true
 
+[patch.crates-io]
+arrow = { git = "https://github.com/coralogix/arrow-rs", branch = "issue-2110" }
+arrow-flight = { git = "https://github.com/coralogix/arrow-rs", branch = "issue-2110" }
+parquet = { git = "https://github.com/coralogix/arrow-rs", branch = "issue-2110" }
