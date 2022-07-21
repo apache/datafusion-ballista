@@ -74,6 +74,8 @@ use crate::{convert_required, into_physical_plan, into_required};
 pub mod from_proto;
 pub mod to_proto;
 
+static DEFAULT_METADATA_SIZE_HINT: usize = 400_000;
+
 impl AsExecutionPlan for PhysicalPlanNode {
     fn try_decode(buf: &[u8]) -> Result<Self, BallistaError>
     where
@@ -165,9 +167,11 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     .as_ref()
                     .map(|expr| parse_expr(expr, registry))
                     .transpose()?;
+
                 Ok(Arc::new(ParquetExec::new(
                     decode_scan_config(scan.base_conf.as_ref().unwrap())?,
                     predicate,
+                    Some(DEFAULT_METADATA_SIZE_HINT),
                 )))
             }
             PhysicalPlanType::AvroScan(scan) => Ok(Arc::new(AvroExec::new(
@@ -960,6 +964,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     protobuf::ParquetScanExecNode {
                         base_conf: Some(exec.base_config().try_into()?),
                         pruning_predicate: pruning_expr,
+                        metadata_size_hint: 0,
                     },
                 )),
             })
@@ -1230,6 +1235,7 @@ mod roundtrip_tests {
     };
 
     use crate::execution_plans::ShuffleWriterExec;
+    use crate::serde::physical_plan::DEFAULT_METADATA_SIZE_HINT;
     use crate::serde::protobuf::PhysicalPlanNode;
     use crate::serde::{AsExecutionPlan, BallistaCodec};
     use datafusion_proto::protobuf::LogicalPlanNode;
@@ -1497,7 +1503,11 @@ mod roundtrip_tests {
         };
 
         let predicate = datafusion::prelude::col("col").eq(datafusion::prelude::lit("1"));
-        roundtrip_test(Arc::new(ParquetExec::new(scan_config, Some(predicate))))
+        roundtrip_test(Arc::new(ParquetExec::new(
+            scan_config,
+            Some(predicate),
+            Some(DEFAULT_METADATA_SIZE_HINT),
+        )))
     }
 
     #[test]

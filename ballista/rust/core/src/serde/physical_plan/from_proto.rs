@@ -69,9 +69,7 @@ pub(crate) fn parse_physical_expr(
             let pcol: Column = c.into();
             Arc::new(pcol)
         }
-        ExprType::Literal(scalar) => {
-            Arc::new(Literal::new(convert_required!(scalar.value)?))
-        }
+        ExprType::Literal(scalar) => Arc::new(Literal::new(scalar.try_into()?)),
         ExprType::BinaryExpr(binary_expr) => Arc::new(BinaryExpr::new(
             parse_required_physical_box_expr(
                 &binary_expr.l,
