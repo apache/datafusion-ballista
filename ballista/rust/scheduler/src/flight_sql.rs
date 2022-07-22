@@ -1,10 +1,11 @@
 use arrow_flight::{FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, Location, Ticket};
 use arrow_flight::flight_descriptor::DescriptorType;
 use arrow_flight::flight_service_server::FlightService;
-use arrow_flight::sql::{ActionClosePreparedStatementRequest, ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult, CommandGetCatalogs, CommandGetCrossReference, CommandGetDbSchemas, CommandGetExportedKeys, CommandGetImportedKeys, CommandGetPrimaryKeys, CommandGetSqlInfo, CommandGetTables, CommandGetTableTypes, CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementQuery, CommandStatementUpdate, SqlInfo, TicketStatementQuery};
+use arrow_flight::sql::{ActionClosePreparedStatementRequest, ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult, CommandGetCatalogs, CommandGetCrossReference, CommandGetDbSchemas, CommandGetExportedKeys, CommandGetImportedKeys, CommandGetPrimaryKeys, CommandGetSqlInfo, CommandGetTables, CommandGetTableTypes, CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementQuery, CommandStatementUpdate, ProstAnyExt, ProstMessageExt, SqlInfo, TicketStatementQuery};
 use arrow_flight::sql::server::FlightSqlService;
 use log::debug;
 use tonic::{Response, Status, Streaming};
+use prost::Message;
 
 use crate::scheduler_server::SchedulerServer;
 use datafusion_proto::protobuf::LogicalPlanNode;
@@ -72,7 +73,11 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .map_err(|e| Status::internal(format!("Error encoding schema: {}", e)))?;
 
         // Generate response
-        let ticket = Ticket { ticket: vec![] };
+        let ticket = TicketStatementQuery { statement_handle: vec![1,2,3] };
+        // let as_any = ProstAnyExt::pack(&ticket)
+        //     .map_err(|e| Status::internal(format!("Error encoding schema: {}", e)))?;
+        let buf = ticket.as_any().encode_to_vec();
+        let ticket = Ticket { ticket: buf };
         let fiep = FlightEndpoint {
             ticket: Some(ticket),
             location: vec![Location { uri: "grpc+tcp://0.0.0.0:50050".to_string() }],
