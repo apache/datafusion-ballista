@@ -1,23 +1,21 @@
-use arrow_flight::{FlightData, FlightDescriptor, FlightInfo, IpcMessage};
+use arrow_flight::{FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, Location, Ticket};
 use arrow_flight::flight_descriptor::DescriptorType;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::sql::{ActionClosePreparedStatementRequest, ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult, CommandGetCatalogs, CommandGetCrossReference, CommandGetDbSchemas, CommandGetExportedKeys, CommandGetImportedKeys, CommandGetPrimaryKeys, CommandGetSqlInfo, CommandGetTables, CommandGetTableTypes, CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementQuery, CommandStatementUpdate, SqlInfo, TicketStatementQuery};
 use arrow_flight::sql::server::FlightSqlService;
-use datafusion::arrow::array::StringBuilder;
-use datafusion::arrow::ipc;
-use datafusion::arrow::ipc::{FieldBuilder, SchemaBuilder};
-use datafusion::parquet::data_type::AsBytes;
 use log::debug;
 use tonic::{Response, Status, Streaming};
-use prost::Message;
 
 use crate::scheduler_server::SchedulerServer;
 use datafusion_proto::protobuf::LogicalPlanNode;
-use flatbuffers::{FlatBufferBuilder, Vector};
 use ballista_core::{
     serde::protobuf::{PhysicalPlanNode},
 };
 use ballista_core::config::BallistaConfig;
+use arrow_flight::SchemaAsIpc;
+use datafusion::arrow;
+use datafusion::arrow::datatypes::Schema;
+use datafusion::arrow::ipc::writer::{IpcDataGenerator, IpcWriteOptions};
 
 #[derive(Clone)]
 pub struct FlightSqlServiceImpl {
@@ -37,7 +35,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     async fn get_flight_info_statement(
         &self,
         query: CommandStatementQuery,
-        _request: FlightDescriptor,
+        request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
         debug!("Got query:\n{}", query.query);
 
@@ -62,39 +60,35 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .and_then(|df| df.to_logical_plan())
             .map_err(|e| Status::internal(format!("Error building plan: {}", e)))?;
 
-        let mut fbb = FlatBufferBuilder::new();
+        // transform schema
+        let arrow_schema: Schema = (&**plan.schema()).into();
+        let options = IpcWriteOptions::default();
+        let pair = SchemaAsIpc::new(&arrow_schema, &options);
 
-        let mut sb = SchemaBuilder::new(&mut fbb);
-
-        fbb.start_vector(0);
-        let mut fb = FieldBuilder::new(&mut fbb);
-        let field_name = fbb.create_string("EXPR$0");
-        fb.add_name(field_name);
-        let field = fb.finish();
-
-        fbb.push()
-        
-        let fields = fbb.create_vector(&[field]);
-        
-        sb.add_fields(fields);
-        let schema = sb.finish();
-        let bytes = Vec::from(schema.to_le_bytes());
+        let data_gen = IpcDataGenerator::default();
+        let encoded_data = data_gen.schema_to_bytes(pair.0, pair.1);
+        let mut schema_bytes = vec![];
+        arrow::ipc::writer::write_message(&mut schema_bytes, encoded_data, pair.1)
+            .map_err(|e| Status::internal(format!("Error encoding schema: {}", e)))?;
 
         // Generate response
-        let mut buf = vec![];
-        let ticket = TicketStatementQuery { statement_handle: vec![] };
-        ticket.encode(&mut buf)
-            .map_err(|e| Status::internal(format!("Error encoding message: {}", e)))?;
-        let total_records = 0;
-        let total_bytes = 0;
-        let ep = vec![];
+        let ticket = Ticket { ticket: vec![] };
+        let fiep = FlightEndpoint {
+            ticket: Some(ticket),
+            location: vec![Location { uri: "grpc+tcp://0.0.0.0:50050".to_string() }],
+        };
         let flight_desc = FlightDescriptor {
             r#type: DescriptorType::Cmd.into(),
-            cmd: bytes,
+            cmd: vec![],
             path: vec![]
         };
-        let msg = IpcMessage(buf);
-        let info = FlightInfo::new(msg, Some(flight_desc), ep, total_records, total_bytes);
+        let info = FlightInfo {
+            schema: schema_bytes,
+            flight_descriptor: Some(flight_desc),
+            endpoint: vec![fiep],
+            total_records: -1,
+            total_bytes: -1,
+        };
         let resp = Response::new(info);
         debug!("Responding to query...");
         Ok(resp)
