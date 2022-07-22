@@ -102,7 +102,9 @@ async fn start_server(
             let scheduler_grpc_server =
                 SchedulerGrpcServer::new(scheduler_server.clone());
 
-            let flight_sql_server = FlightServiceServer::new(FlightSqlServiceImpl {});
+            let flight_sql_server = FlightServiceServer::new(
+                FlightSqlServiceImpl::new(scheduler_server.clone())
+            );
 
             let keda_scaler = ExternalScalerServer::new(scheduler_server.clone());
 
