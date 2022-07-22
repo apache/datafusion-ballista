@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use arrow_flight::{FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, Location, Ticket};
 use arrow_flight::flight_descriptor::DescriptorType;
 use arrow_flight::flight_service_server::FlightService;
-use arrow_flight::sql::{ActionClosePreparedStatementRequest, ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult, CommandGetCatalogs, CommandGetCrossReference, CommandGetDbSchemas, CommandGetExportedKeys, CommandGetImportedKeys, CommandGetPrimaryKeys, CommandGetSqlInfo, CommandGetTables, CommandGetTableTypes, CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementQuery, CommandStatementUpdate, ProstAnyExt, ProstMessageExt, SqlInfo, TicketStatementQuery};
+use arrow_flight::sql::{ActionClosePreparedStatementRequest, ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult, CommandGetCatalogs, CommandGetCrossReference, CommandGetDbSchemas, CommandGetExportedKeys, CommandGetImportedKeys, CommandGetPrimaryKeys, CommandGetSqlInfo, CommandGetTables, CommandGetTableTypes, CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementQuery, CommandStatementUpdate, ProstMessageExt, SqlInfo, TicketStatementQuery};
 use arrow_flight::sql::server::FlightSqlService;
 use log::debug;
 use tonic::{Response, Status, Streaming};
@@ -17,15 +19,18 @@ use arrow_flight::SchemaAsIpc;
 use datafusion::arrow;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::ipc::writer::{IpcDataGenerator, IpcWriteOptions};
+use datafusion::logical_expr::LogicalPlan;
+use uuid::{Uuid};
 
 #[derive(Clone)]
 pub struct FlightSqlServiceImpl {
     server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
+    statements: Arc<Mutex<HashMap<Uuid, LogicalPlan>>>,
 }
 
 impl FlightSqlServiceImpl {
     pub fn new(server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>) -> Self {
-        Self { server }
+        Self { server, statements: Arc::new(Mutex::new(HashMap::new())) }
     }
 }
 
@@ -73,9 +78,11 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .map_err(|e| Status::internal(format!("Error encoding schema: {}", e)))?;
 
         // Generate response
-        let ticket = TicketStatementQuery { statement_handle: vec![1,2,3] };
-        // let as_any = ProstAnyExt::pack(&ticket)
-        //     .map_err(|e| Status::internal(format!("Error encoding schema: {}", e)))?;
+        let handle = Uuid::new_v4();
+        let ticket = TicketStatementQuery { statement_handle: handle.as_bytes().to_vec() };
+        let mut statements = self.statements.try_lock()
+            .map_err(|e| Status::internal(format!("Error locking statements: {}", e)))?;
+        statements.insert(handle, plan);
         let buf = ticket.as_any().encode_to_vec();
         let ticket = Ticket { ticket: buf };
         let fiep = FlightEndpoint {
@@ -171,8 +178,13 @@ impl FlightSqlService for FlightSqlServiceImpl {
     // do_get
     async fn do_get_statement(
         &self,
-        _ticket: TicketStatementQuery,
+        ticket: TicketStatementQuery,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        let handle = Uuid::from_slice(&ticket.statement_handle)
+            .map_err(|e| Status::internal(format!("Error decoding ticket: {}", e)))?;
+        let statements = self.statements.try_lock()
+            .map_err(|e| Status::internal(format!("Error decoding ticket: {}", e)))?;
+        let plan = statements.get(&handle);
         Err(Status::unimplemented("Not yet implemented"))
     }
 

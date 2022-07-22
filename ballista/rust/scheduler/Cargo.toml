@@ -63,11 +63,11 @@ tokio = { version = "1.0", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"], optional = true }
 tonic = "0.7"
 tower = { version = "0.4" }
+uuid = { version = "1.0", features = ["v4"] }
 warp = "0.3"
 
 [dev-dependencies]
 ballista-core = { path = "../core", version = "0.7.0" }
-uuid = { version = "1.0", features = ["v4"] }
 
 [build-dependencies]
 configure_me_codegen = "0.4.1"
