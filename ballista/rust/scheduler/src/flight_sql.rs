@@ -223,70 +223,71 @@ impl FlightSqlService for FlightSqlServiceImpl {
         _query: CommandPreparedStatementQuery,
         _request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement get_flight_info_prepared_statement"))
     }
     async fn get_flight_info_catalogs(
         &self,
         _query: CommandGetCatalogs,
         _request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement get_flight_info_catalogs"))
     }
     async fn get_flight_info_schemas(
         &self,
         _query: CommandGetDbSchemas,
         _request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement get_flight_info_schemas"))
     }
     async fn get_flight_info_tables(
         &self,
         _query: CommandGetTables,
         _request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement get_flight_info_tables"))
     }
     async fn get_flight_info_table_types(
         &self,
         _query: CommandGetTableTypes,
         _request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement get_flight_info_table_types"))
     }
     async fn get_flight_info_sql_info(
         &self,
         _query: CommandGetSqlInfo,
         _request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        // TODO: implement for FlightSQL JDBC to work
+        Err(Status::unimplemented("Implement CommandGetSqlInfo"))
     }
     async fn get_flight_info_primary_keys(
         &self,
         _query: CommandGetPrimaryKeys,
         _request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement get_flight_info_primary_keys"))
     }
     async fn get_flight_info_exported_keys(
         &self,
         _query: CommandGetExportedKeys,
         _request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement get_flight_info_exported_keys"))
     }
     async fn get_flight_info_imported_keys(
         &self,
         _query: CommandGetImportedKeys,
         _request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement get_flight_info_imported_keys"))
     }
     async fn get_flight_info_cross_reference(
         &self,
         _query: CommandGetCrossReference,
         _request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement get_flight_info_cross_reference"))
     }
     // do_get
     async fn do_get_statement(
@@ -298,102 +299,103 @@ impl FlightSqlService for FlightSqlServiceImpl {
         // let statements = self.statements.try_lock()
         //     .map_err(|e| Status::internal(format!("Error decoding ticket: {}", e)))?;
         // let plan = statements.get(&handle);
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement do_get_statement"))
     }
 
     async fn do_get_prepared_statement(
         &self,
         _query: CommandPreparedStatementQuery,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement do_get_prepared_statement"))
     }
     async fn do_get_catalogs(
         &self,
         _query: CommandGetCatalogs,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement do_get_catalogs"))
     }
     async fn do_get_schemas(
         &self,
         _query: CommandGetDbSchemas,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement do_get_schemas"))
     }
     async fn do_get_tables(
         &self,
         _query: CommandGetTables,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement do_get_tables"))
     }
     async fn do_get_table_types(
         &self,
         _query: CommandGetTableTypes,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement do_get_table_types"))
     }
     async fn do_get_sql_info(
         &self,
         _query: CommandGetSqlInfo,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement do_get_sql_info"))
     }
     async fn do_get_primary_keys(
         &self,
         _query: CommandGetPrimaryKeys,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement do_get_primary_keys"))
     }
     async fn do_get_exported_keys(
         &self,
         _query: CommandGetExportedKeys,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement do_get_exported_keys"))
     }
     async fn do_get_imported_keys(
         &self,
         _query: CommandGetImportedKeys,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement do_get_imported_keys"))
     }
     async fn do_get_cross_reference(
         &self,
         _query: CommandGetCrossReference,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement do_get_cross_reference"))
     }
     // do_put
     async fn do_put_statement_update(
         &self,
         _ticket: CommandStatementUpdate,
     ) -> Result<i64, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement do_put_statement_update"))
     }
     async fn do_put_prepared_statement_query(
         &self,
         _query: CommandPreparedStatementQuery,
         _request: Streaming<FlightData>,
     ) -> Result<Response<<Self as FlightService>::DoPutStream>, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement do_put_prepared_statement_query"))
     }
     async fn do_put_prepared_statement_update(
         &self,
         _query: CommandPreparedStatementUpdate,
         _request: Streaming<FlightData>,
     ) -> Result<i64, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        Err(Status::unimplemented("Implement do_put_prepared_statement_update"))
     }
     // do_action
     async fn do_action_create_prepared_statement(
         &self,
         _query: ActionCreatePreparedStatementRequest,
     ) -> Result<ActionCreatePreparedStatementResult, Status> {
-        Err(Status::unimplemented("Not yet implemented"))
+        // TODO: implement for Flight SQL JDBC driver to work
+        Err(Status::unimplemented("Implement do_action_create_prepared_statement"))
     }
     async fn do_action_close_prepared_statement(
         &self,
         _query: ActionClosePreparedStatementRequest,
     ) {
-        unimplemented!("Not yet implemented")
+        unimplemented!("Implement do_action_close_prepared_statement")
     }
 
     async fn register_sql_info(&self, _id: i32, _result: &SqlInfo) {}
