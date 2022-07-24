@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use arrow_flight::{FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, Location, Ticket};
 use arrow_flight::flight_descriptor::DescriptorType;
 use arrow_flight::flight_service_server::FlightService;
-use arrow_flight::sql::{ActionClosePreparedStatementRequest, ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult, CommandGetCatalogs, CommandGetCrossReference, CommandGetDbSchemas, CommandGetExportedKeys, CommandGetImportedKeys, CommandGetPrimaryKeys, CommandGetSqlInfo, CommandGetTables, CommandGetTableTypes, CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementQuery, CommandStatementUpdate, ProstMessageExt, SqlInfo, TicketStatementQuery};
+use arrow_flight::sql::{ActionClosePreparedStatementRequest, ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult, CommandGetCatalogs, CommandGetCrossReference, CommandGetDbSchemas, CommandGetExportedKeys, CommandGetImportedKeys, CommandGetPrimaryKeys, CommandGetSqlInfo, CommandGetTables, CommandGetTableTypes, CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementQuery, CommandStatementUpdate, SqlInfo, TicketStatementQuery};
 use arrow_flight::sql::server::FlightSqlService;
-use log::debug;
+use log::{debug, error};
 use tonic::{Response, Status, Streaming};
-use prost::Message;
 
 use crate::scheduler_server::SchedulerServer;
 use datafusion_proto::protobuf::LogicalPlanNode;
@@ -20,7 +20,13 @@ use datafusion::arrow;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::ipc::writer::{IpcDataGenerator, IpcWriteOptions};
 use datafusion::logical_expr::LogicalPlan;
+use tokio::time::sleep;
 use uuid::{Uuid};
+use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use ballista_core::serde::protobuf::job_status;
+use ballista_core::serde::protobuf::JobStatus;
+use ballista_core::serde::protobuf;
+use prost::Message;
 
 #[derive(Clone)]
 pub struct FlightSqlServiceImpl {
@@ -66,6 +72,124 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .and_then(|df| df.to_logical_plan())
             .map_err(|e| Status::internal(format!("Error building plan: {}", e)))?;
 
+        // enqueue job
+        let job_id = self.server.state.task_manager.generate_job_id();
+
+        self.server.state
+            .task_manager
+            .queue_job(&job_id)
+            .await
+            .map_err(|e| {
+                let msg = format!("Failed to queue job {}: {:?}", job_id, e);
+                error!("{}", msg);
+
+                Status::internal(msg)
+            })?;
+
+        let query_stage_event_sender =
+            self.server.query_stage_event_loop.get_sender().map_err(|e| {
+                Status::internal(format!(
+                    "Could not get query stage event sender due to: {}",
+                    e
+                ))
+            })?;
+
+        query_stage_event_sender
+            .post_event(QueryStageSchedulerEvent::JobQueued {
+                job_id: job_id.clone(),
+                session_id: ctx.session_id().clone(),
+                session_ctx: ctx,
+                plan: Box::new(plan.clone()),
+            })
+            .await
+            .map_err(|e| {
+                let msg =
+                    format!("Failed to send JobQueued event for {}: {:?}", job_id, e);
+                error!("{}", msg);
+                Status::internal(msg)
+            })?;
+
+        // let handle = Uuid::new_v4();
+        // let mut statements = self.statements.try_lock()
+        //     .map_err(|e| Status::internal(format!("Error locking statements: {}", e)))?;
+        // statements.insert(handle, plan.clone());
+
+        // poll for job completion
+        let mut num_rows = 0;
+        let mut num_bytes = 0;
+        let fieps = loop {
+            sleep(Duration::from_millis(100)).await;
+            let status = self.server.state.task_manager.get_job_status(&job_id).await
+                .map_err(|e| {
+                    let msg = format!("Error getting status for job {}: {:?}", job_id, e);
+                    error!("{}", msg);
+                    Status::internal(msg)
+                })?;
+            let status: JobStatus = match status {
+                Some(status) => status,
+                None => {
+                    let msg = format!("Error getting status for job {}!", job_id);
+                    error!("{}", msg);
+                    Err(Status::internal(msg))?
+                }
+            };
+            let status: job_status::Status = match status.status {
+                Some(status) => status,
+                None => {
+                    let msg = format!("Error getting status for job {}!", job_id);
+                    error!("{}", msg);
+                    Err(Status::internal(msg))?
+                }
+            };
+            let completed = match status {
+                job_status::Status::Queued(_) => continue,
+                job_status::Status::Running(_) => continue,
+                job_status::Status::Failed(e) => {
+                    Err(Status::internal(format!("Error building plan: {}", e.error)))?
+                }
+                job_status::Status::Completed(comp) => comp
+            };
+            let mut fieps: Vec<_> = vec![];
+            for loc in completed.partition_location.iter() {
+                let fetch = if let Some(ref id) = loc.partition_id {
+                    let fetch = protobuf::FetchPartition {
+                        job_id: id.job_id.clone(),
+                        stage_id: id.stage_id,
+                        partition_id: id.partition_id,
+                        path: loc.path.clone()
+                    };
+                    protobuf::Action {
+                        action_type: Some(protobuf::action::ActionType::FetchPartition(fetch)),
+                        settings: vec![],
+                    }
+                } else {
+                    Err(Status::internal(format!("Error getting partition it")))?
+                };
+                let authority = if let Some(ref md) = loc.executor_meta {
+                    // pub id: ::prost::alloc::string::String,
+                    format!("{}:{}", md.host, md.port)
+                } else {
+                    Err(Status::internal(format!("Error getting location")))?
+                };
+                if let Some(ref stats) = loc.partition_stats {
+                    num_rows += stats.num_rows;
+                    num_bytes += stats.num_bytes;
+                    // pub num_batches: i64,
+                } else {
+                    Err(Status::internal(format!("Error getting stats")))?
+                }
+                let loc = Location { uri: format!("grpc+tcp://{}", authority) };
+                let buf = fetch.encode_to_vec();
+                let ticket = Ticket { ticket: buf };
+                let fiep = FlightEndpoint {
+                    ticket: Some(ticket),
+                    location: vec![loc],
+                };
+                fieps.push(fiep);
+            }
+            break fieps;
+        };
+
         // transform schema
         let arrow_schema: Schema = (&**plan.schema()).into();
         let options = IpcWriteOptions::default();
@@ -78,28 +202,17 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .map_err(|e| Status::internal(format!("Error encoding schema: {}", e)))?;
 
         // Generate response
-        let handle = Uuid::new_v4();
-        let ticket = TicketStatementQuery { statement_handle: handle.as_bytes().to_vec() };
-        let mut statements = self.statements.try_lock()
-            .map_err(|e| Status::internal(format!("Error locking statements: {}", e)))?;
-        statements.insert(handle, plan);
-        let buf = ticket.as_any().encode_to_vec();
-        let ticket = Ticket { ticket: buf };
-        let fiep = FlightEndpoint {
-            ticket: Some(ticket),
-            location: vec![Location { uri: "grpc+tcp://0.0.0.0:50050".to_string() }],
-        };
         let flight_desc = FlightDescriptor {
             r#type: DescriptorType::Cmd.into(),
             cmd: vec![],
-            path: vec![]
+            path: vec![],
         };
         let info = FlightInfo {
             schema: schema_bytes,
             flight_descriptor: Some(flight_desc),
-            endpoint: vec![fiep],
-            total_records: -1,
-            total_bytes: -1,
+            endpoint: fieps,
+            total_records: num_rows,
+            total_bytes: num_bytes,
         };
         let resp = Response::new(info);
         debug!("Responding to query...");
@@ -180,11 +293,11 @@ impl FlightSqlService for FlightSqlServiceImpl {
         &self,
         ticket: TicketStatementQuery,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
-        let handle = Uuid::from_slice(&ticket.statement_handle)
-            .map_err(|e| Status::internal(format!("Error decoding ticket: {}", e)))?;
-        let statements = self.statements.try_lock()
-            .map_err(|e| Status::internal(format!("Error decoding ticket: {}", e)))?;
-        let plan = statements.get(&handle);
+        // let handle = Uuid::from_slice(&ticket.statement_handle)
+        //     .map_err(|e| Status::internal(format!("Error decoding ticket: {}", e)))?;
+        // let statements = self.statements.try_lock()
+        //     .map_err(|e| Status::internal(format!("Error decoding ticket: {}", e)))?;
+        // let plan = statements.get(&handle);
         Err(Status::unimplemented("Not yet implemented"))
     }
 
