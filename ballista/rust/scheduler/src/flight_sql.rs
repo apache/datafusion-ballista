@@ -1,42 +1,68 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+use arrow_flight::flight_descriptor::DescriptorType;
+use arrow_flight::flight_service_server::FlightService;
+use arrow_flight::sql::server::FlightSqlService;
+use arrow_flight::sql::{
+    ActionClosePreparedStatementRequest, ActionCreatePreparedStatementRequest,
+    ActionCreatePreparedStatementResult, CommandGetCatalogs, CommandGetCrossReference,
+    CommandGetDbSchemas, CommandGetExportedKeys, CommandGetImportedKeys,
+    CommandGetPrimaryKeys, CommandGetSqlInfo, CommandGetTableTypes, CommandGetTables,
+    CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementQuery,
+    CommandStatementUpdate, SqlInfo, TicketStatementQuery,
+};
+use arrow_flight::{
+    FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, Location, Ticket,
+};
+use log::{debug, error};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use arrow_flight::{FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, Location, Ticket};
-use arrow_flight::flight_descriptor::DescriptorType;
-use arrow_flight::flight_service_server::FlightService;
-use arrow_flight::sql::{ActionClosePreparedStatementRequest, ActionCreatePreparedStatementRequest, ActionCreatePreparedStatementResult, CommandGetCatalogs, CommandGetCrossReference, CommandGetDbSchemas, CommandGetExportedKeys, CommandGetImportedKeys, CommandGetPrimaryKeys, CommandGetSqlInfo, CommandGetTables, CommandGetTableTypes, CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementQuery, CommandStatementUpdate, SqlInfo, TicketStatementQuery};
-use arrow_flight::sql::server::FlightSqlService;
-use log::{debug, error};
 use tonic::{Response, Status, Streaming};
 
+use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::SchedulerServer;
-use datafusion_proto::protobuf::LogicalPlanNode;
-use ballista_core::{
-    serde::protobuf::{PhysicalPlanNode},
-};
-use ballista_core::config::BallistaConfig;
 use arrow_flight::SchemaAsIpc;
+use ballista_core::config::BallistaConfig;
+use ballista_core::serde::protobuf;
+use ballista_core::serde::protobuf::job_status;
+use ballista_core::serde::protobuf::JobStatus;
+use ballista_core::serde::protobuf::PhysicalPlanNode;
 use datafusion::arrow;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::ipc::writer::{IpcDataGenerator, IpcWriteOptions};
 use datafusion::logical_expr::LogicalPlan;
-use tokio::time::sleep;
-use uuid::{Uuid};
-use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use ballista_core::serde::protobuf::job_status;
-use ballista_core::serde::protobuf::JobStatus;
-use ballista_core::serde::protobuf;
+use datafusion_proto::protobuf::LogicalPlanNode;
 use prost::Message;
+use tokio::time::sleep;
+use uuid::Uuid;
 
-#[derive(Clone)]
 pub struct FlightSqlServiceImpl {
     server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
-    statements: Arc<Mutex<HashMap<Uuid, LogicalPlan>>>,
+    _statements: Arc<Mutex<HashMap<Uuid, LogicalPlan>>>,
 }
 
 impl FlightSqlServiceImpl {
     pub fn new(server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>) -> Self {
-        Self { server, statements: Arc::new(Mutex::new(HashMap::new())) }
+        Self {
+            server,
+            _statements: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 }
 
@@ -47,27 +73,26 @@ impl FlightSqlService for FlightSqlServiceImpl {
     async fn get_flight_info_statement(
         &self,
         query: CommandStatementQuery,
-        request: FlightDescriptor,
+        _request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
         debug!("Got query:\n{}", query.query);
 
         // Run query
         let config_builder = BallistaConfig::builder();
-        let config = config_builder.build()
+        let config = config_builder
+            .build()
             .map_err(|e| Status::internal(format!("Error building config: {}", e)))?;
-        let ctx = self.server
+        let ctx = self
+            .server
             .state
             .session_manager
             .create_session(&config)
             .await
             .map_err(|e| {
-                Status::internal(format!(
-                    "Failed to create SessionContext: {:?}",
-                    e
-                ))
+                Status::internal(format!("Failed to create SessionContext: {:?}", e))
             })?;
         let plan = ctx
-            .sql(&query.query.as_str())
+            .sql(query.query.as_str())
             .await
             .and_then(|df| df.to_logical_plan())
             .map_err(|e| Status::internal(format!("Error building plan: {}", e)))?;
@@ -75,7 +100,8 @@ impl FlightSqlService for FlightSqlServiceImpl {
         // enqueue job
         let job_id = self.server.state.task_manager.generate_job_id();
 
-        self.server.state
+        self.server
+            .state
             .task_manager
             .queue_job(&job_id)
             .await
@@ -86,8 +112,11 @@ impl FlightSqlService for FlightSqlServiceImpl {
                 Status::internal(msg)
             })?;
 
-        let query_stage_event_sender =
-            self.server.query_stage_event_loop.get_sender().map_err(|e| {
+        let query_stage_event_sender = self
+            .server
+            .query_stage_event_loop
+            .get_sender()
+            .map_err(|e| {
                 Status::internal(format!(
                     "Could not get query stage event sender due to: {}",
                     e
@@ -119,7 +148,12 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let mut num_bytes = 0;
         let fieps = loop {
             sleep(Duration::from_millis(100)).await;
-            let status = self.server.state.task_manager.get_job_status(&job_id).await
+            let status = self
+                .server
+                .state
+                .task_manager
+                .get_job_status(&job_id)
+                .await
                 .map_err(|e| {
                     let msg = format!("Error getting status for job {}: {:?}", job_id, e);
                     error!("{}", msg);
@@ -144,10 +178,11 @@ impl FlightSqlService for FlightSqlServiceImpl {
             let completed = match status {
                 job_status::Status::Queued(_) => continue,
                 job_status::Status::Running(_) => continue,
-                job_status::Status::Failed(e) => {
-                    Err(Status::internal(format!("Error building plan: {}", e.error)))?
-                }
-                job_status::Status::Completed(comp) => comp
+                job_status::Status::Failed(e) => Err(Status::internal(format!(
+                    "Error building plan: {}",
+                    e.error
+                )))?,
+                job_status::Status::Completed(comp) => comp,
             };
             let mut fieps: Vec<_> = vec![];
             for loc in completed.partition_location.iter() {
@@ -156,29 +191,34 @@ impl FlightSqlService for FlightSqlServiceImpl {
                         job_id: id.job_id.clone(),
                         stage_id: id.stage_id,
                         partition_id: id.partition_id,
-                        path: loc.path.clone()
+                        path: loc.path.clone(),
                     };
                     protobuf::Action {
-                        action_type: Some(protobuf::action::ActionType::FetchPartition(fetch)),
+                        action_type: Some(protobuf::action::ActionType::FetchPartition(
+                            fetch,
+                        )),
                         settings: vec![],
                     }
                 } else {
-                    Err(Status::internal(format!("Error getting partition it")))?
+                    Err(Status::internal("Error getting partition ID".to_string()))?
                 };
                 let authority = if let Some(ref md) = loc.executor_meta {
-                    // pub id: ::prost::alloc::string::String,
                     format!("{}:{}", md.host, md.port)
                 } else {
-                    Err(Status::internal(format!("Error getting location")))?
+                    Err(Status::internal(
+                        "Invalid partition location, missing executor metadata"
+                            .to_string(),
+                    ))?
                 };
                 if let Some(ref stats) = loc.partition_stats {
                     num_rows += stats.num_rows;
                     num_bytes += stats.num_bytes;
-                    // pub num_batches: i64,
                 } else {
-                    Err(Status::internal(format!("Error getting stats")))?
+                    Err(Status::internal("Error getting stats".to_string()))?
                 }
-                let loc = Location { uri: format!("grpc+tcp://{}", authority) };
+                let loc = Location {
+                    uri: format!("grpc+tcp://{}", authority),
+                };
                 let buf = fetch.encode_to_vec();
                 let ticket = Ticket { ticket: buf };
                 let fiep = FlightEndpoint {
@@ -223,7 +263,9 @@ impl FlightSqlService for FlightSqlServiceImpl {
         _query: CommandPreparedStatementQuery,
         _request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Implement get_flight_info_prepared_statement"))
+        Err(Status::unimplemented(
+            "Implement get_flight_info_prepared_statement",
+        ))
     }
     async fn get_flight_info_catalogs(
         &self,
@@ -251,7 +293,9 @@ impl FlightSqlService for FlightSqlServiceImpl {
         _query: CommandGetTableTypes,
         _request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Implement get_flight_info_table_types"))
+        Err(Status::unimplemented(
+            "Implement get_flight_info_table_types",
+        ))
     }
     async fn get_flight_info_sql_info(
         &self,
@@ -266,33 +310,41 @@ impl FlightSqlService for FlightSqlServiceImpl {
         _query: CommandGetPrimaryKeys,
         _request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Implement get_flight_info_primary_keys"))
+        Err(Status::unimplemented(
+            "Implement get_flight_info_primary_keys",
+        ))
     }
     async fn get_flight_info_exported_keys(
         &self,
         _query: CommandGetExportedKeys,
         _request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Implement get_flight_info_exported_keys"))
+        Err(Status::unimplemented(
+            "Implement get_flight_info_exported_keys",
+        ))
     }
     async fn get_flight_info_imported_keys(
         &self,
         _query: CommandGetImportedKeys,
         _request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Implement get_flight_info_imported_keys"))
+        Err(Status::unimplemented(
+            "Implement get_flight_info_imported_keys",
+        ))
     }
     async fn get_flight_info_cross_reference(
         &self,
         _query: CommandGetCrossReference,
         _request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented("Implement get_flight_info_cross_reference"))
+        Err(Status::unimplemented(
+            "Implement get_flight_info_cross_reference",
+        ))
     }
     // do_get
     async fn do_get_statement(
         &self,
-        ticket: TicketStatementQuery,
+        _ticket: TicketStatementQuery,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         // let handle = Uuid::from_slice(&ticket.statement_handle)
         //     .map_err(|e| Status::internal(format!("Error decoding ticket: {}", e)))?;
@@ -374,14 +426,18 @@ impl FlightSqlService for FlightSqlServiceImpl {
         _query: CommandPreparedStatementQuery,
         _request: Streaming<FlightData>,
     ) -> Result<Response<<Self as FlightService>::DoPutStream>, Status> {
-        Err(Status::unimplemented("Implement do_put_prepared_statement_query"))
+        Err(Status::unimplemented(
+            "Implement do_put_prepared_statement_query",
+        ))
     }
     async fn do_put_prepared_statement_update(
         &self,
         _query: CommandPreparedStatementUpdate,
         _request: Streaming<FlightData>,
     ) -> Result<i64, Status> {
-        Err(Status::unimplemented("Implement do_put_prepared_statement_update"))
+        Err(Status::unimplemented(
+            "Implement do_put_prepared_statement_update",
+        ))
     }
     // do_action
     async fn do_action_create_prepared_statement(
@@ -389,7 +445,9 @@ impl FlightSqlService for FlightSqlServiceImpl {
         _query: ActionCreatePreparedStatementRequest,
     ) -> Result<ActionCreatePreparedStatementResult, Status> {
         // TODO: implement for Flight SQL JDBC driver to work
-        Err(Status::unimplemented("Implement do_action_create_prepared_statement"))
+        Err(Status::unimplemented(
+            "Implement do_action_create_prepared_statement",
+        ))
     }
     async fn do_action_close_prepared_statement(
         &self,

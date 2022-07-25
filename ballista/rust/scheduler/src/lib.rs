@@ -24,6 +24,6 @@ pub mod scheduler_server;
 pub mod standalone;
 pub mod state;
 
+pub mod flight_sql;
 #[cfg(test)]
 pub mod test_utils;
-pub mod flight_sql;

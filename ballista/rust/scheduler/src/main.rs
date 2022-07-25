@@ -18,12 +18,12 @@
 //! Ballista Rust scheduler binary.
 
 use anyhow::{Context, Result};
+use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_scheduler::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
 use futures::future::{self, Either, TryFutureExt};
 use hyper::{server::conn::AddrStream, service::make_service_fn, Server};
 use std::convert::Infallible;
 use std::{net::SocketAddr, sync::Arc};
-use arrow_flight::flight_service_server::FlightServiceServer;
 use tonic::transport::server::Connected;
 use tonic::transport::Server as TonicServer;
 use tower::Service;
@@ -60,9 +60,9 @@ mod config {
     ));
 }
 
+use ballista_scheduler::flight_sql::FlightSqlServiceImpl;
 use config::prelude::*;
 use datafusion::execution::context::default_session_builder;
-use ballista_scheduler::flight_sql::FlightSqlServiceImpl;
 
 async fn start_server(
     config_backend: Arc<dyn StateBackendClient>,
@@ -102,9 +102,9 @@ async fn start_server(
             let scheduler_grpc_server =
                 SchedulerGrpcServer::new(scheduler_server.clone());
 
-            let flight_sql_server = FlightServiceServer::new(
-                FlightSqlServiceImpl::new(scheduler_server.clone())
-            );
+            let flight_sql_server = FlightServiceServer::new(FlightSqlServiceImpl::new(
+                scheduler_server.clone(),
+            ));
 
             let keda_scaler = ExternalScalerServer::new(scheduler_server.clone());
 
