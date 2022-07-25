@@ -29,7 +29,7 @@ use arrow_flight::sql::{
 use arrow_flight::{
     FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, Location, Ticket,
 };
-use log::{debug, error};
+use log::{debug, error, warn};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -47,6 +47,7 @@ use ballista_core::serde::protobuf::PhysicalPlanNode;
 use datafusion::arrow;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::ipc::writer::{IpcDataGenerator, IpcWriteOptions};
+use datafusion::common::DFSchemaRef;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::protobuf::LogicalPlanNode;
@@ -56,14 +57,14 @@ use uuid::Uuid;
 
 pub struct FlightSqlServiceImpl {
     server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
-    _statements: Arc<Mutex<HashMap<Uuid, LogicalPlan>>>,
+    statements: Arc<Mutex<HashMap<Uuid, LogicalPlan>>>,
 }
 
 impl FlightSqlServiceImpl {
     pub fn new(server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>) -> Self {
         Self {
             server,
-            _statements: Arc::new(Mutex::new(HashMap::new())),
+            statements: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -85,11 +86,11 @@ impl FlightSqlServiceImpl {
     }
 
     async fn prepare_statement(
-        query: CommandStatementQuery,
+        query: &String,
         ctx: &Arc<SessionContext>,
     ) -> Result<LogicalPlan, Status> {
         let plan = ctx
-            .sql(query.query.as_str())
+            .sql(query.as_str())
             .await
             .and_then(|df| df.to_logical_plan())
             .map_err(|e| Status::internal(format!("Error building plan: {}", e)))?;
@@ -127,11 +128,16 @@ impl FlightSqlServiceImpl {
         match status {
             job_status::Status::Queued(_) => Ok(None),
             job_status::Status::Running(_) => Ok(None),
-            job_status::Status::Failed(e) => Err(Status::internal(format!(
-                "Error building plan: {}",
-                e.error
-            )))?,
-            job_status::Status::Completed(comp) => Ok(Some(comp)),
+            job_status::Status::Failed(e) => {
+                warn!("Error executing plan: {:?}", e);
+                Err(Status::internal(format!(
+                    "Error executing plan: {}",
+                    e.error
+                )))?
+            },
+            job_status::Status::Completed(comp) => {
+                Ok(Some(comp))
+            },
         }
     }
 
@@ -186,6 +192,44 @@ impl FlightSqlServiceImpl {
         Ok(fieps)
     }
 
+    fn cache_plan(&self, plan: LogicalPlan) -> Result<Uuid, Status> {
+        let handle = Uuid::new_v4();
+        let mut statements = self.statements.try_lock()
+            .map_err(|e| Status::internal(format!("Error locking statements: {}", e)))?;
+        statements.insert(handle, plan);
+        Ok(handle)
+    }
+
+    fn get_plan(&self, handle: &Uuid) -> Result<LogicalPlan, Status> {
+        let statements = self.statements.try_lock()
+            .map_err(|e| Status::internal(format!("Error locking statements: {}", e)))?;
+        let plan = if let Some(plan) = statements.get(&handle) {
+            plan
+        } else {
+            Err(Status::internal(format!("Statement handle not found: {}", handle)))?
+        };
+        Ok(plan.clone())
+    }
+
+    fn remove_plan(&self, handle: Uuid) -> Result<(), Status> {
+        let mut statements = self.statements.try_lock()
+            .map_err(|e| Status::internal(format!("Error locking statements: {}", e)))?;
+        statements.remove(&handle);
+        Ok(())
+    }
+
+    fn df_schema_to_arrow(&self, schema: &DFSchemaRef) -> Result<Vec<u8>, Status> {
+        let arrow_schema: Schema = (&**schema).into();
+        let options = IpcWriteOptions::default();
+        let pair = SchemaAsIpc::new(&arrow_schema, &options);
+        let data_gen = IpcDataGenerator::default();
+        let encoded_data = data_gen.schema_to_bytes(pair.0, pair.1);
+        let mut schema_bytes = vec![];
+        arrow::ipc::writer::write_message(&mut schema_bytes, encoded_data, pair.1)
+            .map_err(|e| Status::internal(format!("Error encoding schema: {}", e)))?;
+        Ok(schema_bytes)
+    }
+
     async fn enqueue_job(
         &self,
         ctx: Arc<SessionContext>,
@@ -229,27 +273,35 @@ impl FlightSqlServiceImpl {
             })?;
         Ok(job_id)
     }
-}
 
-#[tonic::async_trait]
-impl FlightSqlService for FlightSqlServiceImpl {
-    type FlightService = FlightSqlServiceImpl;
-    // get_flight_info
-    async fn get_flight_info_statement(
+    fn create_resp(
+        schema_bytes: Vec<u8>,
+        fieps: Vec<FlightEndpoint>,
+        num_rows: i64,
+        num_bytes: i64,
+    ) -> Response<FlightInfo> {
+        let flight_desc = FlightDescriptor {
+            r#type: DescriptorType::Cmd.into(),
+            cmd: vec![],
+            path: vec![],
+        };
+        let info = FlightInfo {
+            schema: schema_bytes,
+            flight_descriptor: Some(flight_desc),
+            endpoint: fieps,
+            total_records: num_rows,
+            total_bytes: num_bytes,
+        };
+        let resp = Response::new(info);
+        resp
+    }
+
+    async fn execute_plan(
         &self,
-        query: CommandStatementQuery,
-        _request: FlightDescriptor,
+        ctx: Arc<SessionContext>,
+        plan: &LogicalPlan
     ) -> Result<Response<FlightInfo>, Status> {
-        debug!("Got query:\n{}", query.query);
-
-        let ctx = self.create_ctx().await?;
-        let plan = Self::prepare_statement(query, &ctx).await?;
         let job_id = self.enqueue_job(ctx, &plan).await?;
-
-        // let handle = Uuid::new_v4();
-        // let mut statements = self.statements.try_lock()
-        //     .map_err(|e| Status::internal(format!("Error locking statements: {}", e)))?;
-        // statements.insert(handle, plan.clone());
 
         // poll for job completion
         let mut num_rows = 0;
@@ -267,43 +319,47 @@ impl FlightSqlService for FlightSqlServiceImpl {
             break fieps;
         };
 
-        // transform schema
-        let arrow_schema: Schema = (&**plan.schema()).into();
-        let options = IpcWriteOptions::default();
-        let pair = SchemaAsIpc::new(&arrow_schema, &options);
-        let data_gen = IpcDataGenerator::default();
-        let encoded_data = data_gen.schema_to_bytes(pair.0, pair.1);
-        let mut schema_bytes = vec![];
-        arrow::ipc::writer::write_message(&mut schema_bytes, encoded_data, pair.1)
-            .map_err(|e| Status::internal(format!("Error encoding schema: {}", e)))?;
-
         // Generate response
-        let flight_desc = FlightDescriptor {
-            r#type: DescriptorType::Cmd.into(),
-            cmd: vec![],
-            path: vec![],
-        };
-        let info = FlightInfo {
-            schema: schema_bytes,
-            flight_descriptor: Some(flight_desc),
-            endpoint: fieps,
-            total_records: num_rows,
-            total_bytes: num_bytes,
-        };
-        let resp = Response::new(info);
+        let schema_bytes = self.df_schema_to_arrow(plan.schema())?;
+        let resp = Self::create_resp(schema_bytes, fieps, num_rows, num_bytes);
+        Ok(resp)
+    }
+}
+
+#[tonic::async_trait]
+impl FlightSqlService for FlightSqlServiceImpl {
+    type FlightService = FlightSqlServiceImpl;
+
+    async fn get_flight_info_statement(
+        &self,
+        query: CommandStatementQuery,
+        _request: FlightDescriptor,
+    ) -> Result<Response<FlightInfo>, Status> {
+        debug!("Got query:\n{}", query.query);
+
+        let ctx = self.create_ctx().await?;
+        let plan = Self::prepare_statement(&query.query, &ctx).await?;
+        let resp = self.execute_plan(ctx, &plan).await?;
+
         debug!("Responding to query...");
         Ok(resp)
     }
 
     async fn get_flight_info_prepared_statement(
         &self,
-        _query: CommandPreparedStatementQuery,
+        handle: CommandPreparedStatementQuery,
         _request: FlightDescriptor,
     ) -> Result<Response<FlightInfo>, Status> {
-        Err(Status::unimplemented(
-            "Implement get_flight_info_prepared_statement",
-        ))
+        let ctx = self.create_ctx().await?;
+        let handle = Uuid::from_slice(handle.prepared_statement_handle.as_slice())
+             .map_err(|e| Status::internal(format!("Error decoding handle: {}", e)))?;
+        let plan = self.get_plan(&handle)?;
+        let resp = self.execute_plan(ctx, &plan).await?;
+
+        debug!("Responding to query...");
+        Ok(resp)
     }
+
     async fn get_flight_info_catalogs(
         &self,
         _query: CommandGetCatalogs,
@@ -378,7 +434,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
             "Implement get_flight_info_cross_reference",
         ))
     }
-    // do_get
+
     async fn do_get_statement(
         &self,
         _ticket: TicketStatementQuery,
@@ -476,21 +532,34 @@ impl FlightSqlService for FlightSqlServiceImpl {
             "Implement do_put_prepared_statement_update",
         ))
     }
-    // do_action
+
     async fn do_action_create_prepared_statement(
         &self,
-        _query: ActionCreatePreparedStatementRequest,
+        query: ActionCreatePreparedStatementRequest,
     ) -> Result<ActionCreatePreparedStatementResult, Status> {
-        // TODO: implement for Flight SQL JDBC driver to work
-        Err(Status::unimplemented(
-            "Implement do_action_create_prepared_statement",
-        ))
+        let ctx = self.create_ctx().await?;
+        let plan = Self::prepare_statement(&query.query, &ctx).await?;
+        let schema_bytes = self.df_schema_to_arrow(plan.schema())?;
+        let handle = self.cache_plan(plan)?;
+        let res = ActionCreatePreparedStatementResult {
+            prepared_statement_handle: handle.as_bytes().to_vec(),
+            dataset_schema: schema_bytes,
+            parameter_schema: vec![] // TODO: parameters
+        };
+        Ok(res)
     }
+
     async fn do_action_close_prepared_statement(
         &self,
-        _query: ActionClosePreparedStatementRequest,
+        handle: ActionClosePreparedStatementRequest,
     ) {
-        unimplemented!("Implement do_action_close_prepared_statement")
+        let handle = Uuid::from_slice(handle.prepared_statement_handle.as_slice());
+        let handle = if let Ok(handle) = handle {
+            handle
+        } else {
+            return;
+        };
+        let _ = self.remove_plan(handle);
     }
 
     async fn register_sql_info(&self, _id: i32, _result: &SqlInfo) {}
