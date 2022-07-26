@@ -228,11 +228,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                 );
                 // In case task update fails, make sure to free reservations
                 if let Some(event_loop) = self.event_loop.as_ref() {
+                    let mut reservations = vec![];
+                    for _ in 0..num_status {
+                        reservations
+                            .push(ExecutorReservation::new_free(executor_id.to_owned()));
+                    }
+
                     event_loop
                         .get_sender()?
-                        .post_event(SchedulerServerEvent::Offer(vec![
-                            ExecutorReservation::new_free(executor_id.to_owned()),
-                        ]))
+                        .post_event(SchedulerServerEvent::Offer(reservations))
                         .await?;
                 }
             }
