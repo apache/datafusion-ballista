@@ -86,11 +86,11 @@ impl FlightSqlServiceImpl {
     }
 
     async fn prepare_statement(
-        query: &String,
+        query: &str,
         ctx: &Arc<SessionContext>,
     ) -> Result<LogicalPlan, Status> {
         let plan = ctx
-            .sql(query.as_str())
+            .sql(query)
             .await
             .and_then(|df| df.to_logical_plan())
             .map_err(|e| Status::internal(format!("Error building plan: {}", e)))?;
@@ -134,10 +134,8 @@ impl FlightSqlServiceImpl {
                     "Error executing plan: {}",
                     e.error
                 )))?
-            },
-            job_status::Status::Completed(comp) => {
-                Ok(Some(comp))
-            },
+            }
+            job_status::Status::Completed(comp) => Ok(Some(comp)),
         }
     }
 
@@ -194,25 +192,34 @@ impl FlightSqlServiceImpl {
 
     fn cache_plan(&self, plan: LogicalPlan) -> Result<Uuid, Status> {
         let handle = Uuid::new_v4();
-        let mut statements = self.statements.try_lock()
+        let mut statements = self
+            .statements
+            .try_lock()
             .map_err(|e| Status::internal(format!("Error locking statements: {}", e)))?;
         statements.insert(handle, plan);
         Ok(handle)
     }
 
     fn get_plan(&self, handle: &Uuid) -> Result<LogicalPlan, Status> {
-        let statements = self.statements.try_lock()
+        let statements = self
+            .statements
+            .try_lock()
             .map_err(|e| Status::internal(format!("Error locking statements: {}", e)))?;
-        let plan = if let Some(plan) = statements.get(&handle) {
+        let plan = if let Some(plan) = statements.get(handle) {
             plan
         } else {
-            Err(Status::internal(format!("Statement handle not found: {}", handle)))?
+            Err(Status::internal(format!(
+                "Statement handle not found: {}",
+                handle
+            )))?
         };
         Ok(plan.clone())
     }
 
     fn remove_plan(&self, handle: Uuid) -> Result<(), Status> {
-        let mut statements = self.statements.try_lock()
+        let mut statements = self
+            .statements
+            .try_lock()
             .map_err(|e| Status::internal(format!("Error locking statements: {}", e)))?;
         statements.remove(&handle);
         Ok(())
@@ -292,16 +299,15 @@ impl FlightSqlServiceImpl {
             total_records: num_rows,
             total_bytes: num_bytes,
         };
-        let resp = Response::new(info);
-        resp
+        Response::new(info)
     }
 
     async fn execute_plan(
         &self,
         ctx: Arc<SessionContext>,
-        plan: &LogicalPlan
+        plan: &LogicalPlan,
     ) -> Result<Response<FlightInfo>, Status> {
-        let job_id = self.enqueue_job(ctx, &plan).await?;
+        let job_id = self.enqueue_job(ctx, plan).await?;
 
         // poll for job completion
         let mut num_rows = 0;
@@ -352,7 +358,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     ) -> Result<Response<FlightInfo>, Status> {
         let ctx = self.create_ctx().await?;
         let handle = Uuid::from_slice(handle.prepared_statement_handle.as_slice())
-             .map_err(|e| Status::internal(format!("Error decoding handle: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Error decoding handle: {}", e)))?;
         let plan = self.get_plan(&handle)?;
         let resp = self.execute_plan(ctx, &plan).await?;
 
@@ -544,7 +550,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let res = ActionCreatePreparedStatementResult {
             prepared_statement_handle: handle.as_bytes().to_vec(),
             dataset_schema: schema_bytes,
-            parameter_schema: vec![] // TODO: parameters
+            parameter_schema: vec![], // TODO: parameters
         };
         Ok(res)
     }
