@@ -32,6 +32,7 @@ use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::udaf::AggregateUDF;
 use datafusion::physical_plan::udf::ScalarUDF;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+use datafusion::prelude::SessionContext;
 use futures::future::AbortHandle;
 
 use tokio::sync::Mutex;
@@ -77,6 +78,24 @@ impl Executor {
             scalar_functions: HashMap::new(),
             aggregate_functions: HashMap::new(),
             runtime,
+            metrics_collector,
+            abort_handles: Default::default(),
+        }
+    }
+
+    pub fn new_from_context(
+        metadata: ExecutorRegistration,
+        work_dir: &str,
+        ctx: &SessionContext,
+        metrics_collector: Arc<dyn ExecutorMetricsCollector>,
+    ) -> Self {
+        Self {
+            metadata,
+            work_dir: work_dir.to_owned(),
+            // TODO add logic to dynamically load UDF/UDAFs libs from files
+            scalar_functions: ctx.state.read().scalar_functions.clone(),
+            aggregate_functions: ctx.state.read().aggregate_functions.clone(),
+            runtime: ctx.runtime_env(),
             metrics_collector,
             abort_handles: Default::default(),
         }
