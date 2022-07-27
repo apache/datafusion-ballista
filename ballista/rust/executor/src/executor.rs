@@ -52,6 +52,9 @@ pub struct Executor {
 
     /// Collector for runtime execution metrics
     pub metrics_collector: Arc<dyn ExecutorMetricsCollector>,
+
+    /// Concurrent tasks can run in executor
+    pub concurrent_tasks: usize,
 }
 
 impl Executor {
@@ -61,6 +64,7 @@ impl Executor {
         work_dir: &str,
         runtime: Arc<RuntimeEnv>,
         metrics_collector: Arc<dyn ExecutorMetricsCollector>,
+        concurrent_tasks: usize,
     ) -> Self {
         Self {
             metadata,
@@ -70,6 +74,7 @@ impl Executor {
             aggregate_functions: HashMap::new(),
             runtime,
             metrics_collector,
+            concurrent_tasks,
         }
     }
 }

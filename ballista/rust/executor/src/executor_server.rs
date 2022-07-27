@@ -298,8 +298,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
             info!("Starting the task runner pool");
             // Use a dedicated executor for CPU bound tasks so that the main tokio
             // executor can still answer requests even when under load
-            // TODO make it configurable
-            let dedicated_executor = DedicatedExecutor::new("task_runner", 4);
+            let dedicated_executor = DedicatedExecutor::new(
+                "task_runner",
+                executor_server.executor.concurrent_tasks,
+            );
             loop {
                 if let Some(task) = rx_task.recv().await {
                     if let Some(task_id) = &task.task_id {
