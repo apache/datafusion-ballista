@@ -329,7 +329,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 );
                     while let Some(job_id) = other_jobs.pop() {
                         if graphs.get(&job_id).is_none() {
-                            // let lock = self.state.lock(Keyspace::ActiveJobs, &job_id).await?;
                             let mut graph = self.get_execution_graph(&job_id).await?;
 
                             if let Ok(Some(task)) = graph.pop_next_task(&executor_id) {
@@ -338,7 +337,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                                 reservation.executor_id, task
                             );
                                 assignments.push((executor_id.clone(), task));
-                                // locks.push(lock);
                                 graphs.insert(job_id, graph);
                                 assigned = true;
                                 break;

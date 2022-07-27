@@ -846,43 +846,61 @@ mod test {
     fn drain_tasks(graph: &mut ExecutionGraph) -> Result<()> {
         let executor = test_executor();
         let job_id = graph.job_id().to_owned();
-        while let Some(task) = graph.pop_next_task("executor-id")? {
-            let mut partitions: Vec<protobuf::ShuffleWritePartition> = vec![];
 
-            let num_partitions = task
-                .output_partitioning
-                .map(|p| p.partition_count())
-                .unwrap_or(1);
+        loop {
+            let mut next_tasks = vec![];
 
-            for partition_id in 0..num_partitions {
-                partitions.push(protobuf::ShuffleWritePartition {
-                    partition_id: partition_id as u64,
-                    path: format!(
-                        "/{}/{}/{}",
-                        task.partition.job_id,
-                        task.partition.stage_id,
-                        task.partition.partition_id
-                    ),
-                    num_batches: 1,
-                    num_rows: 1,
-                    num_bytes: 1,
-                })
+            while let Some(task) = graph.pop_next_task("executor-id")? {
+                next_tasks.push(task);
             }
 
-            // Complete the task
-            let task_status = protobuf::TaskStatus {
-                status: Some(task_status::Status::Completed(protobuf::CompletedTask {
-                    executor_id: "executor-1".to_owned(),
-                    partitions,
-                })),
-                task_id: Some(protobuf::PartitionId {
-                    job_id: job_id.clone(),
-                    stage_id: task.partition.stage_id as u32,
-                    partition_id: task.partition.partition_id as u32,
-                }),
-            };
+            if next_tasks.is_empty() {
+                break;
+            }
 
-            graph.update_task_status(&executor, vec![task_status])?;
+            assert_eq!(graph.running_tasks().len(), next_tasks.len());
+
+            let mut status_updates = vec![];
+
+            for task in next_tasks {
+                let num_partitions = task
+                    .output_partitioning
+                    .map(|p| p.partition_count())
+                    .unwrap_or(1);
+
+                let mut partitions: Vec<protobuf::ShuffleWritePartition> = vec![];
+
+                for partition_id in 0..num_partitions {
+                    partitions.push(protobuf::ShuffleWritePartition {
+                        partition_id: partition_id as u64,
+                        path: format!(
+                            "/{}/{}/{}",
+                            task.partition.job_id,
+                            task.partition.stage_id,
+                            task.partition.partition_id
+                        ),
+                        num_batches: 1,
+                        num_rows: 1,
+                        num_bytes: 1,
+                    })
+                }
+
+                status_updates.push(protobuf::TaskStatus {
+                    status: Some(task_status::Status::Completed(
+                        protobuf::CompletedTask {
+                            executor_id: "executor-1".to_owned(),
+                            partitions,
+                        },
+                    )),
+                    task_id: Some(protobuf::PartitionId {
+                        job_id: job_id.clone(),
+                        stage_id: task.partition.stage_id as u32,
+                        partition_id: task.partition.partition_id as u32,
+                    }),
+                });
+            }
+
+            graph.update_task_status(&executor, status_updates)?;
         }
 
         Ok(())
