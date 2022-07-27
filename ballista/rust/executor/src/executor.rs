@@ -35,9 +35,10 @@ use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion::prelude::SessionContext;
 use futures::future::AbortHandle;
 
+use ballista_core::serde::scheduler::PartitionId;
 use tokio::sync::Mutex;
 
-type AbortHandles = Arc<Mutex<HashMap<(String, usize, usize), AbortHandle>>>;
+type AbortHandles = Arc<Mutex<HashMap<PartitionId, AbortHandle>>>;
 
 /// Ballista executor
 #[derive(Clone)]
@@ -138,15 +139,23 @@ impl Executor {
 
         {
             let mut abort_handles = self.abort_handles.lock().await;
-            abort_handles.insert((job_id.clone(), stage_id, part), abort_handle);
+            abort_handles.insert(
+                PartitionId {
+                    job_id: job_id.clone(),
+                    stage_id,
+                    partition_id: part,
+                },
+                abort_handle,
+            );
         }
 
         let partitions = task.await??;
 
-        self.abort_handles
-            .lock()
-            .await
-            .remove(&(job_id.clone(), stage_id, part));
+        self.abort_handles.lock().await.remove(&PartitionId {
+            job_id: job_id.clone(),
+            stage_id,
+            partition_id: part,
+        });
 
         self.metrics_collector
             .record_stage(&job_id, stage_id, part, exec);
@@ -158,14 +167,13 @@ impl Executor {
         &self,
         job_id: String,
         stage_id: usize,
-        partition: usize,
+        partition_id: usize,
     ) -> Result<bool, BallistaError> {
-        if let Some(handle) = self
-            .abort_handles
-            .lock()
-            .await
-            .remove(&(job_id, stage_id, partition))
-        {
+        if let Some(handle) = self.abort_handles.lock().await.remove(&PartitionId {
+            job_id,
+            stage_id,
+            partition_id,
+        }) {
             handle.abort();
             Ok(true)
         } else {
