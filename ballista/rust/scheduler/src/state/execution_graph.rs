@@ -33,8 +33,9 @@ use datafusion::physical_plan::{
 use log::debug;
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 
+use ballista_core::serde::protobuf::task_status::Status;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use std::sync::Arc;
 
@@ -201,6 +202,23 @@ impl ExecutionStage {
         }
     }
 
+    pub fn running_tasks(&self) -> Vec<(usize, usize, String)> {
+        if self.resolved {
+            self.task_statuses
+                .iter()
+                .enumerate()
+                .filter_map(|(partition, status)| match status {
+                    Some(Status::Running(RunningTask { executor_id })) => {
+                        Some((self.stage_id, partition, executor_id.clone()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        } else {
+            vec![]
+        }
+    }
+
     /// Resolve any UnresolvedShuffleExec operators within this stage's plan
     pub fn resolve_shuffles(&mut self) -> Result<()> {
         println!("Resolving shuffles\n{:?}", self);
@@ -343,6 +361,19 @@ pub struct Task {
     pub partition: PartitionId,
     pub plan: Arc<dyn ExecutionPlan>,
     pub output_partitioning: Option<Partitioning>,
+}
+
+impl Display for Task {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Task[session_id: {}, job: {}, stage: {}, partition: {}]",
+            self.session_id,
+            self.partition.job_id,
+            self.partition.stage_id,
+            self.partition.partition_id,
+        )
+    }
 }
 
 impl Debug for Task {
@@ -565,6 +596,29 @@ impl ExecutionGraph {
             .sum()
     }
 
+    /// Return all currently running tasks along with the executor ID on which they are assigned
+    pub fn running_tasks(&self) -> Vec<(PartitionId, String)> {
+        self.stages
+            .iter()
+            .flat_map(|(_, stage)| {
+                stage
+                    .running_tasks()
+                    .iter()
+                    .map(|(stage_id, partition, executor_id)| {
+                        (
+                            PartitionId {
+                                job_id: self.job_id.clone(),
+                                stage_id: *stage_id,
+                                partition_id: *partition,
+                            },
+                            executor_id.clone(),
+                        )
+                    })
+                    .collect::<Vec<(PartitionId, String)>>()
+            })
+            .collect::<Vec<(PartitionId, String)>>()
+    }
+
     /// Get next task that can be assigned to the given executor.
     /// This method should only be called when the resulting task is immediately
     /// being launched as the status will be set to Running and it will not be
@@ -647,6 +701,19 @@ impl ExecutionGraph {
 
     pub fn output_locations(&self) -> Vec<PartitionLocation> {
         self.output_locations.clone()
+    }
+}
+
+impl Display for ExecutionGraph {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ExecutionGraph[job_id={}, session_id={}, available_tasks={}, complete={}]",
+            self.job_id,
+            self.session_id,
+            self.available_tasks(),
+            self.complete()
+        )
     }
 }
 
@@ -779,43 +846,61 @@ mod test {
     fn drain_tasks(graph: &mut ExecutionGraph) -> Result<()> {
         let executor = test_executor();
         let job_id = graph.job_id().to_owned();
-        while let Some(task) = graph.pop_next_task("executor-id")? {
-            let mut partitions: Vec<protobuf::ShuffleWritePartition> = vec![];
 
-            let num_partitions = task
-                .output_partitioning
-                .map(|p| p.partition_count())
-                .unwrap_or(1);
+        loop {
+            let mut next_tasks = vec![];
 
-            for partition_id in 0..num_partitions {
-                partitions.push(protobuf::ShuffleWritePartition {
-                    partition_id: partition_id as u64,
-                    path: format!(
-                        "/{}/{}/{}",
-                        task.partition.job_id,
-                        task.partition.stage_id,
-                        task.partition.partition_id
-                    ),
-                    num_batches: 1,
-                    num_rows: 1,
-                    num_bytes: 1,
-                })
+            while let Some(task) = graph.pop_next_task("executor-id")? {
+                next_tasks.push(task);
             }
 
-            // Complete the task
-            let task_status = protobuf::TaskStatus {
-                status: Some(task_status::Status::Completed(protobuf::CompletedTask {
-                    executor_id: "executor-1".to_owned(),
-                    partitions,
-                })),
-                task_id: Some(protobuf::PartitionId {
-                    job_id: job_id.clone(),
-                    stage_id: task.partition.stage_id as u32,
-                    partition_id: task.partition.partition_id as u32,
-                }),
-            };
+            if next_tasks.is_empty() {
+                break;
+            }
 
-            graph.update_task_status(&executor, vec![task_status])?;
+            assert_eq!(graph.running_tasks().len(), next_tasks.len());
+
+            let mut status_updates = vec![];
+
+            for task in next_tasks {
+                let num_partitions = task
+                    .output_partitioning
+                    .map(|p| p.partition_count())
+                    .unwrap_or(1);
+
+                let mut partitions: Vec<protobuf::ShuffleWritePartition> = vec![];
+
+                for partition_id in 0..num_partitions {
+                    partitions.push(protobuf::ShuffleWritePartition {
+                        partition_id: partition_id as u64,
+                        path: format!(
+                            "/{}/{}/{}",
+                            task.partition.job_id,
+                            task.partition.stage_id,
+                            task.partition.partition_id
+                        ),
+                        num_batches: 1,
+                        num_rows: 1,
+                        num_bytes: 1,
+                    })
+                }
+
+                status_updates.push(protobuf::TaskStatus {
+                    status: Some(task_status::Status::Completed(
+                        protobuf::CompletedTask {
+                            executor_id: "executor-1".to_owned(),
+                            partitions,
+                        },
+                    )),
+                    task_id: Some(protobuf::PartitionId {
+                        job_id: job_id.clone(),
+                        stage_id: task.partition.stage_id as u32,
+                        partition_id: task.partition.partition_id as u32,
+                    }),
+                });
+            }
+
+            graph.update_task_status(&executor, status_updates)?;
         }
 
         Ok(())
