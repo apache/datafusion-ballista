@@ -1367,9 +1367,27 @@ mod test {
 
     fn drain_tasks(graph: &mut ExecutionGraph) -> Result<()> {
         let executor = mock_executor("executor-id1".to_string());
-        while let Some(task) = graph.pop_next_task(&executor.id)? {
-            let task_status = mock_completed_task(task, &executor.id);
-            graph.update_task_status(&executor, vec![task_status])?;
+
+        loop {
+            let mut next_tasks = vec![];
+            while let Some(task) = graph.pop_next_task(&executor.id)? {
+                next_tasks.push(task);
+            }
+
+            if next_tasks.is_empty() {
+                break;
+            }
+
+            assert_eq!(graph.running_tasks().len(), next_tasks.len());
+
+            let mut status_updates = vec![];
+
+            for task in next_tasks {
+                let task_status = mock_completed_task(task, &executor.id);
+                status_updates.push(task_status);
+            }
+
+            graph.update_task_status(&executor, status_updates)?;
         }
 
         Ok(())
