@@ -43,7 +43,6 @@ use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use tokio::sync::mpsc::error::TryRecvError;
-use tokio::sync::mpsc::Receiver;
 
 use crate::as_task_status;
 use crate::cpu_bound_executor::DedicatedExecutor;
