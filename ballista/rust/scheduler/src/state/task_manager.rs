@@ -73,6 +73,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<()> {
         let graph = ExecutionGraph::new(job_id, session_id, plan)?;
+        info!("Submitting execution graph: {}", graph);
         self.state
             .put(
                 Keyspace::ActiveJobs,
@@ -483,7 +484,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         executor_manager: &ExecutorManager,
         task: Task,
     ) -> Result<()> {
-        info!("Launching task {:?} on executor {:?}", task, executor.id);
+        info!("Launching task {} on executor {:?}", task, executor.id);
         let task_definition = self.prepare_task_definition(task)?;
 
         let mut client = executor_manager.get_client(&executor.id).await?;

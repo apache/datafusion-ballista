@@ -33,7 +33,7 @@ use datafusion::physical_plan::{
 use log::debug;
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 
 use ballista_core::serde::protobuf::task_status::Status;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
@@ -363,6 +363,19 @@ pub struct Task {
     pub output_partitioning: Option<Partitioning>,
 }
 
+impl Display for Task {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Task[session_id: {}, job: {}, stage: {}, partition: {}]",
+            self.session_id,
+            self.partition.job_id,
+            self.partition.stage_id,
+            self.partition.partition_id,
+        )
+    }
+}
+
 impl Debug for Task {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent();
@@ -688,6 +701,19 @@ impl ExecutionGraph {
 
     pub fn output_locations(&self) -> Vec<PartitionLocation> {
         self.output_locations.clone()
+    }
+}
+
+impl Display for ExecutionGraph {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ExecutionGraph[job_id={}, session_id={}, available_tasks={}, complete={}]",
+            self.job_id,
+            self.session_id,
+            self.available_tasks(),
+            self.complete()
+        )
     }
 }
 
