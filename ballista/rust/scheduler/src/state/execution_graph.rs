@@ -17,7 +17,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::sync::Arc;
 
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
@@ -920,6 +920,19 @@ impl ExecutionGraph {
     }
 }
 
+impl Display for ExecutionGraph {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ExecutionGraph[job_id={}, session_id={}, available_tasks={}, complete={}]",
+            self.job_id,
+            self.session_id,
+            self.available_tasks(),
+            self.complete()
+        )
+    }
+}
+
 impl Debug for ExecutionGraph {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let stages = self
@@ -1055,6 +1068,19 @@ pub struct Task {
     pub partition: PartitionId,
     pub plan: Arc<dyn ExecutionPlan>,
     pub output_partitioning: Option<Partitioning>,
+}
+
+impl Display for Task {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Task[session_id: {}, job: {}, stage: {}, partition: {}]",
+            self.session_id,
+            self.partition.job_id,
+            self.partition.stage_id,
+            self.partition.partition_id,
+        )
+    }
 }
 
 impl Debug for Task {

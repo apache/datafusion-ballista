@@ -89,7 +89,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     ) -> Result<()> {
         let mut graph =
             ExecutionGraph::new(&self.scheduler_id, job_id, session_id, plan)?;
-        info!("Submitting execution graph: {:?}", graph);
+        info!("Submitting execution graph: {}", graph);
         self.state
             .put(
                 Keyspace::ActiveJobs,
@@ -419,7 +419,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         task: Task,
         executor_manager: &ExecutorManager,
     ) -> Result<()> {
-        info!("Launching task {:?} on executor {:?}", task, executor.id);
+        info!("Launching task {} on executor {:?}", task, executor.id);
         let task_definition = self.prepare_task_definition(task)?;
         let mut client = executor_manager.get_client(&executor.id).await?;
         client
@@ -462,7 +462,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     #[allow(dead_code)]
     pub fn prepare_task_definition(&self, task: Task) -> Result<TaskDefinition> {
-        debug!("Preparing task definition for {:?}", task);
+        debug!("Preparing task definition for {}", task);
         let mut plan_buf: Vec<u8> = vec![];
         let plan_proto =
             U::try_from_physical_plan(task.plan, self.codec.physical_extension_codec())?;
