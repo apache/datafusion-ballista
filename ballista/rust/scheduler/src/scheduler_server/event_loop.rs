@@ -75,8 +75,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .await
                     {
                         Ok(executor) => {
-                            if let Err(e) =
-                                self.state.task_manager.launch_task(&executor, task).await
+                            if let Err(e) = self
+                                .state
+                                .task_manager
+                                .launch_task(
+                                    &executor,
+                                    &self.state.executor_manager,
+                                    task,
+                                )
+                                .await
                             {
                                 error!("Failed to launch new task: {:?}", e);
                                 unassigned_reservations.push(

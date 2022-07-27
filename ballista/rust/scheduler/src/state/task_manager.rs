@@ -17,18 +17,17 @@
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::SessionBuilder;
-use crate::state::backend::{Keyspace, StateBackendClient};
+use crate::state::backend::{Keyspace, Lock, StateBackendClient};
 use crate::state::execution_graph::{ExecutionGraph, ExecutionStage, StageOutput, Task};
-use crate::state::executor_manager::ExecutorReservation;
+use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::{decode_protobuf, encode_protobuf, with_lock};
 use ballista_core::config::BallistaConfig;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
-use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 
 use crate::state::session_manager::create_datafusion_context;
 use ballista_core::serde::protobuf::{
-    self, job_status, task_status, FailedJob, JobStatus, PartitionId, QueuedJob,
+    self, job_status, task_status, CancelTasksParams, FailedJob, JobStatus, QueuedJob,
     TaskDefinition, TaskStatus,
 };
 use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
@@ -37,23 +36,18 @@ use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
-use log::{debug, info, warn};
+
+use log::{debug, error, info, warn};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::default::Default;
 use std::sync::Arc;
-use tokio::sync::RwLock;
-use tonic::transport::Channel;
-
-type ExecutorClients = Arc<RwLock<HashMap<String, ExecutorGrpcClient<Channel>>>>;
 
 #[derive(Clone)]
 pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
     state: Arc<dyn StateBackendClient>,
-    #[allow(dead_code)]
-    clients: ExecutorClients,
     session_builder: SessionBuilder,
     codec: BallistaCodec<T, U>,
 }
@@ -66,7 +60,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     ) -> Self {
         Self {
             state,
-            clients: Default::default(),
             session_builder,
             codec,
         }
@@ -80,6 +73,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<()> {
         let graph = ExecutionGraph::new(job_id, session_id, plan)?;
+        info!("Submitting execution graph: {}", graph);
         self.state
             .put(
                 Keyspace::ActiveJobs,
@@ -335,7 +329,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 );
                     while let Some(job_id) = other_jobs.pop() {
                         if graphs.get(&job_id).is_none() {
-                            // let lock = self.state.lock(Keyspace::ActiveJobs, &job_id).await?;
                             let mut graph = self.get_execution_graph(&job_id).await?;
 
                             if let Ok(Some(task)) = graph.pop_next_task(&executor_id) {
@@ -344,7 +337,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                                 reservation.executor_id, task
                             );
                                 assignments.push((executor_id.clone(), task));
-                                // locks.push(lock);
                                 graphs.insert(job_id, graph);
                                 assigned = true;
                                 break;
@@ -394,11 +386,78 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         .await
     }
 
+    pub(crate) async fn cancel_job(
+        &self,
+        job_id: &str,
+        executor_manager: &ExecutorManager,
+    ) -> Result<()> {
+        let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
+
+        let running_tasks = self
+            .get_execution_graph(job_id)
+            .await
+            .map(|graph| graph.running_tasks())
+            .unwrap_or_else(|_| vec![]);
+
+        info!(
+            "Cancelling {} running tasks for job {}",
+            running_tasks.len(),
+            job_id
+        );
+
+        self.fail_job_inner(lock, job_id, "Cancelled".to_owned())
+            .await?;
+
+        let mut tasks: HashMap<&str, Vec<protobuf::PartitionId>> = Default::default();
+
+        for (partition, executor_id) in &running_tasks {
+            if let Some(parts) = tasks.get_mut(executor_id.as_str()) {
+                parts.push(protobuf::PartitionId {
+                    job_id: job_id.to_owned(),
+                    stage_id: partition.stage_id as u32,
+                    partition_id: partition.partition_id as u32,
+                })
+            } else {
+                tasks.insert(
+                    executor_id.as_str(),
+                    vec![protobuf::PartitionId {
+                        job_id: job_id.to_owned(),
+                        stage_id: partition.stage_id as u32,
+                        partition_id: partition.partition_id as u32,
+                    }],
+                );
+            }
+        }
+
+        for (executor_id, partitions) in tasks {
+            if let Ok(mut client) = executor_manager.get_client(executor_id).await {
+                client
+                    .cancel_tasks(CancelTasksParams {
+                        partition_id: partitions,
+                    })
+                    .await?;
+            } else {
+                error!("Failed to get client for executor ID {}", executor_id)
+            }
+        }
+
+        Ok(())
+    }
+
     /// Mark a job as failed. This will create a key under the FailedJobs keyspace
     /// and remove the job from ActiveJobs or QueuedJobs
     /// TODO this should be atomic
     pub async fn fail_job(&self, job_id: &str, error_message: String) -> Result<()> {
         let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
+        self.fail_job_inner(lock, job_id, error_message).await
+    }
+
+    async fn fail_job_inner(
+        &self,
+        lock: Box<dyn Lock>,
+        job_id: &str,
+        error_message: String,
+    ) -> Result<()> {
         with_lock(lock, self.state.delete(Keyspace::ActiveJobs, job_id)).await?;
 
         self.state.delete(Keyspace::QueuedJobs, job_id).await?;
@@ -417,51 +476,37 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     #[cfg(not(test))]
     /// Launch the given task on the specified executor
-    pub async fn launch_task(
+    pub(crate) async fn launch_task(
         &self,
         executor: &ExecutorMetadata,
+        executor_manager: &ExecutorManager,
         task: Task,
     ) -> Result<()> {
-        info!("Launching task {:?} on executor {:?}", task, executor.id);
+        info!("Launching task {} on executor {:?}", task, executor.id);
         let task_definition = self.prepare_task_definition(task)?;
-        let mut clients = self.clients.write().await;
-        if let Some(client) = clients.get_mut(&executor.id) {
-            client
-                .launch_task(protobuf::LaunchTaskParams {
-                    task: vec![task_definition],
-                })
-                .await
-                .map_err(|e| {
-                    BallistaError::Internal(format!(
-                        "Failed to connect to executor {}: {:?}",
-                        executor.id, e
-                    ))
-                })?;
-        } else {
-            let executor_id = executor.id.clone();
-            let executor_url = format!("http://{}:{}", executor.host, executor.grpc_port);
-            let mut client = ExecutorGrpcClient::connect(executor_url).await?;
-            clients.insert(executor_id, client.clone());
-            client
-                .launch_task(protobuf::LaunchTaskParams {
-                    task: vec![task_definition],
-                })
-                .await
-                .map_err(|e| {
-                    BallistaError::Internal(format!(
-                        "Failed to connect to executor {}: {:?}",
-                        executor.id, e
-                    ))
-                })?;
-        }
+
+        let mut client = executor_manager.get_client(&executor.id).await?;
+        client
+            .launch_task(protobuf::LaunchTaskParams {
+                task: vec![task_definition],
+            })
+            .await
+            .map_err(|e| {
+                BallistaError::Internal(format!(
+                    "Failed to connect to executor {}: {:?}",
+                    executor.id, e
+                ))
+            })?;
+
         Ok(())
     }
 
     /// In unit tests, we do not have actual executors running, so it simplifies things to just noop.
     #[cfg(test)]
-    pub async fn launch_task(
+    pub(crate) async fn launch_task(
         &self,
         _executor: &ExecutorMetadata,
+        _executor_manager: &ExecutorManager,
         _task: Task,
     ) -> Result<()> {
         Ok(())
@@ -487,7 +532,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             hash_partitioning_to_proto(task.output_partitioning.as_ref())?;
 
         let task_definition = TaskDefinition {
-            task_id: Some(PartitionId {
+            task_id: Some(protobuf::PartitionId {
                 job_id: task.partition.job_id.clone(),
                 stage_id: task.partition.stage_id as u32,
                 partition_id: task.partition.partition_id as u32,
