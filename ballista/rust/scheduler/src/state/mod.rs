@@ -15,242 +15,107 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::scheduler_server::{SessionBuilder, SessionContextRegistry};
-use crate::state::backend::StateBackendClient;
-use crate::state::executor_manager::ExecutorManager;
-use crate::state::persistent_state::PersistentSchedulerState;
-use crate::state::stage_manager::StageManager;
-use ballista_core::error::Result;
-use ballista_core::serde::protobuf::{ExecutorHeartbeat, JobStatus, KeyValuePair};
-use ballista_core::serde::scheduler::ExecutorMetadata;
-use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
-use datafusion::physical_plan::ExecutionPlan;
-use datafusion_proto::logical_plan::AsLogicalPlan;
-use std::collections::HashMap;
+use std::any::type_name;
+use std::future::Future;
+
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use prost::Message;
+
+use ballista_core::error::{BallistaError, Result};
+
+use crate::scheduler_server::SessionBuilder;
+
+use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use datafusion_proto::logical_plan::AsLogicalPlan;
+
+use crate::state::backend::{Lock, StateBackendClient};
+
+use crate::state::executor_manager::ExecutorManager;
+use crate::state::session_manager::SessionManager;
+use crate::state::task_manager::TaskManager;
 
 pub mod backend;
-mod executor_manager;
-mod persistent_state;
-mod stage_manager;
-pub mod task_scheduler;
+pub mod execution_graph;
+pub mod executor_manager;
+pub mod session_manager;
+pub mod session_registry;
+mod task_manager;
+
+pub fn decode_protobuf<T: Message + Default>(bytes: &[u8]) -> Result<T> {
+    T::decode(bytes).map_err(|e| {
+        BallistaError::Internal(format!(
+            "Could not deserialize {}: {}",
+            type_name::<T>(),
+            e
+        ))
+    })
+}
+
+pub fn decode_into<T: Message + Default, U: From<T>>(bytes: &[u8]) -> Result<U> {
+    T::decode(bytes)
+        .map_err(|e| {
+            BallistaError::Internal(format!(
+                "Could not deserialize {}: {}",
+                type_name::<T>(),
+                e
+            ))
+        })
+        .map(|t| t.into())
+}
+
+pub fn encode_protobuf<T: Message + Default>(msg: &T) -> Result<Vec<u8>> {
+    let mut value: Vec<u8> = Vec::with_capacity(msg.encoded_len());
+    msg.encode(&mut value).map_err(|e| {
+        BallistaError::Internal(format!(
+            "Could not serialize {}: {}",
+            type_name::<T>(),
+            e
+        ))
+    })?;
+    Ok(value)
+}
 
 #[derive(Clone)]
 pub(super) struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 {
-    persistent_state: PersistentSchedulerState<T, U>,
     pub executor_manager: ExecutorManager,
-    pub stage_manager: StageManager,
+    pub task_manager: TaskManager<T, U>,
+    pub session_manager: SessionManager,
+    _codec: BallistaCodec<T, U>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T, U> {
     pub fn new(
         config_client: Arc<dyn StateBackendClient>,
-        namespace: String,
+        _namespace: String,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
     ) -> Self {
         Self {
-            persistent_state: PersistentSchedulerState::new(
-                config_client,
-                namespace,
+            executor_manager: ExecutorManager::new(config_client.clone()),
+            task_manager: TaskManager::new(
+                config_client.clone(),
                 session_builder,
-                codec,
+                codec.clone(),
             ),
-            executor_manager: ExecutorManager::new(),
-            stage_manager: StageManager::new(),
+            session_manager: SessionManager::new(config_client, session_builder),
+            _codec: codec,
         }
     }
 
     pub async fn init(&self) -> Result<()> {
-        self.persistent_state.init().await?;
-
-        Ok(())
+        self.executor_manager.init().await
     }
+}
 
-    pub fn get_codec(&self) -> &BallistaCodec<T, U> {
-        &self.persistent_state.codec
-    }
+pub async fn with_lock<Out, F: Future<Output = Out>>(lock: Box<dyn Lock>, op: F) -> Out {
+    let mut lock = lock;
+    let result = op.await;
+    lock.unlock().await;
 
-    pub async fn get_executors_metadata(
-        &self,
-    ) -> Result<Vec<(ExecutorMetadata, Duration)>> {
-        let mut result = vec![];
-
-        let executors_heartbeat = self
-            .executor_manager
-            .get_executors_heartbeat()
-            .into_iter()
-            .map(|heartbeat| (heartbeat.executor_id.clone(), heartbeat))
-            .collect::<HashMap<String, ExecutorHeartbeat>>();
-
-        let executors_metadata = self.persistent_state.get_executors_metadata();
-
-        let now_epoch_ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards");
-
-        for meta in executors_metadata.into_iter() {
-            // If there's no heartbeat info for an executor, regard its heartbeat timestamp as 0
-            // so that it will always be excluded when requesting alive executors
-            let ts = executors_heartbeat
-                .get(&meta.id)
-                .map(|heartbeat| Duration::from_secs(heartbeat.timestamp))
-                .unwrap_or_else(|| Duration::from_secs(0));
-            let time_since_last_seen = now_epoch_ts
-                .checked_sub(ts)
-                .unwrap_or_else(|| Duration::from_secs(0));
-            result.push((meta, time_since_last_seen));
-        }
-        Ok(result)
-    }
-
-    pub fn get_executor_metadata(&self, executor_id: &str) -> Option<ExecutorMetadata> {
-        self.persistent_state.get_executor_metadata(executor_id)
-    }
-
-    pub async fn save_executor_metadata(
-        &self,
-        executor_meta: ExecutorMetadata,
-    ) -> Result<()> {
-        self.persistent_state
-            .save_executor_metadata(executor_meta)
-            .await
-    }
-
-    pub async fn save_job_session(
-        &self,
-        job_id: &str,
-        session_id: &str,
-        configs: Vec<KeyValuePair>,
-    ) -> Result<()> {
-        self.persistent_state
-            .save_job_session(job_id, session_id, configs)
-            .await
-    }
-
-    pub fn get_session_from_job(&self, job_id: &str) -> Option<String> {
-        self.persistent_state.get_session_from_job(job_id)
-    }
-
-    pub async fn save_job_metadata(
-        &self,
-        job_id: &str,
-        status: &JobStatus,
-    ) -> Result<()> {
-        self.persistent_state
-            .save_job_metadata(job_id, status)
-            .await
-    }
-
-    pub fn get_job_metadata(&self, job_id: &str) -> Option<JobStatus> {
-        self.persistent_state.get_job_metadata(job_id)
-    }
-
-    pub async fn save_stage_plan(
-        &self,
-        job_id: &str,
-        stage_id: usize,
-        plan: Arc<dyn ExecutionPlan>,
-    ) -> Result<()> {
-        self.persistent_state
-            .save_stage_plan(job_id, stage_id, plan)
-            .await
-    }
-
-    pub fn get_stage_plan(
-        &self,
-        job_id: &str,
-        stage_id: usize,
-    ) -> Option<Arc<dyn ExecutionPlan>> {
-        self.persistent_state.get_stage_plan(job_id, stage_id)
-    }
-
-    pub fn session_registry(&self) -> Arc<SessionContextRegistry> {
-        self.persistent_state.session_registry()
-    }
+    result
 }
 
 #[cfg(all(test, feature = "sled"))]
-mod test {
-    use std::sync::Arc;
-
-    use ballista_core::error::BallistaError;
-    use ballista_core::serde::protobuf::{
-        job_status, JobStatus, PhysicalPlanNode, QueuedJob,
-    };
-    use ballista_core::serde::scheduler::{ExecutorMetadata, ExecutorSpecification};
-    use ballista_core::serde::BallistaCodec;
-    use datafusion::execution::context::default_session_builder;
-    use datafusion_proto::protobuf::LogicalPlanNode;
-
-    use super::{backend::standalone::StandaloneClient, SchedulerState};
-
-    #[tokio::test]
-    async fn executor_metadata() -> Result<(), BallistaError> {
-        let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerState::new(
-                Arc::new(StandaloneClient::try_new_temporary()?),
-                "test".to_string(),
-                default_session_builder,
-                BallistaCodec::default(),
-            );
-        let meta = ExecutorMetadata {
-            id: "123".to_owned(),
-            host: "localhost".to_owned(),
-            port: 123,
-            grpc_port: 124,
-            specification: ExecutorSpecification { task_slots: 2 },
-        };
-        state.save_executor_metadata(meta.clone()).await?;
-        let result: Vec<_> = state
-            .get_executors_metadata()
-            .await?
-            .into_iter()
-            .map(|(meta, _)| meta)
-            .collect();
-        assert_eq!(vec![meta], result);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn job_metadata() -> Result<(), BallistaError> {
-        let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerState::new(
-                Arc::new(StandaloneClient::try_new_temporary()?),
-                "test".to_string(),
-                default_session_builder,
-                BallistaCodec::default(),
-            );
-        let meta = JobStatus {
-            status: Some(job_status::Status::Queued(QueuedJob {})),
-        };
-        state.save_job_metadata("job", &meta).await?;
-        let result = state.get_job_metadata("job").unwrap();
-        assert!(result.status.is_some());
-        match result.status.unwrap() {
-            job_status::Status::Queued(_) => (),
-            _ => panic!("Unexpected status"),
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn job_metadata_non_existant() -> Result<(), BallistaError> {
-        let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerState::new(
-                Arc::new(StandaloneClient::try_new_temporary()?),
-                "test".to_string(),
-                default_session_builder,
-                BallistaCodec::default(),
-            );
-        let meta = JobStatus {
-            status: Some(job_status::Status::Queued(QueuedJob {})),
-        };
-        state.save_job_metadata("job", &meta).await?;
-        let result = state.get_job_metadata("job2");
-        assert!(result.is_none());
-        Ok(())
-    }
-}
+mod test {}

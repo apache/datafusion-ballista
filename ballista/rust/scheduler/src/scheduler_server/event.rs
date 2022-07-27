@@ -15,19 +15,28 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::physical_plan::ExecutionPlan;
+use crate::state::executor_manager::ExecutorReservation;
+
+use datafusion::logical_plan::LogicalPlan;
+
+use datafusion::prelude::SessionContext;
 use std::sync::Arc;
 
-#[derive(Clone)]
-pub(crate) enum SchedulerServerEvent {
-    // number of offer rounds
-    ReviveOffers(u32),
+#[derive(Clone, Debug)]
+pub enum SchedulerServerEvent {
+    /// Offer a list of executor reservations (representing executor task slots available for scheduling)
+    Offer(Vec<ExecutorReservation>),
 }
 
 #[derive(Clone)]
 pub enum QueryStageSchedulerEvent {
-    JobSubmitted(String, Arc<dyn ExecutionPlan>),
-    StageFinished(String, u32),
+    JobQueued {
+        job_id: String,
+        session_id: String,
+        session_ctx: Arc<SessionContext>,
+        plan: Box<LogicalPlan>,
+    },
+    JobSubmitted(String),
     JobFinished(String),
-    JobFailed(String, u32, String),
+    JobFailed(String, String),
 }

@@ -23,12 +23,13 @@ members = [
     "ballista/rust/executor",
     "ballista/rust/scheduler",
     "examples",
+    "ballista-cli",
 ]
-exclude = ["ballista-cli", "python"]
+exclude = ["python"]
 
 # cargo build --profile release-lto
 [profile.release-lto]
-inherits = "release"
 codegen-units = 1
+inherits = "release"
 lto = true
 

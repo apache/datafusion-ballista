@@ -18,6 +18,7 @@
 //! Ballista Rust scheduler binary.
 
 use anyhow::{Context, Result};
+use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_scheduler::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
 use futures::future::{self, Either, TryFutureExt};
 use hyper::{server::conn::AddrStream, service::make_service_fn, Server};
@@ -59,6 +60,7 @@ mod config {
     ));
 }
 
+use ballista_scheduler::flight_sql::FlightSqlServiceImpl;
 use config::prelude::*;
 use datafusion::execution::context::default_session_builder;
 
@@ -100,10 +102,15 @@ async fn start_server(
             let scheduler_grpc_server =
                 SchedulerGrpcServer::new(scheduler_server.clone());
 
+            let flight_sql_server = FlightServiceServer::new(FlightSqlServiceImpl::new(
+                scheduler_server.clone(),
+            ));
+
             let keda_scaler = ExternalScalerServer::new(scheduler_server.clone());
 
             let mut tonic = TonicServer::builder()
                 .add_service(scheduler_grpc_server)
+                .add_service(flight_sql_server)
                 .add_service(keda_scaler)
                 .into_service();
             let mut warp = warp::service(get_routes(scheduler_server.clone()));
@@ -172,7 +179,7 @@ async fn main() -> Result<()> {
             let etcd = etcd_client::Client::connect(&[opt.etcd_urls], None)
                 .await
                 .context("Could not connect to etcd")?;
-            Arc::new(EtcdClient::new(etcd))
+            Arc::new(EtcdClient::new(namespace.clone(), etcd))
         }
         #[cfg(not(feature = "etcd"))]
         StateBackend::Etcd => {
@@ -182,11 +189,18 @@ async fn main() -> Result<()> {
         }
         #[cfg(feature = "sled")]
         StateBackend::Standalone => {
-            // TODO: Use a real file and make path is configurable
-            Arc::new(
-                StandaloneClient::try_new_temporary()
-                    .context("Could not create standalone config backend")?,
-            )
+            if opt.sled_dir.is_empty() {
+                Arc::new(
+                    StandaloneClient::try_new_temporary()
+                        .context("Could not create standalone config backend")?,
+                )
+            } else {
+                println!("{}", opt.sled_dir);
+                Arc::new(
+                    StandaloneClient::try_new(opt.sled_dir)
+                        .context("Could not create standalone config backend")?,
+                )
+            }
         }
         #[cfg(not(feature = "sled"))]
         StateBackend::Standalone => {

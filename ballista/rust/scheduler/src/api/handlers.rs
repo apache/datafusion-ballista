@@ -37,7 +37,8 @@ pub(crate) async fn scheduler_state<T: AsLogicalPlan, U: AsExecutionPlan>(
     // TODO: Display last seen information in UI
     let executors: Vec<ExecutorMetaResponse> = data_server
         .state
-        .get_executors_metadata()
+        .executor_manager
+        .get_executor_state()
         .await
         .unwrap_or_default()
         .into_iter()

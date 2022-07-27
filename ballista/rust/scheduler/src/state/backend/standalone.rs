@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::collections::{HashMap, HashSet};
 use std::{sync::Arc, task::Poll};
 
 use ballista_core::error::{ballista_error, BallistaError, Result};
@@ -24,13 +25,13 @@ use log::warn;
 use sled_package as sled;
 use tokio::sync::Mutex;
 
-use crate::state::backend::{Lock, StateBackendClient, Watch, WatchEvent};
+use crate::state::backend::{Keyspace, Lock, StateBackendClient, Watch, WatchEvent};
 
 /// A [`StateBackendClient`] implementation that uses file-based storage to save cluster configuration.
 #[derive(Clone)]
 pub struct StandaloneClient {
     db: sled::Db,
-    lock: Arc<Mutex<()>>,
+    locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl StandaloneClient {
@@ -38,7 +39,7 @@ impl StandaloneClient {
     pub fn try_new<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
         Ok(Self {
             db: sled::open(path).map_err(sled_to_ballista_error)?,
-            lock: Arc::new(Mutex::new(())),
+            locks: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -49,7 +50,7 @@ impl StandaloneClient {
                 .temporary(true)
                 .open()
                 .map_err(sled_to_ballista_error)?,
-            lock: Arc::new(Mutex::new(())),
+            locks: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 }
@@ -63,7 +64,8 @@ fn sled_to_ballista_error(e: sled::Error) -> BallistaError {
 
 #[tonic::async_trait]
 impl StateBackendClient for StandaloneClient {
-    async fn get(&self, key: &str) -> Result<Vec<u8>> {
+    async fn get(&self, keyspace: Keyspace, key: &str) -> Result<Vec<u8>> {
+        let key = format!("/{:?}/{}", keyspace, key);
         Ok(self
             .db
             .get(key)
@@ -72,7 +74,12 @@ impl StateBackendClient for StandaloneClient {
             .unwrap_or_default())
     }
 
-    async fn get_from_prefix(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>> {
+    async fn get_from_prefix(
+        &self,
+        keyspace: Keyspace,
+        prefix: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>> {
+        let prefix = format!("/{:?}/{}", keyspace, prefix);
         Ok(self
             .db
             .scan_prefix(prefix)
@@ -88,7 +95,64 @@ impl StateBackendClient for StandaloneClient {
             .map_err(|e| ballista_error(&format!("sled error {:?}", e)))?)
     }
 
-    async fn put(&self, key: String, value: Vec<u8>) -> Result<()> {
+    async fn scan(
+        &self,
+        keyspace: Keyspace,
+        limit: Option<usize>,
+    ) -> Result<Vec<(String, Vec<u8>)>> {
+        let prefix = format!("/{:?}/", keyspace);
+        if let Some(limit) = limit {
+            Ok(self
+                .db
+                .scan_prefix(prefix)
+                .take(limit)
+                .map(|v| {
+                    v.map(|(key, value)| {
+                        (
+                            std::str::from_utf8(&key).unwrap().to_owned(),
+                            value.to_vec(),
+                        )
+                    })
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| ballista_error(&format!("sled error {:?}", e)))?)
+        } else {
+            Ok(self
+                .db
+                .scan_prefix(prefix)
+                .map(|v| {
+                    v.map(|(key, value)| {
+                        (
+                            std::str::from_utf8(&key).unwrap().to_owned(),
+                            value.to_vec(),
+                        )
+                    })
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| ballista_error(&format!("sled error {:?}", e)))?)
+        }
+    }
+
+    async fn scan_keys(&self, keyspace: Keyspace) -> Result<HashSet<String>> {
+        let prefix = format!("/{:?}/", keyspace);
+        Ok(self
+            .db
+            .scan_prefix(prefix.clone())
+            .map(|v| {
+                v.map(|(key, _value)| {
+                    std::str::from_utf8(&key)
+                        .unwrap()
+                        .strip_prefix(&prefix)
+                        .unwrap()
+                        .to_owned()
+                })
+            })
+            .collect::<std::result::Result<HashSet<_>, _>>()
+            .map_err(|e| ballista_error(&format!("sled error {:?}", e)))?)
+    }
+
+    async fn put(&self, keyspace: Keyspace, key: String, value: Vec<u8>) -> Result<()> {
+        let key = format!("/{:?}/{}", keyspace, key);
         self.db
             .insert(key, value)
             .map_err(|e| {
@@ -98,14 +162,79 @@ impl StateBackendClient for StandaloneClient {
             .map(|_| ())
     }
 
-    async fn lock(&self) -> Result<Box<dyn Lock>> {
-        Ok(Box::new(self.lock.clone().lock_owned().await))
+    async fn put_txn(&self, ops: Vec<(Keyspace, String, Vec<u8>)>) -> Result<()> {
+        let mut batch = sled::Batch::default();
+
+        for (ks, key, value) in ops {
+            let key = format!("/{:?}/{}", ks, key);
+            batch.insert(key.as_str(), value);
+        }
+
+        self.db.apply_batch(batch).map_err(|e| {
+            warn!("sled transaction insert failed: {}", e);
+            ballista_error("sled insert failed")
+        })
     }
 
-    async fn watch(&self, prefix: String) -> Result<Box<dyn Watch>> {
+    async fn mv(
+        &self,
+        from_keyspace: Keyspace,
+        to_keyspace: Keyspace,
+        key: &str,
+    ) -> Result<()> {
+        let from_key = format!("/{:?}/{}", from_keyspace, key);
+        let to_key = format!("/{:?}/{}", to_keyspace, key);
+
+        let current_value = self
+            .db
+            .get(from_key.as_str())
+            .map_err(|e| ballista_error(&format!("sled error {:?}", e)))?
+            .map(|v| v.to_vec());
+
+        if let Some(value) = current_value {
+            let mut batch = sled::Batch::default();
+
+            batch.remove(from_key.as_str());
+            batch.insert(to_key.as_str(), value);
+
+            self.db.apply_batch(batch).map_err(|e| {
+                warn!("sled transaction insert failed: {}", e);
+                ballista_error("sled insert failed")
+            })
+        } else {
+            // TODO should this return an error?
+            warn!("Cannot move value at {}, does not exist", from_key);
+            Ok(())
+        }
+    }
+
+    async fn lock(&self, keyspace: Keyspace, key: &str) -> Result<Box<dyn Lock>> {
+        let mut mlock = self.locks.lock().await;
+        let lock_key = format!("/{:?}/{}", keyspace, key);
+        if let Some(lock) = mlock.get(&lock_key) {
+            Ok(Box::new(lock.clone().lock_owned().await))
+        } else {
+            let new_lock = Arc::new(Mutex::new(()));
+            mlock.insert(lock_key, new_lock.clone());
+            Ok(Box::new(new_lock.lock_owned().await))
+        }
+    }
+
+    async fn watch(&self, keyspace: Keyspace, prefix: String) -> Result<Box<dyn Watch>> {
+        let prefix = format!("/{:?}/{}", keyspace, prefix);
+
         Ok(Box::new(SledWatch {
             subscriber: self.db.watch_prefix(prefix),
         }))
+    }
+
+    async fn delete(&self, keyspace: Keyspace, key: &str) -> Result<()> {
+        let key = format!("/{:?}/{}", keyspace, key);
+        self.db.remove(key).map_err(|e| {
+            warn!("sled delete failed: {:?}", e);
+            ballista_error("sled delete failed")
+        })?;
+        Ok(())
     }
 }
 
@@ -150,6 +279,7 @@ impl Stream for SledWatch {
 mod tests {
     use super::{StandaloneClient, StateBackendClient, Watch, WatchEvent};
 
+    use crate::state::backend::Keyspace;
     use futures::StreamExt;
     use std::result::Result;
 
@@ -162,8 +292,10 @@ mod tests {
         let client = create_instance()?;
         let key = "key";
         let value = "value".as_bytes();
-        client.put(key.to_owned(), value.to_vec()).await?;
-        assert_eq!(client.get(key).await?, value);
+        client
+            .put(Keyspace::Slots, key.to_owned(), value.to_vec())
+            .await?;
+        assert_eq!(client.get(Keyspace::Slots, key).await?, value);
         Ok(())
     }
 
@@ -172,7 +304,7 @@ mod tests {
         let client = create_instance()?;
         let key = "key";
         let empty: &[u8] = &[];
-        assert_eq!(client.get(key).await?, empty);
+        assert_eq!(client.get(Keyspace::Slots, key).await?, empty);
         Ok(())
     }
 
@@ -181,13 +313,17 @@ mod tests {
         let client = create_instance()?;
         let key = "key";
         let value = "value".as_bytes();
-        client.put(format!("{}/1", key), value.to_vec()).await?;
-        client.put(format!("{}/2", key), value.to_vec()).await?;
+        client
+            .put(Keyspace::Slots, format!("{}/1", key), value.to_vec())
+            .await?;
+        client
+            .put(Keyspace::Slots, format!("{}/2", key), value.to_vec())
+            .await?;
         assert_eq!(
-            client.get_from_prefix(key).await?,
+            client.get_from_prefix(Keyspace::Slots, key).await?,
             vec![
-                ("key/1".to_owned(), value.to_vec()),
-                ("key/2".to_owned(), value.to_vec())
+                ("/Slots/key/1".to_owned(), value.to_vec()),
+                ("/Slots/key/2".to_owned(), value.to_vec())
             ]
         );
         Ok(())
@@ -198,17 +334,28 @@ mod tests {
         let client = create_instance()?;
         let key = "key";
         let value = "value".as_bytes();
-        let mut watch: Box<dyn Watch> = client.watch(key.to_owned()).await?;
-        client.put(key.to_owned(), value.to_vec()).await?;
+        let mut watch: Box<dyn Watch> =
+            client.watch(Keyspace::Slots, key.to_owned()).await?;
+        client
+            .put(Keyspace::Slots, key.to_owned(), value.to_vec())
+            .await?;
         assert_eq!(
             watch.next().await,
-            Some(WatchEvent::Put(key.to_owned(), value.to_owned()))
+            Some(WatchEvent::Put(
+                format!("/{:?}/{}", Keyspace::Slots, key.to_owned()),
+                value.to_owned()
+            ))
         );
         let value2 = "value2".as_bytes();
-        client.put(key.to_owned(), value2.to_vec()).await?;
+        client
+            .put(Keyspace::Slots, key.to_owned(), value2.to_vec())
+            .await?;
         assert_eq!(
             watch.next().await,
-            Some(WatchEvent::Put(key.to_owned(), value2.to_owned()))
+            Some(WatchEvent::Put(
+                format!("/{:?}/{}", Keyspace::Slots, key.to_owned()),
+                value2.to_owned()
+            ))
         );
         watch.cancel().await?;
         Ok(())

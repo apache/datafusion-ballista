@@ -71,7 +71,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
                 .map(|h| match h {
                     OptionalHost::Host(host) => host,
                 })
-                .unwrap_or_else(|| String::from("127.0.0.1")),
+                .unwrap_or_else(|| String::from("0.0.0.0")),
             executor_meta.grpc_port
         );
         let addr = addr.parse().unwrap();
@@ -220,6 +220,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
             task.output_partitioning.as_ref(),
             task_context.as_ref(),
+            plan.schema().as_ref(),
         )?;
 
         let execution_result = self
@@ -297,8 +298,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
             info!("Starting the task runner pool");
             // Use a dedicated executor for CPU bound tasks so that the main tokio
             // executor can still answer requests even when under load
-            // TODO make it configurable
-            let dedicated_executor = DedicatedExecutor::new("task_runner", 4);
+            let dedicated_executor = DedicatedExecutor::new(
+                "task_runner",
+                executor_server.executor.concurrent_tasks,
+            );
             loop {
                 if let Some(task) = rx_task.recv().await {
                     if let Some(task_id) = &task.task_id {

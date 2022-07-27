@@ -16,132 +16,109 @@
 // under the License.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
-use log::{debug, warn};
+use log::{error, info};
 
 use crate::scheduler_server::event::SchedulerServerEvent;
-use crate::scheduler_server::ExecutorsClient;
-use crate::state::task_scheduler::TaskScheduler;
-use crate::state::SchedulerState;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventAction;
-use ballista_core::serde::protobuf::{LaunchTaskParams, TaskDefinition};
-use ballista_core::serde::scheduler::ExecutorDataChange;
+
 use ballista_core::serde::AsExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 
+use crate::state::executor_manager::ExecutorReservation;
+use crate::state::SchedulerState;
+
+/// EventAction which will process `SchedulerServerEvent`s.
+/// In push-based scheduling, this is the primary mechanism for scheduling tasks
+/// on executors.
 pub(crate) struct SchedulerServerEventAction<
     T: 'static + AsLogicalPlan,
     U: 'static + AsExecutionPlan,
 > {
     state: Arc<SchedulerState<T, U>>,
-    executors_client: ExecutorsClient,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     SchedulerServerEventAction<T, U>
 {
-    pub fn new(
-        state: Arc<SchedulerState<T, U>>,
-        executors_client: ExecutorsClient,
-    ) -> Self {
-        Self {
-            state,
-            executors_client,
-        }
+    pub fn new(state: Arc<SchedulerState<T, U>>) -> Self {
+        Self { state }
     }
 
-    #[allow(unused_variables)]
-    async fn offer_resources(&self, n: u32) -> Result<Option<SchedulerServerEvent>> {
-        let mut available_executors =
-            self.state.executor_manager.get_available_executors_data();
-        // In case of there's no enough resources, reschedule the tasks of the job
-        if available_executors.is_empty() {
-            // TODO Maybe it's better to use an exclusive runtime for this kind task scheduling
-            warn!("Not enough available executors for task running");
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            return Ok(Some(SchedulerServerEvent::ReviveOffers(1)));
-        }
-
-        let mut executors_data_change: Vec<ExecutorDataChange> = available_executors
-            .iter()
-            .map(|executor_data| ExecutorDataChange {
-                executor_id: executor_data.executor_id.clone(),
-                task_slots: executor_data.available_task_slots as i32,
-            })
-            .collect();
-
-        let (tasks_assigment, num_tasks) = self
-            .state
-            .fetch_schedulable_tasks(&mut available_executors, n)
-            .await?;
-        for (data_change, data) in executors_data_change
-            .iter_mut()
-            .zip(available_executors.iter())
-        {
-            data_change.task_slots =
-                data.available_task_slots as i32 - data_change.task_slots;
-        }
-
-        #[cfg(not(test))]
-        if num_tasks > 0 {
-            self.launch_tasks(&executors_data_change, tasks_assigment)
-                .await?;
-        }
-
-        Ok(None)
-    }
-
-    #[allow(dead_code)]
-    async fn launch_tasks(
+    /// Process reservations which are offered. The basic process is
+    /// 1. Attempt to fill the offered reservations with available tasks
+    /// 2. For any reservation that filled, launch the assigned task on the executor.
+    /// 3. For any reservations that could not be filled, cancel the reservation (i.e. return the
+    ///    task slot back to the pool of available task slots).
+    ///
+    /// NOTE Error handling in this method is very important. No matter what we need to ensure
+    /// that unfilled reservations are cancelled or else they could become permanently "invisible"
+    /// to the scheduler.
+    async fn offer_reservation(
         &self,
-        executors: &[ExecutorDataChange],
-        tasks_assigment: Vec<Vec<TaskDefinition>>,
-    ) -> Result<()> {
-        for (idx_executor, tasks) in tasks_assigment.into_iter().enumerate() {
-            if !tasks.is_empty() {
-                let executor_data_change = &executors[idx_executor];
-                debug!(
-                    "Start to launch tasks {:?} to executor {:?}",
-                    tasks
-                        .iter()
-                        .map(|task| {
-                            if let Some(task_id) = task.task_id.as_ref() {
-                                format!(
-                                    "{}/{}/{}",
-                                    task_id.job_id,
-                                    task_id.stage_id,
-                                    task_id.partition_id
-                                )
-                            } else {
-                                "".to_string()
+        reservations: Vec<ExecutorReservation>,
+    ) -> Result<Option<SchedulerServerEvent>> {
+        let (free_list, pending_tasks) = match self
+            .state
+            .task_manager
+            .fill_reservations(&reservations)
+            .await
+        {
+            Ok((assignments, mut unassigned_reservations, pending_tasks)) => {
+                for (executor_id, task) in assignments.into_iter() {
+                    match self
+                        .state
+                        .executor_manager
+                        .get_executor_metadata(&executor_id)
+                        .await
+                    {
+                        Ok(executor) => {
+                            if let Err(e) =
+                                self.state.task_manager.launch_task(&executor, task).await
+                            {
+                                error!("Failed to launch new task: {:?}", e);
+                                unassigned_reservations.push(
+                                    ExecutorReservation::new_free(executor_id.clone()),
+                                );
                             }
-                        })
-                        .collect::<Vec<String>>(),
-                    executor_data_change.executor_id
-                );
-                let mut client = {
-                    let clients = self.executors_client.read().await;
-                    clients
-                        .get(&executor_data_change.executor_id)
-                        .unwrap()
-                        .clone()
-                };
-                // TODO check whether launching task is successful or not
-                client.launch_task(LaunchTaskParams { task: tasks }).await?;
-                self.state
-                    .executor_manager
-                    .update_executor_data(executor_data_change);
-            } else {
-                // Since the task assignment policy is round robin,
-                // if find tasks for one executor is empty, just break fast
-                break;
+                        }
+                        Err(e) => {
+                            error!("Failed to launch new task, could not get executor metadata: {:?}", e);
+                            unassigned_reservations
+                                .push(ExecutorReservation::new_free(executor_id.clone()));
+                        }
+                    }
+                }
+                (unassigned_reservations, pending_tasks)
             }
-        }
+            Err(e) => {
+                error!("Error filling reservations: {:?}", e);
+                (reservations, 0)
+            }
+        };
 
-        Ok(())
+        dbg!(free_list.clone());
+        dbg!(pending_tasks);
+        // If any reserved slots remain, return them to the pool
+        if !free_list.is_empty() {
+            self.state
+                .executor_manager
+                .cancel_reservations(free_list)
+                .await?;
+            Ok(None)
+        } else if pending_tasks > 0 {
+            // If there are pending tasks available, try and schedule them
+            let new_reservations = self
+                .state
+                .executor_manager
+                .reserve_slots(pending_tasks as u32)
+                .await?;
+            Ok(Some(SchedulerServerEvent::Offer(new_reservations)))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -149,21 +126,283 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     EventAction<SchedulerServerEvent> for SchedulerServerEventAction<T, U>
 {
-    // TODO
-    fn on_start(&self) {}
+    fn on_start(&self) {
+        info!("Starting SchedulerServerEvent handler")
+    }
 
-    // TODO
-    fn on_stop(&self) {}
+    fn on_stop(&self) {
+        info!("Stopping SchedulerServerEvent handler")
+    }
 
     async fn on_receive(
         &self,
         event: SchedulerServerEvent,
     ) -> Result<Option<SchedulerServerEvent>> {
         match event {
-            SchedulerServerEvent::ReviveOffers(n) => self.offer_resources(n).await,
+            SchedulerServerEvent::Offer(reservations) => {
+                self.offer_reservation(reservations).await
+            }
         }
     }
 
-    // TODO
-    fn on_error(&self, _error: BallistaError) {}
+    fn on_error(&self, error: BallistaError) {
+        error!("Error in SchedulerServerEvent handler: {:?}", error);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::scheduler_server::event::SchedulerServerEvent;
+    use crate::scheduler_server::event_loop::SchedulerServerEventAction;
+    use crate::state::backend::standalone::StandaloneClient;
+    use crate::state::SchedulerState;
+    use ballista_core::config::{BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS};
+    use ballista_core::error::Result;
+    use ballista_core::serde::protobuf::{
+        task_status, CompletedTask, PartitionId, PhysicalPlanNode, ShuffleWritePartition,
+        TaskStatus,
+    };
+    use ballista_core::serde::scheduler::{
+        ExecutorData, ExecutorMetadata, ExecutorSpecification,
+    };
+    use ballista_core::serde::BallistaCodec;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::execution::context::default_session_builder;
+    use datafusion::logical_expr::{col, sum};
+    use datafusion::physical_plan::ExecutionPlan;
+    use datafusion::prelude::SessionContext;
+    use datafusion::test_util::scan_empty;
+    use datafusion_proto::protobuf::LogicalPlanNode;
+    use std::sync::Arc;
+
+    // We should free any reservations which are not assigned
+    #[tokio::test]
+    async fn test_offer_free_reservations() -> Result<()> {
+        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+        let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
+            Arc::new(SchedulerState::new(
+                state_storage,
+                "default".to_string(),
+                default_session_builder,
+                BallistaCodec::default(),
+            ));
+
+        let executors = test_executors(1, 4);
+
+        let (executor_metadata, executor_data) = executors[0].clone();
+
+        let reservations = state
+            .executor_manager
+            .register_executor(executor_metadata, executor_data, true)
+            .await?;
+
+        let event_action = Arc::new(SchedulerServerEventAction::new(state.clone()));
+
+        let result = event_action.offer_reservation(reservations).await?;
+
+        assert!(result.is_none());
+
+        // All reservations should have been cancelled so we should be able to reserve them now
+        let reservations = state.executor_manager.reserve_slots(4).await?;
+
+        assert_eq!(reservations.len(), 4);
+
+        Ok(())
+    }
+
+    // We should fill unbound reservations to any available task
+    #[tokio::test]
+    async fn test_offer_fill_reservations() -> Result<()> {
+        let config = BallistaConfig::builder()
+            .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4")
+            .build()?;
+        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+        let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
+            Arc::new(SchedulerState::new(
+                state_storage,
+                "default".to_string(),
+                default_session_builder,
+                BallistaCodec::default(),
+            ));
+
+        let session_ctx = state.session_manager.create_session(&config).await?;
+
+        let plan = test_graph(session_ctx.clone()).await;
+
+        // Create 4 jobs so we have four pending tasks
+        state
+            .task_manager
+            .submit_job("job-1", session_ctx.session_id().as_str(), plan.clone())
+            .await?;
+        state
+            .task_manager
+            .submit_job("job-2", session_ctx.session_id().as_str(), plan.clone())
+            .await?;
+        state
+            .task_manager
+            .submit_job("job-3", session_ctx.session_id().as_str(), plan.clone())
+            .await?;
+        state
+            .task_manager
+            .submit_job("job-4", session_ctx.session_id().as_str(), plan.clone())
+            .await?;
+
+        let executors = test_executors(1, 4);
+
+        let (executor_metadata, executor_data) = executors[0].clone();
+
+        let reservations = state
+            .executor_manager
+            .register_executor(executor_metadata, executor_data, true)
+            .await?;
+
+        let event_action = Arc::new(SchedulerServerEventAction::new(state.clone()));
+
+        let result = event_action.offer_reservation(reservations).await?;
+
+        assert!(result.is_none());
+
+        // All task slots should be assigned so we should not be able to reserve more tasks
+        let reservations = state.executor_manager.reserve_slots(4).await?;
+
+        assert_eq!(reservations.len(), 0);
+
+        Ok(())
+    }
+
+    // We should generate a new event for tasks that are still pending
+    #[tokio::test]
+    async fn test_offer_resubmit_pending() -> Result<()> {
+        let config = BallistaConfig::builder()
+            .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4")
+            .build()?;
+        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+        let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
+            Arc::new(SchedulerState::new(
+                state_storage,
+                "default".to_string(),
+                default_session_builder,
+                BallistaCodec::default(),
+            ));
+
+        let session_ctx = state.session_manager.create_session(&config).await?;
+
+        let plan = test_graph(session_ctx.clone()).await;
+
+        // Create a job
+        state
+            .task_manager
+            .submit_job("job-1", session_ctx.session_id().as_str(), plan.clone())
+            .await?;
+
+        let executors = test_executors(1, 4);
+
+        let (executor_metadata, executor_data) = executors[0].clone();
+
+        // Complete the first stage. So we should now have 4 pending tasks for this job stage 2
+        let mut partitions: Vec<ShuffleWritePartition> = vec![];
+
+        for partition_id in 0..4 {
+            partitions.push(ShuffleWritePartition {
+                partition_id: partition_id as u64,
+                path: "some/path".to_string(),
+                num_batches: 1,
+                num_rows: 1,
+                num_bytes: 1,
+            })
+        }
+
+        state
+            .task_manager
+            .update_task_statuses(
+                &executor_metadata,
+                vec![TaskStatus {
+                    task_id: Some(PartitionId {
+                        job_id: "job-1".to_string(),
+                        stage_id: 1,
+                        partition_id: 0,
+                    }),
+                    status: Some(task_status::Status::Completed(CompletedTask {
+                        executor_id: "executor-1".to_string(),
+                        partitions,
+                    })),
+                }],
+            )
+            .await?;
+
+        state
+            .executor_manager
+            .register_executor(executor_metadata, executor_data, false)
+            .await?;
+
+        let reservation = state.executor_manager.reserve_slots(1).await?;
+
+        assert_eq!(reservation.len(), 1);
+
+        let event_action = Arc::new(SchedulerServerEventAction::new(state.clone()));
+
+        // Offer the reservation. It should be filled with one of the 4 pending tasks. The other 3 should
+        // be reserved for the other 3 tasks, emitting another offer event
+        let result = event_action.offer_reservation(reservation).await?;
+
+        assert!(result.is_some());
+
+        match result {
+            Some(SchedulerServerEvent::Offer(reservations)) => {
+                assert_eq!(reservations.len(), 3)
+            }
+            _ => panic!("Expected 3 new reservations offered"),
+        }
+
+        // Remaining 3 task slots should be reserved for pending tasks
+        let reservations = state.executor_manager.reserve_slots(4).await?;
+
+        assert_eq!(reservations.len(), 0);
+
+        Ok(())
+    }
+
+    fn test_executors(
+        total_executors: usize,
+        slots_per_executor: u32,
+    ) -> Vec<(ExecutorMetadata, ExecutorData)> {
+        let mut result: Vec<(ExecutorMetadata, ExecutorData)> = vec![];
+
+        for i in 0..total_executors {
+            result.push((
+                ExecutorMetadata {
+                    id: format!("executor-{}", i),
+                    host: format!("host-{}", i),
+                    port: 8080,
+                    grpc_port: 9090,
+                    specification: ExecutorSpecification {
+                        task_slots: slots_per_executor,
+                    },
+                },
+                ExecutorData {
+                    executor_id: format!("executor-{}", i),
+                    total_task_slots: slots_per_executor,
+                    available_task_slots: slots_per_executor,
+                },
+            ));
+        }
+
+        result
+    }
+
+    async fn test_graph(ctx: Arc<SessionContext>) -> Arc<dyn ExecutionPlan> {
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("gmv", DataType::UInt64, false),
+        ]);
+
+        let plan = scan_empty(None, &schema, Some(vec![0, 1]))
+            .unwrap()
+            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
+            .unwrap()
+            .build()
+            .unwrap();
+
+        ctx.create_physical_plan(&plan).await.unwrap()
+    }
 }
