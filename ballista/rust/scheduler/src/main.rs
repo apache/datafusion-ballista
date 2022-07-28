@@ -146,8 +146,6 @@ async fn start_server(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::init();
-
     // parse options
     let (opt, _remaining_args) =
         Config::including_optional_config_files(&["/etc/ballista/scheduler.toml"])
@@ -157,6 +155,12 @@ async fn main() -> Result<()> {
         print_version();
         std::process::exit(0);
     }
+
+    let special_mod_log_level = opt.log_level_setting;
+    env_logger::builder()
+        .parse_filters(&*special_mod_log_level)
+        .format_timestamp_millis()
+        .init();
 
     let namespace = opt.namespace;
     let bind_host = opt.bind_host;

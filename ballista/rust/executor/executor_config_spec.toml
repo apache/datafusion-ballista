@@ -102,3 +102,9 @@ name = "plugin_dir"
 type = "String"
 doc = "plugin dir"
 default = "std::string::String::from(\"\")"
+
+[[param]]
+name = "log_level_setting"
+type = "String"
+doc = "special log level for sub mod. link: https://docs.rs/env_logger/latest/env_logger/#enabling-logging. For example we want whole level is INFO but datafusion mode is DEBUG"
+default = "std::string::String::from(\"INFO, datafusion=INFO\")"

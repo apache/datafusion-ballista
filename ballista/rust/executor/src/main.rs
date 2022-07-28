@@ -63,8 +63,6 @@ static ALLOC: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::init();
-
     // parse command-line arguments
     let (opt, _remaining_args) =
         Config::including_optional_config_files(&["/etc/ballista/executor.toml"])
@@ -74,6 +72,12 @@ async fn main() -> Result<()> {
         print_version();
         std::process::exit(0);
     }
+
+    let special_mod_log_level = opt.log_level_setting;
+    env_logger::builder()
+        .parse_filters(&*special_mod_log_level)
+        .format_timestamp_millis()
+        .init();
 
     let external_host = opt.external_host;
     let bind_host = opt.bind_host;
