@@ -71,4 +71,4 @@ ballista-core = { path = "../core", version = "0.7.0" }
 
 [build-dependencies]
 configure_me_codegen = "0.4.1"
-tonic-build = { version = "0.7" }
+tonic-build = { version = "0.8" }
