@@ -28,11 +28,11 @@ edition = "2021"
 rust-version = "1.59"
 
 [dependencies]
-ballista-core = { path = "../core", version = "0.7.0" }
-ballista-executor = { path = "../executor", version = "0.7.0", optional = true }
-ballista-scheduler = { path = "../scheduler", version = "0.7.0", optional = true }
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "6a5de4fe08597896ab6375e3e4b76c5744dcfba7" }
-datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "6a5de4fe08597896ab6375e3e4b76c5744dcfba7" }
+ballista-core = { path = "../core", features = [], optional = false }
+ballista-executor = { path = "../executor", features = [], optional = true }
+ballista-scheduler = { path = "../scheduler", features = [], optional = true }
+datafusion = { git = "https://github.com/spaceandtimelabs/arrow-datafusion.git", rev = "6cca482d55ae150c889598d02ec55be2685dfb3b", features = [], optional = false }
+datafusion-proto = { git = "https://github.com/spaceandtimelabs/arrow-datafusion.git", rev = "6cca482d55ae150c889598d02ec55be2685dfb3b", features = [], optional = false }
 futures = "0.3"
 log = "0.4"
 parking_lot = "0.12"
