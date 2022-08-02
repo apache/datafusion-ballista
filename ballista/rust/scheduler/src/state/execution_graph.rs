@@ -19,6 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::fmt::{Debug, Display, Formatter};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{
@@ -110,6 +111,7 @@ pub struct ExecutionGraph {
     output_partitions: usize,
     /// Locations of this `ExecutionGraph` final output locations
     output_locations: Vec<PartitionLocation>,
+    queued_at: u64,
 }
 
 impl ExecutionGraph {
@@ -118,6 +120,7 @@ impl ExecutionGraph {
         job_id: &str,
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
+        queued_at: u64,
     ) -> Result<Self> {
         let mut planner = DistributedPlanner::new();
 
@@ -138,6 +141,7 @@ impl ExecutionGraph {
             stages,
             output_partitions,
             output_locations: vec![],
+            queued_at,
         })
     }
 
@@ -658,9 +662,14 @@ impl ExecutionGraph {
             info!("Job {} is failed", self.job_id());
             self.fail_job(job_err_msg);
 
-            Some(QueryStageSchedulerEvent::JobRunningFailed(
-                self.job_id.clone(),
-            ))
+            Some(QueryStageSchedulerEvent::JobRunningFailed {
+                job_id: self.job_id.clone(),
+                queued_at: self.queued_at,
+                failed_at: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards")
+                    .as_secs(),
+            })
         } else if self.complete() {
             // If this ExecutionGraph is complete, finalize it
             info!(
@@ -668,9 +677,18 @@ impl ExecutionGraph {
                 self.job_id()
             );
             self.complete_job()?;
-            Some(QueryStageSchedulerEvent::JobFinished(self.job_id.clone()))
+            Some(QueryStageSchedulerEvent::JobFinished {
+                job_id: self.job_id.clone(),
+                queued_at: self.queued_at,
+                completed_at: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time went backwards")
+                    .as_secs(),
+            })
         } else if has_resolved {
-            Some(QueryStageSchedulerEvent::JobUpdated(self.job_id.clone()))
+            Some(QueryStageSchedulerEvent::JobUpdated {
+                job_id: self.job_id.clone(),
+            })
         } else {
             None
         };
@@ -861,6 +879,7 @@ impl ExecutionGraph {
             stages,
             output_partitions: proto.output_partitions as usize,
             output_locations,
+            queued_at: proto.queued_at,
         })
     }
 
@@ -916,6 +935,7 @@ impl ExecutionGraph {
             output_partitions: graph.output_partitions as u64,
             output_locations,
             scheduler_id: graph.scheduler_id,
+            queued_at: graph.queued_at,
         })
     }
 }
@@ -1415,7 +1435,7 @@ mod test {
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
-        ExecutionGraph::new("localhost:50050", "job", "session", plan).unwrap()
+        ExecutionGraph::new("localhost:50050", "job", "session", plan, 0).unwrap()
     }
 
     async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
@@ -1438,7 +1458,7 @@ mod test {
 
         let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
 
-        ExecutionGraph::new("localhost:50050", "job", "session", plan).unwrap()
+        ExecutionGraph::new("localhost:50050", "job", "session", plan, 0).unwrap()
     }
 
     async fn test_join_plan(partition: usize) -> ExecutionGraph {
@@ -1480,7 +1500,7 @@ mod test {
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
         let graph =
-            ExecutionGraph::new("localhost:50050", "job", "session", plan).unwrap();
+            ExecutionGraph::new("localhost:50050", "job", "session", plan, 0).unwrap();
 
         println!("{:?}", graph);
 
@@ -1505,7 +1525,7 @@ mod test {
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
         let graph =
-            ExecutionGraph::new("localhost:50050", "job", "session", plan).unwrap();
+            ExecutionGraph::new("localhost:50050", "job", "session", plan, 0).unwrap();
 
         println!("{:?}", graph);
 
@@ -1530,7 +1550,7 @@ mod test {
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
         let graph =
-            ExecutionGraph::new("localhost:50050", "job", "session", plan).unwrap();
+            ExecutionGraph::new("localhost:50050", "job", "session", plan, 0).unwrap();
 
         println!("{:?}", graph);
 

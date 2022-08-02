@@ -31,6 +31,7 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::{error, warn};
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use crate::scheduler_server::metrics::SchedulerMetricsCollector;
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
 use crate::state::backend::StateBackendClient;
 use crate::state::executor_manager::{
@@ -47,6 +48,7 @@ pub mod externalscaler {
 pub mod event;
 mod external_scaler;
 mod grpc;
+pub mod metrics;
 mod query_stage_scheduler;
 
 pub(crate) type SessionBuilder = fn(SessionConfig) -> SessionState;
@@ -65,6 +67,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         scheduler_name: String,
         config: Arc<dyn StateBackendClient>,
         codec: BallistaCodec<T, U>,
+        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     ) -> Self {
         SchedulerServer::new_with_policy(
             scheduler_name,
@@ -72,6 +75,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             TaskSchedulingPolicy::PullStaged,
             codec,
             default_session_builder,
+            metrics_collector,
         )
     }
 
@@ -80,6 +84,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         config: Arc<dyn StateBackendClient>,
         codec: BallistaCodec<T, U>,
         session_builder: SessionBuilder,
+        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     ) -> Self {
         SchedulerServer::new_with_policy(
             scheduler_name,
@@ -87,6 +92,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             TaskSchedulingPolicy::PullStaged,
             codec,
             session_builder,
+            metrics_collector,
         )
     }
 
@@ -96,6 +102,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         policy: TaskSchedulingPolicy,
         codec: BallistaCodec<T, U>,
         session_builder: SessionBuilder,
+        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     ) -> Self {
         let state = Arc::new(SchedulerState::new(
             config,
@@ -104,16 +111,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             scheduler_name.clone(),
         ));
 
-        SchedulerServer::new_with_state(scheduler_name, policy, state)
+        SchedulerServer::new_with_state(scheduler_name, policy, state, metrics_collector)
     }
 
     pub(crate) fn new_with_state(
         scheduler_name: String,
         policy: TaskSchedulingPolicy,
         state: Arc<SchedulerState<T, U>>,
+        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     ) -> Self {
-        let query_stage_scheduler =
-            Arc::new(QueryStageScheduler::new(state.clone(), policy));
+        let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
+            state.clone(),
+            policy,
+            metrics_collector,
+        ));
         let query_stage_event_loop =
             EventLoop::new("query_stage".to_owned(), 10000, query_stage_scheduler);
         Self {
@@ -141,6 +152,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         job_id: &str,
         ctx: Arc<SessionContext>,
         plan: &LogicalPlan,
+        queued_at: u64,
     ) -> Result<()> {
         self.query_stage_event_loop
             .get_sender()?
@@ -148,6 +160,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                 job_id: job_id.to_owned(),
                 session_ctx: ctx,
                 plan: Box::new(plan.clone()),
+                queued_at,
             })
             .await
     }
@@ -170,10 +183,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         }
         self.query_stage_event_loop
             .get_sender()?
-            .post_event(QueryStageSchedulerEvent::TaskUpdating(
-                executor_id.to_owned(),
+            .post_event(QueryStageSchedulerEvent::TaskUpdating {
+                executor_id: executor_id.to_owned(),
                 tasks_status,
-            ))
+            })
             .await
     }
 
@@ -264,10 +277,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             .await?;
 
         event_sender
-            .post_event(QueryStageSchedulerEvent::ExecutorLost(
-                executor_id.to_owned(),
+            .post_event(QueryStageSchedulerEvent::ExecutorLost {
+                executor_id: executor_id.to_owned(),
                 reason,
-            ))
+            })
             .await?;
         Ok(())
     }
@@ -306,6 +319,8 @@ mod test {
     use crate::state::SchedulerState;
     use crate::test_utils::{await_condition, ExplodingTableProvider};
 
+    use super::metrics::NoopMetricsCollector;
+
     #[tokio::test]
     async fn test_pull_scheduling() -> Result<()> {
         let plan = test_plan();
@@ -335,7 +350,7 @@ mod test {
         // Submit job
         scheduler
             .state
-            .submit_job(job_id, ctx, &plan)
+            .submit_job(job_id, ctx, &plan, 0)
             .await
             .expect("submitting plan");
 
@@ -437,7 +452,7 @@ mod test {
 
         let job_id = "job";
 
-        scheduler.state.submit_job(job_id, ctx, &plan).await?;
+        scheduler.state.submit_job(job_id, ctx, &plan, 0).await?;
 
         // Complete tasks that are offered through scheduler events
         loop {
@@ -583,7 +598,7 @@ mod test {
 
         let job_id = "job";
 
-        scheduler.state.submit_job(job_id, ctx, &plan).await?;
+        scheduler.state.submit_job(job_id, ctx, &plan, 0).await?;
 
         let available_tasks = scheduler
             .state
@@ -709,7 +724,7 @@ mod test {
         let job_id = "job";
 
         // This should fail when we try and create the physical plan
-        scheduler.submit_job(job_id, ctx, &plan).await?;
+        scheduler.submit_job(job_id, ctx, &plan, 0).await?;
 
         let scheduler = scheduler.clone();
 
@@ -743,6 +758,7 @@ mod test {
                 policy,
                 BallistaCodec::default(),
                 default_session_builder,
+                Arc::new(NoopMetricsCollector::default()),
             );
         scheduler.init().await?;
 
@@ -762,6 +778,7 @@ mod test {
                 "localhost:50050".to_owned(),
                 TaskSchedulingPolicy::PushStaged,
                 state,
+                Arc::new(NoopMetricsCollector::default()),
             );
         scheduler.init().await?;
 

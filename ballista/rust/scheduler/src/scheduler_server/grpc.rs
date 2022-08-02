@@ -450,7 +450,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 _ => Ok(self.state.task_manager.generate_job_id()),
             }?;
 
-            self.submit_job(&job_id, session_ctx, &plan)
+            let queued_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_secs();
+
+            self.submit_job(&job_id, session_ctx, &plan, queued_at)
                 .await
                 .map_err(|e| {
                     let msg =
@@ -588,6 +593,7 @@ mod test {
     use ballista_core::serde::scheduler::ExecutorSpecification;
     use ballista_core::serde::BallistaCodec;
 
+    use crate::scheduler_server::metrics::NoopMetricsCollector;
     use crate::state::executor_manager::DEFAULT_EXECUTOR_TIMEOUT_SECONDS;
     use crate::state::{backend::standalone::StandaloneClient, SchedulerState};
 
@@ -601,6 +607,7 @@ mod test {
                 "localhost:50050".to_owned(),
                 state_storage.clone(),
                 BallistaCodec::default(),
+                Arc::new(NoopMetricsCollector::default()),
             );
         scheduler.init().await?;
         let exec_meta = ExecutorRegistration {
@@ -686,6 +693,7 @@ mod test {
                 "localhost:50050".to_owned(),
                 state_storage.clone(),
                 BallistaCodec::default(),
+                Arc::new(NoopMetricsCollector::default()),
             );
         scheduler.init().await?;
 
@@ -765,6 +773,7 @@ mod test {
                 "localhost:50050".to_owned(),
                 state_storage.clone(),
                 BallistaCodec::default(),
+                Arc::new(NoopMetricsCollector::default()),
             );
         scheduler.init().await?;
 
