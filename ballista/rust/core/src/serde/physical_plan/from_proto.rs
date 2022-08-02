@@ -69,7 +69,9 @@ pub(crate) fn parse_physical_expr(
             Arc::new(pcol)
         }
         ExprType::Literal(scalar) => {
-            Arc::new(Literal::new(convert_required!(scalar.value)?))
+            Arc::new(Literal::new(
+                convert_required!(scalar.value)?
+            ))
         }
         ExprType::BinaryExpr(binary_expr) => Arc::new(BinaryExpr::new(
             parse_required_physical_box_expr(

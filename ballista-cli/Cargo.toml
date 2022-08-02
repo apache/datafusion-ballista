@@ -31,8 +31,8 @@ readme = "README.md"
 [dependencies]
 ballista = { path = "../ballista/rust/client", features = [], optional = false }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = { git = "https://github.com/spaceandtimelabs/arrow-datafusion.git", rev = "6cca482d55ae150c889598d02ec55be2685dfb3b", features = [], optional = false }
-datafusion-cli = { git = "https://github.com/spaceandtimelabs/arrow-datafusion.git", rev = "6cca482d55ae150c889598d02ec55be2685dfb3b", features = [], optional = false }
+datafusion = { path = "../../arrow-datafusion/datafusion/core", features = [], optional = false }
+datafusion-cli = { path = "../../arrow-datafusion/datafusion-cli", features = [], optional = false }
 dirs = "4.0.0"
 env_logger = "0.9"
 mimalloc = { version = "0.1", default-features = false }

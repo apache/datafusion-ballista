@@ -167,7 +167,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> BallistaCodec<T, 
 macro_rules! convert_required {
     ($PB:expr) => {{
         if let Some(field) = $PB.as_ref() {
-            Ok(field.try_into()?)
+            Ok(field.try_into().map_err(|e| proto_error("Failed to convert!"))?)
         } else {
             Err(proto_error("Missing required field in protobuf"))
         }

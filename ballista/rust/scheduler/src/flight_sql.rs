@@ -26,14 +26,13 @@ use arrow_flight::sql::{
     CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementQuery,
     CommandStatementUpdate, SqlInfo, TicketStatementQuery,
 };
-use arrow_flight::{
-    FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, Location, Ticket,
-};
+use arrow_flight::{FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse, Location, Ticket};
 use log::{debug, error, warn};
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tonic::{Response, Status, Streaming};
+use tonic::{Request, Response, Status, Streaming};
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::SchedulerServer;
@@ -53,6 +52,7 @@ use datafusion::prelude::SessionContext;
 use datafusion_proto::protobuf::LogicalPlanNode;
 use prost::Message;
 use tokio::time::sleep;
+use tonic::codegen::futures_core::Stream;
 use uuid::Uuid;
 
 pub struct FlightSqlServiceImpl {
@@ -335,6 +335,18 @@ impl FlightSqlServiceImpl {
 #[tonic::async_trait]
 impl FlightSqlService for FlightSqlServiceImpl {
     type FlightService = FlightSqlServiceImpl;
+
+    async fn do_handshake(
+        &self,
+        _request: Request<Streaming<HandshakeRequest>>,
+    ) -> Result<
+        Response<Pin<Box<dyn Stream<Item = Result<HandshakeResponse, Status>> + Send>>>,
+        Status,
+    > {
+        Err(Status::unimplemented(
+            "Handshake has no default implementation",
+        ))
+    }
 
     async fn get_flight_info_statement(
         &self,
