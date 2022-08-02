@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use chrono::{TimeZone, Utc};
 use datafusion::arrow::datatypes::Schema;
+use datafusion::common::ScalarValue;
 use datafusion::datasource::listing::{FileRange, PartitionedFile};
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::execution::context::ExecutionProps;
@@ -68,10 +69,9 @@ pub(crate) fn parse_physical_expr(
             let pcol: Column = c.into();
             Arc::new(pcol)
         }
-        ExprType::Literal(scalar) => {
-            Arc::new(Literal::new(
-                convert_required!(scalar.value)?
-            ))
+        ExprType::Literal(literal) => {
+            let scalar_value: ScalarValue = literal.try_into()?;
+            Arc::new(Literal::new(scalar_value))
         }
         ExprType::BinaryExpr(binary_expr) => Arc::new(BinaryExpr::new(
             parse_required_physical_box_expr(
