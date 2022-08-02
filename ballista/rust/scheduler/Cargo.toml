@@ -36,14 +36,14 @@ sled = ["sled_package", "tokio-stream"]
 
 [dependencies]
 anyhow = "1"
-arrow-flight = { path = "../../../../arrow-rs/arrow-flight", features = ["flight-sql-experimental"], optional = false }
+arrow-flight = { git = "https://github.com/apache/arrow-rs.git", rev = "6bb4b5ee16488c2a6427a5897bb6fbe334cc280e", features = ["flight-sql-experimental"], optional = false }
 async-recursion = "1.0.0"
 async-trait = "0.1.41"
 ballista-core = { path = "../core", features = [], optional = false }
 clap = { version = "3", features = ["derive", "cargo"] }
 configure_me = "0.4.0"
-datafusion = { path = "../../../../arrow-datafusion/datafusion/core", features = [], optional = false }
-datafusion-proto = { path = "../../../../arrow-datafusion/datafusion/proto", features = [], optional = false }
+datafusion = { git = "https://github.com/spaceandtimelabs/arrow-datafusion.git", rev = "2de9977df7425c234882a604c946fa367659ee2d", features = [], optional = false }
+datafusion-proto = { git = "https://github.com/spaceandtimelabs/arrow-datafusion.git", rev = "2de9977df7425c234882a604c946fa367659ee2d", features = [], optional = false }
 env_logger = "0.9"
 etcd-client = { version = "0.9", optional = true }
 flatbuffers = { version = "2.1.2" }
@@ -52,7 +52,7 @@ http = "0.2"
 http-body = "0.4"
 hyper = "0.14.4"
 log = "0.4"
-object_store = { path = "../../../../arrow-rs/object_store", features = [], optional = false }
+object_store = { git = "https://github.com/apache/arrow-rs.git", rev = "6bb4b5ee16488c2a6427a5897bb6fbe334cc280e", features = [], optional = false }
 parking_lot = "0.12"
 parse_arg = "0.1.3"
 prost = "0.11.0"
