@@ -458,12 +458,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     ))
                 })?;
 
+            let queued_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_secs();
+
             query_stage_event_sender
                 .post_event(QueryStageSchedulerEvent::JobQueued {
                     job_id: job_id.clone(),
                     session_id: session_id.clone(),
                     session_ctx,
                     plan: Box::new(plan),
+                    queued_at,
                 })
                 .await
                 .map_err(|e| {
@@ -570,6 +576,7 @@ mod test {
     use ballista_core::serde::scheduler::ExecutorSpecification;
     use ballista_core::serde::BallistaCodec;
 
+    use crate::scheduler_server::metrics::NoopMetricsCollector;
     use crate::state::{backend::standalone::StandaloneClient, SchedulerState};
 
     use super::{SchedulerGrpc, SchedulerServer};
@@ -583,6 +590,7 @@ mod test {
                 state_storage.clone(),
                 namespace.to_owned(),
                 BallistaCodec::default(),
+                Arc::new(NoopMetricsCollector::default()),
             );
         let exec_meta = ExecutorRegistration {
             id: "abc".to_owned(),

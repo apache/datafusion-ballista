@@ -27,6 +27,7 @@ use std::{net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
 use tonic::transport::Server;
 
+use crate::scheduler_server::metrics::NoopMetricsCollector;
 use crate::{
     scheduler_server::SchedulerServer, state::backend::standalone::StandaloneClient,
 };
@@ -39,6 +40,7 @@ pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
             Arc::new(client),
             "ballista".to_string(),
             BallistaCodec::default(),
+            Arc::new(NoopMetricsCollector::default()),
         );
     scheduler_server.init().await?;
     let server = SchedulerGrpcServer::new(scheduler_server.clone());

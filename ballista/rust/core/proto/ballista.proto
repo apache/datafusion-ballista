@@ -439,6 +439,7 @@ message ExecutionGraph {
   repeated ExecutionGraphStage stages = 4;
   uint64 output_partitions = 5;
   repeated PartitionLocation output_locations = 6;
+  uint64 queued_at = 7;
 }
 
 message KeyValuePair {

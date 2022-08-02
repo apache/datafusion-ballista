@@ -452,6 +452,7 @@ pub struct ExecutionGraph {
     pub(crate) output_partitions: usize,
     /// Locations of this `ExecutionGraph` final output locations
     pub(crate) output_locations: Vec<PartitionLocation>,
+    pub(crate) queued_at: u64,
 }
 
 impl ExecutionGraph {
@@ -459,6 +460,7 @@ impl ExecutionGraph {
         job_id: &str,
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
+        queued_at: u64,
     ) -> Result<Self> {
         let mut planner = DistributedPlanner::new();
 
@@ -478,6 +480,7 @@ impl ExecutionGraph {
             stages,
             output_partitions,
             output_locations: vec![],
+            queued_at,
         })
     }
 
@@ -928,7 +931,7 @@ mod test {
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
-        ExecutionGraph::new("job", "session", plan).unwrap()
+        ExecutionGraph::new("job", "session", plan, 0).unwrap()
     }
 
     async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
@@ -951,7 +954,7 @@ mod test {
 
         let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
 
-        ExecutionGraph::new("job", "session", plan).unwrap()
+        ExecutionGraph::new("job", "session", plan, 0).unwrap()
     }
 
     async fn test_join_plan(partition: usize) -> ExecutionGraph {
@@ -992,7 +995,7 @@ mod test {
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
-        let graph = ExecutionGraph::new("job", "session", plan).unwrap();
+        let graph = ExecutionGraph::new("job", "session", plan, 0).unwrap();
 
         println!("{:?}", graph);
 
@@ -1016,7 +1019,7 @@ mod test {
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
-        let graph = ExecutionGraph::new("job", "session", plan).unwrap();
+        let graph = ExecutionGraph::new("job", "session", plan, 0).unwrap();
 
         println!("{:?}", graph);
 
@@ -1040,7 +1043,7 @@ mod test {
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
-        let graph = ExecutionGraph::new("job", "session", plan).unwrap();
+        let graph = ExecutionGraph::new("job", "session", plan, 0).unwrap();
 
         println!("{:?}", graph);
 

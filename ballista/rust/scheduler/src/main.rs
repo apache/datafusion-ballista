@@ -19,6 +19,7 @@
 
 use anyhow::{Context, Result};
 use ballista_scheduler::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
+use ballista_scheduler::scheduler_server::metrics::NoopMetricsCollector;
 use futures::future::{self, Either, TryFutureExt};
 use hyper::{server::conn::AddrStream, service::make_service_fn, Server};
 use std::convert::Infallible;
@@ -77,6 +78,7 @@ async fn start_server(
         "Starting Scheduler grpc server with task scheduling policy of {:?}",
         policy
     );
+    let metrics_collector = Arc::new(NoopMetricsCollector::default());
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
         match policy {
             TaskSchedulingPolicy::PushStaged => SchedulerServer::new_with_policy(
@@ -85,11 +87,13 @@ async fn start_server(
                 policy,
                 BallistaCodec::default(),
                 default_session_builder,
+                metrics_collector,
             ),
             _ => SchedulerServer::new(
                 config_backend.clone(),
                 namespace.clone(),
                 BallistaCodec::default(),
+                metrics_collector,
             ),
         };
 

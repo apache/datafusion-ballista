@@ -237,19 +237,19 @@ mod test {
         // Create 4 jobs so we have four pending tasks
         state
             .task_manager
-            .submit_job("job-1", session_ctx.session_id().as_str(), plan.clone())
+            .submit_job("job-1", session_ctx.session_id().as_str(), plan.clone(), 0)
             .await?;
         state
             .task_manager
-            .submit_job("job-2", session_ctx.session_id().as_str(), plan.clone())
+            .submit_job("job-2", session_ctx.session_id().as_str(), plan.clone(), 0)
             .await?;
         state
             .task_manager
-            .submit_job("job-3", session_ctx.session_id().as_str(), plan.clone())
+            .submit_job("job-3", session_ctx.session_id().as_str(), plan.clone(), 0)
             .await?;
         state
             .task_manager
-            .submit_job("job-4", session_ctx.session_id().as_str(), plan.clone())
+            .submit_job("job-4", session_ctx.session_id().as_str(), plan.clone(), 0)
             .await?;
 
         let executors = test_executors(1, 4);
@@ -297,7 +297,7 @@ mod test {
         // Create a job
         state
             .task_manager
-            .submit_job("job-1", session_ctx.session_id().as_str(), plan.clone())
+            .submit_job("job-1", session_ctx.session_id().as_str(), plan.clone(), 0)
             .await?;
 
         let executors = test_executors(1, 4);

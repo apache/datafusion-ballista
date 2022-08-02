@@ -44,6 +44,7 @@ use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::default::Default;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone)]
 pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
@@ -71,8 +72,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         job_id: &str,
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
+        queued_at: u64,
     ) -> Result<()> {
-        let graph = ExecutionGraph::new(job_id, session_id, plan)?;
+        let graph = ExecutionGraph::new(job_id, session_id, plan, queued_at)?;
         info!("Submitting execution graph: {}", graph);
         self.state
             .put(
@@ -181,7 +183,17 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                         graph.job_id()
                     );
                     graph.finalize()?;
-                    events.push(QueryStageSchedulerEvent::JobFinished(job_id.clone()));
+
+                    let completed_at = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("Time went backwards")
+                        .as_secs();
+
+                    events.push(QueryStageSchedulerEvent::JobFinished {
+                        job_id: job_id.clone(),
+                        queued_at: graph.queued_at,
+                        completed_at,
+                    });
 
                     for _ in 0..num_tasks {
                         reservation
@@ -190,10 +202,17 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 } else if let Some(job_status::Status::Failed(failure)) =
                     graph.status().status
                 {
-                    events.push(QueryStageSchedulerEvent::JobFailed(
-                        job_id.clone(),
-                        failure.error,
-                    ));
+                    let failed_at = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("Time went backwards")
+                        .as_secs();
+
+                    events.push(QueryStageSchedulerEvent::JobFailed {
+                        job_id: job_id.clone(),
+                        fail_message: failure.error,
+                        queued_at: graph.queued_at,
+                        failed_at,
+                    });
 
                     for _ in 0..num_tasks {
                         reservation
@@ -684,6 +703,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             stages,
             output_partitions: proto.output_partitions as usize,
             output_locations,
+            queued_at: proto.queued_at,
         })
     }
 
@@ -778,6 +798,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             stages,
             output_partitions: graph.output_partitions as u64,
             output_locations,
+            queued_at: graph.queued_at,
         })
     }
 }

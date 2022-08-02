@@ -16,7 +16,7 @@
 // under the License.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use datafusion::logical_plan::LogicalPlan;
@@ -30,6 +30,7 @@ use ballista_core::serde::AsExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SchedulerServerEvent};
+use crate::scheduler_server::metrics::SchedulerMetricsCollector;
 
 use crate::state::executor_manager::ExecutorReservation;
 use crate::state::SchedulerState;
@@ -40,16 +41,19 @@ pub(crate) struct QueryStageScheduler<
 > {
     state: Arc<SchedulerState<T, U>>,
     event_sender: Option<EventSender<SchedulerServerEvent>>,
+    metrics_collector: Arc<dyn SchedulerMetricsCollector>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageScheduler<T, U> {
     pub(crate) fn new(
         state: Arc<SchedulerState<T, U>>,
         event_sender: Option<EventSender<SchedulerServerEvent>>,
+        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     ) -> Self {
         Self {
             state,
             event_sender,
+            metrics_collector,
         }
     }
 
@@ -59,6 +63,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
         session_id: String,
         session_ctx: Arc<SessionContext>,
         plan: &LogicalPlan,
+        queued_at: u64,
     ) -> Result<()> {
         let start = Instant::now();
         let optimized_plan = session_ctx.optimize(plan)?;
@@ -69,7 +74,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
 
         self.state
             .task_manager
-            .submit_job(&job_id, &session_id, plan.clone())
+            .submit_job(&job_id, &session_id, plan.clone(), queued_at)
             .await?;
 
         let elapsed = start.elapsed();
@@ -102,21 +107,43 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 session_id,
                 session_ctx,
                 plan,
+                queued_at,
             } => {
                 info!("Job {} queued", job_id);
                 return if let Err(e) = self
-                    .submit_job(job_id.clone(), session_id, session_ctx, &plan)
+                    .submit_job(job_id.clone(), session_id, session_ctx, &plan, queued_at)
                     .await
                 {
                     let msg = format!("Error planning job {}: {:?}", job_id, e);
                     error!("{}", msg);
-                    Ok(Some(QueryStageSchedulerEvent::JobFailed(job_id, msg)))
+                    Ok(Some(QueryStageSchedulerEvent::JobFailed {
+                        job_id,
+                        fail_message: msg,
+                        queued_at,
+                        failed_at: SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .expect("Time went backwards")
+                            .as_secs(),
+                    }))
                 } else {
-                    Ok(Some(QueryStageSchedulerEvent::JobSubmitted(job_id)))
+                    Ok(Some(QueryStageSchedulerEvent::JobSubmitted {
+                        job_id,
+                        queued_at,
+                        submitted_at: SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .expect("Time went backwards")
+                            .as_secs(),
+                    }))
                 };
             }
-            QueryStageSchedulerEvent::JobSubmitted(job_id) => {
+            QueryStageSchedulerEvent::JobSubmitted {
+                job_id,
+                queued_at,
+                submitted_at,
+            } => {
                 info!("Job {} submitted", job_id);
+                self.metrics_collector
+                    .record_submitted(&job_id, queued_at, submitted_at);
                 if let Some(sender) = &self.event_sender {
                     let available_tasks = self
                         .state
@@ -151,12 +178,25 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     }
                 }
             }
-            QueryStageSchedulerEvent::JobFinished(job_id) => {
+            QueryStageSchedulerEvent::JobFinished {
+                job_id,
+                queued_at,
+                completed_at,
+            } => {
                 info!("Job {} complete", job_id);
+                self.metrics_collector
+                    .record_completed(&job_id, queued_at, completed_at);
                 self.state.task_manager.complete_job(&job_id).await?;
             }
-            QueryStageSchedulerEvent::JobFailed(job_id, fail_message) => {
+            QueryStageSchedulerEvent::JobFailed {
+                job_id,
+                fail_message,
+                queued_at,
+                failed_at,
+            } => {
                 error!("Job {} failed: {}", job_id, fail_message);
+                self.metrics_collector
+                    .record_failed(&job_id, queued_at, failed_at);
                 self.state
                     .task_manager
                     .fail_job(&job_id, fail_message)
