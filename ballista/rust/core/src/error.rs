@@ -25,7 +25,7 @@ use std::{
 
 use datafusion::arrow::error::ArrowError;
 use datafusion::error::DataFusionError;
-use sqlparser::parser;
+use datafusion::sql::sqlparser::parser;
 
 pub type Result<T> = result::Result<T, BallistaError>;
 

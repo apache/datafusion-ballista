@@ -19,7 +19,6 @@
 
 use log::info;
 use parking_lot::Mutex;
-use sqlparser::ast::Statement;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -41,7 +40,10 @@ use datafusion::logical_plan::{
 use datafusion::prelude::{
     AvroReadOptions, CsvReadOptions, ParquetReadOptions, SessionConfig, SessionContext,
 };
-use datafusion::sql::parser::{DFParser, Statement as DFStatement};
+use datafusion::sql::{
+    parser::{DFParser, Statement as DFStatement},
+    sqlparser::ast::Statement,
+};
 
 struct BallistaContextState {
     /// Ballista configuration
