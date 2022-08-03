@@ -46,6 +46,9 @@ use ballista_scheduler::state::backend::{StateBackend, StateBackendClient};
 use ballista_core::config::TaskSchedulingPolicy;
 use ballista_core::serde::BallistaCodec;
 use log::info;
+use tonic::{Request, Status};
+use tonic::metadata::MetadataValue;
+use tonic::service::interceptor;
 
 #[macro_use]
 extern crate configure_me;
@@ -109,6 +112,7 @@ async fn start_server(
             let keda_scaler = ExternalScalerServer::new(scheduler_server.clone());
 
             let mut tonic = TonicServer::builder()
+                // .layer(interceptor(check_auth))
                 .add_service(scheduler_grpc_server)
                 .add_service(flight_sql_server)
                 .add_service(keda_scaler)
@@ -131,6 +135,9 @@ async fn start_server(
                                 .map_err(Error::from),
                         );
                     }
+                    if !req.headers().contains_key("auth-token-bin") {
+
+                    }
                     Either::Right(
                         tonic
                             .call(req)
@@ -142,6 +149,28 @@ async fn start_server(
         }))
         .await
         .context("Could not start grpc server")
+}
+
+fn check_auth(req: Request<()>) -> Result<Request<()>, Status> {
+    println!("--- check_auth ---");
+    for md in req.metadata().iter() {
+        println!("{:?}", md);
+    }
+
+    // trying to authenticate
+    let user = req.metadata().get("user");
+    let password = req.metadata().get("password");
+    if user.is_some() && password.is_some() {
+        return Ok(req);
+    }
+
+    match req.metadata().get("authorization") {
+        Some(t) => {
+            println!("Token: {:?}", t);
+            Ok(req)
+        },
+        _ => Err(Status::unauthenticated("No valid auth token")),
+    }
 }
 
 #[tokio::main]

@@ -30,8 +30,10 @@ use arrow_flight::{FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, Han
 use log::{debug, error, warn};
 use std::collections::HashMap;
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use http::{HeaderMap, HeaderValue};
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
@@ -53,11 +55,14 @@ use datafusion_proto::protobuf::LogicalPlanNode;
 use prost::Message;
 use tokio::time::sleep;
 use tonic::codegen::futures_core::Stream;
+use tonic::metadata::MetadataValue;
 use uuid::Uuid;
+use datafusion::physical_plan::DisplayFormatType::Default;
 
 pub struct FlightSqlServiceImpl {
     server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
     statements: Arc<Mutex<HashMap<Uuid, LogicalPlan>>>,
+    contexts: Arc<Mutex<HashMap<Uuid, Arc<SessionContext>>>>,
 }
 
 impl FlightSqlServiceImpl {
@@ -65,10 +70,11 @@ impl FlightSqlServiceImpl {
         Self {
             server,
             statements: Arc::new(Mutex::new(HashMap::new())),
+            contexts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    async fn create_ctx(&self) -> Result<Arc<SessionContext>, Status> {
+    async fn create_ctx(&self) -> Result<Uuid, Status> {
         let config_builder = BallistaConfig::builder();
         let config = config_builder
             .build()
@@ -82,7 +88,32 @@ impl FlightSqlServiceImpl {
             .map_err(|e| {
                 Status::internal(format!("Failed to create SessionContext: {:?}", e))
             })?;
-        Ok(ctx)
+        let handle = Uuid::new_v4();
+        let mut contexts = self
+            .contexts
+            .try_lock()
+            .map_err(|e| Status::internal(format!("Error locking contexts: {}", e)))?;
+        contexts.insert(handle.clone(), ctx);
+        Ok(handle)
+    }
+
+    fn get_ctx(&self, auth: &Option<String>) -> Result<Arc<SessionContext>, Status> {
+        let auth = auth.clone().ok_or(Status::internal("No authorization header!"))?;
+        let handle = Uuid::from_str(auth.as_str())
+            .map_err(|e| Status::internal(format!("Error locking contexts: {}", e)))?;
+        let contexts = self
+            .contexts
+            .try_lock()
+            .map_err(|e| Status::internal(format!("Error locking contexts: {}", e)))?;
+        let context = if let Some(context) = contexts.get(&handle) {
+            context
+        } else {
+            Err(Status::internal(format!(
+                "Context handle not found: {}",
+                handle
+            )))?
+        };
+        Ok(context.clone())
     }
 
     async fn prepare_statement(
@@ -343,6 +374,11 @@ impl FlightSqlService for FlightSqlServiceImpl {
         Response<Pin<Box<dyn Stream<Item = Result<HandshakeResponse, Status>> + Send>>>,
         Status,
     > {
+        println!("--- do_handshake ---");
+        for md in request.metadata().iter() {
+            println!("{:?}", md);
+        }
+
         let basic = "Basic ";
         let authorization = request
             .metadata()
@@ -372,27 +408,36 @@ impl FlightSqlService for FlightSqlServiceImpl {
         if user != "admin" || pass != "password" {
             Err(Status::unauthenticated("Invalid credentials!"))?
         }
+        
+        let token = self.create_ctx().await?;
+
         let result = HandshakeResponse {
             protocol_version: 0,
-            payload: Uuid::new_v4().as_bytes().to_vec(),
+            payload: token.as_bytes().to_vec(),
         };
         let result = Ok(result);
         let output = futures::stream::iter(vec![result]);
-        return Ok(Response::new(Box::pin(output)));
+        let str = format!("Bearer {}", token.to_string());
+        let mut resp: Response<Pin<Box<dyn Stream<Item = Result<_, _>> + Send>>> = Response::new(Box::pin(output));
+        let md = MetadataValue::from_str(str.as_str())
+            .map_err(|_| Status::invalid_argument("authorization not parsable"))?;
+        resp.metadata_mut().insert("authorization", md);
+        Ok(resp)
     }
 
     async fn get_flight_info_statement(
         &self,
         query: CommandStatementQuery,
         _request: FlightDescriptor,
+        auth: &Option<String>,
     ) -> Result<Response<FlightInfo>, Status> {
-        debug!("Got query:\n{}", query.query);
+        println!("Got query:\n{}", query.query);
 
-        let ctx = self.create_ctx().await?;
+        let ctx = self.get_ctx(auth)?;
         let plan = Self::prepare_statement(&query.query, &ctx).await?;
         let resp = self.execute_plan(ctx, &plan).await?;
 
-        debug!("Responding to query...");
+        println!("Returning flight info...");
         Ok(resp)
     }
 
@@ -400,14 +445,15 @@ impl FlightSqlService for FlightSqlServiceImpl {
         &self,
         handle: CommandPreparedStatementQuery,
         _request: FlightDescriptor,
+        auth: &Option<String>,
     ) -> Result<Response<FlightInfo>, Status> {
-        let ctx = self.create_ctx().await?;
+        let ctx = self.get_ctx(auth)?;
         let handle = Uuid::from_slice(handle.prepared_statement_handle.as_slice())
             .map_err(|e| Status::internal(format!("Error decoding handle: {}", e)))?;
         let plan = self.get_plan(&handle)?;
         let resp = self.execute_plan(ctx, &plan).await?;
 
-        debug!("Responding to query...");
+        println!("Responding to query {}...", handle);
         Ok(resp)
     }
 
@@ -576,22 +622,30 @@ impl FlightSqlService for FlightSqlServiceImpl {
     }
     async fn do_put_prepared_statement_update(
         &self,
-        _query: CommandPreparedStatementUpdate,
+        handle: CommandPreparedStatementUpdate,
         _request: Streaming<FlightData>,
+        auth: &Option<String>,
     ) -> Result<i64, Status> {
-        Err(Status::unimplemented(
-            "Implement do_put_prepared_statement_update",
-        ))
+        println!("do_put_prepared_statement_update");
+        let ctx = self.get_ctx(auth)?;
+        let handle = Uuid::from_slice(handle.prepared_statement_handle.as_slice())
+            .map_err(|e| Status::internal(format!("Error decoding handle: {}", e)))?;
+        let plan = self.get_plan(&handle)?;
+        let _ = self.execute_plan(ctx, &plan).await?;
+        println!("Sending 0 rows affected");
+        Ok(0)
     }
 
     async fn do_action_create_prepared_statement(
         &self,
         query: ActionCreatePreparedStatementRequest,
+        auth: &Option<String>,
     ) -> Result<ActionCreatePreparedStatementResult, Status> {
-        let ctx = self.create_ctx().await?;
+        let ctx = self.get_ctx(auth)?;
         let plan = Self::prepare_statement(&query.query, &ctx).await?;
         let schema_bytes = self.df_schema_to_arrow(plan.schema())?;
         let handle = self.cache_plan(plan)?;
+        println!("Prepared statement {}:\n{}", handle, query.query);
         let res = ActionCreatePreparedStatementResult {
             prepared_statement_handle: handle.as_bytes().to_vec(),
             dataset_schema: schema_bytes,
@@ -606,6 +660,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     ) {
         let handle = Uuid::from_slice(handle.prepared_statement_handle.as_slice());
         let handle = if let Ok(handle) = handle {
+            println!("Closing {}", handle);
             handle
         } else {
             return;
