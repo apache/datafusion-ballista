@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::{
+    scheduler_server::SchedulerServer, state::backend::standalone::StandaloneClient,
+};
 use ballista_core::serde::protobuf::PhysicalPlanNode;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::create_grpc_server;
@@ -26,9 +29,6 @@ use datafusion_proto::protobuf::LogicalPlanNode;
 use log::info;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
-use crate::{
-    scheduler_server::SchedulerServer, state::backend::standalone::StandaloneClient,
-};
 
 pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
     let client = StandaloneClient::try_new_temporary()?;
