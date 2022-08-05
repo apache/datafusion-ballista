@@ -23,6 +23,7 @@ use ballista_core::{
 };
 use datafusion_proto::protobuf::LogicalPlanNode;
 use log::info;
+use std::time::Duration;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
 use tonic::transport::Server;
@@ -50,9 +51,15 @@ pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
         BALLISTA_VERSION, addr
     );
     tokio::spawn(
-        Server::builder().add_service(server).serve_with_incoming(
-            tokio_stream::wrappers::TcpListenerStream::new(listener),
-        ),
+        Server::builder()
+            .timeout(Duration::from_secs(20))
+            .tcp_keepalive(Option::Some(Duration::from_secs(3600)))
+            .http2_keepalive_interval(Option::Some(Duration::from_secs(300)))
+            .http2_keepalive_timeout(Option::Some(Duration::from_secs(20)))
+            .add_service(server)
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
+                listener,
+            )),
     );
 
     Ok(addr)

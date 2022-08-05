@@ -84,7 +84,13 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
         info!("Setup executor grpc service for {:?}", addr);
 
         let server = ExecutorGrpcServer::new(executor_server.clone());
-        let grpc_server_future = Server::builder().add_service(server).serve(addr);
+        let grpc_server_future = Server::builder()
+            .timeout(Duration::from_secs(20))
+            .tcp_keepalive(Option::Some(Duration::from_secs(3600)))
+            .http2_keepalive_interval(Option::Some(Duration::from_secs(300)))
+            .http2_keepalive_timeout(Option::Some(Duration::from_secs(20)))
+            .add_service(server)
+            .serve(addr);
         tokio::spawn(async move { grpc_server_future.await });
     }
 

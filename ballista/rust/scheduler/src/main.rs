@@ -23,6 +23,7 @@ use ballista_scheduler::scheduler_server::externalscaler::external_scaler_server
 use futures::future::{self, Either, TryFutureExt};
 use hyper::{server::conn::AddrStream, service::make_service_fn, Server};
 use std::convert::Infallible;
+use std::time::Duration;
 use std::{net::SocketAddr, sync::Arc};
 use tonic::transport::server::Connected;
 use tonic::transport::Server as TonicServer;
@@ -109,6 +110,10 @@ async fn start_server(
             let keda_scaler = ExternalScalerServer::new(scheduler_server.clone());
 
             let mut tonic = TonicServer::builder()
+                .timeout(Duration::from_secs(20))
+                .tcp_keepalive(Option::Some(Duration::from_secs(3600)))
+                .http2_keepalive_interval(Option::Some(Duration::from_secs(300)))
+                .http2_keepalive_timeout(Option::Some(Duration::from_secs(20)))
                 .add_service(scheduler_grpc_server)
                 .add_service(flight_sql_server)
                 .add_service(keda_scaler)
