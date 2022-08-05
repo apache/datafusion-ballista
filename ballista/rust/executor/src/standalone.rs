@@ -20,6 +20,7 @@ use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightSe
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::serde::scheduler::ExecutorSpecification;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::utils::create_grpc_server;
 use ballista_core::{
     error::Result,
     serde::protobuf::executor_registration::OptionalHost,
@@ -30,10 +31,9 @@ use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::info;
 use std::sync::Arc;
-use std::time::Duration;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
-use tonic::transport::{Channel, Server};
+use tonic::transport::Channel;
 use uuid::Uuid;
 
 pub async fn new_standalone_executor<
@@ -85,11 +85,7 @@ pub async fn new_standalone_executor<
     let service = BallistaFlightService::new(executor.clone());
     let server = FlightServiceServer::new(service);
     tokio::spawn(
-        Server::builder()
-            .timeout(Duration::from_secs(20))
-            .tcp_keepalive(Option::Some(Duration::from_secs(3600)))
-            .http2_keepalive_interval(Option::Some(Duration::from_secs(300)))
-            .http2_keepalive_timeout(Option::Some(Duration::from_secs(20)))
+        create_grpc_server()
             .add_service(server)
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
                 listener,

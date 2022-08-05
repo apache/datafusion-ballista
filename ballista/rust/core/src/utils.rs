@@ -52,7 +52,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{fs::File, pin::Pin};
 use tonic::codegen::StdError;
-use tonic::transport::{Channel, Error};
+use tonic::transport::{Channel, Error, Server};
 
 /// Stream data to disk in Arrow IPC format
 
@@ -329,4 +329,12 @@ where
         .keep_alive_timeout(Duration::from_secs(20))
         .keep_alive_while_idle(true);
     endpoint.connect().await
+}
+
+pub fn create_grpc_server() -> Server {
+    Server::builder()
+        .timeout(Duration::from_secs(20))
+        .tcp_keepalive(Option::Some(Duration::from_secs(3600)))
+        .http2_keepalive_interval(Option::Some(Duration::from_secs(300)))
+        .http2_keepalive_timeout(Option::Some(Duration::from_secs(20)))
 }

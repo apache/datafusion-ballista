@@ -17,17 +17,15 @@
 
 use ballista_core::serde::protobuf::PhysicalPlanNode;
 use ballista_core::serde::BallistaCodec;
+use ballista_core::utils::create_grpc_server;
 use ballista_core::{
     error::Result, serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer,
     BALLISTA_VERSION,
 };
 use datafusion_proto::protobuf::LogicalPlanNode;
 use log::info;
-use std::time::Duration;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
-use tonic::transport::Server;
-
 use crate::{
     scheduler_server::SchedulerServer, state::backend::standalone::StandaloneClient,
 };
@@ -51,11 +49,7 @@ pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
         BALLISTA_VERSION, addr
     );
     tokio::spawn(
-        Server::builder()
-            .timeout(Duration::from_secs(20))
-            .tcp_keepalive(Option::Some(Duration::from_secs(3600)))
-            .http2_keepalive_interval(Option::Some(Duration::from_secs(300)))
-            .http2_keepalive_timeout(Option::Some(Duration::from_secs(20)))
+        create_grpc_server()
             .add_service(server)
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
                 listener,

@@ -28,7 +28,6 @@ use log::{error, info};
 use tempfile::TempDir;
 use tokio::fs::ReadDir;
 use tokio::{fs, time};
-use tonic::transport::Server;
 use uuid::Uuid;
 
 use ballista_core::config::TaskSchedulingPolicy;
@@ -39,7 +38,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::ExecutorSpecification;
 use ballista_core::serde::BallistaCodec;
-use ballista_core::utils::create_grpc_client_connection;
+use ballista_core::utils::{create_grpc_client_connection, create_grpc_server};
 use ballista_core::{print_version, BALLISTA_VERSION};
 use ballista_executor::executor::Executor;
 use ballista_executor::flight_service::BallistaFlightService;
@@ -187,15 +186,8 @@ async fn main() -> Result<()> {
             "Ballista v{} Rust Executor listening on {:?}",
             BALLISTA_VERSION, addr
         );
-        let server_future = tokio::spawn(
-            Server::builder()
-                .timeout(Core_Duration::from_secs(20))
-                .tcp_keepalive(Option::Some(Core_Duration::from_secs(3600)))
-                .http2_keepalive_interval(Option::Some(Core_Duration::from_secs(300)))
-                .http2_keepalive_timeout(Option::Some(Core_Duration::from_secs(20)))
-                .add_service(server)
-                .serve(addr),
-        );
+        let server_future =
+            tokio::spawn(create_grpc_server().add_service(server).serve(addr));
         server_future
             .await
             .context("Tokio error")?
