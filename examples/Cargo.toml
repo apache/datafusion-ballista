@@ -35,7 +35,7 @@ required-features = ["ballista/standalone"]
 
 [dependencies]
 ballista = { path = "../ballista/rust/client", features = [], optional = false }
-datafusion = { path = "../../arrow-datafusion/datafusion/core", features = [], optional = false }
+datafusion = { git = "https://github.com/spaceandtimelabs/arrow-datafusion.git", rev = "1dd59c136bcaf8d5a82631a58af42da9d979ba92", features = [], optional = false }
 futures = "0.3"
 num_cpus = "1.13.0"
 prost = "0.11.0"
