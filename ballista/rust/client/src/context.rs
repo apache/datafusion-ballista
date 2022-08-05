@@ -28,7 +28,9 @@ use std::sync::Arc;
 use ballista_core::config::BallistaConfig;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_core::serde::protobuf::{ExecuteQueryParams, KeyValuePair};
-use ballista_core::utils::create_df_ctx_with_ballista_query_planner;
+use ballista_core::utils::{
+    create_df_ctx_with_ballista_query_planner, create_grpc_client_connection,
+};
 use datafusion_proto::protobuf::LogicalPlanNode;
 
 use datafusion::catalog::TableReference;
@@ -93,9 +95,10 @@ impl BallistaContext {
             "Connecting to Ballista scheduler at {}",
             scheduler_url.clone()
         );
-        let mut scheduler = SchedulerGrpcClient::connect(scheduler_url.clone())
+        let connection = create_grpc_client_connection(scheduler_url.clone())
             .await
             .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+        let mut scheduler = SchedulerGrpcClient::new(connection);
 
         let remote_session_id = scheduler
             .execute_query(ExecuteQueryParams {

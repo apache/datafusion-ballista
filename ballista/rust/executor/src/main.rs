@@ -39,6 +39,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::ExecutorSpecification;
 use ballista_core::serde::BallistaCodec;
+use ballista_core::utils::create_grpc_client_connection;
 use ballista_core::{print_version, BALLISTA_VERSION};
 use ballista_executor::executor::Executor;
 use ballista_executor::flight_service::BallistaFlightService;
@@ -134,9 +135,11 @@ async fn main() -> Result<()> {
         opt.concurrent_tasks,
     ));
 
-    let scheduler = SchedulerGrpcClient::connect(scheduler_url)
+    let connection = create_grpc_client_connection(scheduler_url)
         .await
         .context("Could not connect to scheduler")?;
+
+    let scheduler = SchedulerGrpcClient::new(connection);
 
     let default_codec: BallistaCodec<LogicalPlanNode, PhysicalPlanNode> =
         BallistaCodec::default();

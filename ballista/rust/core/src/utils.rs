@@ -49,7 +49,10 @@ use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use std::{fs::File, pin::Pin};
+use tonic::codegen::StdError;
+use tonic::transport::{Channel, Error};
 
 /// Stream data to disk in Arrow IPC format
 
@@ -309,4 +312,21 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
             ))),
         }
     }
+}
+
+pub async fn create_grpc_client_connection<D>(
+    dst: D,
+) -> std::result::Result<Channel, Error>
+where
+    D: std::convert::TryInto<tonic::transport::Endpoint>,
+    D::Error: Into<StdError>,
+{
+    let endpoint = tonic::transport::Endpoint::new(dst)?
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(20))
+        .tcp_keepalive(Option::Some(Duration::from_secs(3600)))
+        .http2_keep_alive_interval(Duration::from_secs(300))
+        .keep_alive_timeout(Duration::from_secs(20))
+        .keep_alive_while_idle(true);
+    endpoint.connect().await
 }
