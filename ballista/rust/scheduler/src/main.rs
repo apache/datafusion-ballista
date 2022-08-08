@@ -112,7 +112,6 @@ async fn start_server(
             let keda_scaler = ExternalScalerServer::new(scheduler_server.clone());
 
             let mut tonic = TonicServer::builder()
-                // .layer(interceptor(check_auth))
                 .add_service(scheduler_grpc_server)
                 .add_service(flight_sql_server)
                 .add_service(keda_scaler)
@@ -134,9 +133,6 @@ async fn start_server(
                                 .map_ok(|res| res.map(EitherBody::Left))
                                 .map_err(Error::from),
                         );
-                    }
-                    if !req.headers().contains_key("auth-token-bin") {
-
                     }
                     Either::Right(
                         tonic
