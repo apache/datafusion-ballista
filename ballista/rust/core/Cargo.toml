@@ -39,14 +39,14 @@ arrow-flight = { git = "https://github.com/apache/arrow-rs.git", rev = "30c94dbf
 async-trait = "0.1.41"
 chrono = { version = "0.4", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = { git = "https://github.com/spaceandtimelabs/arrow-datafusion.git", rev = "1dd59c136bcaf8d5a82631a58af42da9d979ba92", features = [], optional = false }
-datafusion-proto = { git = "https://github.com/spaceandtimelabs/arrow-datafusion.git", rev = "1dd59c136bcaf8d5a82631a58af42da9d979ba92", features = [], optional = false }
+datafusion = { git = "https://github.com/spaceandtimelabs/arrow-datafusion.git", rev = "be64e657790e2bd9fb1ae980198670d6baba4e84", features = [], optional = false }
+datafusion-proto = { git = "https://github.com/spaceandtimelabs/arrow-datafusion.git", rev = "be64e657790e2bd9fb1ae980198670d6baba4e84", features = [], optional = false }
 futures = "0.3"
 hashbrown = "0.12"
 
 libloading = "0.7.3"
 log = "0.4"
-object_store = { git = "https://github.com/apache/arrow-rs.git", rev = "30c94dbf1c422f81f8520b9956e96ab7b53c3f47", features = [], optional = false }
+object_store = "0.3.0"
 once_cell = "1.9.0"
 
 parking_lot = "0.12"
@@ -54,7 +54,7 @@ parse_arg = "0.1.3"
 prost = "0.11.0"
 prost-types = "0.11.1"
 serde = { version = "1", features = ["derive"] }
-sqlparser = "0.19"
+sqlparser = "0.20.0"
 tokio = "1.0"
 tonic = "0.8"
 uuid = { version = "1.0", features = ["v4"] }
