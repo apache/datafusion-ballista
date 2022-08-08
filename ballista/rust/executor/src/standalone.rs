@@ -20,6 +20,7 @@ use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightSe
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::serde::scheduler::ExecutorSpecification;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::utils::create_grpc_server;
 use ballista_core::{
     error::Result,
     serde::protobuf::executor_registration::OptionalHost,
@@ -32,7 +33,7 @@ use log::info;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
-use tonic::transport::{Channel, Server};
+use tonic::transport::Channel;
 use uuid::Uuid;
 
 pub async fn new_standalone_executor<
@@ -84,9 +85,11 @@ pub async fn new_standalone_executor<
     let service = BallistaFlightService::new(executor.clone());
     let server = FlightServiceServer::new(service);
     tokio::spawn(
-        Server::builder().add_service(server).serve_with_incoming(
-            tokio_stream::wrappers::TcpListenerStream::new(listener),
-        ),
+        create_grpc_server()
+            .add_service(server)
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
+                listener,
+            )),
     );
 
     tokio::spawn(execution_loop::poll_loop(scheduler, executor, codec));

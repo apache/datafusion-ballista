@@ -22,7 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
 use log::{debug, error, info};
-use tonic::transport::{Channel, Server};
+use tonic::transport::Channel;
 use tonic::{Request, Response, Status};
 
 use ballista_core::error::BallistaError;
@@ -39,6 +39,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::ExecutorState;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::utils::create_grpc_server;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -84,7 +85,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
         info!("Setup executor grpc service for {:?}", addr);
 
         let server = ExecutorGrpcServer::new(executor_server.clone());
-        let grpc_server_future = Server::builder().add_service(server).serve(addr);
+        let grpc_server_future = create_grpc_server().add_service(server).serve(addr);
         tokio::spawn(async move { grpc_server_future.await });
     }
 

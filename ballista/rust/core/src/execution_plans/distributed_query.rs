@@ -23,6 +23,7 @@ use crate::serde::protobuf::{
     ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
     PartitionLocation,
 };
+use crate::utils::create_grpc_client_connection;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::{ArrowError, Result as ArrowResult};
 use datafusion::arrow::record_batch::RecordBatch;
@@ -235,10 +236,11 @@ async fn execute_query(
 ) -> Result<impl Stream<Item = ArrowResult<RecordBatch>> + Send> {
     info!("Connecting to Ballista scheduler at {}", scheduler_url);
     // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
-
-    let mut scheduler = SchedulerGrpcClient::connect(scheduler_url.clone())
+    let connection = create_grpc_client_connection(scheduler_url)
         .await
         .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+
+    let mut scheduler = SchedulerGrpcClient::new(connection);
 
     let query_result = scheduler
         .execute_query(query)

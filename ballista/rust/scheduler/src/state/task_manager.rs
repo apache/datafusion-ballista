@@ -440,7 +440,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         } else {
             let executor_id = executor.id.clone();
             let executor_url = format!("http://{}:{}", executor.host, executor.grpc_port);
-            let mut client = ExecutorGrpcClient::connect(executor_url).await?;
+            let connection =
+                ballista_core::utils::create_grpc_client_connection(executor_url).await?;
+            let mut client = ExecutorGrpcClient::new(connection);
             clients.insert(executor_id, client.clone());
             client
                 .launch_task(protobuf::LaunchTaskParams {
