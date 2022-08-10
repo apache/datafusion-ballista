@@ -694,8 +694,8 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .map_err(|e| Status::internal(format!("Error decoding handle: {}", e)))?;
         let plan = self.get_plan(&handle)?;
         let _ = self.execute_plan(ctx, &plan).await?;
-        println!("Sending 0 rows affected");
-        Ok(0)
+        println!("Sending -1 rows affected");
+        Ok(-1)
     }
 
     async fn do_action_create_prepared_statement(
