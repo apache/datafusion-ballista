@@ -62,11 +62,11 @@ tokio = { version = "1.0", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"], optional = true }
 tonic = "0.7"
 tower = { version = "0.4" }
-uuid = { version = "1.0", features = ["v4"] }
-warp = "0.3"
 tracing = "0.1.36"
 tracing-appender = "0.2.2"
 tracing-subscriber = { version = "0.3.15", features = ["fmt", "env-filter", "ansi"] }
+uuid = { version = "1.0", features = ["v4"] }
+warp = "0.3"
 
 [dev-dependencies]
 ballista-core = { path = "../core", version = "0.7.0" }
