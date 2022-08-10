@@ -364,6 +364,7 @@ mod test {
                         executor_id: "executor-1".to_owned(),
                         partitions,
                     })),
+                    metrics: vec![],
                     task_id: Some(PartitionId {
                         job_id: job_id.to_owned(),
                         stage_id: task.partition.stage_id as u32,
@@ -493,6 +494,7 @@ mod test {
                                             partitions,
                                         },
                                     )),
+                                    metrics: vec![],
                                     task_id: Some(PartitionId {
                                         job_id: job_id.to_owned(),
                                         stage_id: task.partition.stage_id as u32,
@@ -627,6 +629,7 @@ mod test {
                                             error: "".to_string(),
                                         },
                                     )),
+                                    metrics: vec![],
                                     task_id: Some(PartitionId {
                                         job_id: job_id.to_owned(),
                                         stage_id: task.partition.stage_id as u32,

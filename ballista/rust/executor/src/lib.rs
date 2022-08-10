@@ -32,21 +32,27 @@ pub use standalone::new_standalone_executor;
 use log::info;
 
 use ballista_core::serde::protobuf::{
-    task_status, CompletedTask, FailedTask, PartitionId, ShuffleWritePartition,
-    TaskStatus,
+    task_status, CompletedTask, FailedTask, OperatorMetricsSet, PartitionId,
+    ShuffleWritePartition, TaskStatus,
 };
 
 pub fn as_task_status(
     execution_result: ballista_core::error::Result<Vec<ShuffleWritePartition>>,
     executor_id: String,
     task_id: PartitionId,
+    operator_metrics: Option<Vec<OperatorMetricsSet>>,
 ) -> TaskStatus {
+    let metrics = operator_metrics.unwrap_or_default();
     match execution_result {
         Ok(partitions) => {
-            info!("Task {:?} finished", task_id);
-
+            info!(
+                "Task {:?} finished with operator_metrics array size {}",
+                task_id,
+                metrics.len()
+            );
             TaskStatus {
                 task_id: Some(task_id),
+                metrics,
                 status: Some(task_status::Status::Completed(CompletedTask {
                     executor_id,
                     partitions,
@@ -59,6 +65,7 @@ pub fn as_task_status(
 
             TaskStatus {
                 task_id: Some(task_id),
+                metrics,
                 status: Some(task_status::Status::Failed(FailedTask {
                     error: format!("Task failed due to Tokio error: {}", error_msg),
                 })),
