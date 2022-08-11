@@ -44,7 +44,6 @@ clap = { version = "3", features = ["derive", "cargo"] }
 configure_me = "0.4.0"
 datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "6a5de4fe08597896ab6375e3e4b76c5744dcfba7" }
 datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "6a5de4fe08597896ab6375e3e4b76c5744dcfba7" }
-env_logger = "0.9"
 etcd-client = { version = "0.9", optional = true }
 flatbuffers = { version = "2.1.2" }
 futures = "0.3"
@@ -63,6 +62,9 @@ tokio = { version = "1.0", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"], optional = true }
 tonic = "0.7"
 tower = { version = "0.4" }
+tracing = "0.1.36"
+tracing-appender = "0.2.2"
+tracing-subscriber = { version = "0.3.15", features = ["fmt", "env-filter", "ansi"] }
 uuid = { version = "1.0", features = ["v4"] }
 warp = "0.3"
 
