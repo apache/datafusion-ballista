@@ -53,31 +53,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
             event_sender,
         }
     }
-
-    async fn submit_job(
-        &self,
-        job_id: String,
-        session_ctx: Arc<SessionContext>,
-        plan: &LogicalPlan,
-    ) -> Result<()> {
-        let start = Instant::now();
-        let optimized_plan = session_ctx.optimize(plan)?;
-
-        debug!("Calculated optimized plan: {:?}", optimized_plan);
-
-        let plan = session_ctx.create_physical_plan(&optimized_plan).await?;
-
-        self.state
-            .task_manager
-            .submit_job(&job_id, &session_ctx.session_id(), plan.clone())
-            .await?;
-
-        let elapsed = start.elapsed();
-
-        info!("Planned job {} in {:?}", job_id, elapsed);
-
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -105,18 +80,27 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 plan,
             } => {
                 info!("Job {} queued", job_id);
-                let event = if let Err(e) =
-                    self.submit_job(job_id.clone(), session_ctx, &plan).await
-                {
-                    let msg = format!("Error planning job {}: {:?}", job_id, e);
-                    error!("{}", msg);
-                    QueryStageSchedulerEvent::JobFailed(job_id, msg)
-                } else {
-                    QueryStageSchedulerEvent::JobSubmitted(job_id)
-                };
-                tx_event.send(event).await.map_err(|e| {
-                    BallistaError::General(format!("Fail to send event due to {}", e))
-                })?;
+                let state = self.state.clone();
+                let tx_event = tx_event.clone();
+                tokio::spawn(async move {
+                    let event = if let Err(e) =
+                        submit_job(state.clone(), job_id.clone(), session_ctx, &plan)
+                            .await
+                    {
+                        let msg = format!("Error planning job {}: {:?}", job_id, e);
+                        error!("{}", msg);
+                        QueryStageSchedulerEvent::JobFailed(job_id, msg)
+                    } else {
+                        QueryStageSchedulerEvent::JobSubmitted(job_id)
+                    };
+                    tx_event
+                        .send(event)
+                        .await
+                        .map_err(|e| {
+                            error!("Fail to send event due to {}", e);
+                        })
+                        .unwrap();
+                });
             }
             QueryStageSchedulerEvent::JobSubmitted(job_id) => {
                 info!("Job {} submitted", job_id);
@@ -173,4 +157,29 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     fn on_error(&self, error: BallistaError) {
         error!("Error received by QueryStageScheduler: {:?}", error);
     }
+}
+
+async fn submit_job<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
+    state: Arc<SchedulerState<T, U>>,
+    job_id: String,
+    session_ctx: Arc<SessionContext>,
+    plan: &LogicalPlan,
+) -> Result<()> {
+    let start = Instant::now();
+    let optimized_plan = session_ctx.optimize(plan)?;
+
+    debug!("Calculated optimized plan: {:?}", optimized_plan);
+
+    let plan = session_ctx.create_physical_plan(&optimized_plan).await?;
+
+    state
+        .task_manager
+        .submit_job(&job_id, &session_ctx.session_id(), plan.clone())
+        .await?;
+
+    let elapsed = start.elapsed();
+
+    info!("Planned job {} in {:?}", job_id, elapsed);
+
+    Ok(())
 }
