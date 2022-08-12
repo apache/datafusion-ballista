@@ -264,32 +264,37 @@ async fn execute_query(
             .await
             .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?
             .into_inner();
-        let status = status.and_then(|s| s.status).ok_or_else(|| {
-            DataFusionError::Internal("Received empty status message".to_owned())
-        })?;
+        let status = status.and_then(|s| s.status);
         let wait_future = tokio::time::sleep(Duration::from_millis(100));
-        let has_status_change = prev_status.map(|x| x != status).unwrap_or(true);
+        let has_status_change = prev_status != status;
         match status {
-            job_status::Status::Queued(_) => {
+            None => {
+                if has_status_change {
+                    info!("Job {} still in initialization ...", job_id);
+                }
+                wait_future.await;
+                prev_status = status;
+            }
+            Some(job_status::Status::Queued(_)) => {
                 if has_status_change {
                     info!("Job {} still queued...", job_id);
                 }
                 wait_future.await;
-                prev_status = Some(status);
+                prev_status = status;
             }
-            job_status::Status::Running(_) => {
+            Some(job_status::Status::Running(_)) => {
                 if has_status_change {
                     info!("Job {} is running...", job_id);
                 }
                 wait_future.await;
-                prev_status = Some(status);
+                prev_status = status;
             }
-            job_status::Status::Failed(err) => {
+            Some(job_status::Status::Failed(err)) => {
                 let msg = format!("Job {} failed: {}", job_id, err.error);
                 error!("{}", msg);
                 break Err(DataFusionError::Execution(msg));
             }
-            job_status::Status::Completed(completed) => {
+            Some(job_status::Status::Completed(completed)) => {
                 let streams = completed.partition_location.into_iter().map(|p| {
                     let f = fetch_partition(p)
                         .map_err(|e| ArrowError::ExternalError(Box::new(e)));
