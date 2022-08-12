@@ -54,7 +54,6 @@ pub enum Keyspace {
     Executors,
     ActiveJobs,
     CompletedJobs,
-    QueuedJobs,
     FailedJobs,
     Slots,
     Sessions,

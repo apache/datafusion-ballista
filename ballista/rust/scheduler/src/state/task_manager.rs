@@ -28,8 +28,8 @@ use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 
 use crate::state::session_manager::create_datafusion_context;
 use ballista_core::serde::protobuf::{
-    self, job_status, task_status, FailedJob, JobStatus, PartitionId, QueuedJob,
-    TaskDefinition, TaskStatus,
+    self, job_status, task_status, FailedJob, JobStatus, PartitionId, TaskDefinition,
+    TaskStatus,
 };
 use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
 use ballista_core::serde::scheduler::{ExecutorMetadata, PartitionLocation};
@@ -88,30 +88,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             )
             .await?;
 
-        if let Err(e) = self.state.delete(Keyspace::QueuedJobs, job_id).await {
-            warn!("Failed to remove key in QueuedJobs for {}: {:?}", job_id, e);
-        }
-
         Ok(())
     }
 
-    /// Queue a job. When a batch job is submitted we do the physical planning asynchronously so we
-    /// need to add a marker so we can report on its status.
-    pub async fn queue_job(&self, job_id: &str) -> Result<()> {
-        self.state
-            .put(Keyspace::QueuedJobs, job_id.to_owned(), vec![0x0])
-            .await
-    }
-
-    /// Get the status of of a job. First look in Active/Completed jobs, and then in Queued jobs, and
-    /// finally in FailedJobs.
+    /// Get the status of of a job. First look in Active/Completed jobs, and then in Failed jobs
     pub async fn get_job_status(&self, job_id: &str) -> Result<Option<JobStatus>> {
-        let queue_marker = self.state.get(Keyspace::QueuedJobs, job_id).await?;
-        if !queue_marker.is_empty() {
-            Ok(Some(JobStatus {
-                status: Some(job_status::Status::Queued(QueuedJob {})),
-            }))
-        } else if let Ok(graph) = self.get_execution_graph(job_id).await {
+        if let Ok(graph) = self.get_execution_graph(job_id).await {
             Ok(Some(graph.status()))
         } else {
             let value = self.state.get(Keyspace::FailedJobs, job_id).await?;
@@ -400,8 +382,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     pub async fn fail_job(&self, job_id: &str, error_message: String) -> Result<()> {
         let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
         with_lock(lock, self.state.delete(Keyspace::ActiveJobs, job_id)).await?;
-
-        self.state.delete(Keyspace::QueuedJobs, job_id).await?;
 
         let status = JobStatus {
             status: Some(job_status::Status::Failed(FailedJob {
