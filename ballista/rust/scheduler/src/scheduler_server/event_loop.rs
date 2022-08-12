@@ -26,6 +26,7 @@ use ballista_core::event_loop::EventAction;
 
 use ballista_core::serde::AsExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
+use tokio::sync::mpsc;
 
 use crate::state::executor_manager::ExecutorReservation;
 use crate::state::SchedulerState;
@@ -137,12 +138,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     async fn on_receive(
         &self,
         event: SchedulerServerEvent,
-    ) -> Result<Option<SchedulerServerEvent>> {
+        tx_event: &mpsc::Sender<SchedulerServerEvent>,
+        _rx_event: &mpsc::Receiver<SchedulerServerEvent>,
+    ) -> Result<()> {
         match event {
             SchedulerServerEvent::Offer(reservations) => {
-                self.offer_reservation(reservations).await
+                if let Some(event) = self.offer_reservation(reservations).await? {
+                    tx_event.send(event).await.map_err(|e| {
+                        BallistaError::General(format!("Fail to send event due to {}", e))
+                    })?;
+                }
             }
         }
+
+        Ok(())
     }
 
     fn on_error(&self, error: BallistaError) {

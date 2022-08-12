@@ -28,6 +28,7 @@ use ballista_core::event_loop::{EventAction, EventSender};
 
 use ballista_core::serde::AsExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
+use tokio::sync::mpsc;
 
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SchedulerServerEvent};
 
@@ -94,7 +95,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     async fn on_receive(
         &self,
         event: QueryStageSchedulerEvent,
-    ) -> Result<Option<QueryStageSchedulerEvent>> {
+        tx_event: &mpsc::Sender<QueryStageSchedulerEvent>,
+        _rx_event: &mpsc::Receiver<QueryStageSchedulerEvent>,
+    ) -> Result<()> {
         match event {
             QueryStageSchedulerEvent::JobQueued {
                 job_id,
@@ -102,15 +105,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 plan,
             } => {
                 info!("Job {} queued", job_id);
-                return if let Err(e) =
+                let event = if let Err(e) =
                     self.submit_job(job_id.clone(), session_ctx, &plan).await
                 {
                     let msg = format!("Error planning job {}: {:?}", job_id, e);
                     error!("{}", msg);
-                    Ok(Some(QueryStageSchedulerEvent::JobFailed(job_id, msg)))
+                    QueryStageSchedulerEvent::JobFailed(job_id, msg)
                 } else {
-                    Ok(Some(QueryStageSchedulerEvent::JobSubmitted(job_id)))
+                    QueryStageSchedulerEvent::JobSubmitted(job_id)
                 };
+                tx_event.send(event).await.map_err(|e| {
+                    BallistaError::General(format!("Fail to send event due to {}", e))
+                })?;
             }
             QueryStageSchedulerEvent::JobSubmitted(job_id) => {
                 info!("Job {} submitted", job_id);
@@ -161,7 +167,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             }
         }
 
-        Ok(None)
+        Ok(())
     }
 
     fn on_error(&self, error: BallistaError) {
