@@ -56,7 +56,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
     async fn submit_job(
         &self,
         job_id: String,
-        session_id: String,
         session_ctx: Arc<SessionContext>,
         plan: &LogicalPlan,
     ) -> Result<()> {
@@ -69,7 +68,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
 
         self.state
             .task_manager
-            .submit_job(&job_id, &session_id, plan.clone())
+            .submit_job(&job_id, &session_ctx.session_id(), plan.clone())
             .await?;
 
         let elapsed = start.elapsed();
@@ -99,14 +98,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         match event {
             QueryStageSchedulerEvent::JobQueued {
                 job_id,
-                session_id,
                 session_ctx,
                 plan,
             } => {
                 info!("Job {} queued", job_id);
-                return if let Err(e) = self
-                    .submit_job(job_id.clone(), session_id, session_ctx, &plan)
-                    .await
+                return if let Err(e) =
+                    self.submit_job(job_id.clone(), session_ctx, &plan).await
                 {
                     let msg = format!("Error planning job {}: {:?}", job_id, e);
                     error!("{}", msg);

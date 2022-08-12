@@ -256,7 +256,6 @@ impl FlightSqlServiceImpl {
         query_stage_event_sender
             .post_event(QueryStageSchedulerEvent::JobQueued {
                 job_id: job_id.clone(),
-                session_id: ctx.session_id().clone(),
                 session_ctx: ctx,
                 plan: Box::new(plan.clone()),
             })

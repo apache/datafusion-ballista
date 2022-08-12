@@ -430,7 +430,6 @@ mod test {
             .await?;
 
         let job_id = "job";
-        let session_id = ctx.session_id();
 
         // Send JobQueued event to kick off the event loop
         scheduler
@@ -438,7 +437,6 @@ mod test {
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::JobQueued {
                 job_id: job_id.to_owned(),
-                session_id,
                 session_ctx: ctx,
                 plan: Box::new(plan),
             })
@@ -570,7 +568,6 @@ mod test {
             .await?;
 
         let job_id = "job";
-        let session_id = ctx.session_id();
 
         // Send JobQueued event to kick off the event loop
         scheduler
@@ -578,7 +575,6 @@ mod test {
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::JobQueued {
                 job_id: job_id.to_owned(),
-                session_id,
                 session_ctx: ctx,
                 plan: Box::new(plan),
             })
@@ -704,7 +700,6 @@ mod test {
         let plan = ctx.sql("SELECT * FROM explode").await?.to_logical_plan()?;
 
         let job_id = "job";
-        let session_id = ctx.session_id();
 
         // Send JobQueued event to kick off the event loop
         // This should fail when we try and create the physical plan
@@ -713,7 +708,6 @@ mod test {
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::JobQueued {
                 job_id: job_id.to_owned(),
-                session_id,
                 session_ctx: ctx,
                 plan: Box::new(plan),
             })

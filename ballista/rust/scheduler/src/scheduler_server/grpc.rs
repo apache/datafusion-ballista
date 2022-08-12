@@ -424,7 +424,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             query_stage_event_sender
                 .post_event(QueryStageSchedulerEvent::JobQueued {
                     job_id: job_id.clone(),
-                    session_id: session_id.clone(),
                     session_ctx,
                     plan: Box::new(plan),
                 })
