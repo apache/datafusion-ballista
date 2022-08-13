@@ -1463,7 +1463,6 @@ mod tests {
         use ballista_core::serde::{protobuf, AsExecutionPlan, BallistaCodec};
         use datafusion::datasource::listing::ListingTableUrl;
         use datafusion::physical_plan::ExecutionPlan;
-        use datafusion_proto::logical_plan::AsLogicalPlan;
         use std::ops::Deref;
 
         async fn round_trip_query(n: usize) -> Result<()> {
@@ -1472,7 +1471,7 @@ mod tests {
                 .with_batch_size(10);
             let ctx = SessionContext::with_config(config);
             let codec: BallistaCodec<
-                datafusion_proto::protobuf::LogicalPlanNode,
+                datafusion::datafusion_proto::protobuf::LogicalPlanNode,
                 protobuf::PhysicalPlanNode,
             > = BallistaCodec::default();
 
@@ -1500,8 +1499,8 @@ mod tests {
             // test logical plan round trip
             let plans = create_logical_plans(&ctx, n)?;
             for plan in plans {
-                let proto: datafusion_proto::protobuf::LogicalPlanNode =
-                    datafusion_proto::protobuf::LogicalPlanNode::try_from_logical_plan(
+                let proto: datafusion::datafusion_proto::protobuf::LogicalPlanNode =
+                    datafusion::datafusion_proto::protobuf::LogicalPlanNode::try_from_logical_plan(
                         &plan,
                         codec.logical_extension_codec(),
                     )
@@ -1517,8 +1516,8 @@ mod tests {
 
                 // test optimized logical plan round trip
                 let plan = ctx.optimize(&plan)?;
-                let proto: datafusion_proto::protobuf::LogicalPlanNode =
-                    datafusion_proto::protobuf::LogicalPlanNode::try_from_logical_plan(
+                let proto: datafusion::datafusion_proto::protobuf::LogicalPlanNode =
+                    datafusion::datafusion_proto::protobuf::LogicalPlanNode::try_from_logical_plan(
                         &plan,
                         codec.logical_extension_codec(),
                     )

@@ -30,9 +30,9 @@ use crate::state::task_manager::TaskManager;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use datafusion::datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion::logical_plan::LogicalPlan;
 use datafusion::prelude::SessionContext;
-use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::{debug, error, info};
 use prost::Message;
 
@@ -296,12 +296,12 @@ mod test {
     };
     use ballista_core::serde::BallistaCodec;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion::execution::context::default_session_builder;
     use datafusion::logical_expr::{col, sum};
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::prelude::SessionContext;
     use datafusion::test_util::scan_empty;
-    use datafusion_proto::protobuf::LogicalPlanNode;
     use std::sync::Arc;
 
     // We should free any reservations which are not assigned

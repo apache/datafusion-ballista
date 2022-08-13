@@ -308,7 +308,7 @@ mod test {
     use std::ops::Deref;
 
     use ballista_core::serde::protobuf::PhysicalPlanNode;
-    use datafusion_proto::protobuf::LogicalPlanNode;
+    use datafusion::datafusion_proto::protobuf::LogicalPlanNode;
     use std::sync::Arc;
     use uuid::Uuid;
 

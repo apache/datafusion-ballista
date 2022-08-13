@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
 
 use ballista_core::serde::protobuf::{
@@ -30,7 +31,6 @@ use ballista_core::serde::scheduler::ExecutorSpecification;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use ballista_core::utils::collect_plan_metrics;
 use datafusion::execution::context::TaskContext;
-use datafusion_proto::logical_plan::AsLogicalPlan;
 use futures::FutureExt;
 use log::{debug, error, info, warn};
 use std::any::Any;

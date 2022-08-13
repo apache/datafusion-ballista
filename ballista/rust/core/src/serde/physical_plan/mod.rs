@@ -23,6 +23,7 @@ use prost::Message;
 
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::datafusion_proto;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -1239,7 +1240,7 @@ mod roundtrip_tests {
     use crate::serde::physical_plan::DEFAULT_METADATA_SIZE_HINT;
     use crate::serde::protobuf::PhysicalPlanNode;
     use crate::serde::{AsExecutionPlan, BallistaCodec};
-    use datafusion_proto::protobuf::LogicalPlanNode;
+    use datafusion::datafusion_proto::protobuf::LogicalPlanNode;
 
     use super::super::super::error::Result;
     use super::super::protobuf;

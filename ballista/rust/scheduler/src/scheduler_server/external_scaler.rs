@@ -21,7 +21,7 @@ use crate::scheduler_server::externalscaler::{
 };
 use crate::scheduler_server::SchedulerServer;
 use ballista_core::serde::AsExecutionPlan;
-use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion::datafusion_proto::logical_plan::AsLogicalPlan;
 
 use tonic::{Request, Response};
 

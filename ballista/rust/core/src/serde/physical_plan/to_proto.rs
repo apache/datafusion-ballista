@@ -26,6 +26,7 @@ use std::{
     sync::Arc,
 };
 
+use datafusion::datafusion_proto;
 use datafusion::physical_plan::expressions::{CastExpr, TryCastExpr};
 use datafusion::physical_plan::ColumnStatistics;
 use datafusion::physical_plan::{

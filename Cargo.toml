@@ -22,6 +22,7 @@ members = [
     "ballista/rust/core",
     "ballista/rust/executor",
     "ballista/rust/scheduler",
+    "datafusion",
     "examples",
     "ballista-cli",
 ]
@@ -34,6 +35,6 @@ inherits = "release"
 lto = true
 
 [patch.crates-io]
-arrow = { git = "https://github.com/coralogix/arrow-rs", branch = "issue-2110" }
-arrow-flight = { git = "https://github.com/coralogix/arrow-rs", branch = "issue-2110" }
-parquet = { git = "https://github.com/coralogix/arrow-rs", branch = "issue-2110" }
+arrow = { git = "https://github.com/mpurins-coralogix/arrow-rs", branch = "v22-with-page-skipping-fix" }
+arrow-flight = { git = "https://github.com/mpurins-coralogix/arrow-rs", branch = "v22-with-page-skipping-fix" }
+parquet = { git = "https://github.com/mpurins-coralogix/arrow-rs", branch = "v22-with-page-skipping-fix" }

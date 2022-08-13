@@ -1,0 +1,14 @@
+[package]
+name = "datafusion"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+simd = ["upstream/simd"]
+force_hash_collisions = ["upstream/force_hash_collisions"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+upstream = { git = "https://github.com/coralogix/arrow-datafusion", branch = "sc-9583", package = "datafusion"}
+datafusion-proto = { git = "https://github.com/coralogix/arrow-datafusion", branch = "sc-9583" }

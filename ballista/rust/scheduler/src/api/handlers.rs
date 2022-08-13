@@ -13,7 +13,7 @@
 use crate::scheduler_server::SchedulerServer;
 use ballista_core::serde::AsExecutionPlan;
 use ballista_core::BALLISTA_VERSION;
-use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion::datafusion_proto::logical_plan::AsLogicalPlan;
 use warp::Rejection;
 
 #[derive(Debug, serde::Serialize)]

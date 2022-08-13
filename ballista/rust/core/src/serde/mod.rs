@@ -19,13 +19,13 @@
 //! as convenience code for interacting with the generated code.
 
 use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
+use datafusion::datafusion_proto::logical_plan::{
+    AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
+};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::logical_plan::{FunctionRegistry, Operator};
 use datafusion::physical_plan::join_utils::JoinSide;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_proto::logical_plan::{
-    AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
-};
 use prost::bytes::BufMut;
 use prost::Message;
 use std::fmt::Debug;
@@ -273,7 +273,8 @@ mod tests {
     use prost::Message;
     use std::any::Any;
 
-    use datafusion_proto::from_proto::parse_expr;
+    use datafusion::datafusion_proto;
+    use datafusion::datafusion_proto::from_proto::parse_expr;
     use std::convert::TryInto;
     use std::fmt;
     use std::fmt::{Debug, Formatter};
@@ -281,13 +282,16 @@ mod tests {
     use std::sync::Arc;
 
     pub mod proto {
+
         #[derive(Clone, PartialEq, ::prost::Message)]
         pub struct TopKPlanProto {
             #[prost(uint64, tag = "1")]
             pub k: u64,
 
             #[prost(message, optional, tag = "2")]
-            pub expr: ::core::option::Option<datafusion_proto::protobuf::LogicalExprNode>,
+            pub expr: ::core::option::Option<
+                datafusion::datafusion_proto::protobuf::LogicalExprNode,
+            >,
         }
 
         #[derive(Clone, Eq, PartialEq, ::prost::Message)]

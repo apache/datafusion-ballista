@@ -39,7 +39,7 @@ use ballista_scheduler::api::{get_routes, EitherBody, Error};
 use ballista_scheduler::state::backend::etcd::EtcdClient;
 #[cfg(feature = "sled")]
 use ballista_scheduler::state::backend::standalone::StandaloneClient;
-use datafusion_proto::protobuf::LogicalPlanNode;
+use datafusion::datafusion_proto::protobuf::LogicalPlanNode;
 
 use ballista_scheduler::scheduler_server::SchedulerServer;
 use ballista_scheduler::state::backend::{StateBackend, StateBackendClient};

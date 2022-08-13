@@ -24,6 +24,7 @@ use std::{
 };
 
 use datafusion::arrow::error::ArrowError;
+use datafusion::datafusion_proto;
 use datafusion::error::DataFusionError;
 use futures::future::Aborted;
 use sqlparser::parser;

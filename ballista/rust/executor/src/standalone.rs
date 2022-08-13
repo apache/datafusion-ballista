@@ -27,8 +27,8 @@ use ballista_core::{
     serde::protobuf::{scheduler_grpc_client::SchedulerGrpcClient, ExecutorRegistration},
     BALLISTA_VERSION,
 };
+use datafusion::datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
-use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::info;
 use std::sync::Arc;
 use tempfile::TempDir;
