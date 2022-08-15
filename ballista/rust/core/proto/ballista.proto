@@ -427,7 +427,7 @@ message ExecutionGraphStage {
   repeated  GraphStageInput inputs = 4;
   bytes plan = 5;
   repeated TaskStatus task_statuses = 6;
-  uint32 output_link = 7;
+  repeated uint32 output_links = 7;
   bool resolved = 8;
   repeated OperatorMetricsSet stage_metrics = 9;
 }

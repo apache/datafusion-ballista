@@ -547,15 +547,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 }
             }
 
-            // This is a little hacky but since we can't make an optional
-            // primitive field in protobuf, we just use 0 to encode None.
-            // Should work since stage IDs are 1-indexed.
-            let output_link = if stage.output_link == 0 {
-                None
-            } else {
-                Some(stage.output_link as usize)
-            };
-
             let output_partitioning: Option<Partitioning> =
                 parse_protobuf_hash_partitioning(
                     stage.output_partitioning.as_ref(),
@@ -608,7 +599,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 inputs,
                 plan,
                 task_statuses,
-                output_link,
+                output_links: stage
+                    .output_links
+                    .into_iter()
+                    .map(|l| l as usize)
+                    .collect(),
                 resolved: stage.resolved,
                 stage_metrics,
             };
@@ -642,15 +637,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .stages
             .into_iter()
             .map(|(stage_id, stage)| {
-                // This is a little hacky but since we can't make an optional
-                // primitive field in protobuf, we just use 0 to encode None.
-                // Should work since stage IDs are 1-indexed.
-                let output_link = if let Some(link) = stage.output_link {
-                    link as u32
-                } else {
-                    0
-                };
-
                 let mut plan: Vec<u8> = vec![];
 
                 U::try_from_physical_plan(
@@ -715,7 +701,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     inputs,
                     plan,
                     task_statuses,
-                    output_link,
+                    output_links: stage
+                        .output_links
+                        .into_iter()
+                        .map(|l| l as u32)
+                        .collect(),
                     resolved: stage.resolved,
                     stage_metrics,
                 })
