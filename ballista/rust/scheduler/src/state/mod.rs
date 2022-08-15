@@ -52,7 +52,7 @@ pub fn decode_protobuf<T: Message + Default>(bytes: &[u8]) -> Result<T> {
     })
 }
 
-pub fn decode_into<T: Message + Default, U: From<T>>(bytes: &[u8]) -> Result<U> {
+pub fn decode_into<T: Message + Default + Into<U>, U>(bytes: &[u8]) -> Result<U> {
     T::decode(bytes)
         .map_err(|e| {
             BallistaError::Internal(format!(

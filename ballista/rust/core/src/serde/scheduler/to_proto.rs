@@ -21,8 +21,12 @@ use std::convert::TryInto;
 use crate::error::BallistaError;
 use crate::serde::protobuf;
 use crate::serde::protobuf::action::ActionType;
+
 use crate::serde::protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
-use crate::serde::scheduler::{Action, PartitionId, PartitionLocation, PartitionStats};
+use crate::serde::scheduler::{
+    Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, ExecutorState,
+    PartitionId, PartitionLocation, PartitionStats,
+};
 use datafusion::physical_plan::Partitioning;
 
 impl TryInto<protobuf::Action> for Action {
@@ -169,5 +173,78 @@ impl TryInto<protobuf::OperatorMetricsSet> for MetricsSet {
             .map(|m| m.value().try_into())
             .collect::<Result<Vec<_>, BallistaError>>()?;
         Ok(protobuf::OperatorMetricsSet { metrics })
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<protobuf::ExecutorMetadata> for ExecutorMetadata {
+    fn into(self) -> protobuf::ExecutorMetadata {
+        protobuf::ExecutorMetadata {
+            id: self.id,
+            host: self.host,
+            port: self.port as u32,
+            grpc_port: self.grpc_port as u32,
+            specification: Some(self.specification.into()),
+        }
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<protobuf::ExecutorSpecification> for ExecutorSpecification {
+    fn into(self) -> protobuf::ExecutorSpecification {
+        protobuf::ExecutorSpecification {
+            resources: vec![protobuf::executor_resource::Resource::TaskSlots(
+                self.task_slots,
+            )]
+            .into_iter()
+            .map(|r| protobuf::ExecutorResource { resource: Some(r) })
+            .collect(),
+        }
+    }
+}
+
+struct ExecutorResourcePair {
+    total: protobuf::executor_resource::Resource,
+    available: protobuf::executor_resource::Resource,
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<protobuf::ExecutorData> for ExecutorData {
+    fn into(self) -> protobuf::ExecutorData {
+        protobuf::ExecutorData {
+            executor_id: self.executor_id,
+            resources: vec![ExecutorResourcePair {
+                total: protobuf::executor_resource::Resource::TaskSlots(
+                    self.total_task_slots,
+                ),
+                available: protobuf::executor_resource::Resource::TaskSlots(
+                    self.available_task_slots,
+                ),
+            }]
+            .into_iter()
+            .map(|r| protobuf::ExecutorResourcePair {
+                total: Some(protobuf::ExecutorResource {
+                    resource: Some(r.total),
+                }),
+                available: Some(protobuf::ExecutorResource {
+                    resource: Some(r.available),
+                }),
+            })
+            .collect(),
+        }
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<protobuf::ExecutorState> for ExecutorState {
+    fn into(self) -> protobuf::ExecutorState {
+        protobuf::ExecutorState {
+            metrics: vec![protobuf::executor_metric::Metric::AvailableMemory(
+                self.available_memory_size,
+            )]
+            .into_iter()
+            .map(|m| protobuf::ExecutorMetric { metric: Some(m) })
+            .collect(),
+        }
     }
 }
