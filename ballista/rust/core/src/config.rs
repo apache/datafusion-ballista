@@ -92,7 +92,7 @@ impl BallistaConfigBuilder {
 }
 
 /// Ballista configuration
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BallistaConfig {
     /// Settings stored in map for easy serde
     settings: HashMap<String, String>,

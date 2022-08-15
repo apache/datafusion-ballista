@@ -413,17 +413,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
             let job_id = self.state.task_manager.generate_job_id();
 
-            self.state
-                .task_manager
-                .queue_job(&job_id)
-                .await
-                .map_err(|e| {
-                    let msg = format!("Failed to queue job {}: {:?}", job_id, e);
-                    error!("{}", msg);
-
-                    Status::internal(msg)
-                })?;
-
             let query_stage_event_sender =
                 self.query_stage_event_loop.get_sender().map_err(|e| {
                     Status::internal(format!(

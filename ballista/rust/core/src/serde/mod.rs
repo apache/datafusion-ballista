@@ -290,7 +290,7 @@ mod tests {
             pub expr: ::core::option::Option<datafusion_proto::protobuf::LogicalExprNode>,
         }
 
-        #[derive(Clone, PartialEq, ::prost::Message)]
+        #[derive(Clone, Eq, PartialEq, ::prost::Message)]
         pub struct TopKExecProto {
             #[prost(uint64, tag = "1")]
             pub k: u64,
