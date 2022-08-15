@@ -25,6 +25,7 @@ use ballista_core::serde::protobuf;
 
 use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
+use ballista_core::utils::create_grpc_client_connection;
 use futures::StreamExt;
 use log::{debug, info};
 use parking_lot::RwLock;
@@ -217,7 +218,8 @@ impl ExecutorManager {
                 "http://{}:{}",
                 executor_metadata.host, executor_metadata.grpc_port
             );
-            let client = ExecutorGrpcClient::connect(executor_url).await?;
+            let connection = create_grpc_client_connection(executor_url).await?;
+            let client = ExecutorGrpcClient::new(connection);
 
             {
                 let mut clients = self.clients.write();
