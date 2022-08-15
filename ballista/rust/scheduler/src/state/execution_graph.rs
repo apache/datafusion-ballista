@@ -30,7 +30,7 @@ use ballista_core::serde::scheduler::{
 use datafusion::physical_plan::{
     accept, ExecutionPlan, ExecutionPlanVisitor, Metric, Partitioning,
 };
-use log::debug;
+use log::{debug, log};
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
@@ -599,12 +599,12 @@ impl ExecutionGraph {
                             // TODO the plan_metrics update above is a snapshot clone from the plan metrics.
                             // TODO Need to modify DataFusion to return metricset reference, not clone.
 
-                            println!(
+                            log!(
                                 "=== [{}/{}/{}] Stage finished, physical plan with metrics ===\n{}\n",
                                 job_id,
                                 stage_id,
                                 partition,
-                                DisplayableExecutionPlan::with_full_metrics(stage_plan.as_ref()).indent()
+                                DisplayableExecutionPlan::with_metrics(stage_plan.as_ref()).indent()
                             );
                         }
 
