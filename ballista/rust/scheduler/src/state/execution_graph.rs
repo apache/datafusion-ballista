@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::planner::DistributedPlanner;
+use crate::display::DisplayableBallistaExecutionPlan;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
 
@@ -30,7 +31,7 @@ use ballista_core::serde::scheduler::{
 use datafusion::physical_plan::{
     accept, ExecutionPlan, ExecutionPlanVisitor, Metric, Partitioning,
 };
-use log::{debug, log};
+use log::{debug, info};
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
@@ -579,6 +580,8 @@ impl ExecutionGraph {
 
                         // if this stage is completed, we want to combine the stage metrics to plan's metric set and print out the plan
                         if stage_complete && stage.stage_metrics.as_ref().is_some() {
+                            // The plan_metrics collected here is a snapshot clone from the plan metrics.
+                            // They are all empty now and need to combine with the stage metrics in the ExecutionStages
                             let mut plan_metrics = collect_plan_metrics(&stage_plan);
                             let stage_metrics = stage
                                 .stage_metrics
@@ -596,15 +599,12 @@ impl ExecutionGraph {
                                 },
                             );
 
-                            // TODO the plan_metrics update above is a snapshot clone from the plan metrics.
-                            // TODO Need to modify DataFusion to return metricset reference, not clone.
-
-                            log!(
+                            info!(
                                 "=== [{}/{}/{}] Stage finished, physical plan with metrics ===\n{}\n",
                                 job_id,
                                 stage_id,
                                 partition,
-                                DisplayableExecutionPlan::with_metrics(stage_plan.as_ref()).indent()
+                                DisplayableBallistaExecutionPlan::new(stage_plan.as_ref(), plan_metrics.as_ref()).indent()
                             );
                         }
 

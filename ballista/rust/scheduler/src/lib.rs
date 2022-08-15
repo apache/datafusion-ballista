@@ -20,6 +20,7 @@
 pub mod api;
 pub mod planner;
 pub mod scheduler_server;
+pub mod display;
 #[cfg(feature = "sled")]
 pub mod standalone;
 pub mod state;
