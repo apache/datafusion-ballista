@@ -243,17 +243,6 @@ impl FlightSqlServiceImpl {
         plan: &LogicalPlan,
     ) -> Result<String, Status> {
         let job_id = self.server.state.task_manager.generate_job_id();
-        self.server
-            .state
-            .task_manager
-            .queue_job(&job_id)
-            .await
-            .map_err(|e| {
-                let msg = format!("Failed to queue job {}: {:?}", job_id, e);
-                error!("{}", msg);
-
-                Status::internal(msg)
-            })?;
         let query_stage_event_sender = self
             .server
             .query_stage_event_loop

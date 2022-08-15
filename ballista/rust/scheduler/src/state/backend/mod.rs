@@ -54,7 +54,6 @@ pub enum Keyspace {
     Executors,
     ActiveJobs,
     CompletedJobs,
-    QueuedJobs,
     FailedJobs,
     Slots,
     Sessions,
@@ -118,7 +117,7 @@ pub trait Watch: Stream<Item = WatchEvent> + Send + Unpin {
     async fn cancel(&mut self) -> Result<()>;
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum WatchEvent {
     /// Contains the inserted or updated key and the new value
     Put(String, Vec<u8>),
