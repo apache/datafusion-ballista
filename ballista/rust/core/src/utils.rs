@@ -344,13 +344,13 @@ pub fn create_grpc_server() -> Server {
         .http2_keepalive_timeout(Option::Some(Duration::from_secs(20)))
 }
 
-pub fn collect_plan_metrics(plan: &Arc<dyn ExecutionPlan>) -> Vec<MetricsSet> {
+pub fn collect_plan_metrics(plan: &dyn ExecutionPlan) -> Vec<MetricsSet> {
     let mut metrics_array = Vec::<MetricsSet>::new();
     if let Some(metrics) = plan.metrics() {
         metrics_array.push(metrics);
     }
     plan.children().iter().for_each(|c| {
-        collect_plan_metrics(c)
+        collect_plan_metrics(c.as_ref())
             .into_iter()
             .for_each(|e| metrics_array.push(e))
     });

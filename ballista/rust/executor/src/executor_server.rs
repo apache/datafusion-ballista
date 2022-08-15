@@ -234,13 +234,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             plan.schema().as_ref(),
         )?;
 
+        let shuffle_writer_plan = self.executor.new_shuffle_writer(
+            task_id.job_id.clone(),
+            task_id.stage_id as usize,
+            plan,
+        )?;
+
         let execution_result = self
             .executor
             .execute_shuffle_write(
                 task_id.job_id.clone(),
                 task_id.stage_id as usize,
                 task_id.partition_id as usize,
-                plan.clone(),
+                shuffle_writer_plan.clone(),
                 task_context,
                 shuffle_output_partitioning,
             )
@@ -248,7 +254,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         info!("Done with task {}", task_id_log);
         debug!("Statistics: {:?}", execution_result);
 
-        let plan_metrics = collect_plan_metrics(&plan);
+        let plan_metrics = collect_plan_metrics(shuffle_writer_plan.as_ref());
         let operator_metrics = plan_metrics
             .into_iter()
             .map(|m| m.try_into())

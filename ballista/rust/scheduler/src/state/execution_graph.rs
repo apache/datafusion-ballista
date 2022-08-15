@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::planner::DistributedPlanner;
 use crate::display::DisplayableBallistaExecutionPlan;
+use crate::planner::DistributedPlanner;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
 
@@ -582,7 +582,8 @@ impl ExecutionGraph {
                         if stage_complete && stage.stage_metrics.as_ref().is_some() {
                             // The plan_metrics collected here is a snapshot clone from the plan metrics.
                             // They are all empty now and need to combine with the stage metrics in the ExecutionStages
-                            let mut plan_metrics = collect_plan_metrics(&stage_plan);
+                            let mut plan_metrics =
+                                collect_plan_metrics(stage_plan.as_ref());
                             let stage_metrics = stage
                                 .stage_metrics
                                 .as_ref()
