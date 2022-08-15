@@ -157,14 +157,22 @@ async fn main() -> Result<()> {
     }
 
     let special_mod_log_level = opt.log_level_setting;
-    env_logger::builder()
-        .parse_filters(&*special_mod_log_level)
-        .format_timestamp_millis()
-        .init();
-
     let namespace = opt.namespace;
     let bind_host = opt.bind_host;
     let port = opt.bind_port;
+    let log_dir = opt.log_dir;
+    let print_thread_info = opt.print_thread_info;
+
+    let scheduler_name = format!("scheduler_{}_{}_{}", namespace, bind_host, port);
+    let log_file = tracing_appender::rolling::daily(log_dir, &scheduler_name);
+
+    tracing_subscriber::fmt()
+        .with_ansi(true)
+        .with_thread_names(print_thread_info)
+        .with_thread_ids(print_thread_info)
+        .with_writer(log_file)
+        .with_env_filter(special_mod_log_level)
+        .init();
 
     let addr = format!("{}:{}", bind_host, port);
     let addr = addr.parse()?;

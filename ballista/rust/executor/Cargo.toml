@@ -42,7 +42,6 @@ chrono = { version = "0.4", default-features = false }
 configure_me = "0.4.0"
 datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "6a5de4fe08597896ab6375e3e4b76c5744dcfba7" }
 datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "6a5de4fe08597896ab6375e3e4b76c5744dcfba7" }
-env_logger = "0.9"
 futures = "0.3"
 hyper = "0.14.4"
 log = "0.4"
@@ -52,6 +51,9 @@ tempfile = "3"
 tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "parking_lot"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = "0.7"
+tracing = "0.1.36"
+tracing-appender = "0.2.2"
+tracing-subscriber = { version = "0.3.15", features = ["fmt", "env-filter", "ansi"] }
 uuid = { version = "1.0", features = ["v4"] }
 
 [dev-dependencies]

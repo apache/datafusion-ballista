@@ -104,7 +104,20 @@ doc = "plugin dir"
 default = "std::string::String::from(\"\")"
 
 [[param]]
+name = "log_dir"
+type = "String"
+doc = "Log dir: a path to save log. This will create a new storage directory at the specified path if it does not already exist."
+default = "std::string::String::from(\"./logs\")"
+
+[[param]]
+name = "print_thread_info"
+type = "bool"
+doc = "Enable print thread ids and names in log file."
+default = "true"
+
+[[param]]
 name = "log_level_setting"
 type = "String"
 doc = "special log level for sub mod. link: https://docs.rs/env_logger/latest/env_logger/#enabling-logging. For example we want whole level is INFO but datafusion mode is DEBUG"
-default = "std::string::String::from(\"INFO, datafusion=INFO\")"
+default = "std::string::String::from(\"INFO,datafusion=INFO\")"
+
