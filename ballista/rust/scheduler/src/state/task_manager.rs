@@ -590,6 +590,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     },
                 );
             }
+            let stage_metrics = if stage.stage_metrics.is_empty() {
+                None
+            } else {
+                let ms = stage
+                    .stage_metrics
+                    .into_iter()
+                    .map(|m| m.try_into())
+                    .collect::<Result<Vec<_>>>()?;
+                Some(ms)
+            };
 
             let execution_stage = ExecutionStage {
                 stage_id: stage.stage_id as usize,
@@ -600,6 +610,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 task_statuses,
                 output_link,
                 resolved: stage.resolved,
+                stage_metrics,
             };
             stages.insert(stage_id, execution_stage);
         }
@@ -681,6 +692,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                                 stage_id: stage_id as u32,
                                 partition_id: partition as u32,
                             }),
+                            // task metrics should not persist.
+                            metrics: vec![],
                             status: Some(status),
                         })
                     })
@@ -689,6 +702,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 let output_partitioning =
                     hash_partitioning_to_proto(stage.output_partitioning.as_ref())?;
 
+                let stage_metrics = stage
+                    .stage_metrics
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|m| m.try_into())
+                    .collect::<Result<Vec<_>>>()?;
                 Ok(protobuf::ExecutionGraphStage {
                     stage_id: stage_id as u64,
                     partitions: stage.partitions as u32,
@@ -698,6 +717,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     task_statuses,
                     output_link,
                     resolved: stage.resolved,
+                    stage_metrics,
                 })
             })
             .collect::<Result<Vec<_>>>()?;

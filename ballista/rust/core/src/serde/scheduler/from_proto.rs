@@ -15,11 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use chrono::{TimeZone, Utc};
+use datafusion::physical_plan::metrics::{
+    Count, Gauge, MetricValue, MetricsSet, Time, Timestamp,
+};
+use datafusion::physical_plan::Metric;
 use std::convert::TryInto;
+use std::sync::Arc;
+use std::time::Duration;
 
 use crate::error::BallistaError;
 use crate::serde::protobuf;
 use crate::serde::protobuf::action::ActionType;
+use crate::serde::protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
 use crate::serde::scheduler::{Action, PartitionId, PartitionLocation, PartitionStats};
 
 impl TryInto<Action> for protobuf::Action {
@@ -102,5 +110,95 @@ impl TryInto<PartitionLocation> for protobuf::PartitionLocation {
                 .into(),
             path: self.path,
         })
+    }
+}
+
+impl TryInto<MetricValue> for protobuf::OperatorMetric {
+    type Error = BallistaError;
+
+    fn try_into(self) -> Result<MetricValue, Self::Error> {
+        match self.metric {
+            Some(operator_metric::Metric::OutputRows(value)) => {
+                let count = Count::new();
+                count.add(value as usize);
+                Ok(MetricValue::OutputRows(count))
+            }
+            Some(operator_metric::Metric::ElapseTime(value)) => {
+                let time = Time::new();
+                time.add_duration(Duration::from_nanos(value));
+                Ok(MetricValue::ElapsedCompute(time))
+            }
+            Some(operator_metric::Metric::SpillCount(value)) => {
+                let count = Count::new();
+                count.add(value as usize);
+                Ok(MetricValue::SpillCount(count))
+            }
+            Some(operator_metric::Metric::SpilledBytes(value)) => {
+                let count = Count::new();
+                count.add(value as usize);
+                Ok(MetricValue::SpilledBytes(count))
+            }
+            Some(operator_metric::Metric::CurrentMemoryUsage(value)) => {
+                let gauge = Gauge::new();
+                gauge.add(value as usize);
+                Ok(MetricValue::CurrentMemoryUsage(gauge))
+            }
+            Some(operator_metric::Metric::Count(NamedCount { name, value })) => {
+                let count = Count::new();
+                count.add(value as usize);
+                Ok(MetricValue::Count {
+                    name: name.into(),
+                    count,
+                })
+            }
+            Some(operator_metric::Metric::Gauge(NamedGauge { name, value })) => {
+                let gauge = Gauge::new();
+                gauge.add(value as usize);
+                Ok(MetricValue::Gauge {
+                    name: name.into(),
+                    gauge,
+                })
+            }
+            Some(operator_metric::Metric::Time(NamedTime { name, value })) => {
+                let time = Time::new();
+                time.add_duration(Duration::from_nanos(value));
+                Ok(MetricValue::Time {
+                    name: name.into(),
+                    time,
+                })
+            }
+            Some(operator_metric::Metric::StartTimestamp(value)) => {
+                let timestamp = Timestamp::new();
+                timestamp.set(Utc.timestamp_nanos(value));
+                Ok(MetricValue::StartTimestamp(timestamp))
+            }
+            Some(operator_metric::Metric::EndTimestamp(value)) => {
+                let timestamp = Timestamp::new();
+                timestamp.set(Utc.timestamp_nanos(value));
+                Ok(MetricValue::EndTimestamp(timestamp))
+            }
+            None => Err(BallistaError::General(
+                "scheduler::from_proto(OperatorMetric) metric is None.".to_owned(),
+            )),
+        }
+    }
+}
+
+impl TryInto<MetricsSet> for protobuf::OperatorMetricsSet {
+    type Error = BallistaError;
+
+    fn try_into(self) -> Result<MetricsSet, Self::Error> {
+        let mut ms = MetricsSet::new();
+        let metrics = self
+            .metrics
+            .into_iter()
+            .map(|m| m.try_into())
+            .collect::<Result<Vec<_>, BallistaError>>()?;
+
+        for value in metrics {
+            let new_metric = Arc::new(Metric::new(value, None));
+            ms.push(new_metric)
+        }
+        Ok(ms)
     }
 }

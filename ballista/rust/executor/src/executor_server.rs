@@ -16,6 +16,7 @@
 // under the License.
 
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -39,7 +40,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::ExecutorState;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
-use ballista_core::utils::create_grpc_server;
+use ballista_core::utils::{collect_plan_metrics, create_grpc_server};
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -233,13 +234,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             plan.schema().as_ref(),
         )?;
 
+        let shuffle_writer_plan = self.executor.new_shuffle_writer(
+            task_id.job_id.clone(),
+            task_id.stage_id as usize,
+            plan,
+        )?;
+
         let execution_result = self
             .executor
             .execute_shuffle_write(
                 task_id.job_id.clone(),
                 task_id.stage_id as usize,
                 task_id.partition_id as usize,
-                plan,
+                shuffle_writer_plan.clone(),
                 task_context,
                 shuffle_output_partitioning,
             )
@@ -247,8 +254,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         info!("Done with task {}", task_id_log);
         debug!("Statistics: {:?}", execution_result);
 
+        let plan_metrics = collect_plan_metrics(shuffle_writer_plan.as_ref());
+        let operator_metrics = plan_metrics
+            .into_iter()
+            .map(|m| m.try_into())
+            .collect::<Result<Vec<_>, BallistaError>>()?;
         let executor_id = &self.executor.metadata.id;
-        let task_status = as_task_status(execution_result, executor_id.clone(), task_id);
+        let task_status = as_task_status(
+            execution_result,
+            executor_id.clone(),
+            task_id,
+            Some(operator_metrics),
+        );
 
         let task_status_sender = self.executor_env.tx_task_status.clone();
         task_status_sender.send(task_status).await.unwrap();

@@ -322,6 +322,7 @@ mod test {
                         stage_id: 1,
                         partition_id: 0,
                     }),
+                    metrics: vec![],
                     status: Some(task_status::Status::Completed(CompletedTask {
                         executor_id: "executor-1".to_string(),
                         partitions,

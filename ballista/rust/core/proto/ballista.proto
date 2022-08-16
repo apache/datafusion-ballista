@@ -429,6 +429,7 @@ message ExecutionGraphStage {
   repeated TaskStatus task_statuses = 6;
   uint32 output_link = 7;
   bool resolved = 8;
+  repeated OperatorMetricsSet stage_metrics = 9;
 }
 
 message ExecutionGraph {
@@ -501,6 +502,41 @@ message ColumnStats {
   datafusion.ScalarValue max_value = 2;
   uint32 null_count = 3;
   uint32 distinct_count = 4;
+}
+
+message OperatorMetricsSet {
+  repeated OperatorMetric metrics = 1;
+}
+
+
+message NamedCount {
+  string name = 1;
+  uint64 value = 2;
+}
+
+message NamedGauge {
+  string name = 1;
+  uint64 value = 2;
+}
+
+message NamedTime {
+  string name = 1;
+  uint64 value = 2;
+}
+
+message OperatorMetric {
+  oneof metric {
+    uint64 output_rows = 1;
+    uint64 elapse_time = 2;
+    uint64 spill_count = 3;
+    uint64 spilled_bytes = 4;
+    uint64 current_memory_usage = 5;
+    NamedCount count = 6;
+    NamedGauge gauge = 7;
+    NamedTime time = 8;
+    int64 start_timestamp = 9;
+    int64 end_timestamp = 10;
+  }
 }
 
 // Used by scheduler
@@ -594,6 +630,7 @@ message TaskStatus {
     FailedTask failed = 3;
     CompletedTask completed = 4;
   }
+  repeated OperatorMetricsSet metrics = 5;
 }
 
 message PollWorkParams {

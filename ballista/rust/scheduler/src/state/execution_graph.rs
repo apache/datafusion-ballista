@@ -15,12 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::display::DisplayableBallistaExecutionPlan;
 use crate::planner::DistributedPlanner;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
 
 use ballista_core::serde::protobuf::{
-    self, CompletedJob, JobStatus, QueuedJob, TaskStatus,
+    self, CompletedJob, JobStatus, OperatorMetricsSet, QueuedJob, TaskStatus,
 };
 use ballista_core::serde::protobuf::{job_status, FailedJob, ShuffleWritePartition};
 use ballista_core::serde::protobuf::{task_status, RunningTask};
@@ -28,14 +29,16 @@ use ballista_core::serde::scheduler::{
     ExecutorMetadata, PartitionId, PartitionLocation, PartitionStats,
 };
 use datafusion::physical_plan::{
-    accept, ExecutionPlan, ExecutionPlanVisitor, Partitioning,
+    accept, ExecutionPlan, ExecutionPlanVisitor, Metric, Partitioning,
 };
-use log::debug;
+use log::{debug, info};
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
 
+use ballista_core::utils::collect_plan_metrics;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
+use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use std::sync::Arc;
 
 /// This data structure collects the partition locations for an `ExecutionStage`.
@@ -103,6 +106,8 @@ pub struct ExecutionStage {
     /// Flag indicating whether all input partitions have been resolved and the plan
     /// has UnresovledShuffleExec operators resolved to ShuffleReadExec operators.
     pub(crate) resolved: bool,
+    /// Combined metrics of the already finished tasks in the stage, If it is None, no task is finished yet.
+    pub(crate) stage_metrics: Option<Vec<MetricsSet>>,
 }
 
 impl Debug for ExecutionStage {
@@ -153,6 +158,7 @@ impl ExecutionStage {
             task_statuses: vec![None; num_tasks],
             output_link,
             resolved,
+            stage_metrics: None,
         }
     }
 
@@ -228,6 +234,60 @@ impl ExecutionStage {
     pub fn update_task_status(&mut self, partition: usize, status: task_status::Status) {
         debug!("Updating task status for partition {}", partition);
         self.task_statuses[partition] = Some(status);
+    }
+
+    /// update and combine the task metrics to the stage metrics
+    pub fn update_task_metrics(
+        &mut self,
+        partition: usize,
+        metrics: Vec<OperatorMetricsSet>,
+    ) -> Result<()> {
+        if let Some(combined_metrics) = &mut self.stage_metrics {
+            if metrics.len() != combined_metrics.len() {
+                return Err(BallistaError::Internal(format!("Error updating task metrics to stage {}, task metrics array size {} does not equal \
+                with the stage metrics array size {} for task {}", self.stage_id, metrics.len(), combined_metrics.len(), partition)));
+            }
+            let metrics_values_array = metrics
+                .into_iter()
+                .map(|ms| {
+                    ms.metrics
+                        .into_iter()
+                        .map(|m| m.try_into())
+                        .collect::<Result<Vec<_>>>()
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let new_metrics_set = combined_metrics
+                .iter_mut()
+                .zip(metrics_values_array)
+                .map(|(first, second)| {
+                    Self::combine_metrics_set(first, second, partition)
+                })
+                .collect();
+            self.stage_metrics = Some(new_metrics_set)
+        } else {
+            let new_metrics_set = metrics
+                .into_iter()
+                .map(|ms| ms.try_into())
+                .collect::<Result<Vec<_>>>()?;
+            if !new_metrics_set.is_empty() {
+                self.stage_metrics = Some(new_metrics_set)
+            }
+        }
+        Ok(())
+    }
+
+    pub fn combine_metrics_set(
+        first: &mut MetricsSet,
+        second: Vec<MetricValue>,
+        partition: usize,
+    ) -> MetricsSet {
+        for metric_value in second {
+            // TODO recheck the lable logic
+            let new_metric = Arc::new(Metric::new(metric_value, Some(partition)));
+            first.push(new_metric);
+        }
+        first.aggregate_by_partition()
     }
 
     /// Add input partitions published from an input stage.
@@ -467,8 +527,8 @@ impl ExecutionGraph {
         self.stages.values().all(|s| s.complete())
     }
 
-    /// Update task statuses in the graph. This will push shuffle partitions to their
-    /// respective shuffle read stages.
+    /// Update task statuses and task metrics in the graph.
+    /// This will also push shuffle partitions to their respective shuffle read stages.
     pub fn update_task_status(
         &mut self,
         executor: &ExecutorMetadata,
@@ -482,6 +542,7 @@ impl ExecutionGraph {
                         stage_id,
                         partition_id,
                     }),
+                metrics: operator_metrics,
                 status: Some(task_status),
             } = status
             {
@@ -497,6 +558,7 @@ impl ExecutionGraph {
                 let partition = partition_id as usize;
                 if let Some(stage) = self.stages.get_mut(&stage_id) {
                     stage.update_task_status(partition, task_status.clone());
+                    let stage_plan = stage.plan.clone();
                     let stage_complete = stage.complete();
 
                     // TODO Should be able to reschedule this task.
@@ -513,6 +575,40 @@ impl ExecutionGraph {
                     } else if let task_status::Status::Completed(completed_task) =
                         task_status
                     {
+                        // update task metrics for completed task
+                        stage.update_task_metrics(partition, operator_metrics)?;
+
+                        // if this stage is completed, we want to combine the stage metrics to plan's metric set and print out the plan
+                        if stage_complete && stage.stage_metrics.as_ref().is_some() {
+                            // The plan_metrics collected here is a snapshot clone from the plan metrics.
+                            // They are all empty now and need to combine with the stage metrics in the ExecutionStages
+                            let mut plan_metrics =
+                                collect_plan_metrics(stage_plan.as_ref());
+                            let stage_metrics = stage
+                                .stage_metrics
+                                .as_ref()
+                                .expect("stage metrics should not be None.");
+                            if plan_metrics.len() != stage_metrics.len() {
+                                return Err(BallistaError::Internal(format!("Error combine stage metrics to plan for stage {},  plan metrics array size {} does not equal \
+                to the stage metrics array size {}", stage_id, plan_metrics.len(), stage_metrics.len())));
+                            }
+                            plan_metrics.iter_mut().zip(stage_metrics).for_each(
+                                |(plan_metric, stage_metric)| {
+                                    stage_metric
+                                        .iter()
+                                        .for_each(|s| plan_metric.push(s.clone()));
+                                },
+                            );
+
+                            info!(
+                                "=== [{}/{}/{}] Stage finished, physical plan with metrics ===\n{}\n",
+                                job_id,
+                                stage_id,
+                                partition,
+                                DisplayableBallistaExecutionPlan::new(stage_plan.as_ref(), plan_metrics.as_ref()).indent()
+                            );
+                        }
+
                         let locations = partition_to_location(
                             self.job_id.as_str(),
                             stage_id,
@@ -808,6 +904,7 @@ mod test {
                     executor_id: "executor-1".to_owned(),
                     partitions,
                 })),
+                metrics: vec![],
                 task_id: Some(protobuf::PartitionId {
                     job_id: job_id.clone(),
                     stage_id: task.partition.stage_id as u32,

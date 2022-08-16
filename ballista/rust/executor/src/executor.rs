@@ -88,16 +88,30 @@ impl Executor {
         job_id: String,
         stage_id: usize,
         part: usize,
-        plan: Arc<dyn ExecutionPlan>,
+        shuffle_writer: Arc<ShuffleWriterExec>,
         task_ctx: Arc<TaskContext>,
         _shuffle_output_partitioning: Option<Partitioning>,
     ) -> Result<Vec<protobuf::ShuffleWritePartition>, BallistaError> {
+        let partitions = shuffle_writer.execute_shuffle_write(part, task_ctx).await?;
+        self.metrics_collector
+            .record_stage(&job_id, stage_id, part, shuffle_writer);
+
+        Ok(partitions)
+    }
+
+    /// Recreate the shuffle writer with the correct working directory.
+    pub fn new_shuffle_writer(
+        &self,
+        job_id: String,
+        stage_id: usize,
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Result<Arc<ShuffleWriterExec>, BallistaError> {
         let exec = if let Some(shuffle_writer) =
             plan.as_any().downcast_ref::<ShuffleWriterExec>()
         {
             // recreate the shuffle writer with the correct working directory
             ShuffleWriterExec::try_new(
-                job_id.clone(),
+                job_id,
                 stage_id,
                 plan.children()[0].clone(),
                 self.work_dir.clone(),
@@ -109,13 +123,7 @@ impl Executor {
                     .to_string(),
             ))
         }?;
-
-        let partitions = exec.execute_shuffle_write(part, task_ctx).await?;
-
-        self.metrics_collector
-            .record_stage(&job_id, stage_id, part, exec);
-
-        Ok(partitions)
+        Ok(Arc::new(exec))
     }
 
     pub fn work_dir(&self) -> &str {

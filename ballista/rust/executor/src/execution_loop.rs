@@ -28,12 +28,14 @@ use ballista_core::error::BallistaError;
 use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
 use ballista_core::serde::scheduler::ExecutorSpecification;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::utils::collect_plan_metrics;
 use datafusion::execution::context::TaskContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use futures::FutureExt;
 use log::{debug, error, info, trace, warn};
 use std::any::Any;
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::error::Error;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -183,14 +185,18 @@ async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecution
         plan.schema().as_ref(),
     )?;
 
+    let shuffle_writer_plan = executor.new_shuffle_writer(
+        task_id.job_id.clone(),
+        task_id.stage_id as usize,
+        plan,
+    )?;
     tokio::spawn(async move {
         use std::panic::AssertUnwindSafe;
-
         let execution_result = match AssertUnwindSafe(executor.execute_shuffle_write(
             task_id.job_id.clone(),
             task_id.stage_id as usize,
             task_id.partition_id as usize,
-            plan,
+            shuffle_writer_plan.clone(),
             task_context,
             shuffle_output_partitioning,
         ))
@@ -209,10 +215,18 @@ async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecution
         debug!("Statistics: {:?}", execution_result);
         available_tasks_slots.fetch_add(1, Ordering::SeqCst);
 
+        let plan_metrics = collect_plan_metrics(shuffle_writer_plan.as_ref());
+        let operator_metrics = plan_metrics
+            .into_iter()
+            .map(|m| m.try_into())
+            .collect::<Result<Vec<_>, BallistaError>>()
+            .ok();
+
         let _ = task_status_sender.send(as_task_status(
             execution_result,
             executor.metadata.id.clone(),
             task_id,
+            operator_metrics,
         ));
     });
 

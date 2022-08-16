@@ -15,11 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use std::convert::TryInto;
 
 use crate::error::BallistaError;
 use crate::serde::protobuf;
 use crate::serde::protobuf::action::ActionType;
+use crate::serde::protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
 use crate::serde::scheduler::{Action, PartitionId, PartitionLocation, PartitionStats};
 use datafusion::physical_plan::Partitioning;
 
@@ -101,5 +103,71 @@ pub fn hash_partitioning_to_proto(
             "scheduler::to_proto() invalid partitioning for ExecutePartition: {:?}",
             other
         ))),
+    }
+}
+
+impl TryInto<protobuf::OperatorMetric> for &MetricValue {
+    type Error = BallistaError;
+
+    fn try_into(self) -> Result<protobuf::OperatorMetric, Self::Error> {
+        match self {
+            MetricValue::OutputRows(count) => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::OutputRows(count.value() as u64)),
+            }),
+            MetricValue::ElapsedCompute(time) => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::ElapseTime(time.value() as u64)),
+            }),
+            MetricValue::SpillCount(count) => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::SpillCount(count.value() as u64)),
+            }),
+            MetricValue::SpilledBytes(count) => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::SpilledBytes(count.value() as u64)),
+            }),
+            MetricValue::CurrentMemoryUsage(gauge) => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::CurrentMemoryUsage(
+                    gauge.value() as u64
+                )),
+            }),
+            MetricValue::Count { name, count } => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::Count(NamedCount {
+                    name: name.to_string(),
+                    value: count.value() as u64,
+                })),
+            }),
+            MetricValue::Gauge { name, gauge } => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::Gauge(NamedGauge {
+                    name: name.to_string(),
+                    value: gauge.value() as u64,
+                })),
+            }),
+            MetricValue::Time { name, time } => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::Time(NamedTime {
+                    name: name.to_string(),
+                    value: time.value() as u64,
+                })),
+            }),
+            MetricValue::StartTimestamp(timestamp) => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::StartTimestamp(
+                    timestamp.value().map(|m| m.timestamp_nanos()).unwrap_or(0),
+                )),
+            }),
+            MetricValue::EndTimestamp(timestamp) => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::EndTimestamp(
+                    timestamp.value().map(|m| m.timestamp_nanos()).unwrap_or(0),
+                )),
+            }),
+        }
+    }
+}
+
+impl TryInto<protobuf::OperatorMetricsSet> for MetricsSet {
+    type Error = BallistaError;
+
+    fn try_into(self) -> Result<protobuf::OperatorMetricsSet, Self::Error> {
+        let metrics = self
+            .iter()
+            .map(|m| m.value().try_into())
+            .collect::<Result<Vec<_>, BallistaError>>()?;
+        Ok(protobuf::OperatorMetricsSet { metrics })
     }
 }
