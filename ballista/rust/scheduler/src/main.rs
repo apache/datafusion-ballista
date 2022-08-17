@@ -65,8 +65,8 @@ use config::prelude::*;
 use datafusion::execution::context::default_session_builder;
 
 async fn start_server(
+    scheduler_name: String,
     config_backend: Arc<dyn StateBackendClient>,
-    namespace: String,
     addr: SocketAddr,
     policy: TaskSchedulingPolicy,
 ) -> Result<()> {
@@ -82,15 +82,15 @@ async fn start_server(
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
         match policy {
             TaskSchedulingPolicy::PushStaged => SchedulerServer::new_with_policy(
+                scheduler_name,
                 config_backend.clone(),
-                namespace.clone(),
                 policy,
                 BallistaCodec::default(),
                 default_session_builder,
             ),
             _ => SchedulerServer::new(
+                scheduler_name,
                 config_backend.clone(),
-                namespace.clone(),
                 BallistaCodec::default(),
             ),
         };
@@ -158,12 +158,13 @@ async fn main() -> Result<()> {
 
     let special_mod_log_level = opt.log_level_setting;
     let namespace = opt.namespace;
+    let external_host = opt.external_host;
     let bind_host = opt.bind_host;
     let port = opt.bind_port;
     let log_dir = opt.log_dir;
     let print_thread_info = opt.print_thread_info;
 
-    let scheduler_name = format!("scheduler_{}_{}_{}", namespace, bind_host, port);
+    let scheduler_name = format!("scheduler_{}_{}_{}", namespace, external_host, port);
     let log_file = tracing_appender::rolling::daily(log_dir, &scheduler_name);
 
     tracing_subscriber::fmt()
@@ -219,6 +220,6 @@ async fn main() -> Result<()> {
     };
 
     let policy: TaskSchedulingPolicy = opt.scheduler_policy;
-    start_server(client, namespace, addr, policy).await?;
+    start_server(scheduler_name, client, addr, policy).await?;
     Ok(())
 }

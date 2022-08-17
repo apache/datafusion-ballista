@@ -191,7 +191,6 @@ mod test {
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::new(
                 state_storage,
-                "default".to_string(),
                 default_session_builder,
                 BallistaCodec::default(),
             ));
@@ -229,7 +228,6 @@ mod test {
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::new(
                 state_storage,
-                "default".to_string(),
                 default_session_builder,
                 BallistaCodec::default(),
             ));
@@ -289,7 +287,6 @@ mod test {
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::new(
                 state_storage,
-                "default".to_string(),
                 default_session_builder,
                 BallistaCodec::default(),
             ));
