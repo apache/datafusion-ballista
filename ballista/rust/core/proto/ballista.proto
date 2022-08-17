@@ -439,6 +439,7 @@ message ExecutionGraph {
   repeated ExecutionGraphStage stages = 4;
   uint64 output_partitions = 5;
   repeated PartitionLocation output_locations = 6;
+  string scheduler_id = 7;
 }
 
 message KeyValuePair {

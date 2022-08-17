@@ -120,6 +120,8 @@ impl Debug for Task {
 /// publish its outputs to the `ExecutionGraph`s `output_locations` representing the final query results.
 #[derive(Clone)]
 pub struct ExecutionGraph {
+    /// Curator scheduler name
+    scheduler_id: String,
     /// ID for this job
     job_id: String,
     /// Session ID for this job
@@ -136,6 +138,7 @@ pub struct ExecutionGraph {
 
 impl ExecutionGraph {
     pub fn new(
+        scheduler_id: &str,
         job_id: &str,
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
@@ -150,6 +153,7 @@ impl ExecutionGraph {
         let stages = builder.build(shuffle_stages)?;
 
         Ok(Self {
+            scheduler_id: scheduler_id.to_string(),
             job_id: job_id.to_string(),
             session_id: session_id.to_string(),
             status: JobStatus {
@@ -523,6 +527,7 @@ impl ExecutionGraph {
             .collect::<Result<Vec<_>>>()?;
 
         Ok(ExecutionGraph {
+            scheduler_id: proto.scheduler_id,
             job_id: proto.job_id,
             session_id: proto.session_id,
             status: proto.status.ok_or_else(|| {
@@ -634,6 +639,7 @@ impl ExecutionGraph {
             stages,
             output_partitions: graph.output_partitions as u64,
             output_locations,
+            scheduler_id: graph.scheduler_id,
         })
     }
 }
@@ -1214,7 +1220,7 @@ mod test {
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
-        ExecutionGraph::new("job", "session", plan).unwrap()
+        ExecutionGraph::new("localhost:50050", "job", "session", plan).unwrap()
     }
 
     async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
@@ -1237,7 +1243,7 @@ mod test {
 
         let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
 
-        ExecutionGraph::new("job", "session", plan).unwrap()
+        ExecutionGraph::new("localhost:50050", "job", "session", plan).unwrap()
     }
 
     async fn test_join_plan(partition: usize) -> ExecutionGraph {
@@ -1278,7 +1284,8 @@ mod test {
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
-        let graph = ExecutionGraph::new("job", "session", plan).unwrap();
+        let graph =
+            ExecutionGraph::new("localhost:50050", "job", "session", plan).unwrap();
 
         println!("{:?}", graph);
 
@@ -1302,7 +1309,8 @@ mod test {
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
-        let graph = ExecutionGraph::new("job", "session", plan).unwrap();
+        let graph =
+            ExecutionGraph::new("localhost:50050", "job", "session", plan).unwrap();
 
         println!("{:?}", graph);
 
@@ -1326,7 +1334,8 @@ mod test {
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
-        let graph = ExecutionGraph::new("job", "session", plan).unwrap();
+        let graph =
+            ExecutionGraph::new("localhost:50050", "job", "session", plan).unwrap();
 
         println!("{:?}", graph);
 

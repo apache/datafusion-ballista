@@ -98,7 +98,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         codec: BallistaCodec<T, U>,
         session_builder: SessionBuilder,
     ) -> Self {
-        let state = Arc::new(SchedulerState::new(config, session_builder, codec));
+        let state = Arc::new(SchedulerState::new(
+            config,
+            session_builder,
+            codec,
+            scheduler_name.clone(),
+        ));
 
         let event_action: Option<Arc<dyn EventAction<SchedulerServerEvent>>> =
             if matches!(policy, TaskSchedulingPolicy::PushStaged) {
@@ -748,7 +753,7 @@ mod test {
         event_action: Arc<dyn EventAction<SchedulerServerEvent>>,
     ) -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
-        let state = Arc::new(SchedulerState::new(
+        let state = Arc::new(SchedulerState::new_with_default_scheduler_name(
             state_storage,
             default_session_builder,
             BallistaCodec::default(),

@@ -561,7 +561,7 @@ mod test {
         // no response task since we told the scheduler we didn't want to accept one
         assert!(response.task.is_none());
         let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerState::new(
+            SchedulerState::new_with_default_scheduler_name(
                 state_storage.clone(),
                 default_session_builder,
                 BallistaCodec::default(),
@@ -594,7 +594,7 @@ mod test {
         // still no response task since there are no tasks in the scheduler
         assert!(response.task.is_none());
         let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerState::new(
+            SchedulerState::new_with_default_scheduler_name(
                 state_storage.clone(),
                 default_session_builder,
                 BallistaCodec::default(),

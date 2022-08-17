@@ -55,6 +55,7 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     clients: ExecutorClients,
     session_builder: SessionBuilder,
     codec: BallistaCodec<T, U>,
+    scheduler_id: String,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U> {
@@ -62,12 +63,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         state: Arc<dyn StateBackendClient>,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
+        scheduler_id: String,
     ) -> Self {
         Self {
             state,
             clients: Default::default(),
             session_builder,
             codec,
+            scheduler_id,
         }
     }
 
@@ -78,7 +81,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<()> {
-        let graph = ExecutionGraph::new(job_id, session_id, plan)?;
+        let graph = ExecutionGraph::new(&self.scheduler_id, job_id, session_id, plan)?;
         info!("Submitting execution graph: {:?}", graph);
         self.state
             .put(
