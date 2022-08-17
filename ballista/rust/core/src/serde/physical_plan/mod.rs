@@ -577,12 +577,19 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     input.schema().as_ref(),
                 )?;
 
+                let max_shuffle_bytes = if shuffle_writer.max_shuffle_bytes == 0 {
+                    None
+                } else {
+                    Some(shuffle_writer.max_shuffle_bytes as usize)
+                };
+
                 Ok(Arc::new(ShuffleWriterExec::try_new(
                     shuffle_writer.job_id.clone(),
                     shuffle_writer.stage_id as usize,
                     input,
                     "".to_string(), // this is intentional but hacky - the executor will fill this in
                     output_partitioning,
+                    max_shuffle_bytes,
                 )?))
             }
             PhysicalPlanType::ShuffleReader(shuffle_reader) => {
@@ -1099,6 +1106,10 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         stage_id: exec.stage_id() as u32,
                         input: Some(Box::new(input)),
                         output_partitioning,
+                        max_shuffle_bytes: exec
+                            .max_shuffle_bytes()
+                            .map(|max| max as u64)
+                            .unwrap_or(0),
                     },
                 ))),
             })
@@ -1468,6 +1479,7 @@ mod roundtrip_tests {
             Arc::new(EmptyExec::new(false, schema)),
             "".to_string(),
             Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4)),
+            None,
         )?))
     }
 

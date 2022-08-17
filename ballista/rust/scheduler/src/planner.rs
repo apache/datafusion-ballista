@@ -40,11 +40,15 @@ type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<ShuffleWriterExe
 
 pub struct DistributedPlanner {
     next_stage_id: usize,
+    max_shuffle_bytes: Option<usize>,
 }
 
 impl DistributedPlanner {
     pub fn new() -> Self {
-        Self { next_stage_id: 0 }
+        Self {
+            next_stage_id: 0,
+            max_shuffle_bytes: Some(50 * 1024 * 1024 * 1024),
+        }
     }
 }
 
@@ -71,6 +75,7 @@ impl DistributedPlanner {
             self.next_stage_id(),
             new_plan,
             None,
+            self.max_shuffle_bytes.clone(),
         )?);
         Ok(stages)
     }
@@ -107,6 +112,7 @@ impl DistributedPlanner {
                 self.next_stage_id(),
                 children[0].clone(),
                 None,
+                self.max_shuffle_bytes,
             )?;
             let unresolved_shuffle = Arc::new(UnresolvedShuffleExec::new(
                 shuffle_writer.stage_id(),
@@ -134,6 +140,7 @@ impl DistributedPlanner {
                         self.next_stage_id(),
                         children[0].clone(),
                         Some(repart.partitioning().to_owned()),
+                        self.max_shuffle_bytes,
                     )?;
                     let unresolved_shuffle = Arc::new(UnresolvedShuffleExec::new(
                         shuffle_writer.stage_id(),
@@ -279,6 +286,7 @@ fn create_shuffle_writer(
     stage_id: usize,
     plan: Arc<dyn ExecutionPlan>,
     partitioning: Option<Partitioning>,
+    max_shuffle_bytes: Option<usize>,
 ) -> Result<Arc<ShuffleWriterExec>> {
     Ok(Arc::new(ShuffleWriterExec::try_new(
         job_id.to_owned(),
@@ -286,6 +294,7 @@ fn create_shuffle_writer(
         plan,
         "".to_owned(), // executor will decide on the work_dir path
         partitioning,
+        max_shuffle_bytes,
     )?))
 }
 

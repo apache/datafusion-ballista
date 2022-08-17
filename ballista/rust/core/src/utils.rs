@@ -61,6 +61,7 @@ pub async fn write_stream_to_disk(
     stream: &mut Pin<Box<dyn RecordBatchStream + Send>>,
     path: &str,
     disk_write_metric: &metrics::Time,
+    max_bytes: Option<usize>,
 ) -> Result<PartitionStats> {
     let file = File::create(&path).map_err(|e| {
         BallistaError::General(format!(
@@ -81,6 +82,15 @@ pub async fn write_stream_to_disk(
         num_batches += 1;
         num_rows += batch.num_rows();
         num_bytes += batch_size_bytes;
+
+        if let Some(max_bytes) = max_bytes {
+            if num_bytes > max_bytes {
+                return Err(BallistaError::General(format!(
+                    "Exceeded limit on max bytes written to disk: {:?}",
+                    max_bytes
+                )));
+            }
+        }
 
         let timer = disk_write_metric.timer();
         writer.write(&batch)?;

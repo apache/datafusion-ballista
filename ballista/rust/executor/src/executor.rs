@@ -171,6 +171,7 @@ impl Executor {
                 plan.children()[0].clone(),
                 self.work_dir.clone(),
                 shuffle_writer.shuffle_output_partitioning().cloned(),
+                shuffle_writer.max_shuffle_bytes(),
             )
         } else {
             Err(DataFusionError::Internal(
@@ -308,6 +309,7 @@ mod test {
             1,
             Arc::new(NeverendingOperator),
             work_dir.clone(),
+            None,
             None,
         )
         .expect("creating shuffle writer");
