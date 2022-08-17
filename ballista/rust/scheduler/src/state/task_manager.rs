@@ -233,98 +233,56 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         &self,
         reservations: &[ExecutorReservation],
     ) -> Result<(Vec<(String, Task)>, Vec<ExecutorReservation>, usize)> {
+        // Reinitialize the free reservations.
+        let free_reservations: Vec<ExecutorReservation> = reservations
+            .iter()
+            .map(|reservation| {
+                ExecutorReservation::new_free(reservation.executor_id.clone())
+            })
+            .collect();
+
         let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
-
         with_lock(lock, async {
-            let mut assignments: Vec<(String, Task)> = vec![];
-            let mut free_reservations: Vec<ExecutorReservation> = vec![];
-            // let _txn_ops: Vec<(Keyspace, String, Vec<u8>)> = vec![];
-
-            // Need to collect graphs we update so we can update them in storage when we are done
-            let mut graphs: HashMap<String, ExecutionGraph> = HashMap::new();
-
-            // First try and fill reservations for particular jobs. If the job has no more tasks
-            // free the reservation.
-            for reservation in reservations {
-                debug!(
-                "Filling reservation for executor {} from job {:?}",
-                reservation.executor_id, reservation.job_id
-            );
-                let executor_id = &reservation.executor_id;
-                if let Some(job_id) = &reservation.job_id {
-                    if let Some(graph) = graphs.get_mut(job_id) {
-                        if let Ok(Some(next_task)) = graph.pop_next_task(executor_id) {
-                            debug!(
-                            "Filled reservation for executor {} with task {:?}",
-                            executor_id, next_task
-                        );
-                            assignments.push((executor_id.clone(), next_task));
-                        } else {
-                            debug!("Cannot fill reservation for executor {} from job {}, freeing reservation", executor_id, job_id);
-                            free_reservations
-                                .push(ExecutorReservation::new_free(executor_id.clone()));
-                        }
-                    } else {
-                        // let lock = self.state.lock(Keyspace::ActiveJobs, job_id).await?;
-                        let mut graph = self.get_execution_graph(job_id).await?;
-
-                        if let Ok(Some(next_task)) = graph.pop_next_task(executor_id) {
-                            debug!(
-                            "Filled reservation for executor {} with task {:?}",
-                            executor_id, next_task
-                        );
-                            assignments.push((executor_id.clone(), next_task));
-                            graphs.insert(job_id.clone(), graph);
-                            // locks.push(lock);
-                        } else {
-                            debug!("Cannot fill reservation for executor {} from job {}, freeing reservation", executor_id, job_id);
-                            free_reservations
-                                .push(ExecutorReservation::new_free(executor_id.clone()));
-                        }
-                    }
-                } else {
-                    free_reservations.push(reservation.clone());
-                }
-            }
-
-            let mut other_jobs: Vec<String> =
+            let mut jobs: Vec<String> =
                 self.get_active_jobs().await?.into_iter().collect();
 
+            let mut assignments: Vec<(String, Task)> = vec![];
             let mut unassigned: Vec<ExecutorReservation> = vec![];
+            // Need to collect graphs we update so we can update them in storage when we are done
+            let mut graphs: HashMap<String, ExecutionGraph> = HashMap::new();
             // Now try and find tasks for free reservations from current set of graphs
             for reservation in free_reservations {
                 debug!(
-                "Filling free reservation for executor {}",
-                reservation.executor_id
-            );
+                    "Filling free reservation for executor {}",
+                    reservation.executor_id
+                );
                 let mut assigned = false;
                 let executor_id = reservation.executor_id.clone();
 
                 // Try and find a task in the graphs we already have locks on
                 if let Ok(Some(assignment)) = find_next_task(&executor_id, &mut graphs) {
                     debug!(
-                    "Filled free reservation for executor {} with task {:?}",
-                    reservation.executor_id, assignment.1
-                );
+                        "Filled free reservation for executor {} with task {:?}",
+                        reservation.executor_id, assignment.1
+                    );
                     // First check if we can find another task
                     assignments.push(assignment);
                     assigned = true;
                 } else {
                     // Otherwise start searching through other active jobs.
                     debug!(
-                    "Filling free reservation for executor {} from active jobs {:?}",
-                    reservation.executor_id, other_jobs
-                );
-                    while let Some(job_id) = other_jobs.pop() {
+                        "Filling free reservation for executor {} from active jobs {:?}",
+                        reservation.executor_id, jobs
+                    );
+                    while let Some(job_id) = jobs.pop() {
                         if graphs.get(&job_id).is_none() {
-                            // let lock = self.state.lock(Keyspace::ActiveJobs, &job_id).await?;
                             let mut graph = self.get_execution_graph(&job_id).await?;
 
                             if let Ok(Some(task)) = graph.pop_next_task(&executor_id) {
                                 debug!(
-                                "Filled free reservation for executor {} with task {:?}",
-                                reservation.executor_id, task
-                            );
+                                    "Filled free reservation for executor {} with task {:?}",
+                                    reservation.executor_id, task
+                                );
                                 assignments.push((executor_id.clone(), task));
                                 // locks.push(lock);
                                 graphs.insert(job_id, graph);
@@ -339,9 +297,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
                 if !assigned {
                     debug!(
-                    "Unable to fill reservation for executor {}, no tasks available",
-                    executor_id
-                );
+                        "Unable to fill reservation for executor {}, no tasks available",
+                        executor_id
+                    );
                     unassigned.push(reservation);
                 }
             }
@@ -547,15 +505,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 }
             }
 
-            // This is a little hacky but since we can't make an optional
-            // primitive field in protobuf, we just use 0 to encode None.
-            // Should work since stage IDs are 1-indexed.
-            let output_link = if stage.output_link == 0 {
-                None
-            } else {
-                Some(stage.output_link as usize)
-            };
-
             let output_partitioning: Option<Partitioning> =
                 parse_protobuf_hash_partitioning(
                     stage.output_partitioning.as_ref(),
@@ -608,7 +557,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 inputs,
                 plan,
                 task_statuses,
-                output_link,
+                output_links: stage
+                    .output_links
+                    .into_iter()
+                    .map(|l| l as usize)
+                    .collect(),
                 resolved: stage.resolved,
                 stage_metrics,
             };
@@ -642,15 +595,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .stages
             .into_iter()
             .map(|(stage_id, stage)| {
-                // This is a little hacky but since we can't make an optional
-                // primitive field in protobuf, we just use 0 to encode None.
-                // Should work since stage IDs are 1-indexed.
-                let output_link = if let Some(link) = stage.output_link {
-                    link as u32
-                } else {
-                    0
-                };
-
                 let mut plan: Vec<u8> = vec![];
 
                 U::try_from_physical_plan(
@@ -715,7 +659,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     inputs,
                     plan,
                     task_statuses,
-                    output_link,
+                    output_links: stage
+                        .output_links
+                        .into_iter()
+                        .map(|l| l as u32)
+                        .collect(),
                     resolved: stage.resolved,
                     stage_metrics,
                 })

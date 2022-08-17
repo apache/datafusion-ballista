@@ -101,8 +101,8 @@ pub struct ExecutionStage {
     /// Status of each already scheduled task. If status is None, the partition has not yet been scheduled
     pub(crate) task_statuses: Vec<Option<task_status::Status>>,
     /// Stage ID of the stage that will take this stages outputs as inputs.
-    /// If `output_link` is `None` then this the final stage in the `ExecutionGraph`
-    pub(crate) output_link: Option<usize>,
+    /// If `output_links` is empty then this the final stage in the `ExecutionGraph`
+    pub(crate) output_links: Vec<usize>,
     /// Flag indicating whether all input partitions have been resolved and the plan
     /// has UnresovledShuffleExec operators resolved to ShuffleReadExec operators.
     pub(crate) resolved: bool,
@@ -136,7 +136,7 @@ impl ExecutionStage {
         stage_id: usize,
         plan: Arc<dyn ExecutionPlan>,
         output_partitioning: Option<Partitioning>,
-        output_link: Option<usize>,
+        output_links: Vec<usize>,
         child_stages: Vec<usize>,
     ) -> Self {
         let num_tasks = plan.output_partitioning().partition_count();
@@ -156,7 +156,7 @@ impl ExecutionStage {
             inputs,
             plan,
             task_statuses: vec![None; num_tasks],
-            output_link,
+            output_links,
             resolved,
             stage_metrics: None,
         }
@@ -320,7 +320,7 @@ struct ExecutionStageBuilder {
     /// Map from stage ID -> List of child stage IDs
     stage_dependencies: HashMap<usize, Vec<usize>>,
     /// Map from Stage ID -> output link
-    output_links: HashMap<usize, usize>,
+    output_links: HashMap<usize, Vec<usize>>,
 }
 
 impl ExecutionStageBuilder {
@@ -346,7 +346,7 @@ impl ExecutionStageBuilder {
         for stage in stages {
             let partitioning = stage.shuffle_output_partitioning().cloned();
             let stage_id = stage.stage_id();
-            let output_link = self.output_links.remove(&stage_id);
+            let output_links = self.output_links.remove(&stage_id).unwrap_or_default();
 
             let child_stages = self
                 .stage_dependencies
@@ -359,7 +359,7 @@ impl ExecutionStageBuilder {
                     stage_id,
                     stage,
                     partitioning,
-                    output_link,
+                    output_links,
                     child_stages,
                 ),
             );
@@ -381,11 +381,21 @@ impl ExecutionPlanVisitor for ExecutionStageBuilder {
         } else if let Some(unresolved_shuffle) =
             plan.as_any().downcast_ref::<UnresolvedShuffleExec>()
         {
-            self.output_links
-                .insert(unresolved_shuffle.stage_id, self.current_stage_id);
+            if let Some(output_links) =
+                self.output_links.get_mut(&unresolved_shuffle.stage_id)
+            {
+                if !output_links.contains(&self.current_stage_id) {
+                    output_links.push(self.current_stage_id);
+                }
+            } else {
+                self.output_links
+                    .insert(unresolved_shuffle.stage_id, vec![self.current_stage_id]);
+            }
 
             if let Some(deps) = self.stage_dependencies.get_mut(&self.current_stage_id) {
-                deps.push(unresolved_shuffle.stage_id)
+                if !deps.contains(&unresolved_shuffle.stage_id) {
+                    deps.push(unresolved_shuffle.stage_id);
+                }
             } else {
                 self.stage_dependencies
                     .insert(self.current_stage_id, vec![unresolved_shuffle.stage_id]);
@@ -462,10 +472,10 @@ impl Debug for Task {
 ///
 ///
 /// The DAG structure of this `ExecutionGraph` is encoded in the stages. Each stage's `input` field
-/// will indicate which stages it depends on, and each stage's `output_link` will indicate which
+/// will indicate which stages it depends on, and each stage's `output_links` will indicate which
 /// stage it needs to publish its output to.
 ///
-/// If a stage has `output_link == None` then it is the final stage in this query, and it should
+/// If a stage has `output_links` is empty then it is the final stage in this query, and it should
 /// publish its outputs to the `ExecutionGraph`s `output_locations` representing the final query results.
 #[derive(Clone)]
 pub struct ExecutionGraph {
@@ -616,28 +626,33 @@ impl ExecutionGraph {
                             completed_task.partitions,
                         );
 
-                        if let Some(link) = stage.output_link {
-                            // If this is an intermediate stage, we need to push its `PartitionLocation`s to the parent stage
-                            if let Some(linked_stage) = self.stages.get_mut(&link) {
-                                linked_stage.add_input_partitions(
-                                    stage_id, partition, locations,
-                                )?;
-
-                                // If all tasks for this stage are complete, mark the input complete in the parent stage
-                                if stage_complete {
-                                    linked_stage.complete_input(stage_id);
-                                }
-
-                                // If all input partitions are ready, we can resolve any UnresolvedShuffleExec in the parent stage plan
-                                if linked_stage.resolvable() {
-                                    linked_stage.resolve_shuffles()?;
-                                }
-                            } else {
-                                return Err(BallistaError::Internal(format!("Error updating job {}: Invalid output link {} for stage {}", job_id, stage_id, link)));
-                            }
-                        } else {
-                            // If `output_link` is `None`, then this is a final stage
+                        let output_links = stage.output_links.clone();
+                        if output_links.is_empty() {
+                            // If `output_links` is empty, then this is a final stage
                             self.output_locations.extend(locations);
+                        } else {
+                            for link in output_links.into_iter() {
+                                // If this is an intermediate stage, we need to push its `PartitionLocation`s to the parent stage
+                                if let Some(linked_stage) = self.stages.get_mut(&link) {
+                                    linked_stage.add_input_partitions(
+                                        stage_id,
+                                        partition,
+                                        locations.clone(),
+                                    )?;
+
+                                    // If all tasks for this stage are complete, mark the input complete in the parent stage
+                                    if stage_complete {
+                                        linked_stage.complete_input(stage_id);
+                                    }
+
+                                    // If all input partitions are ready, we can resolve any UnresolvedShuffleExec in the parent stage plan
+                                    if linked_stage.resolvable() {
+                                        linked_stage.resolve_shuffles()?;
+                                    }
+                                } else {
+                                    return Err(BallistaError::Internal(format!("Error updating job {}: Invalid output link {} for stage {}", job_id, stage_id, link)));
+                                }
+                            }
                         }
                     }
                 } else {

@@ -28,7 +28,10 @@ use crate::error::BallistaError;
 use crate::serde::protobuf;
 use crate::serde::protobuf::action::ActionType;
 use crate::serde::protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
-use crate::serde::scheduler::{Action, PartitionId, PartitionLocation, PartitionStats};
+use crate::serde::scheduler::{
+    Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, ExecutorState,
+    PartitionId, PartitionLocation, PartitionStats,
+};
 
 impl TryInto<Action> for protobuf::Action {
     type Error = BallistaError;
@@ -200,5 +203,81 @@ impl TryInto<MetricsSet> for protobuf::OperatorMetricsSet {
             ms.push(new_metric)
         }
         Ok(ms)
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<ExecutorMetadata> for protobuf::ExecutorMetadata {
+    fn into(self) -> ExecutorMetadata {
+        ExecutorMetadata {
+            id: self.id,
+            host: self.host,
+            port: self.port as u16,
+            grpc_port: self.grpc_port as u16,
+            specification: self.specification.unwrap().into(),
+        }
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<ExecutorSpecification> for protobuf::ExecutorSpecification {
+    fn into(self) -> ExecutorSpecification {
+        let mut ret = ExecutorSpecification { task_slots: 0 };
+        for resource in self.resources {
+            if let Some(protobuf::executor_resource::Resource::TaskSlots(task_slots)) =
+                resource.resource
+            {
+                ret.task_slots = task_slots
+            }
+        }
+        ret
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<ExecutorData> for protobuf::ExecutorData {
+    fn into(self) -> ExecutorData {
+        let mut ret = ExecutorData {
+            executor_id: self.executor_id,
+            total_task_slots: 0,
+            available_task_slots: 0,
+        };
+        for resource in self.resources {
+            if let Some(task_slots) = resource.total {
+                if let Some(protobuf::executor_resource::Resource::TaskSlots(
+                    task_slots,
+                )) = task_slots.resource
+                {
+                    ret.total_task_slots = task_slots
+                }
+            };
+            if let Some(task_slots) = resource.available {
+                if let Some(protobuf::executor_resource::Resource::TaskSlots(
+                    task_slots,
+                )) = task_slots.resource
+                {
+                    ret.available_task_slots = task_slots
+                }
+            };
+        }
+        ret
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<ExecutorState> for protobuf::ExecutorState {
+    fn into(self) -> ExecutorState {
+        let mut ret = ExecutorState {
+            available_memory_size: u64::MAX,
+        };
+        for metric in self.metrics {
+            if let Some(protobuf::executor_metric::Metric::AvailableMemory(
+                available_memory_size,
+            )) = metric.metric
+            {
+                ret.available_memory_size = available_memory_size
+            }
+        }
+        ret
     }
 }
