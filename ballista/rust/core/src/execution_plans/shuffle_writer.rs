@@ -260,9 +260,8 @@ impl ShuffleWriterExec {
                                             stream.schema().as_ref(),
                                         )?;
 
-                                        let cur_bytes = writer.num_bytes;
                                         writer.write(&output_batch)?;
-                                        total_bytes_count.fetch_add((writer.num_bytes - cur_bytes) as usize, Ordering::Acquire);
+                                        total_bytes_count.fetch_add(writer.num_bytes  as usize, Ordering::Acquire);
 
                                         writers[output_partition] = Some(writer);
                                     }
@@ -488,7 +487,7 @@ mod tests {
             input_plan,
             work_dir.into_path().to_str().unwrap().to_owned(),
             Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
-            Some(1024 * 1024 as usize),
+            Some(1024 * 1024_usize),
         )?;
         let mut stream = query_stage.execute(0, task_ctx)?;
         let batches = utils::collect_stream(&mut stream)
@@ -546,7 +545,7 @@ mod tests {
             input_plan,
             work_dir.into_path().to_str().unwrap().to_owned(),
             Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
-            Some(1024 * 1024 * 1024 as usize),
+            Some(1024 * 1024 * 1024_usize),
         )?;
         let mut stream = query_stage.execute(0, task_ctx)?;
         let batches = utils::collect_stream(&mut stream)
@@ -586,13 +585,12 @@ mod tests {
             input_plan,
             work_dir.into_path().to_str().unwrap().to_owned(),
             Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
-            Some(1 as usize),
+            Some(1_usize),
         )?;
         let mut stream = query_stage.execute(0, task_ctx)?;
-        match utils::collect_stream(&mut stream).await {
-            Ok(_) => Err(DataFusionError::Execution("Should fail".to_string())),
-            Err(_) => Ok(()),
-        }
+        assert!(utils::collect_stream(&mut stream).await.is_err());
+
+        Ok(())
     }
 
     #[tokio::test]
@@ -609,13 +607,12 @@ mod tests {
             input_plan,
             work_dir.into_path().to_str().unwrap().to_owned(),
             Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
-            Some(1 as usize),
+            Some(1_usize),
         )?;
         let mut stream = query_stage.execute(0, task_ctx)?;
-        match utils::collect_stream(&mut stream).await {
-            Ok(_) => Err(DataFusionError::Execution("Should fail".to_string())),
-            Err(_) => Ok(()),
-        }
+        assert!(utils::collect_stream(&mut stream).await.is_err());
+
+        Ok(())
     }
 
     fn create_input_plan() -> Result<Arc<dyn ExecutionPlan>> {
