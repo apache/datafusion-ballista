@@ -75,7 +75,7 @@ impl DistributedPlanner {
             self.next_stage_id(),
             new_plan,
             None,
-            self.max_shuffle_bytes.clone(),
+            self.max_shuffle_bytes,
         )?);
         Ok(stages)
     }

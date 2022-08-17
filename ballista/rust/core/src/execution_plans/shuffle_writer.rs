@@ -161,7 +161,7 @@ impl ShuffleWriterExec {
         let write_metrics = ShuffleWriteMetrics::new(input_partition, &self.metrics);
         let output_partitioning = self.shuffle_output_partitioning.clone();
         let plan = self.plan.clone();
-        let max_shuffle_bytes = self.max_shuffle_bytes.clone();
+        let max_shuffle_bytes = self.max_shuffle_bytes;
 
         async move {
             let now = Instant::now();
@@ -242,7 +242,7 @@ impl ShuffleWriterExec {
                                     Some(w) => {
                                         let cur_bytes = w.num_bytes;
                                         w.write(&output_batch)?;
-                                        total_bytes_count.fetch_add(((w.num_bytes - cur_bytes)) as usize, Ordering::SeqCst);
+                                        total_bytes_count.fetch_add((w.num_bytes - cur_bytes) as usize, Ordering::SeqCst);
                                     }
                                     None => {
                                         let mut path = path.clone();
@@ -262,7 +262,7 @@ impl ShuffleWriterExec {
 
                                         let cur_bytes = writer.num_bytes;
                                         writer.write(&output_batch)?;
-                                        total_bytes_count.fetch_add(((writer.num_bytes - cur_bytes)) as usize, Ordering::Acquire);
+                                        total_bytes_count.fetch_add((writer.num_bytes - cur_bytes) as usize, Ordering::Acquire);
 
                                         writers[output_partition] = Some(writer);
                                     }
@@ -361,7 +361,7 @@ impl ExecutionPlan for ShuffleWriterExec {
             children[0].clone(),
             self.work_dir.clone(),
             self.shuffle_output_partitioning.clone(),
-            self.max_shuffle_bytes.clone(),
+            self.max_shuffle_bytes,
         )?))
     }
 
