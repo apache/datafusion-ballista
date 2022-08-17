@@ -28,6 +28,7 @@ use ballista_core::event_loop::{EventAction, EventSender};
 
 use ballista_core::serde::AsExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
+use tokio::sync::mpsc;
 
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SchedulerServerEvent};
 
@@ -52,32 +53,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
             event_sender,
         }
     }
-
-    async fn submit_job(
-        &self,
-        job_id: String,
-        session_id: String,
-        session_ctx: Arc<SessionContext>,
-        plan: &LogicalPlan,
-    ) -> Result<()> {
-        let start = Instant::now();
-        let optimized_plan = session_ctx.optimize(plan)?;
-
-        debug!("Calculated optimized plan: {:?}", optimized_plan);
-
-        let plan = session_ctx.create_physical_plan(&optimized_plan).await?;
-
-        self.state
-            .task_manager
-            .submit_job(&job_id, &session_id, plan.clone())
-            .await?;
-
-        let elapsed = start.elapsed();
-
-        info!("Planned job {} in {:?}", job_id, elapsed);
-
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -95,25 +70,37 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     async fn on_receive(
         &self,
         event: QueryStageSchedulerEvent,
-    ) -> Result<Option<QueryStageSchedulerEvent>> {
+        tx_event: &mpsc::Sender<QueryStageSchedulerEvent>,
+        _rx_event: &mpsc::Receiver<QueryStageSchedulerEvent>,
+    ) -> Result<()> {
         match event {
             QueryStageSchedulerEvent::JobQueued {
                 job_id,
-                session_id,
                 session_ctx,
                 plan,
             } => {
                 info!("Job {} queued", job_id);
-                return if let Err(e) = self
-                    .submit_job(job_id.clone(), session_id, session_ctx, &plan)
-                    .await
-                {
-                    let msg = format!("Error planning job {}: {:?}", job_id, e);
-                    error!("{}", msg);
-                    Ok(Some(QueryStageSchedulerEvent::JobFailed(job_id, msg)))
-                } else {
-                    Ok(Some(QueryStageSchedulerEvent::JobSubmitted(job_id)))
-                };
+                let state = self.state.clone();
+                let tx_event = tx_event.clone();
+                tokio::spawn(async move {
+                    let event = if let Err(e) =
+                        submit_job(state.clone(), job_id.clone(), session_ctx, &plan)
+                            .await
+                    {
+                        let msg = format!("Error planning job {}: {:?}", job_id, e);
+                        error!("{}", msg);
+                        QueryStageSchedulerEvent::JobFailed(job_id, msg)
+                    } else {
+                        QueryStageSchedulerEvent::JobSubmitted(job_id)
+                    };
+                    tx_event
+                        .send(event)
+                        .await
+                        .map_err(|e| {
+                            error!("Fail to send event due to {}", e);
+                        })
+                        .unwrap();
+                });
             }
             QueryStageSchedulerEvent::JobSubmitted(job_id) => {
                 info!("Job {} submitted", job_id);
@@ -164,10 +151,35 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             }
         }
 
-        Ok(None)
+        Ok(())
     }
 
     fn on_error(&self, error: BallistaError) {
         error!("Error received by QueryStageScheduler: {:?}", error);
     }
+}
+
+async fn submit_job<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
+    state: Arc<SchedulerState<T, U>>,
+    job_id: String,
+    session_ctx: Arc<SessionContext>,
+    plan: &LogicalPlan,
+) -> Result<()> {
+    let start = Instant::now();
+    let optimized_plan = session_ctx.optimize(plan)?;
+
+    debug!("Calculated optimized plan: {:?}", optimized_plan);
+
+    let plan = session_ctx.create_physical_plan(&optimized_plan).await?;
+
+    state
+        .task_manager
+        .submit_job(&job_id, &session_ctx.session_id(), plan.clone())
+        .await?;
+
+    let elapsed = start.elapsed();
+
+    info!("Planned job {} in {:?}", job_id, elapsed);
+
+    Ok(())
 }

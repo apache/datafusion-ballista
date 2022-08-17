@@ -33,7 +33,7 @@ use datafusion::execution::context::{SessionConfig, SessionContext, SessionState
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::CsvReadOptions;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{Receiver, Sender};
 
 pub const TPCH_TABLES: &[&str] = &[
     "part", "supplier", "partsupp", "customer", "orders", "lineitem", "nation", "region",
@@ -63,10 +63,12 @@ impl EventAction<SchedulerServerEvent> for SchedulerEventObserver {
     async fn on_receive(
         &self,
         event: SchedulerServerEvent,
-    ) -> Result<Option<SchedulerServerEvent>> {
+        _tx_event: &Sender<SchedulerServerEvent>,
+        _rx_event: &Receiver<SchedulerServerEvent>,
+    ) -> Result<()> {
         self.sender.send(event).await.unwrap();
 
-        Ok(None)
+        Ok(())
     }
 
     fn on_error(&self, error: BallistaError) {
