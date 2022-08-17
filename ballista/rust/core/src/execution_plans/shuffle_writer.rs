@@ -26,6 +26,7 @@ use std::any::Any;
 use std::future::Future;
 use std::iter::Iterator;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -75,6 +76,8 @@ pub struct ShuffleWriterExec {
     shuffle_output_partitioning: Option<Partitioning>,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
+    /// Maximum shuffle bytes written per node
+    max_shuffle_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +116,7 @@ impl ShuffleWriterExec {
         plan: Arc<dyn ExecutionPlan>,
         work_dir: String,
         shuffle_output_partitioning: Option<Partitioning>,
+        max_shuffle_bytes: Option<usize>,
     ) -> Result<Self> {
         Ok(Self {
             job_id,
@@ -121,6 +125,7 @@ impl ShuffleWriterExec {
             work_dir,
             shuffle_output_partitioning,
             metrics: ExecutionPlanMetricsSet::new(),
+            max_shuffle_bytes,
         })
     }
 
@@ -139,6 +144,11 @@ impl ShuffleWriterExec {
         self.shuffle_output_partitioning.as_ref()
     }
 
+    /// Get the max shuffle bytes
+    pub fn max_shuffle_bytes(&self) -> Option<usize> {
+        self.max_shuffle_bytes
+    }
+
     pub fn execute_shuffle_write(
         &self,
         input_partition: usize,
@@ -151,6 +161,7 @@ impl ShuffleWriterExec {
         let write_metrics = ShuffleWriteMetrics::new(input_partition, &self.metrics);
         let output_partitioning = self.shuffle_output_partitioning.clone();
         let plan = self.plan.clone();
+        let max_shuffle_bytes = self.max_shuffle_bytes.clone();
 
         async move {
             let now = Instant::now();
@@ -170,6 +181,7 @@ impl ShuffleWriterExec {
                         &mut stream,
                         path,
                         &write_metrics.write_time,
+                        max_shuffle_bytes,
                     )
                     .await
                     .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
@@ -211,6 +223,8 @@ impl ShuffleWriterExec {
                         write_metrics.repart_time.clone(),
                     )?;
 
+                    let total_bytes_count: AtomicUsize = AtomicUsize::new(0);
+
                     while let Some(result) = stream.next().await {
                         let input_batch = result?;
 
@@ -226,7 +240,9 @@ impl ShuffleWriterExec {
                                 let timer = write_metrics.write_time.timer();
                                 match &mut writers[output_partition] {
                                     Some(w) => {
+                                        let cur_bytes = w.num_bytes;
                                         w.write(&output_batch)?;
+                                        total_bytes_count.fetch_add(((w.num_bytes - cur_bytes)) as usize, Ordering::SeqCst);
                                     }
                                     None => {
                                         let mut path = path.clone();
@@ -244,12 +260,26 @@ impl ShuffleWriterExec {
                                             stream.schema().as_ref(),
                                         )?;
 
+                                        let cur_bytes = writer.num_bytes;
                                         writer.write(&output_batch)?;
+                                        total_bytes_count.fetch_add(((writer.num_bytes - cur_bytes)) as usize, Ordering::Acquire);
+
                                         writers[output_partition] = Some(writer);
                                     }
                                 }
                                 write_metrics.output_rows.add(output_batch.num_rows());
                                 timer.done();
+
+                                if let Some(max_shuffle_bytes) = max_shuffle_bytes {
+                                    let total_bytes_count = total_bytes_count.load(Ordering::SeqCst);
+
+                                    if total_bytes_count > max_shuffle_bytes {
+                                        return Err(DataFusionError::Execution(format!(
+                                            "Exceeded limit on max bytes written to disk: {:?}", max_shuffle_bytes
+                                        )))
+                                    }
+                                }
+
                                 Ok(())
                             },
                         )?;
@@ -331,6 +361,7 @@ impl ExecutionPlan for ShuffleWriterExec {
             children[0].clone(),
             self.work_dir.clone(),
             self.shuffle_output_partitioning.clone(),
+            self.max_shuffle_bytes.clone(),
         )?))
     }
 
@@ -456,6 +487,7 @@ mod tests {
             input_plan,
             work_dir.into_path().to_str().unwrap().to_owned(),
             Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
+            Some(1024 * 1024 as usize),
         )?;
         let mut stream = query_stage.execute(0, task_ctx)?;
         let batches = utils::collect_stream(&mut stream)
@@ -513,6 +545,7 @@ mod tests {
             input_plan,
             work_dir.into_path().to_str().unwrap().to_owned(),
             Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
+            Some(1024 * 1024 * 1024 as usize),
         )?;
         let mut stream = query_stage.execute(0, task_ctx)?;
         let batches = utils::collect_stream(&mut stream)
@@ -536,6 +569,52 @@ mod tests {
         assert_eq!(2, num_rows.value(1));
 
         Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(not(feature = "force_hash_collisions"))]
+    async fn test_shuffle_fails_max_bytes() -> Result<()> {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+
+        let input_plan = Arc::new(CoalescePartitionsExec::new(create_input_plan()?));
+        let work_dir = TempDir::new()?;
+        let query_stage = ShuffleWriterExec::try_new(
+            "jobOne".to_owned(),
+            1,
+            input_plan,
+            work_dir.into_path().to_str().unwrap().to_owned(),
+            Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
+            Some(1 as usize),
+        )?;
+        let mut stream = query_stage.execute(0, task_ctx)?;
+        match utils::collect_stream(&mut stream).await {
+            Ok(_) => Err(DataFusionError::Execution("Should fail".to_string())),
+            Err(_) => Ok(()),
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(not(feature = "force_hash_collisions"))]
+    async fn test_partitioned_fails_max_bytes() -> Result<()> {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+
+        let input_plan = create_input_plan()?;
+        let work_dir = TempDir::new()?;
+        let query_stage = ShuffleWriterExec::try_new(
+            "jobOne".to_owned(),
+            1,
+            input_plan,
+            work_dir.into_path().to_str().unwrap().to_owned(),
+            Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
+            Some(1 as usize),
+        )?;
+        let mut stream = query_stage.execute(0, task_ctx)?;
+        match utils::collect_stream(&mut stream).await {
+            Ok(_) => Err(DataFusionError::Execution("Should fail".to_string())),
+            Err(_) => Ok(()),
+        }
     }
 
     fn create_input_plan() -> Result<Arc<dyn ExecutionPlan>> {

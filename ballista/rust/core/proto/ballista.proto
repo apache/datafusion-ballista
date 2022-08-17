@@ -339,6 +339,8 @@ message ShuffleWriterExecNode {
   uint32 stage_id = 2;
   PhysicalPlanNode input = 3;
   PhysicalHashRepartition output_partitioning = 4;
+  uint64 max_shuffle_bytes = 5;
+
 }
 
 message ShuffleReaderExecNode {
