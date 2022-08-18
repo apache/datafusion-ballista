@@ -32,7 +32,7 @@ use ballista_core::utils::collect_plan_metrics;
 use datafusion::execution::context::TaskContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use futures::FutureExt;
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info, warn};
 use std::any::Any;
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -47,7 +47,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     mut scheduler: SchedulerGrpcClient<Channel>,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
-) {
+) -> Result<(), BallistaError> {
     let executor_specification: ExecutorSpecification = executor
         .metadata
         .specification
@@ -59,10 +59,9 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         Arc::new(AtomicUsize::new(executor_specification.task_slots as usize));
     let (task_status_sender, mut task_status_receiver) =
         std::sync::mpsc::channel::<TaskStatus>();
+    info!("Starting poll work loop with scheduler");
 
     loop {
-        trace!("Starting registration loop with scheduler");
-
         let task_status: Vec<TaskStatus> =
             sample_tasks_status(&mut task_status_receiver).await;
 
@@ -108,7 +107,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 }
             }
             Err(error) => {
-                warn!("Executor registration failed. If this continues to happen the executor might be marked as dead by the scheduler. Error: {}", error);
+                warn!("Executor poll work loop failed. If this continues to happen the Scheduler might be marked as dead. Error: {}", error);
             }
         }
         if !active_job {
