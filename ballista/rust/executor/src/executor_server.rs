@@ -170,7 +170,7 @@ pub struct ExecutorServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPl
 
 #[derive(Clone)]
 struct ExecutorEnv {
-    /// Receive `TaskDefinzition` from rpc then send to CPU bound tasks pool `dedicated_executor`.
+    /// Receive `TaskDefinition` from rpc then send to CPU bound tasks pool `dedicated_executor`.
     tx_task: mpsc::Sender<TaskDefinition>,
     /// Receive `TaskStatus` from CPU bound tasks pool `dedicated_executor` then use rpc send back to scheduler.
     tx_task_status: mpsc::Sender<TaskStatus>,
