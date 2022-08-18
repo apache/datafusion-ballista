@@ -408,30 +408,6 @@ enum JoinSide{
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Ballista Scheduling
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-message TaskInputPartitions {
-  uint32 partition = 1;
-  repeated PartitionLocation partition_location = 2;
-}
-
-message GraphStageInput {
-  uint32 stage_id = 1;
-  repeated TaskInputPartitions partition_locations = 2;
-  bool complete = 3;
-}
-
-
-message ExecutionGraphStage {
-  uint64 stage_id = 1;
-  uint32 partitions = 2;
-  PhysicalHashRepartition output_partitioning = 3;
-  repeated  GraphStageInput inputs = 4;
-  bytes plan = 5;
-  repeated TaskStatus task_statuses = 6;
-  repeated uint32 output_links = 7;
-  bool resolved = 8;
-  repeated OperatorMetricsSet stage_metrics = 9;
-}
-
 message ExecutionGraph {
   string job_id = 1;
   string session_id = 2;
@@ -440,6 +416,74 @@ message ExecutionGraph {
   uint64 output_partitions = 5;
   repeated PartitionLocation output_locations = 6;
   string scheduler_id = 7;
+}
+
+message ExecutionGraphStage {
+  oneof StageType {
+      UnResolvedStage unresolved_stage = 1;
+      ResolvedStage resolved_stage = 2;
+      CompletedStage completed_stage = 3;
+      FailedStage failed_stage = 4;
+      RunningStage running_stage = 5;
+  }
+}
+
+message UnResolvedStage {
+  uint64 stage_id = 1;
+  PhysicalHashRepartition output_partitioning = 2;
+  repeated uint32 output_links = 3;
+  repeated  GraphStageInput inputs = 4;
+  bytes plan = 5;
+}
+
+message ResolvedStage {
+  uint64 stage_id = 1;
+  uint32 partitions = 2;
+  PhysicalHashRepartition output_partitioning = 3;
+  repeated uint32 output_links = 4;
+  bytes plan = 5;
+}
+
+message RunningStage {
+  uint64 stage_id = 1;
+  uint32 partitions = 2;
+  PhysicalHashRepartition output_partitioning = 3;
+  repeated uint32 output_links = 4;
+  bytes plan = 5;
+  repeated TaskStatus task_statuses = 6;
+  repeated OperatorMetricsSet stage_metrics = 7;
+}
+
+message CompletedStage {
+  uint64 stage_id = 1;
+  uint32 partitions = 2;
+  PhysicalHashRepartition output_partitioning = 3;
+  repeated uint32 output_links = 4;
+  bytes plan = 5;
+  repeated TaskStatus task_statuses = 6;
+  repeated OperatorMetricsSet stage_metrics = 7;
+}
+
+message FailedStage {
+  uint64 stage_id = 1;
+  uint32 partitions = 2;
+  PhysicalHashRepartition output_partitioning = 3;
+  repeated uint32 output_links = 4;
+  bytes plan = 5;
+  repeated TaskStatus task_statuses = 6;
+  repeated OperatorMetricsSet stage_metrics = 7;
+  string error_message = 8;
+}
+
+message GraphStageInput {
+  uint32 stage_id = 1;
+  repeated TaskInputPartitions partition_locations = 2;
+  bool complete = 3;
+}
+
+message TaskInputPartitions {
+  uint32 partition = 1;
+  repeated PartitionLocation partition_location = 2;
 }
 
 message KeyValuePair {

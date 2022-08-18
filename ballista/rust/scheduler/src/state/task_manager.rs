@@ -479,7 +479,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Retrieve the number of available tasks for the given job. The value returned
     /// is strictly a point-in-time snapshot
     pub async fn get_available_task_count(&self, job_id: &str) -> Result<usize> {
-        let graph = self.get_execution_graph(job_id).await?;
+        let mut graph = self.get_execution_graph(job_id).await?;
+
+        graph.revive();
 
         Ok(graph.available_tasks())
     }
