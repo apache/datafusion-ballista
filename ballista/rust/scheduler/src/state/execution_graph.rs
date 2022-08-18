@@ -817,6 +817,7 @@ impl ExecutionGraph {
         self.status = JobStatus {
             status: Some(job_status::Status::Completed(CompletedJob {
                 partition_location,
+                queued_at: self.queued_at,
             })),
         };
 
