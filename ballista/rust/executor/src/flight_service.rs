@@ -54,7 +54,7 @@ pub struct BallistaFlightService {}
 
 impl BallistaFlightService {
     pub fn new() -> Self {
-        Self { }
+        Self {}
     }
 }
 

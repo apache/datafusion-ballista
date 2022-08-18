@@ -51,9 +51,8 @@ impl Graceful {
     }
 }
 
-
-impl Default for  Graceful {
+impl Default for Graceful {
     fn default() -> Self {
-       Graceful::new()
+        Graceful::new()
     }
 }
