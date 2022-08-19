@@ -26,7 +26,7 @@ use datafusion::physical_plan::{
 };
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
-use log::{error, warn};
+use log::{error, info, warn};
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
@@ -43,6 +43,7 @@ use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 
 use crate::display::print_stage_metrics;
 use crate::planner::DistributedPlanner;
+use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::execution_graph::execution_stage::{
     CompletedStage, ExecutionStage, FailedStage, ResolvedStage, RunningStage,
     UnResolvedStage,
@@ -193,7 +194,7 @@ impl ExecutionGraph {
         &mut self,
         executor: &ExecutorMetadata,
         task_statuses: Vec<TaskStatus>,
-    ) -> Result<()> {
+    ) -> Result<Option<QueryStageSchedulerEvent>> {
         let job_id = self.job_id().to_owned();
         // First of all, classify the statuses by stages
         let mut job_task_statuses: HashMap<usize, Vec<TaskStatus>> = HashMap::new();
@@ -218,9 +219,7 @@ impl ExecutionGraph {
         // It will be refined later
         self.revive();
 
-        let mut failed_stages = vec![];
-        let mut completed_stages = vec![];
-        let mut resolved_stages = vec![];
+        let mut events = vec![];
         for (stage_id, stage_task_statuses) in job_task_statuses {
             if let Some(stage) = self.stages.get_mut(&stage_id) {
                 if let ExecutionStage::Running(running_stage) = stage {
@@ -245,11 +244,13 @@ impl ExecutionGraph {
 
                             // TODO Should be able to reschedule this task.
                             if let task_status::Status::Failed(failed_task) = status {
-                                let failed_stage = running_stage.to_failed(format!(
-                                    "Task {}/{}/{} failed: {}",
-                                    job_id, stage_id, partition_id, failed_task.error
+                                events.push(StageEvent::StageFailed(
+                                    stage_id,
+                                    format!(
+                                        "Task {}/{}/{} failed: {}",
+                                        job_id, stage_id, partition_id, failed_task.error
+                                    ),
                                 ));
-                                failed_stages.push(failed_stage);
                                 break;
                             } else if let task_status::Status::Completed(completed_task) =
                                 status
@@ -273,7 +274,7 @@ impl ExecutionGraph {
                     }
                     let is_completed = running_stage.is_completed();
                     if is_completed {
-                        completed_stages.push(running_stage.to_completed());
+                        events.push(StageEvent::StageCompleted(stage_id));
                         // if this stage is completed, we want to combine the stage metrics to plan's metric set and print out the plan
                         if let Some(stage_metrics) = running_stage.stage_metrics.as_ref()
                         {
@@ -287,7 +288,7 @@ impl ExecutionGraph {
                     }
 
                     let output_links = running_stage.output_links.clone();
-                    resolved_stages.append(&mut self.update_stage_output_links(
+                    events.append(&mut self.update_stage_output_links(
                         stage_id,
                         is_completed,
                         locations,
@@ -309,37 +310,7 @@ impl ExecutionGraph {
             }
         }
 
-        // Then update completed stages
-        for completed_stage in completed_stages {
-            self.stages.insert(
-                completed_stage.stage_id,
-                ExecutionStage::Completed(completed_stage),
-            );
-        }
-
-        // Then update resolved stages
-        for resolved_stage in resolved_stages {
-            self.stages.insert(
-                resolved_stage.stage_id,
-                ExecutionStage::Resolved(resolved_stage),
-            );
-        }
-
-        // Then update failed stages
-        let mut err_msg = "".to_owned();
-        for failed_stage in failed_stages {
-            err_msg = format!("{}{}\n", err_msg, &failed_stage.error_message);
-            self.stages
-                .insert(failed_stage.stage_id, ExecutionStage::Failed(failed_stage));
-        }
-
-        if !err_msg.is_empty() {
-            self.status = JobStatus {
-                status: Some(job_status::Status::Failed(FailedJob { error: err_msg })),
-            }
-        };
-
-        Ok(())
+        self.processing_stage_events(events)
     }
 
     fn update_stage_output_links(
@@ -348,7 +319,7 @@ impl ExecutionGraph {
         is_completed: bool,
         locations: Vec<PartitionLocation>,
         output_links: Vec<usize>,
-    ) -> Result<Vec<ResolvedStage>> {
+    ) -> Result<Vec<StageEvent>> {
         let mut ret = vec![];
         let job_id = &self.job_id;
         if output_links.is_empty() {
@@ -371,7 +342,9 @@ impl ExecutionGraph {
 
                         // If all input partitions are ready, we can resolve any UnresolvedShuffleExec in the parent stage plan
                         if linked_unresolved_stage.resolvable() {
-                            ret.push(linked_unresolved_stage.to_resolved()?);
+                            ret.push(StageEvent::StageResolved(
+                                linked_unresolved_stage.stage_id,
+                            ));
                         }
                     } else {
                         return Err(BallistaError::Internal(format!(
@@ -493,7 +466,128 @@ impl ExecutionGraph {
         Ok(next_task)
     }
 
-    pub fn finalize(&mut self) -> Result<()> {
+    pub fn update_status(&mut self, status: JobStatus) {
+        self.status = status;
+    }
+
+    /// Reset the status for the given task. This should be called is a task failed to
+    /// launch and it needs to be returned to the set of available tasks and be
+    /// re-scheduled.
+    pub fn reset_task_status(&mut self, task: Task) {
+        let stage_id = task.partition.stage_id;
+        let partition = task.partition.partition_id;
+
+        if let Some(ExecutionStage::Running(stage)) = self.stages.get_mut(&stage_id) {
+            stage.task_statuses[partition] = None;
+        }
+    }
+
+    pub fn output_locations(&self) -> Vec<PartitionLocation> {
+        self.output_locations.clone()
+    }
+
+    /// Processing stage events for stage state changing
+    fn processing_stage_events(
+        &mut self,
+        events: Vec<StageEvent>,
+    ) -> Result<Option<QueryStageSchedulerEvent>> {
+        let mut job_err_msg = "".to_owned();
+        for event in events {
+            match event {
+                StageEvent::StageResolved(stage_id) => {
+                    self.resolve_stage(stage_id)?;
+                }
+                StageEvent::StageCompleted(stage_id) => {
+                    self.complete_stage(stage_id);
+                }
+                StageEvent::StageFailed(stage_id, err_msg) => {
+                    job_err_msg = format!("{}{}\n", job_err_msg, &err_msg);
+                    self.fail_stage(stage_id, err_msg);
+                }
+            }
+        }
+
+        let event = if !job_err_msg.is_empty() {
+            // If this ExecutionGraph is complete, fail it
+            info!("Job {} is failed", self.job_id());
+            self.fail_job(job_err_msg.clone());
+
+            Some(QueryStageSchedulerEvent::JobFailed(
+                self.job_id.clone(),
+                job_err_msg,
+            ))
+        } else if self.complete() {
+            // If this ExecutionGraph is complete, finalize it
+            info!(
+                "Job {} is complete, finalizing output partitions",
+                self.job_id()
+            );
+            self.complete_job()?;
+            Some(QueryStageSchedulerEvent::JobFinished(self.job_id.clone()))
+        } else {
+            None
+        };
+
+        Ok(event)
+    }
+
+    /// Convert unresolved stage to be resolved
+    fn resolve_stage(&mut self, stage_id: usize) -> Result<bool> {
+        if let Some(ExecutionStage::UnResolved(stage)) = self.stages.remove(&stage_id) {
+            self.stages
+                .insert(stage_id, ExecutionStage::Resolved(stage.to_resolved()?));
+            Ok(true)
+        } else {
+            warn!(
+                "Fail to find a unresolved stage {}/{} to resolve",
+                self.job_id(),
+                stage_id
+            );
+            Ok(false)
+        }
+    }
+
+    /// Convert running stage to be completed
+    fn complete_stage(&mut self, stage_id: usize) -> bool {
+        if let Some(ExecutionStage::Running(stage)) = self.stages.remove(&stage_id) {
+            self.stages
+                .insert(stage_id, ExecutionStage::Completed(stage.to_completed()));
+            true
+        } else {
+            warn!(
+                "Fail to find a running stage {}/{} to complete",
+                self.job_id(),
+                stage_id
+            );
+            false
+        }
+    }
+
+    /// Convert running stage to be failed
+    fn fail_stage(&mut self, stage_id: usize, err_msg: String) -> bool {
+        if let Some(ExecutionStage::Running(stage)) = self.stages.remove(&stage_id) {
+            self.stages
+                .insert(stage_id, ExecutionStage::Failed(stage.to_failed(err_msg)));
+            true
+        } else {
+            warn!(
+                "Fail to find a running stage {}/{} to fail",
+                self.job_id(),
+                stage_id
+            );
+            false
+        }
+    }
+
+    /// fail job with error message
+    fn fail_job(&mut self, error: String) {
+        self.status = JobStatus {
+            status: Some(job_status::Status::Failed(FailedJob { error })),
+        };
+    }
+
+    /// finalize job as completed
+    fn complete_job(&mut self) -> Result<()> {
         if !self.complete() {
             return Err(BallistaError::Internal(format!(
                 "Attempt to finalize an incomplete job {}",
@@ -514,26 +608,6 @@ impl ExecutionGraph {
         };
 
         Ok(())
-    }
-
-    pub fn update_status(&mut self, status: JobStatus) {
-        self.status = status;
-    }
-
-    /// Reset the status for the given task. This should be called is a task failed to
-    /// launch and it needs to be returned to the set of available tasks and be
-    /// re-scheduled.
-    pub fn reset_task_status(&mut self, task: Task) {
-        let stage_id = task.partition.stage_id;
-        let partition = task.partition.partition_id;
-
-        if let Some(ExecutionStage::Running(stage)) = self.stages.get_mut(&stage_id) {
-            stage.task_statuses[partition] = None;
-        }
-    }
-
-    pub fn output_locations(&self) -> Vec<PartitionLocation> {
-        self.output_locations.clone()
     }
 
     pub(crate) async fn decode_execution_graph<
@@ -770,6 +844,13 @@ impl ExecutionPlanVisitor for ExecutionStageBuilder {
     }
 }
 
+#[derive(Clone)]
+pub enum StageEvent {
+    StageResolved(usize),
+    StageCompleted(usize),
+    StageFailed(usize, String),
+}
+
 /// Represents the basic unit of work for the Ballista executor. Will execute
 /// one partition of one stage on one task slot.
 #[derive(Clone)]
@@ -888,7 +969,6 @@ mod test {
         let mut agg_graph = test_aggregation_plan(4).await;
 
         drain_tasks(&mut agg_graph)?;
-        agg_graph.finalize()?;
 
         let status = agg_graph.status();
 

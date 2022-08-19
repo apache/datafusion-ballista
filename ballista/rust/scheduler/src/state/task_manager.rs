@@ -163,41 +163,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
                 let mut graph = self.get_execution_graph(&job_id).await?;
 
-                graph.update_task_status(executor, statuses)?;
+                let job_event = graph.update_task_status(executor, statuses)?;
+                if let Some(event) = job_event {
+                    events.push(event);
+                }
 
-                if graph.complete() {
-                    // If this ExecutionGraph is complete, finalize it
-                    info!(
-                        "Job {} is complete, finalizing output partitions",
-                        graph.job_id()
-                    );
-                    graph.finalize()?;
-                    events.push(QueryStageSchedulerEvent::JobFinished(job_id.clone()));
-
-                    for _ in 0..num_tasks {
-                        reservation
-                            .push(ExecutorReservation::new_free(executor.id.to_owned()));
-                    }
-                } else if let Some(job_status::Status::Failed(failure)) =
-                    graph.status().status
-                {
-                    events.push(QueryStageSchedulerEvent::JobFailed(
-                        job_id.clone(),
-                        failure.error,
-                    ));
-
-                    for _ in 0..num_tasks {
-                        reservation
-                            .push(ExecutorReservation::new_free(executor.id.to_owned()));
-                    }
-                } else {
-                    // Otherwise keep the task slots reserved for this job
-                    for _ in 0..num_tasks {
-                        reservation.push(ExecutorReservation::new_assigned(
-                            executor.id.to_owned(),
-                            job_id.clone(),
-                        ));
-                    }
+                for _ in 0..num_tasks {
+                    reservation
+                        .push(ExecutorReservation::new_free(executor.id.to_owned()));
                 }
 
                 txn_ops.push((
