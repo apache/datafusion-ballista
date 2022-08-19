@@ -45,8 +45,7 @@ use crate::display::print_stage_metrics;
 use crate::planner::DistributedPlanner;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::execution_graph::execution_stage::{
-    CompletedStage, ExecutionStage, FailedStage, ResolvedStage, RunningStage,
-    UnResolvedStage,
+    CompletedStage, ExecutionStage, FailedStage, ResolvedStage, UnResolvedStage,
 };
 
 mod execution_stage;
@@ -491,11 +490,13 @@ impl ExecutionGraph {
         &mut self,
         events: Vec<StageEvent>,
     ) -> Result<Option<QueryStageSchedulerEvent>> {
+        let mut has_resolved = false;
         let mut job_err_msg = "".to_owned();
         for event in events {
             match event {
                 StageEvent::StageResolved(stage_id) => {
                     self.resolve_stage(stage_id)?;
+                    has_resolved = true;
                 }
                 StageEvent::StageCompleted(stage_id) => {
                     self.complete_stage(stage_id);
@@ -510,11 +511,10 @@ impl ExecutionGraph {
         let event = if !job_err_msg.is_empty() {
             // If this ExecutionGraph is complete, fail it
             info!("Job {} is failed", self.job_id());
-            self.fail_job(job_err_msg.clone());
+            self.fail_job(job_err_msg);
 
-            Some(QueryStageSchedulerEvent::JobFailed(
+            Some(QueryStageSchedulerEvent::JobRunningFailed(
                 self.job_id.clone(),
-                job_err_msg,
             ))
         } else if self.complete() {
             // If this ExecutionGraph is complete, finalize it
@@ -524,6 +524,8 @@ impl ExecutionGraph {
             );
             self.complete_job()?;
             Some(QueryStageSchedulerEvent::JobFinished(self.job_id.clone()))
+        } else if has_resolved {
+            Some(QueryStageSchedulerEvent::JobUpdated(self.job_id.clone()))
         } else {
             None
         };
@@ -580,7 +582,7 @@ impl ExecutionGraph {
     }
 
     /// fail job with error message
-    fn fail_job(&mut self, error: String) {
+    pub fn fail_job(&mut self, error: String) {
         self.status = JobStatus {
             status: Some(job_status::Status::Failed(FailedJob { error })),
         };
@@ -633,11 +635,6 @@ impl ExecutionGraph {
                         ResolvedStage::decode(stage, codec, session_ctx)?;
                     (stage.stage_id, ExecutionStage::Resolved(stage))
                 }
-                StageType::RunningStage(stage) => {
-                    let stage: RunningStage =
-                        RunningStage::decode(stage, codec, session_ctx)?;
-                    (stage.stage_id, ExecutionStage::Running(stage))
-                }
                 StageType::CompletedStage(stage) => {
                     let stage: CompletedStage =
                         CompletedStage::decode(stage, codec, session_ctx)?;
@@ -674,6 +671,8 @@ impl ExecutionGraph {
         })
     }
 
+    /// Running stages will not be persisted so that will not be encoded.
+    /// Running stages will be convert back to the resolved stages to be encoded and persisted
     pub(crate) fn encode_execution_graph<
         T: 'static + AsLogicalPlan,
         U: 'static + AsExecutionPlan,
@@ -694,8 +693,8 @@ impl ExecutionGraph {
                     ExecutionStage::Resolved(stage) => {
                         StageType::ResolvedStage(ResolvedStage::encode(stage, codec)?)
                     }
-                    ExecutionStage::Running(stage) => StageType::RunningStage(
-                        RunningStage::encode(job_id.clone(), stage, codec)?,
+                    ExecutionStage::Running(stage) => StageType::ResolvedStage(
+                        ResolvedStage::encode(stage.to_resolved(), codec)?,
                     ),
                     ExecutionStage::Completed(stage) => StageType::CompletedStage(
                         CompletedStage::encode(job_id.clone(), stage, codec)?,

@@ -327,15 +327,18 @@ mod test {
             .await
             .expect("submitting plan");
 
-        loop {
-            // Refresh the ExecutionGraph
-            let mut graph = scheduler
-                .state
-                .task_manager
-                .get_execution_graph(job_id)
-                .await?;
-
-            if let Some(task) = graph.pop_next_task("executor-1")? {
+        // Refresh the ExecutionGraph
+        while let Some(graph) = scheduler
+            .state
+            .task_manager
+            .get_active_execution_graph(job_id)
+            .await
+        {
+            let task = {
+                let mut graph = graph.write().await;
+                graph.pop_next_task("executor-1")?
+            };
+            if let Some(task) = task {
                 let mut partitions: Vec<ShuffleWritePartition> = vec![];
 
                 let num_partitions = task
@@ -378,9 +381,11 @@ mod test {
         let final_graph = scheduler
             .state
             .task_manager
-            .get_execution_graph(job_id)
-            .await?;
+            .get_active_execution_graph(job_id)
+            .await
+            .expect("Fail to find graph in the cache");
 
+        let final_graph = final_graph.read().await;
         assert!(final_graph.complete());
         assert_eq!(final_graph.output_locations().len(), 4);
 

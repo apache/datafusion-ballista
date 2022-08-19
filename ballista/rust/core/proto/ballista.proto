@@ -424,7 +424,6 @@ message ExecutionGraphStage {
       ResolvedStage resolved_stage = 2;
       CompletedStage completed_stage = 3;
       FailedStage failed_stage = 4;
-      RunningStage running_stage = 5;
   }
 }
 
@@ -442,16 +441,6 @@ message ResolvedStage {
   PhysicalHashRepartition output_partitioning = 3;
   repeated uint32 output_links = 4;
   bytes plan = 5;
-}
-
-message RunningStage {
-  uint64 stage_id = 1;
-  uint32 partitions = 2;
-  PhysicalHashRepartition output_partitioning = 3;
-  repeated uint32 output_links = 4;
-  bytes plan = 5;
-  repeated TaskStatus task_statuses = 6;
-  repeated OperatorMetricsSet stage_metrics = 7;
 }
 
 message CompletedStage {

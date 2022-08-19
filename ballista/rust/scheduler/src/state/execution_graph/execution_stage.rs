@@ -503,6 +503,15 @@ impl RunningStage {
         }
     }
 
+    pub(super) fn to_resolved(&self) -> ResolvedStage {
+        ResolvedStage::new(
+            self.stage_id,
+            self.plan.clone(),
+            self.output_partitioning.clone(),
+            self.output_links.clone(),
+        )
+    }
+
     /// Returns `true` if all tasks for this stage are complete
     pub(super) fn is_completed(&self) -> bool {
         self.task_statuses
@@ -606,104 +615,6 @@ impl RunningStage {
             first.push(new_metric);
         }
         first.aggregate_by_partition()
-    }
-
-    pub(super) fn decode<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
-        stage: protobuf::RunningStage,
-        codec: &BallistaCodec<T, U>,
-        session_ctx: &SessionContext,
-    ) -> Result<RunningStage> {
-        let plan_proto = U::try_decode(&stage.plan)?;
-        let plan = plan_proto.try_into_physical_plan(
-            session_ctx,
-            session_ctx.runtime_env().as_ref(),
-            codec.physical_extension_codec(),
-        )?;
-
-        let output_partitioning: Option<Partitioning> = parse_protobuf_hash_partitioning(
-            stage.output_partitioning.as_ref(),
-            session_ctx,
-            plan.schema().as_ref(),
-        )?;
-
-        let mut task_statuses: Vec<Option<task_status::Status>> =
-            vec![None; stage.partitions as usize];
-        for status in stage.task_statuses {
-            if let Some(task_id) = status.task_id.as_ref() {
-                task_statuses[task_id.partition_id as usize] = status.status
-            }
-        }
-
-        let stage_metrics = if stage.stage_metrics.is_empty() {
-            None
-        } else {
-            let ms = stage
-                .stage_metrics
-                .into_iter()
-                .map(|m| m.try_into())
-                .collect::<Result<Vec<_>>>()?;
-            Some(ms)
-        };
-
-        Ok(RunningStage {
-            stage_id: stage.stage_id as usize,
-            partitions: stage.partitions as usize,
-            output_partitioning,
-            output_links: stage.output_links.into_iter().map(|l| l as usize).collect(),
-            plan,
-            task_statuses,
-            stage_metrics,
-        })
-    }
-
-    pub(super) fn encode<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
-        job_id: String,
-        stage: RunningStage,
-        codec: &BallistaCodec<T, U>,
-    ) -> Result<protobuf::RunningStage> {
-        let stage_id = stage.stage_id;
-
-        let mut plan: Vec<u8> = vec![];
-        U::try_from_physical_plan(stage.plan, codec.physical_extension_codec())
-            .and_then(|proto| proto.try_encode(&mut plan))?;
-
-        let output_partitioning =
-            hash_partitioning_to_proto(stage.output_partitioning.as_ref())?;
-
-        let task_statuses: Vec<protobuf::TaskStatus> = stage
-            .task_statuses
-            .into_iter()
-            .enumerate()
-            .filter_map(|(partition, status)| {
-                status.map(|status| protobuf::TaskStatus {
-                    task_id: Some(protobuf::PartitionId {
-                        job_id: job_id.clone(),
-                        stage_id: stage_id as u32,
-                        partition_id: partition as u32,
-                    }),
-                    // task metrics should not persist.
-                    metrics: vec![],
-                    status: Some(status),
-                })
-            })
-            .collect();
-
-        let stage_metrics = stage
-            .stage_metrics
-            .unwrap_or_default()
-            .into_iter()
-            .map(|m| m.try_into())
-            .collect::<Result<Vec<_>>>()?;
-
-        Ok(protobuf::RunningStage {
-            stage_id: stage_id as u64,
-            partitions: stage.partitions as u32,
-            output_partitioning,
-            output_links: stage.output_links.into_iter().map(|l| l as u32).collect(),
-            plan,
-            task_statuses,
-            stage_metrics,
-        })
     }
 }
 
