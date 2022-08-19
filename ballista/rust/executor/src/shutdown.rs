@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 
 /// Listens for the server shutdown signal(copied from mini-redis example).
 ///
@@ -62,5 +62,44 @@ impl Shutdown {
 
         // Remember that the signal has been received.
         self.shutdown = true;
+    }
+}
+
+pub struct ShutdownNotifier {
+    /// Broadcasts a shutdown signal to all related components.
+    pub notify_shutdown: broadcast::Sender<()>,
+
+    /// Used as part of the graceful shutdown process to wait for
+    /// related components to complete processing.
+    ///
+    /// Tokio channels are closed once all `Sender` handles go out of scope.
+    /// When a channel is closed, the receiver receives `None`. This is
+    /// leveraged to detect all shutdown processing completing.
+    pub shutdown_complete_rx: mpsc::Receiver<()>,
+
+    pub shutdown_complete_tx: mpsc::Sender<()>,
+}
+
+impl ShutdownNotifier {
+    /// Create a new ShutdownNotifier instance
+    pub fn new() -> Self {
+        let (notify_shutdown, _) = broadcast::channel(1);
+        let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
+        Self {
+            notify_shutdown,
+            shutdown_complete_rx,
+            shutdown_complete_tx,
+        }
+    }
+
+    /// Subscribe for shutdown notification
+    pub fn subscribe_for_shutdown(&self) -> Shutdown {
+        Shutdown::new(self.notify_shutdown.subscribe())
+    }
+}
+
+impl Default for ShutdownNotifier {
+    fn default() -> Self {
+        ShutdownNotifier::new()
     }
 }

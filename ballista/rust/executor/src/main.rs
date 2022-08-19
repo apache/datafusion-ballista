@@ -44,9 +44,9 @@ use ballista_core::utils::{create_grpc_client_connection, create_grpc_server};
 use ballista_core::{print_version, BALLISTA_VERSION};
 use ballista_executor::executor::Executor;
 use ballista_executor::flight_service::BallistaFlightService;
-use ballista_executor::graceful::Graceful;
 use ballista_executor::metrics::LoggingMetricsCollector;
 use ballista_executor::shutdown::Shutdown;
+use ballista_executor::shutdown::ShutdownNotifier;
 use config::prelude::*;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion_proto::protobuf::LogicalPlanNode;
@@ -163,17 +163,14 @@ async fn main() -> Result<()> {
     let cleanup_ttl = opt.executor_cleanup_ttl;
 
     // Graceful shutdown notification
-    let graceful = Graceful::new();
+    let shutdown_noti = ShutdownNotifier::new();
 
     if opt.executor_cleanup_enable {
         let mut interval_time =
             time::interval(Core_Duration::from_secs(opt.executor_cleanup_interval));
-        let mut shuffle_cleaner_shutdown = graceful.subscribe_for_shutdown();
-        // Not used directly.
-        let shuffle_cleaner_complete = graceful.shutdown_complete_tx.clone();
+        let mut shuffle_cleaner_shutdown = shutdown_noti.subscribe_for_shutdown();
+        let shuffle_cleaner_complete = shutdown_noti.shutdown_complete_tx.clone();
         tokio::spawn(async move {
-            // Drop and notifies the receiver half that the shutdown is complete
-            let _shuffle_cleaner_complete = shuffle_cleaner_complete;
             // As long as the shutdown notification has not been received
             while !shuffle_cleaner_shutdown.is_shutdown() {
                 tokio::select! {
@@ -190,6 +187,7 @@ async fn main() -> Result<()> {
                         } else {
                             info!("Shuffle data cleaned.");
                         }
+                        drop(shuffle_cleaner_complete);
                         return;
                     }
                 };
@@ -212,7 +210,7 @@ async fn main() -> Result<()> {
                     executor.clone(),
                     default_codec,
                     stop_send,
-                    &graceful,
+                    &shutdown_noti,
                 )
                 .await?,
             );
@@ -227,7 +225,7 @@ async fn main() -> Result<()> {
     };
     service_handlers.push(tokio::spawn(flight_server_run(
         addr,
-        graceful.subscribe_for_shutdown(),
+        shutdown_noti.subscribe_for_shutdown(),
     )));
 
     // Concurrently run the service checking and listen for the `shutdown` signal and wait for the stop request coming.
@@ -247,12 +245,12 @@ async fn main() -> Result<()> {
     // Extract the `shutdown_complete` receiver and transmitter
     // explicitly drop `shutdown_transmitter`. This is important, as the
     // `.await` below would otherwise never complete.
-    let Graceful {
+    let ShutdownNotifier {
         mut shutdown_complete_rx,
         shutdown_complete_tx,
         notify_shutdown,
         ..
-    } = graceful;
+    } = shutdown_noti;
 
     // When `notify_shutdown` is dropped, all components which have `subscribe`d will
     // receive the shutdown signal and can exit
