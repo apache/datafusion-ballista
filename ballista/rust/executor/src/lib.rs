@@ -23,6 +23,7 @@ pub mod executor;
 pub mod executor_server;
 pub mod flight_service;
 pub mod metrics;
+pub mod shutdown;
 
 mod cpu_bound_executor;
 mod standalone;

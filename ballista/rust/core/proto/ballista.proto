@@ -681,6 +681,10 @@ message HeartBeatResult {
 }
 
 message StopExecutorParams {
+  // stop reason
+  string reason = 1;
+  // force to stop the executor immediately
+  bool force = 2;
 }
 
 message StopExecutorResult {

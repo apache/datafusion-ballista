@@ -18,6 +18,7 @@
 //! Ballista Rust executor binary.
 
 use chrono::{DateTime, Duration, Utc};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration as Core_Duration;
 
@@ -27,6 +28,7 @@ use ballista_executor::{execution_loop, executor_server};
 use log::{error, info};
 use tempfile::TempDir;
 use tokio::fs::ReadDir;
+use tokio::signal;
 use tokio::{fs, time};
 use uuid::Uuid;
 
@@ -43,9 +45,15 @@ use ballista_core::{print_version, BALLISTA_VERSION};
 use ballista_executor::executor::Executor;
 use ballista_executor::flight_service::BallistaFlightService;
 use ballista_executor::metrics::LoggingMetricsCollector;
+use ballista_executor::shutdown::Shutdown;
+use ballista_executor::shutdown::ShutdownNotifier;
 use config::prelude::*;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion_proto::protobuf::LogicalPlanNode;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 #[macro_use]
 extern crate configure_me;
@@ -154,55 +162,152 @@ async fn main() -> Result<()> {
     let scheduler_policy = opt.task_scheduling_policy;
     let cleanup_ttl = opt.executor_cleanup_ttl;
 
+    // Graceful shutdown notification
+    let shutdown_noti = ShutdownNotifier::new();
+
     if opt.executor_cleanup_enable {
         let mut interval_time =
             time::interval(Core_Duration::from_secs(opt.executor_cleanup_interval));
+        let mut shuffle_cleaner_shutdown = shutdown_noti.subscribe_for_shutdown();
+        let shuffle_cleaner_complete = shutdown_noti.shutdown_complete_tx.clone();
         tokio::spawn(async move {
-            loop {
-                interval_time.tick().await;
-                if let Err(e) =
-                    clean_shuffle_data_loop(&work_dir, cleanup_ttl as i64).await
-                {
-                    error!("Ballista executor fail to clean_shuffle_data {:?}", e)
-                }
+            // As long as the shutdown notification has not been received
+            while !shuffle_cleaner_shutdown.is_shutdown() {
+                tokio::select! {
+                    _ = interval_time.tick() => {
+                            if let Err(e) = clean_shuffle_data_loop(&work_dir, cleanup_ttl as i64).await
+                        {
+                            error!("Ballista executor fail to clean_shuffle_data {:?}", e)
+                        }
+                        },
+                    _ = shuffle_cleaner_shutdown.recv() => {
+                        if let Err(e) = clean_all_shuffle_data(&work_dir).await
+                        {
+                            error!("Ballista executor fail to clean_shuffle_data {:?}", e)
+                        } else {
+                            info!("Shuffle data cleaned.");
+                        }
+                        drop(shuffle_cleaner_complete);
+                        return;
+                    }
+                };
             }
         });
     }
 
+    let mut service_handlers: FuturesUnordered<JoinHandle<Result<(), BallistaError>>> =
+        FuturesUnordered::new();
+
+    // Channels used to receive stop requests from Executor grpc service.
+    let (stop_send, mut stop_recv) = mpsc::channel::<bool>(10);
+
     match scheduler_policy {
         TaskSchedulingPolicy::PushStaged => {
-            tokio::spawn(executor_server::startup(
-                scheduler,
-                executor.clone(),
-                default_codec,
-            ));
+            service_handlers.push(
+                //If there is executor registration error during startup, return the error and stop early.
+                executor_server::startup(
+                    scheduler,
+                    executor.clone(),
+                    default_codec,
+                    stop_send,
+                    &shutdown_noti,
+                )
+                .await?,
+            );
         }
         _ => {
-            tokio::spawn(execution_loop::poll_loop(
+            service_handlers.push(tokio::spawn(execution_loop::poll_loop(
                 scheduler,
                 executor.clone(),
                 default_codec,
-            ));
+            )));
+        }
+    };
+    service_handlers.push(tokio::spawn(flight_server_run(
+        addr,
+        shutdown_noti.subscribe_for_shutdown(),
+    )));
+
+    // Concurrently run the service checking and listen for the `shutdown` signal and wait for the stop request coming.
+    // The check_services runs until an error is encountered, so under normal circumstances, this `select!` statement runs
+    // until the `shutdown` signal is received or a stop request is coming.
+    tokio::select! {
+        service_val = check_services(&mut service_handlers) => {
+             info!("services stopped with reason {:?}", service_val);
+        },
+        _ = signal::ctrl_c() => {
+             // sometimes OS can not log ??
+             info!("received ctrl-c event.");
+        },
+        _ = stop_recv.recv() => {},
+    }
+
+    // Extract the `shutdown_complete` receiver and transmitter
+    // explicitly drop `shutdown_transmitter`. This is important, as the
+    // `.await` below would otherwise never complete.
+    let ShutdownNotifier {
+        mut shutdown_complete_rx,
+        shutdown_complete_tx,
+        notify_shutdown,
+        ..
+    } = shutdown_noti;
+
+    // When `notify_shutdown` is dropped, all components which have `subscribe`d will
+    // receive the shutdown signal and can exit
+    drop(notify_shutdown);
+    // Drop final `Sender` so the `Receiver` below can complete
+    drop(shutdown_complete_tx);
+
+    // Wait for all related components to finish the shutdown processing.
+    let _ = shutdown_complete_rx.recv().await;
+    info!("Executor stopped.");
+    Ok(())
+}
+
+// Arrow flight service
+async fn flight_server_run(
+    addr: SocketAddr,
+    mut grpc_shutdown: Shutdown,
+) -> Result<(), BallistaError> {
+    let service = BallistaFlightService::new();
+    let server = FlightServiceServer::new(service);
+    info!(
+        "Ballista v{} Rust Executor Flight Server listening on {:?}",
+        BALLISTA_VERSION, addr
+    );
+
+    let shutdown_signal = grpc_shutdown.recv();
+    let server_future = create_grpc_server()
+        .add_service(server)
+        .serve_with_shutdown(addr, shutdown_signal);
+
+    server_future.await.map_err(|e| {
+        error!("Tonic error, Could not start Executor Flight Server.");
+        BallistaError::TonicError(e)
+    })
+}
+
+// Check the status of long running services
+async fn check_services(
+    service_handlers: &mut FuturesUnordered<JoinHandle<Result<(), BallistaError>>>,
+) -> Result<(), BallistaError> {
+    loop {
+        match service_handlers.next().await {
+            Some(result) => match result {
+                // React to "inner_result", i.e. propagate as BallistaError
+                Ok(inner_result) => match inner_result {
+                    Ok(()) => (),
+                    Err(e) => return Err(e),
+                },
+                // React to JoinError
+                Err(e) => return Err(BallistaError::TokioError(e)),
+            },
+            None => {
+                info!("service handlers are all done with their work!");
+                return Ok(());
+            }
         }
     }
-
-    // Arrow flight service
-    {
-        let service = BallistaFlightService::new(executor.clone());
-        let server = FlightServiceServer::new(service);
-        info!(
-            "Ballista v{} Rust Executor listening on {:?}",
-            BALLISTA_VERSION, addr
-        );
-        let server_future =
-            tokio::spawn(create_grpc_server().add_service(server).serve(addr));
-        server_future
-            .await
-            .context("Tokio error")?
-            .context("Could not start executor server")?;
-    }
-
-    Ok(())
 }
 
 /// This function will scheduled periodically for cleanup executor.
@@ -237,6 +342,28 @@ async fn clean_shuffle_data_loop(work_dir: &str, seconds: i64) -> Result<()> {
         "The work_dir {:?} that have not been modified for {:?} seconds will be deleted",
         &to_deleted, seconds
     );
+    for del in to_deleted {
+        fs::remove_dir_all(del).await?;
+    }
+    Ok(())
+}
+
+/// This function will clean up all shuffle data on this executor
+async fn clean_all_shuffle_data(work_dir: &str) -> Result<()> {
+    let mut dir = fs::read_dir(work_dir).await?;
+    let mut to_deleted = Vec::new();
+    while let Some(child) = dir.next_entry().await? {
+        if let Ok(metadata) = child.metadata().await {
+            // only delete the job dir
+            if metadata.is_dir() {
+                to_deleted.push(child.path().into_os_string())
+            }
+        } else {
+            error!("Can not get metadata from file: {:?}", child)
+        }
+    }
+
+    info!("The work_dir {:?} will be deleted", &to_deleted);
     for del in to_deleted {
         fs::remove_dir_all(del).await?;
     }
