@@ -36,20 +36,606 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
 
+use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
+use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
+use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use ballista_core::utils::collect_plan_metrics;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
+use datafusion::prelude::SessionContext;
+use datafusion_proto::logical_plan::AsLogicalPlan;
 use std::sync::Arc;
+
+/// Represents the basic unit of work for the Ballista executor. Will execute
+/// one partition of one stage on one task slot.
+#[derive(Clone)]
+pub struct Task {
+    pub session_id: String,
+    pub partition: PartitionId,
+    pub plan: Arc<dyn ExecutionPlan>,
+    pub output_partitioning: Option<Partitioning>,
+}
+
+impl Debug for Task {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent();
+        write!(
+            f,
+            "Task[session_id: {}, job: {}, stage: {}, partition: {}]\n{}",
+            self.session_id,
+            self.partition.job_id,
+            self.partition.stage_id,
+            self.partition.partition_id,
+            plan
+        )
+    }
+}
+
+/// Represents the DAG for a distributed query plan.
+///
+/// A distributed query plan consists of a set of stages which must be executed sequentially.
+///
+/// Each stage consists of a set of partitions which can be executed in parallel, where each partition
+/// represents a `Task`, which is the basic unit of scheduling in Ballista.
+///
+/// As an example, consider a SQL query which performs a simple aggregation:
+///
+/// `SELECT id, SUM(gmv) FROM some_table GROUP BY id`
+///
+/// This will produce a DataFusion execution plan that looks something like
+///
+///
+///   CoalesceBatchesExec: target_batch_size=4096
+///     RepartitionExec: partitioning=Hash([Column { name: "id", index: 0 }], 4)
+///       AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[SUM(some_table.gmv)]
+///         TableScan: some_table
+///
+/// The Ballista `DistributedPlanner` will turn this into a distributed plan by creating a shuffle
+/// boundary (called a "Stage") whenever the underlying plan needs to perform a repartition.
+/// In this case we end up with a distributed plan with two stages:
+///
+///
+/// ExecutionGraph[job_id=job, session_id=session, available_tasks=1, complete=false]
+/// Stage[id=2, partitions=4, children=1, completed_tasks=0, resolved=false, scheduled_tasks=0, available_tasks=0]
+/// Inputs{1: StageOutput { partition_locations: {}, complete: false }}
+///
+/// ShuffleWriterExec: None
+///   AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[SUM(?table?.gmv)]
+///     CoalesceBatchesExec: target_batch_size=4096
+///       UnresolvedShuffleExec
+///
+/// Stage[id=1, partitions=1, children=0, completed_tasks=0, resolved=true, scheduled_tasks=0, available_tasks=1]
+/// Inputs{}
+///
+/// ShuffleWriterExec: Some(Hash([Column { name: "id", index: 0 }], 4))
+///   AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[SUM(?table?.gmv)]
+///     TableScan: some_table
+///
+///
+/// The DAG structure of this `ExecutionGraph` is encoded in the stages. Each stage's `input` field
+/// will indicate which stages it depends on, and each stage's `output_links` will indicate which
+/// stage it needs to publish its output to.
+///
+/// If a stage has `output_links` is empty then it is the final stage in this query, and it should
+/// publish its outputs to the `ExecutionGraph`s `output_locations` representing the final query results.
+#[derive(Clone)]
+pub struct ExecutionGraph {
+    /// ID for this job
+    job_id: String,
+    /// Session ID for this job
+    session_id: String,
+    /// Status of this job
+    status: JobStatus,
+    /// Map from Stage ID -> ExecutionStage
+    stages: HashMap<usize, ExecutionStage>,
+    /// Total number fo output partitions
+    output_partitions: usize,
+    /// Locations of this `ExecutionGraph` final output locations
+    output_locations: Vec<PartitionLocation>,
+}
+
+impl ExecutionGraph {
+    pub fn new(
+        job_id: &str,
+        session_id: &str,
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Result<Self> {
+        let mut planner = DistributedPlanner::new();
+
+        let output_partitions = plan.output_partitioning().partition_count();
+
+        let shuffle_stages = planner.plan_query_stages(job_id, plan)?;
+
+        let builder = ExecutionStageBuilder::new();
+        let stages = builder.build(shuffle_stages)?;
+
+        Ok(Self {
+            job_id: job_id.to_string(),
+            session_id: session_id.to_string(),
+            status: JobStatus {
+                status: Some(job_status::Status::Queued(QueuedJob {})),
+            },
+            stages,
+            output_partitions,
+            output_locations: vec![],
+        })
+    }
+
+    pub fn job_id(&self) -> &str {
+        self.job_id.as_str()
+    }
+
+    pub fn session_id(&self) -> &str {
+        self.session_id.as_str()
+    }
+
+    pub fn status(&self) -> JobStatus {
+        self.status.clone()
+    }
+
+    /// An ExecutionGraph is complete if all its stages are complete
+    pub fn complete(&self) -> bool {
+        self.stages.values().all(|s| s.complete())
+    }
+
+    /// Update task statuses and task metrics in the graph.
+    /// This will also push shuffle partitions to their respective shuffle read stages.
+    pub fn update_task_status(
+        &mut self,
+        executor: &ExecutorMetadata,
+        statuses: Vec<TaskStatus>,
+    ) -> Result<()> {
+        for status in statuses.into_iter() {
+            if let TaskStatus {
+                task_id:
+                    Some(protobuf::PartitionId {
+                        job_id,
+                        stage_id,
+                        partition_id,
+                    }),
+                metrics: operator_metrics,
+                status: Some(task_status),
+            } = status
+            {
+                if job_id != self.job_id() {
+                    return Err(BallistaError::Internal(format!(
+                        "Error updating job {}: Invalid task status job ID {}",
+                        self.job_id(),
+                        job_id
+                    )));
+                }
+
+                let stage_id = stage_id as usize;
+                let partition = partition_id as usize;
+                if let Some(stage) = self.stages.get_mut(&stage_id) {
+                    stage.update_task_status(partition, task_status.clone());
+                    let stage_plan = stage.plan.clone();
+                    let stage_complete = stage.complete();
+
+                    // TODO Should be able to reschedule this task.
+                    if let task_status::Status::Failed(failed_task) = task_status {
+                        self.status = JobStatus {
+                            status: Some(job_status::Status::Failed(FailedJob {
+                                error: format!(
+                                    "Task {}/{}/{} failed: {}",
+                                    job_id, stage_id, partition_id, failed_task.error
+                                ),
+                            })),
+                        };
+                        return Ok(());
+                    } else if let task_status::Status::Completed(completed_task) =
+                        task_status
+                    {
+                        // update task metrics for completed task
+                        stage.update_task_metrics(partition, operator_metrics)?;
+
+                        // if this stage is completed, we want to combine the stage metrics to plan's metric set and print out the plan
+                        if stage_complete && stage.stage_metrics.as_ref().is_some() {
+                            // The plan_metrics collected here is a snapshot clone from the plan metrics.
+                            // They are all empty now and need to combine with the stage metrics in the ExecutionStages
+                            let mut plan_metrics =
+                                collect_plan_metrics(stage_plan.as_ref());
+                            let stage_metrics = stage
+                                .stage_metrics
+                                .as_ref()
+                                .expect("stage metrics should not be None.");
+                            if plan_metrics.len() != stage_metrics.len() {
+                                return Err(BallistaError::Internal(format!("Error combine stage metrics to plan for stage {},  plan metrics array size {} does not equal \
+                to the stage metrics array size {}", stage_id, plan_metrics.len(), stage_metrics.len())));
+                            }
+                            plan_metrics.iter_mut().zip(stage_metrics).for_each(
+                                |(plan_metric, stage_metric)| {
+                                    stage_metric
+                                        .iter()
+                                        .for_each(|s| plan_metric.push(s.clone()));
+                                },
+                            );
+
+                            info!(
+                                "=== [{}/{}/{}] Stage finished, physical plan with metrics ===\n{}\n",
+                                job_id,
+                                stage_id,
+                                partition,
+                                DisplayableBallistaExecutionPlan::new(stage_plan.as_ref(), plan_metrics.as_ref()).indent()
+                            );
+                        }
+
+                        let locations = partition_to_location(
+                            self.job_id.as_str(),
+                            stage_id,
+                            executor,
+                            completed_task.partitions,
+                        );
+
+                        let output_links = stage.output_links.clone();
+                        if output_links.is_empty() {
+                            // If `output_links` is empty, then this is a final stage
+                            self.output_locations.extend(locations);
+                        } else {
+                            for link in output_links.into_iter() {
+                                // If this is an intermediate stage, we need to push its `PartitionLocation`s to the parent stage
+                                if let Some(linked_stage) = self.stages.get_mut(&link) {
+                                    linked_stage.add_input_partitions(
+                                        stage_id,
+                                        partition,
+                                        locations.clone(),
+                                    )?;
+
+                                    // If all tasks for this stage are complete, mark the input complete in the parent stage
+                                    if stage_complete {
+                                        linked_stage.complete_input(stage_id);
+                                    }
+
+                                    // If all input partitions are ready, we can resolve any UnresolvedShuffleExec in the parent stage plan
+                                    if linked_stage.resolvable() {
+                                        linked_stage.resolve_shuffles()?;
+                                    }
+                                } else {
+                                    return Err(BallistaError::Internal(format!("Error updating job {}: Invalid output link {} for stage {}", job_id, stage_id, link)));
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    return Err(BallistaError::Internal(format!(
+                        "Invalid stage ID {} for job {}",
+                        stage_id,
+                        self.job_id()
+                    )));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Total number of tasks in this plan that are ready for scheduling
+    pub fn available_tasks(&self) -> usize {
+        self.stages
+            .iter()
+            .map(|(_, stage)| stage.available_tasks())
+            .sum()
+    }
+
+    /// Get next task that can be assigned to the given executor.
+    /// This method should only be called when the resulting task is immediately
+    /// being launched as the status will be set to Running and it will not be
+    /// available to the scheduler.
+    /// If the task is not launched the status must be reset to allow the task to
+    /// be scheduled elsewhere.
+    pub fn pop_next_task(&mut self, executor_id: &str) -> Result<Option<Task>> {
+        let job_id = self.job_id.clone();
+        let session_id = self.session_id.clone();
+        self.stages.iter_mut().find(|(_stage_id, stage)| {
+            stage.resolved() && stage.available_tasks() > 0
+        }).map(|(stage_id, stage)| {
+            let (partition_id,_) = stage
+                .task_statuses
+                .iter()
+                .enumerate()
+                .find(|(_partition,status)| status.is_none())
+                .ok_or_else(|| {
+                    BallistaError::Internal(format!("Error getting next task for job {}: Stage {} is ready but has no pending tasks", job_id, stage_id))
+                })?;
+
+            let partition = PartitionId {
+                job_id,
+                stage_id: *stage_id,
+                partition_id
+            };
+
+            // Set the status to Running
+            stage.task_statuses[partition_id] = Some(task_status::Status::Running(RunningTask {
+                executor_id: executor_id.to_owned()
+            }));
+
+            Ok(Task {
+                session_id,
+                partition,
+                plan: stage.plan.clone(),
+                output_partitioning: stage.output_partitioning.clone()
+            })
+        }).transpose()
+    }
+
+    pub fn finalize(&mut self) -> Result<()> {
+        if !self.complete() {
+            return Err(BallistaError::Internal(format!(
+                "Attempt to finalize an incomplete job {}",
+                self.job_id()
+            )));
+        }
+
+        let partition_location = self
+            .output_locations()
+            .into_iter()
+            .map(|l| l.try_into())
+            .collect::<Result<Vec<_>>>()?;
+
+        self.status = JobStatus {
+            status: Some(job_status::Status::Completed(CompletedJob {
+                partition_location,
+            })),
+        };
+
+        Ok(())
+    }
+
+    pub fn update_status(&mut self, status: JobStatus) {
+        self.status = status;
+    }
+
+    /// Reset the status for the given task. This should be called is a task failed to
+    /// launch and it needs to be returned to the set of available tasks and be
+    /// re-scheduled.
+    pub fn reset_task_status(&mut self, task: Task) {
+        let stage_id = task.partition.stage_id;
+        let partition = task.partition.partition_id;
+
+        if let Some(stage) = self.stages.get_mut(&stage_id) {
+            stage.task_statuses[partition] = None;
+        }
+    }
+
+    pub fn output_locations(&self) -> Vec<PartitionLocation> {
+        self.output_locations.clone()
+    }
+
+    pub(crate) async fn decode_execution_graph<
+        T: 'static + AsLogicalPlan,
+        U: 'static + AsExecutionPlan,
+    >(
+        proto: protobuf::ExecutionGraph,
+        codec: &BallistaCodec<T, U>,
+        session_ctx: &SessionContext,
+    ) -> Result<ExecutionGraph> {
+        let mut stages: HashMap<usize, ExecutionStage> = HashMap::new();
+        for stage in proto.stages {
+            let plan_proto = U::try_decode(stage.plan.as_slice())?;
+            let plan = plan_proto.try_into_physical_plan(
+                session_ctx,
+                session_ctx.runtime_env().as_ref(),
+                codec.physical_extension_codec(),
+            )?;
+
+            let stage_id = stage.stage_id as usize;
+            let partitions: usize = stage.partitions as usize;
+
+            let mut task_statuses: Vec<Option<task_status::Status>> =
+                vec![None; partitions];
+
+            for status in stage.task_statuses {
+                if let Some(task_id) = status.task_id.as_ref() {
+                    task_statuses[task_id.partition_id as usize] = status.status
+                }
+            }
+
+            let output_partitioning: Option<Partitioning> =
+                parse_protobuf_hash_partitioning(
+                    stage.output_partitioning.as_ref(),
+                    session_ctx,
+                    plan.schema().as_ref(),
+                )?;
+
+            let mut inputs: HashMap<usize, StageOutput> = HashMap::new();
+
+            for input in stage.inputs {
+                let stage_id = input.stage_id as usize;
+
+                let outputs = input
+                    .partition_locations
+                    .into_iter()
+                    .map(|loc| {
+                        let partition = loc.partition as usize;
+                        let locations = loc
+                            .partition_location
+                            .into_iter()
+                            .map(|l| l.try_into())
+                            .collect::<Result<Vec<_>>>()?;
+                        Ok((partition, locations))
+                    })
+                    .collect::<Result<HashMap<usize, Vec<PartitionLocation>>>>()?;
+
+                inputs.insert(
+                    stage_id,
+                    StageOutput {
+                        partition_locations: outputs,
+                        complete: input.complete,
+                    },
+                );
+            }
+            let stage_metrics = if stage.stage_metrics.is_empty() {
+                None
+            } else {
+                let ms = stage
+                    .stage_metrics
+                    .into_iter()
+                    .map(|m| m.try_into())
+                    .collect::<Result<Vec<_>>>()?;
+                Some(ms)
+            };
+
+            let execution_stage = ExecutionStage {
+                stage_id: stage.stage_id as usize,
+                partitions,
+                output_partitioning,
+                inputs,
+                plan,
+                task_statuses,
+                output_links: stage
+                    .output_links
+                    .into_iter()
+                    .map(|l| l as usize)
+                    .collect(),
+                resolved: stage.resolved,
+                stage_metrics,
+            };
+            stages.insert(stage_id, execution_stage);
+        }
+
+        let output_locations: Vec<PartitionLocation> = proto
+            .output_locations
+            .into_iter()
+            .map(|loc| loc.try_into())
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(ExecutionGraph {
+            job_id: proto.job_id,
+            session_id: proto.session_id,
+            status: proto.status.ok_or_else(|| {
+                BallistaError::Internal(
+                    "Invalid Execution Graph: missing job status".to_owned(),
+                )
+            })?,
+            stages,
+            output_partitions: proto.output_partitions as usize,
+            output_locations,
+        })
+    }
+
+    pub(crate) fn encode_execution_graph<
+        T: 'static + AsLogicalPlan,
+        U: 'static + AsExecutionPlan,
+    >(
+        graph: ExecutionGraph,
+        codec: &BallistaCodec<T, U>,
+    ) -> Result<protobuf::ExecutionGraph> {
+        let job_id = graph.job_id().to_owned();
+
+        let stages = graph
+            .stages
+            .into_iter()
+            .map(|(stage_id, stage)| {
+                let mut plan: Vec<u8> = vec![];
+
+                U::try_from_physical_plan(stage.plan, codec.physical_extension_codec())
+                    .and_then(|proto| proto.try_encode(&mut plan))?;
+
+                let mut inputs: Vec<protobuf::GraphStageInput> = vec![];
+
+                for (stage, output) in stage.inputs.into_iter() {
+                    inputs.push(protobuf::GraphStageInput {
+                        stage_id: stage as u32,
+                        partition_locations: output
+                            .partition_locations
+                            .into_iter()
+                            .map(|(partition, locations)| {
+                                Ok(protobuf::TaskInputPartitions {
+                                    partition: partition as u32,
+                                    partition_location: locations
+                                        .into_iter()
+                                        .map(|l| l.try_into())
+                                        .collect::<Result<Vec<_>>>()?,
+                                })
+                            })
+                            .collect::<Result<Vec<_>>>()?,
+                        complete: output.complete,
+                    });
+                }
+
+                let task_statuses: Vec<protobuf::TaskStatus> = stage
+                    .task_statuses
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(partition, status)| {
+                        status.map(|status| protobuf::TaskStatus {
+                            task_id: Some(protobuf::PartitionId {
+                                job_id: job_id.clone(),
+                                stage_id: stage_id as u32,
+                                partition_id: partition as u32,
+                            }),
+                            // task metrics should not persist.
+                            metrics: vec![],
+                            status: Some(status),
+                        })
+                    })
+                    .collect();
+
+                let output_partitioning =
+                    hash_partitioning_to_proto(stage.output_partitioning.as_ref())?;
+
+                let stage_metrics = stage
+                    .stage_metrics
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|m| m.try_into())
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(protobuf::ExecutionGraphStage {
+                    stage_id: stage_id as u64,
+                    partitions: stage.partitions as u32,
+                    output_partitioning,
+                    inputs,
+                    plan,
+                    task_statuses,
+                    output_links: stage
+                        .output_links
+                        .into_iter()
+                        .map(|l| l as u32)
+                        .collect(),
+                    resolved: stage.resolved,
+                    stage_metrics,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let output_locations: Vec<protobuf::PartitionLocation> = graph
+            .output_locations
+            .into_iter()
+            .map(|loc| loc.try_into())
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(protobuf::ExecutionGraph {
+            job_id: graph.job_id,
+            session_id: graph.session_id,
+            status: Some(graph.status),
+            stages,
+            output_partitions: graph.output_partitions as u64,
+            output_locations,
+        })
+    }
+}
+
+impl Debug for ExecutionGraph {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let stages = self
+            .stages
+            .iter()
+            .map(|(_, stage)| format!("{:?}", stage))
+            .collect::<Vec<String>>()
+            .join("\n");
+        write!(f, "ExecutionGraph[job_id={}, session_id={}, available_tasks={}, complete={}]\n{}", self.job_id, self.session_id, self.available_tasks(), self.complete(), stages)
+    }
+}
 
 /// This data structure collects the partition locations for an `ExecutionStage`.
 /// Each `ExecutionStage` will hold a `StageOutput`s for each of its child stages.
 /// When all tasks for the child stage are complete, it will mark the `StageOutput`
 #[derive(Clone, Debug, Default)]
-pub struct StageOutput {
+struct StageOutput {
     /// Map from partition -> partition locations
-    pub(crate) partition_locations: HashMap<usize, Vec<PartitionLocation>>,
+    partition_locations: HashMap<usize, Vec<PartitionLocation>>,
     /// Flag indicating whether all tasks are complete
-    pub(crate) complete: bool,
+    complete: bool,
 }
 
 impl StageOutput {
@@ -85,29 +671,29 @@ impl StageOutput {
 /// This represents a set of tasks (one per each `partition`) which can
 /// be executed concurrently.
 #[derive(Clone)]
-pub struct ExecutionStage {
+struct ExecutionStage {
     /// Stage ID
-    pub(crate) stage_id: usize,
+    stage_id: usize,
     /// Total number of output partitions for this stage.
     /// This stage will produce on task for partition.
-    pub(crate) partitions: usize,
+    partitions: usize,
     /// Output partitioning for this stage.
-    pub(crate) output_partitioning: Option<Partitioning>,
+    output_partitioning: Option<Partitioning>,
     /// Represents the outputs from this stage's child stages.
     /// This stage can only be resolved an executed once all child stages are completed.
-    pub(crate) inputs: HashMap<usize, StageOutput>,
+    inputs: HashMap<usize, StageOutput>,
     // `ExecutionPlan` for this stage
-    pub(crate) plan: Arc<dyn ExecutionPlan>,
+    plan: Arc<dyn ExecutionPlan>,
     /// Status of each already scheduled task. If status is None, the partition has not yet been scheduled
-    pub(crate) task_statuses: Vec<Option<task_status::Status>>,
+    task_statuses: Vec<Option<task_status::Status>>,
     /// Stage ID of the stage that will take this stages outputs as inputs.
     /// If `output_links` is empty then this the final stage in the `ExecutionGraph`
-    pub(crate) output_links: Vec<usize>,
+    output_links: Vec<usize>,
     /// Flag indicating whether all input partitions have been resolved and the plan
     /// has UnresovledShuffleExec operators resolved to ShuffleReadExec operators.
-    pub(crate) resolved: bool,
+    resolved: bool,
     /// Combined metrics of the already finished tasks in the stage, If it is None, no task is finished yet.
-    pub(crate) stage_metrics: Option<Vec<MetricsSet>>,
+    stage_metrics: Option<Vec<MetricsSet>>,
 }
 
 impl Debug for ExecutionStage {
@@ -402,374 +988,6 @@ impl ExecutionPlanVisitor for ExecutionStageBuilder {
             }
         }
         Ok(true)
-    }
-}
-
-/// Represents the basic unit of work for the Ballista executor. Will execute
-/// one partition of one stage on one task slot.
-#[derive(Clone)]
-pub struct Task {
-    pub session_id: String,
-    pub partition: PartitionId,
-    pub plan: Arc<dyn ExecutionPlan>,
-    pub output_partitioning: Option<Partitioning>,
-}
-
-impl Debug for Task {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent();
-        write!(
-            f,
-            "Task[session_id: {}, job: {}, stage: {}, partition: {}]\n{}",
-            self.session_id,
-            self.partition.job_id,
-            self.partition.stage_id,
-            self.partition.partition_id,
-            plan
-        )
-    }
-}
-
-/// Represents the DAG for a distributed query plan.
-///
-/// A distributed query plan consists of a set of stages which must be executed sequentially.
-///
-/// Each stage consists of a set of partitions which can be executed in parallel, where each partition
-/// represents a `Task`, which is the basic unit of scheduling in Ballista.
-///
-/// As an example, consider a SQL query which performs a simple aggregation:
-///
-/// `SELECT id, SUM(gmv) FROM some_table GROUP BY id`
-///
-/// This will produce a DataFusion execution plan that looks something like
-///
-///
-///   CoalesceBatchesExec: target_batch_size=4096
-///     RepartitionExec: partitioning=Hash([Column { name: "id", index: 0 }], 4)
-///       AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[SUM(some_table.gmv)]
-///         TableScan: some_table
-///
-/// The Ballista `DistributedPlanner` will turn this into a distributed plan by creating a shuffle
-/// boundary (called a "Stage") whenever the underlying plan needs to perform a repartition.
-/// In this case we end up with a distributed plan with two stages:
-///
-///
-/// ExecutionGraph[job_id=job, session_id=session, available_tasks=1, complete=false]
-/// Stage[id=2, partitions=4, children=1, completed_tasks=0, resolved=false, scheduled_tasks=0, available_tasks=0]
-/// Inputs{1: StageOutput { partition_locations: {}, complete: false }}
-///
-/// ShuffleWriterExec: None
-///   AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[SUM(?table?.gmv)]
-///     CoalesceBatchesExec: target_batch_size=4096
-///       UnresolvedShuffleExec
-///
-/// Stage[id=1, partitions=1, children=0, completed_tasks=0, resolved=true, scheduled_tasks=0, available_tasks=1]
-/// Inputs{}
-///
-/// ShuffleWriterExec: Some(Hash([Column { name: "id", index: 0 }], 4))
-///   AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[SUM(?table?.gmv)]
-///     TableScan: some_table
-///
-///
-/// The DAG structure of this `ExecutionGraph` is encoded in the stages. Each stage's `input` field
-/// will indicate which stages it depends on, and each stage's `output_links` will indicate which
-/// stage it needs to publish its output to.
-///
-/// If a stage has `output_links` is empty then it is the final stage in this query, and it should
-/// publish its outputs to the `ExecutionGraph`s `output_locations` representing the final query results.
-#[derive(Clone)]
-pub struct ExecutionGraph {
-    /// ID for this job
-    pub(crate) job_id: String,
-    /// Session ID for this job
-    pub(crate) session_id: String,
-    /// Status of this job
-    pub(crate) status: JobStatus,
-    /// Map from Stage ID -> ExecutionStage
-    pub(crate) stages: HashMap<usize, ExecutionStage>,
-    /// Total number fo output partitions
-    pub(crate) output_partitions: usize,
-    /// Locations of this `ExecutionGraph` final output locations
-    pub(crate) output_locations: Vec<PartitionLocation>,
-}
-
-impl ExecutionGraph {
-    pub fn new(
-        job_id: &str,
-        session_id: &str,
-        plan: Arc<dyn ExecutionPlan>,
-    ) -> Result<Self> {
-        let mut planner = DistributedPlanner::new();
-
-        let output_partitions = plan.output_partitioning().partition_count();
-
-        let shuffle_stages = planner.plan_query_stages(job_id, plan)?;
-
-        let builder = ExecutionStageBuilder::new();
-        let stages = builder.build(shuffle_stages)?;
-
-        Ok(Self {
-            job_id: job_id.to_string(),
-            session_id: session_id.to_string(),
-            status: JobStatus {
-                status: Some(job_status::Status::Queued(QueuedJob {})),
-            },
-            stages,
-            output_partitions,
-            output_locations: vec![],
-        })
-    }
-
-    pub fn job_id(&self) -> &str {
-        self.job_id.as_str()
-    }
-
-    pub fn session_id(&self) -> &str {
-        self.session_id.as_str()
-    }
-
-    pub fn status(&self) -> JobStatus {
-        self.status.clone()
-    }
-
-    /// An ExecutionGraph is complete if all its stages are complete
-    pub fn complete(&self) -> bool {
-        self.stages.values().all(|s| s.complete())
-    }
-
-    /// Update task statuses and task metrics in the graph.
-    /// This will also push shuffle partitions to their respective shuffle read stages.
-    pub fn update_task_status(
-        &mut self,
-        executor: &ExecutorMetadata,
-        statuses: Vec<TaskStatus>,
-    ) -> Result<()> {
-        for status in statuses.into_iter() {
-            if let TaskStatus {
-                task_id:
-                    Some(protobuf::PartitionId {
-                        job_id,
-                        stage_id,
-                        partition_id,
-                    }),
-                metrics: operator_metrics,
-                status: Some(task_status),
-            } = status
-            {
-                if job_id != self.job_id() {
-                    return Err(BallistaError::Internal(format!(
-                        "Error updating job {}: Invalid task status job ID {}",
-                        self.job_id(),
-                        job_id
-                    )));
-                }
-
-                let stage_id = stage_id as usize;
-                let partition = partition_id as usize;
-                if let Some(stage) = self.stages.get_mut(&stage_id) {
-                    stage.update_task_status(partition, task_status.clone());
-                    let stage_plan = stage.plan.clone();
-                    let stage_complete = stage.complete();
-
-                    // TODO Should be able to reschedule this task.
-                    if let task_status::Status::Failed(failed_task) = task_status {
-                        self.status = JobStatus {
-                            status: Some(job_status::Status::Failed(FailedJob {
-                                error: format!(
-                                    "Task {}/{}/{} failed: {}",
-                                    job_id, stage_id, partition_id, failed_task.error
-                                ),
-                            })),
-                        };
-                        return Ok(());
-                    } else if let task_status::Status::Completed(completed_task) =
-                        task_status
-                    {
-                        // update task metrics for completed task
-                        stage.update_task_metrics(partition, operator_metrics)?;
-
-                        // if this stage is completed, we want to combine the stage metrics to plan's metric set and print out the plan
-                        if stage_complete && stage.stage_metrics.as_ref().is_some() {
-                            // The plan_metrics collected here is a snapshot clone from the plan metrics.
-                            // They are all empty now and need to combine with the stage metrics in the ExecutionStages
-                            let mut plan_metrics =
-                                collect_plan_metrics(stage_plan.as_ref());
-                            let stage_metrics = stage
-                                .stage_metrics
-                                .as_ref()
-                                .expect("stage metrics should not be None.");
-                            if plan_metrics.len() != stage_metrics.len() {
-                                return Err(BallistaError::Internal(format!("Error combine stage metrics to plan for stage {},  plan metrics array size {} does not equal \
-                to the stage metrics array size {}", stage_id, plan_metrics.len(), stage_metrics.len())));
-                            }
-                            plan_metrics.iter_mut().zip(stage_metrics).for_each(
-                                |(plan_metric, stage_metric)| {
-                                    stage_metric
-                                        .iter()
-                                        .for_each(|s| plan_metric.push(s.clone()));
-                                },
-                            );
-
-                            info!(
-                                "=== [{}/{}/{}] Stage finished, physical plan with metrics ===\n{}\n",
-                                job_id,
-                                stage_id,
-                                partition,
-                                DisplayableBallistaExecutionPlan::new(stage_plan.as_ref(), plan_metrics.as_ref()).indent()
-                            );
-                        }
-
-                        let locations = partition_to_location(
-                            self.job_id.as_str(),
-                            stage_id,
-                            executor,
-                            completed_task.partitions,
-                        );
-
-                        let output_links = stage.output_links.clone();
-                        if output_links.is_empty() {
-                            // If `output_links` is empty, then this is a final stage
-                            self.output_locations.extend(locations);
-                        } else {
-                            for link in output_links.into_iter() {
-                                // If this is an intermediate stage, we need to push its `PartitionLocation`s to the parent stage
-                                if let Some(linked_stage) = self.stages.get_mut(&link) {
-                                    linked_stage.add_input_partitions(
-                                        stage_id,
-                                        partition,
-                                        locations.clone(),
-                                    )?;
-
-                                    // If all tasks for this stage are complete, mark the input complete in the parent stage
-                                    if stage_complete {
-                                        linked_stage.complete_input(stage_id);
-                                    }
-
-                                    // If all input partitions are ready, we can resolve any UnresolvedShuffleExec in the parent stage plan
-                                    if linked_stage.resolvable() {
-                                        linked_stage.resolve_shuffles()?;
-                                    }
-                                } else {
-                                    return Err(BallistaError::Internal(format!("Error updating job {}: Invalid output link {} for stage {}", job_id, stage_id, link)));
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    return Err(BallistaError::Internal(format!(
-                        "Invalid stage ID {} for job {}",
-                        stage_id,
-                        self.job_id()
-                    )));
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Total number of tasks in this plan that are ready for scheduling
-    pub fn available_tasks(&self) -> usize {
-        self.stages
-            .iter()
-            .map(|(_, stage)| stage.available_tasks())
-            .sum()
-    }
-
-    /// Get next task that can be assigned to the given executor.
-    /// This method should only be called when the resulting task is immediately
-    /// being launched as the status will be set to Running and it will not be
-    /// available to the scheduler.
-    /// If the task is not launched the status must be reset to allow the task to
-    /// be scheduled elsewhere.
-    pub fn pop_next_task(&mut self, executor_id: &str) -> Result<Option<Task>> {
-        let job_id = self.job_id.clone();
-        let session_id = self.session_id.clone();
-        self.stages.iter_mut().find(|(_stage_id, stage)| {
-            stage.resolved() && stage.available_tasks() > 0
-        }).map(|(stage_id, stage)| {
-            let (partition_id,_) = stage
-                .task_statuses
-                .iter()
-                .enumerate()
-                .find(|(_partition,status)| status.is_none())
-                .ok_or_else(|| {
-                BallistaError::Internal(format!("Error getting next task for job {}: Stage {} is ready but has no pending tasks", job_id, stage_id))
-            })?;
-
-             let partition = PartitionId {
-                job_id,
-                stage_id: *stage_id,
-                partition_id
-            };
-
-            // Set the status to Running
-            stage.task_statuses[partition_id] = Some(task_status::Status::Running(RunningTask {
-                executor_id: executor_id.to_owned()
-            }));
-
-            Ok(Task {
-                session_id,
-                partition,
-                plan: stage.plan.clone(),
-                output_partitioning: stage.output_partitioning.clone()
-            })
-        }).transpose()
-    }
-
-    pub fn finalize(&mut self) -> Result<()> {
-        if !self.complete() {
-            return Err(BallistaError::Internal(format!(
-                "Attempt to finalize an incomplete job {}",
-                self.job_id()
-            )));
-        }
-
-        let partition_location = self
-            .output_locations()
-            .into_iter()
-            .map(|l| l.try_into())
-            .collect::<Result<Vec<_>>>()?;
-
-        self.status = JobStatus {
-            status: Some(job_status::Status::Completed(CompletedJob {
-                partition_location,
-            })),
-        };
-
-        Ok(())
-    }
-
-    pub fn update_status(&mut self, status: JobStatus) {
-        self.status = status;
-    }
-
-    /// Reset the status for the given task. This should be called is a task failed to
-    /// launch and it needs to be returned to the set of available tasks and be
-    /// re-scheduled.
-    pub fn reset_task_status(&mut self, task: Task) {
-        let stage_id = task.partition.stage_id;
-        let partition = task.partition.partition_id;
-
-        if let Some(stage) = self.stages.get_mut(&stage_id) {
-            stage.task_statuses[partition] = None;
-        }
-    }
-
-    pub fn output_locations(&self) -> Vec<PartitionLocation> {
-        self.output_locations.clone()
-    }
-}
-
-impl Debug for ExecutionGraph {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let stages = self
-            .stages
-            .iter()
-            .map(|(_, stage)| format!("{:?}", stage))
-            .collect::<Vec<String>>()
-            .join("\n");
-        write!(f, "ExecutionGraph[job_id={}, session_id={}, available_tasks={}, complete={}]\n{}", self.job_id, self.session_id, self.available_tasks(), self.complete(), stages)
     }
 }
 
