@@ -16,7 +16,6 @@
 // under the License.
 
 use ballista_core::config::{BallistaConfig, TaskSchedulingPolicy};
-
 use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
 
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
@@ -48,7 +47,6 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
-use crate::scheduler_server::event::SchedulerServerEvent;
 use crate::scheduler_server::SchedulerServer;
 use crate::state::executor_manager::ExecutorReservation;
 
@@ -189,30 +187,28 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 available_task_slots: metadata.specification.task_slots,
             };
 
-            if let Ok(Some(sender)) =
-                self.event_loop.as_ref().map(|e| e.get_sender()).transpose()
-            {
-                // If we are using push-based scheduling then reserve this executors slots and send
-                // them for scheduling tasks.
+            async {
+                // Save the executor to state
                 let reservations = self
                     .state
                     .executor_manager
-                    .register_executor(metadata, executor_data, true)
-                    .await
-                    .unwrap();
-
-                sender
-                    .post_event(SchedulerServerEvent::Offer(reservations))
-                    .await
-                    .unwrap();
-            } else {
-                // Otherwise just save the executor to state
-                self.state
-                    .executor_manager
                     .register_executor(metadata, executor_data, false)
-                    .await
-                    .unwrap();
+                    .await?;
+
+                // If we are using push-based scheduling then reserve this executors slots and send
+                // them for scheduling tasks.
+                if matches!(self.policy, TaskSchedulingPolicy::PushStaged) {
+                    self.offer_reservation(reservations).await?;
+                }
+
+                Ok::<(), ballista_core::error::BallistaError>(())
             }
+            .await
+            .map_err(|e| {
+                let msg = format!("Fail to do executor registration due to: {}", e);
+                error!("{}", msg);
+                Status::internal(msg)
+            })?;
 
             Ok(Response::new(RegisterExecutorResult { success: true }))
         } else {

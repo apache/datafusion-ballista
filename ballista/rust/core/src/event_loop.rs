@@ -128,6 +128,10 @@ pub struct EventSender<E> {
 }
 
 impl<E> EventSender<E> {
+    pub fn new(tx_event: mpsc::Sender<E>) -> Self {
+        Self { tx_event }
+    }
+
     pub async fn post_event(&self, event: E) -> Result<()> {
         self.tx_event.send(event).await.map_err(|e| {
             BallistaError::General(format!("Fail to send event due to {}", e))
