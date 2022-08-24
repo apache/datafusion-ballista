@@ -48,7 +48,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
-use crate::scheduler_server::event::{QueryStageSchedulerEvent, SchedulerServerEvent};
+use crate::scheduler_server::event::SchedulerServerEvent;
 use crate::scheduler_server::SchedulerServer;
 use crate::state::executor_manager::ExecutorReservation;
 
@@ -414,20 +414,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
             let job_id = self.state.task_manager.generate_job_id();
 
-            let query_stage_event_sender =
-                self.query_stage_event_loop.get_sender().map_err(|e| {
-                    Status::internal(format!(
-                        "Could not get query stage event sender due to: {}",
-                        e
-                    ))
-                })?;
-
-            query_stage_event_sender
-                .post_event(QueryStageSchedulerEvent::JobQueued {
-                    job_id: job_id.clone(),
-                    session_ctx,
-                    plan: Box::new(plan),
-                })
+            self.submit_job(&job_id, session_ctx, &plan)
                 .await
                 .map_err(|e| {
                     let msg =
@@ -535,12 +522,13 @@ mod test {
     #[tokio::test]
     async fn test_poll_work() -> Result<(), BallistaError> {
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
-        let scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
                 state_storage.clone(),
                 BallistaCodec::default(),
             );
+        scheduler.init().await?;
         let exec_meta = ExecutorRegistration {
             id: "abc".to_owned(),
             optional_host: Some(OptionalHost::Host("http://localhost:8080".to_owned())),

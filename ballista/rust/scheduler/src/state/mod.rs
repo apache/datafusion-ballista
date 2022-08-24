@@ -26,12 +26,14 @@ use ballista_core::error::{BallistaError, Result};
 
 use crate::scheduler_server::SessionBuilder;
 
+use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 
 use crate::state::backend::{Lock, StateBackendClient};
 
-use crate::state::executor_manager::ExecutorManager;
+use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::TaskManager;
 
@@ -121,6 +123,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
     pub async fn init(&self) -> Result<()> {
         self.executor_manager.init().await
+    }
+
+    pub(crate) async fn update_task_statuses(
+        &self,
+        executor_id: &str,
+        tasks_status: Vec<TaskStatus>,
+    ) -> Result<(Vec<QueryStageSchedulerEvent>, Vec<ExecutorReservation>)> {
+        let executor = self
+            .executor_manager
+            .get_executor_metadata(executor_id)
+            .await?;
+
+        self.task_manager
+            .update_task_statuses(&executor, tasks_status)
+            .await
     }
 }
 

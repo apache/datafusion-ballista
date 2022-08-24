@@ -157,6 +157,39 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 error!("Job {} Updated", job_id);
                 self.state.task_manager.update_job(&job_id).await?;
             }
+            QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status) => {
+                let num_status = tasks_status.len();
+                match self
+                    .state
+                    .update_task_statuses(&executor_id, tasks_status)
+                    .await
+                {
+                    Ok((stage_events, offers)) => {
+                        if let Some(event_sender) = self.event_sender.as_ref() {
+                            event_sender
+                                .post_event(SchedulerServerEvent::Offer(offers))
+                                .await?;
+                        }
+
+                        for stage_event in stage_events {
+                            tx_event
+                                .send(stage_event)
+                                .await
+                                .map_err(|e| {
+                                    error!("Fail to send event due to {}", e);
+                                })
+                                .unwrap();
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to update {} task statuses for executor {}: {:?}",
+                            num_status, executor_id, e
+                        );
+                        // TODO error handling
+                    }
+                }
+            }
         }
 
         Ok(())

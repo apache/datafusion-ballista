@@ -21,20 +21,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ballista_core::config::TaskSchedulingPolicy;
 use ballista_core::error::Result;
 use ballista_core::event_loop::{EventAction, EventLoop};
-use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use datafusion::execution::context::{default_session_builder, SessionState};
+use datafusion::logical_plan::LogicalPlan;
 
-use datafusion::prelude::SessionConfig;
+use ballista_core::serde::protobuf::TaskStatus;
+use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
-
-use log::error;
 
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SchedulerServerEvent};
 use crate::scheduler_server::event_loop::SchedulerServerEventAction;
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
 use crate::state::backend::StateBackendClient;
-use crate::state::executor_manager::ExecutorReservation;
 use crate::state::SchedulerState;
 
 // include the generated protobuf source as a submodule
@@ -172,64 +170,35 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         Ok(())
     }
 
+    pub(crate) async fn submit_job(
+        &self,
+        job_id: &str,
+        ctx: Arc<SessionContext>,
+        plan: &LogicalPlan,
+    ) -> Result<()> {
+        self.query_stage_event_loop
+            .get_sender()?
+            .post_event(QueryStageSchedulerEvent::JobQueued {
+                job_id: job_id.to_owned(),
+                session_ctx: ctx,
+                plan: Box::new(plan.clone()),
+            })
+            .await
+    }
+
+    /// It just send task status update event to the channel,
+    /// and will not guarantee the event processing completed after return
     pub(crate) async fn update_task_status(
         &self,
         executor_id: &str,
         tasks_status: Vec<TaskStatus>,
     ) -> Result<()> {
-        let num_status = tasks_status.len();
-        let executor = self
-            .state
-            .executor_manager
-            .get_executor_metadata(executor_id)
-            .await?;
-
-        match self
-            .state
-            .task_manager
-            .update_task_statuses(&executor, tasks_status)
-            .await
-        {
-            Ok((stage_events, offers)) => {
-                if let Some(event_loop) = self.event_loop.as_ref() {
-                    event_loop
-                        .get_sender()?
-                        .post_event(SchedulerServerEvent::Offer(offers))
-                        .await?;
-                }
-
-                for stage_event in stage_events {
-                    self.post_stage_event(stage_event).await?;
-                }
-            }
-            Err(e) => {
-                error!(
-                    "Failed to update {} task statuses for executor {}: {:?}",
-                    num_status, executor_id, e
-                );
-                // In case task update fails, make sure to free reservations
-                if let Some(event_loop) = self.event_loop.as_ref() {
-                    let mut reservations = vec![];
-                    for _ in 0..num_status {
-                        reservations
-                            .push(ExecutorReservation::new_free(executor_id.to_owned()));
-                    }
-
-                    event_loop
-                        .get_sender()?
-                        .post_event(SchedulerServerEvent::Offer(reservations))
-                        .await?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn post_stage_event(&self, event: QueryStageSchedulerEvent) -> Result<()> {
         self.query_stage_event_loop
             .get_sender()?
-            .post_event(event)
+            .post_event(QueryStageSchedulerEvent::TaskUpdating(
+                executor_id.to_owned(),
+                tasks_status,
+            ))
             .await
     }
 }
@@ -261,9 +230,7 @@ mod test {
     };
     use ballista_core::serde::BallistaCodec;
 
-    use crate::scheduler_server::event::{
-        QueryStageSchedulerEvent, SchedulerServerEvent,
-    };
+    use crate::scheduler_server::event::SchedulerServerEvent;
     use crate::scheduler_server::SchedulerServer;
     use crate::state::backend::standalone::StandaloneClient;
 
@@ -371,7 +338,8 @@ mod test {
                 };
 
                 scheduler
-                    .update_task_status("executor-1", vec![task_status])
+                    .state
+                    .update_task_statuses("executor-1", vec![task_status])
                     .await?;
             } else {
                 break;
@@ -433,15 +401,7 @@ mod test {
         let job_id = "job";
 
         // Send JobQueued event to kick off the event loop
-        scheduler
-            .query_stage_event_loop
-            .get_sender()?
-            .post_event(QueryStageSchedulerEvent::JobQueued {
-                job_id: job_id.to_owned(),
-                session_ctx: ctx,
-                plan: Box::new(plan),
-            })
-            .await?;
+        scheduler.submit_job(job_id, ctx, &plan).await?;
 
         // Complete tasks that are offered through scheduler events
         while let Some(SchedulerServerEvent::Offer(reservations)) =
@@ -572,15 +532,7 @@ mod test {
         let job_id = "job";
 
         // Send JobQueued event to kick off the event loop
-        scheduler
-            .query_stage_event_loop
-            .get_sender()?
-            .post_event(QueryStageSchedulerEvent::JobQueued {
-                job_id: job_id.to_owned(),
-                session_ctx: ctx,
-                plan: Box::new(plan),
-            })
-            .await?;
+        scheduler.submit_job(job_id, ctx, &plan).await?;
 
         // Complete tasks that are offered through scheduler events
         if let Some(SchedulerServerEvent::Offer(reservations)) =
@@ -634,7 +586,8 @@ mod test {
                                 };
 
                                 scheduler
-                                    .update_task_status(&executor.id, vec![task_status])
+                                    .state
+                                    .update_task_statuses(&executor.id, vec![task_status])
                                     .await?;
                             }
                             Err(_e) => {
@@ -706,15 +659,7 @@ mod test {
 
         // Send JobQueued event to kick off the event loop
         // This should fail when we try and create the physical plan
-        scheduler
-            .query_stage_event_loop
-            .get_sender()?
-            .post_event(QueryStageSchedulerEvent::JobQueued {
-                job_id: job_id.to_owned(),
-                session_ctx: ctx,
-                plan: Box::new(plan),
-            })
-            .await?;
+        scheduler.submit_job(job_id, ctx, &plan).await?;
 
         let scheduler = scheduler.clone();
 
