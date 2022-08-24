@@ -18,6 +18,7 @@
 #![doc = include_str ! ("../README.md")]
 
 pub mod api;
+pub mod display;
 pub mod planner;
 pub mod scheduler_server;
 #[cfg(feature = "sled")]

@@ -38,6 +38,7 @@ use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::file_format::{CsvExec, ParquetExec};
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::hash_join::HashJoinExec;
+use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{metrics, ExecutionPlan, RecordBatchStream};
@@ -341,4 +342,17 @@ pub fn create_grpc_server() -> Server {
         .tcp_keepalive(Option::Some(Duration::from_secs(3600)))
         .http2_keepalive_interval(Option::Some(Duration::from_secs(300)))
         .http2_keepalive_timeout(Option::Some(Duration::from_secs(20)))
+}
+
+pub fn collect_plan_metrics(plan: &dyn ExecutionPlan) -> Vec<MetricsSet> {
+    let mut metrics_array = Vec::<MetricsSet>::new();
+    if let Some(metrics) = plan.metrics() {
+        metrics_array.push(metrics);
+    }
+    plan.children().iter().for_each(|c| {
+        collect_plan_metrics(c.as_ref())
+            .into_iter()
+            .for_each(|e| metrics_array.push(e))
+    });
+    metrics_array
 }

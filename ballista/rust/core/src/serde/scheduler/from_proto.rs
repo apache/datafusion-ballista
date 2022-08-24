@@ -15,12 +15,23 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use chrono::{TimeZone, Utc};
+use datafusion::physical_plan::metrics::{
+    Count, Gauge, MetricValue, MetricsSet, Time, Timestamp,
+};
+use datafusion::physical_plan::Metric;
 use std::convert::TryInto;
+use std::sync::Arc;
+use std::time::Duration;
 
 use crate::error::BallistaError;
 use crate::serde::protobuf;
 use crate::serde::protobuf::action::ActionType;
-use crate::serde::scheduler::{Action, PartitionId, PartitionLocation, PartitionStats};
+use crate::serde::protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
+use crate::serde::scheduler::{
+    Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, ExecutorState,
+    PartitionId, PartitionLocation, PartitionStats,
+};
 
 impl TryInto<Action> for protobuf::Action {
     type Error = BallistaError;
@@ -102,5 +113,171 @@ impl TryInto<PartitionLocation> for protobuf::PartitionLocation {
                 .into(),
             path: self.path,
         })
+    }
+}
+
+impl TryInto<MetricValue> for protobuf::OperatorMetric {
+    type Error = BallistaError;
+
+    fn try_into(self) -> Result<MetricValue, Self::Error> {
+        match self.metric {
+            Some(operator_metric::Metric::OutputRows(value)) => {
+                let count = Count::new();
+                count.add(value as usize);
+                Ok(MetricValue::OutputRows(count))
+            }
+            Some(operator_metric::Metric::ElapseTime(value)) => {
+                let time = Time::new();
+                time.add_duration(Duration::from_nanos(value));
+                Ok(MetricValue::ElapsedCompute(time))
+            }
+            Some(operator_metric::Metric::SpillCount(value)) => {
+                let count = Count::new();
+                count.add(value as usize);
+                Ok(MetricValue::SpillCount(count))
+            }
+            Some(operator_metric::Metric::SpilledBytes(value)) => {
+                let count = Count::new();
+                count.add(value as usize);
+                Ok(MetricValue::SpilledBytes(count))
+            }
+            Some(operator_metric::Metric::CurrentMemoryUsage(value)) => {
+                let gauge = Gauge::new();
+                gauge.add(value as usize);
+                Ok(MetricValue::CurrentMemoryUsage(gauge))
+            }
+            Some(operator_metric::Metric::Count(NamedCount { name, value })) => {
+                let count = Count::new();
+                count.add(value as usize);
+                Ok(MetricValue::Count {
+                    name: name.into(),
+                    count,
+                })
+            }
+            Some(operator_metric::Metric::Gauge(NamedGauge { name, value })) => {
+                let gauge = Gauge::new();
+                gauge.add(value as usize);
+                Ok(MetricValue::Gauge {
+                    name: name.into(),
+                    gauge,
+                })
+            }
+            Some(operator_metric::Metric::Time(NamedTime { name, value })) => {
+                let time = Time::new();
+                time.add_duration(Duration::from_nanos(value));
+                Ok(MetricValue::Time {
+                    name: name.into(),
+                    time,
+                })
+            }
+            Some(operator_metric::Metric::StartTimestamp(value)) => {
+                let timestamp = Timestamp::new();
+                timestamp.set(Utc.timestamp_nanos(value));
+                Ok(MetricValue::StartTimestamp(timestamp))
+            }
+            Some(operator_metric::Metric::EndTimestamp(value)) => {
+                let timestamp = Timestamp::new();
+                timestamp.set(Utc.timestamp_nanos(value));
+                Ok(MetricValue::EndTimestamp(timestamp))
+            }
+            None => Err(BallistaError::General(
+                "scheduler::from_proto(OperatorMetric) metric is None.".to_owned(),
+            )),
+        }
+    }
+}
+
+impl TryInto<MetricsSet> for protobuf::OperatorMetricsSet {
+    type Error = BallistaError;
+
+    fn try_into(self) -> Result<MetricsSet, Self::Error> {
+        let mut ms = MetricsSet::new();
+        let metrics = self
+            .metrics
+            .into_iter()
+            .map(|m| m.try_into())
+            .collect::<Result<Vec<_>, BallistaError>>()?;
+
+        for value in metrics {
+            let new_metric = Arc::new(Metric::new(value, None));
+            ms.push(new_metric)
+        }
+        Ok(ms)
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<ExecutorMetadata> for protobuf::ExecutorMetadata {
+    fn into(self) -> ExecutorMetadata {
+        ExecutorMetadata {
+            id: self.id,
+            host: self.host,
+            port: self.port as u16,
+            grpc_port: self.grpc_port as u16,
+            specification: self.specification.unwrap().into(),
+        }
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<ExecutorSpecification> for protobuf::ExecutorSpecification {
+    fn into(self) -> ExecutorSpecification {
+        let mut ret = ExecutorSpecification { task_slots: 0 };
+        for resource in self.resources {
+            if let Some(protobuf::executor_resource::Resource::TaskSlots(task_slots)) =
+                resource.resource
+            {
+                ret.task_slots = task_slots
+            }
+        }
+        ret
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<ExecutorData> for protobuf::ExecutorData {
+    fn into(self) -> ExecutorData {
+        let mut ret = ExecutorData {
+            executor_id: self.executor_id,
+            total_task_slots: 0,
+            available_task_slots: 0,
+        };
+        for resource in self.resources {
+            if let Some(task_slots) = resource.total {
+                if let Some(protobuf::executor_resource::Resource::TaskSlots(
+                    task_slots,
+                )) = task_slots.resource
+                {
+                    ret.total_task_slots = task_slots
+                }
+            };
+            if let Some(task_slots) = resource.available {
+                if let Some(protobuf::executor_resource::Resource::TaskSlots(
+                    task_slots,
+                )) = task_slots.resource
+                {
+                    ret.available_task_slots = task_slots
+                }
+            };
+        }
+        ret
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<ExecutorState> for protobuf::ExecutorState {
+    fn into(self) -> ExecutorState {
+        let mut ret = ExecutorState {
+            available_memory_size: u64::MAX,
+        };
+        for metric in self.metrics {
+            if let Some(protobuf::executor_metric::Metric::AvailableMemory(
+                available_memory_size,
+            )) = metric.metric
+            {
+                ret.available_memory_size = available_memory_size
+            }
+        }
+        ret
     }
 }

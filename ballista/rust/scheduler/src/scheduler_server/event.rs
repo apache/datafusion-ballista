@@ -32,7 +32,6 @@ pub enum SchedulerServerEvent {
 pub enum QueryStageSchedulerEvent {
     JobQueued {
         job_id: String,
-        session_id: String,
         session_ctx: Arc<SessionContext>,
         plan: Box<LogicalPlan>,
     },

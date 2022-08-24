@@ -99,30 +99,13 @@ impl Executor {
         job_id: String,
         stage_id: usize,
         part: usize,
-        plan: Arc<dyn ExecutionPlan>,
+        shuffle_writer: Arc<ShuffleWriterExec>,
         task_ctx: Arc<TaskContext>,
         _shuffle_output_partitioning: Option<Partitioning>,
     ) -> Result<Vec<protobuf::ShuffleWritePartition>, BallistaError> {
-        let exec = if let Some(shuffle_writer) =
-            plan.as_any().downcast_ref::<ShuffleWriterExec>()
-        {
-            // recreate the shuffle writer with the correct working directory
-            ShuffleWriterExec::try_new(
-                job_id.clone(),
-                stage_id,
-                plan.children()[0].clone(),
-                self.work_dir.clone(),
-                shuffle_writer.shuffle_output_partitioning().cloned(),
-            )
-        } else {
-            Err(DataFusionError::Internal(
-                "Plan passed to execute_shuffle_write is not a ShuffleWriterExec"
-                    .to_string(),
-            ))
-        }?;
-
-        let (task, abort_handle) =
-            futures::future::abortable(exec.execute_shuffle_write(part, task_ctx));
+        let (task, abort_handle) = futures::future::abortable(
+            shuffle_writer.execute_shuffle_write(part, task_ctx),
+        );
 
         {
             let mut abort_handles = self.abort_handles.lock().await;
@@ -145,9 +128,36 @@ impl Executor {
         });
 
         self.metrics_collector
-            .record_stage(&job_id, stage_id, part, exec);
+            .record_stage(&job_id, stage_id, part, shuffle_writer);
 
         Ok(partitions)
+    }
+
+    /// Recreate the shuffle writer with the correct working directory.
+    pub fn new_shuffle_writer(
+        &self,
+        job_id: String,
+        stage_id: usize,
+        plan: Arc<dyn ExecutionPlan>,
+    ) -> Result<Arc<ShuffleWriterExec>, BallistaError> {
+        let exec = if let Some(shuffle_writer) =
+            plan.as_any().downcast_ref::<ShuffleWriterExec>()
+        {
+            // recreate the shuffle writer with the correct working directory
+            ShuffleWriterExec::try_new(
+                job_id,
+                stage_id,
+                plan.children()[0].clone(),
+                self.work_dir.clone(),
+                shuffle_writer.shuffle_output_partitioning().cloned(),
+            )
+        } else {
+            Err(DataFusionError::Internal(
+                "Plan passed to execute_shuffle_write is not a ShuffleWriterExec"
+                    .to_string(),
+            ))
+        }?;
+        Ok(Arc::new(exec))
     }
 
     pub async fn cancel_task(
