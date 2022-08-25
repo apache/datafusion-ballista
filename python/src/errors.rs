@@ -16,6 +16,7 @@
 // under the License.
 
 use core::fmt;
+use std::error::Error;
 
 use datafusion::arrow::error::ArrowError;
 use datafusion::error::DataFusionError as InnerDataFusionError;
@@ -26,6 +27,7 @@ pub enum DataFusionError {
     ExecutionError(InnerDataFusionError),
     ArrowError(ArrowError),
     Common(String),
+    PythonError(PyErr),
 }
 
 impl fmt::Display for DataFusionError {
@@ -33,6 +35,7 @@ impl fmt::Display for DataFusionError {
         match self {
             DataFusionError::ExecutionError(e) => write!(f, "DataFusion error: {:?}", e),
             DataFusionError::ArrowError(e) => write!(f, "Arrow error: {:?}", e),
+            DataFusionError::PythonError(e) => write!(f, "Python error {:?}", e),
             DataFusionError::Common(e) => write!(f, "{}", e),
         }
     }
@@ -50,8 +53,19 @@ impl From<InnerDataFusionError> for DataFusionError {
     }
 }
 
-impl From<DataFusionError> for PyErr {
-    fn from(err: DataFusionError) -> PyErr {
-        PyException::new_err(err.to_string())
+impl From<PyErr> for DataFusionError {
+    fn from(err: PyErr) -> DataFusionError {
+        DataFusionError::PythonError(err)
     }
 }
+
+impl From<DataFusionError> for PyErr {
+    fn from(err: DataFusionError) -> PyErr {
+        match err {
+            DataFusionError::PythonError(py_err) => py_err,
+            _ => PyException::new_err(err.to_string()),
+        }
+    }
+}
+
+impl Error for DataFusionError {}

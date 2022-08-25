@@ -38,7 +38,7 @@ pub(crate) struct PyDatabase {
 }
 
 #[pyclass(name = "Table", module = "datafusion", subclass)]
-pub(crate) struct PyTable {
+pub struct PyTable {
     table: Arc<dyn TableProvider>,
 }
 
@@ -57,6 +57,10 @@ impl PyDatabase {
 impl PyTable {
     pub fn new(table: Arc<dyn TableProvider>) -> Self {
         Self { table }
+    }
+
+    pub fn table(&self) -> Arc<dyn TableProvider> {
+        self.table.clone()
     }
 }
 
