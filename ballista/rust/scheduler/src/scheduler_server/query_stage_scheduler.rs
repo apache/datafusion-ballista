@@ -89,7 +89,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     {
                         let msg = format!("Error planning job {}: {:?}", job_id, e);
                         error!("{}", &msg);
-                        QueryStageSchedulerEvent::JobFailed(job_id, msg)
+                        QueryStageSchedulerEvent::JobPlanningFailed(job_id, msg)
                     } else {
                         QueryStageSchedulerEvent::JobSubmitted(job_id)
                     };
@@ -138,7 +138,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     }
                 }
             }
-            QueryStageSchedulerEvent::JobFailed(job_id, fail_message) => {
+            QueryStageSchedulerEvent::JobPlanningFailed(job_id, fail_message) => {
                 error!("Job {} failed: {}", job_id, fail_message);
                 self.state
                     .task_manager

@@ -48,7 +48,7 @@ use crate::display::DisplayableBallistaExecutionPlan;
 ///                         CompletedStage
 #[derive(Clone)]
 pub(super) enum ExecutionStage {
-    UnResolved(UnResolvedStage),
+    UnResolved(UnresolvedStage),
     Resolved(ResolvedStage),
     Running(RunningStage),
     Completed(CompletedStage),
@@ -69,7 +69,7 @@ impl Debug for ExecutionStage {
 
 /// For a stage whose input stages are not all completed, we say it's a unresolved stage
 #[derive(Clone)]
-pub(super) struct UnResolvedStage {
+pub(super) struct UnresolvedStage {
     /// Stage ID
     pub(super) stage_id: usize,
     /// Output partitioning for this stage.
@@ -85,7 +85,7 @@ pub(super) struct UnResolvedStage {
 }
 
 /// For a stage, if it has no inputs or all of its input stages are completed,
-/// then we it's a resolved stage
+/// then we call it as a resolved stage
 #[derive(Clone)]
 pub(super) struct ResolvedStage {
     /// Stage ID
@@ -103,7 +103,7 @@ pub(super) struct ResolvedStage {
 }
 
 /// Different from the resolved stage, a running stage will
-/// 1. save the execution plan as encoded one to avoid serialization cost for creating task definition2
+/// 1. save the execution plan as encoded one to avoid serialization cost for creating task definition
 /// 2. manage the task statuses
 /// 3. manage the stage-level combined metrics
 /// Running stages will only be maintained in memory and will not saved to the backend storage
@@ -171,7 +171,7 @@ pub(super) struct FailedStage {
     pub(super) error_message: String,
 }
 
-impl UnResolvedStage {
+impl UnresolvedStage {
     pub(super) fn new(
         stage_id: usize,
         plan: Arc<dyn ExecutionPlan>,
@@ -246,7 +246,7 @@ impl UnResolvedStage {
         stage: protobuf::UnResolvedStage,
         codec: &BallistaCodec<T, U>,
         session_ctx: &SessionContext,
-    ) -> Result<UnResolvedStage> {
+    ) -> Result<UnresolvedStage> {
         let plan_proto = U::try_decode(&stage.plan)?;
         let plan = plan_proto.try_into_physical_plan(
             session_ctx,
@@ -287,7 +287,7 @@ impl UnResolvedStage {
             );
         }
 
-        Ok(UnResolvedStage {
+        Ok(UnresolvedStage {
             stage_id: stage.stage_id as usize,
             output_partitioning,
             output_links: stage.output_links.into_iter().map(|l| l as usize).collect(),
@@ -297,7 +297,7 @@ impl UnResolvedStage {
     }
 
     pub(super) fn encode<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
-        stage: UnResolvedStage,
+        stage: UnresolvedStage,
         codec: &BallistaCodec<T, U>,
     ) -> Result<protobuf::UnResolvedStage> {
         let mut plan: Vec<u8> = vec![];
@@ -338,7 +338,7 @@ impl UnResolvedStage {
     }
 }
 
-impl Debug for UnResolvedStage {
+impl Debug for UnresolvedStage {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent();
 

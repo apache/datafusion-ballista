@@ -45,7 +45,7 @@ use crate::display::print_stage_metrics;
 use crate::planner::DistributedPlanner;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::execution_graph::execution_stage::{
-    CompletedStage, ExecutionStage, FailedStage, ResolvedStage, UnResolvedStage,
+    CompletedStage, ExecutionStage, FailedStage, ResolvedStage, UnresolvedStage,
 };
 
 mod execution_stage;
@@ -159,8 +159,8 @@ impl ExecutionGraph {
             .all(|s| matches!(s, ExecutionStage::Completed(_)))
     }
 
-    /// Revive the execution graph by converting the resolved stages to running changes
-    /// If existing such change, return true; else false.
+    /// Revive the execution graph by converting the resolved stages to running stages
+    /// If any stages are converted, return true; else false.
     pub fn revive(&mut self) -> bool {
         let running_stages = self
             .stages
@@ -626,8 +626,8 @@ impl ExecutionGraph {
 
             let execution_stage = match stage_type {
                 StageType::UnresolvedStage(stage) => {
-                    let stage: UnResolvedStage =
-                        UnResolvedStage::decode(stage, codec, session_ctx)?;
+                    let stage: UnresolvedStage =
+                        UnresolvedStage::decode(stage, codec, session_ctx)?;
                     (stage.stage_id, ExecutionStage::UnResolved(stage))
                 }
                 StageType::ResolvedStage(stage) => {
@@ -688,7 +688,7 @@ impl ExecutionGraph {
             .map(|stage| {
                 let stage_type = match stage {
                     ExecutionStage::UnResolved(stage) => {
-                        StageType::UnresolvedStage(UnResolvedStage::encode(stage, codec)?)
+                        StageType::UnresolvedStage(UnresolvedStage::encode(stage, codec)?)
                     }
                     ExecutionStage::Resolved(stage) => {
                         StageType::ResolvedStage(ResolvedStage::encode(stage, codec)?)
@@ -792,7 +792,7 @@ impl ExecutionStageBuilder {
                     output_links,
                 ))
             } else {
-                ExecutionStage::UnResolved(UnResolvedStage::new(
+                ExecutionStage::UnResolved(UnresolvedStage::new(
                     stage_id,
                     stage,
                     partitioning,
