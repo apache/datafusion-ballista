@@ -763,6 +763,14 @@ message FilePartitionMetadata {
   repeated string filename = 1;
 }
 
+message CancelJobParams {
+  string job_id = 1;
+}
+
+message CancelJobResult {
+  bool cancelled = 1;
+}
+
 message LaunchTaskParams {
   // Allow to launch a task set to an executor at once
   repeated TaskDefinition task = 1;
@@ -771,6 +779,14 @@ message LaunchTaskParams {
 message LaunchTaskResult {
   bool success = 1;
   // TODO when part of the task set are scheduled successfully
+}
+
+message CancelTasksParams {
+  repeated PartitionId partition_id = 1;
+}
+
+message CancelTasksResult {
+  bool cancelled = 1;
 }
 
 service SchedulerGrpc {
@@ -790,10 +806,14 @@ service SchedulerGrpc {
   rpc ExecuteQuery (ExecuteQueryParams) returns (ExecuteQueryResult) {}
 
   rpc GetJobStatus (GetJobStatusParams) returns (GetJobStatusResult) {}
+
+  rpc CancelJob (CancelJobParams) returns (CancelJobResult) {}
 }
 
 service ExecutorGrpc {
   rpc LaunchTask (LaunchTaskParams) returns (LaunchTaskResult) {}
 
   rpc StopExecutor (StopExecutorParams) returns (StopExecutorResult) {}
+
+  rpc CancelTasks (CancelTasksParams) returns (CancelTasksResult) {}
 }

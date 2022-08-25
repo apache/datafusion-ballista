@@ -22,10 +22,11 @@ use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Qu
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
-    ExecuteQueryParams, ExecuteQueryResult, ExecutorHeartbeat, GetFileMetadataParams,
-    GetFileMetadataResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
-    HeartBeatResult, PollWorkParams, PollWorkResult, RegisterExecutorParams,
-    RegisterExecutorResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
+    CancelJobParams, CancelJobResult, ExecuteQueryParams, ExecuteQueryResult,
+    ExecutorHeartbeat, GetFileMetadataParams, GetFileMetadataResult, GetJobStatusParams,
+    GetJobStatusResult, HeartBeatParams, HeartBeatResult, PollWorkParams, PollWorkResult,
+    RegisterExecutorParams, RegisterExecutorResult, UpdateTaskStatusParams,
+    UpdateTaskStatusResult,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::serde::AsExecutionPlan;
@@ -488,6 +489,26 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 Err(Status::internal(msg))
             }
         }
+    }
+
+    async fn cancel_job(
+        &self,
+        request: Request<CancelJobParams>,
+    ) -> Result<Response<CancelJobResult>, Status> {
+        let job_id = request.into_inner().job_id;
+        info!("Received cancellation request for job {}", job_id);
+
+        self.state
+            .task_manager
+            .cancel_job(&job_id, &self.state.executor_manager)
+            .await
+            .map_err(|e| {
+                let msg = format!("Error cancelling job {}: {:?}", job_id, e);
+                error!("{}", msg);
+                Status::internal(msg)
+            })?;
+
+        Ok(Response::new(CancelJobResult { cancelled: true }))
     }
 }
 

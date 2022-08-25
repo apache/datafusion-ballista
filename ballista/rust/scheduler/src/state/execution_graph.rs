@@ -317,6 +317,29 @@ impl ExecutionGraph {
             .sum()
     }
 
+    /// Return all currently running tasks along with the executor ID on which they are assigned
+    pub fn running_tasks(&self) -> Vec<(PartitionId, String)> {
+        self.stages
+            .iter()
+            .flat_map(|(_, stage)| {
+                stage
+                    .running_tasks()
+                    .iter()
+                    .map(|(stage_id, partition, executor_id)| {
+                        (
+                            PartitionId {
+                                job_id: self.job_id.clone(),
+                                stage_id: *stage_id,
+                                partition_id: *partition,
+                            },
+                            executor_id.clone(),
+                        )
+                    })
+                    .collect::<Vec<(PartitionId, String)>>()
+            })
+            .collect::<Vec<(PartitionId, String)>>()
+    }
+
     /// Get next task that can be assigned to the given executor.
     /// This method should only be called when the resulting task is immediately
     /// being launched as the status will be set to Running and it will not be
@@ -745,6 +768,24 @@ impl ExecutionStage {
             output_links,
             resolved,
             stage_metrics: None,
+        }
+    }
+
+    /// Returns a vector of currently running tasks in this stage
+    pub fn running_tasks(&self) -> Vec<(usize, usize, String)> {
+        if self.resolved {
+            self.task_statuses
+                .iter()
+                .enumerate()
+                .filter_map(|(partition, status)| match status {
+                    Some(task_status::Status::Running(RunningTask { executor_id })) => {
+                        Some((self.stage_id, partition, executor_id.clone()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        } else {
+            vec![]
         }
     }
 

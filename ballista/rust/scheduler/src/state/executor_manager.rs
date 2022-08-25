@@ -23,12 +23,17 @@ use crate::state::{decode_into, decode_protobuf, encode_protobuf, with_lock};
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf;
 
+use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
+use ballista_core::utils::create_grpc_client_connection;
 use futures::StreamExt;
 use log::{debug, info};
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use tonic::transport::Channel;
+
+type ExecutorClients = Arc<RwLock<HashMap<String, ExecutorGrpcClient<Channel>>>>;
 
 /// Represents a task slot that is reserved (i.e. available for scheduling but not visible to the
 /// rest of the system).
@@ -71,6 +76,7 @@ pub(crate) struct ExecutorManager {
     state: Arc<dyn StateBackendClient>,
     executor_metadata: Arc<RwLock<HashMap<String, ExecutorMetadata>>>,
     executors_heartbeat: Arc<RwLock<HashMap<String, protobuf::ExecutorHeartbeat>>>,
+    clients: ExecutorClients,
 }
 
 impl ExecutorManager {
@@ -79,6 +85,7 @@ impl ExecutorManager {
             state,
             executor_metadata: Arc::new(RwLock::new(HashMap::new())),
             executors_heartbeat: Arc::new(RwLock::new(HashMap::new())),
+            clients: Default::default(),
         }
     }
 
@@ -192,6 +199,34 @@ impl ExecutorManager {
             Ok(())
         })
         .await
+    }
+
+    pub async fn get_client(
+        &self,
+        executor_id: &str,
+    ) -> Result<ExecutorGrpcClient<Channel>> {
+        let client = {
+            let clients = self.clients.read();
+            clients.get(executor_id).cloned()
+        };
+
+        if let Some(client) = client {
+            Ok(client)
+        } else {
+            let executor_metadata = self.get_executor_metadata(executor_id).await?;
+            let executor_url = format!(
+                "http://{}:{}",
+                executor_metadata.host, executor_metadata.grpc_port
+            );
+            let connection = create_grpc_client_connection(executor_url).await?;
+            let client = ExecutorGrpcClient::new(connection);
+
+            {
+                let mut clients = self.clients.write();
+                clients.insert(executor_id.to_owned(), client.clone());
+            }
+            Ok(client)
+        }
     }
 
     /// Get a list of all executors along with the timestamp of their last recorded heartbeat

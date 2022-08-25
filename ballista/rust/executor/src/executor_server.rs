@@ -35,9 +35,9 @@ use ballista_core::serde::protobuf::executor_grpc_server::{
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_core::serde::protobuf::{
-    HeartBeatParams, LaunchTaskParams, LaunchTaskResult, RegisterExecutorParams,
-    StopExecutorParams, StopExecutorResult, TaskDefinition, TaskStatus,
-    UpdateTaskStatusParams,
+    CancelTasksParams, CancelTasksResult, HeartBeatParams, LaunchTaskParams,
+    LaunchTaskResult, RegisterExecutorParams, StopExecutorParams, StopExecutorResult,
+    TaskDefinition, TaskStatus, UpdateTaskStatusParams,
 };
 use ballista_core::serde::scheduler::ExecutorState;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
@@ -504,5 +504,32 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         let stop_sender = self.executor_env.tx_stop.clone();
         stop_sender.send(force).await.unwrap();
         Ok(Response::new(StopExecutorResult {}))
+    }
+
+    async fn cancel_tasks(
+        &self,
+        request: Request<CancelTasksParams>,
+    ) -> Result<Response<CancelTasksResult>, Status> {
+        let partitions = request.into_inner().partition_id;
+        info!("Cancelling partition tasks for {:?}", partitions);
+
+        let mut cancelled = true;
+
+        for partition in partitions {
+            if let Err(e) = self
+                .executor
+                .cancel_task(
+                    partition.job_id,
+                    partition.stage_id as usize,
+                    partition.partition_id as usize,
+                )
+                .await
+            {
+                error!("Error cancelling task: {:?}", e);
+                cancelled = false;
+            }
+        }
+
+        Ok(Response::new(CancelTasksResult { cancelled }))
     }
 }
