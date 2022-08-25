@@ -63,6 +63,13 @@ jobs:
         env:
           CARGO_HOME: "/github/home/.cargo"
           CARGO_TARGET_DIR: "/github/home/target/debug"
+      - name: Build Python bindings
+        run: |
+          cd python
+          cargo build
+        env:
+          CARGO_HOME: "/github/home/.cargo"
+          CARGO_TARGET_DIR: "/github/home/target/debug"
       - name: Build workspace in release mode
         run: |
           cargo check --release
