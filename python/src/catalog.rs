@@ -27,17 +27,17 @@ use datafusion::{
     datasource::{TableProvider, TableType},
 };
 
-#[pyclass(name = "Catalog", module = "datafusion", subclass)]
+#[pyclass(name = "Catalog", module = "ballista", subclass)]
 pub(crate) struct PyCatalog {
     catalog: Arc<dyn CatalogProvider>,
 }
 
-#[pyclass(name = "Database", module = "datafusion", subclass)]
+#[pyclass(name = "Database", module = "ballista", subclass)]
 pub(crate) struct PyDatabase {
     database: Arc<dyn SchemaProvider>,
 }
 
-#[pyclass(name = "Table", module = "datafusion", subclass)]
+#[pyclass(name = "Table", module = "ballista", subclass)]
 pub struct PyTable {
     table: Arc<dyn TableProvider>,
 }

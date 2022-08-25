@@ -30,7 +30,7 @@ use std::sync::Arc;
 /// A PyDataFrame is a representation of a logical plan and an API to compose statements.
 /// Use it to build a plan and `.collect()` to execute the plan and collect the result.
 /// The actual execution of a plan runs natively on Rust and Arrow on a multi-threaded environment.
-#[pyclass(name = "DataFrame", module = "datafusion", subclass)]
+#[pyclass(name = "DataFrame", module = "ballista", subclass)]
 #[derive(Clone)]
 pub(crate) struct PyDataFrame {
     df: Arc<DataFrame>,

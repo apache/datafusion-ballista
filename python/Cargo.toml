@@ -25,7 +25,7 @@ description = "Python bindings for Apache Arrow Ballista"
 readme = "README.md"
 license = "Apache-2.0"
 edition = "2021"
-rust-version = "1.57"
+rust-version = "1.63"
 
 [features]
 default = ["mimalloc"]
