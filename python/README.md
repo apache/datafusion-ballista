@@ -36,14 +36,14 @@ Technically, zero-copy is achieved via the [c data interface](https://arrow.apac
 Simple usage:
 
 ```python
-import datafusion
+import ballista
 import pyarrow
 
 # an alias
-f = datafusion.functions
+f = ballista.functions
 
 # create a context
-ctx = datafusion.SessionContext()
+ctx = ballista.SessionContext()
 
 # create a RecordBatch and a new DataFrame from it
 batch = pyarrow.RecordBatch.from_arrays(
@@ -143,7 +143,7 @@ python -m pip install -U pip
 # if python -V gives python 3.7
 python -m pip install -r requirements-37.txt
 # if python -V gives python 3.8/3.9/3.10
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-310.txt
 ```
 
 Whenever rust code changes (your changes or via `git pull`):
