@@ -22,6 +22,7 @@ import pyarrow as pa
 
 from ._internal import (
     AggregateUDF,
+    BallistaContext,
     DataFrame,
     SessionContext,
     Expression,
@@ -30,6 +31,7 @@ from ._internal import (
 
 
 __all__ = [
+    "BallistaContext",
     "DataFrame",
     "SessionContext",
     "Expression",

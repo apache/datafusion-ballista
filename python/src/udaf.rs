@@ -24,7 +24,9 @@ use datafusion::arrow::datatypes::DataType;
 use datafusion::arrow::pyarrow::PyArrowConvert;
 use datafusion::common::ScalarValue;
 use datafusion::error::{DataFusionError, Result};
-use datafusion::logical_expr::{Accumulator, AccumulatorFunctionImplementation, AggregateUDF};
+use datafusion::logical_expr::{
+    Accumulator, AccumulatorFunctionImplementation, AggregateUDF,
+};
 use datafusion::logical_plan;
 
 use crate::expression::PyExpr;
