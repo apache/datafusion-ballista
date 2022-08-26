@@ -27,6 +27,9 @@ license = "Apache-2.0"
 edition = "2021"
 rust-version = "1.63"
 
+[package.metadata.maturin]
+name = "ballista._internal"
+
 [features]
 default = ["mimalloc"]
 
@@ -43,12 +46,9 @@ tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "sync"
 uuid = { version = "0.8", features = ["v4"] }
 
 [lib]
-name = "ballista_python"
 crate-type = ["cdylib", "rlib"]
-
-[package.metadata.maturin]
-name = "ballista._internal"
+name = "ballista_python"
 
 [profile.release]
-lto = true
 codegen-units = 1
+lto = true
