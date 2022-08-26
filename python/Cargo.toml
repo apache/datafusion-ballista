@@ -31,17 +31,17 @@ rust-version = "1.63"
 default = ["mimalloc"]
 
 [dependencies]
-tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "sync"] }
-rand = "0.7"
-pyo3 = { version = "~0.16.5", features = ["extension-module", "abi3", "abi3-py37"] }
-datafusion = { version = "^10.0.0", features = ["pyarrow"] }
-datafusion-expr = { version = "^10.0.0" }
-datafusion-common = { version = "^10.0.0", features = ["pyarrow"] }
-uuid = { version = "0.8", features = ["v4"] }
-mimalloc = { version = "*", optional = true, default-features = false }
 async-trait = "0.1"
+datafusion = { version = "^10.0.0", features = ["pyarrow"] }
+datafusion-common = { version = "^10.0.0", features = ["pyarrow"] }
+datafusion-expr = { version = "^10.0.0" }
 futures = "0.3"
+mimalloc = { version = "*", optional = true, default-features = false }
+pyo3 = { version = "~0.16.5", features = ["extension-module", "abi3", "abi3-py37"] }
+rand = "0.7"
 serde_json = { version = "1.0.85", features = ["std"] }
+tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "sync"] }
+uuid = { version = "0.8", features = ["v4"] }
 
 [lib]
 name = "ballista_python"
