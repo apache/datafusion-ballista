@@ -18,6 +18,7 @@
 use core::fmt;
 use std::error::Error;
 
+use ballista::prelude::BallistaError as InnerBallistaError;
 use datafusion::arrow::error::ArrowError;
 use datafusion::error::DataFusionError as InnerDataFusionError;
 use pyo3::{exceptions::PyException, PyErr};
@@ -69,3 +70,42 @@ impl From<DataFusionError> for PyErr {
 }
 
 impl Error for DataFusionError {}
+
+#[derive(Debug)]
+pub enum BallistaError {
+    DataFusionExecutionError(InnerDataFusionError),
+    ExecutionError(InnerBallistaError),
+    ArrowError(ArrowError),
+    Common(String),
+}
+
+impl From<InnerDataFusionError> for BallistaError {
+    fn from(err: InnerDataFusionError) -> BallistaError {
+        BallistaError::DataFusionExecutionError(err)
+    }
+}
+
+impl From<InnerBallistaError> for BallistaError {
+    fn from(err: InnerBallistaError) -> BallistaError {
+        BallistaError::ExecutionError(err)
+    }
+}
+
+impl fmt::Display for BallistaError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            BallistaError::DataFusionExecutionError(e) => {
+                write!(f, "DataFusion error: {:?}", e)
+            }
+            BallistaError::ExecutionError(e) => write!(f, "Ballista error: {:?}", e),
+            BallistaError::ArrowError(e) => write!(f, "Arrow error: {:?}", e),
+            BallistaError::Common(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+impl From<BallistaError> for PyErr {
+    fn from(err: BallistaError) -> PyErr {
+        PyException::new_err(err.to_string())
+    }
+}

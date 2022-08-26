@@ -22,12 +22,12 @@ use pyo3::{prelude::*, types::PyTuple};
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::datatypes::DataType;
 use datafusion::arrow::pyarrow::PyArrowConvert;
+use datafusion::common::ScalarValue;
 use datafusion::error::{DataFusionError, Result};
+use datafusion::logical_expr::Accumulator;
+use datafusion::logical_expr::AccumulatorFunctionImplementation;
+use datafusion::logical_expr::AggregateUDF;
 use datafusion::logical_plan;
-use datafusion_common::ScalarValue;
-use datafusion_expr::Accumulator;
-use datafusion_expr::AccumulatorFunctionImplementation;
-use datafusion_expr::AggregateUDF;
 
 use crate::expression::PyExpr;
 use crate::utils::parse_volatility;

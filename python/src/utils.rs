@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::errors::DataFusionError;
-use datafusion_expr::Volatility;
+use datafusion::logical_expr::Volatility;
 use pyo3::prelude::*;
 use std::future::Future;
 use tokio::runtime::Runtime;

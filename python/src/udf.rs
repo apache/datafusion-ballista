@@ -23,10 +23,10 @@ use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::datatypes::DataType;
 use datafusion::arrow::pyarrow::PyArrowConvert;
 use datafusion::error::DataFusionError;
+use datafusion::logical_expr::function::ScalarFunctionImplementation;
 use datafusion::logical_plan;
 use datafusion::physical_plan::functions::make_scalar_function;
 use datafusion::physical_plan::udf::ScalarUDF;
-use datafusion_expr::function::ScalarFunctionImplementation;
 
 use crate::expression::PyExpr;
 use crate::utils::parse_volatility;

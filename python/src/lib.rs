@@ -20,6 +20,8 @@ use mimalloc::MiMalloc;
 use pyo3::prelude::*;
 
 #[allow(clippy::borrow_deref_ref)]
+mod ballista_context;
+#[allow(clippy::borrow_deref_ref)]
 pub mod catalog;
 #[allow(clippy::borrow_deref_ref)]
 mod context;
