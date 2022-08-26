@@ -18,12 +18,12 @@
 import pyarrow as pa
 import pytest
 
-from datafusion import ExecutionContext
+from ballista import SessionContext
 
 
 @pytest.fixture
 def ctx():
-    return ExecutionContext()
+    return SessionContext()
 
 
 def test_register_record_batches(ctx):

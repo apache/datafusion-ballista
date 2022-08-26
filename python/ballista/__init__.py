@@ -23,7 +23,7 @@ import pyarrow as pa
 from ._internal import (
     AggregateUDF,
     DataFrame,
-    ExecutionContext,
+    SessionContext,
     Expression,
     ScalarUDF,
 )
@@ -31,7 +31,7 @@ from ._internal import (
 
 __all__ = [
     "DataFrame",
-    "ExecutionContext",
+    "SessionContext",
     "Expression",
     "AggregateUDF",
     "ScalarUDF",
