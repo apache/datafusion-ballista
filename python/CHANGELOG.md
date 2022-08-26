@@ -85,7 +85,7 @@ For older versions, see [apache/arrow/CHANGELOG.md](https://github.com/apache/ar
 **Implemented enhancements:**
 
 - add more math functions and unit tests to `python` crate  [\#748](https://github.com/apache/arrow-datafusion/pull/748) ([Jimexist](https://github.com/Jimexist))
-- Expose ExecutionContext.register\_csv to the python bindings [\#524](https://github.com/apache/arrow-datafusion/pull/524) ([kszucs](https://github.com/kszucs))
+- Expose SessionContext.register\_csv to the python bindings [\#524](https://github.com/apache/arrow-datafusion/pull/524) ([kszucs](https://github.com/kszucs))
 - Implement missing join types for Python dataframe [\#503](https://github.com/apache/arrow-datafusion/pull/503) ([Dandandan](https://github.com/Dandandan))
 - Add missing functions to python [\#388](https://github.com/apache/arrow-datafusion/pull/388) ([jgoday](https://github.com/jgoday))
 

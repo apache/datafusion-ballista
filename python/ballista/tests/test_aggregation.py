@@ -18,13 +18,12 @@
 import pyarrow as pa
 import pytest
 
-from datafusion import ExecutionContext, column
-from datafusion import functions as f
-
+from ballista import SessionContext, column
+from ballista import functions as f
 
 @pytest.fixture
 def df():
-    ctx = ExecutionContext()
+    ctx = SessionContext()
 
     # create a RecordBatch and a new DataFrame from it
     batch = pa.RecordBatch.from_arrays(

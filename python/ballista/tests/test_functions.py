@@ -19,14 +19,14 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from datafusion import ExecutionContext, column
-from datafusion import functions as f
-from datafusion import literal
+from ballista import SessionContext, column
+from ballista import functions as f
+from ballista import literal
 
 
 @pytest.fixture
 def df():
-    ctx = ExecutionContext()
+    ctx = SessionContext()
     # create a RecordBatch and a new DataFrame from it
     batch = pa.RecordBatch.from_arrays(
         [pa.array(["Hello", "World", "!"]), pa.array([4, 5, 6])],
@@ -70,7 +70,7 @@ def test_lit_arith(df):
 
 
 def test_math_functions():
-    ctx = ExecutionContext()
+    ctx = SessionContext()
     # create a RecordBatch and a new DataFrame from it
     batch = pa.RecordBatch.from_arrays(
         [pa.array([0.1, -0.7, 0.55])], names=["value"]

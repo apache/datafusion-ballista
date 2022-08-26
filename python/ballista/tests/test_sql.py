@@ -19,14 +19,14 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from datafusion import ExecutionContext, udf
+from ballista import SessionContext, udf
 
 from . import generic as helpers
 
 
 @pytest.fixture
 def ctx():
-    return ExecutionContext()
+    return SessionContext()
 
 
 def test_no_table(ctx):
