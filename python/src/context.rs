@@ -98,7 +98,10 @@ impl PySessionContext {
         Ok(PyDataFrame::new(df))
     }
 
-    fn create_dataframe(&mut self, partitions: Vec<Vec<RecordBatch>>) -> PyResult<PyDataFrame> {
+    fn create_dataframe(
+        &mut self,
+        partitions: Vec<Vec<RecordBatch>>,
+    ) -> PyResult<PyDataFrame> {
         let table = MemTable::try_new(partitions[0][0].schema(), partitions)
             .map_err(DataFusionError::from)?;
 

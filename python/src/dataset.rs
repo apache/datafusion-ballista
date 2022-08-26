@@ -100,8 +100,13 @@ impl TableProvider for Dataset {
     ) -> DFResult<Arc<dyn ExecutionPlan>> {
         Python::with_gil(|py| {
             let plan: Arc<dyn ExecutionPlan> = Arc::new(
-                DatasetExec::new(py, self.dataset.as_ref(py), projection.clone(), filters)
-                    .map_err(|err| DataFusionError::External(Box::new(err)))?,
+                DatasetExec::new(
+                    py,
+                    self.dataset.as_ref(py),
+                    projection.clone(),
+                    filters,
+                )
+                .map_err(|err| DataFusionError::External(Box::new(err)))?,
             );
             Ok(plan)
         })
@@ -109,7 +114,10 @@ impl TableProvider for Dataset {
 
     /// Tests whether the table provider can make use of a filter expression
     /// to optimise data retrieval.
-    fn supports_filter_pushdown(&self, filter: &Expr) -> DFResult<TableProviderFilterPushDown> {
+    fn supports_filter_pushdown(
+        &self,
+        filter: &Expr,
+    ) -> DFResult<TableProviderFilterPushDown> {
         match PyArrowFilterExpression::try_from(filter) {
             Ok(_) => Ok(TableProviderFilterPushDown::Exact),
             _ => Ok(TableProviderFilterPushDown::Unsupported),

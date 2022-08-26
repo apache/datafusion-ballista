@@ -231,7 +231,11 @@ impl ExecutionPlan for DatasetExec {
         })
     }
 
-    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt_as(
+        &self,
+        t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
         Python::with_gil(|py| {
             let number_of_fragments = self.fragments.as_ref(py).len();
             match t {
@@ -243,7 +247,8 @@ impl ExecutionPlan for DatasetExec {
                         .map(|x| x.name().to_owned())
                         .collect();
                     if let Some(filter_expr) = &self.filter_expr {
-                        let filter_expr = filter_expr.as_ref(py).str().or(Err(std::fmt::Error))?;
+                        let filter_expr =
+                            filter_expr.as_ref(py).str().or(Err(std::fmt::Error))?;
                         write!(
                             f,
                             "DatasetExec: number_of_fragments={}, filter_expr={}, projection=[{}]",

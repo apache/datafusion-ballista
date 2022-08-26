@@ -86,7 +86,11 @@ fn concat_ws(sep: String, args: Vec<PyExpr>) -> PyResult<PyExpr> {
 
 /// Creates a new Sort expression
 #[pyfunction]
-fn order_by(expr: PyExpr, asc: Option<bool>, nulls_first: Option<bool>) -> PyResult<PyExpr> {
+fn order_by(
+    expr: PyExpr,
+    asc: Option<bool>,
+    nulls_first: Option<bool>,
+) -> PyResult<PyExpr> {
     Ok(PyExpr {
         expr: datafusion::logical_plan::Expr::Sort {
             expr: Box::new(expr.expr),
@@ -100,7 +104,10 @@ fn order_by(expr: PyExpr, asc: Option<bool>, nulls_first: Option<bool>) -> PyRes
 #[pyfunction]
 fn alias(expr: PyExpr, name: &str) -> PyResult<PyExpr> {
     Ok(PyExpr {
-        expr: datafusion::logical_plan::Expr::Alias(Box::new(expr.expr), String::from(name)),
+        expr: datafusion::logical_plan::Expr::Alias(
+            Box::new(expr.expr),
+            String::from(name),
+        ),
     })
 }
 
