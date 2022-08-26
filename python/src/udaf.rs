@@ -22,12 +22,12 @@ use pyo3::{prelude::*, types::PyTuple};
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::datatypes::DataType;
 use datafusion::arrow::pyarrow::PyArrowConvert;
+use datafusion::common::ScalarValue;
 use datafusion::error::{DataFusionError, Result};
+use datafusion::logical_expr::{
+    Accumulator, AccumulatorFunctionImplementation, AggregateUDF,
+};
 use datafusion::logical_plan;
-use datafusion::physical_plan::aggregates::AccumulatorFunctionImplementation;
-use datafusion::physical_plan::udaf::AggregateUDF;
-use datafusion::physical_plan::Accumulator;
-use datafusion::scalar::ScalarValue;
 
 use crate::expression::PyExpr;
 use crate::utils::parse_volatility;
@@ -47,16 +47,6 @@ impl Accumulator for RustAccumulator {
     fn state(&self) -> Result<Vec<ScalarValue>> {
         Python::with_gil(|py| self.accum.as_ref(py).call_method0("state")?.extract())
             .map_err(|e| DataFusionError::Execution(format!("{}", e)))
-    }
-
-    fn update(&mut self, _values: &[ScalarValue]) -> Result<()> {
-        // no need to implement as datafusion does not use it
-        todo!()
-    }
-
-    fn merge(&mut self, _states: &[ScalarValue]) -> Result<()> {
-        // no need to implement as datafusion does not use it
-        todo!()
     }
 
     fn evaluate(&self) -> Result<ScalarValue> {
@@ -114,8 +104,8 @@ pub fn to_rust_accumulator(accum: PyObject) -> AccumulatorFunctionImplementation
     })
 }
 
-/// Represents a AggregateUDF
-#[pyclass(name = "AggregateUDF", module = "datafusion", subclass)]
+/// Represents an AggregateUDF
+#[pyclass(name = "AggregateUDF", module = "ballista", subclass)]
 #[derive(Debug, Clone)]
 pub struct PyAggregateUDF {
     pub(crate) function: AggregateUDF,
@@ -133,7 +123,7 @@ impl PyAggregateUDF {
         volatility: &str,
     ) -> PyResult<Self> {
         let function = logical_plan::create_udaf(
-            &name,
+            name,
             input_type,
             Arc::new(return_type),
             parse_volatility(volatility)?,
@@ -144,7 +134,6 @@ impl PyAggregateUDF {
     }
 
     /// creates a new PyExpr with the call of the udf
-    #[call]
     #[args(args = "*")]
     fn __call__(&self, args: Vec<PyExpr>) -> PyResult<PyExpr> {
         let args = args.iter().map(|e| e.expr.clone()).collect();

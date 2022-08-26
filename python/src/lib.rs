@@ -15,17 +15,35 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#[cfg(feature = "mimalloc")]
+use mimalloc::MiMalloc;
 use pyo3::prelude::*;
 
-mod catalog;
+#[allow(clippy::borrow_deref_ref)]
+mod ballista_context;
+#[allow(clippy::borrow_deref_ref)]
+pub mod catalog;
+#[allow(clippy::borrow_deref_ref)]
 mod context;
+#[allow(clippy::borrow_deref_ref)]
 mod dataframe;
-mod errors;
+mod dataset;
+mod dataset_exec;
+pub mod errors;
+#[allow(clippy::borrow_deref_ref)]
 mod expression;
+#[allow(clippy::borrow_deref_ref)]
 mod functions;
+mod pyarrow_filter_expression;
+#[allow(clippy::borrow_deref_ref)]
 mod udaf;
+#[allow(clippy::borrow_deref_ref)]
 mod udf;
-mod utils;
+pub mod utils;
+
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 /// Low-level DataFusion internal package.
 ///
@@ -37,7 +55,8 @@ fn _internal(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<catalog::PyCatalog>()?;
     m.add_class::<catalog::PyDatabase>()?;
     m.add_class::<catalog::PyTable>()?;
-    m.add_class::<context::PyExecutionContext>()?;
+    m.add_class::<ballista_context::PyBallistaContext>()?;
+    m.add_class::<context::PySessionContext>()?;
     m.add_class::<dataframe::PyDataFrame>()?;
     m.add_class::<expression::PyExpr>()?;
     m.add_class::<udf::PyScalarUDF>()?;

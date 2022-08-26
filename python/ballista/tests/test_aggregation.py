@@ -18,13 +18,13 @@
 import pyarrow as pa
 import pytest
 
-from datafusion import ExecutionContext, column
-from datafusion import functions as f
+from ballista import SessionContext, column
+from ballista import functions as f
 
 
 @pytest.fixture
 def df():
-    ctx = ExecutionContext()
+    ctx = SessionContext()
 
     # create a RecordBatch and a new DataFrame from it
     batch = pa.RecordBatch.from_arrays(
@@ -44,5 +44,5 @@ def test_built_in_aggregation(df):
     result = df.collect()[0]
     assert result.column(0) == pa.array([3])
     assert result.column(1) == pa.array([1])
-    assert result.column(2) == pa.array([3], type=pa.uint64())
+    assert result.column(2) == pa.array([3], type=pa.int64())
     assert result.column(3) == pa.array([2], type=pa.uint64())

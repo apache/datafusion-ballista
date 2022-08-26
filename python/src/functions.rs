@@ -17,11 +17,9 @@
 
 use pyo3::{prelude::*, wrap_pyfunction};
 
+use datafusion::logical_expr::{BuiltinScalarFunction, WindowFunction};
 use datafusion::logical_plan;
-
-use datafusion::physical_plan::{
-    aggregates::AggregateFunction, functions::BuiltinScalarFunction,
-};
+use datafusion::physical_plan::aggregates::AggregateFunction;
 
 use crate::errors;
 use crate::expression::PyExpr;
@@ -122,19 +120,19 @@ fn window(
     order_by: Option<Vec<PyExpr>>,
 ) -> PyResult<PyExpr> {
     use std::str::FromStr;
-    let fun = datafusion::physical_plan::window_functions::WindowFunction::from_str(name)
+    let fun = WindowFunction::from_str(name)
         .map_err(|e| -> errors::DataFusionError { e.into() })?;
     Ok(PyExpr {
         expr: datafusion::logical_plan::Expr::WindowFunction {
             fun,
             args: args.into_iter().map(|x| x.expr).collect::<Vec<_>>(),
             partition_by: partition_by
-                .unwrap_or(vec![])
+                .unwrap_or_default()
                 .into_iter()
                 .map(|x| x.expr)
                 .collect::<Vec<_>>(),
             order_by: order_by
-                .unwrap_or(vec![])
+                .unwrap_or_default()
                 .into_iter()
                 .map(|x| x.expr)
                 .collect::<Vec<_>>(),
@@ -244,7 +242,11 @@ scalar_function!(sha384, SHA384);
 scalar_function!(sha512, SHA512);
 scalar_function!(signum, Signum);
 scalar_function!(sin, Sin);
-scalar_function!(split_part, SplitPart, "Splits string at occurrences of delimiter and returns the n'th field (counting from one).");
+scalar_function!(
+    split_part,
+    SplitPart,
+    "Splits string at occurrences of delimiter and returns the n'th field (counting from one)."
+);
 scalar_function!(sqrt, Sqrt);
 scalar_function!(
     starts_with,

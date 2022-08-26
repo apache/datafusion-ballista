@@ -19,14 +19,14 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from datafusion import ExecutionContext, udf
+from ballista import SessionContext, udf
 
 from . import generic as helpers
 
 
 @pytest.fixture
 def ctx():
-    return ExecutionContext()
+    return SessionContext()
 
 
 def test_no_table(ctx):
@@ -104,12 +104,12 @@ def test_execute(ctx, tmp_path):
     # count
     result = ctx.sql("SELECT COUNT(a) AS cnt FROM t").collect()
 
-    expected = pa.array([7], pa.uint64())
+    expected = pa.array([7], pa.int64())
     expected = [pa.RecordBatch.from_arrays([expected], ["cnt"])]
     assert result == expected
 
     # where
-    expected = pa.array([2], pa.uint64())
+    expected = pa.array([2], pa.int64())
     expected = [pa.RecordBatch.from_arrays([expected], ["cnt"])]
     result = ctx.sql("SELECT COUNT(a) AS cnt FROM t WHERE a > 10").collect()
     assert result == expected

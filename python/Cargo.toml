@@ -16,30 +16,38 @@
 # under the License.
 
 [package]
-name = "datafusion-python"
-version = "0.4.0"
-homepage = "https://github.com/apache/arrow"
-repository = "https://github.com/apache/arrow"
+name = "ballista-python"
+version = "0.7.0"
+homepage = "https://github.com/apache/arrow-ballista"
+repository = "https://github.com/apache/arrow-ballista"
 authors = ["Apache Arrow <dev@arrow.apache.org>"]
-description = "Build and run queries against data"
+description = "Python bindings for Apache Arrow Ballista"
 readme = "README.md"
 license = "Apache-2.0"
 edition = "2021"
-rust-version = "1.57"
+rust-version = "1.63"
 
 [package.metadata.maturin]
-name = "datafusion._internal"
+name = "ballista._internal"
+
+[features]
+default = ["mimalloc"]
 
 [dependencies]
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "7607ace992a5a42840bf546221a8635e70e10885", features = ["pyarrow"] }
-pyo3 = { version = "0.14", features = ["extension-module", "abi3", "abi3-py36"] }
+async-trait = "0.1"
+ballista = { path = "../ballista/rust/client" }
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "6a5de4fe08597896ab6375e3e4b76c5744dcfba7", features = ["pyarrow"] }
+futures = "0.3"
+mimalloc = { version = "*", optional = true, default-features = false }
+pyo3 = { version = "~0.16.5", features = ["extension-module", "abi3", "abi3-py37"] }
 rand = "0.7"
+serde_json = { version = "1.0.85", features = ["std"] }
 tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "sync"] }
 uuid = { version = "0.8", features = ["v4"] }
 
 [lib]
-crate-type = ["cdylib"]
-name = "_internal"
+crate-type = ["cdylib", "rlib"]
+name = "ballista_python"
 
 [profile.release]
 codegen-units = 1

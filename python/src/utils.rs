@@ -15,17 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::future::Future;
-
+use crate::errors::DataFusionError;
+use datafusion::logical_expr::Volatility;
 use pyo3::prelude::*;
+use std::future::Future;
 use tokio::runtime::Runtime;
 
-use datafusion::physical_plan::functions::Volatility;
-
-use crate::errors::DataFusionError;
-
 /// Utility to collect rust futures with GIL released
-pub(crate) fn wait_for_future<F: Future>(py: Python, f: F) -> F::Output
+pub fn wait_for_future<F: Future>(py: Python, f: F) -> F::Output
 where
     F: Send,
     F::Output: Send,

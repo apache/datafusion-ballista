@@ -27,18 +27,18 @@ use datafusion::{
     datasource::{TableProvider, TableType},
 };
 
-#[pyclass(name = "Catalog", module = "datafusion", subclass)]
+#[pyclass(name = "Catalog", module = "ballista", subclass)]
 pub(crate) struct PyCatalog {
     catalog: Arc<dyn CatalogProvider>,
 }
 
-#[pyclass(name = "Database", module = "datafusion", subclass)]
+#[pyclass(name = "Database", module = "ballista", subclass)]
 pub(crate) struct PyDatabase {
     database: Arc<dyn SchemaProvider>,
 }
 
-#[pyclass(name = "Table", module = "datafusion", subclass)]
-pub(crate) struct PyTable {
+#[pyclass(name = "Table", module = "ballista", subclass)]
+pub struct PyTable {
     table: Arc<dyn TableProvider>,
 }
 
@@ -57,6 +57,10 @@ impl PyDatabase {
 impl PyTable {
     pub fn new(table: Arc<dyn TableProvider>) -> Self {
         Self { table }
+    }
+
+    pub fn table(&self) -> Arc<dyn TableProvider> {
+        self.table.clone()
     }
 }
 
