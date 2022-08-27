@@ -15,13 +15,14 @@
 .. specific language governing permissions and limitations
 .. under the License.
 
-.. _api.dataframe:
-.. currentmodule:: datafusion
+Start a Ballista Cluster
+========================
 
-DataFrame
-=========
+.. toctree::
+   :maxdepth: 2
 
-.. autosummary::
-   :toctree: ../generated/
-
-   DataFrame
+   cargo-install
+   docker
+   docker-compose
+   kubernetes
+   configuration

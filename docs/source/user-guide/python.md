@@ -17,42 +17,16 @@
   under the License.
 -->
 
-Feature Name:
+# Python
 
-Status: draft/in-progress/completed/
-
-Start Date: YYYY-MM-DD
-
-Authors:
-
-RFC PR: #
-
-DataFusion Issue: #
-
----
-
-### Background
-
----
-
-### Goals
-
----
-
-### Non-Goals
-
----
-
-### Survey
-
----
-
-### General design
-
----
-
-### Detailed design
-
----
-
-### Others
+```text
+>>> import ballista
+>>> ctx = ballista.BallistaContext("localhost", 50050)
+>>> df = ctx.sql("SELECT 1")
+>>> df.show()
++----------+
+| Int64(1) |
++----------+
+| 1        |
++----------+
+```
