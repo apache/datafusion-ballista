@@ -42,6 +42,7 @@ impl PyBallistaContext {
     fn new(py: Python, host: &str, port: u16) -> PyResult<Self> {
         let config = BallistaConfig::builder()
             .set("ballista.shuffle.partitions", "4")
+            .set("ballista.with_information_schema", "true")
             .build()
             .map_err(BallistaError::from)?;
 
