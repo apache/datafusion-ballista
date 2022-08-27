@@ -15,22 +15,13 @@
 .. specific language governing permissions and limitations
 .. under the License.
 
-=======================
-Apache Arrow DataFusion
-=======================
+=====================
+Apache Arrow Ballista
+=====================
 
 Table of content
 ================
 
-.. _toc.usage:
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Supported Environments
-
-   Rust <https://docs.rs/crate/datafusion/>
-   Python <python/index>
-   Command line <cli/index>
 
 .. _toc.guide:
 
@@ -39,32 +30,19 @@ Table of content
    :caption: User Guide
 
    user-guide/introduction
-   user-guide/example-usage
-   user-guide/library
+   user-guide/deployment/index
+   user-guide/python
+   user-guide/rust
    user-guide/cli
-   user-guide/sql/index
-   user-guide/distributed/index
    user-guide/faq
 
-.. _toc.specs:
+.. _toc.source:
 
 .. toctree::
    :maxdepth: 1
-   :caption: Specification
+   :caption: Source Code
 
-   specification/roadmap
-   specification/invariants
-   specification/output-field-name-semantic
-   specification/quarterly_roadmap
-
-.. _toc.readme:
-
-.. toctree::
-   :maxdepth: 1
-   :caption: README
-
-   DataFusion <https://github.com/apache/arrow-datafusion/blob/master/README.md>
-   Ballista <https://github.com/apache/arrow-datafusion/tree/master/ballista/README.md>
+   Ballista <https://github.com/apache/arrow-ballista/>
 
 .. _toc.community:
 
@@ -73,5 +51,5 @@ Table of content
    :caption: Community
 
    community/communication
-   Issue tracker <https://github.com/apache/arrow-datafusion/issues>
-   Code of conduct <https://github.com/apache/arrow-datafusion/blob/master/CODE_OF_CONDUCT.md>
+   Issue tracker <https://github.com/apache/arrow-ballista/issues>
+   Code of conduct <https://github.com/apache/arrow-ballista/blob/master/CODE_OF_CONDUCT.md>
