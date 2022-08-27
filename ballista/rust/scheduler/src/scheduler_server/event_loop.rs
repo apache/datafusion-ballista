@@ -189,9 +189,8 @@ mod test {
     async fn test_offer_free_reservations() -> Result<()> {
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
-            Arc::new(SchedulerState::new(
+            Arc::new(SchedulerState::new_with_default_scheduler_name(
                 state_storage,
-                "default".to_string(),
                 default_session_builder,
                 BallistaCodec::default(),
             ));
@@ -227,9 +226,8 @@ mod test {
             .build()?;
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
-            Arc::new(SchedulerState::new(
+            Arc::new(SchedulerState::new_with_default_scheduler_name(
                 state_storage,
-                "default".to_string(),
                 default_session_builder,
                 BallistaCodec::default(),
             ));
@@ -287,9 +285,8 @@ mod test {
             .build()?;
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
-            Arc::new(SchedulerState::new(
+            Arc::new(SchedulerState::new_with_default_scheduler_name(
                 state_storage,
-                "default".to_string(),
                 default_session_builder,
                 BallistaCodec::default(),
             ));

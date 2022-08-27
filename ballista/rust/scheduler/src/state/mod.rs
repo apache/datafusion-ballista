@@ -82,15 +82,29 @@ pub(super) struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExec
     pub executor_manager: ExecutorManager,
     pub task_manager: TaskManager<T, U>,
     pub session_manager: SessionManager,
-    _codec: BallistaCodec<T, U>,
+    pub codec: BallistaCodec<T, U>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T, U> {
-    pub fn new(
+    #[cfg(test)]
+    pub fn new_with_default_scheduler_name(
         config_client: Arc<dyn StateBackendClient>,
-        _namespace: String,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
+    ) -> Self {
+        SchedulerState::new(
+            config_client,
+            session_builder,
+            codec,
+            "localhost:50050".to_owned(),
+        )
+    }
+
+    pub fn new(
+        config_client: Arc<dyn StateBackendClient>,
+        session_builder: SessionBuilder,
+        codec: BallistaCodec<T, U>,
+        scheduler_name: String,
     ) -> Self {
         Self {
             executor_manager: ExecutorManager::new(config_client.clone()),
@@ -98,9 +112,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 config_client.clone(),
                 session_builder,
                 codec.clone(),
+                scheduler_name,
             ),
             session_manager: SessionManager::new(config_client, session_builder),
-            _codec: codec,
+            codec,
         }
     }
 

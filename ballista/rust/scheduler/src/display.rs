@@ -19,12 +19,44 @@
 //! [`crate::physical_plan::displayable`] for examples of how to
 //! format
 
+use ballista_core::utils::collect_plan_metrics;
 use datafusion::logical_plan::{StringifiedPlan, ToStringifiedPlan};
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{
     accept, DisplayFormatType, ExecutionPlan, ExecutionPlanVisitor,
 };
+use log::{error, info};
 use std::fmt;
+
+pub fn print_stage_metrics(
+    job_id: &str,
+    stage_id: usize,
+    plan: &dyn ExecutionPlan,
+    stage_metrics: &[MetricsSet],
+) {
+    // The plan_metrics collected here is a snapshot clone from the plan metrics.
+    // They are all empty now and need to combine with the stage metrics in the ExecutionStages
+    let mut plan_metrics = collect_plan_metrics(plan);
+    if plan_metrics.len() == stage_metrics.len() {
+        plan_metrics.iter_mut().zip(stage_metrics).for_each(
+            |(plan_metric, stage_metric)| {
+                stage_metric
+                    .iter()
+                    .for_each(|s| plan_metric.push(s.clone()));
+            },
+        );
+
+        info!(
+            "=== [{}/{}] Stage finished, physical plan with metrics ===\n{}\n",
+            job_id,
+            stage_id,
+            DisplayableBallistaExecutionPlan::new(plan, &plan_metrics).indent()
+        );
+    } else {
+        error!("Fail to combine stage metrics to plan for stage [{}/{}],  plan metrics array size {} does not equal
+                to the stage metrics array size {}", job_id, stage_id, plan_metrics.len(), stage_metrics.len());
+    }
+}
 
 /// Wraps an `ExecutionPlan` to display this plan with metrics collected/aggregated.
 /// The metrics must be collected in the same order as how we visit and display the plan.

@@ -53,23 +53,23 @@ pub(crate) type SessionBuilder = fn(SessionConfig) -> SessionState;
 
 #[derive(Clone)]
 pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
+    pub scheduler_name: String,
     pub(crate) state: Arc<SchedulerState<T, U>>,
     pub start_time: u128,
     policy: TaskSchedulingPolicy,
     event_loop: Option<EventLoop<SchedulerServerEvent>>,
     pub(crate) query_stage_event_loop: EventLoop<QueryStageSchedulerEvent>,
-    codec: BallistaCodec<T, U>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
     pub fn new(
+        scheduler_name: String,
         config: Arc<dyn StateBackendClient>,
-        namespace: String,
         codec: BallistaCodec<T, U>,
     ) -> Self {
         SchedulerServer::new_with_policy(
+            scheduler_name,
             config,
-            namespace,
             TaskSchedulingPolicy::PullStaged,
             codec,
             default_session_builder,
@@ -77,14 +77,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     }
 
     pub fn new_with_builder(
+        scheduler_name: String,
         config: Arc<dyn StateBackendClient>,
-        namespace: String,
         codec: BallistaCodec<T, U>,
         session_builder: SessionBuilder,
     ) -> Self {
         SchedulerServer::new_with_policy(
+            scheduler_name,
             config,
-            namespace,
             TaskSchedulingPolicy::PullStaged,
             codec,
             session_builder,
@@ -92,32 +92,47 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     }
 
     pub fn new_with_policy(
+        scheduler_name: String,
         config: Arc<dyn StateBackendClient>,
-        namespace: String,
         policy: TaskSchedulingPolicy,
         codec: BallistaCodec<T, U>,
         session_builder: SessionBuilder,
     ) -> Self {
         let state = Arc::new(SchedulerState::new(
             config,
-            namespace,
             session_builder,
-            codec.clone(),
+            codec,
+            scheduler_name.clone(),
         ));
 
-        let event_loop = if matches!(policy, TaskSchedulingPolicy::PushStaged) {
-            let event_action: Arc<SchedulerServerEventAction<T, U>> =
-                Arc::new(SchedulerServerEventAction::new(state.clone()));
-            let event_loop = EventLoop::new("scheduler".to_owned(), 10000, event_action);
-            Some(event_loop)
+        let event_action: Option<Arc<dyn EventAction<SchedulerServerEvent>>> =
+            if matches!(policy, TaskSchedulingPolicy::PushStaged) {
+                Some(Arc::new(SchedulerServerEventAction::new(state.clone())))
+            } else {
+                None
+            };
+        SchedulerServer::new_with_event_action(scheduler_name, state, event_action)
+    }
+
+    fn new_with_event_action(
+        scheduler_name: String,
+        state: Arc<SchedulerState<T, U>>,
+        event_action: Option<Arc<dyn EventAction<SchedulerServerEvent>>>,
+    ) -> Self {
+        let event_loop = event_action.map(|event_action| {
+            EventLoop::new("scheduler".to_owned(), 10000, event_action)
+        });
+        let policy = if event_loop.is_some() {
+            TaskSchedulingPolicy::PushStaged
         } else {
-            None
+            TaskSchedulingPolicy::PullStaged
         };
         let query_stage_scheduler =
             Arc::new(QueryStageScheduler::new(state.clone(), None));
         let query_stage_event_loop =
             EventLoop::new("query_stage".to_owned(), 10000, query_stage_scheduler);
         Self {
+            scheduler_name,
             state,
             start_time: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -126,40 +141,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             policy,
             event_loop,
             query_stage_event_loop,
-            codec,
-            // session_builder,
-        }
-    }
-
-    pub fn new_with_event_action(
-        config: Arc<dyn StateBackendClient>,
-        namespace: String,
-        codec: BallistaCodec<T, U>,
-        session_builder: SessionBuilder,
-        event_action: Arc<dyn EventAction<SchedulerServerEvent>>,
-    ) -> Self {
-        let state = Arc::new(SchedulerState::new(
-            config,
-            namespace,
-            session_builder,
-            codec.clone(),
-        ));
-
-        let event_loop = EventLoop::new("scheduler".to_owned(), 10000, event_action);
-        let query_stage_scheduler =
-            Arc::new(QueryStageScheduler::new(state.clone(), None));
-        let query_stage_event_loop =
-            EventLoop::new("query_stage".to_owned(), 10000, query_stage_scheduler);
-        Self {
-            state,
-            start_time: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis(),
-            policy: TaskSchedulingPolicy::PushStaged,
-            event_loop: Some(event_loop),
-            query_stage_event_loop,
-            codec,
         }
     }
 
@@ -287,6 +268,7 @@ mod test {
     use crate::state::backend::standalone::StandaloneClient;
 
     use crate::state::executor_manager::ExecutorReservation;
+    use crate::state::SchedulerState;
     use crate::test_utils::{
         await_condition, ExplodingTableProvider, SchedulerEventObserver,
     };
@@ -345,15 +327,18 @@ mod test {
             .await
             .expect("submitting plan");
 
-        loop {
-            // Refresh the ExecutionGraph
-            let mut graph = scheduler
-                .state
-                .task_manager
-                .get_execution_graph(job_id)
-                .await?;
-
-            if let Some(task) = graph.pop_next_task("executor-1")? {
+        // Refresh the ExecutionGraph
+        while let Some(graph) = scheduler
+            .state
+            .task_manager
+            .get_active_execution_graph(job_id)
+            .await
+        {
+            let task = {
+                let mut graph = graph.write().await;
+                graph.pop_next_task("executor-1")?
+            };
+            if let Some(task) = task {
                 let mut partitions: Vec<ShuffleWritePartition> = vec![];
 
                 let num_partitions = task
@@ -396,9 +381,11 @@ mod test {
         let final_graph = scheduler
             .state
             .task_manager
-            .get_execution_graph(job_id)
-            .await?;
+            .get_active_execution_graph(job_id)
+            .await
+            .expect("Fail to find graph in the cache");
 
+        let final_graph = final_graph.read().await;
         assert!(final_graph.complete());
         assert_eq!(final_graph.output_locations().len(), 4);
 
@@ -756,8 +743,8 @@ mod test {
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new_with_policy(
+                "localhost:50050".to_owned(),
                 state_storage.clone(),
-                "default".to_owned(),
                 policy,
                 BallistaCodec::default(),
                 default_session_builder,
@@ -771,14 +758,16 @@ mod test {
         event_action: Arc<dyn EventAction<SchedulerServerEvent>>,
     ) -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
-
+        let state = Arc::new(SchedulerState::new_with_default_scheduler_name(
+            state_storage,
+            default_session_builder,
+            BallistaCodec::default(),
+        ));
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new_with_event_action(
-                state_storage.clone(),
-                "default".to_owned(),
-                BallistaCodec::default(),
-                default_session_builder,
-                event_action,
+                "localhost:50050".to_owned(),
+                state,
+                Some(event_action),
             );
         scheduler.init().await?;
 

@@ -36,6 +36,10 @@ pub enum QueryStageSchedulerEvent {
         plan: Box<LogicalPlan>,
     },
     JobSubmitted(String),
+    // For a job which failed during planning
+    JobPlanningFailed(String, String),
     JobFinished(String),
-    JobFailed(String, String),
+    // For a job fails with its execution graph setting failed
+    JobRunningFailed(String),
+    JobUpdated(String),
 }

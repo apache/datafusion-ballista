@@ -40,13 +40,14 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::{debug, error, info, warn};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::default::Default;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tonic::transport::Channel;
 
 type ExecutorClients = Arc<RwLock<HashMap<String, ExecutorGrpcClient<Channel>>>>;
+type ExecutionGraphCache = Arc<RwLock<HashMap<String, Arc<RwLock<ExecutionGraph>>>>>;
 
 #[derive(Clone)]
 pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
@@ -55,6 +56,9 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     clients: ExecutorClients,
     session_builder: SessionBuilder,
     codec: BallistaCodec<T, U>,
+    scheduler_id: String,
+    // Cache for active execution graphs curated by this scheduler
+    active_job_cache: ExecutionGraphCache,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U> {
@@ -62,38 +66,53 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         state: Arc<dyn StateBackendClient>,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
+        scheduler_id: String,
     ) -> Self {
         Self {
             state,
             clients: Default::default(),
             session_builder,
             codec,
+            scheduler_id,
+            active_job_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     /// Generate an ExecutionGraph for the job and save it to the persistent state.
+    /// By default, this job will be curated by the scheduler which receives it.
+    /// Then we will also save it to the active execution graph
     pub async fn submit_job(
         &self,
         job_id: &str,
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<()> {
-        let graph = ExecutionGraph::new(job_id, session_id, plan)?;
+        let mut graph =
+            ExecutionGraph::new(&self.scheduler_id, job_id, session_id, plan)?;
         info!("Submitting execution graph: {:?}", graph);
         self.state
             .put(
                 Keyspace::ActiveJobs,
                 job_id.to_owned(),
-                self.encode_execution_graph(graph)?,
+                self.encode_execution_graph(graph.clone())?,
             )
             .await?;
+
+        graph.revive();
+
+        let mut active_graph_cache = self.active_job_cache.write().await;
+        active_graph_cache.insert(job_id.to_owned(), Arc::new(RwLock::new(graph)));
 
         Ok(())
     }
 
-    /// Get the status of of a job. First look in Active/Completed jobs, and then in Failed jobs
+    /// Get the status of of a job. First look in the active cache.
+    /// If no one found, then in the Active/Completed jobs, and then in Failed jobs
     pub async fn get_job_status(&self, job_id: &str) -> Result<Option<JobStatus>> {
-        if let Ok(graph) = self.get_execution_graph(job_id).await {
+        if let Some(graph) = self.get_active_execution_graph(job_id).await {
+            let status = graph.read().await.status();
+            Ok(Some(status))
+        } else if let Ok(graph) = self.get_execution_graph(job_id).await {
             Ok(Some(graph.status()))
         } else {
             let value = self.state.get(Keyspace::FailedJobs, job_id).await?;
@@ -107,123 +126,63 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         }
     }
 
-    /// Generate a new random Job ID
-    pub fn generate_job_id(&self) -> String {
-        let mut rng = thread_rng();
-        std::iter::repeat(())
-            .map(|()| rng.sample(Alphanumeric))
-            .map(char::from)
-            .take(7)
-            .collect()
-    }
-
-    /// Atomically update given task statuses in the respective job and return a tuple containing:
+    /// Update given task statuses in the respective job and return a tuple containing:
     /// 1. A list of QueryStageSchedulerEvent to publish.
     /// 2. A list of reservations that can now be offered.
-    ///
-    /// When a task is updated, there may or may not be more tasks pending for its job. If there are more
-    /// tasks pending then we want to reschedule one of those tasks on the same task slot. In that case
-    /// we will set the `job_id` on the `ExecutorReservation` so the scheduler attempts to assign tasks from
-    /// the same job. Note that when the scheduler attempts to fill the reservation, there is no guarantee
-    /// that the available task is still available.
     pub(crate) async fn update_task_statuses(
         &self,
         executor: &ExecutorMetadata,
         task_status: Vec<TaskStatus>,
     ) -> Result<(Vec<QueryStageSchedulerEvent>, Vec<ExecutorReservation>)> {
-        let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
-
-        with_lock(lock, async {
-            let mut events: Vec<QueryStageSchedulerEvent> = vec![];
-            let mut reservation: Vec<ExecutorReservation> = vec![];
-
-            let mut job_updates: HashMap<String, Vec<TaskStatus>> = HashMap::new();
-
-            for status in task_status {
-                debug!("Task Update\n{:?}", status);
-                if let Some(job_id) = status.task_id.as_ref().map(|id| &id.job_id) {
-                    if let Some(statuses) = job_updates.get_mut(job_id) {
-                        statuses.push(status)
-                    } else {
-                        job_updates.insert(job_id.clone(), vec![status]);
-                    }
-                } else {
-                    warn!("Received task with no job ID");
-                }
+        let mut job_updates: HashMap<String, Vec<TaskStatus>> = HashMap::new();
+        for status in task_status {
+            debug!("Task Update\n{:?}", status);
+            if let Some(job_id) = status.task_id.as_ref().map(|id| &id.job_id) {
+                let job_task_statuses =
+                    job_updates.entry(job_id.clone()).or_insert_with(Vec::new);
+                job_task_statuses.push(status);
+            } else {
+                warn!("Received task with no job ID");
             }
+        }
 
-            let mut txn_ops: Vec<(Keyspace, String, Vec<u8>)> = vec![];
+        let mut events: Vec<QueryStageSchedulerEvent> = vec![];
+        let mut total_num_tasks = 0;
+        for (job_id, statuses) in job_updates {
+            let num_tasks = statuses.len();
+            debug!("Updating {} tasks in job {}", num_tasks, job_id);
 
-            for (job_id, statuses) in job_updates {
-                let num_tasks = statuses.len();
-                debug!("Updating {} tasks in job {}", num_tasks, job_id);
+            total_num_tasks += num_tasks;
 
-                let mut graph = self.get_execution_graph(&job_id).await?;
+            let graph = self.get_active_execution_graph(&job_id).await;
+            let job_event = if let Some(graph) = graph {
+                let mut graph = graph.write().await;
+                graph.update_task_status(executor, statuses)?
+            } else {
+                // TODO Deal with curator changed case
+                error!("Fail to find job {} in the active cache and it may not be curated by this scheduler", job_id);
+                None
+            };
 
-                graph.update_task_status(executor, statuses)?;
-
-                if graph.complete() {
-                    // If this ExecutionGraph is complete, finalize it
-                    info!(
-                        "Job {} is complete, finalizing output partitions",
-                        graph.job_id()
-                    );
-                    graph.finalize()?;
-                    events.push(QueryStageSchedulerEvent::JobFinished(job_id.clone()));
-
-                    for _ in 0..num_tasks {
-                        reservation
-                            .push(ExecutorReservation::new_free(executor.id.to_owned()));
-                    }
-                } else if let Some(job_status::Status::Failed(failure)) =
-                    graph.status().status
-                {
-                    events.push(QueryStageSchedulerEvent::JobFailed(
-                        job_id.clone(),
-                        failure.error,
-                    ));
-
-                    for _ in 0..num_tasks {
-                        reservation
-                            .push(ExecutorReservation::new_free(executor.id.to_owned()));
-                    }
-                } else {
-                    // Otherwise keep the task slots reserved for this job
-                    for _ in 0..num_tasks {
-                        reservation.push(ExecutorReservation::new_assigned(
-                            executor.id.to_owned(),
-                            job_id.clone(),
-                        ));
-                    }
-                }
-
-                txn_ops.push((
-                    Keyspace::ActiveJobs,
-                    job_id.clone(),
-                    self.encode_execution_graph(graph)?,
-                ));
+            if let Some(event) = job_event {
+                events.push(event);
             }
+        }
 
-            self.state.put_txn(txn_ops).await?;
-
-            Ok((events, reservation))
-        })
-        .await
+        let reservation = (0..total_num_tasks)
+            .into_iter()
+            .map(|_| ExecutorReservation::new_free(executor.id.to_owned()))
+            .collect();
+        Ok((events, reservation))
     }
 
     /// Take a list of executor reservations and fill them with tasks that are ready
-    /// to be scheduled. When the reservation is filled, the underlying stage task in the
-    /// `ExecutionGraph` will be set to a status of Running, so if the task is not subsequently launched
-    /// we must ensure that the task status is reset.
+    /// to be scheduled.
     ///
     /// Here we use the following  algorithm:
     ///
-    /// 1. For each reservation with a `job_id` assigned try and assign another task from the same job.
-    /// 2. If a reservation either does not have a `job_id` or there are no available tasks for its `job_id`,
-    ///    add it to a list of "free" reservations.
-    /// 3. For each free reservation, try to assign a task from one of the jobs we have already considered.
-    /// 4. If we cannot find a task, then looks for a task among all active jobs
-    /// 5. If we cannot find a task in all active jobs, then add the reservation to the list of unassigned reservations
+    /// 1. For each free reservation, try to assign a task from one of the active jobs
+    /// 2. If we cannot find a task in all active jobs, then add the reservation to the list of unassigned reservations
     ///
     /// Finally, we return:
     /// 1. A list of assignments which is a (Executor ID, Task) tuple
@@ -241,96 +200,55 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             })
             .collect();
 
-        let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
-        with_lock(lock, async {
-            let mut jobs: Vec<String> =
-                self.get_active_jobs().await?.into_iter().collect();
-
-            let mut assignments: Vec<(String, Task)> = vec![];
-            let mut unassigned: Vec<ExecutorReservation> = vec![];
-            // Need to collect graphs we update so we can update them in storage when we are done
-            let mut graphs: HashMap<String, ExecutionGraph> = HashMap::new();
-            // Now try and find tasks for free reservations from current set of graphs
-            for reservation in free_reservations {
-                debug!(
-                    "Filling free reservation for executor {}",
-                    reservation.executor_id
-                );
-                let mut assigned = false;
-                let executor_id = reservation.executor_id.clone();
-
-                // Try and find a task in the graphs we already have locks on
-                if let Ok(Some(assignment)) = find_next_task(&executor_id, &mut graphs) {
-                    debug!(
-                        "Filled free reservation for executor {} with task {:?}",
-                        reservation.executor_id, assignment.1
-                    );
-                    // First check if we can find another task
-                    assignments.push(assignment);
-                    assigned = true;
+        let mut assignments: Vec<(String, Task)> = vec![];
+        let mut pending_tasks = 0usize;
+        let mut assign_tasks = 0usize;
+        let job_cache = self.active_job_cache.read().await;
+        for (_job_id, graph) in job_cache.iter() {
+            let mut graph = graph.write().await;
+            for reservation in free_reservations.iter().skip(assign_tasks) {
+                if let Some(task) = graph.pop_next_task(&reservation.executor_id)? {
+                    assignments.push((reservation.executor_id.clone(), task));
+                    assign_tasks += 1;
                 } else {
-                    // Otherwise start searching through other active jobs.
-                    debug!(
-                        "Filling free reservation for executor {} from active jobs {:?}",
-                        reservation.executor_id, jobs
-                    );
-                    while let Some(job_id) = jobs.pop() {
-                        if graphs.get(&job_id).is_none() {
-                            let mut graph = self.get_execution_graph(&job_id).await?;
-
-                            if let Ok(Some(task)) = graph.pop_next_task(&executor_id) {
-                                debug!(
-                                    "Filled free reservation for executor {} with task {:?}",
-                                    reservation.executor_id, task
-                                );
-                                assignments.push((executor_id.clone(), task));
-                                graphs.insert(job_id, graph);
-                                assigned = true;
-                                break;
-                            } else {
-                                debug!("No available tasks for job {}", job_id);
-                            }
-                        }
-                    }
-                }
-
-                if !assigned {
-                    debug!(
-                        "Unable to fill reservation for executor {}, no tasks available",
-                        executor_id
-                    );
-                    unassigned.push(reservation);
+                    break;
                 }
             }
+            if assign_tasks >= free_reservations.len() {
+                pending_tasks = graph.available_tasks();
+                break;
+            }
+        }
 
-            let mut pending_tasks = 0;
-
-            // Transactional update graphs now that we have assigned tasks
-            let txn_ops: Vec<(Keyspace, String, Vec<u8>)> = graphs
-                .into_iter()
-                .map(|(job_id, graph)| {
-                    pending_tasks += graph.available_tasks();
-                    let value = self.encode_execution_graph(graph)?;
-                    Ok((Keyspace::ActiveJobs, job_id, value))
-                })
-                .collect::<Result<Vec<_>>>()?;
-
-            self.state.put_txn(txn_ops).await?;
-
-            Ok((assignments, unassigned, pending_tasks))
-        }).await
+        let mut unassigned = vec![];
+        for reservation in free_reservations.iter().skip(assign_tasks) {
+            unassigned.push(reservation.clone());
+        }
+        Ok((assignments, unassigned, pending_tasks))
     }
 
-    /// Move the given job to the CompletedJobs keyspace in persistent storage.
+    /// Mark a job as completed. This will create a key under the CompletedJobs keyspace
+    /// and remove the job from ActiveJobs
     pub async fn complete_job(&self, job_id: &str) -> Result<()> {
         debug!("Moving job {} from Active to Completed", job_id);
         let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
-        with_lock(
-            lock,
-            self.state
-                .mv(Keyspace::ActiveJobs, Keyspace::CompletedJobs, job_id),
-        )
-        .await
+        with_lock(lock, self.state.delete(Keyspace::ActiveJobs, job_id)).await?;
+
+        if let Some(graph) = self.get_active_execution_graph(job_id).await {
+            let graph = graph.read().await.clone();
+            if graph.complete() {
+                let value = self.encode_execution_graph(graph)?;
+                self.state
+                    .put(Keyspace::CompletedJobs, job_id.to_owned(), value)
+                    .await?;
+            } else {
+                error!("Job {} has not finished and cannot be completed", job_id);
+            }
+        } else {
+            warn!("Fail to find job {} in the cache", job_id);
+        }
+
+        Ok(())
     }
 
     pub(crate) async fn cancel_job(
@@ -395,6 +313,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// and remove the job from ActiveJobs or QueuedJobs
     /// TODO this should be atomic
     pub async fn fail_job(&self, job_id: &str, error_message: String) -> Result<()> {
+        debug!("Moving job {} from Active or Queue to Failed", job_id);
         let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
         self.fail_job_inner(lock, job_id, error_message).await
     }
@@ -407,16 +326,66 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     ) -> Result<()> {
         with_lock(lock, self.state.delete(Keyspace::ActiveJobs, job_id)).await?;
 
-        let status = JobStatus {
-            status: Some(job_status::Status::Failed(FailedJob {
-                error: error_message,
-            })),
+        let value = if let Some(graph) = self.get_active_execution_graph(job_id).await {
+            let mut graph = graph.write().await;
+            graph.fail_job(error_message);
+            let graph = graph.clone();
+
+            self.encode_execution_graph(graph)?
+        } else {
+            warn!("Fail to find job {} in the cache", job_id);
+
+            let status = JobStatus {
+                status: Some(job_status::Status::Failed(FailedJob {
+                    error: error_message.clone(),
+                })),
+            };
+            encode_protobuf(&status)?
         };
-        let value = encode_protobuf(&status)?;
 
         self.state
             .put(Keyspace::FailedJobs, job_id.to_owned(), value)
-            .await
+            .await?;
+
+        Ok(())
+    }
+
+    /// Mark a job as failed. This will create a key under the FailedJobs keyspace
+    /// and remove the job from ActiveJobs or QueuedJobs
+    /// TODO this should be atomic
+    pub async fn fail_running_job(&self, job_id: &str) -> Result<()> {
+        if let Some(graph) = self.get_active_execution_graph(job_id).await {
+            let graph = graph.read().await.clone();
+            let value = self.encode_execution_graph(graph)?;
+
+            debug!("Moving job {} from Active to Failed", job_id);
+            let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
+            with_lock(lock, self.state.delete(Keyspace::ActiveJobs, job_id)).await?;
+            self.state
+                .put(Keyspace::FailedJobs, job_id.to_owned(), value)
+                .await?;
+        } else {
+            warn!("Fail to find job {} in the cache", job_id);
+        }
+
+        Ok(())
+    }
+
+    pub async fn update_job(&self, job_id: &str) -> Result<()> {
+        debug!("Update job {} in Active", job_id);
+        if let Some(graph) = self.get_active_execution_graph(job_id).await {
+            let mut graph = graph.write().await;
+            graph.revive();
+            let graph = graph.clone();
+            let value = self.encode_execution_graph(graph)?;
+            self.state
+                .put(Keyspace::ActiveJobs, job_id.to_owned(), value)
+                .await?;
+        } else {
+            warn!("Fail to find job {} in the cache", job_id);
+        }
+
+        Ok(())
     }
 
     #[cfg(not(test))]
@@ -476,9 +445,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Retrieve the number of available tasks for the given job. The value returned
     /// is strictly a point-in-time snapshot
     pub async fn get_available_task_count(&self, job_id: &str) -> Result<usize> {
-        let graph = self.get_execution_graph(job_id).await?;
-
-        Ok(graph.available_tasks())
+        if let Some(graph) = self.get_active_execution_graph(job_id).await {
+            let available_tasks = graph.read().await.available_tasks();
+            Ok(available_tasks)
+        } else {
+            warn!("Fail to find job {} in the cache", job_id);
+            Ok(0)
+        }
     }
 
     #[allow(dead_code)]
@@ -506,12 +479,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(task_definition)
     }
 
-    ///  Return a set of active job IDs. This will return all keys
-    /// in the `ActiveJobs` keyspace stripped of any prefixes used for
-    /// the storage layer (i.e. just the Job IDs).
-    async fn get_active_jobs(&self) -> Result<HashSet<String>> {
-        debug!("Scanning for active job IDs");
-        self.state.scan_keys(Keyspace::ActiveJobs).await
+    /// Get the `ExecutionGraph` for the given job ID from cache
+    pub(crate) async fn get_active_execution_graph(
+        &self,
+        job_id: &str,
+    ) -> Option<Arc<RwLock<ExecutionGraph>>> {
+        let active_graph_cache = self.active_job_cache.read().await;
+        active_graph_cache.get(job_id).cloned()
     }
 
     /// Get the `ExecutionGraph` for the given job ID. This will search fist in the `ActiveJobs`
@@ -559,17 +533,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
         encode_protobuf(&proto)
     }
-}
 
-/// Find the next available task in a set of `ExecutionGraph`s
-fn find_next_task(
-    executor_id: &str,
-    graphs: &mut HashMap<String, ExecutionGraph>,
-) -> Result<Option<(String, Task)>> {
-    for graph in graphs.values_mut() {
-        if let Ok(Some(task)) = graph.pop_next_task(executor_id) {
-            return Ok(Some((executor_id.to_owned(), task)));
-        }
+    /// Generate a new random Job ID
+    pub fn generate_job_id(&self) -> String {
+        let mut rng = thread_rng();
+        std::iter::repeat(())
+            .map(|()| rng.sample(Alphanumeric))
+            .map(char::from)
+            .take(7)
+            .collect()
     }
-    Ok(None)
 }

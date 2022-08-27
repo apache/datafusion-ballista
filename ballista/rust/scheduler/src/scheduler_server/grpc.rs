@@ -391,7 +391,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     .and_then(|m| {
                         m.try_into_logical_plan(
                             session_ctx.deref(),
-                            self.codec.logical_extension_codec(),
+                            self.state.codec.logical_extension_codec(),
                         )
                     })
                     .map_err(|e| {
@@ -535,16 +535,15 @@ mod test {
     #[tokio::test]
     async fn test_poll_work() -> Result<(), BallistaError> {
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
-        let namespace = "default";
         let scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
+                "localhost:50050".to_owned(),
                 state_storage.clone(),
-                namespace.to_owned(),
                 BallistaCodec::default(),
             );
         let exec_meta = ExecutorRegistration {
             id: "abc".to_owned(),
-            optional_host: Some(OptionalHost::Host("http://host:8080".to_owned())),
+            optional_host: Some(OptionalHost::Host("http://localhost:8080".to_owned())),
             port: 0,
             grpc_port: 0,
             specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
@@ -562,9 +561,8 @@ mod test {
         // no response task since we told the scheduler we didn't want to accept one
         assert!(response.task.is_none());
         let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerState::new(
+            SchedulerState::new_with_default_scheduler_name(
                 state_storage.clone(),
-                namespace.to_string(),
                 default_session_builder,
                 BallistaCodec::default(),
             );
@@ -580,7 +578,7 @@ mod test {
         assert_eq!(stored_executor.grpc_port, 0);
         assert_eq!(stored_executor.port, 0);
         assert_eq!(stored_executor.specification.task_slots, 2);
-        assert_eq!(stored_executor.host, "http://host:8080".to_owned());
+        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
 
         let request: Request<PollWorkParams> = Request::new(PollWorkParams {
             metadata: Some(exec_meta.clone()),
@@ -596,9 +594,8 @@ mod test {
         // still no response task since there are no tasks in the scheduler
         assert!(response.task.is_none());
         let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerState::new(
+            SchedulerState::new_with_default_scheduler_name(
                 state_storage.clone(),
-                namespace.to_string(),
                 default_session_builder,
                 BallistaCodec::default(),
             );
@@ -614,7 +611,7 @@ mod test {
         assert_eq!(stored_executor.grpc_port, 0);
         assert_eq!(stored_executor.port, 0);
         assert_eq!(stored_executor.specification.task_slots, 2);
-        assert_eq!(stored_executor.host, "http://host:8080".to_owned());
+        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
 
         Ok(())
     }

@@ -88,8 +88,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             .await
                     {
                         let msg = format!("Error planning job {}: {:?}", job_id, e);
-                        error!("{}", msg);
-                        QueryStageSchedulerEvent::JobFailed(job_id, msg)
+                        error!("{}", &msg);
+                        QueryStageSchedulerEvent::JobPlanningFailed(job_id, msg)
                     } else {
                         QueryStageSchedulerEvent::JobSubmitted(job_id)
                     };
@@ -138,16 +138,24 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     }
                 }
             }
-            QueryStageSchedulerEvent::JobFinished(job_id) => {
-                info!("Job {} complete", job_id);
-                self.state.task_manager.complete_job(&job_id).await?;
-            }
-            QueryStageSchedulerEvent::JobFailed(job_id, fail_message) => {
+            QueryStageSchedulerEvent::JobPlanningFailed(job_id, fail_message) => {
                 error!("Job {} failed: {}", job_id, fail_message);
                 self.state
                     .task_manager
                     .fail_job(&job_id, fail_message)
                     .await?;
+            }
+            QueryStageSchedulerEvent::JobFinished(job_id) => {
+                info!("Job {} complete", job_id);
+                self.state.task_manager.complete_job(&job_id).await?;
+            }
+            QueryStageSchedulerEvent::JobRunningFailed(job_id) => {
+                error!("Job {} running failed", job_id);
+                self.state.task_manager.fail_running_job(&job_id).await?;
+            }
+            QueryStageSchedulerEvent::JobUpdated(job_id) => {
+                error!("Job {} Updated", job_id);
+                self.state.task_manager.update_job(&job_id).await?;
             }
         }
 
