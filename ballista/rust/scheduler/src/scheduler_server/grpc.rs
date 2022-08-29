@@ -252,6 +252,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             metrics,
             status,
         };
+
         self.state
             .executor_manager
             .save_executor_heartbeat(executor_heartbeat)

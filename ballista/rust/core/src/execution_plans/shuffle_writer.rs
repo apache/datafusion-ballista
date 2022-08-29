@@ -54,9 +54,10 @@ use futures::{StreamExt, TryFutureExt, TryStreamExt};
 
 use datafusion::arrow::error::ArrowError;
 use datafusion::execution::context::TaskContext;
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::repartition::BatchPartitioner;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use log::{debug, info};
+use log::{debug, error, info};
 
 /// ShuffleWriterExec represents a section of a query plan that has consistent partitioning and
 /// can be executed as one unit with each partition being executed in parallel. The output of each
@@ -165,7 +166,17 @@ impl ShuffleWriterExec {
 
         async move {
             let now = Instant::now();
-            let mut stream = plan.execute(input_partition, context)?;
+            let mut stream = match plan.execute(input_partition, context) {
+                Ok(stream) => stream,
+                Err(e) => {
+                    error!(
+                        "Error executing partition: {:?}\n{}",
+                        e,
+                        DisplayableExecutionPlan::new(plan.as_ref()).indent()
+                    );
+                    return Err(e);
+                }
+            };
 
             match output_partitioning {
                 None => {
