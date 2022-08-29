@@ -18,6 +18,7 @@
 //! Ballista Rust scheduler binary.
 
 use anyhow::{Context, Result};
+#[cfg(feature = "flight-sql")]
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_scheduler::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
 use futures::future::{self, Either, TryFutureExt};
@@ -60,6 +61,7 @@ mod config {
 }
 
 use ballista_core::utils::create_grpc_server;
+#[cfg(feature = "flight-sql")]
 use ballista_scheduler::flight_sql::FlightSqlServiceImpl;
 use config::prelude::*;
 use datafusion::execution::context::default_session_builder;
@@ -102,17 +104,19 @@ async fn start_server(
             let scheduler_grpc_server =
                 SchedulerGrpcServer::new(scheduler_server.clone());
 
-            let flight_sql_server = FlightServiceServer::new(FlightSqlServiceImpl::new(
-                scheduler_server.clone(),
-            ));
-
             let keda_scaler = ExternalScalerServer::new(scheduler_server.clone());
 
-            let mut tonic = create_grpc_server()
+            let tonic_builder = create_grpc_server()
                 .add_service(scheduler_grpc_server)
-                .add_service(flight_sql_server)
-                .add_service(keda_scaler)
-                .into_service();
+                .add_service(keda_scaler);
+
+            #[cfg(feature = "flight-sql")]
+            tonic_builder.add_service(FlightServiceServer::new(
+                FlightSqlServiceImpl::new(scheduler_server.clone()),
+            ));
+
+            let mut tonic = tonic_builder.into_service();
+
             let mut warp = warp::service(get_routes(scheduler_server.clone()));
 
             let connect_info = request.connect_info();

@@ -168,6 +168,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 Ok(Arc::new(ParquetExec::new(
                     decode_scan_config(scan.base_conf.as_ref().unwrap())?,
                     predicate,
+                    None,
                 )))
             }
             PhysicalPlanType::AvroScan(scan) => Ok(Arc::new(AvroExec::new(

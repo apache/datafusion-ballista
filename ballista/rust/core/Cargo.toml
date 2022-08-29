@@ -35,28 +35,28 @@ simd = ["datafusion/simd"]
 [dependencies]
 ahash = { version = "0.8", default-features = false }
 
-arrow-flight = { version = "18.0.0" }
+arrow-flight = { version = "20.0.0" }
 async-trait = "0.1.41"
 chrono = { version = "0.4", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "6a5de4fe08597896ab6375e3e4b76c5744dcfba7" }
-datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "6a5de4fe08597896ab6375e3e4b76c5744dcfba7" }
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "7aed4d697fa24053d515babfd7678855451c6736" }
+datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "7aed4d697fa24053d515babfd7678855451c6736" }
 futures = "0.3"
 hashbrown = "0.12"
 
 libloading = "0.7.3"
 log = "0.4"
-object_store = "0.3.0"
+object_store = "0.4.0"
 once_cell = "1.9.0"
 
 parking_lot = "0.12"
 parse_arg = "0.1.3"
-prost = "0.10"
-prost-types = "0.10"
+prost = "0.11"
+prost-types = "0.11"
 serde = { version = "1", features = ["derive"] }
-sqlparser = "0.18"
+sqlparser = "0.22"
 tokio = "1.0"
-tonic = "0.7"
+tonic = "0.8"
 uuid = { version = "1.0", features = ["v4"] }
 walkdir = "2.3.2"
 
@@ -65,4 +65,4 @@ tempfile = "3"
 
 [build-dependencies]
 rustc_version = "0.4.0"
-tonic-build = { version = "0.7" }
+tonic-build = { version = "0.8", default-features = false, features = ["transport", "prost"] }

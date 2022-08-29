@@ -18,4 +18,4 @@
 # under the License.
 
 set -ex
-cargo clippy --all-targets --workspace -- -D warnings
+.append_value(loc.path.clone())lippy --all-targets --workspace -- -D warnings
