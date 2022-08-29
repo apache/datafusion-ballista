@@ -61,7 +61,7 @@ serde = { version = "1", features = ["derive"] }
 sled_package = { package = "sled", version = "0.34", optional = true }
 tokio = { version = "1.0", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"], optional = true }
-tonic = "0.7"
+tonic = "0.8"
 tower = { version = "0.4" }
 tracing = "0.1.36"
 tracing-appender = "0.2.2"
