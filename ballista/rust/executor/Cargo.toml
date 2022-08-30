@@ -34,14 +34,14 @@ snmalloc = ["snmalloc-rs"]
 
 [dependencies]
 anyhow = "1"
-arrow = { version = "18.0.0" }
-arrow-flight = { version = "18.0.0" }
+arrow = { version = "20.0.0" }
+arrow-flight = { version = "20.0.0" }
 async-trait = "0.1.41"
 ballista-core = { path = "../core", version = "0.7.0" }
 chrono = { version = "0.4", default-features = false }
 configure_me = "0.4.0"
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "6a5de4fe08597896ab6375e3e4b76c5744dcfba7" }
-datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "6a5de4fe08597896ab6375e3e4b76c5744dcfba7" }
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "7aed4d697fa24053d515babfd7678855451c6736" }
+datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "7aed4d697fa24053d515babfd7678855451c6736" }
 futures = "0.3"
 hyper = "0.14.4"
 log = "0.4"
@@ -50,7 +50,7 @@ snmalloc-rs = { version = "0.3", optional = true }
 tempfile = "3"
 tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "parking_lot", "signal"] }
 tokio-stream = { version = "0.1", features = ["net"] }
-tonic = "0.7"
+tonic = "0.8"
 tracing = "0.1.36"
 tracing-appender = "0.2.2"
 tracing-subscriber = { version = "0.3.15", features = ["fmt", "env-filter", "ansi"] }

@@ -23,6 +23,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
+      - name: Install protobuf compiler
+        shell: bash
+        run: |
+          mkdir -p $HOME/d/protoc
+          cd $HOME/d/protoc
+          export PROTO_ZIP="protoc-21.4-linux-x86_64.zip"
+          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.4/$PROTO_ZIP
+          unzip $PROTO_ZIP
+          export PATH=$PATH:$HOME/d/protoc/bin
+          protoc --version
       - name: Setup Rust toolchain
         run: |
           rustup component add rustfmt
@@ -41,6 +51,7 @@ jobs:
           python-version: "3.10"
       - name: Create Virtualenv
         run: |
+          export PATH=$PATH:$HOME/d/protoc/bin
           python -m venv venv
           source venv/bin/activate
           pip install -r python/requirements.txt
@@ -51,6 +62,8 @@ jobs:
           black --line-length 79 --diff --check python
       - name: Run tests
         run: |
+          export PATH=$PATH:$HOME/d/protoc/bin
+          protoc --version
           source venv/bin/activate
           cd python
           maturin develop

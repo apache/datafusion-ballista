@@ -25,7 +25,7 @@ use datafusion::arrow::pyarrow::PyArrowConvert;
 use datafusion::common::ScalarValue;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::{
-    Accumulator, AccumulatorFunctionImplementation, AggregateUDF,
+    Accumulator, AccumulatorFunctionImplementation, AggregateState, AggregateUDF,
 };
 use datafusion::logical_plan;
 
@@ -44,9 +44,13 @@ impl RustAccumulator {
 }
 
 impl Accumulator for RustAccumulator {
-    fn state(&self) -> Result<Vec<ScalarValue>> {
-        Python::with_gil(|py| self.accum.as_ref(py).call_method0("state")?.extract())
-            .map_err(|e| DataFusionError::Execution(format!("{}", e)))
+    fn state(&self) -> Result<Vec<AggregateState>> {
+        let py_result: PyResult<Vec<ScalarValue>> =
+            Python::with_gil(|py| self.accum.as_ref(py).call_method0("state")?.extract());
+        match py_result {
+            Ok(r) => Ok(r.into_iter().map(AggregateState::Scalar).collect()),
+            Err(e) => Err(DataFusionError::Execution(format!("{}", e))),
+        }
     }
 
     fn evaluate(&self) -> Result<ScalarValue> {

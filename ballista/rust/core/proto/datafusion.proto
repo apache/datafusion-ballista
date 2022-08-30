@@ -438,6 +438,10 @@ enum ScalarFunction {
   Coalesce=63;
   Power=64;
   StructFun=65;
+  FromUnixtime=66;
+  Atan2=67;
+  DateBin=68;
+  ArrowTypeof=69;
 }
 
 message ScalarFunctionNode {
@@ -464,11 +468,13 @@ enum AggregateFunction {
   APPROX_MEDIAN=15;
   APPROX_PERCENTILE_CONT_WITH_WEIGHT = 16;
   GROUPING = 17;
+  MEDIAN=18;
 }
 
 message AggregateExprNode {
   AggregateFunction aggr_function = 1;
   repeated LogicalExprNode expr = 2;
+  bool distinct = 3;
 }
 
 message AggregateUDFExprNode {
@@ -654,7 +660,7 @@ message Union{
 }
 
 message ScalarListValue{
-  ScalarType datatype = 1;
+  Field field = 1;
   repeated ScalarValue values = 2;
 }
 
