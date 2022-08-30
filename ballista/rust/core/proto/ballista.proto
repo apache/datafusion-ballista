@@ -807,7 +807,8 @@ message CancelJobResult {
 
 message LaunchTaskParams {
   // Allow to launch a task set to an executor at once
-  repeated TaskDefinition task = 1;
+  repeated TaskDefinition tasks = 1;
+  string scheduler_id = 2;
 }
 
 message LaunchTaskResult {

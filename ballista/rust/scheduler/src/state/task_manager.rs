@@ -387,41 +387,23 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         &self,
         executor: &ExecutorMetadata,
         task: Task,
+        executor_manager: &ExecutorManager,
     ) -> Result<()> {
         info!("Launching task {:?} on executor {:?}", task, executor.id);
         let task_definition = self.prepare_task_definition(task)?;
-        let mut clients = self.clients.write().await;
-        if let Some(client) = clients.get_mut(&executor.id) {
-            client
-                .launch_task(protobuf::LaunchTaskParams {
-                    task: vec![task_definition],
-                })
-                .await
-                .map_err(|e| {
-                    BallistaError::Internal(format!(
-                        "Failed to connect to executor {}: {:?}",
-                        executor.id, e
-                    ))
-                })?;
-        } else {
-            let executor_id = executor.id.clone();
-            let executor_url = format!("http://{}:{}", executor.host, executor.grpc_port);
-            let connection =
-                ballista_core::utils::create_grpc_client_connection(executor_url).await?;
-            let mut client = ExecutorGrpcClient::new(connection);
-            clients.insert(executor_id, client.clone());
-            client
-                .launch_task(protobuf::LaunchTaskParams {
-                    task: vec![task_definition],
-                })
-                .await
-                .map_err(|e| {
-                    BallistaError::Internal(format!(
-                        "Failed to connect to executor {}: {:?}",
-                        executor.id, e
-                    ))
-                })?;
-        }
+        let mut client = executor_manager.get_client(&executor.id).await?;
+        client
+            .launch_task(protobuf::LaunchTaskParams {
+                tasks: vec![task_definition],
+                scheduler_id: self.scheduler_id.clone(),
+            })
+            .await
+            .map_err(|e| {
+                BallistaError::Internal(format!(
+                    "Failed to connect to executor {}: {:?}",
+                    executor.id, e
+                ))
+            })?;
         Ok(())
     }
 
@@ -431,6 +413,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         &self,
         _executor: &ExecutorMetadata,
         _task: Task,
+        _executor_manager: &ExecutorManager,
     ) -> Result<()> {
         Ok(())
     }
