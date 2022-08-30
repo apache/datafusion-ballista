@@ -1463,7 +1463,11 @@ mod roundtrip_tests {
         };
 
         let predicate = datafusion::prelude::col("col").eq(datafusion::prelude::lit("1"));
-        roundtrip_test(Arc::new(ParquetExec::new(scan_config, Some(predicate), None)))
+        roundtrip_test(Arc::new(ParquetExec::new(
+            scan_config,
+            Some(predicate),
+            None,
+        )))
     }
 
     #[test]
