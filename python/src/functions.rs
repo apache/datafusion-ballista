@@ -46,7 +46,7 @@ fn in_list(expr: PyExpr, value: Vec<PyExpr>, negated: bool) -> PyExpr {
 fn now() -> PyExpr {
     PyExpr {
         // here lit(0) is a stub for conform to arity
-        expr: logical_plan::now(logical_plan::lit(0)),
+        expr: logical_plan::now(),
     }
 }
 
