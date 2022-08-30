@@ -32,8 +32,9 @@ scheduler = "scheduler_config_spec.toml"
 [features]
 default = ["etcd", "sled"]
 etcd = ["etcd-client"]
-sled = ["sled_package", "tokio-stream"]
 flight-sql = []
+sled = ["sled_package", "tokio-stream"]
+
 
 [dependencies]
 anyhow = "1"
