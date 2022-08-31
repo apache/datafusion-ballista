@@ -98,13 +98,6 @@ pub struct ExecutorDataChange {
     pub task_slots: i32,
 }
 
-/// The internal state of an executor, like cpu usage, memory usage, etc
-#[derive(Debug, Clone, Copy, Serialize)]
-pub struct ExecutorState {
-    // in bytes
-    pub available_memory_size: u64,
-}
-
 /// Summary of executed partition
 #[derive(Debug, Copy, Clone, Default)]
 pub struct PartitionStats {

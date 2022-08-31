@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use tonic::transport::Channel;
 use tonic::{Request, Response, Status};
 
@@ -35,11 +35,10 @@ use ballista_core::serde::protobuf::executor_grpc_server::{
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_core::serde::protobuf::{
-    HeartBeatParams, LaunchTaskParams, LaunchTaskResult, RegisterExecutorParams,
-    StopExecutorParams, StopExecutorResult, TaskDefinition, TaskStatus,
-    UpdateTaskStatusParams,
+    executor_metric, executor_status, ExecutorMetric, ExecutorStatus, HeartBeatParams,
+    LaunchTaskParams, LaunchTaskResult, RegisterExecutorParams, StopExecutorParams,
+    StopExecutorResult, TaskDefinition, TaskStatus, UpdateTaskStatusParams,
 };
-use ballista_core::serde::scheduler::ExecutorState;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use ballista_core::utils::{collect_plan_metrics, create_grpc_server};
 use datafusion::execution::context::TaskContext;
@@ -200,15 +199,23 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
     }
 
     async fn heartbeat(&self) {
-        // TODO Error handling
-        self.scheduler
+        if let Err(error) = self
+            .scheduler
             .clone()
             .heart_beat_from_executor(HeartBeatParams {
                 executor_id: self.executor.metadata.id.clone(),
-                state: Some(self.get_executor_state().into()),
+                metrics: self.get_executor_metrics(),
+                status: Some(ExecutorStatus {
+                    status: Some(executor_status::Status::Active("".to_string())),
+                }),
             })
             .await
-            .unwrap();
+        {
+            warn!(
+                "Error communicating with Scheduler in heartbeater due to: {}",
+                error
+            );
+        }
     }
 
     async fn run_task(&self, task: TaskDefinition) -> Result<(), BallistaError> {
@@ -299,11 +306,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         Ok(())
     }
 
-    // TODO with real state
-    fn get_executor_state(&self) -> ExecutorState {
-        ExecutorState {
-            available_memory_size: u64::MAX,
-        }
+    // TODO populate with real metrics
+    fn get_executor_metrics(&self) -> Vec<ExecutorMetric> {
+        let available_memory = ExecutorMetric {
+            metric: Some(executor_metric::Metric::AvailableMemory(u64::MAX)),
+        };
+        let mut executor_metrics = vec![];
+        executor_metrics.push(available_memory);
+        executor_metrics
     }
 }
 

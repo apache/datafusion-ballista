@@ -21,7 +21,8 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
 
 use ballista_core::serde::protobuf::{
-    self, CompletedJob, JobStatus, OperatorMetricsSet, QueuedJob, TaskStatus,
+    self, CompletedJob, CompletedTask, JobStatus, OperatorMetricsSet, QueuedJob,
+    TaskStatus,
 };
 use ballista_core::serde::protobuf::{job_status, FailedJob, ShuffleWritePartition};
 use ballista_core::serde::protobuf::{task_status, RunningTask};
@@ -31,8 +32,8 @@ use ballista_core::serde::scheduler::{
 use datafusion::physical_plan::{
     accept, ExecutionPlan, ExecutionPlanVisitor, Metric, Partitioning,
 };
-use log::{debug, info};
-use std::collections::HashMap;
+use log::{debug, error, info, warn};
+use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
 
@@ -95,6 +96,7 @@ pub struct ExecutionStage {
     pub(crate) output_partitioning: Option<Partitioning>,
     /// Represents the outputs from this stage's child stages.
     /// This stage can only be resolved an executed once all child stages are completed.
+    /// THis map holds the mapping from child_stage_id to StageOutput
     pub(crate) inputs: HashMap<usize, StageOutput>,
     // `ExecutionPlan` for this stage
     pub(crate) plan: Arc<dyn ExecutionPlan>,
@@ -137,15 +139,15 @@ impl ExecutionStage {
         plan: Arc<dyn ExecutionPlan>,
         output_partitioning: Option<Partitioning>,
         output_links: Vec<usize>,
-        child_stages: Vec<usize>,
+        child_stage_ids: Vec<usize>,
     ) -> Self {
         let num_tasks = plan.output_partitioning().partition_count();
 
-        let resolved = child_stages.is_empty();
+        let resolved = child_stage_ids.is_empty();
 
         let mut inputs: HashMap<usize, StageOutput> = HashMap::new();
 
-        for input_stage_id in &child_stages {
+        for input_stage_id in &child_stage_ids {
             inputs.insert(*input_stage_id, StageOutput::new());
         }
 
@@ -183,6 +185,41 @@ impl ExecutionStage {
             .count()
     }
 
+    /// Reset the running and completed tasks on a given executor
+    /// Returns the number of running tasks that were reset
+    pub fn reset_tasks(&mut self, executor: &str) -> usize {
+        let mut reset = 0;
+        for task in self.task_statuses.iter_mut() {
+            match task {
+                Some(task_status::Status::Running(RunningTask { executor_id }))
+                    if executor.to_owned() == executor_id.to_owned() =>
+                {
+                    *task = None;
+                    reset += 1;
+                }
+                Some(task_status::Status::Completed(CompletedTask {
+                    executor_id,
+                    partitions: _,
+                })) if executor.to_owned() == executor_id.to_owned() => {
+                    *task = None;
+                    reset += 1;
+                }
+                _ => {}
+            }
+        }
+        reset
+    }
+
+    /// Reset all the tasks
+    pub fn reset_all_tasks(&mut self) -> usize {
+        let mut reset = 0;
+        for task in self.task_statuses.iter_mut() {
+            *task = None;
+            reset += 1;
+        }
+        reset
+    }
+
     /// Marks the input stage ID as complete.
     pub fn complete_input(&mut self, stage_id: usize) {
         if let Some(input) = self.inputs.get_mut(&stage_id) {
@@ -209,7 +246,6 @@ impl ExecutionStage {
 
     /// Resolve any UnresolvedShuffleExec operators within this stage's plan
     pub fn resolve_shuffles(&mut self) -> Result<()> {
-        println!("Resolving shuffles\n{:?}", self);
         if self.resolved {
             // If this stage has no input shuffles, then it is already resolved
             Ok(())
@@ -226,6 +262,21 @@ impl ExecutionStage {
             )?;
             self.plan = new_plan;
             self.resolved = true;
+            Ok(())
+        }
+    }
+
+    /// Roll back a resolve shuffle to unsolved and change ShuffleReaderExec back to UnresolvedShuffleExec
+    pub fn rollback_resolved_shuffles(&mut self) -> Result<()> {
+        if !self.resolved {
+            Ok(())
+        } else {
+            let new_plan = crate::planner::rollback_resolved_shuffles(
+                self.stage_id,
+                self.plan.clone(),
+            )?;
+            self.plan = new_plan;
+            self.resolved = false;
             Ok(())
         }
     }
@@ -715,6 +766,107 @@ impl ExecutionGraph {
                 output_partitioning: stage.output_partitioning.clone()
             })
         }).transpose()
+    }
+
+    /// Reset running and completed stages on a given executor
+    /// This will first check the running stages and reset the running tasks and completed tasks.
+    /// Then it will check the completed stage and whether there are running parent stages need to read shuffle from it.
+    /// If yes, reset the complete tasks and roll back the resolved shuffle recursively.
+    ///
+    /// Returns 'true' when there are stages were reset
+    pub fn reset_stages(&mut self, executor_id: &str) -> bool {
+        let mut reset = false;
+        loop {
+            let reset_stage = self.reset_stages_internal(executor_id);
+            if reset_stage {
+                reset = reset_stage;
+            } else {
+                return reset;
+            }
+        }
+    }
+
+    fn reset_stages_internal(&mut self, executor_id: &str) -> bool {
+        let mut reset_stage = false;
+        let job_id = self.job_id.clone();
+
+        let mut resubmit_inputs: HashSet<usize> = HashSet::new();
+        // check the reset the running stages
+        self.stages
+            .iter_mut()
+            .filter(|(_stage_id, stage)| stage.resolved() && !stage.complete())
+            .for_each(|(stage_id, stage)| {
+                let reset = stage.reset_tasks(executor_id);
+                if reset > 0 {
+                    warn!(
+                        "Reset {} tasks for running job/stage {}/{} on Executor {}",
+                        reset, job_id, stage_id, executor_id
+                    );
+                    reset_stage = true;
+                }
+                // For each stage input, check whether there are input locations match that executor
+                // and calculate the resubmit input stages.
+                let mut rollback_stage = false;
+                stage.inputs.iter_mut().for_each(|(input_stage_id, stage_output)| {
+                    let mut match_found = false;
+                    stage_output.partition_locations.iter_mut().for_each(
+                        |(_partition, locs)| {
+                            let indexes = locs
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(idx, loc)| {
+                                    (loc.executor_meta.id == executor_id).then(|| idx)
+                                })
+                                .collect::<Vec<_>>();
+
+                            // remove the matched partition locations
+                            if !indexes.is_empty() {
+                                for idx in &indexes {
+                                    locs.remove(idx.clone());
+                                }
+                                match_found = true;
+                            }
+                        },
+                    );
+                    if match_found {
+                        stage_output.complete = false;
+                        rollback_stage = true;
+                        resubmit_inputs.insert(input_stage_id.clone());
+                    }
+                });
+
+                if rollback_stage {
+                    stage.reset_all_tasks();
+                    stage.rollback_resolved_shuffles().unwrap_or_else(|e| {
+                        error!("Fail to rollback resolved shuffle due to {:?}", e);
+                    });
+                    warn!(
+                        "Roll back running job/stage {}/{} and change ShuffleReaderExec back to UnresolvedShuffleExec",
+                        job_id, stage_id);
+                    reset_stage = true;
+                }
+            });
+
+        // check the reset the complete stages
+        if !resubmit_inputs.is_empty() {
+            self.stages
+                .iter_mut()
+                .filter(|(stage_id, stage)| {
+                    stage.resolved()
+                        && stage.complete()
+                        && resubmit_inputs.contains(stage_id)
+                })
+                .for_each(|(stage_id, stage)| {
+                    let reset = stage.reset_tasks(executor_id);
+                    if reset > 0 {
+                        warn!(
+                            "Reset {} tasks for completed job/stage {}/{} on Executor {}",
+                            reset, job_id, stage_id, executor_id
+                        )
+                    }
+                });
+        }
+        reset_stage
     }
 
     pub fn finalize(&mut self) -> Result<()> {

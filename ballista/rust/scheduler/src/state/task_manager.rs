@@ -322,6 +322,38 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         }).await
     }
 
+    pub async fn executor_lost(&self, executor_id: &str) -> Result<()> {
+        // Check all the active jobs and reset all the running tasks on the given executor_id
+        let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
+        with_lock(lock, async {
+            let active_jobs: Vec<String> =
+                self.get_active_jobs().await?.into_iter().collect();
+
+            // Collect graphs we update so we can update them in storage
+            let mut graphs: HashMap<String, ExecutionGraph> = HashMap::new();
+
+            for job_id in active_jobs {
+                let mut graph = self.get_execution_graph(&job_id).await?;
+                let reset = graph.reset_stages(executor_id);
+                if reset {
+                    graphs.insert(job_id, graph);
+                }
+            }
+
+            // Transactional update graphs
+            let txn_ops: Vec<(Keyspace, String, Vec<u8>)> = graphs
+                .into_iter()
+                .map(|(job_id, graph)| {
+                    let value = self.encode_execution_graph(graph)?;
+                    Ok((Keyspace::ActiveJobs, job_id, value))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            self.state.put_txn(txn_ops).await?;
+            Ok(())
+        })
+        .await
+    }
+
     /// Move the given job to the CompletedJobs keyspace in persistent storage.
     pub async fn complete_job(&self, job_id: &str) -> Result<()> {
         debug!("Moving job {} from Active to Completed", job_id);

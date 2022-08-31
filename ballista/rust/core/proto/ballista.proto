@@ -565,17 +565,22 @@ message ExecutorHeartbeat {
   string executor_id = 1;
   // Unix epoch-based timestamp in seconds
   uint64 timestamp = 2;
-  ExecutorState state = 3;
-}
-
-message ExecutorState {
-  repeated ExecutorMetric metrics = 1;
+  repeated ExecutorMetric metrics = 3;
+  ExecutorStatus status = 4;
 }
 
 message ExecutorMetric {
   // TODO add more metrics
   oneof metric {
     uint64 available_memory = 1;
+  }
+}
+
+message ExecutorStatus {
+  oneof status {
+    string active = 1;
+    string dead = 2;
+    string unknown = 3;
   }
 }
 
@@ -672,7 +677,8 @@ message RegisterExecutorResult {
 
 message HeartBeatParams {
   string executor_id = 1;
-  ExecutorState state = 2;
+  repeated ExecutorMetric metrics = 2;
+  ExecutorStatus status = 3;
 }
 
 message HeartBeatResult {
@@ -688,6 +694,15 @@ message StopExecutorParams {
 }
 
 message StopExecutorResult {
+}
+
+message ExecutorStoppedParams {
+  string executor_id = 1;
+  // stop reason
+  string reason = 2;
+}
+
+message ExecutorStoppedResult {
 }
 
 message UpdateTaskStatusParams {
@@ -790,6 +805,9 @@ service SchedulerGrpc {
   rpc ExecuteQuery (ExecuteQueryParams) returns (ExecuteQueryResult) {}
 
   rpc GetJobStatus (GetJobStatusParams) returns (GetJobStatusResult) {}
+
+  // Used by Executor to tell scheduler it is stopped.
+  rpc ExecutorStopped (ExecutorStoppedParams) returns (ExecutorStoppedResult) {}
 }
 
 service ExecutorGrpc {

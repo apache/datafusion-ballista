@@ -29,8 +29,8 @@ use crate::serde::protobuf;
 use crate::serde::protobuf::action::ActionType;
 use crate::serde::protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
 use crate::serde::scheduler::{
-    Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, ExecutorState,
-    PartitionId, PartitionLocation, PartitionStats,
+    Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, PartitionId,
+    PartitionLocation, PartitionStats,
 };
 
 impl TryInto<Action> for protobuf::Action {
@@ -259,24 +259,6 @@ impl Into<ExecutorData> for protobuf::ExecutorData {
                     ret.available_task_slots = task_slots
                 }
             };
-        }
-        ret
-    }
-}
-
-#[allow(clippy::from_over_into)]
-impl Into<ExecutorState> for protobuf::ExecutorState {
-    fn into(self) -> ExecutorState {
-        let mut ret = ExecutorState {
-            available_memory_size: u64::MAX,
-        };
-        for metric in self.metrics {
-            if let Some(protobuf::executor_metric::Metric::AvailableMemory(
-                available_memory_size,
-            )) = metric.metric
-            {
-                ret.available_memory_size = available_memory_size
-            }
         }
         ret
     }

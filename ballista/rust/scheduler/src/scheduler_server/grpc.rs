@@ -22,7 +22,8 @@ use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Qu
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
-    ExecuteQueryParams, ExecuteQueryResult, ExecutorHeartbeat, GetFileMetadataParams,
+    executor_status, ExecuteQueryParams, ExecuteQueryResult, ExecutorHeartbeat,
+    ExecutorStatus, ExecutorStoppedParams, ExecutorStoppedResult, GetFileMetadataParams,
     GetFileMetadataResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
     HeartBeatResult, PollWorkParams, PollWorkResult, RegisterExecutorParams,
     RegisterExecutorResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
@@ -37,7 +38,7 @@ use datafusion::datasource::file_format::FileFormat;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::protobuf::FileType;
 use futures::TryStreamExt;
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info, warn};
 
 // use http_body::Body;
 use std::convert::TryInto;
@@ -91,7 +92,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     .duration_since(UNIX_EPOCH)
                     .expect("Time went backwards")
                     .as_secs(),
-                state: None,
+                metrics: vec![],
+                status: Some(ExecutorStatus {
+                    status: Some(executor_status::Status::Active("".to_string())),
+                }),
             };
 
             self.state
@@ -224,17 +228,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         &self,
         request: Request<HeartBeatParams>,
     ) -> Result<Response<HeartBeatResult>, Status> {
-        let HeartBeatParams { executor_id, state } = request.into_inner();
-
+        let HeartBeatParams {
+            executor_id,
+            metrics,
+            status,
+        } = request.into_inner();
         debug!("Received heart beat request for {:?}", executor_id);
-        trace!("Related executor state is {:?}", state);
         let executor_heartbeat = ExecutorHeartbeat {
             executor_id,
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("Time went backwards")
                 .as_secs(),
-            state,
+            metrics,
+            status,
         };
         self.state
             .executor_manager
@@ -488,6 +495,41 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 Err(Status::internal(msg))
             }
         }
+    }
+
+    async fn executor_stopped(
+        &self,
+        request: Request<ExecutorStoppedParams>,
+    ) -> Result<Response<ExecutorStoppedResult>, Status> {
+        let ExecutorStoppedParams {
+            executor_id,
+            reason,
+        } = request.into_inner();
+        info!(
+            "Received executor stopped request from Executor {} with reason {}",
+            executor_id, reason
+        );
+        self.state
+            .executor_manager
+            .remove_executor(&executor_id, Some(reason))
+            .await
+            .map_err(|e| {
+                let msg = format!("ExecutorManager could not remove executor: {}", e);
+                error!("{}", msg);
+                Status::internal(msg)
+            })?;
+
+        self.state
+            .task_manager
+            .executor_lost(&executor_id)
+            .await
+            .map_err(|e| {
+                let msg = format!("TaskManager could not handle executor lost: {}", e);
+                error!("{}", msg);
+                Status::internal(msg)
+            })?;
+
+        Ok(Response::new(ExecutorStoppedResult {}))
     }
 }
 
