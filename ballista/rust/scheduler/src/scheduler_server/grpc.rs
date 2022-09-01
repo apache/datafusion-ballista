@@ -16,7 +16,6 @@
 // under the License.
 
 use ballista_core::config::{BallistaConfig, TaskSchedulingPolicy};
-
 use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
 
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
@@ -48,7 +47,6 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
-use crate::scheduler_server::event::{QueryStageSchedulerEvent, SchedulerServerEvent};
 use crate::scheduler_server::SchedulerServer;
 use crate::state::executor_manager::ExecutorReservation;
 
@@ -189,30 +187,28 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 available_task_slots: metadata.specification.task_slots,
             };
 
-            if let Ok(Some(sender)) =
-                self.event_loop.as_ref().map(|e| e.get_sender()).transpose()
-            {
-                // If we are using push-based scheduling then reserve this executors slots and send
-                // them for scheduling tasks.
+            async {
+                // Save the executor to state
                 let reservations = self
                     .state
                     .executor_manager
-                    .register_executor(metadata, executor_data, true)
-                    .await
-                    .unwrap();
-
-                sender
-                    .post_event(SchedulerServerEvent::Offer(reservations))
-                    .await
-                    .unwrap();
-            } else {
-                // Otherwise just save the executor to state
-                self.state
-                    .executor_manager
                     .register_executor(metadata, executor_data, false)
-                    .await
-                    .unwrap();
+                    .await?;
+
+                // If we are using push-based scheduling then reserve this executors slots and send
+                // them for scheduling tasks.
+                if matches!(self.policy, TaskSchedulingPolicy::PushStaged) {
+                    self.offer_reservation(reservations).await?;
+                }
+
+                Ok::<(), ballista_core::error::BallistaError>(())
             }
+            .await
+            .map_err(|e| {
+                let msg = format!("Fail to do executor registration due to: {}", e);
+                error!("{}", msg);
+                Status::internal(msg)
+            })?;
 
             Ok(Response::new(RegisterExecutorResult { success: true }))
         } else {
@@ -414,20 +410,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
             let job_id = self.state.task_manager.generate_job_id();
 
-            let query_stage_event_sender =
-                self.query_stage_event_loop.get_sender().map_err(|e| {
-                    Status::internal(format!(
-                        "Could not get query stage event sender due to: {}",
-                        e
-                    ))
-                })?;
-
-            query_stage_event_sender
-                .post_event(QueryStageSchedulerEvent::JobQueued {
-                    job_id: job_id.clone(),
-                    session_ctx,
-                    plan: Box::new(plan),
-                })
+            self.submit_job(&job_id, session_ctx, &plan)
                 .await
                 .map_err(|e| {
                     let msg =
@@ -535,12 +518,13 @@ mod test {
     #[tokio::test]
     async fn test_poll_work() -> Result<(), BallistaError> {
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
-        let scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
                 state_storage.clone(),
                 BallistaCodec::default(),
             );
+        scheduler.init().await?;
         let exec_meta = ExecutorRegistration {
             id: "abc".to_owned(),
             optional_host: Some(OptionalHost::Host("http://localhost:8080".to_owned())),
