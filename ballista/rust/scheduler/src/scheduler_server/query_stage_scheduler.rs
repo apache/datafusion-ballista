@@ -154,7 +154,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.state.task_manager.fail_running_job(&job_id).await?;
             }
             QueryStageSchedulerEvent::JobUpdated(job_id) => {
-                error!("Job {} Updated", job_id);
+                info!("Job {} Updated", job_id);
                 self.state.task_manager.update_job(&job_id).await?;
             }
         }

@@ -85,6 +85,8 @@ pub(crate) struct ExecutorManager {
     executor_metadata: Arc<RwLock<HashMap<String, ExecutorMetadata>>>,
     // executor_id -> ExecutorHeartbeat map
     executors_heartbeat: Arc<RwLock<HashMap<String, protobuf::ExecutorHeartbeat>>>,
+    // dead executor sets:
+    dead_executors: Arc<RwLock<HashSet<String>>>,
     clients: ExecutorClients,
 }
 
@@ -94,6 +96,7 @@ impl ExecutorManager {
             state,
             executor_metadata: Arc::new(RwLock::new(HashMap::new())),
             executors_heartbeat: Arc::new(RwLock::new(HashMap::new())),
+            dead_executors: Arc::new(RwLock::new(HashSet::new())),
             clients: Default::default(),
         }
     }
@@ -105,6 +108,7 @@ impl ExecutorManager {
         let heartbeat_listener = ExecutorHeartbeatListener::new(
             self.state.clone(),
             self.executors_heartbeat.clone(),
+            self.dead_executors.clone(),
         );
         heartbeat_listener.start().await
     }
@@ -433,13 +437,19 @@ impl ExecutorManager {
         let executor_id = heartbeat.executor_id.clone();
         let value = encode_protobuf(&heartbeat)?;
         self.state
-            .put(Keyspace::Heartbeats, executor_id, value)
+            .put(Keyspace::Heartbeats, executor_id.clone(), value)
             .await?;
 
         let mut executors_heartbeat = self.executors_heartbeat.write();
         executors_heartbeat.remove(&heartbeat.executor_id.clone());
 
+        let mut dead_executors = self.dead_executors.write();
+        dead_executors.insert(executor_id);
         Ok(())
+    }
+
+    pub(crate) fn is_dead_executor(&self, executor_id: &str) -> bool {
+        self.dead_executors.read().contains(executor_id)
     }
 
     /// Initialize the set of active executor heartbeats from storage
@@ -493,16 +503,19 @@ impl ExecutorManager {
 struct ExecutorHeartbeatListener {
     state: Arc<dyn StateBackendClient>,
     executors_heartbeat: Arc<RwLock<HashMap<String, protobuf::ExecutorHeartbeat>>>,
+    dead_executors: Arc<RwLock<HashSet<String>>>,
 }
 
 impl ExecutorHeartbeatListener {
     pub fn new(
         state: Arc<dyn StateBackendClient>,
         executors_heartbeat: Arc<RwLock<HashMap<String, protobuf::ExecutorHeartbeat>>>,
+        dead_executors: Arc<RwLock<HashSet<String>>>,
     ) -> Self {
         Self {
             state,
             executors_heartbeat,
+            dead_executors,
         }
     }
 
@@ -514,6 +527,7 @@ impl ExecutorHeartbeatListener {
             .watch(Keyspace::Heartbeats, "".to_owned())
             .await?;
         let heartbeats = self.executors_heartbeat.clone();
+        let dead_executors = self.dead_executors.clone();
         tokio::task::spawn(async move {
             while let Some(event) = watch.next().await {
                 if let WatchEvent::Put(_, value) = event {
@@ -528,6 +542,7 @@ impl ExecutorHeartbeatListener {
                         }) = data.status
                         {
                             heartbeats.remove(&executor_id);
+                            dead_executors.write().insert(executor_id);
                         } else {
                             heartbeats.insert(executor_id, data);
                         }

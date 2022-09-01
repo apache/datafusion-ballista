@@ -28,7 +28,7 @@ use datafusion::execution::context::{default_session_builder, SessionState};
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 
-use log::error;
+use log::{error, warn};
 
 use crate::scheduler_server::event::{QueryStageSchedulerEvent, SchedulerServerEvent};
 use crate::scheduler_server::event_loop::SchedulerServerEventAction;
@@ -177,6 +177,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         executor_id: &str,
         tasks_status: Vec<TaskStatus>,
     ) -> Result<()> {
+        // We might receive buggy task updates from dead executors.
+        if self.state.executor_manager.is_dead_executor(executor_id) {
+            let error_msg = format!(
+                "Receive buggy tasks status from dead Executor {}, task status update ignored.",
+                executor_id
+            );
+            warn!("{}", error_msg);
+            return Ok(());
+        }
         let num_status = tasks_status.len();
         let executor = self
             .state

@@ -75,6 +75,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         } = request.into_inner()
         {
             debug!("Received poll_work request for {:?}", metadata);
+            // We might receive buggy poll work requests from dead executors.
+            if self
+                .state
+                .executor_manager
+                .is_dead_executor(&metadata.id.clone())
+            {
+                let error_msg = format!(
+                    "Receive buggy poll work request from dead Executor {}",
+                    metadata.id.clone()
+                );
+                warn!("{}", error_msg);
+                return Err(Status::internal(error_msg));
+            }
             let metadata = ExecutorMetadata {
                 id: metadata.id,
                 host: metadata
@@ -507,7 +520,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             reason,
         } = request.into_inner();
         info!(
-            "Received executor stopped request from Executor {} with reason {}",
+            "Received executor stopped request from Executor {} with reason '{}'",
             executor_id, reason
         );
         self.state
@@ -520,15 +533,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 Status::internal(msg)
             })?;
 
-        self.state
-            .task_manager
-            .executor_lost(&executor_id)
-            .await
-            .map_err(|e| {
-                let msg = format!("TaskManager could not handle executor lost: {}", e);
-                error!("{}", msg);
-                Status::internal(msg)
-            })?;
+        let state = self.state.clone();
+        // TODO move the logic to event loop
+        tokio::spawn(async move {
+            state
+                .task_manager
+                .executor_lost(&executor_id)
+                .await
+                .unwrap_or_else(|e| {
+                    let msg =
+                        format!("TaskManager could not handle executor lost: {}", e);
+                    error!("{}", msg);
+                });
+        });
 
         Ok(Response::new(ExecutorStoppedResult {}))
     }

@@ -525,7 +525,7 @@ impl ExecutionGraph {
                 let reset = stage.reset_tasks(executor_id);
                 if reset > 0 {
                     warn!(
-                        "Reset {} tasks for running job/stage {}/{} on Executor {}",
+                        "Reset {} tasks for running job/stage {}/{} on lost Executor {}",
                         reset, job_id, stage.stage_id, executor_id
                     );
                     reset_stage = true;
@@ -588,7 +588,7 @@ impl ExecutionGraph {
                         stage_events
                             .push(StageEvent::ReRunCompletedStage(stage.stage_id));
                         warn!(
-                            "Reset {} tasks for completed job/stage {}/{} on Executor {}",
+                            "Reset {} tasks for completed job/stage {}/{} on lost Executor {}",
                             reset, job_id, stage.stage_id, executor_id
                         )
                     }
