@@ -18,6 +18,7 @@
 //! Ballista Rust scheduler binary.
 
 use anyhow::{Context, Result};
+#[cfg(feature = "flight-sql")]
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_scheduler::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
 use futures::future::{self, Either, TryFutureExt};
@@ -60,13 +61,14 @@ mod config {
 }
 
 use ballista_core::utils::create_grpc_server;
+#[cfg(feature = "flight-sql")]
 use ballista_scheduler::flight_sql::FlightSqlServiceImpl;
 use config::prelude::*;
 use datafusion::execution::context::default_session_builder;
 
 async fn start_server(
+    scheduler_name: String,
     config_backend: Arc<dyn StateBackendClient>,
-    namespace: String,
     addr: SocketAddr,
     policy: TaskSchedulingPolicy,
 ) -> Result<()> {
@@ -82,15 +84,15 @@ async fn start_server(
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
         match policy {
             TaskSchedulingPolicy::PushStaged => SchedulerServer::new_with_policy(
+                scheduler_name,
                 config_backend.clone(),
-                namespace.clone(),
                 policy,
                 BallistaCodec::default(),
                 default_session_builder,
             ),
             _ => SchedulerServer::new(
+                scheduler_name,
                 config_backend.clone(),
-                namespace.clone(),
                 BallistaCodec::default(),
             ),
         };
@@ -102,17 +104,19 @@ async fn start_server(
             let scheduler_grpc_server =
                 SchedulerGrpcServer::new(scheduler_server.clone());
 
-            let flight_sql_server = FlightServiceServer::new(FlightSqlServiceImpl::new(
-                scheduler_server.clone(),
-            ));
-
             let keda_scaler = ExternalScalerServer::new(scheduler_server.clone());
 
-            let mut tonic = create_grpc_server()
+            let tonic_builder = create_grpc_server()
                 .add_service(scheduler_grpc_server)
-                .add_service(flight_sql_server)
-                .add_service(keda_scaler)
-                .into_service();
+                .add_service(keda_scaler);
+
+            #[cfg(feature = "flight-sql")]
+            tonic_builder.add_service(FlightServiceServer::new(
+                FlightSqlServiceImpl::new(scheduler_server.clone()),
+            ));
+
+            let mut tonic = tonic_builder.into_service();
+
             let mut warp = warp::service(get_routes(scheduler_server.clone()));
 
             let connect_info = request.connect_info();
@@ -158,12 +162,13 @@ async fn main() -> Result<()> {
 
     let special_mod_log_level = opt.log_level_setting;
     let namespace = opt.namespace;
+    let external_host = opt.external_host;
     let bind_host = opt.bind_host;
     let port = opt.bind_port;
     let log_dir = opt.log_dir;
     let print_thread_info = opt.print_thread_info;
 
-    let scheduler_name = format!("scheduler_{}_{}_{}", namespace, bind_host, port);
+    let scheduler_name = format!("scheduler_{}_{}_{}", namespace, external_host, port);
     let log_file = tracing_appender::rolling::daily(log_dir, &scheduler_name);
 
     tracing_subscriber::fmt()
@@ -219,6 +224,6 @@ async fn main() -> Result<()> {
     };
 
     let policy: TaskSchedulingPolicy = opt.scheduler_policy;
-    start_server(client, namespace, addr, policy).await?;
+    start_server(scheduler_name, client, addr, policy).await?;
     Ok(())
 }

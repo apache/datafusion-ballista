@@ -20,12 +20,12 @@ requires = ["maturin>=0.11,<0.12"]
 build-backend = "maturin"
 
 [project]
-name = "datafusion"
+name = "ballista"
 description = "Build and run queries against data"
 readme = "README.md"
 license = {file = "LICENSE.txt"}
 requires-python = ">=3.6"
-keywords = ["datafusion", "dataframe", "rust", "query-engine"]
+keywords = ["ballista", "dataframe", "rust", "query-engine"]
 classifier = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Developers",
@@ -48,8 +48,8 @@ dependencies = [
 ]
 
 [project.urls]
-documentation = "https://arrow.apache.org/datafusion/python"
-repository = "https://github.com/apache/arrow-datafusion"
+documentation = "https://arrow.apache.org/apache/arrow-ballista/python"
+repository = "https://github.com/apache/arrow-ballista"
 
 [tool.isort]
 profile = "black"

@@ -17,11 +17,11 @@
   under the License.
 -->
 
-## DataFusion in Python
+## Python bindings for Ballista
 
-This is a Python library that binds to [Apache Arrow](https://arrow.apache.org/) in-memory query engine [DataFusion](https://github.com/apache/arrow-datafusion).
+This is a Python library that binds to [Apache Arrow](https://arrow.apache.org/) distributed query engine [Ballista](https://github.com/apache/arrow-ballista).
 
-Like pyspark, it allows you to build a plan through SQL or a DataFrame API against in-memory data, parquet or CSV files, run it in a multi-threaded environment, and obtain the result back in Python.
+Like pyspark, it allows you to build a plan through SQL or a DataFrame API against Parquet or CSV files, run it in a distributed environment, and obtain the result back in Python.
 
 It also allows you to use UDFs and UDAFs for complex operations.
 
@@ -36,14 +36,14 @@ Technically, zero-copy is achieved via the [c data interface](https://arrow.apac
 Simple usage:
 
 ```python
-import datafusion
+import ballista
 import pyarrow
 
 # an alias
-f = datafusion.functions
+f = ballista.functions
 
 # create a context
-ctx = datafusion.ExecutionContext()
+ctx = ballista.SessionContext()
 
 # create a RecordBatch and a new DataFrame from it
 batch = pyarrow.RecordBatch.from_arrays(
@@ -118,9 +118,9 @@ df = df.aggregate(
 ## How to install (from pip)
 
 ```bash
-pip install datafusion
+pip install ballista
 # or
-python -m pip install datafusion
+python -m pip install ballista
 ```
 
 ## How to develop
@@ -131,9 +131,9 @@ Bootstrap:
 
 ```bash
 # fetch this repo
-git clone git@github.com:apache/arrow-datafusion.git
+git clone git@github.com:apache/arrow-ballista.git
 # change to python directory
-cd arrow-datafusion/python
+cd arrow-ballista/python
 # prepare development environment (used to build wheel / install in development)
 python3 -m venv venv
 # activate the venv
@@ -143,7 +143,7 @@ python -m pip install -U pip
 # if python -V gives python 3.7
 python -m pip install -r requirements-37.txt
 # if python -V gives python 3.8/3.9/3.10
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-310.txt
 ```
 
 Whenever rust code changes (your changes or via `git pull`):

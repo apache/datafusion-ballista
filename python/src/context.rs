@@ -25,31 +25,69 @@ use pyo3::prelude::*;
 
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::datasource::datasource::TableProvider;
 use datafusion::datasource::MemTable;
-use datafusion::execution::context::ExecutionContext;
-use datafusion::prelude::CsvReadOptions;
+use datafusion::execution::context::{SessionConfig, SessionContext};
+use datafusion::prelude::{CsvReadOptions, ParquetReadOptions};
 
-use crate::catalog::PyCatalog;
+use crate::catalog::{PyCatalog, PyTable};
 use crate::dataframe::PyDataFrame;
+use crate::dataset::Dataset;
 use crate::errors::DataFusionError;
 use crate::udf::PyScalarUDF;
 use crate::utils::wait_for_future;
 
-/// `PyExecutionContext` is able to plan and execute DataFusion plans.
+/// `PySessionContext` is able to plan and execute DataFusion plans.
 /// It has a powerful optimizer, a physical planner for local execution, and a
 /// multi-threaded execution engine to perform the execution.
-#[pyclass(name = "ExecutionContext", module = "datafusion", subclass, unsendable)]
-pub(crate) struct PyExecutionContext {
-    ctx: ExecutionContext,
+#[pyclass(name = "SessionContext", module = "ballista", subclass, unsendable)]
+pub(crate) struct PySessionContext {
+    ctx: SessionContext,
 }
 
 #[pymethods]
-impl PyExecutionContext {
-    // TODO(kszucs): should expose the configuration options as keyword arguments
+impl PySessionContext {
+    #[allow(clippy::too_many_arguments)]
+    #[args(
+        default_catalog = "\"datafusion\"",
+        default_schema = "\"public\"",
+        create_default_catalog_and_schema = "true",
+        information_schema = "false",
+        repartition_joins = "true",
+        repartition_aggregations = "true",
+        repartition_windows = "true",
+        parquet_pruning = "true",
+        target_partitions = "None"
+    )]
     #[new]
-    fn new() -> Self {
-        PyExecutionContext {
-            ctx: ExecutionContext::new(),
+    fn new(
+        default_catalog: &str,
+        default_schema: &str,
+        create_default_catalog_and_schema: bool,
+        information_schema: bool,
+        repartition_joins: bool,
+        repartition_aggregations: bool,
+        repartition_windows: bool,
+        parquet_pruning: bool,
+        target_partitions: Option<usize>,
+        // TODO: config_options
+    ) -> Self {
+        let cfg = SessionConfig::new()
+            .create_default_catalog_and_schema(create_default_catalog_and_schema)
+            .with_default_catalog_and_schema(default_catalog, default_schema)
+            .with_information_schema(information_schema)
+            .with_repartition_joins(repartition_joins)
+            .with_repartition_aggregations(repartition_aggregations)
+            .with_repartition_windows(repartition_windows)
+            .with_parquet_pruning(parquet_pruning);
+
+        let cfg_full = match target_partitions {
+            None => cfg,
+            Some(x) => cfg.with_target_partitions(x),
+        };
+
+        PySessionContext {
+            ctx: SessionContext::with_config(cfg_full),
         }
     }
 
@@ -70,7 +108,7 @@ impl PyExecutionContext {
         // generate a random (unique) name for this table
         // table name cannot start with numeric digit
         let name = "c".to_owned()
-            + &Uuid::new_v4()
+            + Uuid::new_v4()
                 .to_simple()
                 .encode_lower(&mut Uuid::encode_buffer());
 
@@ -81,6 +119,20 @@ impl PyExecutionContext {
 
         let df = PyDataFrame::new(table);
         Ok(df)
+    }
+
+    fn register_table(&mut self, name: &str, table: &PyTable) -> PyResult<()> {
+        self.ctx
+            .register_table(name, table.table())
+            .map_err(DataFusionError::from)?;
+        Ok(())
+    }
+
+    fn deregister_table(&mut self, name: &str) -> PyResult<()> {
+        self.ctx
+            .deregister_table(name)
+            .map_err(DataFusionError::from)?;
+        Ok(())
     }
 
     fn register_record_batches(
@@ -96,12 +148,31 @@ impl PyExecutionContext {
         Ok(())
     }
 
-    fn register_parquet(&mut self, name: &str, path: &str, py: Python) -> PyResult<()> {
-        let result = self.ctx.register_parquet(name, path);
+    #[allow(clippy::too_many_arguments)]
+    #[args(
+        table_partition_cols = "vec![]",
+        parquet_pruning = "true",
+        file_extension = "\".parquet\""
+    )]
+    fn register_parquet(
+        &mut self,
+        name: &str,
+        path: &str,
+        table_partition_cols: Vec<String>,
+        parquet_pruning: bool,
+        file_extension: &str,
+        py: Python,
+    ) -> PyResult<()> {
+        let mut options = ParquetReadOptions::default()
+            .table_partition_cols(table_partition_cols)
+            .parquet_pruning(parquet_pruning);
+        options.file_extension = file_extension;
+        let result = self.ctx.register_parquet(name, path, options);
         wait_for_future(py, result).map_err(DataFusionError::from)?;
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[args(
         schema = "None",
         has_header = "true",
@@ -122,7 +193,7 @@ impl PyExecutionContext {
     ) -> PyResult<()> {
         let path = path
             .to_str()
-            .ok_or(PyValueError::new_err("Unable to convert path to a string"))?;
+            .ok_or_else(|| PyValueError::new_err("Unable to convert path to a string"))?;
         let delimiter = delimiter.as_bytes();
         if delimiter.len() != 1 {
             return Err(PyValueError::new_err(
@@ -139,6 +210,17 @@ impl PyExecutionContext {
 
         let result = self.ctx.register_csv(name, path, options);
         wait_for_future(py, result).map_err(DataFusionError::from)?;
+
+        Ok(())
+    }
+
+    // Registers a PyArrow.Dataset
+    fn register_dataset(&self, name: &str, dataset: &PyAny, py: Python) -> PyResult<()> {
+        let table: Arc<dyn TableProvider> = Arc::new(Dataset::new(dataset, py)?);
+
+        self.ctx
+            .register_table(name, table)
+            .map_err(DataFusionError::from)?;
 
         Ok(())
     }
@@ -160,6 +242,7 @@ impl PyExecutionContext {
     }
 
     fn tables(&self) -> HashSet<String> {
+        #[allow(deprecated)]
         self.ctx.tables().unwrap()
     }
 

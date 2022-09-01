@@ -17,6 +17,7 @@
 
 use ballista_core::execution_plans::ShuffleWriterExec;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
+use log::info;
 use std::sync::Arc;
 
 /// `ExecutorMetricsCollector` records metrics for `ShuffleWriteExec`
@@ -48,7 +49,7 @@ impl ExecutorMetricsCollector for LoggingMetricsCollector {
         partition: usize,
         plan: Arc<ShuffleWriterExec>,
     ) {
-        println!(
+        info!(
             "=== [{}/{}/{}] Physical plan with metrics ===\n{}\n",
             job_id,
             stage_id,

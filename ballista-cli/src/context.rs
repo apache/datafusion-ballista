@@ -50,11 +50,8 @@ impl Context {
     }
 }
 
-// implement wrappers around the BallistaContext to support running without ballista
-
-#[cfg(feature = "ballista")]
 pub struct BallistaContext(ballista::context::BallistaContext);
-#[cfg(feature = "ballista")]
+
 impl BallistaContext {
     pub async fn try_new(host: &str, port: u16) -> Result<Self> {
         use ballista::context::BallistaContext;
@@ -71,20 +68,5 @@ impl BallistaContext {
     }
     pub async fn sql(&mut self, sql: &str) -> Result<Arc<DataFrame>> {
         self.0.sql(sql).await
-    }
-}
-
-#[cfg(not(feature = "ballista"))]
-pub struct BallistaContext();
-#[cfg(not(feature = "ballista"))]
-impl BallistaContext {
-    pub async fn try_new(_host: &str, _port: u16) -> Result<Self> {
-        Err(DataFusionError::NotImplemented(
-            "Remote execution not supported. Compile with feature 'ballista' to enable"
-                .to_string(),
-        ))
-    }
-    pub async fn sql(&mut self, _sql: &str) -> Result<Arc<DataFrame>> {
-        unreachable!()
     }
 }

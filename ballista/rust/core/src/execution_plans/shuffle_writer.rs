@@ -354,11 +354,11 @@ impl ExecutionPlan for ShuffleWriterExec {
                 let mut num_bytes_builder = UInt64Builder::new(num_writers);
 
                 for loc in &part_loc {
-                    path_builder.append_value(loc.path.clone())?;
-                    partition_builder.append_value(loc.partition_id as u32)?;
-                    num_rows_builder.append_value(loc.num_rows)?;
-                    num_batches_builder.append_value(loc.num_batches)?;
-                    num_bytes_builder.append_value(loc.num_bytes)?;
+                    path_builder.append_value(loc.path.clone());
+                    partition_builder.append_value(loc.partition_id as u32);
+                    num_rows_builder.append_value(loc.num_rows);
+                    num_batches_builder.append_value(loc.num_batches);
+                    num_bytes_builder.append_value(loc.num_bytes);
                 }
 
                 // build arrays
@@ -374,7 +374,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     field_builders,
                 );
                 for _ in 0..num_writers {
-                    stats_builder.append(true)?;
+                    stats_builder.append(true);
                 }
                 let stats = Arc::new(stats_builder.finish());
 

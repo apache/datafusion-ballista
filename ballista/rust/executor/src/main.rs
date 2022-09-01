@@ -241,7 +241,7 @@ async fn main() -> Result<()> {
         },
         _ = signal::ctrl_c() => {
              // sometimes OS can not log ??
-            let msg = format!("executor received ctrl-c event.");
+            let msg = "executor received ctrl-c event.".to_string();
              info!("{:?}", msg);
             (true, msg)
         },

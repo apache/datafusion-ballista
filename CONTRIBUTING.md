@@ -263,5 +263,5 @@ $ prettier --version
 After you've confirmed your prettier version, you can format all the `.md` files:
 
 ```bash
-prettier -w README.md {ballista,dev,docs,examples}/**/*.md
+prettier -w README.md {ballista,ballista-cli,benchmarks,dev,docs,examples,python}/**/*.md
 ```

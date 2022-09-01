@@ -53,6 +53,12 @@ default = "std::string::String::from(\"0.0.0.0\")"
 doc = "Local host name or IP address to bind to. Default: 0.0.0.0"
 
 [[param]]
+name = "external_host"
+type = "String"
+doc = "Host name or IP address so that executors can connect to this scheduler. Default: localhost"
+default = "std::string::String::from(\"localhost\")"
+
+[[param]]
 abbr = "p"
 name = "bind_port"
 type = "u16"

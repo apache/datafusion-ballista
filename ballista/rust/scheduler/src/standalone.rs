@@ -35,8 +35,8 @@ pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
 
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
         SchedulerServer::new(
+            "localhost:50050".to_owned(),
             Arc::new(client),
-            "ballista".to_string(),
             BallistaCodec::default(),
         );
     scheduler_server.init().await?;
