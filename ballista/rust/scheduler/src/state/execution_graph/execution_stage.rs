@@ -201,6 +201,22 @@ impl UnresolvedStage {
         }
     }
 
+    pub(super) fn new_with_inputs(
+        stage_id: usize,
+        plan: Arc<dyn ExecutionPlan>,
+        output_partitioning: Option<Partitioning>,
+        output_links: Vec<usize>,
+        inputs: HashMap<usize, StageOutput>,
+    ) -> Self {
+        Self {
+            stage_id,
+            output_partitioning,
+            output_links,
+            inputs,
+            plan,
+        }
+    }
+
     /// Add input partitions published from an input stage.
     pub(super) fn add_input_partitions(
         &mut self,
@@ -492,15 +508,14 @@ impl RunningStage {
 
     /// Change to the unresolved state
     pub(super) fn to_unresolved(&self) -> Result<UnresolvedStage> {
-        let new_plan =
-            crate::planner::rollback_resolved_shuffles(self.stage_id, self.plan.clone())?;
-        let child_stage_ids = self.inputs.keys().copied().collect();
-        let unresolved = UnresolvedStage::new(
+        let new_plan = crate::planner::rollback_resolved_shuffles(self.plan.clone())?;
+
+        let unresolved = UnresolvedStage::new_with_inputs(
             self.stage_id,
             new_plan,
             self.output_partitioning.clone(),
             self.output_links.clone(),
-            child_stage_ids,
+            self.inputs.clone(),
         );
         Ok(unresolved)
     }

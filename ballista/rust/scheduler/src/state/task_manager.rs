@@ -396,7 +396,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             for (job_id, graph) in job_cache.iter() {
                 let mut graph = graph.write().await;
                 let reset = graph.reset_stages(executor_id)?;
-                if reset {
+                if !reset.is_empty() {
                     updated_graphs.insert(job_id.to_owned(), graph.clone());
                 }
             }

@@ -247,7 +247,6 @@ pub fn remove_unresolved_shuffles(
 }
 
 pub fn rollback_resolved_shuffles(
-    stage_id: usize,
     stage: Arc<dyn ExecutionPlan>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let mut new_children: Vec<Arc<dyn ExecutionPlan>> = vec![];
@@ -256,6 +255,7 @@ pub fn rollback_resolved_shuffles(
             let partition_locations = &shuffle_reader.partition;
             let output_partition_count = partition_locations.len();
             let input_partition_count = partition_locations[0].len();
+            let stage_id = partition_locations[0][0].partition_id.stage_id;
 
             let unresolved_shuffle = Arc::new(UnresolvedShuffleExec::new(
                 stage_id,
@@ -265,7 +265,7 @@ pub fn rollback_resolved_shuffles(
             ));
             new_children.push(unresolved_shuffle);
         } else {
-            new_children.push(rollback_resolved_shuffles(stage_id, child)?);
+            new_children.push(rollback_resolved_shuffles(child)?);
         }
     }
     Ok(with_new_children_if_necessary(stage, new_children)?)
