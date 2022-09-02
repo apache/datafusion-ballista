@@ -133,7 +133,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         &self,
         executor: &ExecutorMetadata,
         task_status: Vec<TaskStatus>,
-    ) -> Result<(Vec<QueryStageSchedulerEvent>, Vec<ExecutorReservation>)> {
+    ) -> Result<Vec<QueryStageSchedulerEvent>> {
         let mut job_updates: HashMap<String, Vec<TaskStatus>> = HashMap::new();
         for status in task_status {
             debug!("Task Update\n{:?}", status);
@@ -147,12 +147,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         }
 
         let mut events: Vec<QueryStageSchedulerEvent> = vec![];
-        let mut total_num_tasks = 0;
         for (job_id, statuses) in job_updates {
             let num_tasks = statuses.len();
             debug!("Updating {} tasks in job {}", num_tasks, job_id);
-
-            total_num_tasks += num_tasks;
 
             let graph = self.get_active_execution_graph(&job_id).await;
             let job_event = if let Some(graph) = graph {
@@ -169,11 +166,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             }
         }
 
-        let reservation = (0..total_num_tasks)
-            .into_iter()
-            .map(|_| ExecutorReservation::new_free(executor.id.to_owned()))
-            .collect();
-        Ok((events, reservation))
+        Ok(events)
     }
 
     /// Take a list of executor reservations and fill them with tasks that are ready
@@ -424,41 +417,23 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         &self,
         executor: &ExecutorMetadata,
         task: Task,
+        executor_manager: &ExecutorManager,
     ) -> Result<()> {
         info!("Launching task {:?} on executor {:?}", task, executor.id);
         let task_definition = self.prepare_task_definition(task)?;
-        let mut clients = self.clients.write().await;
-        if let Some(client) = clients.get_mut(&executor.id) {
-            client
-                .launch_task(protobuf::LaunchTaskParams {
-                    task: vec![task_definition],
-                })
-                .await
-                .map_err(|e| {
-                    BallistaError::Internal(format!(
-                        "Failed to connect to executor {}: {:?}",
-                        executor.id, e
-                    ))
-                })?;
-        } else {
-            let executor_id = executor.id.clone();
-            let executor_url = format!("http://{}:{}", executor.host, executor.grpc_port);
-            let connection =
-                ballista_core::utils::create_grpc_client_connection(executor_url).await?;
-            let mut client = ExecutorGrpcClient::new(connection);
-            clients.insert(executor_id, client.clone());
-            client
-                .launch_task(protobuf::LaunchTaskParams {
-                    task: vec![task_definition],
-                })
-                .await
-                .map_err(|e| {
-                    BallistaError::Internal(format!(
-                        "Failed to connect to executor {}: {:?}",
-                        executor.id, e
-                    ))
-                })?;
-        }
+        let mut client = executor_manager.get_client(&executor.id).await?;
+        client
+            .launch_task(protobuf::LaunchTaskParams {
+                tasks: vec![task_definition],
+                scheduler_id: self.scheduler_id.clone(),
+            })
+            .await
+            .map_err(|e| {
+                BallistaError::Internal(format!(
+                    "Failed to connect to executor {}: {:?}",
+                    executor.id, e
+                ))
+            })?;
         Ok(())
     }
 
@@ -468,6 +443,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         &self,
         _executor: &ExecutorMetadata,
         _task: Task,
+        _executor_manager: &ExecutorManager,
     ) -> Result<()> {
         Ok(())
     }

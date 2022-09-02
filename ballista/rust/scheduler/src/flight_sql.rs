@@ -35,7 +35,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tonic::{Response, Status, Streaming};
 
-use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::SchedulerServer;
 use arrow_flight::SchemaAsIpc;
 use ballista_core::config::BallistaConfig;
@@ -243,22 +242,8 @@ impl FlightSqlServiceImpl {
         plan: &LogicalPlan,
     ) -> Result<String, Status> {
         let job_id = self.server.state.task_manager.generate_job_id();
-        let query_stage_event_sender = self
-            .server
-            .query_stage_event_loop
-            .get_sender()
-            .map_err(|e| {
-                Status::internal(format!(
-                    "Could not get query stage event sender due to: {}",
-                    e
-                ))
-            })?;
-        query_stage_event_sender
-            .post_event(QueryStageSchedulerEvent::JobQueued {
-                job_id: job_id.clone(),
-                session_ctx: ctx,
-                plan: Box::new(plan.clone()),
-            })
+        self.server
+            .submit_job(&job_id, ctx, plan)
             .await
             .map_err(|e| {
                 let msg =
