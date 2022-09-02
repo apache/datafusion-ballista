@@ -16,24 +16,28 @@
 // under the License.
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ballista_core::config::TaskSchedulingPolicy;
 use ballista_core::error::Result;
-use ballista_core::event_loop::EventLoop;
-use ballista_core::serde::protobuf::TaskStatus;
+use ballista_core::event_loop::{EventLoop, EventSender};
+use ballista_core::serde::protobuf::{
+    executor_status, ExecutorStatus, StopExecutorParams, TaskStatus,
+};
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use datafusion::execution::context::{default_session_builder, SessionState};
 use datafusion::logical_plan::LogicalPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 
-use log::warn;
+use log::{error, warn};
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
 use crate::state::backend::StateBackendClient;
-use crate::state::executor_manager::ExecutorReservation;
+use crate::state::executor_manager::{
+    ExecutorManager, ExecutorReservation, DEFAULT_EXECUTOR_TIMEOUT_SECONDS,
+};
 use crate::state::SchedulerState;
 
 // include the generated protobuf source as a submodule
@@ -129,6 +133,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     pub async fn init(&mut self) -> Result<()> {
         self.state.init().await?;
         self.query_stage_event_loop.start()?;
+        self.expire_dead_executors()?;
 
         Ok(())
     }
@@ -182,6 +187,93 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::ReservationOffering(reservations))
             .await
+    }
+
+    /// Spawn an async task which periodically check the active executors' status and
+    /// expire the dead executors
+    fn expire_dead_executors(&self) -> Result<()> {
+        let state = self.state.clone();
+        let event_sender = self.query_stage_event_loop.get_sender()?;
+        tokio::task::spawn(async move {
+            loop {
+                let dead_executors = state.executor_manager.get_dead_executors();
+                for mut dead in dead_executors {
+                    dead.status = Some(ExecutorStatus {
+                        status: Some(executor_status::Status::Dead("".to_string())),
+                    });
+
+                    let executor_id = dead.executor_id.clone();
+                    let executor_manager = state.executor_manager.clone();
+                    let stop_reason = format!(
+                        "Executor heartbeat timed out after {}s",
+                        DEFAULT_EXECUTOR_TIMEOUT_SECONDS
+                    );
+                    let sender_clone = event_sender.clone();
+                    Self::remove_executor(
+                        executor_manager,
+                        sender_clone,
+                        &executor_id,
+                        Some(stop_reason.clone()),
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        let msg = format!(
+                            "Error to remove executor in Scheduler due to {:?}",
+                            e
+                        );
+                        error!("{}", msg);
+                    });
+
+                    match state.executor_manager.get_client(&executor_id).await {
+                        Ok(mut client) => {
+                            tokio::task::spawn(async move {
+                                match client
+                                    .stop_executor(StopExecutorParams {
+                                        reason: stop_reason,
+                                        force: true,
+                                    })
+                                    .await
+                                {
+                                    Err(error) => {
+                                        warn!(
+                                            "Failed to send stop_executor rpc due to, {}",
+                                            error
+                                        );
+                                    }
+                                    Ok(_value) => {}
+                                }
+                            });
+                        }
+                        Err(_) => {
+                            warn!("Executor is already dead, failed to connect to executor {}", executor_id);
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(DEFAULT_EXECUTOR_TIMEOUT_SECONDS))
+                    .await;
+            }
+        });
+        Ok(())
+    }
+
+    pub(crate) async fn remove_executor(
+        executor_manager: ExecutorManager,
+        event_sender: EventSender<QueryStageSchedulerEvent>,
+        executor_id: &str,
+        reason: Option<String>,
+    ) -> Result<()> {
+        // Update the executor manager immediately here
+        executor_manager
+            .remove_executor(executor_id, reason.clone())
+            .await?;
+
+        event_sender
+            .post_event(QueryStageSchedulerEvent::ExecutorLost(
+                executor_id.to_owned(),
+                reason,
+            ))
+            .await?;
+        Ok(())
     }
 }
 

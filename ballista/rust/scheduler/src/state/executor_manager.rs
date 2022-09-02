@@ -30,7 +30,7 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::utils::create_grpc_client_connection;
 use futures::StreamExt;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -485,6 +485,37 @@ impl ExecutorManager {
             .collect()
     }
 
+    /// Return a list of dead/expired executors
+    pub(crate) fn get_dead_executors(&self) -> Vec<ExecutorHeartbeat> {
+        let now_epoch_ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards");
+        let last_seen_threshold = now_epoch_ts
+            .checked_sub(Duration::from_secs(DEFAULT_EXECUTOR_TIMEOUT_SECONDS))
+            .unwrap_or_else(|| Duration::from_secs(0))
+            .as_secs();
+
+        let lock = self.executors_heartbeat.upgradable_read();
+        let dead_executors = lock
+            .iter()
+            .filter_map(|(_exec, heartbeat)| {
+                (heartbeat.timestamp <= last_seen_threshold).then(|| heartbeat.clone())
+            })
+            .collect::<Vec<_>>();
+
+        if !dead_executors.is_empty() {
+            let mut lock = RwLockUpgradableReadGuard::upgrade(lock);
+            for dead in &dead_executors {
+                warn!(
+                    "Expired dead executor {:?} with no recent heartbeats within: {:?}s",
+                    &dead.executor_id, DEFAULT_EXECUTOR_TIMEOUT_SECONDS
+                );
+                lock.remove(&dead.executor_id);
+            }
+        }
+        dead_executors
+    }
+
     #[allow(dead_code)]
     fn get_alive_executors_within_one_minute(&self) -> HashSet<String> {
         let now_epoch_ts = SystemTime::now()
@@ -550,134 +581,7 @@ impl ExecutorHeartbeatListener {
                 }
             }
         });
-
-        self.expire_dead()?;
         Ok(())
-    }
-
-    /// Spawn an async task which periodicially check the active executors' status and expire the dead executors
-    fn expire_dead(&self) -> Result<()> {
-        let heart_beat = self.executors_heartbeat.clone();
-        let state = self.state.clone();
-        tokio::task::spawn(async move {
-            loop {
-                let dead_executors = Self::check_dead_executors(heart_beat.clone());
-                for mut dead in dead_executors {
-                    dead.status = Some(ExecutorStatus {
-                        status: Some(executor_status::Status::Dead("".to_string())),
-                    });
-
-                    let executor_id = dead.executor_id.clone();
-                    let encoded_heartbeat = match encode_protobuf(&dead) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            error!("Encode heartbeat error, {}", error);
-                            continue;
-                        }
-                    };
-
-                    state
-                        .put(Keyspace::Heartbeats, executor_id.clone(), encoded_heartbeat)
-                        .await
-                        .unwrap_or_else(|e| {
-                            error!("Fail to persist heartbeat due to {:?}", e);
-                        });
-
-                    let executor_meta =
-                        match state.get(Keyspace::Executors, &executor_id).await {
-                            Ok(value) => value,
-                            Err(error) => {
-                                error!("Get Executor meta error, {}", error);
-                                continue;
-                            }
-                        };
-                    let decoded_executor_meta = match decode_into::<
-                        protobuf::ExecutorMetadata,
-                        ExecutorMetadata,
-                    >(&executor_meta)
-                    {
-                        Ok(value) => value,
-                        Err(error) => {
-                            warn!("Decode Executor meta error, {}", error);
-                            continue;
-                        }
-                    };
-
-                    tokio::task::spawn(async move {
-                        let executor_url = format!(
-                            "http://{}:{}",
-                            decoded_executor_meta.host, decoded_executor_meta.grpc_port
-                        );
-                        let connection =
-                            ballista_core::utils::create_grpc_client_connection(
-                                executor_url,
-                            )
-                            .await;
-                        if let Ok(channel) = connection {
-                            let mut client = ExecutorGrpcClient::new(channel);
-                            let stop_reason = format!(
-                                "Executor heartbeat timed out after {}s",
-                                DEFAULT_EXECUTOR_TIMEOUT_SECONDS
-                            );
-
-                            match client
-                                .stop_executor(protobuf::StopExecutorParams {
-                                    reason: stop_reason,
-                                    force: true,
-                                })
-                                .await
-                            {
-                                Err(error) => {
-                                    error!(
-                                        "Failed to send stop_executor rpc due to, {}",
-                                        error
-                                    );
-                                }
-                                Ok(_value) => {}
-                            }
-                        } else {
-                            info!("Executor is already dead, failed to connect to executor {}", executor_id);
-                        }
-                    });
-                }
-                tokio::time::sleep(Duration::from_secs(DEFAULT_EXECUTOR_TIMEOUT_SECONDS))
-                    .await;
-            }
-        });
-        Ok(())
-    }
-
-    // Return a list of dead/expired executors
-    fn check_dead_executors(
-        heartbeat: Arc<RwLock<HashMap<String, protobuf::ExecutorHeartbeat>>>,
-    ) -> Vec<ExecutorHeartbeat> {
-        let now_epoch_ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards");
-        let last_seen_threshold = now_epoch_ts
-            .checked_sub(Duration::from_secs(DEFAULT_EXECUTOR_TIMEOUT_SECONDS))
-            .unwrap_or_else(|| Duration::from_secs(0))
-            .as_secs();
-
-        let lock = heartbeat.upgradable_read();
-        let dead_executors = lock
-            .iter()
-            .filter_map(|(_exec, heartbeat)| {
-                (heartbeat.timestamp <= last_seen_threshold).then(|| heartbeat.clone())
-            })
-            .collect::<Vec<_>>();
-
-        if !dead_executors.is_empty() {
-            let mut lock = RwLockUpgradableReadGuard::upgrade(lock);
-            for dead in &dead_executors {
-                warn!(
-                    "Expired dead executor {:?} with no recent heartbeats within: {:?}s",
-                    &dead.executor_id, DEFAULT_EXECUTOR_TIMEOUT_SECONDS
-                );
-                lock.remove(&dead.executor_id);
-            }
-        }
-        dead_executors
     }
 }
 

@@ -39,4 +39,5 @@ pub enum QueryStageSchedulerEvent {
     JobUpdated(String),
     TaskUpdating(String, Vec<TaskStatus>),
     ReservationOffering(Vec<ExecutorReservation>),
+    ExecutorLost(String, Option<String>),
 }

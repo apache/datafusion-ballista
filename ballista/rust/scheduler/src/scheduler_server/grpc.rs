@@ -506,29 +506,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             "Received executor stopped request from Executor {} with reason '{}'",
             executor_id, reason
         );
-        self.state
-            .executor_manager
-            .remove_executor(&executor_id, Some(reason))
+
+        let executor_manager = self.state.executor_manager.clone();
+        let event_sender = self.query_stage_event_loop.get_sender().map_err(|e| {
+            let msg = format!("Get query stage event loop error due to {:?}", e);
+            error!("{}", msg);
+            Status::internal(msg)
+        })?;
+        Self::remove_executor(executor_manager, event_sender, &executor_id, Some(reason))
             .await
             .map_err(|e| {
-                let msg = format!("ExecutorManager could not remove executor: {}", e);
+                let msg = format!("Error to remove executor in Scheduler due to {:?}", e);
                 error!("{}", msg);
                 Status::internal(msg)
             })?;
-
-        let state = self.state.clone();
-        // TODO move the logic to event loop
-        tokio::spawn(async move {
-            state
-                .task_manager
-                .executor_lost(&executor_id)
-                .await
-                .unwrap_or_else(|e| {
-                    let msg =
-                        format!("TaskManager could not handle executor lost: {}", e);
-                    error!("{}", msg);
-                });
-        });
 
         Ok(Response::new(ExecutorStoppedResult {}))
     }

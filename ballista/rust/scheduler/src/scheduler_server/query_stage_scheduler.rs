@@ -183,6 +183,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .await?;
                 }
             }
+            QueryStageSchedulerEvent::ExecutorLost(executor_id, _) => {
+                self.state
+                    .task_manager
+                    .executor_lost(&executor_id)
+                    .await
+                    .unwrap_or_else(|e| {
+                        let msg = format!(
+                            "TaskManager error to handle executor {} lost: {}",
+                            executor_id, e
+                        );
+                        error!("{}", msg);
+                    });
+            }
         }
 
         Ok(())
