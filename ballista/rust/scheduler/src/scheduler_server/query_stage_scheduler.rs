@@ -166,7 +166,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     }
                     Err(e) => {
                         error!(
-                            "Failed to update {} task statuses for executor {}: {:?}",
+                            "Failed to update {} task statuses for Executor {}: {:?}",
                             num_status, executor_id, e
                         );
                         // TODO error handling
@@ -190,7 +190,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .await
                     .unwrap_or_else(|e| {
                         let msg = format!(
-                            "TaskManager error to handle executor {} lost: {}",
+                            "TaskManager error to handle Executor {} lost: {}",
                             executor_id, e
                         );
                         error!("{}", msg);

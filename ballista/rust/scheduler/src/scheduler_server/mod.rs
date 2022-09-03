@@ -21,9 +21,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ballista_core::config::TaskSchedulingPolicy;
 use ballista_core::error::Result;
 use ballista_core::event_loop::{EventLoop, EventSender};
-use ballista_core::serde::protobuf::{
-    executor_status, ExecutorStatus, StopExecutorParams, TaskStatus,
-};
+use ballista_core::serde::protobuf::{StopExecutorParams, TaskStatus};
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use datafusion::execution::context::{default_session_builder, SessionState};
 use datafusion::logical_plan::LogicalPlan;
@@ -197,15 +195,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         tokio::task::spawn(async move {
             loop {
                 let dead_executors = state.executor_manager.get_dead_executors();
-                for mut dead in dead_executors {
-                    dead.status = Some(ExecutorStatus {
-                        status: Some(executor_status::Status::Dead("".to_string())),
-                    });
-
+                for dead in dead_executors {
                     let executor_id = dead.executor_id.clone();
                     let executor_manager = state.executor_manager.clone();
                     let stop_reason = format!(
-                        "Executor heartbeat timed out after {}s",
+                        "Executor {} heartbeat timed out after {}s",
+                        executor_id.clone(),
                         DEFAULT_EXECUTOR_TIMEOUT_SECONDS
                     );
                     let sender_clone = event_sender.clone();
@@ -218,7 +213,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                     .await
                     .unwrap_or_else(|e| {
                         let msg = format!(
-                            "Error to remove executor in Scheduler due to {:?}",
+                            "Error to remove Executor in Scheduler due to {:?}",
                             e
                         );
                         error!("{}", msg);
@@ -245,7 +240,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                             });
                         }
                         Err(_) => {
-                            warn!("Executor is already dead, failed to connect to executor {}", executor_id);
+                            warn!("Executor is already dead, failed to connect to Executor {}", executor_id);
                         }
                     }
                 }

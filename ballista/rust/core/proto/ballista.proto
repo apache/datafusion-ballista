@@ -859,7 +859,7 @@ service SchedulerGrpc {
 
   rpc GetJobStatus (GetJobStatusParams) returns (GetJobStatusResult) {}
 
-  // Used by Executor to tell scheduler it is stopped.
+  // Used by Executor to tell Scheduler it is stopped.
   rpc ExecutorStopped (ExecutorStoppedParams) returns (ExecutorStoppedResult) {}
 
   rpc CancelJob (CancelJobParams) returns (CancelJobResult) {}

@@ -515,7 +515,7 @@ impl ExecutionGraph {
         let mut resubmit_inputs: HashSet<usize> = HashSet::new();
         let mut empty_inputs: HashMap<usize, StageOutput> = HashMap::new();
 
-        // check the the unresolved, resolved and running stages
+        // check the unresolved, resolved and running stages
         self.stages
             .iter_mut()
             .for_each(|(stage_id, stage)| {
@@ -592,7 +592,7 @@ impl ExecutionGraph {
                 }
             });
 
-        // check the reset the complete stages
+        // check and reset the complete stages
         if !resubmit_inputs.is_empty() {
             self.stages
                 .iter_mut()
