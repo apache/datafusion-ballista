@@ -366,6 +366,20 @@ impl ResolvedStage {
         )
     }
 
+    /// Change to the unresolved state
+    pub(super) fn to_unresolved(&self) -> Result<UnresolvedStage> {
+        let new_plan = crate::planner::rollback_resolved_shuffles(self.plan.clone())?;
+
+        let unresolved = UnresolvedStage::new_with_inputs(
+            self.stage_id,
+            new_plan,
+            self.output_partitioning.clone(),
+            self.output_links.clone(),
+            self.inputs.clone(),
+        );
+        Ok(unresolved)
+    }
+
     pub(super) fn decode<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
         stage: protobuf::ResolvedStage,
         codec: &BallistaCodec<T, U>,

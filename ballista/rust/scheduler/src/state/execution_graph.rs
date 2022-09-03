@@ -45,7 +45,8 @@ use crate::display::print_stage_metrics;
 use crate::planner::DistributedPlanner;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::execution_graph::execution_stage::{
-    CompletedStage, ExecutionStage, FailedStage, ResolvedStage, UnresolvedStage,
+    CompletedStage, ExecutionStage, FailedStage, ResolvedStage, StageOutput,
+    UnresolvedStage,
 };
 
 mod execution_stage;
@@ -490,7 +491,7 @@ impl ExecutionGraph {
     }
 
     /// Reset running and completed stages on a given executor
-    /// This will first check the running stages and reset the running tasks and completed tasks.
+    /// This will first check the unresolved/resolved/running stages and reset the running tasks and completed tasks.
     /// Then it will check the completed stage and whether there are running parent stages need to read shuffle from it.
     /// If yes, reset the complete tasks and roll back the resolved shuffle recursively.
     ///
@@ -512,32 +513,37 @@ impl ExecutionGraph {
         let job_id = self.job_id.clone();
         let mut stage_events = vec![];
         let mut resubmit_inputs: HashSet<usize> = HashSet::new();
+        let mut empty_inputs: HashMap<usize, StageOutput> = HashMap::new();
 
-        // check the reset the running stages
+        // check the the unresolved, resolved and running stages
         self.stages
             .iter_mut()
-            .filter_map(|(_stage_id, stage)| {
-                if let ExecutionStage::Running(running) = stage {
-                    Some(running)
-                }
-                else {
-                    None
-                }
-              }
-            )
-            .for_each(|stage| {
-                let reset = stage.reset_tasks(executor_id);
-                if reset > 0 {
-                    warn!(
+            .for_each(|(stage_id, stage)| {
+                let stage_inputs = match stage {
+                    ExecutionStage::UnResolved(stage) => {
+                        &mut stage.inputs
+                    }
+                    ExecutionStage::Resolved(stage) => {
+                        &mut stage.inputs
+                    }
+                    ExecutionStage::Running(stage) => {
+                        let reset = stage.reset_tasks(executor_id);
+                        if reset > 0 {
+                            warn!(
                         "Reset {} tasks for running job/stage {}/{} on lost Executor {}",
-                        reset, job_id, stage.stage_id, executor_id
-                    );
-                    reset_stage.insert(stage.stage_id);
-                }
+                        reset, job_id, stage_id, executor_id
+                        );
+                            reset_stage.insert(*stage_id);
+                        }
+                        &mut stage.inputs
+                    }
+                    _ => &mut empty_inputs
+                };
+
                 // For each stage input, check whether there are input locations match that executor
-                // and calculate the resubmit input stages.
+                // and calculate the resubmit input stages if the input stages are completed.
                 let mut rollback_stage = false;
-                stage.inputs.iter_mut().for_each(|(input_stage_id, stage_output)| {
+                stage_inputs.iter_mut().for_each(|(input_stage_id, stage_output)| {
                     let mut match_found = false;
                     stage_output.partition_locations.iter_mut().for_each(
                         |(_partition, locs)| {
@@ -566,11 +572,23 @@ impl ExecutionGraph {
                 });
 
                 if rollback_stage {
-                    stage_events.push(StageEvent::RollBackRunningStage(stage.stage_id));
-                    warn!(
-                        "Roll back running job/stage {}/{} and change ShuffleReaderExec back to UnresolvedShuffleExec",
-                        job_id, stage.stage_id);
-                    reset_stage.insert(stage.stage_id);
+                    match stage {
+                        ExecutionStage::Resolved(_) => {
+                            stage_events.push(StageEvent::RollBackResolvedStage(*stage_id));
+                            warn!(
+                            "Roll back resolved job/stage {}/{} and change ShuffleReaderExec back to UnresolvedShuffleExec",
+                            job_id, stage_id);
+                            reset_stage.insert(*stage_id);
+                        },
+                        ExecutionStage::Running(_) => {
+                            stage_events.push(StageEvent::RollBackRunningStage(*stage_id));
+                            warn!(
+                            "Roll back running job/stage {}/{} and change ShuffleReaderExec back to UnresolvedShuffleExec",
+                            job_id, stage_id);
+                            reset_stage.insert(*stage_id);
+                        },
+                        _ => {},
+                    }
                 }
             });
 
@@ -625,6 +643,9 @@ impl ExecutionGraph {
                 }
                 StageEvent::RollBackRunningStage(stage_id) => {
                     self.rollback_running_stage(stage_id)?;
+                }
+                StageEvent::RollBackResolvedStage(stage_id) => {
+                    self.rollback_resolved_stage(stage_id)?;
                 }
                 StageEvent::ReRunCompletedStage(stage_id) => {
                     self.rerun_completed_stage(stage_id);
@@ -714,6 +735,22 @@ impl ExecutionGraph {
         } else {
             warn!(
                 "Fail to find a running stage {}/{} to rollback",
+                self.job_id(),
+                stage_id
+            );
+            Ok(false)
+        }
+    }
+
+    /// Convert resolved stage to be unresolved
+    fn rollback_resolved_stage(&mut self, stage_id: usize) -> Result<bool> {
+        if let Some(ExecutionStage::Resolved(stage)) = self.stages.remove(&stage_id) {
+            self.stages
+                .insert(stage_id, ExecutionStage::UnResolved(stage.to_unresolved()?));
+            Ok(true)
+        } else {
+            warn!(
+                "Fail to find a resolved stage {}/{} to rollback",
                 self.job_id(),
                 stage_id
             );
@@ -1006,6 +1043,7 @@ pub enum StageEvent {
     StageCompleted(usize),
     StageFailed(usize, String),
     RollBackRunningStage(usize),
+    RollBackResolvedStage(usize),
     ReRunCompletedStage(usize),
 }
 
@@ -1149,7 +1187,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_reset_stage() -> Result<()> {
+    async fn test_reset_completed_stage() -> Result<()> {
         let executor1 = mock_executor("executor-id1".to_string());
         let executor2 = mock_executor("executor-id2".to_string());
         let mut join_graph = test_join_plan(4).await;
@@ -1190,6 +1228,48 @@ mod test {
         let reset = join_graph.reset_stages(&executor1.id)?;
 
         // Two stages were reset, 1 Running stage rollback to Unresolved and 1 Completed stage move to Running
+        assert_eq!(reset.len(), 2);
+        assert_eq!(join_graph.available_tasks(), 1);
+
+        drain_tasks(&mut join_graph)?;
+        assert!(join_graph.complete(), "Failed to complete join plan");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reset_resolved_stage() -> Result<()> {
+        let executor1 = mock_executor("executor-id1".to_string());
+        let executor2 = mock_executor("executor-id2".to_string());
+        let mut join_graph = test_join_plan(4).await;
+
+        assert_eq!(join_graph.stage_count(), 5);
+        assert_eq!(join_graph.available_tasks(), 0);
+
+        // Call revive to move the two leaf Resolved stages to Running
+        join_graph.revive();
+
+        assert_eq!(join_graph.stage_count(), 5);
+        assert_eq!(join_graph.available_tasks(), 2);
+
+        // Complete the first stage
+        if let Some(task) = join_graph.pop_next_task(&executor1.id)? {
+            let task_status = mock_completed_task(task, &executor1.id);
+            join_graph.update_task_status(&executor1, vec![task_status])?;
+        }
+
+        // Complete the second stage
+        if let Some(task) = join_graph.pop_next_task(&executor2.id)? {
+            let task_status = mock_completed_task(task, &executor2.id);
+            join_graph.update_task_status(&executor2, vec![task_status])?;
+        }
+
+        // There are 0 tasks pending schedule now
+        assert_eq!(join_graph.available_tasks(), 0);
+
+        let reset = join_graph.reset_stages(&executor1.id)?;
+
+        // Two stages were reset, 1 Resolved stage rollback to Unresolved and 1 Completed stage move to Running
         assert_eq!(reset.len(), 2);
         assert_eq!(join_graph.available_tasks(), 1);
 
