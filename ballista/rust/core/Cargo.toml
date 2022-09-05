@@ -41,20 +41,20 @@ simd = ["datafusion/simd"]
 [dependencies]
 ahash = { version = "0.8", default-features = false }
 
-arrow-flight = { version = "23.0.0", features = ["flight-sql-experimental"] }
+arrow-flight = { git = "https://github.com/apache/arrow-rs.git", rev = "4df1f3c62f6d089d8cf02892168b9179e4c8c6fd", features = ["flight-sql-experimental"] }
 async-trait = "0.1.41"
 chrono = { version = "0.4", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "06a4f79f02fcb6ea85303925b7c5a9b0231e3fee" }
+datafusion = { git = "https://github.com/spaceandtimelabs/arrow-datafusion.git", rev = "ec72b6292c83d767790c1eb54cf80e75caa5c3c9" }
 datafusion-objectstore-hdfs = { version = "0.1.0", optional = true }
-datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "06a4f79f02fcb6ea85303925b7c5a9b0231e3fee" }
+datafusion-proto = { git = "https://github.com/spaceandtimelabs/arrow-datafusion.git", rev = "ec72b6292c83d767790c1eb54cf80e75caa5c3c9" }
 futures = "0.3"
 hashbrown = "0.12"
 
 itertools = "0.10"
 libloading = "0.7.3"
 log = "0.4"
-object_store = "0.5.0"
+object_store = { git = "https://github.com/apache/arrow-rs.git", rev = "4df1f3c62f6d089d8cf02892168b9179e4c8c6fd" }
 once_cell = "1.9.0"
 
 parking_lot = "0.12"

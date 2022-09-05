@@ -33,8 +33,8 @@ ballista = { path = "../ballista/rust/client", version = "0.8.0", features = [
     "standalone",
 ] }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "06a4f79f02fcb6ea85303925b7c5a9b0231e3fee" }
-datafusion-cli = { git = "https://github.com/apache/arrow-datafusion", rev = "06a4f79f02fcb6ea85303925b7c5a9b0231e3fee" }
+datafusion = { git = "https://github.com/spaceandtimelabs/arrow-datafusion.git", rev = "ec72b6292c83d767790c1eb54cf80e75caa5c3c9" }
+datafusion-cli = { git = "https://github.com/spaceandtimelabs/arrow-datafusion.git", rev = "ec72b6292c83d767790c1eb54cf80e75caa5c3c9" }
 dirs = "4.0.0"
 env_logger = "0.9"
 mimalloc = { version = "0.1", default-features = false }
