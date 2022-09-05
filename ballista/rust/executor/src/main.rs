@@ -18,6 +18,7 @@
 //! Ballista Rust executor binary.
 
 use chrono::{DateTime, Duration, Utc};
+use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration as Core_Duration;
@@ -97,6 +98,7 @@ async fn main() -> Result<()> {
         .with_thread_names(print_thread_info)
         .with_thread_ids(print_thread_info)
         .with_writer(log_file)
+        .with_writer(io::stdout)
         .with_env_filter(special_mod_log_level)
         .init();
 

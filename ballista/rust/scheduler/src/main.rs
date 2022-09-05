@@ -24,7 +24,7 @@ use ballista_scheduler::scheduler_server::externalscaler::external_scaler_server
 use futures::future::{self, Either, TryFutureExt};
 use hyper::{server::conn::AddrStream, service::make_service_fn, Server};
 use std::convert::Infallible;
-use std::{net::SocketAddr, sync::Arc};
+use std::{io, net::SocketAddr, sync::Arc};
 use tonic::transport::server::Connected;
 use tower::Service;
 
@@ -176,6 +176,7 @@ async fn main() -> Result<()> {
         .with_thread_names(print_thread_info)
         .with_thread_ids(print_thread_info)
         .with_writer(log_file)
+        .with_writer(io::stdout)
         .with_env_filter(special_mod_log_level)
         .init();
 
