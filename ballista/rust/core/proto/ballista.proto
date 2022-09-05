@@ -824,6 +824,13 @@ message CancelTasksResult {
   bool cancelled = 1;
 }
 
+message RemoveJobDataParams {
+  string job_id = 1;
+}
+
+message RemoveJobDataResult {
+}
+
 service SchedulerGrpc {
   // Executors must poll the scheduler for heartbeat and to receive tasks
   rpc PollWork (PollWorkParams) returns (PollWorkResult) {}
@@ -851,4 +858,6 @@ service ExecutorGrpc {
   rpc StopExecutor (StopExecutorParams) returns (StopExecutorResult) {}
 
   rpc CancelTasks (CancelTasksParams) returns (CancelTasksResult) {}
+
+  rpc RemoveJobData (RemoveJobDataParams) returns (RemoveJobDataResult) {}
 }

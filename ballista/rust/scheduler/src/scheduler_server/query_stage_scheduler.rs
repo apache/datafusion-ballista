@@ -134,15 +134,30 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             }
             QueryStageSchedulerEvent::JobFinished(job_id) => {
                 info!("Job {} complete", job_id);
-                self.state.task_manager.complete_job(&job_id).await?;
+                let executor_manager = self.state.executor_manager.clone();
+                self.state
+                    .task_manager
+                    .complete_job(&job_id, executor_manager)
+                    .await?;
             }
             QueryStageSchedulerEvent::JobRunningFailed(job_id) => {
                 error!("Job {} running failed", job_id);
-                self.state.task_manager.fail_running_job(&job_id).await?;
+                let executor_manager = self.state.executor_manager.clone();
+                self.state
+                    .task_manager
+                    .fail_running_job(&job_id, executor_manager)
+                    .await?;
             }
             QueryStageSchedulerEvent::JobUpdated(job_id) => {
                 error!("Job {} Updated", job_id);
                 self.state.task_manager.update_job(&job_id).await?;
+            }
+            QueryStageSchedulerEvent::JobCancel(job_id) => {
+                let executor_manager = self.state.executor_manager.clone();
+                self.state
+                    .task_manager
+                    .cancel_job(&job_id, executor_manager)
+                    .await?;
             }
             QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status) => {
                 let num_status = tasks_status.len();

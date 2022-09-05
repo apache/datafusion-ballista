@@ -49,7 +49,7 @@ impl parse_arg::ParseArgFromStr for StateBackend {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Keyspace {
     Executors,
     ActiveJobs,

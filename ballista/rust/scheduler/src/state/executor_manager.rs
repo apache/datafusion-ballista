@@ -412,7 +412,7 @@ impl ExecutorManager {
     }
 
     #[allow(dead_code)]
-    fn get_alive_executors_within_one_minute(&self) -> HashSet<String> {
+    pub fn get_alive_executors_within_one_minute(&self) -> HashSet<String> {
         let now_epoch_ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards");
