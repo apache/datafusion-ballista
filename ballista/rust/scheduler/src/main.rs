@@ -111,7 +111,7 @@ async fn start_server(
                 .add_service(keda_scaler);
 
             #[cfg(feature = "flight-sql")]
-            tonic_builder.add_service(FlightServiceServer::new(
+            let tonic_builder = tonic_builder.add_service(FlightServiceServer::new(
                 FlightSqlServiceImpl::new(scheduler_server.clone()),
             ));
 
