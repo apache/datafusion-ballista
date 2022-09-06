@@ -27,13 +27,13 @@ use arrow_flight::sql::{
     CommandStatementUpdate, SqlInfo, TicketStatementQuery,
 };
 use arrow_flight::{
-    FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, Location, Ticket,
+    Action, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, Location, Ticket,
 };
 use log::{debug, error, warn};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tonic::{Response, Status, Streaming};
+use tonic::{Request, Response, Status, Streaming};
 
 use crate::scheduler_server::SchedulerServer;
 use arrow_flight::SchemaAsIpc;
@@ -312,7 +312,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     async fn get_flight_info_statement(
         &self,
         query: CommandStatementQuery,
-        _request: FlightDescriptor,
+        _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         debug!("Got query:\n{}", query.query);
 
@@ -327,7 +327,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     async fn get_flight_info_prepared_statement(
         &self,
         handle: CommandPreparedStatementQuery,
-        _request: FlightDescriptor,
+        _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         let ctx = self.create_ctx().await?;
         let handle = Uuid::from_slice(handle.prepared_statement_handle.as_slice())
@@ -342,28 +342,28 @@ impl FlightSqlService for FlightSqlServiceImpl {
     async fn get_flight_info_catalogs(
         &self,
         _query: CommandGetCatalogs,
-        _request: FlightDescriptor,
+        _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         Err(Status::unimplemented("Implement get_flight_info_catalogs"))
     }
     async fn get_flight_info_schemas(
         &self,
         _query: CommandGetDbSchemas,
-        _request: FlightDescriptor,
+        _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         Err(Status::unimplemented("Implement get_flight_info_schemas"))
     }
     async fn get_flight_info_tables(
         &self,
         _query: CommandGetTables,
-        _request: FlightDescriptor,
+        _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         Err(Status::unimplemented("Implement get_flight_info_tables"))
     }
     async fn get_flight_info_table_types(
         &self,
         _query: CommandGetTableTypes,
-        _request: FlightDescriptor,
+        _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         Err(Status::unimplemented(
             "Implement get_flight_info_table_types",
@@ -372,7 +372,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     async fn get_flight_info_sql_info(
         &self,
         _query: CommandGetSqlInfo,
-        _request: FlightDescriptor,
+        _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         // TODO: implement for FlightSQL JDBC to work
         Err(Status::unimplemented("Implement CommandGetSqlInfo"))
@@ -380,7 +380,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     async fn get_flight_info_primary_keys(
         &self,
         _query: CommandGetPrimaryKeys,
-        _request: FlightDescriptor,
+        _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         Err(Status::unimplemented(
             "Implement get_flight_info_primary_keys",
@@ -389,7 +389,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     async fn get_flight_info_exported_keys(
         &self,
         _query: CommandGetExportedKeys,
-        _request: FlightDescriptor,
+        _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         Err(Status::unimplemented(
             "Implement get_flight_info_exported_keys",
@@ -398,7 +398,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     async fn get_flight_info_imported_keys(
         &self,
         _query: CommandGetImportedKeys,
-        _request: FlightDescriptor,
+        _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         Err(Status::unimplemented(
             "Implement get_flight_info_imported_keys",
@@ -407,7 +407,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     async fn get_flight_info_cross_reference(
         &self,
         _query: CommandGetCrossReference,
-        _request: FlightDescriptor,
+        _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         Err(Status::unimplemented(
             "Implement get_flight_info_cross_reference",
@@ -417,6 +417,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     async fn do_get_statement(
         &self,
         _ticket: TicketStatementQuery,
+        _request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         // let handle = Uuid::from_slice(&ticket.statement_handle)
         //     .map_err(|e| Status::internal(format!("Error decoding ticket: {}", e)))?;
@@ -429,60 +430,70 @@ impl FlightSqlService for FlightSqlServiceImpl {
     async fn do_get_prepared_statement(
         &self,
         _query: CommandPreparedStatementQuery,
+        _request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         Err(Status::unimplemented("Implement do_get_prepared_statement"))
     }
     async fn do_get_catalogs(
         &self,
         _query: CommandGetCatalogs,
+        _request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         Err(Status::unimplemented("Implement do_get_catalogs"))
     }
     async fn do_get_schemas(
         &self,
         _query: CommandGetDbSchemas,
+        _request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         Err(Status::unimplemented("Implement do_get_schemas"))
     }
     async fn do_get_tables(
         &self,
         _query: CommandGetTables,
+        _request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         Err(Status::unimplemented("Implement do_get_tables"))
     }
     async fn do_get_table_types(
         &self,
         _query: CommandGetTableTypes,
+        _request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         Err(Status::unimplemented("Implement do_get_table_types"))
     }
     async fn do_get_sql_info(
         &self,
         _query: CommandGetSqlInfo,
+        _request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         Err(Status::unimplemented("Implement do_get_sql_info"))
     }
     async fn do_get_primary_keys(
         &self,
         _query: CommandGetPrimaryKeys,
+        _request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         Err(Status::unimplemented("Implement do_get_primary_keys"))
     }
     async fn do_get_exported_keys(
         &self,
         _query: CommandGetExportedKeys,
+        _request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         Err(Status::unimplemented("Implement do_get_exported_keys"))
     }
     async fn do_get_imported_keys(
         &self,
         _query: CommandGetImportedKeys,
+        _request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         Err(Status::unimplemented("Implement do_get_imported_keys"))
     }
     async fn do_get_cross_reference(
         &self,
         _query: CommandGetCrossReference,
+        _request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         Err(Status::unimplemented("Implement do_get_cross_reference"))
     }
@@ -490,13 +501,14 @@ impl FlightSqlService for FlightSqlServiceImpl {
     async fn do_put_statement_update(
         &self,
         _ticket: CommandStatementUpdate,
+        _request: Request<Streaming<FlightData>>,
     ) -> Result<i64, Status> {
         Err(Status::unimplemented("Implement do_put_statement_update"))
     }
     async fn do_put_prepared_statement_query(
         &self,
         _query: CommandPreparedStatementQuery,
-        _request: Streaming<FlightData>,
+        _request: Request<Streaming<FlightData>>,
     ) -> Result<Response<<Self as FlightService>::DoPutStream>, Status> {
         Err(Status::unimplemented(
             "Implement do_put_prepared_statement_query",
@@ -504,8 +516,8 @@ impl FlightSqlService for FlightSqlServiceImpl {
     }
     async fn do_put_prepared_statement_update(
         &self,
-        _query: CommandPreparedStatementUpdate,
-        _request: Streaming<FlightData>,
+        _handle: CommandPreparedStatementUpdate,
+        _request: Request<Streaming<FlightData>>,
     ) -> Result<i64, Status> {
         Err(Status::unimplemented(
             "Implement do_put_prepared_statement_update",
@@ -515,6 +527,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     async fn do_action_create_prepared_statement(
         &self,
         query: ActionCreatePreparedStatementRequest,
+        _request: Request<Action>,
     ) -> Result<ActionCreatePreparedStatementResult, Status> {
         let ctx = self.create_ctx().await?;
         let plan = Self::prepare_statement(&query.query, &ctx).await?;
@@ -531,6 +544,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     async fn do_action_close_prepared_statement(
         &self,
         handle: ActionClosePreparedStatementRequest,
+        _request: Request<Action>,
     ) {
         let handle = Uuid::from_slice(handle.prepared_statement_handle.as_slice());
         let handle = if let Ok(handle) = handle {
