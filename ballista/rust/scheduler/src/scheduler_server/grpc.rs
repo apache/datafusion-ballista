@@ -548,6 +548,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 #[cfg(all(test, feature = "sled"))]
 mod test {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use datafusion::execution::context::default_session_builder;
     use datafusion_proto::protobuf::LogicalPlanNode;
@@ -555,12 +556,14 @@ mod test {
 
     use ballista_core::error::BallistaError;
     use ballista_core::serde::protobuf::{
-        executor_registration::OptionalHost, ExecutorRegistration, PhysicalPlanNode,
-        PollWorkParams,
+        executor_registration::OptionalHost, executor_status, ExecutorRegistration,
+        ExecutorStatus, ExecutorStoppedParams, HeartBeatParams, PhysicalPlanNode,
+        PollWorkParams, RegisterExecutorParams,
     };
     use ballista_core::serde::scheduler::ExecutorSpecification;
     use ballista_core::serde::BallistaCodec;
 
+    use crate::state::executor_manager::DEFAULT_EXECUTOR_TIMEOUT_SECONDS;
     use crate::state::{backend::standalone::StandaloneClient, SchedulerState};
 
     use super::{SchedulerGrpc, SchedulerServer};
@@ -647,6 +650,167 @@ mod test {
         assert_eq!(stored_executor.specification.task_slots, 2);
         assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_stop_executor() -> Result<(), BallistaError> {
+        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerServer::new(
+                "localhost:50050".to_owned(),
+                state_storage.clone(),
+                BallistaCodec::default(),
+            );
+        scheduler.init().await?;
+
+        let exec_meta = ExecutorRegistration {
+            id: "abc".to_owned(),
+            optional_host: Some(OptionalHost::Host("http://localhost:8080".to_owned())),
+            port: 0,
+            grpc_port: 0,
+            specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
+        };
+
+        let request: Request<RegisterExecutorParams> =
+            Request::new(RegisterExecutorParams {
+                metadata: Some(exec_meta.clone()),
+            });
+        let response = scheduler
+            .register_executor(request)
+            .await
+            .expect("Received error response")
+            .into_inner();
+
+        // registration should success
+        assert!(response.success);
+
+        let state = scheduler.state.clone();
+        // executor should be registered
+        let stored_executor = state
+            .executor_manager
+            .get_executor_metadata("abc")
+            .await
+            .expect("getting executor");
+
+        assert_eq!(stored_executor.grpc_port, 0);
+        assert_eq!(stored_executor.port, 0);
+        assert_eq!(stored_executor.specification.task_slots, 2);
+        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
+
+        let request: Request<ExecutorStoppedParams> =
+            Request::new(ExecutorStoppedParams {
+                executor_id: "abc".to_owned(),
+                reason: "test_stop".to_owned(),
+            });
+
+        let _response = scheduler
+            .executor_stopped(request)
+            .await
+            .expect("Received error response")
+            .into_inner();
+
+        // executor should be registered
+        let _stopped_executor = state
+            .executor_manager
+            .get_executor_metadata("abc")
+            .await
+            .expect("getting executor");
+
+        // executor should be marked to dead
+        assert!(state.executor_manager.is_dead_executor("abc"));
+
+        let active_executors = state
+            .executor_manager
+            .get_alive_executors_within_one_minute();
+        assert!(active_executors.is_empty());
+
+        let expired_executors = state.executor_manager.get_expired_executors();
+        assert!(expired_executors.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_expired_executor() -> Result<(), BallistaError> {
+        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerServer::new(
+                "localhost:50050".to_owned(),
+                state_storage.clone(),
+                BallistaCodec::default(),
+            );
+        scheduler.init().await?;
+
+        let exec_meta = ExecutorRegistration {
+            id: "abc".to_owned(),
+            optional_host: Some(OptionalHost::Host("http://localhost:8080".to_owned())),
+            port: 0,
+            grpc_port: 0,
+            specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
+        };
+
+        let request: Request<RegisterExecutorParams> =
+            Request::new(RegisterExecutorParams {
+                metadata: Some(exec_meta.clone()),
+            });
+        let response = scheduler
+            .register_executor(request)
+            .await
+            .expect("Received error response")
+            .into_inner();
+
+        // registration should success
+        assert!(response.success);
+
+        let state = scheduler.state.clone();
+        // executor should be registered
+        let stored_executor = state
+            .executor_manager
+            .get_executor_metadata("abc")
+            .await
+            .expect("getting executor");
+
+        assert_eq!(stored_executor.grpc_port, 0);
+        assert_eq!(stored_executor.port, 0);
+        assert_eq!(stored_executor.specification.task_slots, 2);
+        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
+
+        // heartbeat from the executor
+        let request: Request<HeartBeatParams> = Request::new(HeartBeatParams {
+            executor_id: "abc".to_owned(),
+            metrics: vec![],
+            status: Some(ExecutorStatus {
+                status: Some(executor_status::Status::Active("".to_string())),
+            }),
+        });
+
+        let _response = scheduler
+            .heart_beat_from_executor(request)
+            .await
+            .expect("Received error response")
+            .into_inner();
+
+        let active_executors = state
+            .executor_manager
+            .get_alive_executors_within_one_minute();
+        assert_eq!(active_executors.len(), 1);
+
+        let expired_executors = state.executor_manager.get_expired_executors();
+        assert!(expired_executors.is_empty());
+
+        // simulate the heartbeat timeout
+        tokio::time::sleep(Duration::from_secs(DEFAULT_EXECUTOR_TIMEOUT_SECONDS)).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        // executor should be marked to dead
+        assert!(state.executor_manager.is_dead_executor("abc"));
+
+        let active_executors = state
+            .executor_manager
+            .get_alive_executors_within_one_minute();
+        assert!(active_executors.is_empty());
         Ok(())
     }
 }

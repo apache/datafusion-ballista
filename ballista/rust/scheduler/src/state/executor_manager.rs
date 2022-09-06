@@ -30,8 +30,8 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::utils::create_grpc_client_connection;
 use futures::StreamExt;
-use log::{debug, info, warn};
-use parking_lot::{RwLock, RwLockUpgradableReadGuard};
+use log::{debug, info};
+use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tonic::transport::Channel;
@@ -75,8 +75,10 @@ impl ExecutorReservation {
 }
 
 // TODO move to configuration file
-/// Default executor timeout in seconds
-pub const DEFAULT_EXECUTOR_TIMEOUT_SECONDS: u64 = 60;
+/// Default executor timeout in seconds, it should be longer than executor's heartbeat intervals.
+/// Only after missing two or tree consecutive heartbeats from a executor, the executor is mark
+/// to be dead.
+pub const DEFAULT_EXECUTOR_TIMEOUT_SECONDS: u64 = 180;
 
 #[derive(Clone)]
 pub(crate) struct ExecutorManager {
@@ -453,7 +455,7 @@ impl ExecutorManager {
     }
 
     /// Initialize the set of active executor heartbeats from storage
-    pub(crate) async fn init_active_executor_heartbeats(&self) -> Result<()> {
+    async fn init_active_executor_heartbeats(&self) -> Result<()> {
         let heartbeats = self.state.scan(Keyspace::Heartbeats, None).await?;
         let mut cache = self.executors_heartbeat.write();
 
@@ -485,8 +487,8 @@ impl ExecutorManager {
             .collect()
     }
 
-    /// Return a list of dead/expired executors
-    pub(crate) fn get_dead_executors(&self) -> Vec<ExecutorHeartbeat> {
+    /// Return a list of expired executors
+    pub(crate) fn get_expired_executors(&self) -> Vec<ExecutorHeartbeat> {
         let now_epoch_ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards");
@@ -495,34 +497,22 @@ impl ExecutorManager {
             .unwrap_or_else(|| Duration::from_secs(0))
             .as_secs();
 
-        let lock = self.executors_heartbeat.upgradable_read();
-        let dead_executors = lock
+        let lock = self.executors_heartbeat.read();
+        let expired_executors = lock
             .iter()
             .filter_map(|(_exec, heartbeat)| {
                 (heartbeat.timestamp <= last_seen_threshold).then(|| heartbeat.clone())
             })
             .collect::<Vec<_>>();
-
-        if !dead_executors.is_empty() {
-            let mut lock = RwLockUpgradableReadGuard::upgrade(lock);
-            for dead in &dead_executors {
-                warn!(
-                    "Expired dead executor {:?} with no recent heartbeats within: {:?}s",
-                    &dead.executor_id, DEFAULT_EXECUTOR_TIMEOUT_SECONDS
-                );
-                lock.remove(&dead.executor_id);
-            }
-        }
-        dead_executors
+        expired_executors
     }
 
-    #[allow(dead_code)]
-    fn get_alive_executors_within_one_minute(&self) -> HashSet<String> {
+    pub(crate) fn get_alive_executors_within_one_minute(&self) -> HashSet<String> {
         let now_epoch_ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards");
         let last_seen_threshold = now_epoch_ts
-            .checked_sub(Duration::from_secs(DEFAULT_EXECUTOR_TIMEOUT_SECONDS))
+            .checked_sub(Duration::from_secs(60))
             .unwrap_or_else(|| Duration::from_secs(0));
         self.get_alive_executors(last_seen_threshold.as_secs())
     }

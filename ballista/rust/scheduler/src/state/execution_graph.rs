@@ -299,12 +299,12 @@ impl ExecutionGraph {
                         output_links,
                     )?);
                 } else {
-                    return Err(BallistaError::Internal(format!(
+                    warn!(
                         "Stage {}/{} is not in running when updating the status of tasks {:?}",
                         job_id,
                         stage_id,
                         stage_task_statuses.into_iter().map(|task_status| task_status.task_id.map(|task_id| task_id.partition_id)).collect::<Vec<_>>(),
-                    )));
+                    );
                 }
             } else {
                 return Err(BallistaError::Internal(format!(
@@ -1275,6 +1275,66 @@ mod test {
 
         drain_tasks(&mut join_graph)?;
         assert!(join_graph.complete(), "Failed to complete join plan");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_task_update_after_reset_stage() -> Result<()> {
+        let executor1 = mock_executor("executor-id1".to_string());
+        let executor2 = mock_executor("executor-id2".to_string());
+        let mut agg_graph = test_aggregation_plan(4).await;
+
+        assert_eq!(agg_graph.stage_count(), 2);
+        assert_eq!(agg_graph.available_tasks(), 0);
+
+        // Call revive to move the leaf Resolved stages to Running
+        agg_graph.revive();
+
+        assert_eq!(agg_graph.stage_count(), 2);
+        assert_eq!(agg_graph.available_tasks(), 1);
+
+        // Complete the first stage
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            let task_status = mock_completed_task(task, &executor1.id);
+            agg_graph.update_task_status(&executor1, vec![task_status])?;
+        }
+
+        // 1st task in the second stage
+        if let Some(task) = agg_graph.pop_next_task(&executor2.id)? {
+            let task_status = mock_completed_task(task, &executor2.id);
+            agg_graph.update_task_status(&executor2, vec![task_status])?;
+        }
+
+        // 2rd task in the second stage
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            let task_status = mock_completed_task(task, &executor1.id);
+            agg_graph.update_task_status(&executor1, vec![task_status])?;
+        }
+
+        // 3rd task in the second stage, scheduled but not completed
+        let task = agg_graph.pop_next_task(&executor1.id)?;
+
+        // There is 1 task pending schedule now
+        assert_eq!(agg_graph.available_tasks(), 1);
+
+        let reset = agg_graph.reset_stages(&executor1.id)?;
+
+        // 3rd task status update comes later.
+        let task_status = mock_completed_task(task.unwrap(), &executor1.id);
+        agg_graph.update_task_status(&executor1, vec![task_status])?;
+
+        // Two stages were reset, 1 Running stage rollback to Unresolved and 1 Completed stage move to Running
+        assert_eq!(reset.len(), 2);
+        assert_eq!(agg_graph.available_tasks(), 1);
+
+        // Call the reset again
+        let reset = agg_graph.reset_stages(&executor1.id)?;
+        assert_eq!(reset.len(), 0);
+        assert_eq!(agg_graph.available_tasks(), 1);
+
+        drain_tasks(&mut agg_graph)?;
+        assert!(agg_graph.complete(), "Failed to complete agg plan");
 
         Ok(())
     }

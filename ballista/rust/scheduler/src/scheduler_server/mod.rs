@@ -194,15 +194,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         let event_sender = self.query_stage_event_loop.get_sender()?;
         tokio::task::spawn(async move {
             loop {
-                let dead_executors = state.executor_manager.get_dead_executors();
-                for dead in dead_executors {
-                    let executor_id = dead.executor_id.clone();
+                let expired_executors = state.executor_manager.get_expired_executors();
+                for expired in expired_executors {
+                    let executor_id = expired.executor_id.clone();
                     let executor_manager = state.executor_manager.clone();
                     let stop_reason = format!(
                         "Executor {} heartbeat timed out after {}s",
                         executor_id.clone(),
                         DEFAULT_EXECUTOR_TIMEOUT_SECONDS
                     );
+                    warn!("{}", stop_reason.clone());
                     let sender_clone = event_sender.clone();
                     Self::remove_executor(
                         executor_manager,
