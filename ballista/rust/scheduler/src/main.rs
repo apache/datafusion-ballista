@@ -24,7 +24,7 @@ use ballista_scheduler::scheduler_server::externalscaler::external_scaler_server
 use futures::future::{self, Either, TryFutureExt};
 use hyper::{server::conn::AddrStream, service::make_service_fn, Server};
 use std::convert::Infallible;
-use std::{net::SocketAddr, sync::Arc};
+use std::{env, io, net::SocketAddr, sync::Arc};
 use tonic::transport::server::Connected;
 use tower::Service;
 
@@ -65,6 +65,7 @@ use ballista_core::utils::create_grpc_server;
 use ballista_scheduler::flight_sql::FlightSqlServiceImpl;
 use config::prelude::*;
 use datafusion::execution::context::default_session_builder;
+use tracing_subscriber::EnvFilter;
 
 async fn start_server(
     scheduler_name: String,
@@ -167,17 +168,30 @@ async fn main() -> Result<()> {
     let port = opt.bind_port;
     let log_dir = opt.log_dir;
     let print_thread_info = opt.print_thread_info;
-
     let scheduler_name = format!("scheduler_{}_{}_{}", namespace, external_host, port);
-    let log_file = tracing_appender::rolling::daily(log_dir, &scheduler_name);
 
-    tracing_subscriber::fmt()
-        .with_ansi(true)
-        .with_thread_names(print_thread_info)
-        .with_thread_ids(print_thread_info)
-        .with_writer(log_file)
-        .with_env_filter(special_mod_log_level)
-        .init();
+    // File layer
+    if let Some(log_dir) = log_dir {
+        let log_file = tracing_appender::rolling::daily(log_dir, &scheduler_name);
+        tracing_subscriber::fmt()
+            .with_ansi(true)
+            .with_thread_names(print_thread_info)
+            .with_thread_ids(print_thread_info)
+            .with_writer(log_file)
+            .with_env_filter(special_mod_log_level)
+            .init();
+    } else {
+        //Console layer
+        let rust_log = env::var(EnvFilter::DEFAULT_ENV);
+        let std_filter = EnvFilter::new(rust_log.unwrap_or_else(|_| "INFO".to_string()));
+        tracing_subscriber::fmt()
+            .with_ansi(true)
+            .with_thread_names(print_thread_info)
+            .with_thread_ids(print_thread_info)
+            .with_writer(io::stdout)
+            .with_env_filter(std_filter)
+            .init();
+    }
 
     let addr = format!("{}:{}", bind_host, port);
     let addr = addr.parse()?;

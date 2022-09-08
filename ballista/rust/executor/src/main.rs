@@ -21,6 +21,7 @@ use chrono::{DateTime, Duration, Utc};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration as Core_Duration;
+use std::{env, io};
 
 use anyhow::{Context, Result};
 use arrow_flight::flight_service_server::FlightServiceServer;
@@ -54,6 +55,7 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tracing_subscriber::EnvFilter;
 
 #[macro_use]
 extern crate configure_me;
@@ -90,15 +92,29 @@ async fn main() -> Result<()> {
     let print_thread_info = opt.print_thread_info;
 
     let scheduler_name = format!("executor_{}_{}", bind_host, port);
-    let log_file = tracing_appender::rolling::daily(log_dir, &scheduler_name);
 
-    tracing_subscriber::fmt()
-        .with_ansi(true)
-        .with_thread_names(print_thread_info)
-        .with_thread_ids(print_thread_info)
-        .with_writer(log_file)
-        .with_env_filter(special_mod_log_level)
-        .init();
+    // File layer
+    if let Some(log_dir) = log_dir {
+        let log_file = tracing_appender::rolling::daily(log_dir, &scheduler_name);
+        tracing_subscriber::fmt()
+            .with_ansi(true)
+            .with_thread_names(print_thread_info)
+            .with_thread_ids(print_thread_info)
+            .with_writer(log_file)
+            .with_env_filter(special_mod_log_level)
+            .init();
+    } else {
+        //Console layer
+        let rust_log = env::var(EnvFilter::DEFAULT_ENV);
+        let std_filter = EnvFilter::new(rust_log.unwrap_or_else(|_| "INFO".to_string()));
+        tracing_subscriber::fmt()
+            .with_ansi(true)
+            .with_thread_names(print_thread_info)
+            .with_thread_ids(print_thread_info)
+            .with_writer(io::stdout)
+            .with_env_filter(std_filter)
+            .init();
+    }
 
     let addr = format!("{}:{}", bind_host, port);
     let addr = addr

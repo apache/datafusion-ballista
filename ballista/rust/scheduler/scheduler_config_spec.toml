@@ -88,7 +88,6 @@ default = "std::string::String::from(\"\")"
 name = "log_dir"
 type = "String"
 doc = "Log dir: a path to save log. This will create a new storage directory at the specified path if it does not already exist."
-default = "std::string::String::from(\"./logs\")"
 
 [[param]]
 name = "print_thread_info"
