@@ -739,7 +739,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::GlobalLimit(Box::new(
                     protobuf::GlobalLimitExecNode {
                         input: Some(Box::new(input)),
-                        skip: *limit.skip().unwrap_or(&0) as u32,
+                        skip: *limit.skip() as u32,
                         fetch: *limit.fetch().unwrap_or(&0) as u32,
                     },
                 ))),
