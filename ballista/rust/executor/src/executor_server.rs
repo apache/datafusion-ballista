@@ -35,11 +35,11 @@ use ballista_core::serde::protobuf::executor_grpc_server::{
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_core::serde::protobuf::{
-    CancelTasksParams, CancelTasksResult, HeartBeatParams, LaunchTaskParams,
-    LaunchTaskResult, RegisterExecutorParams, StopExecutorParams, StopExecutorResult,
-    TaskDefinition, TaskStatus, UpdateTaskStatusParams,
+    executor_metric, executor_status, CancelTasksParams, CancelTasksResult,
+    ExecutorMetric, ExecutorStatus, HeartBeatParams, LaunchTaskParams, LaunchTaskResult,
+    RegisterExecutorParams, StopExecutorParams, StopExecutorResult, TaskDefinition,
+    TaskStatus, UpdateTaskStatusParams,
 };
-use ballista_core::serde::scheduler::ExecutorState;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use ballista_core::utils::{
     collect_plan_metrics, create_grpc_client_connection, create_grpc_server,
@@ -249,7 +249,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
     async fn heartbeat(&self) {
         let heartbeat_params = HeartBeatParams {
             executor_id: self.executor.metadata.id.clone(),
-            state: Some(self.get_executor_state().into()),
+            metrics: self.get_executor_metrics(),
+            status: Some(ExecutorStatus {
+                status: Some(executor_status::Status::Active("".to_string())),
+            }),
         };
         let mut scheduler = self.scheduler_to_register.clone();
         match scheduler
@@ -385,11 +388,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         Ok(())
     }
 
-    // TODO with real state
-    fn get_executor_state(&self) -> ExecutorState {
-        ExecutorState {
-            available_memory_size: u64::MAX,
-        }
+    // TODO populate with real metrics
+    fn get_executor_metrics(&self) -> Vec<ExecutorMetric> {
+        let available_memory = ExecutorMetric {
+            metric: Some(executor_metric::Metric::AvailableMemory(u64::MAX)),
+        };
+        let executor_metrics = vec![available_memory];
+        executor_metrics
     }
 }
 

@@ -24,8 +24,8 @@ use crate::serde::protobuf::action::ActionType;
 
 use crate::serde::protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
 use crate::serde::scheduler::{
-    Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, ExecutorState,
-    PartitionId, PartitionLocation, PartitionStats,
+    Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, PartitionId,
+    PartitionLocation, PartitionStats,
 };
 use datafusion::physical_plan::Partitioning;
 
@@ -230,20 +230,6 @@ impl Into<protobuf::ExecutorData> for ExecutorData {
                     resource: Some(r.available),
                 }),
             })
-            .collect(),
-        }
-    }
-}
-
-#[allow(clippy::from_over_into)]
-impl Into<protobuf::ExecutorState> for ExecutorState {
-    fn into(self) -> protobuf::ExecutorState {
-        protobuf::ExecutorState {
-            metrics: vec![protobuf::executor_metric::Metric::AvailableMemory(
-                self.available_memory_size,
-            )]
-            .into_iter()
-            .map(|m| protobuf::ExecutorMetric { metric: Some(m) })
             .collect(),
         }
     }

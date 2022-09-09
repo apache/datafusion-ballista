@@ -23,12 +23,6 @@ use ballista_core::serde::protobuf::TaskStatus;
 use datafusion::prelude::SessionContext;
 use std::sync::Arc;
 
-#[derive(Clone, Debug)]
-pub enum SchedulerServerEvent {
-    /// Offer a list of executor reservations (representing executor task slots available for scheduling)
-    Offer(Vec<ExecutorReservation>),
-}
-
 #[derive(Clone)]
 pub enum QueryStageSchedulerEvent {
     JobQueued {
@@ -45,4 +39,5 @@ pub enum QueryStageSchedulerEvent {
     JobUpdated(String),
     TaskUpdating(String, Vec<TaskStatus>),
     ReservationOffering(Vec<ExecutorReservation>),
+    ExecutorLost(String, Option<String>),
 }

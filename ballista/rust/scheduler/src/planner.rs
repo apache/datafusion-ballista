@@ -246,6 +246,34 @@ pub fn remove_unresolved_shuffles(
     Ok(with_new_children_if_necessary(stage, new_children)?)
 }
 
+/// Rollback the ShuffleReaderExec to UnresolvedShuffleExec.
+/// Used when the input stages are finished but some partitions are missing due to executor lost.
+/// The entire stage need to be rolled back and rescheduled.
+pub fn rollback_resolved_shuffles(
+    stage: Arc<dyn ExecutionPlan>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let mut new_children: Vec<Arc<dyn ExecutionPlan>> = vec![];
+    for child in stage.children() {
+        if let Some(shuffle_reader) = child.as_any().downcast_ref::<ShuffleReaderExec>() {
+            let partition_locations = &shuffle_reader.partition;
+            let output_partition_count = partition_locations.len();
+            let input_partition_count = partition_locations[0].len();
+            let stage_id = partition_locations[0][0].partition_id.stage_id;
+
+            let unresolved_shuffle = Arc::new(UnresolvedShuffleExec::new(
+                stage_id,
+                shuffle_reader.schema(),
+                input_partition_count,
+                output_partition_count,
+            ));
+            new_children.push(unresolved_shuffle);
+        } else {
+            new_children.push(rollback_resolved_shuffles(child)?);
+        }
+    }
+    Ok(with_new_children_if_necessary(stage, new_children)?)
+}
+
 fn create_shuffle_writer(
     job_id: &str,
     stage_id: usize,

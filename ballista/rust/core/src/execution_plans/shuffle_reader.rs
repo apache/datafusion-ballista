@@ -43,7 +43,7 @@ use log::info;
 #[derive(Debug, Clone)]
 pub struct ShuffleReaderExec {
     /// Each partition of a shuffle can read data from multiple locations
-    pub(crate) partition: Vec<Vec<PartitionLocation>>,
+    pub partition: Vec<Vec<PartitionLocation>>,
     pub(crate) schema: SchemaRef,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,

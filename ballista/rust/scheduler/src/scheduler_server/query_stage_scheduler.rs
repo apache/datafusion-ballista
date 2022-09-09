@@ -141,7 +141,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.state.task_manager.fail_running_job(&job_id).await?;
             }
             QueryStageSchedulerEvent::JobUpdated(job_id) => {
-                error!("Job {} Updated", job_id);
+                info!("Job {} Updated", job_id);
                 self.state.task_manager.update_job(&job_id).await?;
             }
             QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status) => {
@@ -166,7 +166,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     }
                     Err(e) => {
                         error!(
-                            "Failed to update {} task statuses for executor {}: {:?}",
+                            "Failed to update {} task statuses for Executor {}: {:?}",
                             num_status, executor_id, e
                         );
                         // TODO error handling
@@ -182,6 +182,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         ))
                         .await?;
                 }
+            }
+            QueryStageSchedulerEvent::ExecutorLost(executor_id, _) => {
+                self.state
+                    .task_manager
+                    .executor_lost(&executor_id)
+                    .await
+                    .unwrap_or_else(|e| {
+                        let msg = format!(
+                            "TaskManager error to handle Executor {} lost: {}",
+                            executor_id, e
+                        );
+                        error!("{}", msg);
+                    });
             }
         }
 

@@ -29,7 +29,9 @@ use log::{debug, warn};
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
-use ballista_core::serde::protobuf::{self, OperatorMetricsSet};
+use ballista_core::serde::protobuf::{
+    self, CompletedTask, FailedTask, GraphStageInput, OperatorMetricsSet,
+};
 use ballista_core::serde::protobuf::{task_status, RunningTask};
 use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
 use ballista_core::serde::scheduler::PartitionLocation;
@@ -98,6 +100,8 @@ pub(super) struct ResolvedStage {
     /// Stage ID of the stage that will take this stages outputs as inputs.
     /// If `output_links` is empty then this the final stage in the `ExecutionGraph`
     pub(super) output_links: Vec<usize>,
+    /// Represents the outputs from this stage's child stages.
+    pub(super) inputs: HashMap<usize, StageOutput>,
     /// `ExecutionPlan` for this stage
     pub(super) plan: Arc<dyn ExecutionPlan>,
 }
@@ -119,6 +123,8 @@ pub(super) struct RunningStage {
     /// Stage ID of the stage that will take this stages outputs as inputs.
     /// If `output_links` is empty then this the final stage in the `ExecutionGraph`
     pub(super) output_links: Vec<usize>,
+    /// Represents the outputs from this stage's child stages.
+    pub(super) inputs: HashMap<usize, StageOutput>,
     /// `ExecutionPlan` for this stage
     pub(super) plan: Arc<dyn ExecutionPlan>,
     /// Status of each already scheduled task. If status is None, the partition has not yet been scheduled
@@ -140,6 +146,8 @@ pub(super) struct CompletedStage {
     /// Stage ID of the stage that will take this stages outputs as inputs.
     /// If `output_links` is empty then this the final stage in the `ExecutionGraph`
     pub(super) output_links: Vec<usize>,
+    /// Represents the outputs from this stage's child stages.
+    pub(super) inputs: HashMap<usize, StageOutput>,
     /// `ExecutionPlan` for this stage
     pub(super) plan: Arc<dyn ExecutionPlan>,
     /// Status of each already scheduled task.
@@ -177,13 +185,29 @@ impl UnresolvedStage {
         plan: Arc<dyn ExecutionPlan>,
         output_partitioning: Option<Partitioning>,
         output_links: Vec<usize>,
-        child_stages: Vec<usize>,
+        child_stage_ids: Vec<usize>,
     ) -> Self {
         let mut inputs: HashMap<usize, StageOutput> = HashMap::new();
-        for input_stage_id in child_stages {
+        for input_stage_id in child_stage_ids {
             inputs.insert(input_stage_id, StageOutput::new());
         }
 
+        Self {
+            stage_id,
+            output_partitioning,
+            output_links,
+            inputs,
+            plan,
+        }
+    }
+
+    pub(super) fn new_with_inputs(
+        stage_id: usize,
+        plan: Arc<dyn ExecutionPlan>,
+        output_partitioning: Option<Partitioning>,
+        output_links: Vec<usize>,
+        inputs: HashMap<usize, StageOutput>,
+    ) -> Self {
         Self {
             stage_id,
             output_partitioning,
@@ -239,6 +263,7 @@ impl UnresolvedStage {
             plan,
             self.output_partitioning.clone(),
             self.output_links.clone(),
+            self.inputs.clone(),
         ))
     }
 
@@ -260,32 +285,7 @@ impl UnresolvedStage {
             plan.schema().as_ref(),
         )?;
 
-        let mut inputs: HashMap<usize, StageOutput> = HashMap::new();
-        for input in stage.inputs {
-            let stage_id = input.stage_id as usize;
-
-            let outputs = input
-                .partition_locations
-                .into_iter()
-                .map(|loc| {
-                    let partition = loc.partition as usize;
-                    let locations = loc
-                        .partition_location
-                        .into_iter()
-                        .map(|l| l.try_into())
-                        .collect::<Result<Vec<_>>>()?;
-                    Ok((partition, locations))
-                })
-                .collect::<Result<HashMap<usize, Vec<PartitionLocation>>>>()?;
-
-            inputs.insert(
-                stage_id,
-                StageOutput {
-                    partition_locations: outputs,
-                    complete: input.complete,
-                },
-            );
-        }
+        let inputs = decode_inputs(stage.inputs)?;
 
         Ok(UnresolvedStage {
             stage_id: stage.stage_id as usize,
@@ -304,26 +304,7 @@ impl UnresolvedStage {
         U::try_from_physical_plan(stage.plan, codec.physical_extension_codec())
             .and_then(|proto| proto.try_encode(&mut plan))?;
 
-        let mut inputs: Vec<protobuf::GraphStageInput> = vec![];
-        for (stage_id, output) in stage.inputs.into_iter() {
-            inputs.push(protobuf::GraphStageInput {
-                stage_id: stage_id as u32,
-                partition_locations: output
-                    .partition_locations
-                    .into_iter()
-                    .map(|(partition, locations)| {
-                        Ok(protobuf::TaskInputPartitions {
-                            partition: partition as u32,
-                            partition_location: locations
-                                .into_iter()
-                                .map(|l| l.try_into())
-                                .collect::<Result<Vec<_>>>()?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()?,
-                complete: output.complete,
-            });
-        }
+        let inputs = encode_inputs(stage.inputs)?;
 
         let output_partitioning =
             hash_partitioning_to_proto(stage.output_partitioning.as_ref())?;
@@ -359,6 +340,7 @@ impl ResolvedStage {
         plan: Arc<dyn ExecutionPlan>,
         output_partitioning: Option<Partitioning>,
         output_links: Vec<usize>,
+        inputs: HashMap<usize, StageOutput>,
     ) -> Self {
         let partitions = plan.output_partitioning().partition_count();
 
@@ -367,6 +349,7 @@ impl ResolvedStage {
             partitions,
             output_partitioning,
             output_links,
+            inputs,
             plan,
         }
     }
@@ -379,7 +362,22 @@ impl ResolvedStage {
             self.partitions,
             self.output_partitioning.clone(),
             self.output_links.clone(),
+            self.inputs.clone(),
         )
+    }
+
+    /// Change to the unresolved state
+    pub(super) fn to_unresolved(&self) -> Result<UnresolvedStage> {
+        let new_plan = crate::planner::rollback_resolved_shuffles(self.plan.clone())?;
+
+        let unresolved = UnresolvedStage::new_with_inputs(
+            self.stage_id,
+            new_plan,
+            self.output_partitioning.clone(),
+            self.output_links.clone(),
+            self.inputs.clone(),
+        );
+        Ok(unresolved)
     }
 
     pub(super) fn decode<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
@@ -400,11 +398,14 @@ impl ResolvedStage {
             plan.schema().as_ref(),
         )?;
 
+        let inputs = decode_inputs(stage.inputs)?;
+
         Ok(ResolvedStage {
             stage_id: stage.stage_id as usize,
             partitions: stage.partitions as usize,
             output_partitioning,
             output_links: stage.output_links.into_iter().map(|l| l as usize).collect(),
+            inputs,
             plan,
         })
     }
@@ -420,11 +421,14 @@ impl ResolvedStage {
         let output_partitioning =
             hash_partitioning_to_proto(stage.output_partitioning.as_ref())?;
 
+        let inputs = encode_inputs(stage.inputs)?;
+
         Ok(protobuf::ResolvedStage {
             stage_id: stage.stage_id as u64,
             partitions: stage.partitions as u32,
             output_partitioning,
             output_links: stage.output_links.into_iter().map(|l| l as u32).collect(),
+            inputs,
             plan,
         })
     }
@@ -449,12 +453,14 @@ impl RunningStage {
         partitions: usize,
         output_partitioning: Option<Partitioning>,
         output_links: Vec<usize>,
+        inputs: HashMap<usize, StageOutput>,
     ) -> Self {
         Self {
             stage_id,
             partitions,
             output_partitioning,
             output_links,
+            inputs,
             plan,
             task_statuses: vec![None; partitions],
             stage_metrics: None,
@@ -484,6 +490,7 @@ impl RunningStage {
             partitions: self.partitions,
             output_partitioning: self.output_partitioning.clone(),
             output_links: self.output_links.clone(),
+            inputs: self.inputs.clone(),
             plan: self.plan.clone(),
             task_statuses,
             stage_metrics,
@@ -509,7 +516,22 @@ impl RunningStage {
             self.plan.clone(),
             self.output_partitioning.clone(),
             self.output_links.clone(),
+            self.inputs.clone(),
         )
+    }
+
+    /// Change to the unresolved state
+    pub(super) fn to_unresolved(&self) -> Result<UnresolvedStage> {
+        let new_plan = crate::planner::rollback_resolved_shuffles(self.plan.clone())?;
+
+        let unresolved = UnresolvedStage::new_with_inputs(
+            self.stage_id,
+            new_plan,
+            self.output_partitioning.clone(),
+            self.output_links.clone(),
+            self.inputs.clone(),
+        );
+        Ok(unresolved)
     }
 
     /// Returns `true` if all tasks for this stage are complete
@@ -616,6 +638,31 @@ impl RunningStage {
         }
         first.aggregate_by_partition()
     }
+
+    /// Reset the running and completed tasks on a given executor
+    /// Returns the number of running tasks that were reset
+    pub fn reset_tasks(&mut self, executor: &str) -> usize {
+        let mut reset = 0;
+        for task in self.task_statuses.iter_mut() {
+            match task {
+                Some(task_status::Status::Running(RunningTask { executor_id }))
+                    if *executor == *executor_id =>
+                {
+                    *task = None;
+                    reset += 1;
+                }
+                Some(task_status::Status::Completed(CompletedTask {
+                    executor_id,
+                    partitions: _,
+                })) if *executor == *executor_id => {
+                    *task = None;
+                    reset += 1;
+                }
+                _ => {}
+            }
+        }
+        reset
+    }
 }
 
 impl Debug for RunningStage {
@@ -636,6 +683,48 @@ impl Debug for RunningStage {
 }
 
 impl CompletedStage {
+    pub fn to_running(&self) -> RunningStage {
+        let mut task_status: Vec<Option<task_status::Status>> = Vec::new();
+        for task in self.task_statuses.iter() {
+            match task {
+                task_status::Status::Completed(_) => task_status.push(Some(task.clone())),
+                _ => task_status.push(None),
+            }
+        }
+        RunningStage {
+            stage_id: self.stage_id,
+            partitions: self.partitions,
+            output_partitioning: self.output_partitioning.clone(),
+            output_links: self.output_links.clone(),
+            inputs: self.inputs.clone(),
+            plan: self.plan.clone(),
+            task_statuses: task_status,
+            stage_metrics: Some(self.stage_metrics.clone()),
+        }
+    }
+
+    /// Reset the completed tasks on a given executor
+    /// Returns the number of running tasks that were reset
+    pub fn reset_tasks(&mut self, executor: &str) -> usize {
+        let mut reset = 0;
+        let failure_reason = format!("Task failure due to Executor {} lost", executor);
+        for task in self.task_statuses.iter_mut() {
+            match task {
+                task_status::Status::Completed(CompletedTask {
+                    executor_id,
+                    partitions: _,
+                }) if *executor == *executor_id => {
+                    *task = task_status::Status::Failed(FailedTask {
+                        error: failure_reason.clone(),
+                    });
+                    reset += 1;
+                }
+                _ => {}
+            }
+        }
+        reset
+    }
+
     pub(super) fn decode<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
         stage: protobuf::CompletedStage,
         codec: &BallistaCodec<T, U>,
@@ -653,6 +742,8 @@ impl CompletedStage {
             session_ctx,
             plan.schema().as_ref(),
         )?;
+
+        let inputs = decode_inputs(stage.inputs)?;
 
         let task_statuses = stage
             .task_statuses
@@ -676,6 +767,7 @@ impl CompletedStage {
             partitions: stage.partitions as usize,
             output_partitioning,
             output_links: stage.output_links.into_iter().map(|l| l as usize).collect(),
+            inputs,
             plan,
             task_statuses,
             stage_metrics,
@@ -695,6 +787,8 @@ impl CompletedStage {
 
         let output_partitioning =
             hash_partitioning_to_proto(stage.output_partitioning.as_ref())?;
+
+        let inputs = encode_inputs(stage.inputs)?;
 
         let task_statuses: Vec<protobuf::TaskStatus> = stage
             .task_statuses
@@ -725,6 +819,7 @@ impl CompletedStage {
             partitions: stage.partitions as u32,
             output_partitioning,
             output_links: stage.output_links.into_iter().map(|l| l as u32).collect(),
+            inputs,
             plan,
             task_statuses,
             stage_metrics,
@@ -894,9 +989,9 @@ impl Debug for FailedStage {
 #[derive(Clone, Debug, Default)]
 pub(super) struct StageOutput {
     /// Map from partition -> partition locations
-    partition_locations: HashMap<usize, Vec<PartitionLocation>>,
+    pub partition_locations: HashMap<usize, Vec<PartitionLocation>>,
     /// Flag indicating whether all tasks are complete
-    complete: bool,
+    pub complete: bool,
 }
 
 impl StageOutput {
@@ -925,4 +1020,62 @@ impl StageOutput {
     pub(super) fn is_complete(&self) -> bool {
         self.complete
     }
+}
+
+fn decode_inputs(
+    stage_inputs: Vec<GraphStageInput>,
+) -> Result<HashMap<usize, StageOutput>> {
+    let mut inputs: HashMap<usize, StageOutput> = HashMap::new();
+    for input in stage_inputs {
+        let stage_id = input.stage_id as usize;
+
+        let outputs = input
+            .partition_locations
+            .into_iter()
+            .map(|loc| {
+                let partition = loc.partition as usize;
+                let locations = loc
+                    .partition_location
+                    .into_iter()
+                    .map(|l| l.try_into())
+                    .collect::<Result<Vec<_>>>()?;
+                Ok((partition, locations))
+            })
+            .collect::<Result<HashMap<usize, Vec<PartitionLocation>>>>()?;
+
+        inputs.insert(
+            stage_id,
+            StageOutput {
+                partition_locations: outputs,
+                complete: input.complete,
+            },
+        );
+    }
+    Ok(inputs)
+}
+
+fn encode_inputs(
+    stage_inputs: HashMap<usize, StageOutput>,
+) -> Result<Vec<GraphStageInput>> {
+    let mut inputs: Vec<protobuf::GraphStageInput> = vec![];
+    for (stage_id, output) in stage_inputs.into_iter() {
+        inputs.push(protobuf::GraphStageInput {
+            stage_id: stage_id as u32,
+            partition_locations: output
+                .partition_locations
+                .into_iter()
+                .map(|(partition, locations)| {
+                    Ok(protobuf::TaskInputPartitions {
+                        partition: partition as u32,
+                        partition_location: locations
+                            .into_iter()
+                            .map(|l| l.try_into())
+                            .collect::<Result<Vec<_>>>()?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            complete: output.complete,
+        });
+    }
+    Ok(inputs)
 }

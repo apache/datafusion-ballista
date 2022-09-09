@@ -381,6 +381,36 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(())
     }
 
+    pub async fn executor_lost(&self, executor_id: &str) -> Result<()> {
+        // Collect graphs we update so we can update them in storage
+        let mut updated_graphs: HashMap<String, ExecutionGraph> = HashMap::new();
+        {
+            let job_cache = self.active_job_cache.read().await;
+            for (job_id, graph) in job_cache.iter() {
+                let mut graph = graph.write().await;
+                let reset = graph.reset_stages(executor_id)?;
+                if !reset.is_empty() {
+                    updated_graphs.insert(job_id.to_owned(), graph.clone());
+                }
+            }
+        }
+
+        let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
+        with_lock(lock, async {
+            // Transactional update graphs
+            let txn_ops: Vec<(Keyspace, String, Vec<u8>)> = updated_graphs
+                .into_iter()
+                .map(|(job_id, graph)| {
+                    let value = self.encode_execution_graph(graph)?;
+                    Ok((Keyspace::ActiveJobs, job_id, value))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            self.state.put_txn(txn_ops).await?;
+            Ok(())
+        })
+        .await
+    }
+
     #[cfg(not(test))]
     /// Launch the given task on the specified executor
     pub(crate) async fn launch_task(
