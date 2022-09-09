@@ -416,6 +416,7 @@ jobs:
           key: cargo-coverage-cache3-
       - name: Run coverage
         run: |
+          export PATH=$PATH:$HOME/d/protoc/bin
           export CARGO_HOME="/home/runner/.cargo"
           export CARGO_TARGET_DIR="/home/runner/target"
 
