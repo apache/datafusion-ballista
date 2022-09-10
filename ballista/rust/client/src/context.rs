@@ -389,7 +389,7 @@ impl BallistaContext {
                 let table_exists = ctx.table_exist(name.as_str())?;
 
                 match (if_not_exists, table_exists) {
-                    (_, false) => match file_type.as_str() {
+                    (_, false) => match file_type.to_lowercase().as_str() {
                         "csv" => {
                             self.register_csv(
                                 name,
