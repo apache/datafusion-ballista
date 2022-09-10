@@ -803,7 +803,7 @@ message GetJobStatusResult {
 
 message GetFileMetadataParams {
   string path = 1;
-  datafusion.FileType file_type = 2;
+  string file_type = 2;
 }
 
 message GetFileMetadataResult {
