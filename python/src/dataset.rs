@@ -31,7 +31,7 @@ use datafusion::datasource::datasource::TableProviderFilterPushDown;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::error::{DataFusionError, Result as DFResult};
 use datafusion::execution::context::SessionState;
-use datafusion::logical_plan::*;
+use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::ExecutionPlan;
 
 use crate::dataset_exec::DatasetExec;
