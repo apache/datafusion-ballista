@@ -17,7 +17,7 @@
   under the License.
 -->
 
-# Ballista Tuning Guide
+# Tuning Guide
 
 ## Partitions and Parallelism
 
@@ -34,6 +34,9 @@ table only has a single Parquet file then there will be a single partition and t
 if the cluster has resource available. Ballista supports repartitioning within a query to improve parallelism. 
 The configuration setting `ballista.shuffle.partitions`can be set to the desired number of partitions. This is 
 currently a global setting for the entire context. The default value for this setting is 2.
+
+Note that Ballista will never decrease the number of partitions based on this setting and will only repartition if 
+the source operation has fewer partitions than this setting.   
 
 Example: Setting the desired number of shuffle partitions when creating a context.
 
