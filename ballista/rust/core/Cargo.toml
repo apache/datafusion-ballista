@@ -35,12 +35,12 @@ simd = ["datafusion/simd"]
 [dependencies]
 ahash = { version = "0.8", default-features = false }
 
-arrow-flight = { version = "21.0.0" }
+arrow-flight = { version = "22.0.0" }
 async-trait = "0.1.41"
 chrono = { version = "0.4", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "312a7dd3b9642e64555bd0cfa90f4e10145ea103" }
-datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "312a7dd3b9642e64555bd0cfa90f4e10145ea103" }
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "8b59b207aaadd6f2c19c28d1f1431a0cb8d110ae" }
+datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "8b59b207aaadd6f2c19c28d1f1431a0cb8d110ae" }
 futures = "0.3"
 hashbrown = "0.12"
 
@@ -54,7 +54,7 @@ parse_arg = "0.1.3"
 prost = "0.11"
 prost-types = "0.11"
 serde = { version = "1", features = ["derive"] }
-sqlparser = "0.22"
+sqlparser = "0.23"
 tokio = "1.0"
 tonic = "0.8"
 uuid = { version = "1.0", features = ["v4"] }

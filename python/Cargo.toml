@@ -36,10 +36,10 @@ default = ["mimalloc"]
 [dependencies]
 async-trait = "0.1"
 ballista = { path = "../ballista/rust/client" }
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "312a7dd3b9642e64555bd0cfa90f4e10145ea103", features = ["pyarrow"] }
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "8b59b207aaadd6f2c19c28d1f1431a0cb8d110ae", features = ["pyarrow"] }
 futures = "0.3"
 mimalloc = { version = "*", optional = true, default-features = false }
-pyo3 = { version = "~0.16.5", features = ["extension-module", "abi3", "abi3-py37"] }
+pyo3 = { version = "~0.17.1", features = ["extension-module", "abi3", "abi3-py37"] }
 rand = "0.7"
 serde_json = { version = "1.0.85", features = ["std"] }
 tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "sync"] }

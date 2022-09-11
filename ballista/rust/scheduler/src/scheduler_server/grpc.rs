@@ -36,12 +36,10 @@ use object_store::{local::LocalFileSystem, path::Path, ObjectStore};
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::file_format::FileFormat;
 use datafusion_proto::logical_plan::AsLogicalPlan;
-use datafusion_proto::protobuf::FileType;
 use futures::TryStreamExt;
 use log::{debug, error, info, warn};
 
 // use http_body::Body;
-use std::convert::TryInto;
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -303,14 +301,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
         let GetFileMetadataParams { path, file_type } = request.into_inner();
 
-        let file_type: FileType = file_type.try_into().map_err(|e| {
-            let msg = format!("Error reading request: {}", e);
-            error!("{}", msg);
-            tonic::Status::internal(msg)
-        })?;
-
-        let file_format: Arc<dyn FileFormat> = match file_type {
-            FileType::Parquet => Ok(Arc::new(ParquetFormat::default())),
+        let file_format: Arc<dyn FileFormat> = match file_type.as_str() {
+            "parquet" => Ok(Arc::new(ParquetFormat::default())),
             // TODO implement for CSV
             _ => Err(tonic::Status::unimplemented(
                 "get_file_metadata unsupported file type",

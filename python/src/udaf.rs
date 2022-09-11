@@ -25,9 +25,8 @@ use datafusion::arrow::pyarrow::PyArrowConvert;
 use datafusion::common::ScalarValue;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::{
-    Accumulator, AccumulatorFunctionImplementation, AggregateState, AggregateUDF,
+    self, Accumulator, AccumulatorFunctionImplementation, AggregateState, AggregateUDF,
 };
-use datafusion::logical_plan;
 
 use crate::expression::PyExpr;
 use crate::utils::parse_volatility;
@@ -126,7 +125,7 @@ impl PyAggregateUDF {
         state_type: Vec<DataType>,
         volatility: &str,
     ) -> PyResult<Self> {
-        let function = logical_plan::create_udaf(
+        let function = logical_expr::create_udaf(
             name,
             input_type,
             Arc::new(return_type),
