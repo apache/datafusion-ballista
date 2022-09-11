@@ -685,7 +685,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
             Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Explain(
                     protobuf::ExplainExecNode {
-                        schema: Some(exec.schema().as_ref().into()),
+                        schema: Some(exec.schema().as_ref().try_into()?),
                         stringified_plans: exec
                             .stringified_plans()
                             .iter()
@@ -797,7 +797,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                             }
                         })
                         .collect();
-                    let schema = f.schema().into();
+                    let schema = f.schema().try_into()?;
                     Ok(protobuf::JoinFilter {
                         expression: Some(expression),
                         column_indices,
@@ -910,14 +910,14 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         aggr_expr_name: agg_names,
                         mode: agg_mode as i32,
                         input: Some(Box::new(input)),
-                        input_schema: Some(input_schema.as_ref().into()),
+                        input_schema: Some(input_schema.as_ref().try_into()?),
                         null_expr,
                         groups,
                     },
                 ))),
             })
         } else if let Some(empty) = plan.downcast_ref::<EmptyExec>() {
-            let schema = empty.schema().as_ref().into();
+            let schema = empty.schema().as_ref().try_into()?;
             Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Empty(
                     protobuf::EmptyExecNode {
@@ -985,7 +985,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::ShuffleReader(
                     protobuf::ShuffleReaderExecNode {
                         partition,
-                        schema: Some(exec.schema().as_ref().into()),
+                        schema: Some(exec.schema().as_ref().try_into()?),
                     },
                 )),
             })
@@ -1102,7 +1102,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Unresolved(
                     protobuf::UnresolvedShuffleExecNode {
                         stage_id: exec.stage_id as u32,
-                        schema: Some(exec.schema().as_ref().into()),
+                        schema: Some(exec.schema().as_ref().try_into()?),
                         input_partition_count: exec.input_partition_count as u32,
                         output_partition_count: exec.output_partition_count as u32,
                     },

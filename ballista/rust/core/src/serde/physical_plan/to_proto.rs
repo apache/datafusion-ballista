@@ -280,7 +280,7 @@ impl TryFrom<Arc<dyn PhysicalExpr>> for protobuf::PhysicalExprNode {
                 expr_type: Some(protobuf::physical_expr_node::ExprType::Cast(Box::new(
                     protobuf::PhysicalCastNode {
                         expr: Some(Box::new(cast.expr().clone().try_into()?)),
-                        arrow_type: Some(cast.cast_type().into()),
+                        arrow_type: Some(cast.cast_type().try_into()?),
                     },
                 ))),
             })
@@ -289,7 +289,7 @@ impl TryFrom<Arc<dyn PhysicalExpr>> for protobuf::PhysicalExprNode {
                 expr_type: Some(protobuf::physical_expr_node::ExprType::TryCast(
                     Box::new(protobuf::PhysicalTryCastNode {
                         expr: Some(Box::new(cast.expr().clone().try_into()?)),
-                        arrow_type: Some(cast.cast_type().into()),
+                        arrow_type: Some(cast.cast_type().try_into()?),
                     }),
                 )),
             })
@@ -310,7 +310,7 @@ impl TryFrom<Arc<dyn PhysicalExpr>> for protobuf::PhysicalExprNode {
                                 name: expr.name().to_string(),
                                 fun: fun.into(),
                                 args,
-                                return_type: Some(expr.return_type().into()),
+                                return_type: Some(expr.return_type().try_into()?),
                             },
                         ),
                     ),
@@ -321,7 +321,7 @@ impl TryFrom<Arc<dyn PhysicalExpr>> for protobuf::PhysicalExprNode {
                         protobuf::PhysicalScalarUdfNode {
                             name: expr.name().to_string(),
                             args,
-                            return_type: Some(expr.return_type().into()),
+                            return_type: Some(expr.return_type().try_into()?),
                         },
                     )),
                 })
@@ -450,7 +450,7 @@ impl TryFrom<&FileScanConfig> for protobuf::FileScanExecConf {
                 .iter()
                 .map(|n| *n as u32)
                 .collect(),
-            schema: Some(conf.file_schema.as_ref().into()),
+            schema: Some(conf.file_schema.as_ref().try_into()?),
             table_partition_cols: conf.table_partition_cols.to_vec(),
             object_store_url: conf.object_store_url.to_string(),
         })
