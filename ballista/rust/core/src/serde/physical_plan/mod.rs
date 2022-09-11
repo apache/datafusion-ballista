@@ -1197,10 +1197,12 @@ mod roundtrip_tests {
     use std::sync::Arc;
 
     use datafusion::arrow::array::ArrayRef;
+    use datafusion::arrow::datatypes::IntervalUnit;
     use datafusion::datasource::object_store::ObjectStoreUrl;
     use datafusion::execution::context::ExecutionProps;
     use datafusion::logical_expr::{BuiltinScalarFunction, Volatility};
     use datafusion::logical_plan::create_udf;
+    use datafusion::physical_expr::expressions::DateTimeIntervalExpr;
     use datafusion::physical_expr::ScalarFunctionExpr;
     use datafusion::physical_plan::aggregates::PhysicalGroupBy;
     use datafusion::physical_plan::functions;
@@ -1292,6 +1294,32 @@ mod roundtrip_tests {
     #[test]
     fn roundtrip_empty() -> Result<()> {
         roundtrip_test(Arc::new(EmptyExec::new(false, Arc::new(Schema::empty()))))
+    }
+
+    #[test]
+    fn roundtrip_date_time_interval() -> Result<()> {
+        let schema = Schema::new(vec![
+            Field::new("some_date", DataType::Date32, false),
+            Field::new(
+                "some_interval",
+                DataType::Interval(IntervalUnit::DayTime),
+                false,
+            ),
+        ]);
+        let input = Arc::new(EmptyExec::new(false, Arc::new(schema.clone())));
+        let date_expr = col("some_date", &schema)?;
+        let literal_expr = col("some_interval", &schema)?;
+        let date_time_interval_expr = Arc::new(DateTimeIntervalExpr::try_new(
+            date_expr,
+            Operator::Plus,
+            literal_expr,
+            &schema,
+        )?);
+        let plan = Arc::new(ProjectionExec::try_new(
+            vec![(date_time_interval_expr, "result".to_string())],
+            input,
+        )?);
+        roundtrip_test(plan)
     }
 
     #[test]

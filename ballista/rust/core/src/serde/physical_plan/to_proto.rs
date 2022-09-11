@@ -46,6 +46,7 @@ use datafusion::physical_plan::{AggregateExpr, PhysicalExpr};
 use crate::serde::{protobuf, BallistaError};
 
 use datafusion::logical_expr::BuiltinScalarFunction;
+use datafusion::physical_expr::expressions::DateTimeIntervalExpr;
 use datafusion::physical_expr::ScalarFunctionExpr;
 
 impl TryInto<protobuf::PhysicalExprNode> for Arc<dyn AggregateExpr> {
@@ -325,6 +326,20 @@ impl TryFrom<Arc<dyn PhysicalExpr>> for protobuf::PhysicalExprNode {
                     )),
                 })
             }
+        } else if let Some(expr) = expr.downcast_ref::<DateTimeIntervalExpr>() {
+            let dti_expr = Box::new(protobuf::PhysicalDateTimeIntervalExprNode {
+                l: Some(Box::new(expr.lhs().to_owned().try_into()?)),
+                r: Some(Box::new(expr.rhs().to_owned().try_into()?)),
+                op: format!("{:?}", expr.op()),
+            });
+
+            Ok(protobuf::PhysicalExprNode {
+                expr_type: Some(
+                    protobuf::physical_expr_node::ExprType::DateTimeIntervalExpr(
+                        dti_expr,
+                    ),
+                ),
+            })
         } else {
             Err(BallistaError::General(format!(
                 "physical_plan::to_proto() unsupported expression {:?}",

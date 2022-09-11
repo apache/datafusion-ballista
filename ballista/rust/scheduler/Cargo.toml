@@ -45,8 +45,8 @@ ballista-core = { path = "../core", version = "0.7.0" }
 base64 = { version = "0.13", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
 configure_me = "0.4.0"
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "8b59b207aaadd6f2c19c28d1f1431a0cb8d110ae" }
-datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "8b59b207aaadd6f2c19c28d1f1431a0cb8d110ae" }
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "deea8c3e8436614c7333025d7c44917487ef439a" }
+datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "deea8c3e8436614c7333025d7c44917487ef439a" }
 etcd-client = { version = "0.9", optional = true }
 flatbuffers = { version = "2.1.2" }
 futures = "0.3"
