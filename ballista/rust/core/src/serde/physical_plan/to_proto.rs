@@ -46,6 +46,7 @@ use datafusion::physical_plan::{AggregateExpr, PhysicalExpr};
 use crate::serde::{protobuf, BallistaError};
 
 use datafusion::logical_expr::BuiltinScalarFunction;
+use datafusion::physical_expr::expressions::DateTimeIntervalExpr;
 use datafusion::physical_expr::ScalarFunctionExpr;
 
 impl TryInto<protobuf::PhysicalExprNode> for Arc<dyn AggregateExpr> {
@@ -279,7 +280,7 @@ impl TryFrom<Arc<dyn PhysicalExpr>> for protobuf::PhysicalExprNode {
                 expr_type: Some(protobuf::physical_expr_node::ExprType::Cast(Box::new(
                     protobuf::PhysicalCastNode {
                         expr: Some(Box::new(cast.expr().clone().try_into()?)),
-                        arrow_type: Some(cast.cast_type().into()),
+                        arrow_type: Some(cast.cast_type().try_into()?),
                     },
                 ))),
             })
@@ -288,7 +289,7 @@ impl TryFrom<Arc<dyn PhysicalExpr>> for protobuf::PhysicalExprNode {
                 expr_type: Some(protobuf::physical_expr_node::ExprType::TryCast(
                     Box::new(protobuf::PhysicalTryCastNode {
                         expr: Some(Box::new(cast.expr().clone().try_into()?)),
-                        arrow_type: Some(cast.cast_type().into()),
+                        arrow_type: Some(cast.cast_type().try_into()?),
                     }),
                 )),
             })
@@ -309,7 +310,7 @@ impl TryFrom<Arc<dyn PhysicalExpr>> for protobuf::PhysicalExprNode {
                                 name: expr.name().to_string(),
                                 fun: fun.into(),
                                 args,
-                                return_type: Some(expr.return_type().into()),
+                                return_type: Some(expr.return_type().try_into()?),
                             },
                         ),
                     ),
@@ -320,11 +321,25 @@ impl TryFrom<Arc<dyn PhysicalExpr>> for protobuf::PhysicalExprNode {
                         protobuf::PhysicalScalarUdfNode {
                             name: expr.name().to_string(),
                             args,
-                            return_type: Some(expr.return_type().into()),
+                            return_type: Some(expr.return_type().try_into()?),
                         },
                     )),
                 })
             }
+        } else if let Some(expr) = expr.downcast_ref::<DateTimeIntervalExpr>() {
+            let dti_expr = Box::new(protobuf::PhysicalDateTimeIntervalExprNode {
+                l: Some(Box::new(expr.lhs().to_owned().try_into()?)),
+                r: Some(Box::new(expr.rhs().to_owned().try_into()?)),
+                op: format!("{:?}", expr.op()),
+            });
+
+            Ok(protobuf::PhysicalExprNode {
+                expr_type: Some(
+                    protobuf::physical_expr_node::ExprType::DateTimeIntervalExpr(
+                        dti_expr,
+                    ),
+                ),
+            })
         } else {
             Err(BallistaError::General(format!(
                 "physical_plan::to_proto() unsupported expression {:?}",
@@ -435,7 +450,7 @@ impl TryFrom<&FileScanConfig> for protobuf::FileScanExecConf {
                 .iter()
                 .map(|n| *n as u32)
                 .collect(),
-            schema: Some(conf.file_schema.as_ref().into()),
+            schema: Some(conf.file_schema.as_ref().try_into()?),
             table_partition_cols: conf.table_partition_cols.to_vec(),
             object_store_url: conf.object_store_url.to_string(),
         })

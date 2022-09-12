@@ -169,6 +169,7 @@ macro_rules! aggregate_function {
                 fun: AggregateFunction::$FUNC,
                 args: args.into_iter().map(|e| e.into()).collect(),
                 distinct,
+                filter: None,
             };
             expr.into()
         }

@@ -40,9 +40,9 @@ use futures::TryStreamExt;
 use log::{debug, error, info, warn};
 
 // use http_body::Body;
+use std::convert::TryInto;
 use std::ops::Deref;
 use std::sync::Arc;
-
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
@@ -336,7 +336,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             })?;
 
         Ok(Response::new(GetFileMetadataResult {
-            schema: Some(schema.as_ref().into()),
+            schema: Some(schema.as_ref().try_into().map_err(|e| {
+                let msg = format!("Error inferring schema: {}", e);
+                error!("{}", msg);
+                tonic::Status::internal(msg)
+            })?),
         }))
     }
 

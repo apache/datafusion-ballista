@@ -28,6 +28,7 @@ use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::execution::context::ExecutionProps;
 use datafusion::logical_expr::window_function::WindowFunction;
 use datafusion::logical_plan::FunctionRegistry;
+use datafusion::physical_expr::expressions::DateTimeIntervalExpr;
 use datafusion::physical_expr::ScalarFunctionExpr;
 use datafusion::physical_plan::file_format::FileScanConfig;
 use datafusion::physical_plan::{
@@ -84,6 +85,12 @@ pub(crate) fn parse_physical_expr(
                 input_schema,
             )?,
         )),
+        ExprType::DateTimeIntervalExpr(expr) => Arc::new(DateTimeIntervalExpr::try_new(
+            parse_required_physical_box_expr(&expr.l, registry, "left", input_schema)?,
+            from_proto_binary_op(&expr.op)?,
+            parse_required_physical_box_expr(&expr.r, registry, "right", input_schema)?,
+            input_schema,
+        )?),
         ExprType::AggregateExpr(_) => {
             return Err(BallistaError::General(
                 "Cannot convert aggregate expr node to physical expression".to_owned(),

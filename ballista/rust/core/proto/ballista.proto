@@ -118,6 +118,8 @@ message PhysicalExprNode {
     PhysicalWindowExprNode window_expr = 15;
 
     PhysicalScalarUdfNode scalar_udf = 16;
+
+    PhysicalDateTimeIntervalExprNode date_time_interval_expr = 17;
   }
 }
 
@@ -159,6 +161,12 @@ message PhysicalAliasNode {
 }
 
 message PhysicalBinaryExprNode {
+  PhysicalExprNode l = 1;
+  PhysicalExprNode r = 2;
+  string op = 3;
+}
+
+message PhysicalDateTimeIntervalExprNode {
   PhysicalExprNode l = 1;
   PhysicalExprNode r = 2;
   string op = 3;
