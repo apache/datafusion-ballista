@@ -97,7 +97,7 @@ impl Accumulator for RustAccumulator {
 }
 
 pub fn to_rust_accumulator(accum: PyObject) -> AccumulatorFunctionImplementation {
-    Arc::new(move || -> Result<Box<dyn Accumulator>> {
+    Arc::new(move |_| -> Result<Box<dyn Accumulator>> {
         let accum = Python::with_gil(|py| {
             accum
                 .call0(py)
