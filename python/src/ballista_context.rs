@@ -38,10 +38,20 @@ pub(crate) struct PyBallistaContext {
 #[pymethods]
 impl PyBallistaContext {
     #[new]
-    #[args(port = "50050")]
-    fn new(py: Python, host: &str, port: u16) -> PyResult<Self> {
+    #[args(port = "50050", shuffle_partitions = 4, batch_size = 8192)]
+    fn new(
+        py: Python,
+        host: &str,
+        port: u16,
+        shuffle_partitions: usize,
+        batch_size: usize,
+    ) -> PyResult<Self> {
         let config = BallistaConfig::builder()
-            .set("ballista.shuffle.partitions", "4")
+            .set(
+                "ballista.shuffle.partitions",
+                &format!("{}", shuffle_partitions),
+            )
+            .set("ballista.batch.size", &format!("{}", batch_size))
             .set("ballista.with_information_schema", "true")
             .build()
             .map_err(BallistaError::from)?;
