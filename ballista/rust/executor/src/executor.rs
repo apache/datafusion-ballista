@@ -95,6 +95,7 @@ impl Executor {
         work_dir: &str,
         ctx: &SessionContext,
         metrics_collector: Arc<dyn ExecutorMetricsCollector>,
+        concurrent_tasks: usize,
     ) -> Self {
         Self {
             metadata,
@@ -104,6 +105,7 @@ impl Executor {
             aggregate_functions: ctx.state.read().aggregate_functions.clone(),
             runtime: ctx.runtime_env(),
             metrics_collector,
+            concurrent_tasks,
             abort_handles: Default::default(),
         }
     }

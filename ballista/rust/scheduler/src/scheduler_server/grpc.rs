@@ -16,11 +16,9 @@
 // under the License.
 
 use ballista_core::config::{BallistaConfig, TaskSchedulingPolicy};
-use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf::execute_query_params::{
     OptionalJobId, OptionalSessionId, Query,
 };
-use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
