@@ -38,7 +38,7 @@ pub(crate) struct PyBallistaContext {
 #[pymethods]
 impl PyBallistaContext {
     #[new]
-    #[args(port = "50050", shuffle_partitions = 4, batch_size = 8192)]
+    #[args(port = "50050", shuffle_partitions = 16, batch_size = 8192)]
     fn new(
         py: Python,
         host: &str,
