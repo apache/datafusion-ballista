@@ -36,9 +36,10 @@ use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_core::serde::protobuf::{
     executor_metric, executor_status, CancelTasksParams, CancelTasksResult,
-    ExecutorMetric, ExecutorStatus, HeartBeatParams, LaunchTaskParams, LaunchTaskResult,
-    RegisterExecutorParams, StopExecutorParams, StopExecutorResult, TaskDefinition,
-    TaskStatus, UpdateTaskStatusParams,
+    ExecutorMetric, ExecutorStatus, HeartBeatParams, LaunchMultiTaskParams,
+    LaunchMultiTaskResult, LaunchTaskParams, LaunchTaskResult, RegisterExecutorParams,
+    StopExecutorParams, StopExecutorResult, TaskDefinition, TaskStatus,
+    UpdateTaskStatusParams,
 };
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use ballista_core::utils::{
@@ -615,6 +616,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                 .unwrap();
         }
         Ok(Response::new(LaunchTaskResult { success: true }))
+    }
+
+    async fn launch_multi_task(
+        &self,
+        _request: Request<LaunchMultiTaskParams>,
+    ) -> Result<Response<LaunchMultiTaskResult>, Status> {
+        panic!("not implemented")
     }
 
     async fn stop_executor(

@@ -534,6 +534,15 @@ message PartitionId {
   uint32 partition_id = 4;
 }
 
+// Unique identifier for a materialized partition of data
+message PartitionIds {
+  string job_id = 1;
+  uint32 stage_id = 2;
+  repeated uint32 partition_id = 3;
+  // Output partition for shuffle writer
+  repeated PhysicalHashRepartition output_partitioning = 4;
+}
+
 message PartitionStats {
   int64 num_rows = 1;
   int64 num_batches = 2;
@@ -698,6 +707,13 @@ message TaskDefinition {
   repeated KeyValuePair props = 5;
 }
 
+message MultiTaskDefinition {
+  PartitionIds task_ids = 1;
+  bytes plan = 2;
+  string session_id = 3;
+  repeated KeyValuePair props = 4;
+}
+
 message SessionSettings {
   repeated KeyValuePair configs = 1;
 }
@@ -836,9 +852,19 @@ message LaunchTaskParams {
   string scheduler_id = 2;
 }
 
+message LaunchMultiTaskParams {
+  // Allow to launch multiple tasks set to an executor and executin plan at once
+  MultiTaskDefinition tasks = 1;
+  string scheduler_id = 2;
+}
+
 message LaunchTaskResult {
   bool success = 1;
   // TODO when part of the task set are scheduled successfully
+}
+
+message LaunchMultiTaskResult {
+  repeated bool success = 1;
 }
 
 message CancelTasksParams {
@@ -875,6 +901,8 @@ service SchedulerGrpc {
 
 service ExecutorGrpc {
   rpc LaunchTask (LaunchTaskParams) returns (LaunchTaskResult) {}
+
+  rpc LaunchMultiTask (LaunchMultiTaskParams) returns (LaunchMultiTaskResult) {}
 
   rpc StopExecutor (StopExecutorParams) returns (StopExecutorResult) {}
 
