@@ -51,11 +51,21 @@ let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
 ## Configuring Executor Concurrency Levels
 
 Each executor instance has a fixed number of tasks that it can process concurrently. This is specified by passing a
-`concurrent_tasks` command-line parameter. The default value is 4.
+`concurrent_tasks` command-line parameter. The default setting is to use all available CPU cores.
 
 Increasing this configuration setting will increase the number of tasks that each executor can run concurrently but
 this will also mean that the executor will use more memory. If executors are failing due to out-of-memory errors then
-decreasing the number of concurrent tasks can help.
+decreasing the number of concurrent tasks may help.
 
 In the future, Ballista will have better support for tracking memory usage and allocating tasks based on available
 memory, as well as supporting spill-to-disk to reduce memory pressure.
+
+## Push-based vs Pull-based Task Scheduling
+
+Ballista supports both push-based and pull-based task scheduling. It is recommended that you try both to determine
+which is the best for your use case.
+
+Pull-based scheduling works in a similar way to Apache Spark and push-based scheduling can result in lower latency.
+
+The scheduling policy can be specified in the `--scheduler_policy` parameter when starting the scheduler and executor
+processes. The default is `pull-based`.
