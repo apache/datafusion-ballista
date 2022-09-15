@@ -69,7 +69,7 @@ doc = "Directory for temporary IPC files"
 abbr = "c"
 name = "concurrent_tasks"
 type = "usize"
-default = "4"
+default = "0" # defaults to all available cores if left as zero
 doc = "Max concurrent tasks."
 
 [[param]]
