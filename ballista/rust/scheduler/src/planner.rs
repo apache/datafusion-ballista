@@ -223,7 +223,7 @@ pub fn remove_unresolved_shuffles(
                     relevant_locations.push(vec![]);
                 }
             }
-            info!(
+            debug!(
                 "Creating shuffle reader: {}",
                 relevant_locations
                     .iter()

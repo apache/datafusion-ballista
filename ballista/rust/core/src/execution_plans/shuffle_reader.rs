@@ -36,7 +36,7 @@ use futures::{StreamExt, TryStreamExt};
 use datafusion::arrow::error::ArrowError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use log::info;
+use log::{debug, info};
 
 /// ShuffleReaderExec reads partitions that have already been materialized by a ShuffleWriterExec
 /// being executed by an executor
@@ -104,7 +104,7 @@ impl ExecutionPlan for ShuffleReaderExec {
         partition: usize,
         _context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        info!("ShuffleReaderExec::execute({})", partition);
+        debug!("ShuffleReaderExec::execute({})", partition);
 
         let fetch_time =
             MetricBuilder::new(&self.metrics).subset_time("fetch_time", partition);
