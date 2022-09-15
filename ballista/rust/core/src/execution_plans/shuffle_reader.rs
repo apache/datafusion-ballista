@@ -36,7 +36,7 @@ use futures::{StreamExt, TryStreamExt};
 use datafusion::arrow::error::ArrowError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use log::{debug, info};
+use log::debug;
 
 /// ShuffleReaderExec reads partitions that have already been materialized by a ShuffleWriterExec
 /// being executed by an executor
@@ -136,7 +136,7 @@ impl ExecutionPlan for ShuffleReaderExec {
     ) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default => {
-                write!(f, "ShuffleReaderExec: partitions={}", self.partition.len(),)
+                write!(f, "ShuffleReaderExec: partitions={}", self.partition.len())
             }
         }
     }
