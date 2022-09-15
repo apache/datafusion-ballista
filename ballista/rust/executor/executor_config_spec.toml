@@ -69,14 +69,14 @@ doc = "Directory for temporary IPC files"
 abbr = "c"
 name = "concurrent_tasks"
 type = "usize"
-default = "4"
+default = "0" # defaults to all available cores if left as zero
 doc = "Max concurrent tasks."
 
 [[param]]
 abbr = "s"
 name = "task_scheduling_policy"
 type = "ballista_core::config::TaskSchedulingPolicy"
-doc = "The task scheduing policy for the scheduler, see TaskSchedulingPolicy::variants() for options. Default: PullStaged"
+doc = "The task scheduing policy for the scheduler, possible values: pull-staged, push-staged. Default: pull-staged"
 default = "ballista_core::config::TaskSchedulingPolicy::PullStaged"
 
 [[param]]
@@ -119,4 +119,3 @@ name = "log_level_setting"
 type = "String"
 doc = "special log level for sub mod. link: https://docs.rs/env_logger/latest/env_logger/#enabling-logging. For example we want whole level is INFO but datafusion mode is DEBUG"
 default = "std::string::String::from(\"INFO,datafusion=INFO\")"
-
