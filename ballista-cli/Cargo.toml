@@ -31,9 +31,9 @@ readme = "README.md"
 [dependencies]
 ballista = { path = "../ballista/rust/client", version = "0.7.0" }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = { git = "https://github.com/coralogix/arrow-datafusion", branch = "sc-9583"}
-datafusion-proto = { git = "https://github.com/coralogix/arrow-datafusion", branch = "sc-9583" }
+datafusion = { git = "https://github.com/coralogix/arrow-datafusion", branch = "sc-9583" }
 datafusion-cli = { git = "https://github.com/coralogix/arrow-datafusion", branch = "sc-9583" }
+datafusion-proto = { git = "https://github.com/coralogix/arrow-datafusion", branch = "sc-9583" }
 dirs = "4.0.0"
 env_logger = "0.9"
 mimalloc = { version = "0.1", default-features = false }

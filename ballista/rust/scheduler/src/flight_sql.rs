@@ -32,7 +32,7 @@ use arrow_flight::{
 use log::{debug, error, warn};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::scheduler_server::SchedulerServer;
@@ -47,9 +47,9 @@ use datafusion::arrow;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::ipc::writer::{IpcDataGenerator, IpcWriteOptions};
 use datafusion::common::DFSchemaRef;
+use datafusion::datafusion_proto::protobuf::LogicalPlanNode;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
-use datafusion_proto::protobuf::LogicalPlanNode;
 use prost::Message;
 use tokio::time::sleep;
 use uuid::Uuid;
@@ -242,8 +242,14 @@ impl FlightSqlServiceImpl {
         plan: &LogicalPlan,
     ) -> Result<String, Status> {
         let job_id = self.server.state.task_manager.generate_job_id();
+
+        let queued_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+
         self.server
-            .submit_job(&job_id, ctx, plan)
+            .submit_job(&job_id, ctx, plan, queued_at)
             .await
             .map_err(|e| {
                 let msg =

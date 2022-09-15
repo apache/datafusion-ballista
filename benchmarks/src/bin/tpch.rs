@@ -1461,6 +1461,7 @@ mod tests {
     mod ballista_round_trip {
         use super::*;
         use ballista_core::serde::{protobuf, AsExecutionPlan, BallistaCodec};
+        use datafusion::datafusion_proto::logical_plan::AsLogicalPlan;
         use datafusion::datasource::listing::ListingTableUrl;
         use datafusion::physical_plan::ExecutionPlan;
         use std::ops::Deref;
