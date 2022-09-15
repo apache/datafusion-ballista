@@ -132,9 +132,17 @@ async fn main() -> Result<()> {
             .into_string()
             .unwrap(),
     );
+
+    let concurrent_tasks = if opt.concurrent_tasks == 0 {
+        // use all available cores if no concurrency level is specified
+        num_cpus::get()
+    } else {
+        opt.concurrent_tasks
+    };
+
     info!("Running with config:");
     info!("work_dir: {}", work_dir);
-    info!("concurrent_tasks: {}", opt.concurrent_tasks);
+    info!("concurrent_tasks: {}", concurrent_tasks);
 
     // assign this executor an unique ID
     let executor_id = Uuid::new_v4().to_string();
@@ -147,7 +155,7 @@ async fn main() -> Result<()> {
         grpc_port: grpc_port as u32,
         specification: Some(
             ExecutorSpecification {
-                task_slots: opt.concurrent_tasks as u32,
+                task_slots: concurrent_tasks as u32,
             }
             .into(),
         ),
@@ -165,7 +173,7 @@ async fn main() -> Result<()> {
         &work_dir,
         runtime,
         metrics_collector,
-        opt.concurrent_tasks,
+        concurrent_tasks,
     ));
 
     let connection = create_grpc_client_connection(scheduler_url)
