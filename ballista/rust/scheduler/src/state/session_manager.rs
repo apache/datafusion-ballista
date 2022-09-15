@@ -122,12 +122,6 @@ pub fn create_datafusion_context(
         .with_repartition_aggregations(ballista_config.repartition_aggregations())
         .with_repartition_windows(ballista_config.repartition_windows())
         .with_parquet_pruning(ballista_config.parquet_pruning());
-
-    println!(
-        "create_datafusion_context() config={:?}",
-        config.config_options
-    );
-
     let config = propagate_ballista_configs(config, ballista_config);
 
     let session_state = session_builder(config);
