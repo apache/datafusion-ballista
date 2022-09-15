@@ -168,11 +168,13 @@ async fn main() -> Result<()> {
     let port = opt.bind_port;
     let log_dir = opt.log_dir;
     let print_thread_info = opt.print_thread_info;
-    let scheduler_name = format!("scheduler_{}_{}_{}", namespace, external_host, port);
+    let log_file_name_prefix =
+        format!("scheduler_{}_{}_{}", namespace, external_host, port);
+    let scheduler_name = format!("{}:{}", external_host, port);
 
     // File layer
     if let Some(log_dir) = log_dir {
-        let log_file = tracing_appender::rolling::daily(log_dir, &scheduler_name);
+        let log_file = tracing_appender::rolling::daily(log_dir, &log_file_name_prefix);
         tracing_subscriber::fmt()
             .with_ansi(true)
             .with_thread_names(print_thread_info)
