@@ -223,6 +223,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             num_status, executor_id, e
                         );
                         // TODO error handling
+
+                        // In case task update fails, make sure to free reservations
+                        if matches!(self.policy, TaskSchedulingPolicy::PushStaged) {
+                            let mut offers = Vec::with_capacity(num_status);
+                            for _ in 0..num_status {
+                                offers.push(ExecutorReservation::new_free(
+                                    executor_id.to_owned(),
+                                ));
+                            }
+
+                            tx_event
+                                .post_event(
+                                    QueryStageSchedulerEvent::ReservationOffering(offers),
+                                )
+                                .await?;
+                        }
                     }
                 }
             }
