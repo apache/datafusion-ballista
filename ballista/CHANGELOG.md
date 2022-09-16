@@ -19,6 +19,53 @@
 
 # Changelog
 
+## [0.8.0](https://github.com/apache/arrow-ballista/tree/0.8.0) (2022-09-16)
+
+[Full Changelog](https://github.com/apache/arrow-ballista/compare/0.7.0...0.8.0)
+
+**Implemented enhancements:**
+
+- Executor should use all available cores by default [\#218](https://github.com/apache/arrow-ballista/issues/218)
+- Update task status to the task job curator scheduler [\#179](https://github.com/apache/arrow-ballista/issues/179)
+- update datafusion and arrow  to 20.0.0 [\#176](https://github.com/apache/arrow-ballista/issues/176)
+- No scheduler logs when deployed to k8s [\#165](https://github.com/apache/arrow-ballista/issues/165)
+- Upgrade to DataFusion 11.0.0 [\#163](https://github.com/apache/arrow-ballista/issues/163)
+- Better encapsulation for ExecutionGraph [\#149](https://github.com/apache/arrow-ballista/issues/149)
+- A stage may act as the input of multiple stages [\#144](https://github.com/apache/arrow-ballista/issues/144)
+- Executor Lost handling [\#143](https://github.com/apache/arrow-ballista/issues/143)
+- Cancel a running query. [\#139](https://github.com/apache/arrow-ballista/issues/139)
+- Ignore the previous job\_id inside fill\_reservations\(\) [\#138](https://github.com/apache/arrow-ballista/issues/138)
+- Normalize the serialization and deserialization places of protobuf structs [\#137](https://github.com/apache/arrow-ballista/issues/137)
+- Remove revive offer event loop [\#136](https://github.com/apache/arrow-ballista/issues/136)
+- Remove Keyspace::QueuedJobs [\#133](https://github.com/apache/arrow-ballista/issues/133)
+- Spawn a thread for execution plan generation [\#131](https://github.com/apache/arrow-ballista/issues/131)
+- Introduce CuratorTaskManager for make an active job be curated by only one scheduler [\#130](https://github.com/apache/arrow-ballista/issues/130)
+- Using tokio tracing for log file [\#122](https://github.com/apache/arrow-ballista/issues/122)
+- Ballista Executor report plan/operators metrics to Ballista Scheduler when task finish   [\#116](https://github.com/apache/arrow-ballista/issues/116)
+- Add timeout settings for Grpc Client [\#114](https://github.com/apache/arrow-ballista/issues/114)
+- Add log level config in ballista [\#102](https://github.com/apache/arrow-ballista/issues/102)
+- Use another channel to update the status of a task set for executor [\#96](https://github.com/apache/arrow-ballista/issues/96)
+- Add config for concurrent\_task in executor [\#94](https://github.com/apache/arrow-ballista/issues/94)
+- Ballista should support Arrow FlightSQL  [\#92](https://github.com/apache/arrow-ballista/issues/92)
+- Why not include the `ballista-cli` in the member of workspace [\#88](https://github.com/apache/arrow-ballista/issues/88)
+- Upgrade dependency of arrow-datafusion to commit d0d5564b8f689a01e542b8c1df829d74d0fab2b0 [\#84](https://github.com/apache/arrow-ballista/issues/84)
+- Support  sled path in config file. [\#79](https://github.com/apache/arrow-ballista/issues/79)
+- Support for multi-scheduler deployments [\#39](https://github.com/apache/arrow-ballista/issues/39)
+- Ballista 0.7.0 Release [\#126](https://github.com/apache/arrow-ballista/issues/126)
+- Improvements to Ballista extensibility [\#8](https://github.com/apache/arrow-ballista/issues/8)
+- Implement Python bindings for BallistaContext [\#15](https://github.com/apache/arrow-ballista/issues/15)
+
+**Fixed bugs:**
+
+- Run example fails via PushStaged mode [\#214](https://github.com/apache/arrow-ballista/issues/214)
+- Config settings in BallistaContext do not get passed to DataFusion context [\#213](https://github.com/apache/arrow-ballista/issues/213)
+- Start scheduler fails with arguments "-s PushStaged" [\#207](https://github.com/apache/arrow-ballista/issues/207)
+- FlightSQL is broken and CI isn't catching it [\#190](https://github.com/apache/arrow-ballista/issues/190)
+- Query fails with "NULL is invalid as a DataFusion scalar value" [\#180](https://github.com/apache/arrow-ballista/issues/180)
+- Executor doesn't compile, missing `tokio::signal` [\#171](https://github.com/apache/arrow-ballista/issues/171)
+- Unable to build master [\#76](https://github.com/apache/arrow-ballista/issues/76)
+
+
 ## [ballista-0.7.0](https://github.com/apache/arrow-datafusion/tree/ballista-0.7.0) (2022-05-12)
 
 [Full Changelog](https://github.com/apache/arrow-datafusion/compare/7.1.0-rc1...ballista-0.7.0)
@@ -42,13 +89,13 @@
 
 - Add `CREATE VIEW` [\#2279](https://github.com/apache/arrow-datafusion/pull/2279) ([matthewmturner](https://github.com/matthewmturner))
 - \[Ballista\] Support Union in ballista. [\#2098](https://github.com/apache/arrow-datafusion/pull/2098) ([Ted-Jiang](https://github.com/Ted-Jiang))
-- Add missing aggr_expr to PhysicalExprNode for Ballista. [\#1989](https://github.com/apache/arrow-datafusion/pull/1989) ([Ted-Jiang](https://github.com/Ted-Jiang))
+- Add missing aggr\_expr to PhysicalExprNode for Ballista. [\#1989](https://github.com/apache/arrow-datafusion/pull/1989) ([Ted-Jiang](https://github.com/Ted-Jiang))
 
 **Fixed bugs:**
 
 - Ballista integration tests no longer work [\#2440](https://github.com/apache/arrow-datafusion/issues/2440)
 - Ballista crates cannot be released from DafaFusion 7.0.0 source release [\#1980](https://github.com/apache/arrow-datafusion/issues/1980)
-- protobuf OctetLength should be deserialized as octet_length, not length [\#1834](https://github.com/apache/arrow-datafusion/pull/1834) ([carols10cents](https://github.com/carols10cents))
+- protobuf OctetLength should be deserialized as octet\_length, not length [\#1834](https://github.com/apache/arrow-datafusion/pull/1834) ([carols10cents](https://github.com/carols10cents))
 
 **Documentation updates:**
 
@@ -80,7 +127,7 @@
 - Limit cpu cores used when generating changelog [\#2494](https://github.com/apache/arrow-datafusion/pull/2494) ([andygrove](https://github.com/andygrove))
 - MINOR: Parameterize changelog script [\#2484](https://github.com/apache/arrow-datafusion/pull/2484) ([jychen7](https://github.com/jychen7))
 - Fix stage key extraction [\#2472](https://github.com/apache/arrow-datafusion/pull/2472) ([thinkharderdev](https://github.com/thinkharderdev))
-- Add support for list_dir\(\) on local fs [\#2467](https://github.com/apache/arrow-datafusion/pull/2467) ([wjones127](https://github.com/wjones127))
+- Add support for list\_dir\(\) on local fs [\#2467](https://github.com/apache/arrow-datafusion/pull/2467) ([wjones127](https://github.com/wjones127))
 - minor: update versions and paths in changelog scripts [\#2429](https://github.com/apache/arrow-datafusion/pull/2429) ([andygrove](https://github.com/andygrove))
 - Fix Ballista executing during plan [\#2428](https://github.com/apache/arrow-datafusion/pull/2428) ([tustvold](https://github.com/tustvold))
 - Re-organize and rename aggregates physical plan [\#2388](https://github.com/apache/arrow-datafusion/pull/2388) ([yjshen](https://github.com/yjshen))
@@ -88,7 +135,7 @@
 - Grouped Aggregate in row format [\#2375](https://github.com/apache/arrow-datafusion/pull/2375) ([yjshen](https://github.com/yjshen))
 - Stop optimizing queries twice [\#2369](https://github.com/apache/arrow-datafusion/pull/2369) ([andygrove](https://github.com/andygrove))
 - Bump follow-redirects from 1.13.2 to 1.14.9 in /ballista/ui/scheduler [\#2325](https://github.com/apache/arrow-datafusion/pull/2325) ([dependabot[bot]](https://github.com/apps/dependabot))
-- Move FileType enum from sql module to logical_plan module [\#2290](https://github.com/apache/arrow-datafusion/pull/2290) ([andygrove](https://github.com/andygrove))
+- Move FileType enum from sql module to logical\_plan module [\#2290](https://github.com/apache/arrow-datafusion/pull/2290) ([andygrove](https://github.com/andygrove))
 - Add BatchPartitioner \(\#2285\) [\#2287](https://github.com/apache/arrow-datafusion/pull/2287) ([tustvold](https://github.com/tustvold))
 - Update uuid requirement from 0.8 to 1.0 [\#2280](https://github.com/apache/arrow-datafusion/pull/2280) ([dependabot[bot]](https://github.com/apps/dependabot))
 - Bump async from 2.6.3 to 2.6.4 in /ballista/ui/scheduler [\#2277](https://github.com/apache/arrow-datafusion/pull/2277) ([dependabot[bot]](https://github.com/apps/dependabot))
@@ -98,11 +145,11 @@
 - Update to Arrow 12.0.0, update tonic and prost [\#2253](https://github.com/apache/arrow-datafusion/pull/2253) ([alamb](https://github.com/alamb))
 - Add ExecutorMetricsCollector interface [\#2234](https://github.com/apache/arrow-datafusion/pull/2234) ([thinkharderdev](https://github.com/thinkharderdev))
 - minor: add editor config file [\#2224](https://github.com/apache/arrow-datafusion/pull/2224) ([jackwener](https://github.com/jackwener))
-- \[Ballista\] Enable ApproxPercentileWithWeight in Ballista and fill UT [\#2192](https://github.com/apache/arrow-datafusion/pull/2192) ([Ted-Jiang](https://github.com/Ted-Jiang))
+- \[Ballista\] Enable ApproxPercentileWithWeight in Ballista and fill UT  [\#2192](https://github.com/apache/arrow-datafusion/pull/2192) ([Ted-Jiang](https://github.com/Ted-Jiang))
 - make nightly clippy happy [\#2186](https://github.com/apache/arrow-datafusion/pull/2186) ([xudong963](https://github.com/xudong963))
 - \[Ballista\]Make PhysicalAggregateExprNode has repeated PhysicalExprNode [\#2184](https://github.com/apache/arrow-datafusion/pull/2184) ([Ted-Jiang](https://github.com/Ted-Jiang))
 - Add LogicalPlan::SubqueryAlias [\#2172](https://github.com/apache/arrow-datafusion/pull/2172) ([andygrove](https://github.com/andygrove))
-- Implement fast path of with_new_children\(\) in ExecutionPlan [\#2168](https://github.com/apache/arrow-datafusion/pull/2168) ([mingmwang](https://github.com/mingmwang))
+- Implement fast path of with\_new\_children\(\) in ExecutionPlan [\#2168](https://github.com/apache/arrow-datafusion/pull/2168) ([mingmwang](https://github.com/mingmwang))
 - \[MINOR\] ignore suspicious slow test in Ballista [\#2167](https://github.com/apache/arrow-datafusion/pull/2167) ([Ted-Jiang](https://github.com/Ted-Jiang))
 - enable explain for ballista [\#2163](https://github.com/apache/arrow-datafusion/pull/2163) ([doki23](https://github.com/doki23))
 - Add delimiter for create external table [\#2162](https://github.com/apache/arrow-datafusion/pull/2162) ([matthewmturner](https://github.com/matthewmturner))
@@ -118,7 +165,7 @@
 - Refactor SessionContext, BallistaContext to support multi-tenancy configurations - Part 3 [\#2091](https://github.com/apache/arrow-datafusion/pull/2091) ([mingmwang](https://github.com/mingmwang))
 - Remove dependency of common for the storage crate [\#2076](https://github.com/apache/arrow-datafusion/pull/2076) ([yahoNanJing](https://github.com/yahoNanJing))
 - [MINOR] fix doc in `EXTRACT\(field FROM source\) [\#2074](https://github.com/apache/arrow-datafusion/pull/2074) ([Ted-Jiang](https://github.com/Ted-Jiang))
-- \[Bug\]\[Datafusion\] fix TaskContext session_config bug [\#2070](https://github.com/apache/arrow-datafusion/pull/2070) ([gaojun2048](https://github.com/gaojun2048))
+- \[Bug\]\[Datafusion\] fix TaskContext session\_config bug [\#2070](https://github.com/apache/arrow-datafusion/pull/2070) ([gaojun2048](https://github.com/gaojun2048))
 - Short-circuit evaluation for `CaseWhen` [\#2068](https://github.com/apache/arrow-datafusion/pull/2068) ([yjshen](https://github.com/yjshen))
 - split datafusion-object-store module [\#2065](https://github.com/apache/arrow-datafusion/pull/2065) ([yahoNanJing](https://github.com/yahoNanJing))
 - Change log level for noisy logs [\#2060](https://github.com/apache/arrow-datafusion/pull/2060) ([thinkharderdev](https://github.com/thinkharderdev))
@@ -153,17 +200,17 @@
 - Remove uneeded Mutex in Ballista Client [\#1898](https://github.com/apache/arrow-datafusion/pull/1898) ([alamb](https://github.com/alamb))
 - Create a `datafusion-proto` crate for datafusion protobuf serialization [\#1887](https://github.com/apache/arrow-datafusion/pull/1887) ([carols10cents](https://github.com/carols10cents))
 - Fix clippy lints [\#1885](https://github.com/apache/arrow-datafusion/pull/1885) ([HaoYang670](https://github.com/HaoYang670))
-- Separate cpu-bound \(query-execution\) and IO-bound\(heartbeat\) to … [\#1883](https://github.com/apache/arrow-datafusion/pull/1883) ([Ted-Jiang](https://github.com/Ted-Jiang))
+- Separate cpu-bound \(query-execution\) and IO-bound\(heartbeat\) to  … [\#1883](https://github.com/apache/arrow-datafusion/pull/1883) ([Ted-Jiang](https://github.com/Ted-Jiang))
 - \[Minor\] Clean up DecimalArray API Usage [\#1869](https://github.com/apache/arrow-datafusion/pull/1869) [[sql](https://github.com/apache/arrow-datafusion/labels/sql)] ([alamb](https://github.com/alamb))
 - Changes after went through "Datafusion as a library section" [\#1868](https://github.com/apache/arrow-datafusion/pull/1868) ([nonontb](https://github.com/nonontb))
 - Remove allow unused imports from ballista-core, then fix all warnings [\#1853](https://github.com/apache/arrow-datafusion/pull/1853) ([carols10cents](https://github.com/carols10cents))
 - Update to arrow 9.1.0 [\#1851](https://github.com/apache/arrow-datafusion/pull/1851) ([alamb](https://github.com/alamb))
 - move some tests out of context and into sql [\#1846](https://github.com/apache/arrow-datafusion/pull/1846) ([alamb](https://github.com/alamb))
-- Fix compiling ballista in standalone mode, add build to CI [\#1839](https://github.com/apache/arrow-datafusion/pull/1839) ([alamb](https://github.com/alamb))
+- Fix compiling ballista  in standalone mode, add build to CI [\#1839](https://github.com/apache/arrow-datafusion/pull/1839) ([alamb](https://github.com/alamb))
 - Update documentation example for change in API [\#1812](https://github.com/apache/arrow-datafusion/pull/1812) ([alamb](https://github.com/alamb))
 - Refactor scheduler state with different management policy for volatile and stable states [\#1810](https://github.com/apache/arrow-datafusion/pull/1810) ([yahoNanJing](https://github.com/yahoNanJing))
 - DataFusion + Conbench Integration [\#1791](https://github.com/apache/arrow-datafusion/pull/1791) ([dianaclarke](https://github.com/dianaclarke))
-- Enable periodic cleanup of work_dir directories in ballista executor [\#1783](https://github.com/apache/arrow-datafusion/pull/1783) ([Ted-Jiang](https://github.com/Ted-Jiang))
+- Enable periodic cleanup of work\_dir directories in ballista executor [\#1783](https://github.com/apache/arrow-datafusion/pull/1783) ([Ted-Jiang](https://github.com/Ted-Jiang))
 - Use`eq_dyn`, `neq_dyn`, `lt_dyn`, `lt_eq_dyn`, `gt_dyn`, `gt_eq_dyn` kernels from arrow [\#1475](https://github.com/apache/arrow-datafusion/pull/1475) ([alamb](https://github.com/alamb))
 
 ## [7.1.0-rc1](https://github.com/apache/arrow-datafusion/tree/7.1.0-rc1) (2022-04-10)
@@ -181,7 +228,7 @@
 **Closed issues:**
 
 - Optimize memory usage pattern to avoid "double memory" behavior [\#2149](https://github.com/apache/arrow-datafusion/issues/2149)
-- Document approx_percentile_cont_with_weight in users guide [\#2078](https://github.com/apache/arrow-datafusion/issues/2078)
+- Document approx\_percentile\_cont\_with\_weight in users guide [\#2078](https://github.com/apache/arrow-datafusion/issues/2078)
 - \[follow up\]cleaning up statements.remove\(0\) [\#1986](https://github.com/apache/arrow-datafusion/issues/1986)
 - Formatting error on documentation for Python [\#1873](https://github.com/apache/arrow-datafusion/issues/1873)
 - Remove duplicate tests from `test_const_evaluator_scalar_functions` [\#1727](https://github.com/apache/arrow-datafusion/issues/1727)
@@ -208,17 +255,17 @@
 - Add `corr` aggregate function [\#1561](https://github.com/apache/arrow-datafusion/pull/1561) ([realno](https://github.com/realno))
 - Add `covar`, `covar_pop` and `covar_samp` aggregate functions [\#1551](https://github.com/apache/arrow-datafusion/pull/1551) ([realno](https://github.com/realno))
 - Add `approx_quantile()` aggregation function [\#1539](https://github.com/apache/arrow-datafusion/pull/1539) ([domodwyer](https://github.com/domodwyer))
-- Initial MemoryManager and DiskManager APIs for query execution + External Sort implementation [\#1526](https://github.com/apache/arrow-datafusion/pull/1526) ([yjshen](https://github.com/yjshen))
+- Initial MemoryManager and DiskManager APIs  for query execution + External Sort implementation [\#1526](https://github.com/apache/arrow-datafusion/pull/1526) ([yjshen](https://github.com/yjshen))
 - Add `stddev` and `variance` [\#1525](https://github.com/apache/arrow-datafusion/pull/1525) ([realno](https://github.com/realno))
 - Add `rem` operation for Expr [\#1467](https://github.com/apache/arrow-datafusion/pull/1467) ([liukun4515](https://github.com/liukun4515))
 - Implement `array_agg` aggregate function [\#1300](https://github.com/apache/arrow-datafusion/pull/1300) ([viirya](https://github.com/viirya))
 
 **Fixed bugs:**
 
-- Ballista context::tests::test_standalone_mode test fails [\#1020](https://github.com/apache/arrow-datafusion/issues/1020)
+- Ballista context::tests::test\_standalone\_mode test fails [\#1020](https://github.com/apache/arrow-datafusion/issues/1020)
 - \[Ballista\] Fix scheduler state mod bug [\#1655](https://github.com/apache/arrow-datafusion/pull/1655) ([gaojun2048](https://github.com/gaojun2048))
 - Pass local address host so we do not get mismatch between IPv4 and IP… [\#1466](https://github.com/apache/arrow-datafusion/pull/1466) ([thinkharderdev](https://github.com/thinkharderdev))
-- Add Timezone to Scalar::Time\* types, and better timezone awareness to Datafusion's time types [\#1455](https://github.com/apache/arrow-datafusion/pull/1455) ([maxburke](https://github.com/maxburke))
+- Add Timezone to Scalar::Time\* types,   and better timezone awareness to Datafusion's time types [\#1455](https://github.com/apache/arrow-datafusion/pull/1455) ([maxburke](https://github.com/maxburke))
 
 **Documentation updates:**
 
@@ -235,7 +282,7 @@
 - Track memory usage in Non Limited Operators [\#1569](https://github.com/apache/arrow-datafusion/issues/1569)
 - \[Question\] Why does ballista store tables in the client instead of in the SchedulerServer [\#1473](https://github.com/apache/arrow-datafusion/issues/1473)
 - Why use the expr types before coercion to get the result type? [\#1358](https://github.com/apache/arrow-datafusion/issues/1358)
-- A problem about the projection_push_down optimizer gathers valid columns [\#1312](https://github.com/apache/arrow-datafusion/issues/1312)
+- A problem about the projection\_push\_down optimizer gathers valid columns  [\#1312](https://github.com/apache/arrow-datafusion/issues/1312)
 - apply constant folding to `LogicalPlan::Values` [\#1170](https://github.com/apache/arrow-datafusion/issues/1170)
 - reduce usage of `IntoIterator<Item = Expr>` in logical plan builder window fn [\#372](https://github.com/apache/arrow-datafusion/issues/372)
 
@@ -248,7 +295,7 @@
 - Update to sqlparser 0.14 [\#1796](https://github.com/apache/arrow-datafusion/pull/1796) [[sql](https://github.com/apache/arrow-datafusion/labels/sql)] ([alamb](https://github.com/alamb))
 - Update datafusion versions [\#1793](https://github.com/apache/arrow-datafusion/pull/1793) ([matthewmturner](https://github.com/matthewmturner))
 - Update datafusion to use arrow 9.0.0 [\#1775](https://github.com/apache/arrow-datafusion/pull/1775) ([alamb](https://github.com/alamb))
-- Update parking_lot requirement from 0.11 to 0.12 [\#1735](https://github.com/apache/arrow-datafusion/pull/1735) ([dependabot[bot]](https://github.com/apps/dependabot))
+- Update parking\_lot requirement from 0.11 to 0.12 [\#1735](https://github.com/apache/arrow-datafusion/pull/1735) ([dependabot[bot]](https://github.com/apps/dependabot))
 - substitute `parking_lot::Mutex` for `std::sync::Mutex` [\#1720](https://github.com/apache/arrow-datafusion/pull/1720) ([xudong963](https://github.com/xudong963))
 - Create ListingTableConfig which includes file format and schema inference [\#1715](https://github.com/apache/arrow-datafusion/pull/1715) ([matthewmturner](https://github.com/matthewmturner))
 - Support `create_physical_expr` and `ExecutionContextState` or `DefaultPhysicalPlanner` for faster speed [\#1700](https://github.com/apache/arrow-datafusion/pull/1700) ([alamb](https://github.com/alamb))
@@ -274,7 +321,7 @@
 - add rfcs for datafusion [\#1490](https://github.com/apache/arrow-datafusion/pull/1490) ([xudong963](https://github.com/xudong963))
 - support comparison for decimal data type and refactor the binary coercion rule [\#1483](https://github.com/apache/arrow-datafusion/pull/1483) ([liukun4515](https://github.com/liukun4515))
 - Update arrow-rs to 6.4.0 and replace boolean comparison in datafusion with arrow compute kernel [\#1446](https://github.com/apache/arrow-datafusion/pull/1446) ([xudong963](https://github.com/xudong963))
-- support cast/try_cast for decimal: signed numeric to decimal [\#1442](https://github.com/apache/arrow-datafusion/pull/1442) ([liukun4515](https://github.com/liukun4515))
+- support cast/try\_cast for decimal: signed numeric to decimal [\#1442](https://github.com/apache/arrow-datafusion/pull/1442) ([liukun4515](https://github.com/liukun4515))
 - use 0.13 sql parser [\#1435](https://github.com/apache/arrow-datafusion/pull/1435) ([Jimexist](https://github.com/Jimexist))
 - Clarify communication on bi-weekly sync [\#1427](https://github.com/apache/arrow-datafusion/pull/1427) ([alamb](https://github.com/alamb))
 - Minimize features [\#1399](https://github.com/apache/arrow-datafusion/pull/1399) ([carols10cents](https://github.com/carols10cents))
@@ -301,6 +348,7 @@
 
 [Full Changelog](https://github.com/apache/arrow-datafusion/compare/ballista-0.6.0...6.0.0)
 
+
 ## [ballista-0.6.0](https://github.com/apache/arrow-datafusion/tree/ballista-0.6.0) (2021-11-13)
 
 [Full Changelog](https://github.com/apache/arrow-datafusion/compare/ballista-0.5.0...ballista-0.6.0)
@@ -309,14 +357,14 @@
 
 - File partitioning for ListingTable [\#1141](https://github.com/apache/arrow-datafusion/pull/1141) ([rdettai](https://github.com/rdettai))
 - Register tables in BallistaContext using TableProviders instead of Dataframe [\#1028](https://github.com/apache/arrow-datafusion/pull/1028) ([rdettai](https://github.com/rdettai))
-- Make TableProvider.scan\(\) and PhysicalPlanner::create_physical_plan\(\) async [\#1013](https://github.com/apache/arrow-datafusion/pull/1013) ([rdettai](https://github.com/rdettai))
+- Make TableProvider.scan\(\) and PhysicalPlanner::create\_physical\_plan\(\) async [\#1013](https://github.com/apache/arrow-datafusion/pull/1013) ([rdettai](https://github.com/rdettai))
 - Reorganize table providers by table format [\#1010](https://github.com/apache/arrow-datafusion/pull/1010) ([rdettai](https://github.com/rdettai))
 - Move CBOs and Statistics to physical plan [\#965](https://github.com/apache/arrow-datafusion/pull/965) ([rdettai](https://github.com/rdettai))
 - Update to sqlparser v 0.10.0 [\#934](https://github.com/apache/arrow-datafusion/pull/934) [[sql](https://github.com/apache/arrow-datafusion/labels/sql)] ([alamb](https://github.com/alamb))
 - FilePartition and PartitionedFile for scanning flexibility [\#932](https://github.com/apache/arrow-datafusion/pull/932) [[sql](https://github.com/apache/arrow-datafusion/labels/sql)] ([yjshen](https://github.com/yjshen))
 - Improve SQLMetric APIs, port existing metrics [\#908](https://github.com/apache/arrow-datafusion/pull/908) ([alamb](https://github.com/alamb))
 - Add support for EXPLAIN ANALYZE [\#858](https://github.com/apache/arrow-datafusion/pull/858) [[sql](https://github.com/apache/arrow-datafusion/labels/sql)] ([alamb](https://github.com/alamb))
-- Rename concurrency to target_partitions [\#706](https://github.com/apache/arrow-datafusion/pull/706) ([andygrove](https://github.com/andygrove))
+- Rename concurrency to target\_partitions [\#706](https://github.com/apache/arrow-datafusion/pull/706) ([andygrove](https://github.com/andygrove))
 
 **Implemented enhancements:**
 
@@ -333,16 +381,16 @@
 - add digest\(utf8, method\) function and refactor all current hash digest functions [\#1090](https://github.com/apache/arrow-datafusion/pull/1090) ([Jimexist](https://github.com/Jimexist))
 - \[crypto\] add `blake3` algorithm to `digest` function [\#1086](https://github.com/apache/arrow-datafusion/pull/1086) ([Jimexist](https://github.com/Jimexist))
 - \[crypto\] add blake2b and blake2s functions [\#1081](https://github.com/apache/arrow-datafusion/pull/1081) ([Jimexist](https://github.com/Jimexist))
-- Update sqlparser-rs to 0.11 [\#1052](https://github.com/apache/arrow-datafusion/pull/1052) [[sql](https://github.com/apache/arrow-datafusion/labels/sql)] ([alamb](https://github.com/alamb))
+-  Update sqlparser-rs to 0.11 [\#1052](https://github.com/apache/arrow-datafusion/pull/1052) [[sql](https://github.com/apache/arrow-datafusion/labels/sql)] ([alamb](https://github.com/alamb))
 - remove hard coded partition count in ballista logicalplan deserialization [\#1044](https://github.com/apache/arrow-datafusion/pull/1044) ([xudong963](https://github.com/xudong963))
 - Indexed field access for List [\#1006](https://github.com/apache/arrow-datafusion/pull/1006) [[sql](https://github.com/apache/arrow-datafusion/labels/sql)] ([Igosuki](https://github.com/Igosuki))
 - Update DataFusion to arrow 6.0 [\#984](https://github.com/apache/arrow-datafusion/pull/984) ([alamb](https://github.com/alamb))
 - Implement Display for Expr, improve operator display [\#971](https://github.com/apache/arrow-datafusion/pull/971) [[sql](https://github.com/apache/arrow-datafusion/labels/sql)] ([matthewmturner](https://github.com/matthewmturner))
 - ObjectStore API to read from remote storage systems [\#950](https://github.com/apache/arrow-datafusion/pull/950) ([yjshen](https://github.com/yjshen))
-- fixes \#933 replace placeholder fmt_as fr ExecutionPlan impls [\#939](https://github.com/apache/arrow-datafusion/pull/939) ([tiphaineruy](https://github.com/tiphaineruy))
+- fixes \#933 replace placeholder fmt\_as fr ExecutionPlan impls [\#939](https://github.com/apache/arrow-datafusion/pull/939) ([tiphaineruy](https://github.com/tiphaineruy))
 - Support `NotLike` in Ballista [\#916](https://github.com/apache/arrow-datafusion/pull/916) ([Dandandan](https://github.com/Dandandan))
 - Avro Table Provider [\#910](https://github.com/apache/arrow-datafusion/pull/910) [[sql](https://github.com/apache/arrow-datafusion/labels/sql)] ([Igosuki](https://github.com/Igosuki))
-- Add BaselineMetrics, Timestamp metrics, add for `CoalescePartitionsExec`, rename output_time -\> elapsed_compute [\#909](https://github.com/apache/arrow-datafusion/pull/909) ([alamb](https://github.com/alamb))
+- Add BaselineMetrics, Timestamp metrics, add for `CoalescePartitionsExec`, rename output\_time -\> elapsed\_compute [\#909](https://github.com/apache/arrow-datafusion/pull/909) ([alamb](https://github.com/alamb))
 - \[Ballista\] Add executor last seen info to the ui [\#895](https://github.com/apache/arrow-datafusion/pull/895) ([msathis](https://github.com/msathis))
 - add cross join support to ballista [\#891](https://github.com/apache/arrow-datafusion/pull/891) ([houqp](https://github.com/houqp))
 - Add Ballista support to DataFusion CLI [\#889](https://github.com/apache/arrow-datafusion/pull/889) ([andygrove](https://github.com/andygrove))
@@ -350,7 +398,7 @@
 
 **Fixed bugs:**
 
-- Test execution_plans::shuffle_writer::tests::test Fail [\#1040](https://github.com/apache/arrow-datafusion/issues/1040)
+- Test execution\_plans::shuffle\_writer::tests::test Fail [\#1040](https://github.com/apache/arrow-datafusion/issues/1040)
 - Integration test fails to build docker images [\#918](https://github.com/apache/arrow-datafusion/issues/918)
 - Ballista: Remove hard-coded concurrency from logical plan serde code [\#708](https://github.com/apache/arrow-datafusion/issues/708)
 - How can I make ballista distributed compute work? [\#327](https://github.com/apache/arrow-datafusion/issues/327)
@@ -363,8 +411,8 @@
 - Adds note on compatible rust version [\#1097](https://github.com/apache/arrow-datafusion/pull/1097) ([1nF0rmed](https://github.com/1nF0rmed))
 - implement `approx_distinct` function using HyperLogLog [\#1087](https://github.com/apache/arrow-datafusion/pull/1087) ([Jimexist](https://github.com/Jimexist))
 - Improve User Guide [\#954](https://github.com/apache/arrow-datafusion/pull/954) ([andygrove](https://github.com/andygrove))
-- Update plan_query_stages doc [\#951](https://github.com/apache/arrow-datafusion/pull/951) ([rdettai](https://github.com/rdettai))
-- \[DataFusion\] - Add show and show_limit function for DataFrame [\#923](https://github.com/apache/arrow-datafusion/pull/923) ([francis-du](https://github.com/francis-du))
+- Update plan\_query\_stages doc [\#951](https://github.com/apache/arrow-datafusion/pull/951) ([rdettai](https://github.com/rdettai))
+- \[DataFusion\] -  Add show and show\_limit function for DataFrame [\#923](https://github.com/apache/arrow-datafusion/pull/923) ([francis-du](https://github.com/francis-du))
 - update docs related to protoc and optional syntax [\#902](https://github.com/apache/arrow-datafusion/pull/902) ([Jimexist](https://github.com/Jimexist))
 - Improve Ballista crate README content [\#878](https://github.com/apache/arrow-datafusion/pull/878) ([andygrove](https://github.com/andygrove))
 
@@ -376,15 +424,16 @@
 
 - InList expr with NULL literals do not work [\#1190](https://github.com/apache/arrow-datafusion/issues/1190)
 - update the homepage README to include values, `approx_distinct`, etc. [\#1171](https://github.com/apache/arrow-datafusion/issues/1171)
-- \[Python\]: Inconsistencies with Python package name [\#1011](https://github.com/apache/arrow-datafusion/issues/1011)
+- \[Python\]: Inconsistencies with Python package name  [\#1011](https://github.com/apache/arrow-datafusion/issues/1011)
 - Wanting to contribute to project where to start? [\#983](https://github.com/apache/arrow-datafusion/issues/983)
 - delete redundant code [\#973](https://github.com/apache/arrow-datafusion/issues/973)
-- How to build DataFusion python wheel [\#853](https://github.com/apache/arrow-datafusion/issues/853)
+- How to build DataFusion python wheel  [\#853](https://github.com/apache/arrow-datafusion/issues/853)
 - Produce a design for a metrics framework [\#21](https://github.com/apache/arrow-datafusion/issues/21)
 
 **Merged pull requests:**
 
 - \[nit\] simplify ballista executor `CollectExec` impl codes [\#1140](https://github.com/apache/arrow-datafusion/pull/1140) ([panarch](https://github.com/panarch))
+
 
 For older versions, see [apache/arrow/CHANGELOG.md](https://github.com/apache/arrow/blob/master/CHANGELOG.md)
 
@@ -394,7 +443,7 @@ For older versions, see [apache/arrow/CHANGELOG.md](https://github.com/apache/ar
 
 **Breaking changes:**
 
-- \[ballista\] support date_part and date_turnc ser/de, pass tpch 7 [\#840](https://github.com/apache/arrow-datafusion/pull/840) ([houqp](https://github.com/houqp))
+- \[ballista\] support date\_part and date\_turnc ser/de, pass tpch 7 [\#840](https://github.com/apache/arrow-datafusion/pull/840) ([houqp](https://github.com/houqp))
 - Box ScalarValue:Lists, reduce size by half size [\#788](https://github.com/apache/arrow-datafusion/pull/788) ([alamb](https://github.com/alamb))
 - Support DataFrame.collect for Ballista DataFrames [\#785](https://github.com/apache/arrow-datafusion/pull/785) ([andygrove](https://github.com/andygrove))
 - JOIN conditions are order dependent [\#778](https://github.com/apache/arrow-datafusion/pull/778) ([seddonm1](https://github.com/seddonm1))
@@ -449,7 +498,7 @@ For older versions, see [apache/arrow/CHANGELOG.md](https://github.com/apache/ar
 - add `order by` construct in window function and logical plans [\#463](https://github.com/apache/arrow-datafusion/pull/463) ([Jimexist](https://github.com/Jimexist))
 - Refactor Ballista executor so that FlightService delegates to an Executor struct [\#450](https://github.com/apache/arrow-datafusion/pull/450) ([andygrove](https://github.com/andygrove))
 - implement lead and lag built-in window function [\#429](https://github.com/apache/arrow-datafusion/pull/429) ([Jimexist](https://github.com/Jimexist))
-- Implement fmt_as for ShuffleReaderExec [\#400](https://github.com/apache/arrow-datafusion/pull/400) ([andygrove](https://github.com/andygrove))
+- Implement fmt\_as for ShuffleReaderExec [\#400](https://github.com/apache/arrow-datafusion/pull/400) ([andygrove](https://github.com/andygrove))
 - Add window expression part 1 - logical and physical planning, structure, to/from proto, and explain, for empty over clause only [\#334](https://github.com/apache/arrow-datafusion/pull/334) ([Jimexist](https://github.com/Jimexist))
 - \[breaking change\] fix 265, log should be log10, and add ln [\#271](https://github.com/apache/arrow-datafusion/pull/271) ([Jimexist](https://github.com/Jimexist))
 - Allow table providers to indicate their type for catalog metadata [\#205](https://github.com/apache/arrow-datafusion/pull/205) ([returnString](https://github.com/returnString))
@@ -464,7 +513,7 @@ For older versions, see [apache/arrow/CHANGELOG.md](https://github.com/apache/ar
 - Ballista: TPC-H q3 @ SF=1000 never completes [\#835](https://github.com/apache/arrow-datafusion/issues/835)
 - Ballista does not support MIN/MAX aggregate functions [\#832](https://github.com/apache/arrow-datafusion/issues/832)
 - Ballista docker images fail to build [\#828](https://github.com/apache/arrow-datafusion/issues/828)
-- Ballista: UnresolvedShuffleExec should only have a single stage_id [\#726](https://github.com/apache/arrow-datafusion/issues/726)
+- Ballista: UnresolvedShuffleExec should only have a single stage\_id [\#726](https://github.com/apache/arrow-datafusion/issues/726)
 - Ballista integration tests are failing [\#623](https://github.com/apache/arrow-datafusion/issues/623)
 - Integration test build failure due to arrow-rs using unstable feature [\#596](https://github.com/apache/arrow-datafusion/issues/596)
 - `cargo build` cannot build the project [\#531](https://github.com/apache/arrow-datafusion/issues/531)
@@ -494,12 +543,12 @@ For older versions, see [apache/arrow/CHANGELOG.md](https://github.com/apache/ar
 **Closed issues:**
 
 - Confirm git tagging strategy for releases [\#770](https://github.com/apache/arrow-datafusion/issues/770)
-- arrow::util::pretty::pretty_format_batches missing [\#769](https://github.com/apache/arrow-datafusion/issues/769)
+- arrow::util::pretty::pretty\_format\_batches missing [\#769](https://github.com/apache/arrow-datafusion/issues/769)
 - move the `assert_batches_eq!` macros to a non part of datafusion [\#745](https://github.com/apache/arrow-datafusion/issues/745)
 - fix an issue where aliases are not respected in generating downstream schemas in window expr [\#592](https://github.com/apache/arrow-datafusion/issues/592)
 - make the planner to print more succinct and useful information in window function explain clause [\#526](https://github.com/apache/arrow-datafusion/issues/526)
 - move window frame module to be in `logical_plan` [\#517](https://github.com/apache/arrow-datafusion/issues/517)
-- use a more rust idiomatic way of handling nth_value [\#448](https://github.com/apache/arrow-datafusion/issues/448)
+- use a more rust idiomatic way of handling nth\_value [\#448](https://github.com/apache/arrow-datafusion/issues/448)
 - Make Ballista not depend on arrow directly [\#446](https://github.com/apache/arrow-datafusion/issues/446)
 - create a test with more than one partition for window functions [\#435](https://github.com/apache/arrow-datafusion/issues/435)
 - Implement hash-partitioned hash aggregate [\#27](https://github.com/apache/arrow-datafusion/issues/27)
@@ -515,7 +564,7 @@ For older versions, see [apache/arrow/CHANGELOG.md](https://github.com/apache/ar
 - Change datatype of tpch keys from Int32 to UInt64 to support sf=1000 [\#836](https://github.com/apache/arrow-datafusion/pull/836) ([andygrove](https://github.com/andygrove))
 - Add ballista-examples to docker build [\#829](https://github.com/apache/arrow-datafusion/pull/829) ([andygrove](https://github.com/andygrove))
 - Update dependencies: prost to 0.8 and tonic to 0.5 [\#818](https://github.com/apache/arrow-datafusion/pull/818) ([alamb](https://github.com/alamb))
-- Move `hash_array` into hash_utils.rs [\#807](https://github.com/apache/arrow-datafusion/pull/807) ([alamb](https://github.com/alamb))
+- Move `hash_array` into hash\_utils.rs [\#807](https://github.com/apache/arrow-datafusion/pull/807) ([alamb](https://github.com/alamb))
 - Fix: Update clippy lints for Rust 1.54 [\#794](https://github.com/apache/arrow-datafusion/pull/794) ([alamb](https://github.com/alamb))
 - MINOR: Remove unused Ballista query execution code path [\#732](https://github.com/apache/arrow-datafusion/pull/732) ([andygrove](https://github.com/andygrove))
 - \[fix\] benchmark run with compose [\#666](https://github.com/apache/arrow-datafusion/pull/666) ([rdettai](https://github.com/rdettai))
@@ -538,8 +587,10 @@ For older versions, see [apache/arrow/CHANGELOG.md](https://github.com/apache/ar
 - Remove references to Ballista Docker images published to ballistacompute Docker Hub repo [\#326](https://github.com/apache/arrow-datafusion/pull/326) ([andygrove](https://github.com/andygrove))
 - Update arrow-rs deps [\#317](https://github.com/apache/arrow-datafusion/pull/317) ([alamb](https://github.com/alamb))
 - Update arrow deps [\#269](https://github.com/apache/arrow-datafusion/pull/269) ([alamb](https://github.com/alamb))
-- Enable redundant_field_names clippy lint [\#261](https://github.com/apache/arrow-datafusion/pull/261) ([Dandandan](https://github.com/Dandandan))
+- Enable redundant\_field\_names clippy lint [\#261](https://github.com/apache/arrow-datafusion/pull/261) ([Dandandan](https://github.com/Dandandan))
 - Update arrow-rs deps \(to fix build due to flatbuffers update\) [\#224](https://github.com/apache/arrow-datafusion/pull/224) ([alamb](https://github.com/alamb))
 - update arrow-rs deps to latest master [\#216](https://github.com/apache/arrow-datafusion/pull/216) ([alamb](https://github.com/alamb))
 
-\* _This Changelog was automatically generated by [github_changelog_generator](https://github.com/github-changelog-generator/github-changelog-generator)_
+
+
+\* *This Changelog was automatically generated by [github_changelog_generator](https://github.com/github-changelog-generator/github-changelog-generator)*
