@@ -200,9 +200,9 @@ The vote will be open for at least 72 hours.
 [ ] +0
 [ ] -1 Do not release this as Apache Arrow Ballista 5.1.0 because...
 
-[1]: https://github.com/apache/arrrow-ballista/tree/a5dd428f57e62db20a945e8b1895de91405958c4
-[2]: https://dist.apache.org/repos/dist/dev/arrow/apache-arrrow-ballista-5.1.0
-[3]: https://github.com/apache/arrrow-ballista/blob/a5dd428f57e62db20a945e8b1895de91405958c4/CHANGELOG.md
+[1]: https://github.com/apache/arrow-ballista/tree/a5dd428f57e62db20a945e8b1895de91405958c4
+[2]: https://dist.apache.org/repos/dist/dev/arrow/apache-arrow-ballista-5.1.0
+[3]: https://github.com/apache/arrow-ballista/blob/a5dd428f57e62db20a945e8b1895de91405958c4/CHANGELOG.md
 ```
 
 For the release to become "official" it needs at least three PMC members to vote +1 on it.

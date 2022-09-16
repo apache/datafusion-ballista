@@ -136,9 +136,9 @@ test_source_distribution() {
   fi
 
 
-  # Note can't verify datafusion or datafusion-expr as they depend
-  # on datafusion-common which isn't published yet
-  pushd datafusion/common
+  # Note can't verify other ballista crates as they depend
+  # on ballista-core which isn't published yet
+  pushd ballista/rust/core
     cargo publish --dry-run
   popd
 }
