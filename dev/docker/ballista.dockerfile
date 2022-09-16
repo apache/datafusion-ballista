@@ -44,12 +44,13 @@ RUN cargo install cargo-chef --version 0.1.34
 #RUN cargo chef cook $RELEASE_FLAG --recipe-path recipe.json
 
 FROM base as builder
+ARG PROTOC_VERSION=21.4
 
 RUN mkdir /tmp/protoc
 WORKDIR /tmp/protoc
 
-RUN export PROTO_ZIP="protoc-21.4-linux-x86_64.zip" && \
-  curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.4/$PROTO_ZIP && \
+RUN export PROTO_ZIP="protoc-${PROTOC_VERSION}-linux-x86_64.zip" && \
+  curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v$PROTOC_VERSION/$PROTO_ZIP && \
   unzip $PROTO_ZIP
 
 ENV PATH=$PATH:/tmp/protoc/bin
