@@ -79,11 +79,13 @@ def main():
         os.path.join(repo_root, rel_path, "Cargo.toml")
         for rel_path in [
             'ballista-cli',
-            'ballista-examples',
             'ballista/rust/core',
             'ballista/rust/scheduler',
             'ballista/rust/executor',
             'ballista/rust/client',
+            'benchmarks',
+            'examples',
+            'python',
         ]
     ])
     new_version = args.new_version
@@ -94,8 +96,8 @@ def main():
         update_cargo_toml(cargo_toml, new_version)
 
     for path in (
-        "benchmarks/docker-compose.yaml",
-        "docs/source/user-guide/distributed/deployment/docker-compose.md",
+            "benchmarks/docker-compose.yaml",
+            "docs/source/user-guide/deployment/docker-compose.md",
     ):
         path = os.path.join(repo_root, path)
         update_docker_compose(path, new_version)
