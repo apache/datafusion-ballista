@@ -34,7 +34,7 @@ use datafusion::physical_plan::{
     with_new_children_if_necessary, ExecutionPlan, Partitioning,
 };
 
-use log::info;
+use log::{debug, info};
 
 type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<ShuffleWriterExec>>);
 
@@ -223,7 +223,7 @@ pub fn remove_unresolved_shuffles(
                     relevant_locations.push(vec![]);
                 }
             }
-            info!(
+            debug!(
                 "Creating shuffle reader: {}",
                 relevant_locations
                     .iter()
