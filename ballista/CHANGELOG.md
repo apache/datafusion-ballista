@@ -19,6 +19,52 @@
 
 # Changelog
 
+## [0.8.0](https://github.com/apache/arrow-ballista/tree/0.8.0) (2022-09-16)
+
+[Full Changelog](https://github.com/apache/arrow-ballista/compare/0.7.0...0.8.0)
+
+**Implemented enhancements:**
+
+- Executor should use all available cores by default [\#218](https://github.com/apache/arrow-ballista/issues/218)
+- Update task status to the task job curator scheduler [\#179](https://github.com/apache/arrow-ballista/issues/179)
+- update datafusion and arrow  to 20.0.0 [\#176](https://github.com/apache/arrow-ballista/issues/176)
+- No scheduler logs when deployed to k8s [\#165](https://github.com/apache/arrow-ballista/issues/165)
+- Upgrade to DataFusion 11.0.0 [\#163](https://github.com/apache/arrow-ballista/issues/163)
+- Better encapsulation for ExecutionGraph [\#149](https://github.com/apache/arrow-ballista/issues/149)
+- A stage may act as the input of multiple stages [\#144](https://github.com/apache/arrow-ballista/issues/144)
+- Executor Lost handling [\#143](https://github.com/apache/arrow-ballista/issues/143)
+- Cancel a running query. [\#139](https://github.com/apache/arrow-ballista/issues/139)
+- Ignore the previous job\_id inside fill\_reservations\(\) [\#138](https://github.com/apache/arrow-ballista/issues/138)
+- Normalize the serialization and deserialization places of protobuf structs [\#137](https://github.com/apache/arrow-ballista/issues/137)
+- Remove revive offer event loop [\#136](https://github.com/apache/arrow-ballista/issues/136)
+- Remove Keyspace::QueuedJobs [\#133](https://github.com/apache/arrow-ballista/issues/133)
+- Spawn a thread for execution plan generation [\#131](https://github.com/apache/arrow-ballista/issues/131)
+- Introduce CuratorTaskManager for make an active job be curated by only one scheduler [\#130](https://github.com/apache/arrow-ballista/issues/130)
+- Using tokio tracing for log file [\#122](https://github.com/apache/arrow-ballista/issues/122)
+- Ballista Executor report plan/operators metrics to Ballista Scheduler when task finish   [\#116](https://github.com/apache/arrow-ballista/issues/116)
+- Add timeout settings for Grpc Client [\#114](https://github.com/apache/arrow-ballista/issues/114)
+- Add log level config in ballista [\#102](https://github.com/apache/arrow-ballista/issues/102)
+- Use another channel to update the status of a task set for executor [\#96](https://github.com/apache/arrow-ballista/issues/96)
+- Add config for concurrent\_task in executor [\#94](https://github.com/apache/arrow-ballista/issues/94)
+- Ballista should support Arrow FlightSQL  [\#92](https://github.com/apache/arrow-ballista/issues/92)
+- Why not include the `ballista-cli` in the member of workspace [\#88](https://github.com/apache/arrow-ballista/issues/88)
+- Upgrade dependency of arrow-datafusion to commit d0d5564b8f689a01e542b8c1df829d74d0fab2b0 [\#84](https://github.com/apache/arrow-ballista/issues/84)
+- Support  sled path in config file. [\#79](https://github.com/apache/arrow-ballista/issues/79)
+- Support for multi-scheduler deployments [\#39](https://github.com/apache/arrow-ballista/issues/39)
+- Ballista 0.7.0 Release [\#126](https://github.com/apache/arrow-ballista/issues/126)
+- Improvements to Ballista extensibility [\#8](https://github.com/apache/arrow-ballista/issues/8)
+- Implement Python bindings for BallistaContext [\#15](https://github.com/apache/arrow-ballista/issues/15)
+
+**Fixed bugs:**
+
+- Run example fails via PushStaged mode [\#214](https://github.com/apache/arrow-ballista/issues/214)
+- Config settings in BallistaContext do not get passed to DataFusion context [\#213](https://github.com/apache/arrow-ballista/issues/213)
+- Start scheduler fails with arguments "-s PushStaged" [\#207](https://github.com/apache/arrow-ballista/issues/207)
+- FlightSQL is broken and CI isn't catching it [\#190](https://github.com/apache/arrow-ballista/issues/190)
+- Query fails with "NULL is invalid as a DataFusion scalar value" [\#180](https://github.com/apache/arrow-ballista/issues/180)
+- Executor doesn't compile, missing `tokio::signal` [\#171](https://github.com/apache/arrow-ballista/issues/171)
+- Unable to build master [\#76](https://github.com/apache/arrow-ballista/issues/76)
+
 
 ## [ballista-0.7.0](https://github.com/apache/arrow-datafusion/tree/ballista-0.7.0) (2022-05-12)
 
