@@ -36,7 +36,7 @@ let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
 
 | key                               | type    | default | description                                                                                                                                                               |
 | --------------------------------- | ------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ballista.shuffle.partitions       | UInt16  | 2       | Sets the default number of partitions to create when repartitioning query stages.                                                                                         |
+| ballista.shuffle.partitions       | UInt16  | 16      | Sets the default number of partitions to create when repartitioning query stages.                                                                                         |
 | ballista.batch.size               | UInt16  | 8192    | Sets the default batch size.                                                                                                                                              |
 | ballista.repartition.joins        | Boolean | true    | When set to true, Ballista will repartition data using the join keys to execute joins in parallel using the provided `ballista.shuffle.partitions` level.                 |
 | ballista.repartition.aggregations | Boolean | true    | When set to true, Ballista will repartition data using the aggregate keys to execute aggregates in parallel using the provided `ballista.shuffle.partitions` level.       |

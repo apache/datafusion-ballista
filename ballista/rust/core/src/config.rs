@@ -157,7 +157,7 @@ impl BallistaConfig {
         let entries = vec![
             ConfigEntry::new(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS.to_string(),
                              "Sets the default number of partitions to create when repartitioning query stages".to_string(),
-                             DataType::UInt16, Some("2".to_string())),
+                             DataType::UInt16, Some("16".to_string())),
             ConfigEntry::new(BALLISTA_DEFAULT_BATCH_SIZE.to_string(),
                              "Sets the default batch size".to_string(),
                              DataType::UInt16, Some("8192".to_string())),
@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn default_config() -> Result<()> {
         let config = BallistaConfig::new()?;
-        assert_eq!(2, config.default_shuffle_partitions());
+        assert_eq!(16, config.default_shuffle_partitions());
         assert!(!config.default_with_information_schema());
         assert_eq!("", config.default_plugin_dir().as_str());
         Ok(())
