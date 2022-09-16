@@ -65,7 +65,7 @@ tag="${version}-rc${rc}"
 echo "Attempting to create ${tarball} from tag ${tag}"
 release_hash=$(cd "${SOURCE_TOP_DIR}" && git rev-list --max-count=1 ${tag})
 
-release=apache-arrrow-ballista-${version}
+release=apache-arrow-ballista-${version}
 distdir=${SOURCE_TOP_DIR}/dev/dist/${release}-rc${rc}
 tarname=${release}.tar.gz
 tarball=${distdir}/${tarname}
@@ -121,7 +121,7 @@ echo "Signing tarball and creating checksums"
 gpg --armor --output ${tarball}.asc --detach-sig ${tarball}
 # create signing with relative path of tarball
 # so that they can be verified with a command such as
-#  shasum --check apache-arrrow-ballista-4.1.0-rc2.tar.gz.sha512
+#  shasum --check apache-arrow-ballista-4.1.0-rc2.tar.gz.sha512
 (cd ${distdir} && shasum -a 256 ${tarname}) > ${tarball}.sha256
 (cd ${distdir} && shasum -a 512 ${tarname}) > ${tarball}.sha512
 
