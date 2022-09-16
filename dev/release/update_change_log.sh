@@ -60,7 +60,7 @@ docker run -it --rm \
     -v "$(pwd)":/usr/local/src/your-app \
     githubchangeloggenerator/github-changelog-generator \
     --user apache \
-    --project arrow-datafusion \
+    --project arrow-ballista \
     --since-tag "${SINCE_TAG}" \
     --include-labels "${PROJECT}" \
     --base "${OUTPUT_PATH}" \
