@@ -24,7 +24,7 @@
 # https://github.com/github-changelog-generator/github-changelog-generator
 #
 # With the config located in
-# arrow-datafusion/.github_changelog_generator
+# arrow-ballista/.github_changelog_generator
 #
 # Usage:
 # CHANGELOG_GITHUB_TOKEN=<TOKEN> ./update_change_log.sh <PROJECT> <SINCE_TAG> <EXTRA_ARGS...>

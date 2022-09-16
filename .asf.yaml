@@ -22,7 +22,7 @@ notifications:
   jira_options: link label worklog
 github:
   description: "Apache Arrow Ballista Distributed Query Engine"
-  homepage: https://arrow.apache.org/datafusion
+  homepage: https://arrow.apache.org/ballista
   labels:
     - arrow
     - big-data

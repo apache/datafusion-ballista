@@ -21,7 +21,7 @@
 # Adapted from https://github.com/apache/arrow-rs/tree/master/dev/release/create-tarball.sh
 
 # This script creates a signed tarball in
-# dev/dist/apache-arrow-datafusion-<version>-<sha>.tar.gz and uploads it to
+# dev/dist/apache-arrow-ballista-<version>-<sha>.tar.gz and uploads it to
 # the "dev" area of the dist.apache.arrow repository and prepares an
 # email for sending to the dev@arrow.apache.org list for a formal
 # vote.
@@ -65,7 +65,7 @@ tag="${version}-rc${rc}"
 echo "Attempting to create ${tarball} from tag ${tag}"
 release_hash=$(cd "${SOURCE_TOP_DIR}" && git rev-list --max-count=1 ${tag})
 
-release=apache-arrow-datafusion-${version}
+release=apache-arrrow-ballista-${version}
 distdir=${SOURCE_TOP_DIR}/dev/dist/${release}-rc${rc}
 tarname=${release}.tar.gz
 tarball=${distdir}/${tarname}
@@ -80,10 +80,10 @@ echo ""
 echo "---------------------------------------------------------"
 cat <<MAIL
 To: dev@arrow.apache.org
-Subject: [VOTE][RUST][DataFusion] Release Apache Arrow DataFusion ${version} RC${rc}
+Subject: [VOTE][RUST][Ballista] Release Apache Arrow Ballista ${version} RC${rc}
 Hi,
 
-I would like to propose a release of Apache Arrow DataFusion Implementation,
+I would like to propose a release of Apache Arrow Ballista Implementation,
 version ${version}.
 
 This release candidate is based on commit: ${release_hash} [1]
@@ -96,15 +96,15 @@ on the release. The vote will be open for at least 72 hours.
 Only votes from PMC members are binding, but all members of the community are
 encouraged to test the release and vote with "(non-binding)".
 
-The standard verification procedure is documented at https://github.com/apache/arrow-datafusion/blob/master/dev/release/README.md#verifying-release-candidates.
+The standard verification procedure is documented at https://github.com/apache/arrow-ballista/blob/master/dev/release/README.md#verifying-release-candidates.
 
-[ ] +1 Release this as Apache Arrow DataFusion ${version}
+[ ] +1 Release this as Apache Arrow Ballista ${version}
 [ ] +0
-[ ] -1 Do not release this as Apache Arrow DataFusion ${version} because...
+[ ] -1 Do not release this as Apache Arrow Ballista ${version} because...
 
-[1]: https://github.com/apache/arrow-datafusion/tree/${release_hash}
+[1]: https://github.com/apache/arrow-ballista/tree/${release_hash}
 [2]: ${url}
-[3]: https://github.com/apache/arrow-datafusion/blob/${release_hash}/CHANGELOG.md
+[3]: https://github.com/apache/arrow-ballista/blob/${release_hash}/CHANGELOG.md
 MAIL
 echo "---------------------------------------------------------"
 
@@ -121,7 +121,7 @@ echo "Signing tarball and creating checksums"
 gpg --armor --output ${tarball}.asc --detach-sig ${tarball}
 # create signing with relative path of tarball
 # so that they can be verified with a command such as
-#  shasum --check apache-arrow-datafusion-4.1.0-rc2.tar.gz.sha512
+#  shasum --check apache-arrrow-ballista-4.1.0-rc2.tar.gz.sha512
 (cd ${distdir} && shasum -a 256 ${tarname}) > ${tarball}.sha256
 (cd ${distdir} && shasum -a 512 ${tarname}) > ${tarball}.sha512
 
@@ -129,4 +129,4 @@ gpg --armor --output ${tarball}.asc --detach-sig ${tarball}
 echo "Uploading to apache dist/dev to ${url}"
 svn co --depth=empty https://dist.apache.org/repos/dist/dev/arrow ${SOURCE_TOP_DIR}/dev/dist
 svn add ${distdir}
-svn ci -m "Apache Arrow DataFusion ${version} ${rc}" ${distdir}
+svn ci -m "Apache Arrow Ballista ${version} ${rc}" ${distdir}

@@ -19,37 +19,15 @@
 
 # Release Process
 
-## Sub-projects
-
-The DataFusion repo contains 2 different releasable sub-projects: DataFusion, Ballista
-
-We use DataFusion release to drive the release for the other sub-projects. As a
-result, DataFusion version bump is required for every release while version
-bumps for the Python binding and Ballista are optional. In other words, we can
-release a new version of DataFusion without releasing a new version of the
-Python binding or Ballista. On the other hand, releasing a new version of the
-Python binding or Ballista always requires a new DataFusion version release.
-
 ## Branching
 
 ### Major Release
 
-DataFusion typically has major releases from the `master` branch every 3 months, including breaking API changes.
-
-### Minor Release
-
-Starting v7.0.0, we are experimenting with maintaining an active stable release branch (e.g. `maint-7.x`). Every month, we will review the `maint-*` branch and prepare a minor release (e.g. v7.1.0) when necessary. A patch release (v7.0.1) can be requested on demand if it is urgent bug/security fix.
-
-#### How to add changes to `maint-*` branch?
-
-If you would like to propose your change for inclusion in the maintenance branch
-
-1. follow normal workflow to create PR to `master` branch and wait for its approval and merges.
-2. after PR is squash merged to `master`, branch from most recent maintenance branch (e.g. `maint-7-x`), cherry-pick the commit and create a PR to maintenance branch (e.g. `maint-7-x`).
+Ballista typically has major releases from the `master` branch every 1-3 months, including breaking API changes.
 
 ## Prerequisite
 
-- Have upstream git repo `git@github.com:apache/arrow-datafusion.git` add as git remote `apache`.
+- Have upstream git repo `git@github.com:apache/arrow-ballista.git` add as git remote `apache`.
 - Created a peronal access token in Github for changelog automation script.
   - Github PAT should be created with `repo` access
 - Make sure your signing key is added to the following files in SVN:
@@ -90,7 +68,7 @@ We maintain `CHANGELOG.md` for each sub project so our users know what has been
 changed between releases.
 
 The CHANGELOG is managed automatically using
-[update_change_log.sh](https://github.com/apache/arrow-datafusion/blob/master/dev/release/update_change_log.sh)
+[update_change_log.sh](https://github.com/apache/arrow-ballista/blob/master/dev/release/update_change_log.sh)
 
 This script creates a changelog using github PRs and issues based on the labels
 associated with them.
@@ -100,7 +78,7 @@ associated with them.
 Prepare a PR to update `CHANGELOG.md` and versions to reflect the planned
 release.
 
-See [#801](https://github.com/apache/arrow-datafusion/pull/801) for an example.
+See [#801](https://github.com/apache/arrow-ballista/pull/801) for an example.
 
 Here are the commands that could be used to prepare the `5.1.0` release:
 
@@ -113,16 +91,10 @@ git fetch apache
 git checkout apache/master
 ```
 
-Update datafusion version in `datafusion/Cargo.toml` to `5.1.0`:
+Update version in `ballista/Cargo.toml` to `0.8.0`:
 
 ```
-./dev/update_datafusion_versions.py 5.1.0
-```
-
-If there is a ballista release, update versions in ballista Cargo.tomls, run
-
-```
-./dev/update_ballista_versions.py 0.5.0
+./dev/update_ballista_versions.py 0.8.0
 ```
 
 Lastly commit the version change:
@@ -133,7 +105,7 @@ git commit -a -m 'Update version'
 
 ### Update CHANGELOG.md
 
-Define release branch (e.g. `master`), base version tag (e.g. `7.0.0`) and future version tag (e.g. `8.0.0`). Commits between the base version tag and the release branch will be used to
+Define release branch (e.g. `master`), base version tag (e.g. `0.8.0`) and future version tag (e.g. `0.9.0`). Commits between the base version tag and the release branch will be used to
 populate the changelog content.
 
 You will need a GitHub Personal Access Token for the following steps. Follow
@@ -142,8 +114,7 @@ to generate one if you do not already have one.
 
 ```bash
 # create the changelog
-CHANGELOG_GITHUB_TOKEN=<TOKEN> ./dev/release/update_change_log-datafusion.sh master 8.0.0 7.0.0
-CHANGELOG_GITHUB_TOKEN=<TOKEN> ./dev/release/update_change_log-ballista.sh master ballista-0.7.0 ballista-0.6.0
+CHANGELOG_GITHUB_TOKEN=<TOKEN> ./dev/release/update_change_log-ballista.sh master 0.8.0 0.7.0
 # review change log / edit issues and labels if needed, rerun until you are happy with the result
 git commit -a -m 'Create changelog for release'
 ```
@@ -209,11 +180,11 @@ Send the email output from the script to dev@arrow.apache.org. The email should 
 
 ```
 To: dev@arrow.apache.org
-Subject: [VOTE][DataFusion] Release Apache Arrow DataFusion 5.1.0 RC0
+Subject: [VOTE][Ballista] Release Apache Arrow Ballista 5.1.0 RC0
 
 Hi,
 
-I would like to propose a release of Apache Arrow DataFusion Implementation,
+I would like to propose a release of Apache Arrow Ballista Implementation,
 version 5.1.0.
 
 This release candidate is based on commit: a5dd428f57e62db20a945e8b1895de91405958c4 [1]
@@ -225,13 +196,13 @@ and vote on the release.
 
 The vote will be open for at least 72 hours.
 
-[ ] +1 Release this as Apache Arrow DataFusion 5.1.0
+[ ] +1 Release this as Apache Arrow Ballista 5.1.0
 [ ] +0
-[ ] -1 Do not release this as Apache Arrow DataFusion 5.1.0 because...
+[ ] -1 Do not release this as Apache Arrow Ballista 5.1.0 because...
 
-[1]: https://github.com/apache/arrow-datafusion/tree/a5dd428f57e62db20a945e8b1895de91405958c4
-[2]: https://dist.apache.org/repos/dist/dev/arrow/apache-arrow-datafusion-5.1.0
-[3]: https://github.com/apache/arrow-datafusion/blob/a5dd428f57e62db20a945e8b1895de91405958c4/CHANGELOG.md
+[1]: https://github.com/apache/arrrow-ballista/tree/a5dd428f57e62db20a945e8b1895de91405958c4
+[2]: https://dist.apache.org/repos/dist/dev/arrow/apache-arrrow-ballista-5.1.0
+[3]: https://github.com/apache/arrrow-ballista/blob/a5dd428f57e62db20a945e8b1895de91405958c4/CHANGELOG.md
 ```
 
 For the release to become "official" it needs at least three PMC members to vote +1 on it.
@@ -256,7 +227,7 @@ NOTE: steps in this section can only be done by PMC members.
 ### After the release is approved
 
 Move artifacts to the release location in SVN, e.g.
-https://dist.apache.org/repos/dist/release/arrow/arrow-datafusion-5.1.0/, using
+https://dist.apache.org/repos/dist/release/arrow/arrow-ballista-5.1.0/, using
 the `release-tarball.sh` script:
 
 ```shell
@@ -270,16 +241,9 @@ Congratulations! The release is now official!
 Tag the same release candidate commit with the final release tag
 
 ```
-git co apache/5.1.0-rc0
-git tag 5.1.0
-git push apache 5.1.0
-```
-
-If there is a ballista release, also push the ballista tag
-
-```
-git tag ballista-0.5.0
-git push apache ballista-0.5.0
+git co apache 0.8.0-rc1
+git tag 0.8.0
+git push apache 0.8.0
 ```
 
 ### Publish on Crates.io

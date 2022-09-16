@@ -45,7 +45,7 @@ download_dist_file() {
 }
 
 download_rc_file() {
-  download_dist_file apache-arrow-datafusion-${VERSION}-rc${RC_NUMBER}/$1
+  download_dist_file apache-arrow-ballista-${VERSION}-rc${RC_NUMBER}/$1
 }
 
 import_gpg_keys() {
@@ -149,7 +149,7 @@ setup_tempdir "arrow-${VERSION}"
 echo "Working in sandbox ${ARROW_TMPDIR}"
 cd ${ARROW_TMPDIR}
 
-dist_name="apache-arrow-datafusion-${VERSION}"
+dist_name="apache-arrow-ballista-${VERSION}"
 import_gpg_keys
 fetch_archive ${dist_name}
 tar xf ${dist_name}.tar.gz
