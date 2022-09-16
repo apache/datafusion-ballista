@@ -1,7 +1,25 @@
+<!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
 
 # Changelog
 
-## [ballista-0.7.0](https://github.com/apache/arrow-datafusion/tree/ballista-0.7.0) (2022-05-12)
+## [0.7.0](https://github.com/apache/arrow-ballista/tree/0.7.0) (2022-05-12)
 
 [Full Changelog](https://github.com/apache/arrow-datafusion/compare/7.1.0-rc1...ballista-0.7.0)
 
@@ -148,7 +166,7 @@
 - Enable periodic cleanup of work\_dir directories in ballista executor [\#1783](https://github.com/apache/arrow-datafusion/pull/1783) ([Ted-Jiang](https://github.com/Ted-Jiang))
 - Use`eq_dyn`, `neq_dyn`, `lt_dyn`, `lt_eq_dyn`, `gt_dyn`, `gt_eq_dyn` kernels from arrow [\#1475](https://github.com/apache/arrow-datafusion/pull/1475) ([alamb](https://github.com/alamb))
 
-## [7.1.0-rc1](https://github.com/apache/arrow-datafusion/tree/7.1.0-rc1) (2022-04-10)
+## [7.1.0-rc1](https://github.com/apache/arrow-ballista/tree/7.1.0-rc1) (2022-04-10)
 
 [Full Changelog](https://github.com/apache/arrow-datafusion/compare/7.0.0-rc2...7.1.0-rc1)
 
@@ -169,11 +187,11 @@
 - Remove duplicate tests from `test_const_evaluator_scalar_functions` [\#1727](https://github.com/apache/arrow-datafusion/issues/1727)
 - Question: Is the Ballista project providing value to the overall DataFusion project? [\#1273](https://github.com/apache/arrow-datafusion/issues/1273)
 
-## [7.0.0-rc2](https://github.com/apache/arrow-datafusion/tree/7.0.0-rc2) (2022-02-14)
+## [7.0.0-rc2](https://github.com/apache/arrow-ballista/tree/7.0.0-rc2) (2022-02-14)
 
 [Full Changelog](https://github.com/apache/arrow-datafusion/compare/7.0.0...7.0.0-rc2)
 
-## [7.0.0](https://github.com/apache/arrow-datafusion/tree/7.0.0) (2022-02-14)
+## [7.0.0](https://github.com/apache/arrow-ballista/tree/7.0.0) (2022-02-14)
 
 [Full Changelog](https://github.com/apache/arrow-datafusion/compare/6.0.0-rc0...7.0.0)
 
@@ -275,16 +293,16 @@
 - Add PSQL comparison tests for except, intersect [\#1292](https://github.com/apache/arrow-datafusion/pull/1292) ([mrob95](https://github.com/mrob95))
 - Extract logical plans in LogicalPlan as independent struct: TableScan [\#1290](https://github.com/apache/arrow-datafusion/pull/1290) ([xudong963](https://github.com/xudong963))
 
-## [6.0.0-rc0](https://github.com/apache/arrow-datafusion/tree/6.0.0-rc0) (2021-11-14)
+## [6.0.0-rc0](https://github.com/apache/arrow-ballista/tree/6.0.0-rc0) (2021-11-14)
 
 [Full Changelog](https://github.com/apache/arrow-datafusion/compare/6.0.0...6.0.0-rc0)
 
-## [6.0.0](https://github.com/apache/arrow-datafusion/tree/6.0.0) (2021-11-14)
+## [6.0.0](https://github.com/apache/arrow-ballista/tree/6.0.0) (2021-11-14)
 
 [Full Changelog](https://github.com/apache/arrow-datafusion/compare/ballista-0.6.0...6.0.0)
 
 
-## [ballista-0.6.0](https://github.com/apache/arrow-datafusion/tree/ballista-0.6.0) (2021-11-13)
+## [ballista-0.6.0](https://github.com/apache/arrow-ballista/tree/ballista-0.6.0) (2021-11-13)
 
 [Full Changelog](https://github.com/apache/arrow-datafusion/compare/ballista-0.5.0...ballista-0.6.0)
 
@@ -372,7 +390,7 @@
 
 For older versions, see [apache/arrow/CHANGELOG.md](https://github.com/apache/arrow/blob/master/CHANGELOG.md)
 
-## [ballista-0.5.0](https://github.com/apache/arrow-datafusion/tree/ballista-0.5.0) (2021-08-10)
+## [ballista-0.5.0](https://github.com/apache/arrow-ballista/tree/ballista-0.5.0) (2021-08-10)
 
 [Full Changelog](https://github.com/apache/arrow-datafusion/compare/4.0.0...ballista-0.5.0)
 
