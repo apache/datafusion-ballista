@@ -20,8 +20,8 @@
 set -e
 
 . ./dev/build-set-env.sh
-#docker build -t apache/arrow-ballista-base:$BALLISTA_VERSION -f dev/docker/ballista-base.dockerfile .
-#docker build -t apache/arrow-ballista:$BALLISTA_VERSION -f dev/docker/ballista.dockerfile .
-#docker build -t apache/arrow-ballista-executor:$BALLISTA_VERSION -f dev/docker/ballista-executor.dockerfile .
-docker build -t apache/arrow-ballista-scheduler:$BALLISTA_VERSION -f dev/docker/ballista-scheduler.dockerfile .
-#docker build -t apache/arrow-ballista-benchmarks:$BALLISTA_VERSION -f dev/docker/ballista-benchmarks.dockerfile .
+docker build -t apache/arrow-ballista-base:$BALLISTA_VERSION -f dev/docker/ballista-base.dockerfile .
+docker build --build-arg VERSION=$BALLISTA_VERSION -t apache/arrow-ballista:$BALLISTA_VERSION -f dev/docker/ballista.dockerfile .
+docker build --build-arg VERSION=$BALLISTA_VERSION -t apache/arrow-ballista-executor:$BALLISTA_VERSION -f dev/docker/ballista-executor.dockerfile .
+docker build --build-arg VERSION=$BALLISTA_VERSION -t apache/arrow-ballista-scheduler:$BALLISTA_VERSION -f dev/docker/ballista-scheduler.dockerfile .
+docker build --build-arg VERSION=$BALLISTA_VERSION -t apache/arrow-ballista-benchmarks:$BALLISTA_VERSION -f dev/docker/ballista-benchmarks.dockerfile .

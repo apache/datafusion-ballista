@@ -1,9 +1,7 @@
 .git
-ballista-cli
 ci
 conbench
 dev
-examples
 python
 **/docs
 **/target
