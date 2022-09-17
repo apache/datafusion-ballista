@@ -1,8 +1,10 @@
 .git
-ballista/ui/*
+ballista-cli
 ci
 conbench
 dev
+examples
+python
 **/docs
 **/target
 **/CHANGELOG.md

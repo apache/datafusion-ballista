@@ -1,0 +1,7 @@
+ARG VERSION=0.8.0
+FROM ballista:$VERSION
+
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=full
+
+CMD ["/executor"]

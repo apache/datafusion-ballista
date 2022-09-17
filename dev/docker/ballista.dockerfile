@@ -22,7 +22,7 @@
 # as a mounted directory.
 
 ARG RELEASE_FLAG=--release
-ARG VERSION=0.7.0
+ARG VERSION=0.8.0
 
 FROM ballista-base:$VERSION AS base
 WORKDIR /tmp/ballista
@@ -93,10 +93,6 @@ COPY --from=builder /executor /
 COPY --from=builder /scheduler /
 
 COPY --from=builder /tpch /
-
-ADD benchmarks/run.sh /
-RUN mkdir /queries
-COPY benchmarks/queries/ /queries/
 
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
