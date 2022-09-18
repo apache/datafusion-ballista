@@ -153,7 +153,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         if let Some(graph) = self.get_active_execution_graph(job_id).await {
             Ok(Some(Arc::new(graph.read().await.clone())))
         } else if let Ok(graph) = self.get_execution_graph(job_id).await {
-            Ok(Some(Arc::new(graph.clone())))
+            Ok(Some(Arc::new(graph)))
         } else {
             // if the job failed then we return no graph for now
             Ok(None)

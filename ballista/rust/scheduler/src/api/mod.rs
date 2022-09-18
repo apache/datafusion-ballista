@@ -90,14 +90,9 @@ pub fn get_routes<T: AsLogicalPlan + Clone, U: 'static + AsExecutionPlan>(
         .and_then(handlers::get_state);
 
     let route_job_summary = warp::path!("jobs" / String)
-        .and(with_data_server(scheduler_server.clone()))
+        .and(with_data_server(scheduler_server))
         .and_then(|job_id, data_server| handlers::get_job_summary(data_server, job_id));
 
-    // let route_graph = warp::path("jobs" / job_id / "graph" )
-    //     .and(with_data_server(scheduler_server.clone()))
-    //     .map(|x, job_id| handlers::get_execution_graph(x, job_id).await);
-    // .and(with_data_server(scheduler_server))
-    // .and_then();
     let routes = route_state.or(route_job_summary);
     routes.boxed()
 }
