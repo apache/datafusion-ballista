@@ -106,6 +106,24 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(())
     }
 
+    /// Get a list of active job ids
+    pub async fn get_active_job_ids(&self) -> Result<Vec<String>> {
+        let keys = self.state.scan_keys(Keyspace::ActiveJobs).await?;
+        Ok(keys.iter().cloned().collect::<Vec<_>>())
+    }
+
+    /// Get a list of completed job ids
+    pub async fn get_completed_job_ids(&self) -> Result<Vec<String>> {
+        let keys = self.state.scan_keys(Keyspace::CompletedJobs).await?;
+        Ok(keys.iter().cloned().collect::<Vec<_>>())
+    }
+
+    /// Get a list of failed job ids
+    pub async fn get_failed_job_ids(&self) -> Result<Vec<String>> {
+        let keys = self.state.scan_keys(Keyspace::FailedJobs).await?;
+        Ok(keys.iter().cloned().collect::<Vec<_>>())
+    }
+
     /// Get the status of of a job. First look in the active cache.
     /// If no one found, then in the Active/Completed jobs, and then in Failed jobs
     pub async fn get_job_status(&self, job_id: &str) -> Result<Option<JobStatus>> {
@@ -123,6 +141,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             } else {
                 Ok(None)
             }
+        }
+    }
+
+    /// Get the execution graph of of a job. First look in the active cache.
+    /// If no one found, then in the Active/Completed jobs.
+    pub async fn get_job_execution_graph(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<Arc<ExecutionGraph>>> {
+        if let Some(graph) = self.get_active_execution_graph(job_id).await {
+            Ok(Some(Arc::new(graph.read().await.clone())))
+        } else if let Ok(graph) = self.get_execution_graph(job_id).await {
+            Ok(Some(Arc::new(graph.clone())))
+        } else {
+            // if the job failed then we return no graph for now
+            Ok(None)
         }
     }
 

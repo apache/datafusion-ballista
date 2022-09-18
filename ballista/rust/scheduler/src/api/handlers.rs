@@ -19,6 +19,9 @@ use warp::Rejection;
 #[derive(Debug, serde::Serialize)]
 struct StateResponse {
     executors: Vec<ExecutorMetaResponse>,
+    active_jobs: Vec<String>,
+    completed_jobs: Vec<String>,
+    failed_jobs: Vec<String>,
     started: u128,
     version: &'static str,
 }
@@ -31,12 +34,14 @@ pub struct ExecutorMetaResponse {
     pub last_seen: u128,
 }
 
-pub(crate) async fn scheduler_state<T: AsLogicalPlan, U: AsExecutionPlan>(
+/// Return current scheduler state, including list of executors and active, completed, and failed
+/// job ids.
+pub(crate) async fn get_state<T: AsLogicalPlan, U: AsExecutionPlan>(
     data_server: SchedulerServer<T, U>,
 ) -> Result<impl warp::Reply, Rejection> {
     // TODO: Display last seen information in UI
-    let executors: Vec<ExecutorMetaResponse> = data_server
-        .state
+    let state = data_server.state;
+    let executors: Vec<ExecutorMetaResponse> = state
         .executor_manager
         .get_executor_state()
         .await
@@ -51,8 +56,52 @@ pub(crate) async fn scheduler_state<T: AsLogicalPlan, U: AsExecutionPlan>(
         .collect();
     let response = StateResponse {
         executors,
+        active_jobs: state
+            .task_manager
+            .get_active_job_ids()
+            .await
+            .map_err(|_| warp::reject())?,
+        completed_jobs: state
+            .task_manager
+            .get_completed_job_ids()
+            .await
+            .map_err(|_| warp::reject())?,
+        failed_jobs: state
+            .task_manager
+            .get_failed_job_ids()
+            .await
+            .map_err(|_| warp::reject())?,
         started: data_server.start_time,
         version: BALLISTA_VERSION,
     };
     Ok(warp::reply::json(&response))
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct JobSummaryResponse {
+    /// Just show debug output for now but what we really want here is a list of stages with
+    /// plans and metrics and the relationship between them
+    pub summary: String,
+}
+
+/// Get the execution graph for the specified job id
+pub(crate) async fn get_job_summary<T: AsLogicalPlan, U: AsExecutionPlan>(
+    data_server: SchedulerServer<T, U>,
+    job_id: String,
+) -> Result<impl warp::Reply, Rejection> {
+    let graph = data_server
+        .state
+        .task_manager
+        .get_job_execution_graph(&job_id)
+        .await
+        .map_err(|_| warp::reject())?;
+
+    match graph {
+        Some(x) => Ok(warp::reply::json(&JobSummaryResponse {
+            summary: format!("{:?}", x),
+        })),
+        _ => Ok(warp::reply::json(&JobSummaryResponse {
+            summary: "Not Found".to_string(),
+        })),
+    }
 }
