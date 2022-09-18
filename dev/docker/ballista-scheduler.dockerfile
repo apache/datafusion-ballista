@@ -16,25 +16,27 @@
 # under the License.
 
 ARG VERSION
-FROM apache/arrow-ballista:$VERSION
 
-# Scheduler UI
-RUN apt -y install nodejs npm nginx
-RUN npm install --global yarn
-RUN npm install --save node-releases
-RUN mkdir /tmp/ballista-ui
-WORKDIR /tmp/ballista-ui
-
+# Use node image to build the scheduler UI
+FROM node:14.16.0-alpine as ui-build
+WORKDIR /app
+ENV PATH /app/node_modules/.bin:$PATH
 COPY ballista/ui/scheduler ./
 RUN yarn
+RUN yarn build
 
-# TODO this fails with:
-# Error: Cannot find module '../../data/browsers'
-#RUN yarn build
-
-# TODO start nginx in background to serve the UI
+FROM apache/arrow-ballista:$VERSION
+COPY --from=ui-build /app/build /usr/share/nginx/html
+RUN apt -y install nginx
 
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
 
-CMD ["/scheduler"]
+# Expose Ballista Scheduler web UI port
+EXPOSE 80
+
+# Expose Ballista Scheduler gRPC port
+EXPOSE 50050
+
+ADD dev/docker/scheduler-entrypoint.sh /
+CMD ["/scheduler-entrypoint.sh"]

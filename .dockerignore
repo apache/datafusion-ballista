@@ -1,7 +1,8 @@
 .git
 ci
 conbench
-dev
+dev/dist
+dev/release
 python
 **/docs
 **/target
