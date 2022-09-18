@@ -24,5 +24,5 @@ ENV RUST_BACKTRACE=full
 # Expose Ballista Executor gRPC port
 EXPOSE 50051
 
-ADD dev/docker/scheduler-entrypoint.sh /
-ENTRYPOINT ["/scheduler-entrypoint.sh"]
+ADD dev/docker/executor-entrypoint.sh /
+ENTRYPOINT ["/executor-entrypoint.sh"]
