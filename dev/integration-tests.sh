@@ -17,6 +17,7 @@
 # specific language governing permissions and limitations
 # under the License.
 set -e
+export DOCKER_DEFAULT_PLATFORM=x86_64
 ./dev/build-ballista-docker.sh
 pushd benchmarks
 ./tpch-gen.sh
