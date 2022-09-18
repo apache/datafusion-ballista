@@ -21,4 +21,8 @@ FROM apache/arrow-ballista:$VERSION
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
 
-CMD ["/executor"]
+# Expose Ballista Executor gRPC port
+EXPOSE 50051
+
+ADD dev/docker/scheduler-entrypoint.sh /
+ENTRYPOINT ["/scheduler-entrypoint.sh"]

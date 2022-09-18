@@ -23,7 +23,7 @@ services:
       - 2379:2379
   ballista-scheduler:
     image: apache/arrow-ballista-scheduler:0.8.0
-    command: "/scheduler --config-backend etcd --etcd-urls etcd:2379 --bind-host 0.0.0.0 --bind-port 50050"
+    command: "--config-backend etcd --etcd-urls etcd:2379 --bind-host 0.0.0.0 --bind-port 50050"
     environment:
       - RUST_LOG=info
     volumes:
@@ -32,7 +32,7 @@ services:
       - etcd
   ballista-executor:
     image: apache/arrow-ballista-executor:0.8.0
-    command: "/executor --bind-host 0.0.0.0 --bind-port 50051 --scheduler-host ballista-scheduler"
+    command: "--bind-host 0.0.0.0 --bind-port 50051 --scheduler-host ballista-scheduler"
     scale: 2
     environment:
       - RUST_LOG=ballista=debug,info

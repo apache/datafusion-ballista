@@ -39,4 +39,4 @@ EXPOSE 80
 EXPOSE 50050
 
 ADD dev/docker/scheduler-entrypoint.sh /
-CMD ["/scheduler-entrypoint.sh"]
+ENTRYPOINT ["/scheduler-entrypoint.sh"]
