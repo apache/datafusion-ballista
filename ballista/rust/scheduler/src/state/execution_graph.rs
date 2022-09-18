@@ -17,7 +17,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::sync::Arc;
 
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
@@ -930,6 +930,75 @@ impl Debug for ExecutionGraph {
             .join("");
         write!(f, "ExecutionGraph[job_id={}, session_id={}, available_tasks={}, complete={}]\n{}",
                self.job_id, self.session_id, self.available_tasks(), self.complete(), stages)
+    }
+}
+
+pub struct ExecutionGraphDot {
+    graph: Arc<ExecutionGraph>
+}
+
+impl ExecutionGraphDot {
+    pub fn new(graph: Arc<ExecutionGraph>) -> Self {
+        Self { graph }
+    }
+}
+
+impl Display for ExecutionGraphDot {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut cluster = 0;
+        writeln!(f, "digraph G {{")?;
+
+        for (id, stage) in &self.graph.stages {
+            writeln!(f, "\tsubgraph cluster{} {{", cluster)?;
+            writeln!(f, "\t\tstage_{}", id)?;
+            match stage {
+                ExecutionStage::UnResolved(stage) => {
+                }
+                ExecutionStage::Resolved(stage) => {
+                }
+                ExecutionStage::Running(stage) => {
+                }
+                ExecutionStage::Completed(stage) => {
+                }
+                ExecutionStage::Failed(stage) => {
+                }
+            }
+            cluster += 1;
+            writeln!(f, "\t}}")?; // end of subgraph
+        }
+
+        // links
+        for (id, stage) in &self.graph.stages {
+            match stage {
+                ExecutionStage::UnResolved(stage) => {
+                    for x in &stage.output_links {
+                        writeln!(f, "\tstage_{} -> stage_{}", id, x)?;
+                    }
+                }
+                ExecutionStage::Resolved(stage) => {
+                    for x in &stage.output_links {
+                        writeln!(f, "\tstage_{} -> stage_{}", id, x)?;
+                    }
+                }
+                ExecutionStage::Running(stage) => {
+                    for x in &stage.output_links {
+                        writeln!(f, "\tstage_{} -> stage_{}", id, x)?;
+                    }
+                }
+                ExecutionStage::Completed(stage) => {
+                    for x in &stage.output_links {
+                        writeln!(f, "\tstage_{} -> stage_{}", id, x)?;
+                    }
+                }
+                ExecutionStage::Failed(stage) => {
+                    for x in &stage.output_links {
+                        writeln!(f, "\tstage_{} -> stage_{}", id, x)?;
+                    }
+                }
+            }
+        }
+
+        writeln!(f, "}}") // end of digraph
     }
 }
 
