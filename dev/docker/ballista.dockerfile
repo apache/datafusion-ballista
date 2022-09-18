@@ -22,7 +22,7 @@
 # as a mounted directory.
 
 ARG RELEASE_FLAG=--release
-ARG VERSION=0.7.0
+ARG VERSION=0.8.0
 
 FROM ballista-base:$VERSION AS base
 WORKDIR /tmp/ballista
