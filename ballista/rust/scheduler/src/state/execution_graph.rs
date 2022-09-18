@@ -24,12 +24,21 @@ use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{
     accept, ExecutionPlan, ExecutionPlanVisitor, Partitioning,
 };
+use datafusion::physical_plan::aggregates::AggregateExec;
+use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::file_format::ParquetExec;
+use datafusion::physical_plan::filter::FilterExec;
+use datafusion::physical_plan::hash_join::HashJoinExec;
+use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
+use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::{error, info, warn};
 
 use ballista_core::error::{BallistaError, Result};
-use ballista_core::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
+use ballista_core::execution_plans::{ShuffleReaderExec, ShuffleWriterExec, UnresolvedShuffleExec};
 use ballista_core::serde::protobuf::{
     self, execution_graph_stage::StageType, CompletedJob, JobStatus, QueuedJob,
     TaskStatus,
@@ -949,18 +958,23 @@ impl Display for ExecutionGraphDot {
         writeln!(f, "digraph G {{")?;
 
         for (id, stage) in &self.graph.stages {
+            let stage_name = format!("stage_{}", id);
             writeln!(f, "\tsubgraph cluster{} {{", cluster)?;
-            writeln!(f, "\t\tstage_{}", id)?;
             match stage {
                 ExecutionStage::UnResolved(stage) => {
+                    write_operator(f, &stage_name, &stage.plan, 0)?;
                 }
                 ExecutionStage::Resolved(stage) => {
+                    write_operator(f, &stage_name, &stage.plan, 0)?;
                 }
                 ExecutionStage::Running(stage) => {
+                    write_operator(f, &stage_name, &stage.plan, 0)?;
                 }
                 ExecutionStage::Completed(stage) => {
+                    write_operator(f, &stage_name, &stage.plan, 0)?;
                 }
                 ExecutionStage::Failed(stage) => {
+                    write_operator(f, &stage_name, &stage.plan, 0)?;
                 }
             }
             cluster += 1;
@@ -969,38 +983,91 @@ impl Display for ExecutionGraphDot {
 
         // links
         for (id, stage) in &self.graph.stages {
-            match stage {
-                ExecutionStage::UnResolved(stage) => {
-                    for x in &stage.output_links {
-                        writeln!(f, "\tstage_{} -> stage_{}", id, x)?;
-                    }
-                }
-                ExecutionStage::Resolved(stage) => {
-                    for x in &stage.output_links {
-                        writeln!(f, "\tstage_{} -> stage_{}", id, x)?;
-                    }
-                }
-                ExecutionStage::Running(stage) => {
-                    for x in &stage.output_links {
-                        writeln!(f, "\tstage_{} -> stage_{}", id, x)?;
-                    }
-                }
-                ExecutionStage::Completed(stage) => {
-                    for x in &stage.output_links {
-                        writeln!(f, "\tstage_{} -> stage_{}", id, x)?;
-                    }
-                }
-                ExecutionStage::Failed(stage) => {
-                    for x in &stage.output_links {
-                        writeln!(f, "\tstage_{} -> stage_{}", id, x)?;
-                    }
-                }
+            let stage_name = format!("stage_{}", id);
+            let last_node = get_last_node_name(&stage_name, 0);
+            for parent_stage_id in stage.output_links() {
+                let parent_stage_name = format!("stage_{}", parent_stage_id);
+                let parent_stage = self.graph.stages.get(parent_stage_id).unwrap();
+                let first_node = get_first_node_name(&parent_stage_name, parent_stage.plan(), 0);
+                writeln!(f, "\t{} -> {}", last_node, first_node)?;
             }
         }
 
         writeln!(f, "}}") // end of digraph
     }
 }
+
+fn write_operator(f: &mut Formatter<'_>, prefix: &str, plan: &Arc<dyn ExecutionPlan>, i: usize) -> std::fmt::Result {
+    let node_name = format!("{}_{}", prefix, i);
+    let display_name = get_operator_name(plan);
+
+    let mut metrics_str = vec![];
+    if let Some(metrics) = plan.metrics() {
+        if let Some(x) = metrics.output_rows() {
+            metrics_str.push(format!("output_rows={}", x))
+        }
+        if let Some(x) = metrics.elapsed_compute() {
+            metrics_str.push(format!("elapsed_compute={}", x))
+        }
+    }
+
+    writeln!(f, "\t\t{} [shape=box, label=\"{}\n{}\"]", node_name, display_name, metrics_str.join(", "))?;
+    let mut j = 0;
+    for child in plan.children() {
+        write_operator(f, &node_name, &child, j)?;
+        // write link from child to parent
+        writeln!(f, "\t\t{}_{} -> {}", node_name, j, node_name)?;
+        j += 1;
+    }
+
+    Ok(())
+}
+
+fn get_last_node_name(prefix: &str, i: usize) -> String {
+    format!("{}_{}", prefix, i)
+}
+
+fn get_first_node_name(prefix: &str, plan: &dyn ExecutionPlan, i: usize) -> String {
+    let node_name = format!("{}_{}", prefix, i);
+    let mut j = 0;
+    let mut last_name = node_name.clone();
+    for child in plan.children() {
+        last_name = get_first_node_name(&node_name, child.as_ref(), j);
+        j += 1;
+    }
+    last_name
+}
+
+fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
+    if let Some(_) = plan.as_any().downcast_ref::<FilterExec>() {
+        "Filter".to_string()
+    } else if let Some(_) = plan.as_any().downcast_ref::<ProjectionExec>() {
+        "Projection".to_string()
+    } else if let Some(_) = plan.as_any().downcast_ref::<SortExec>() {
+        "Sort".to_string()
+    } else if let Some(_) = plan.as_any().downcast_ref::<AggregateExec>() {
+        "Aggregate".to_string()
+    } else if let Some(_) = plan.as_any().downcast_ref::<CoalesceBatchesExec>() {
+        "CoalesceBatches".to_string()
+    } else if let Some(_) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() {
+        "CoalescePartitions".to_string()
+    } else if let Some(_) = plan.as_any().downcast_ref::<HashJoinExec>() {
+        "HashJoin".to_string()
+    } else if let Some(_) = plan.as_any().downcast_ref::<ShuffleReaderExec>() {
+        "ShuffleReader".to_string()
+    } else if let Some(exec) = plan.as_any().downcast_ref::<ShuffleWriterExec>() {
+        format!("ShuffleWriter [{} partitions]", exec.output_partitioning().partition_count())
+    } else if let Some(exec) = plan.as_any().downcast_ref::<ParquetExec>() {
+        format!("Parquet: {}", exec.base_config().object_store_url)
+    } else if let Some(_) = plan.as_any().downcast_ref::<GlobalLimitExec>() {
+        "GlobalLimit".to_string()
+    } else if let Some(_) = plan.as_any().downcast_ref::<LocalLimitExec>() {
+        "LocalLimit".to_string()
+    } else {
+        "Unknown Operator".to_string()
+    }
+}
+
 
 /// Utility for building a set of `ExecutionStage`s from
 /// a list of `ShuffleWriterExec`.

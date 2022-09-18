@@ -57,6 +57,29 @@ pub(super) enum ExecutionStage {
     Failed(FailedStage),
 }
 
+impl ExecutionStage {
+    pub fn plan(&self) -> &dyn ExecutionPlan {
+        match self {
+            Self::UnResolved(stage) => stage.plan.as_ref(),
+            Self::Resolved(stage) => stage.plan.as_ref(),
+            Self::Running(stage) => stage.plan.as_ref(),
+            Self::Completed(stage) => stage.plan.as_ref(),
+            Self::Failed(stage) => stage.plan.as_ref(),
+        }
+    }
+
+    pub fn output_links(&self) -> &Vec<usize> {
+        match self {
+            Self::UnResolved(stage) => &stage.output_links,
+            Self::Resolved(stage) => &stage.output_links,
+            Self::Running(stage) => &stage.output_links,
+            Self::Completed(stage) => &stage.output_links,
+            Self::Failed(stage) => &stage.output_links,
+        }
+    }
+
+}
+
 impl Debug for ExecutionStage {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
