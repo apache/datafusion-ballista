@@ -26,8 +26,9 @@ RUN yarn
 RUN yarn build
 
 FROM apache/arrow-ballista:$VERSION
-COPY --from=ui-build /app/build /usr/share/nginx/html
 RUN apt -y install nginx
+RUN rm -rf /var/www/html/*
+COPY --from=ui-build /app/build /var/www/html
 
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
