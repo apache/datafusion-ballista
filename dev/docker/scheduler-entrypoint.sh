@@ -16,7 +16,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-#
+
 echo "Starting nginx to serve Ballista Scheduler web UI on port 80"
 nohup nginx -g "daemon off;" &
-/scheduler "$@"
+/root/ballista-scheduler "$@"

@@ -15,18 +15,24 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM ubuntu
+FROM ubuntu:22.04
 
-RUN apt-get update && \
-    apt-get install -y git build-essential
+ARG RELEASE_FLAG=release
 
-RUN git clone https://github.com/databricks/tpch-dbgen.git && \
-    cd tpch-dbgen && \
-    make
+ENV RELEASE_FLAG=${RELEASE_FLAG}
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=full
 
-WORKDIR /tpch-dbgen
-ADD entrypoint.sh /tpch-dbgen/
+COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
 
-VOLUME /data
+COPY ballista/ui/scheduler/build /var/www/html
+COPY dev/docker/nginx.conf /etc/nginx/sites-enabled/default
 
-ENTRYPOINT [ "bash", "./entrypoint.sh" ]
+# Expose Ballista Scheduler web UI port
+EXPOSE 80
+
+# Expose Ballista Scheduler gRPC port
+EXPOSE 50050
+
+COPY dev/docker/scheduler-entrypoint.sh /root/scheduler-entrypoint.sh
+ENTRYPOINT ["/root/scheduler-entrypoint.sh"]

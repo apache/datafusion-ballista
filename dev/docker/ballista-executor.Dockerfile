@@ -15,14 +15,18 @@
 # specific language governing permissions and limitations
 # under the License.
 
-ARG VERSION
-FROM apache/arrow-ballista:$VERSION
+FROM ubuntu:22.04
 
-ADD benchmarks/run.sh /
-RUN mkdir /queries
-COPY benchmarks/queries/ /queries/
+ARG RELEASE_FLAG=release
 
+ENV RELEASE_FLAG=${RELEASE_FLAG}
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
 
-CMD ["/run.sh"]
+COPY target/$RELEASE_FLAG/ballista-executor /root/ballista-executor
+
+# Expose Ballista Executor gRPC port
+EXPOSE 50051
+
+COPY dev/docker/executor-entrypoint.sh /root/executor-entrypoint.sh
+ENTRYPOINT ["/root/executor-entrypoint.sh"]

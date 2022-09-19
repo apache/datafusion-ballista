@@ -15,30 +15,21 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# General purpose Dockerfile to take a Docker image containing R
-# and install Arrow R package dependencies
+FROM ubuntu:22.04
 
-ARG base
-FROM ${base}
+ARG RELEASE_FLAG=release
 
-ARG r_bin=R
-ENV R_BIN=${r_bin}
+ENV RELEASE_FLAG=${RELEASE_FLAG}
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=full
 
-ARG r_dev=FALSE
-ENV ARROW_R_DEV=${r_dev}
+COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
+COPY target/$RELEASE_FLAG/ballista-executor /root/ballista-executor
+COPY target/$RELEASE_FLAG/tpch /root/tpch
 
-ARG devtoolset_version=-1
-ENV DEVTOOLSET_VERSION=${devtoolset_version}
+COPY benchmarks/run.sh /root/run.sh
+COPY benchmarks/queries/ /root/benchmarks/queries
 
-# Make sure R is on the path for the R-hub devel versions (where RPREFIX is set in its dockerfile)
-ENV PATH "${RPREFIX}/bin:${PATH}"
+WORKDIR /root
 
-# Patch up some of the docker images
-COPY ci/scripts/r_docker_configure.sh /arrow/ci/scripts/
-COPY ci/etc/rprofile /arrow/ci/etc/
-COPY ci/scripts/install_minio.sh /arrow/ci/scripts/
-RUN /arrow/ci/scripts/r_docker_configure.sh
-
-COPY ci/scripts/r_deps.sh /arrow/ci/scripts/
-COPY r/DESCRIPTION /arrow/r/
-RUN /arrow/ci/scripts/r_deps.sh /arrow
+CMD ["/root/run.sh"]
