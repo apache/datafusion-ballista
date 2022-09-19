@@ -11,11 +11,11 @@
 // limitations under the License.
 
 use crate::scheduler_server::SchedulerServer;
+use crate::state::execution_graph::ExecutionGraphDot;
 use ballista_core::serde::AsExecutionPlan;
 use ballista_core::BALLISTA_VERSION;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use warp::Rejection;
-use crate::state::execution_graph::ExecutionGraphDot;
 
 #[derive(Debug, serde::Serialize)]
 struct StateResponse {
@@ -123,7 +123,7 @@ pub(crate) async fn get_job_dot_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
         Some(x) => {
             let dot = ExecutionGraphDot::new(x);
             Ok(format!("{}", dot))
-        },
-        _ => Ok("Not Found".to_string())
+        }
+        _ => Ok("Not Found".to_string()),
     }
 }

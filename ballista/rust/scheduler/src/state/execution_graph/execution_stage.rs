@@ -77,7 +77,6 @@ impl ExecutionStage {
             Self::Failed(stage) => &stage.output_links,
         }
     }
-
 }
 
 impl Debug for ExecutionStage {
