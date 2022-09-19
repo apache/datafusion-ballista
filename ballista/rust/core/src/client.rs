@@ -26,7 +26,6 @@ use std::{
 };
 
 use crate::error::{ballista_error, BallistaError, Result};
-use crate::serde::protobuf::{self};
 use crate::serde::scheduler::Action;
 
 use arrow_flight::utils::flight_data_to_arrow_batch;
@@ -39,6 +38,7 @@ use datafusion::arrow::{
     record_batch::RecordBatch,
 };
 
+use crate::serde::protobuf;
 use crate::utils::create_grpc_client_connection;
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 use futures::{Stream, StreamExt};

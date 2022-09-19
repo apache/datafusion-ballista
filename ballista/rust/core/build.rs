@@ -16,6 +16,10 @@
 // under the License.
 
 fn main() -> Result<(), String> {
+    use std::io::Write;
+
+    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+
     // for use in docker build where file changes can be wonky
     println!("cargo:rerun-if-env-changed=FORCE_REBUILD");
 
@@ -26,5 +30,15 @@ fn main() -> Result<(), String> {
     tonic_build::configure()
         .extern_path(".datafusion", "::datafusion_proto::protobuf")
         .compile(&["proto/ballista.proto"], &["proto"])
-        .map_err(|e| format!("protobuf compilation failed: {}", e))
+        .map_err(|e| format!("protobuf compilation failed: {}", e))?;
+
+    let code = std::fs::read_to_string(out.join("ballista.protobuf.rs")).unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open("src/serde/generated/ballista.rs")
+        .unwrap();
+    file.write_all(code.as_str().as_ref()).unwrap();
+
+    Ok(())
 }

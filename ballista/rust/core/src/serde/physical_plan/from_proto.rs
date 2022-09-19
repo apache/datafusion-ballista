@@ -42,7 +42,7 @@ use datafusion::physical_plan::{ColumnStatistics, PhysicalExpr, Statistics};
 use object_store::path::Path;
 use object_store::ObjectMeta;
 
-use protobuf::physical_expr_node::ExprType;
+use crate::serde::protobuf::physical_expr_node::ExprType;
 
 use crate::convert_required;
 use crate::error::BallistaError;
