@@ -1,5 +1,3 @@
-#!/bin/bash
-
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -17,11 +15,14 @@
 # specific language governing permissions and limitations
 # under the License.
 
-set -e
+ARG VERSION
+FROM apache/arrow-ballista:$VERSION
 
-. ./dev/build-set-env.sh
-docker build -t apache/arrow-ballista-base:$BALLISTA_VERSION -f dev/docker/ballista-base.dockerfile .
-docker build --build-arg VERSION=$BALLISTA_VERSION -t apache/arrow-ballista:$BALLISTA_VERSION -f dev/docker/ballista.dockerfile .
-docker build --build-arg VERSION=$BALLISTA_VERSION -t apache/arrow-ballista-executor:$BALLISTA_VERSION -f dev/docker/ballista-executor.dockerfile .
-docker build --build-arg VERSION=$BALLISTA_VERSION -t apache/arrow-ballista-scheduler:$BALLISTA_VERSION -f dev/docker/ballista-scheduler.dockerfile .
-docker build --build-arg VERSION=$BALLISTA_VERSION -t apache/arrow-ballista-benchmarks:$BALLISTA_VERSION -f dev/docker/ballista-benchmarks.dockerfile .
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=full
+
+# Expose Ballista Executor gRPC port
+EXPOSE 50051
+
+ADD dev/docker/executor-entrypoint.sh /
+ENTRYPOINT ["/executor-entrypoint.sh"]

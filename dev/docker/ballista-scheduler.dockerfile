@@ -1,5 +1,3 @@
-#!/bin/bash
-
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -17,11 +15,29 @@
 # specific language governing permissions and limitations
 # under the License.
 
-set -e
+ARG VERSION
 
-. ./dev/build-set-env.sh
-docker build -t apache/arrow-ballista-base:$BALLISTA_VERSION -f dev/docker/ballista-base.dockerfile .
-docker build --build-arg VERSION=$BALLISTA_VERSION -t apache/arrow-ballista:$BALLISTA_VERSION -f dev/docker/ballista.dockerfile .
-docker build --build-arg VERSION=$BALLISTA_VERSION -t apache/arrow-ballista-executor:$BALLISTA_VERSION -f dev/docker/ballista-executor.dockerfile .
-docker build --build-arg VERSION=$BALLISTA_VERSION -t apache/arrow-ballista-scheduler:$BALLISTA_VERSION -f dev/docker/ballista-scheduler.dockerfile .
-docker build --build-arg VERSION=$BALLISTA_VERSION -t apache/arrow-ballista-benchmarks:$BALLISTA_VERSION -f dev/docker/ballista-benchmarks.dockerfile .
+# Use node image to build the scheduler UI
+FROM node:14.16.0-alpine as ui-build
+WORKDIR /app
+ENV PATH /app/node_modules/.bin:$PATH
+COPY ballista/ui/scheduler ./
+RUN yarn
+RUN yarn build
+
+FROM apache/arrow-ballista:$VERSION
+RUN apt -y install nginx
+RUN rm -rf /var/www/html/*
+COPY --from=ui-build /app/build /var/www/html
+
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=full
+
+# Expose Ballista Scheduler web UI port
+EXPOSE 80
+
+# Expose Ballista Scheduler gRPC port
+EXPOSE 50050
+
+ADD dev/docker/scheduler-entrypoint.sh /
+ENTRYPOINT ["/scheduler-entrypoint.sh"]
