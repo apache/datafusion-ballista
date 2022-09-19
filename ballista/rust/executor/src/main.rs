@@ -233,6 +233,7 @@ async fn main() -> Result<()> {
                 //If there is executor registration error during startup, return the error and stop early.
                 executor_server::startup(
                     scheduler.clone(),
+                    bind_host,
                     executor.clone(),
                     default_codec,
                     stop_send,
