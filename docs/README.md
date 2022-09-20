@@ -19,7 +19,8 @@
 
 # Developer Documentation
 
-Developer documentation can be found [here](developer/).
+Developer documentation can be found [here](developer/README.md).
+User documentation can be found [here](source/user-guide/introduction.md).
 
 # User Documentation
 
