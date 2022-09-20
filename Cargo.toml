@@ -35,6 +35,6 @@ inherits = "release"
 lto = true
 
 [patch.crates-io]
-arrow = { git = "https://github.com/mpurins-coralogix/arrow-rs", branch = "v22-with-page-skipping-fix" }
-arrow-flight = { git = "https://github.com/mpurins-coralogix/arrow-rs", branch = "v22-with-page-skipping-fix" }
-parquet = { git = "https://github.com/mpurins-coralogix/arrow-rs", branch = "v22-with-page-skipping-fix" }
+arrow = { git = "https://github.com/coralogix/arrow-rs", branch = "master" }
+arrow-flight = { git = "https://github.com/coralogix/arrow-rs", branch = "master" }
+parquet = { git = "https://github.com/coralogix/arrow-rs", branch = "master" }
