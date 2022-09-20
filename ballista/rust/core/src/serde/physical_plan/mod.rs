@@ -38,7 +38,7 @@ use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::explain::ExplainExec;
 use datafusion::physical_plan::expressions::{Column, PhysicalSortExpr};
 use datafusion::physical_plan::file_format::{
-    AvroExec, CsvExec, FileScanConfig, ParquetExec,
+    AvroExec, CsvExec, FileScanConfig, ParquetExec, ParquetScanOptions,
 };
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::hash_join::{HashJoinExec, PartitionMode};
@@ -169,11 +169,18 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     .map(|expr| parse_expr(expr, registry))
                     .transpose()?;
 
-                Ok(Arc::new(ParquetExec::new(
-                    decode_scan_config(scan.base_conf.as_ref().unwrap())?,
-                    predicate,
-                    Some(DEFAULT_METADATA_SIZE_HINT),
-                )))
+                Ok(Arc::new(
+                    ParquetExec::new(
+                        decode_scan_config(scan.base_conf.as_ref().unwrap())?,
+                        predicate,
+                        Some(DEFAULT_METADATA_SIZE_HINT),
+                    )
+                    .with_scan_options(
+                        ParquetScanOptions::default()
+                            .with_pushdown_filters(true)
+                            .with_reorder_predicates(true),
+                    ),
+                ))
             }
             PhysicalPlanType::AvroScan(scan) => Ok(Arc::new(AvroExec::new(
                 decode_scan_config(scan.base_conf.as_ref().unwrap())?,
