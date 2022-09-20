@@ -24,7 +24,7 @@ fn main() -> Result<(), String> {
     println!("cargo:rustc-env=RUSTC_VERSION={}", version);
     println!("cargo:rerun-if-changed=proto/datafusion.proto");
     tonic_build::configure()
-        .extern_path(".datafusion", "::datafusion_proto::protobuf")
+        .extern_path(".datafusion", "::datafusion::datafusion_proto::protobuf")
         .compile(&["proto/ballista.proto"], &["proto"])
         .map_err(|e| format!("protobuf compilation failed: {}", e))
 }

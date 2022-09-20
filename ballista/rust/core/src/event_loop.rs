@@ -30,7 +30,12 @@ pub trait EventAction<E>: Send + Sync {
 
     fn on_stop(&self);
 
-    async fn on_receive(&self, event: E) -> Result<Option<E>>;
+    async fn on_receive(
+        &self,
+        event: E,
+        tx_event: &mpsc::Sender<E>,
+        rx_event: &mpsc::Receiver<E>,
+    ) -> Result<()>;
 
     fn on_error(&self, error: BallistaError);
 }
@@ -72,19 +77,9 @@ impl<E: Send + 'static> EventLoop<E> {
             info!("Starting the event loop {}", name);
             while !stopped.load(Ordering::SeqCst) {
                 if let Some(event) = rx_event.recv().await {
-                    match action.on_receive(event).await {
-                        Ok(Some(event)) => {
-                            if let Err(e) = tx_event.send(event).await {
-                                let msg = format!("Fail to send event due to {}", e);
-                                error!("{}", msg);
-                                action.on_error(BallistaError::General(msg));
-                            }
-                        }
-                        Err(e) => {
-                            error!("Fail to process event due to {}", e);
-                            action.on_error(e);
-                        }
-                        _ => {}
+                    if let Err(e) = action.on_receive(event, &tx_event, &rx_event).await {
+                        error!("Fail to process event due to {}", e);
+                        action.on_error(e);
                     }
                 } else {
                     info!("Event Channel closed, shutting down");
@@ -128,11 +123,16 @@ impl<E: Send + 'static> EventLoop<E> {
     }
 }
 
+#[derive(Clone)]
 pub struct EventSender<E> {
     tx_event: mpsc::Sender<E>,
 }
 
 impl<E> EventSender<E> {
+    pub fn new(tx_event: mpsc::Sender<E>) -> Self {
+        Self { tx_event }
+    }
+
     pub async fn post_event(&self, event: E) -> Result<()> {
         self.tx_event.send(event).await.map_err(|e| {
             BallistaError::General(format!("Fail to send event due to {}", e))

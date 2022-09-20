@@ -43,7 +43,7 @@ use log::info;
 #[derive(Debug, Clone)]
 pub struct ShuffleReaderExec {
     /// Each partition of a shuffle can read data from multiple locations
-    pub(crate) partition: Vec<Vec<PartitionLocation>>,
+    pub partition: Vec<Vec<PartitionLocation>>,
     pub(crate) schema: SchemaRef,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
@@ -205,6 +205,8 @@ async fn fetch_partition(
 ) -> Result<SendableRecordBatchStream> {
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
+    // TODO for shuffle client connections, we should avoid creating new connections again and again.
+    // And we should also avoid to keep alive too many connections for long time.
     let mut ballista_client =
         BallistaClient::try_new(metadata.host.as_str(), metadata.port as u16)
             .await

@@ -24,7 +24,9 @@ use std::{
 };
 
 use datafusion::arrow::error::ArrowError;
+use datafusion::datafusion_proto;
 use datafusion::error::DataFusionError;
+use futures::future::Aborted;
 use sqlparser::parser;
 
 pub type Result<T> = result::Result<T, BallistaError>;
@@ -47,6 +49,7 @@ pub enum BallistaError {
     TonicError(tonic::transport::Error),
     GrpcError(tonic::Status),
     TokioError(tokio::task::JoinError),
+    Cancelled,
 }
 
 #[allow(clippy::from_over_into)]
@@ -150,6 +153,12 @@ impl From<datafusion_proto::to_proto::Error> for BallistaError {
     }
 }
 
+impl From<futures::future::Aborted> for BallistaError {
+    fn from(_: Aborted) -> Self {
+        BallistaError::Cancelled
+    }
+}
+
 impl Display for BallistaError {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self {
@@ -178,6 +187,7 @@ impl Display for BallistaError {
                 write!(f, "Internal Ballista error: {}", desc)
             }
             BallistaError::TokioError(desc) => write!(f, "Tokio join error: {}", desc),
+            BallistaError::Cancelled => write!(f, "Task cancelled"),
         }
     }
 }

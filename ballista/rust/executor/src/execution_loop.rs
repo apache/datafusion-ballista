@@ -15,15 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::collections::HashMap;
-use std::ops::Deref;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use std::{sync::Arc, time::Duration};
-
+use datafusion::datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
-use log::{debug, error, info, warn};
-use tonic::transport::Channel;
 
 use ballista_core::serde::protobuf::{
     scheduler_grpc_client::SchedulerGrpcClient, PollWorkParams, PollWorkResult,
@@ -35,14 +28,26 @@ use crate::executor::Executor;
 use ballista_core::error::BallistaError;
 use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
 use ballista_core::serde::scheduler::ExecutorSpecification;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan, BallistaCodec};
+use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::utils::collect_plan_metrics;
 use datafusion::execution::context::TaskContext;
+use futures::FutureExt;
+use log::{debug, error, info, warn};
+use std::any::Any;
+use std::collections::HashMap;
+use std::convert::TryInto;
+use std::error::Error;
+use std::ops::Deref;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::{sync::Arc, time::Duration};
+use tonic::transport::Channel;
 
 pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     mut scheduler: SchedulerGrpcClient<Channel>,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
-) {
+) -> Result<(), BallistaError> {
     let executor_specification: ExecutorSpecification = executor
         .metadata
         .specification
@@ -54,10 +59,9 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         Arc::new(AtomicUsize::new(executor_specification.task_slots as usize));
     let (task_status_sender, mut task_status_receiver) =
         std::sync::mpsc::channel::<TaskStatus>();
+    info!("Starting poll work loop with scheduler");
 
     loop {
-        debug!("Starting registration loop with scheduler");
-
         let task_status: Vec<TaskStatus> =
             sample_tasks_status(&mut task_status_receiver).await;
 
@@ -103,12 +107,25 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 }
             }
             Err(error) => {
-                warn!("Executor registration failed. If this continues to happen the executor might be marked as dead by the scheduler. Error: {}", error);
+                warn!("Executor poll work loop failed. If this continues to happen the Scheduler might be marked as dead. Error: {}", error);
             }
         }
         if !active_job {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+}
+
+/// Tries to get meaningful description from panic-error.
+pub(crate) fn any_to_string(any: &Box<dyn Any + Send>) -> String {
+    if let Some(s) = any.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = any.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(error) = any.downcast_ref::<Box<dyn Error + Send>>() {
+        error.to_string()
+    } else {
+        "Unknown error occurred".to_string()
     }
 }
 
@@ -164,26 +181,51 @@ async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecution
     let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
         task.output_partitioning.as_ref(),
         task_context.as_ref(),
+        plan.schema().as_ref(),
     )?;
 
+    let shuffle_writer_plan = executor.new_shuffle_writer(
+        task_id.job_id.clone(),
+        task_id.stage_id as usize,
+        plan,
+    )?;
     tokio::spawn(async move {
-        let execution_result = executor
-            .execute_shuffle_write(
-                task_id.job_id.clone(),
-                task_id.stage_id as usize,
-                task_id.partition_id as usize,
-                plan,
-                task_context,
-                shuffle_output_partitioning,
-            )
-            .await;
+        use std::panic::AssertUnwindSafe;
+        let execution_result = match AssertUnwindSafe(executor.execute_shuffle_write(
+            task_id.job_id.clone(),
+            task_id.stage_id as usize,
+            task_id.partition_id as usize,
+            shuffle_writer_plan.clone(),
+            task_context,
+            shuffle_output_partitioning,
+        ))
+        .catch_unwind()
+        .await
+        {
+            Ok(Ok(r)) => Ok(r),
+            Ok(Err(r)) => Err(r),
+            Err(r) => {
+                error!("Error executing task: {:?}", any_to_string(&r));
+                Err(BallistaError::Internal(format!("{:#?}", any_to_string(&r))))
+            }
+        };
+
         info!("Done with task {}", task_id_log);
         debug!("Statistics: {:?}", execution_result);
         available_tasks_slots.fetch_add(1, Ordering::SeqCst);
+
+        let plan_metrics = collect_plan_metrics(shuffle_writer_plan.as_ref());
+        let operator_metrics = plan_metrics
+            .into_iter()
+            .map(|m| m.try_into())
+            .collect::<Result<Vec<_>, BallistaError>>()
+            .ok();
+
         let _ = task_status_sender.send(as_task_status(
             execution_result,
             executor.metadata.id.clone(),
             task_id,
+            operator_metrics,
         ));
     });
 

@@ -21,13 +21,13 @@ notifications:
   pullrequests: github@arrow.apache.org
   jira_options: link label worklog
 github:
-  description: "Apache Arrow DataFusion and Ballista query engines"
+  description: "Apache Arrow Ballista Distributed Query Engine"
   homepage: https://arrow.apache.org/datafusion
   labels:
     - arrow
     - big-data
     - dataframe
-    - datafusion
+    - distributed
     - olap
     - python
     - query-engine

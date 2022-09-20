@@ -11,8 +11,9 @@
 // limitations under the License.
 
 use crate::scheduler_server::SchedulerServer;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan};
+use ballista_core::serde::AsExecutionPlan;
 use ballista_core::BALLISTA_VERSION;
+use datafusion::datafusion_proto::logical_plan::AsLogicalPlan;
 use warp::Rejection;
 
 #[derive(Debug, serde::Serialize)]
@@ -36,7 +37,8 @@ pub(crate) async fn scheduler_state<T: AsLogicalPlan, U: AsExecutionPlan>(
     // TODO: Display last seen information in UI
     let executors: Vec<ExecutorMetaResponse> = data_server
         .state
-        .get_executors_metadata()
+        .executor_manager
+        .get_executor_state()
         .await
         .unwrap_or_default()
         .into_iter()

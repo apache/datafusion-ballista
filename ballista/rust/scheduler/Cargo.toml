@@ -20,8 +20,8 @@ name = "ballista-scheduler"
 description = "Ballista Distributed Compute - Scheduler"
 license = "Apache-2.0"
 version = "0.7.0"
-homepage = "https://github.com/apache/arrow-datafusion"
-repository = "https://github.com/apache/arrow-datafusion"
+homepage = "https://github.com/apache/arrow-ballista"
+repository = "https://github.com/apache/arrow-ballista"
 readme = "README.md"
 authors = ["Apache Arrow <dev@arrow.apache.org>"]
 edition = "2018"
@@ -32,39 +32,49 @@ scheduler = "scheduler_config_spec.toml"
 [features]
 default = ["etcd", "sled"]
 etcd = ["etcd-client"]
+flight-sql = []
 sled = ["sled_package", "tokio-stream"]
+
 
 [dependencies]
 anyhow = "1"
+arrow-flight = { version = "22.0.0", features = ["flight-sql-experimental"] }
 async-recursion = "1.0.0"
 async-trait = "0.1.41"
 ballista-core = { path = "../core", version = "0.7.0" }
+base64 = { version = "0.13", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
 configure_me = "0.4.0"
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "a08d26eef39bcb2adac527e5c260d31f473fca79" }
-env_logger = "0.9"
-etcd-client = { version = "0.9", optional = true }
+datafusion = { path = "../../../datafusion" }
+etcd-client = { version = "0.10.1", optional = true }
+flatbuffers = { version = "2.1.2" }
 futures = "0.3"
 http = "0.2"
 http-body = "0.4"
 hyper = "0.14.4"
+itertools = "0.10.3"
 log = "0.4"
+object_store = "0.5.0"
 parking_lot = "0.12"
 parse_arg = "0.1.3"
-prost = "0.10"
+prost = "0.11"
+prost-types = { version = "0.11.0" }
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 sled_package = { package = "sled", version = "0.34", optional = true }
 tokio = { version = "1.0", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"], optional = true }
-tonic = "0.7"
+tonic = "0.8"
 tower = { version = "0.4" }
+tracing = "0.1.36"
+tracing-appender = "0.2.2"
+tracing-subscriber = { version = "0.3.15", features = ["fmt", "env-filter", "ansi"] }
+uuid = { version = "1.0", features = ["v4"] }
 warp = "0.3"
 
 [dev-dependencies]
 ballista-core = { path = "../core", version = "0.7.0" }
-uuid = { version = "1.0", features = ["v4"] }
 
 [build-dependencies]
 configure_me_codegen = "0.4.1"
-tonic-build = { version = "0.7" }
+tonic-build = { version = "0.8", default-features = false, features = ["transport", "prost"] }

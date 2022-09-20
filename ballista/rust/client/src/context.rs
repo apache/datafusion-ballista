@@ -27,15 +27,18 @@ use std::sync::Arc;
 
 use ballista_core::config::BallistaConfig;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
-use ballista_core::serde::protobuf::{ExecuteQueryParams, KeyValuePair, LogicalPlanNode};
-use ballista_core::utils::create_df_ctx_with_ballista_query_planner;
+use ballista_core::serde::protobuf::{ExecuteQueryParams, KeyValuePair};
+use ballista_core::utils::{
+    create_df_ctx_with_ballista_query_planner, create_grpc_client_connection,
+};
 
 use datafusion::catalog::TableReference;
 use datafusion::dataframe::DataFrame;
+use datafusion::datafusion_proto::protobuf::LogicalPlanNode;
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_plan::{
-    source_as_provider, CreateExternalTable, FileType, LogicalPlan, TableScan,
+    source_as_provider, CreateExternalTable, LogicalPlan, TableScan,
 };
 use datafusion::prelude::{
     AvroReadOptions, CsvReadOptions, ParquetReadOptions, SessionConfig, SessionContext,
@@ -92,9 +95,10 @@ impl BallistaContext {
             "Connecting to Ballista scheduler at {}",
             scheduler_url.clone()
         );
-        let mut scheduler = SchedulerGrpcClient::connect(scheduler_url.clone())
+        let connection = create_grpc_client_connection(scheduler_url.clone())
             .await
             .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+        let mut scheduler = SchedulerGrpcClient::new(connection);
 
         let remote_session_id = scheduler
             .execute_query(ExecuteQueryParams {
@@ -108,6 +112,7 @@ impl BallistaContext {
                     })
                     .collect::<Vec<_>>(),
                 optional_session_id: None,
+                optional_job_id: None,
             })
             .await
             .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?
@@ -167,6 +172,7 @@ impl BallistaContext {
                     })
                     .collect::<Vec<_>>(),
                 optional_session_id: None,
+                optional_job_id: None,
             })
             .await
             .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?
@@ -380,12 +386,13 @@ impl BallistaContext {
                 ref delimiter,
                 ref table_partition_cols,
                 ref if_not_exists,
+                ..
             }) => {
                 let table_exists = ctx.table_exist(name.as_str())?;
 
                 match (if_not_exists, table_exists) {
-                    (_, false) => match file_type {
-                        FileType::CSV => {
+                    (_, false) => match file_type.to_lowercase().as_str() {
+                        "csv" => {
                             self.register_csv(
                                 name,
                                 location,
@@ -398,7 +405,7 @@ impl BallistaContext {
                             .await?;
                             Ok(Arc::new(DataFrame::new(ctx.state.clone(), &plan)))
                         }
-                        FileType::Parquet => {
+                        "parquet" => {
                             self.register_parquet(
                                 name,
                                 location,
@@ -408,7 +415,7 @@ impl BallistaContext {
                             .await?;
                             Ok(Arc::new(DataFrame::new(ctx.state.clone(), &plan)))
                         }
-                        FileType::Avro => {
+                        "avro" => {
                             self.register_avro(
                                 name,
                                 location,
@@ -439,6 +446,8 @@ impl BallistaContext {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "standalone")]
+    use datafusion::datasource::listing::ListingTableUrl;
 
     #[tokio::test]
     #[cfg(feature = "standalone")]
@@ -590,12 +599,14 @@ mod tests {
                         target_partitions: x.target_partitions,
                     };
 
-                    let config = ListingTableConfig::new(
-                        listing_table.object_store().clone(),
-                        listing_table.table_path().to_string(),
-                    )
-                    .with_schema(Arc::new(Schema::new(vec![])))
-                    .with_listing_options(error_options);
+                    let table_paths = listing_table
+                        .table_paths()
+                        .iter()
+                        .map(|t| ListingTableUrl::parse(t).unwrap())
+                        .collect();
+                    let config = ListingTableConfig::new_with_multi_paths(table_paths)
+                        .with_schema(Arc::new(Schema::new(vec![])))
+                        .with_listing_options(error_options);
 
                     let error_table = ListingTable::try_new(config).unwrap();
 
@@ -612,7 +623,7 @@ mod tests {
             .await
             .unwrap();
         let results = df.collect().await.unwrap();
-        pretty::print_batches(&results);
+        pretty::print_batches(&results).unwrap();
     }
 
     #[tokio::test]

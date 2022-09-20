@@ -39,6 +39,7 @@ use datafusion::arrow::{
     record_batch::RecordBatch,
 };
 
+use crate::utils::create_grpc_client_connection;
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 use futures::{Stream, StreamExt};
 use log::debug;
@@ -57,8 +58,8 @@ impl BallistaClient {
     pub async fn try_new(host: &str, port: u16) -> Result<Self> {
         let addr = format!("http://{}:{}", host, port);
         debug!("BallistaClient connecting to {}", addr);
-        let flight_client =
-            FlightServiceClient::connect(addr.clone())
+        let connection =
+            create_grpc_client_connection(addr.clone())
                 .await
                 .map_err(|e| {
                     BallistaError::General(format!(
@@ -66,6 +67,7 @@ impl BallistaClient {
                         addr, e
                     ))
                 })?;
+        let flight_client = FlightServiceClient::new(connection);
         debug!("BallistaClient connected OK");
 
         Ok(Self { flight_client })

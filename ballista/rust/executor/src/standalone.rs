@@ -15,27 +15,26 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::Arc;
-
+use crate::metrics::LoggingMetricsCollector;
+use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightService};
 use arrow_flight::flight_service_server::FlightServiceServer;
-
 use ballista_core::serde::scheduler::ExecutorSpecification;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan, BallistaCodec};
+use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::utils::create_grpc_server;
 use ballista_core::{
     error::Result,
     serde::protobuf::executor_registration::OptionalHost,
     serde::protobuf::{scheduler_grpc_client::SchedulerGrpcClient, ExecutorRegistration},
     BALLISTA_VERSION,
 };
+use datafusion::datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use log::info;
+use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
-use tonic::transport::{Channel, Server};
+use tonic::transport::Channel;
 use uuid::Uuid;
-
-use crate::metrics::LoggingMetricsCollector;
-use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightService};
 
 pub async fn new_standalone_executor<
     T: 'static + AsLogicalPlan,
@@ -80,14 +79,17 @@ pub async fn new_standalone_executor<
         &work_dir,
         Arc::new(RuntimeEnv::new(config).unwrap()),
         Arc::new(LoggingMetricsCollector::default()),
+        concurrent_tasks,
     ));
 
-    let service = BallistaFlightService::new(executor.clone());
+    let service = BallistaFlightService::new();
     let server = FlightServiceServer::new(service);
     tokio::spawn(
-        Server::builder().add_service(server).serve_with_incoming(
-            tokio_stream::wrappers::TcpListenerStream::new(listener),
-        ),
+        create_grpc_server()
+            .add_service(server)
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
+                listener,
+            )),
     );
 
     tokio::spawn(execution_loop::poll_loop(scheduler, executor, codec));

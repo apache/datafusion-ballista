@@ -18,23 +18,20 @@
 //! This crate contains code generated from the Ballista Protocol Buffer Definition as well
 //! as convenience code for interacting with the generated code.
 
+use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
+use datafusion::datafusion_proto::logical_plan::{
+    AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
+};
+use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::logical_plan::{FunctionRegistry, Operator};
+use datafusion::physical_plan::join_utils::JoinSide;
+use datafusion::physical_plan::ExecutionPlan;
 use prost::bytes::BufMut;
+use prost::Message;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::{convert::TryInto, io::Cursor};
-
-use datafusion::logical_plan::{
-    FunctionRegistry, JoinConstraint, JoinType, LogicalPlan, Operator,
-};
-
-use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
-
-use datafusion::execution::runtime_env::RuntimeEnv;
-use datafusion::logical_plan::plan::Extension;
-use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::SessionContext;
-use prost::Message;
 
 // include the generated protobuf source as a submodule
 #[allow(clippy::all)]
@@ -42,7 +39,6 @@ pub mod protobuf {
     include!(concat!(env!("OUT_DIR"), "/ballista.protobuf.rs"));
 }
 
-pub mod logical_plan;
 pub mod physical_plan;
 pub mod scheduler;
 
@@ -56,71 +52,6 @@ pub fn decode_protobuf(bytes: &[u8]) -> Result<BallistaAction, BallistaError> {
 
 pub(crate) fn proto_error<S: Into<String>>(message: S) -> BallistaError {
     BallistaError::General(message.into())
-}
-
-pub trait AsLogicalPlan: Debug + Send + Sync + Clone {
-    fn try_decode(buf: &[u8]) -> Result<Self, BallistaError>
-    where
-        Self: Sized;
-
-    fn try_encode<B>(&self, buf: &mut B) -> Result<(), BallistaError>
-    where
-        B: BufMut,
-        Self: Sized;
-
-    fn try_into_logical_plan(
-        &self,
-        ctx: &SessionContext,
-        extension_codec: &dyn LogicalExtensionCodec,
-    ) -> Result<LogicalPlan, BallistaError>;
-
-    fn try_from_logical_plan(
-        plan: &LogicalPlan,
-        extension_codec: &dyn LogicalExtensionCodec,
-    ) -> Result<Self, BallistaError>
-    where
-        Self: Sized;
-}
-
-pub trait LogicalExtensionCodec: Debug + Send + Sync {
-    fn try_decode(
-        &self,
-        buf: &[u8],
-        inputs: &[LogicalPlan],
-        ctx: &SessionContext,
-    ) -> Result<Extension, BallistaError>;
-
-    fn try_encode(
-        &self,
-        node: &Extension,
-        buf: &mut Vec<u8>,
-    ) -> Result<(), BallistaError>;
-}
-
-#[derive(Debug, Clone)]
-pub struct DefaultLogicalExtensionCodec {}
-
-impl LogicalExtensionCodec for DefaultLogicalExtensionCodec {
-    fn try_decode(
-        &self,
-        _buf: &[u8],
-        _inputs: &[LogicalPlan],
-        _ctx: &SessionContext,
-    ) -> Result<Extension, BallistaError> {
-        Err(BallistaError::NotImplemented(
-            "LogicalExtensionCodec is not provided".to_string(),
-        ))
-    }
-
-    fn try_encode(
-        &self,
-        _node: &Extension,
-        _buf: &mut Vec<u8>,
-    ) -> Result<(), BallistaError> {
-        Err(BallistaError::NotImplemented(
-            "LogicalExtensionCodec is not provided".to_string(),
-        ))
-    }
 }
 
 pub trait AsExecutionPlan: Debug + Send + Sync + Clone {
@@ -289,46 +220,20 @@ pub(crate) fn from_proto_binary_op(op: &str) -> Result<Operator, BallistaError> 
     }
 }
 
-impl From<protobuf::JoinType> for JoinType {
-    fn from(t: protobuf::JoinType) -> Self {
+impl From<protobuf::JoinSide> for JoinSide {
+    fn from(t: protobuf::JoinSide) -> Self {
         match t {
-            protobuf::JoinType::Inner => JoinType::Inner,
-            protobuf::JoinType::Left => JoinType::Left,
-            protobuf::JoinType::Right => JoinType::Right,
-            protobuf::JoinType::Full => JoinType::Full,
-            protobuf::JoinType::Semi => JoinType::Semi,
-            protobuf::JoinType::Anti => JoinType::Anti,
+            protobuf::JoinSide::LeftSide => JoinSide::Left,
+            protobuf::JoinSide::RightSide => JoinSide::Right,
         }
     }
 }
 
-impl From<JoinType> for protobuf::JoinType {
-    fn from(t: JoinType) -> Self {
+impl From<JoinSide> for protobuf::JoinSide {
+    fn from(t: JoinSide) -> Self {
         match t {
-            JoinType::Inner => protobuf::JoinType::Inner,
-            JoinType::Left => protobuf::JoinType::Left,
-            JoinType::Right => protobuf::JoinType::Right,
-            JoinType::Full => protobuf::JoinType::Full,
-            JoinType::Semi => protobuf::JoinType::Semi,
-            JoinType::Anti => protobuf::JoinType::Anti,
-        }
-    }
-}
-
-impl From<protobuf::JoinConstraint> for JoinConstraint {
-    fn from(t: protobuf::JoinConstraint) -> Self {
-        match t {
-            protobuf::JoinConstraint::On => JoinConstraint::On,
-            protobuf::JoinConstraint::Using => JoinConstraint::Using,
-        }
-    }
-}
-
-impl From<JoinConstraint> for protobuf::JoinConstraint {
-    fn from(t: JoinConstraint) -> Self {
-        match t {
-            JoinConstraint::On => protobuf::JoinConstraint::On,
-            JoinConstraint::Using => protobuf::JoinConstraint::Using,
+            JoinSide::Left => protobuf::JoinSide::LeftSide,
+            JoinSide::Right => protobuf::JoinSide::RightSide,
         }
     }
 }
@@ -368,7 +273,7 @@ mod tests {
     use prost::Message;
     use std::any::Any;
 
-    use datafusion_proto::from_proto::parse_expr;
+    use datafusion::datafusion_proto::from_proto::parse_expr;
     use std::convert::TryInto;
     use std::fmt;
     use std::fmt::{Debug, Formatter};
@@ -376,16 +281,19 @@ mod tests {
     use std::sync::Arc;
 
     pub mod proto {
+
         #[derive(Clone, PartialEq, ::prost::Message)]
         pub struct TopKPlanProto {
             #[prost(uint64, tag = "1")]
             pub k: u64,
 
             #[prost(message, optional, tag = "2")]
-            pub expr: ::core::option::Option<datafusion_proto::protobuf::LogicalExprNode>,
+            pub expr: ::core::option::Option<
+                datafusion::datafusion_proto::protobuf::LogicalExprNode,
+            >,
         }
 
-        #[derive(Clone, PartialEq, ::prost::Message)]
+        #[derive(Clone, Eq, PartialEq, ::prost::Message)]
         pub struct TopKExecProto {
             #[prost(uint64, tag = "1")]
             pub k: u64,
@@ -393,10 +301,11 @@ mod tests {
     }
 
     use crate::error::BallistaError;
-    use crate::serde::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+    use crate::serde::protobuf::PhysicalPlanNode;
     use crate::serde::{
         AsExecutionPlan, AsLogicalPlan, LogicalExtensionCodec, PhysicalExtensionCodec,
     };
+    use datafusion::datafusion_proto::protobuf::LogicalPlanNode;
     use proto::{TopKExecProto, TopKPlanProto};
 
     struct TopKPlanNode {
@@ -446,7 +355,7 @@ mod tests {
             &self,
             exprs: &[Expr],
             inputs: &[LogicalPlan],
-        ) -> Arc<dyn UserDefinedLogicalNode + Send + Sync> {
+        ) -> Arc<dyn UserDefinedLogicalNode> {
             assert_eq!(inputs.len(), 1, "input size inconsistent");
             assert_eq!(exprs.len(), 1, "expression size inconsistent");
             Arc::new(TopKPlanNode {
@@ -543,9 +452,10 @@ mod tests {
 
     struct TopKPlanner {}
 
+    #[async_trait]
     impl ExtensionPlanner for TopKPlanner {
         /// Create a physical plan for an extension node
-        fn plan_extension(
+        async fn plan_extension(
             &self,
             _planner: &dyn PhysicalPlanner,
             node: &dyn UserDefinedLogicalNode,
@@ -601,10 +511,10 @@ mod tests {
             buf: &[u8],
             inputs: &[LogicalPlan],
             ctx: &SessionContext,
-        ) -> Result<Extension, BallistaError> {
+        ) -> Result<Extension, DataFusionError> {
             if let Some((input, _)) = inputs.split_first() {
                 let proto = TopKPlanProto::decode(buf).map_err(|e| {
-                    BallistaError::Internal(format!(
+                    DataFusionError::Internal(format!(
                         "failed to decode logical plan: {:?}",
                         e
                     ))
@@ -621,10 +531,10 @@ mod tests {
                         node: Arc::new(node),
                     })
                 } else {
-                    Err(BallistaError::from("invalid plan, no expr".to_string()))
+                    Err(DataFusionError::Plan("invalid plan, no expr".to_string()))
                 }
             } else {
-                Err(BallistaError::from("invalid plan, no input".to_string()))
+                Err(DataFusionError::Plan("invalid plan, no input".to_string()))
             }
         }
 
@@ -632,7 +542,7 @@ mod tests {
             &self,
             node: &Extension,
             buf: &mut Vec<u8>,
-        ) -> Result<(), BallistaError> {
+        ) -> Result<(), DataFusionError> {
             if let Some(exec) = node.node.as_any().downcast_ref::<TopKPlanNode>() {
                 let proto = TopKPlanProto {
                     k: exec.k as u64,
@@ -640,7 +550,7 @@ mod tests {
                 };
 
                 proto.encode(buf).map_err(|e| {
-                    BallistaError::Internal(format!(
+                    DataFusionError::Internal(format!(
                         "failed to encode logical plan: {:?}",
                         e
                     ))
@@ -648,7 +558,7 @@ mod tests {
 
                 Ok(())
             } else {
-                Err(BallistaError::from("unsupported plan type".to_string()))
+                Err(DataFusionError::Plan("unsupported plan type".to_string()))
             }
         }
     }

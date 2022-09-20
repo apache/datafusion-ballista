@@ -23,13 +23,14 @@ use prost::Message;
 
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::datafusion_data_access::object_store::local::LocalFileSystem;
+use datafusion::datafusion_proto;
 use datafusion::datasource::listing::PartitionedFile;
+use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::logical_plan::window_frames::WindowFrame;
 use datafusion::logical_plan::FunctionRegistry;
-use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::aggregates::{create_aggregate_expr, AggregateMode};
+use datafusion::physical_plan::aggregates::{AggregateExec, PhysicalGroupBy};
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::cross_join::CrossJoinExec;
@@ -37,10 +38,11 @@ use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::explain::ExplainExec;
 use datafusion::physical_plan::expressions::{Column, PhysicalSortExpr};
 use datafusion::physical_plan::file_format::{
-    AvroExec, CsvExec, FileScanConfig, ParquetExec,
+    AvroExec, CsvExec, FileScanConfig, ParquetExec, ParquetScanOptions,
 };
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::hash_join::{HashJoinExec, PartitionMode};
+use datafusion::physical_plan::join_utils::{ColumnIndex, JoinFilter};
 use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
@@ -72,6 +74,8 @@ use crate::{convert_required, into_physical_plan, into_required};
 
 pub mod from_proto;
 pub mod to_proto;
+
+static DEFAULT_METADATA_SIZE_HINT: usize = 400_000;
 
 impl AsExecutionPlan for PhysicalPlanNode {
     fn try_decode(buf: &[u8]) -> Result<Self, BallistaError>
@@ -126,7 +130,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     .expr
                     .iter()
                     .zip(projection.expr_name.iter())
-                    .map(|(expr, name)| Ok((parse_physical_expr(expr,registry)?, name.to_string())))
+                    .map(|(expr, name)| Ok((parse_physical_expr(expr,registry, input.schema().as_ref())?, name.to_string())))
                     .collect::<Result<Vec<(Arc<dyn PhysicalExpr>, String)>, BallistaError>>(
                     )?;
                 Ok(Arc::new(ProjectionExec::try_new(exprs, input)?))
@@ -141,7 +145,9 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 let predicate = filter
                     .expr
                     .as_ref()
-                    .map(|expr| parse_physical_expr(expr, registry))
+                    .map(|expr| {
+                        parse_physical_expr(expr, registry, input.schema().as_ref())
+                    })
                     .transpose()?
                     .ok_or_else(|| {
                         BallistaError::General(
@@ -152,7 +158,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 Ok(Arc::new(FilterExec::try_new(predicate, input)?))
             }
             PhysicalPlanType::CsvScan(scan) => Ok(Arc::new(CsvExec::new(
-                decode_scan_config(scan.base_conf.as_ref().unwrap(), runtime)?,
+                decode_scan_config(scan.base_conf.as_ref().unwrap())?,
                 scan.has_header,
                 str_to_byte(&scan.delimiter)?,
             ))),
@@ -162,13 +168,22 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     .as_ref()
                     .map(|expr| parse_expr(expr, registry))
                     .transpose()?;
-                Ok(Arc::new(ParquetExec::new(
-                    decode_scan_config(scan.base_conf.as_ref().unwrap(), runtime)?,
-                    predicate,
-                )))
+
+                Ok(Arc::new(
+                    ParquetExec::new(
+                        decode_scan_config(scan.base_conf.as_ref().unwrap())?,
+                        predicate,
+                        Some(DEFAULT_METADATA_SIZE_HINT),
+                    )
+                    .with_scan_options(
+                        ParquetScanOptions::default()
+                            .with_pushdown_filters(true)
+                            .with_reorder_predicates(true),
+                    ),
+                ))
             }
             PhysicalPlanType::AvroScan(scan) => Ok(Arc::new(AvroExec::new(
-                decode_scan_config(scan.base_conf.as_ref().unwrap(), runtime)?,
+                decode_scan_config(scan.base_conf.as_ref().unwrap())?,
             ))),
             PhysicalPlanType::CoalesceBatches(coalesce_batches) => {
                 let input: Arc<dyn ExecutionPlan> = into_physical_plan!(
@@ -199,7 +214,9 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         let expr = hash_part
                             .hash_expr
                             .iter()
-                            .map(|e| parse_physical_expr(e, registry))
+                            .map(|e| {
+                                parse_physical_expr(e, registry, input.schema().as_ref())
+                            })
                             .collect::<Result<Vec<Arc<dyn PhysicalExpr>>, _>>()?;
 
                         Ok(Arc::new(RepartitionExec::try_new(
@@ -234,12 +251,21 @@ impl AsExecutionPlan for PhysicalPlanNode {
             PhysicalPlanType::GlobalLimit(limit) => {
                 let input: Arc<dyn ExecutionPlan> =
                     into_physical_plan!(limit.input, registry, runtime, extension_codec)?;
-                Ok(Arc::new(GlobalLimitExec::new(input, limit.limit as usize)))
+                let fetch = if limit.fetch > 0 {
+                    Some(limit.fetch as usize)
+                } else {
+                    None
+                };
+                Ok(Arc::new(GlobalLimitExec::new(
+                    input,
+                    limit.skip as usize,
+                    fetch,
+                )))
             }
             PhysicalPlanType::LocalLimit(limit) => {
                 let input: Arc<dyn ExecutionPlan> =
                     into_physical_plan!(limit.input, registry, runtime, extension_codec)?;
-                Ok(Arc::new(LocalLimitExec::new(input, limit.limit as usize)))
+                Ok(Arc::new(LocalLimitExec::new(input, limit.fetch as usize)))
             }
             PhysicalPlanType::Window(window_agg) => {
                 let input: Arc<dyn ExecutionPlan> = into_physical_plan!(
@@ -274,7 +300,13 @@ impl AsExecutionPlan for PhysicalPlanNode {
                                 let window_node_expr = window_node
                                     .expr
                                     .as_ref()
-                                    .map(|e| parse_physical_expr(e.as_ref(), registry))
+                                    .map(|e| {
+                                        parse_physical_expr(
+                                            e.as_ref(),
+                                            registry,
+                                            &physical_schema,
+                                        )
+                                    })
                                     .transpose()?
                                     .ok_or_else(|| {
                                         proto_error(
@@ -328,15 +360,38 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         AggregateMode::FinalPartitioned
                     }
                 };
-                let group = hash_agg
+
+                let num_expr = hash_agg.group_expr.len();
+
+                let group_expr = hash_agg
                     .group_expr
                     .iter()
                     .zip(hash_agg.group_expr_name.iter())
                     .map(|(expr, name)| {
-                        parse_physical_expr(expr, registry)
+                        parse_physical_expr(expr, registry, input.schema().as_ref())
                             .map(|expr| (expr, name.to_string()))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+
+                let null_expr = hash_agg
+                    .null_expr
+                    .iter()
+                    .zip(hash_agg.group_expr_name.iter())
+                    .map(|(expr, name)| {
+                        parse_physical_expr(expr, registry, input.schema().as_ref())
+                            .map(|expr| (expr, name.to_string()))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let groups: Vec<Vec<bool>> = if !hash_agg.groups.is_empty() {
+                    hash_agg
+                        .groups
+                        .chunks(num_expr)
+                        .map(|g| g.to_vec())
+                        .collect::<Vec<Vec<bool>>>()
+                } else {
+                    vec![]
+                };
 
                 let input_schema = hash_agg
                     .input_schema
@@ -375,7 +430,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                                         )?;
 
                                 let input_phy_expr: Vec<Arc<dyn PhysicalExpr>> = agg_node.expr.iter()
-                                    .map(|e| parse_physical_expr(e, registry).unwrap()).collect();
+                                    .map(|e| parse_physical_expr(e, registry, &physical_schema).unwrap()).collect();
 
                                 Ok(create_aggregate_expr(
                                     &aggr_function.into(),
@@ -395,7 +450,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
 
                 Ok(Arc::new(AggregateExec::try_new(
                     agg_mode,
-                    group,
+                    PhysicalGroupBy::new(group_expr, null_expr, groups),
                     physical_aggr_expr,
                     input,
                     Arc::new((&input_schema).try_into()?),
@@ -423,13 +478,49 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         Ok((left, right))
                     })
                     .collect::<Result<_, BallistaError>>()?;
-                let join_type = protobuf::JoinType::from_i32(hashjoin.join_type)
-                    .ok_or_else(|| {
-                        proto_error(format!(
+                let join_type =
+                    datafusion_proto::protobuf::JoinType::from_i32(hashjoin.join_type)
+                        .ok_or_else(|| {
+                            proto_error(format!(
                             "Received a HashJoinNode message with unknown JoinType {}",
                             hashjoin.join_type
                         ))
-                    })?;
+                        })?;
+                let filter = hashjoin
+                    .filter
+                    .as_ref()
+                    .map(|f| {
+                        let schema = f
+                            .schema
+                            .as_ref()
+                            .ok_or_else(|| proto_error("Missing JoinFilter schema"))?
+                            .try_into()?;
+
+                        let expression = parse_physical_expr(
+                            f.expression.as_ref().ok_or_else(|| {
+                                proto_error("Unexpected empty filter expression")
+                            })?,
+                            registry, &schema
+                        )?;
+                        let column_indices = f.column_indices
+                            .iter()
+                            .map(|i| {
+                                let side = protobuf::JoinSide::from_i32(i.side)
+                                    .ok_or_else(|| proto_error(format!(
+                                        "Received a HashJoinNode message with JoinSide in Filter {}",
+                                        i.side))
+                                    )?;
+
+                                Ok(ColumnIndex{
+                                    index: i.index as usize,
+                                    side: side.into(),
+                                })
+                            })
+                            .collect::<Result<Vec<_>, BallistaError>>()?;
+
+                        Ok(JoinFilter::new(expression, column_indices, schema))
+                    })
+                    .map_or(Ok(None), |v: Result<JoinFilter, BallistaError>| v.map(Some))?;
 
                 let partition_mode =
                     protobuf::PartitionMode::from_i32(hashjoin.partition_mode)
@@ -447,6 +538,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     left,
                     right,
                     on,
+                    filter,
                     &join_type.into(),
                     partition_mode,
                     &hashjoin.null_equals_null,
@@ -489,7 +581,14 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 let output_partitioning = parse_protobuf_hash_partitioning(
                     shuffle_writer.output_partitioning.as_ref(),
                     registry,
+                    input.schema().as_ref(),
                 )?;
+
+                let max_shuffle_bytes = if shuffle_writer.max_shuffle_bytes == 0 {
+                    None
+                } else {
+                    Some(shuffle_writer.max_shuffle_bytes as usize)
+                };
 
                 Ok(Arc::new(ShuffleWriterExec::try_new(
                     shuffle_writer.job_id.clone(),
@@ -497,6 +596,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     input,
                     "".to_string(), // this is intentional but hacky - the executor will fill this in
                     output_partitioning,
+                    max_shuffle_bytes,
                 )?))
             }
             PhysicalPlanType::ShuffleReader(shuffle_reader) => {
@@ -544,7 +644,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                                 })?
                                 .as_ref();
                             Ok(PhysicalSortExpr {
-                                expr: parse_physical_expr(expr,registry)?,
+                                expr: parse_physical_expr(expr,registry, input.schema().as_ref())?,
                                 options: SortOptions {
                                     descending: !sort_expr.asc,
                                     nulls_first: sort_expr.nulls_first,
@@ -603,7 +703,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
             Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Explain(
                     protobuf::ExplainExecNode {
-                        schema: Some(exec.schema().as_ref().into()),
+                        schema: Some(exec.schema().as_ref().try_into()?),
                         stringified_plans: exec
                             .stringified_plans()
                             .iter()
@@ -656,7 +756,8 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::GlobalLimit(Box::new(
                     protobuf::GlobalLimitExecNode {
                         input: Some(Box::new(input)),
-                        limit: limit.limit() as u32,
+                        skip: limit.skip() as u32,
+                        fetch: *limit.fetch().unwrap_or(&0) as u32,
                     },
                 ))),
             })
@@ -669,7 +770,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::LocalLimit(Box::new(
                     protobuf::LocalLimitExecNode {
                         input: Some(Box::new(input)),
-                        limit: limit.limit() as u32,
+                        fetch: limit.fetch() as u32,
                     },
                 ))),
             })
@@ -696,7 +797,35 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     }),
                 })
                 .collect();
-            let join_type: protobuf::JoinType = exec.join_type().to_owned().into();
+            let join_type: datafusion_proto::protobuf::JoinType =
+                exec.join_type().to_owned().into();
+            let filter = exec
+                .filter()
+                .as_ref()
+                .map(|f| {
+                    let expression = f.expression().to_owned().try_into()?;
+                    let column_indices = f
+                        .column_indices()
+                        .iter()
+                        .map(|i| {
+                            let side: protobuf::JoinSide = i.side.to_owned().into();
+                            protobuf::ColumnIndex {
+                                index: i.index as u32,
+                                side: side.into(),
+                            }
+                        })
+                        .collect();
+                    let schema = f.schema().try_into()?;
+                    Ok(protobuf::JoinFilter {
+                        expression: Some(expression),
+                        column_indices,
+                        schema: Some(schema),
+                    })
+                })
+                .map_or(
+                    Ok(None),
+                    |v: Result<protobuf::JoinFilter, BallistaError>| v.map(Some),
+                )?;
 
             let partition_mode = match exec.partition_mode() {
                 PartitionMode::CollectLeft => protobuf::PartitionMode::CollectLeft,
@@ -712,6 +841,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         join_type: join_type.into(),
                         partition_mode: partition_mode.into(),
                         null_equals_null: *exec.null_equals_null(),
+                        filter,
                     },
                 ))),
             })
@@ -733,16 +863,21 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 ))),
             })
         } else if let Some(exec) = plan.downcast_ref::<AggregateExec>() {
-            let groups = exec
+            let groups: Vec<bool> = exec
                 .group_expr()
+                .groups()
                 .iter()
-                .map(|expr| expr.0.to_owned().try_into())
-                .collect::<Result<Vec<_>, BallistaError>>()?;
+                .flatten()
+                .copied()
+                .collect();
+
             let group_names = exec
                 .group_expr()
+                .expr()
                 .iter()
                 .map(|expr| expr.1.to_owned())
                 .collect();
+
             let agg = exec
                 .aggr_expr()
                 .iter()
@@ -769,21 +904,38 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 exec.input().to_owned(),
                 extension_codec,
             )?;
+
+            let null_expr = exec
+                .group_expr()
+                .null_expr()
+                .iter()
+                .map(|expr| expr.0.to_owned().try_into())
+                .collect::<Result<Vec<_>, BallistaError>>()?;
+
+            let group_expr = exec
+                .group_expr()
+                .expr()
+                .iter()
+                .map(|expr| expr.0.to_owned().try_into())
+                .collect::<Result<Vec<_>, BallistaError>>()?;
+
             Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Aggregate(Box::new(
                     protobuf::AggregateExecNode {
-                        group_expr: groups,
+                        group_expr,
                         group_expr_name: group_names,
                         aggr_expr: agg,
                         aggr_expr_name: agg_names,
                         mode: agg_mode as i32,
                         input: Some(Box::new(input)),
-                        input_schema: Some(input_schema.as_ref().into()),
+                        input_schema: Some(input_schema.as_ref().try_into()?),
+                        null_expr,
+                        groups,
                     },
                 ))),
             })
         } else if let Some(empty) = plan.downcast_ref::<EmptyExec>() {
-            let schema = empty.schema().as_ref().into();
+            let schema = empty.schema().as_ref().try_into()?;
             Ok(protobuf::PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Empty(
                     protobuf::EmptyExecNode {
@@ -826,6 +978,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     protobuf::ParquetScanExecNode {
                         base_conf: Some(exec.base_config().try_into()?),
                         pruning_predicate: pruning_expr,
+                        metadata_size_hint: 0,
                     },
                 )),
             })
@@ -851,7 +1004,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::ShuffleReader(
                     protobuf::ShuffleReaderExecNode {
                         partition,
-                        schema: Some(exec.schema().as_ref().into()),
+                        schema: Some(exec.schema().as_ref().try_into()?),
                     },
                 )),
             })
@@ -960,6 +1113,10 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         stage_id: exec.stage_id() as u32,
                         input: Some(Box::new(input)),
                         output_partitioning,
+                        max_shuffle_bytes: exec
+                            .max_shuffle_bytes()
+                            .map(|max| max as u64)
+                            .unwrap_or(0),
                     },
                 ))),
             })
@@ -968,7 +1125,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::Unresolved(
                     protobuf::UnresolvedShuffleExecNode {
                         stage_id: exec.stage_id as u32,
-                        schema: Some(exec.schema().as_ref().into()),
+                        schema: Some(exec.schema().as_ref().try_into()?),
                         input_partition_count: exec.input_partition_count as u32,
                         output_partition_count: exec.output_partition_count as u32,
                     },
@@ -1008,7 +1165,6 @@ impl AsExecutionPlan for PhysicalPlanNode {
 
 fn decode_scan_config(
     proto: &protobuf::FileScanExecConf,
-    runtime: &RuntimeEnv,
 ) -> Result<FileScanConfig, BallistaError> {
     let schema = Arc::new(convert_required!(proto.schema)?);
     let projection = proto
@@ -1029,14 +1185,13 @@ fn decode_scan_config(
         .map(|f| f.try_into())
         .collect::<Result<Vec<_>, _>>()?;
 
-    let object_store = if let Some(file) = file_groups.get(0).and_then(|h| h.get(0)) {
-        runtime.object_store(file.file_meta.path())?.0
-    } else {
-        Arc::new(LocalFileSystem {})
+    let object_store_url = match proto.object_store_url.is_empty() {
+        false => ObjectStoreUrl::parse(&proto.object_store_url)?,
+        true => ObjectStoreUrl::local_filesystem(),
     };
 
     Ok(FileScanConfig {
-        object_store,
+        object_store_url,
         file_schema: schema,
         file_groups,
         statistics,
@@ -1065,20 +1220,22 @@ mod roundtrip_tests {
     use std::sync::Arc;
 
     use datafusion::arrow::array::ArrayRef;
+    use datafusion::arrow::datatypes::IntervalUnit;
+    use datafusion::datasource::object_store::ObjectStoreUrl;
     use datafusion::execution::context::ExecutionProps;
     use datafusion::logical_expr::{BuiltinScalarFunction, Volatility};
     use datafusion::logical_plan::create_udf;
+    use datafusion::physical_expr::expressions::DateTimeIntervalExpr;
+    use datafusion::physical_expr::ScalarFunctionExpr;
+    use datafusion::physical_plan::aggregates::PhysicalGroupBy;
     use datafusion::physical_plan::functions;
-    use datafusion::physical_plan::functions::{
-        make_scalar_function, ScalarFunctionExpr,
-    };
+    use datafusion::physical_plan::functions::make_scalar_function;
     use datafusion::physical_plan::projection::ProjectionExec;
     use datafusion::{
         arrow::{
             compute::kernels::sort::SortOptions,
             datatypes::{DataType, Field, Schema},
         },
-        datafusion_data_access::object_store::local::LocalFileSystem,
         datasource::listing::PartitionedFile,
         logical_plan::{JoinType, Operator},
         physical_plan::{
@@ -1098,8 +1255,10 @@ mod roundtrip_tests {
     };
 
     use crate::execution_plans::ShuffleWriterExec;
-    use crate::serde::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+    use crate::serde::physical_plan::DEFAULT_METADATA_SIZE_HINT;
+    use crate::serde::protobuf::PhysicalPlanNode;
     use crate::serde::{AsExecutionPlan, BallistaCodec};
+    use datafusion::datafusion_proto::protobuf::LogicalPlanNode;
 
     use super::super::super::error::Result;
     use super::super::protobuf;
@@ -1162,6 +1321,32 @@ mod roundtrip_tests {
     }
 
     #[test]
+    fn roundtrip_date_time_interval() -> Result<()> {
+        let schema = Schema::new(vec![
+            Field::new("some_date", DataType::Date32, false),
+            Field::new(
+                "some_interval",
+                DataType::Interval(IntervalUnit::DayTime),
+                false,
+            ),
+        ]);
+        let input = Arc::new(EmptyExec::new(false, Arc::new(schema.clone())));
+        let date_expr = col("some_date", &schema)?;
+        let literal_expr = col("some_interval", &schema)?;
+        let date_time_interval_expr = Arc::new(DateTimeIntervalExpr::try_new(
+            date_expr,
+            Operator::Plus,
+            literal_expr,
+            &schema,
+        )?);
+        let plan = Arc::new(ProjectionExec::try_new(
+            vec![(date_time_interval_expr, "result".to_string())],
+            input,
+        )?);
+        roundtrip_test(plan)
+    }
+
+    #[test]
     fn roundtrip_local_limit() -> Result<()> {
         roundtrip_test(Arc::new(LocalLimitExec::new(
             Arc::new(EmptyExec::new(false, Arc::new(Schema::empty()))),
@@ -1173,7 +1358,8 @@ mod roundtrip_tests {
     fn roundtrip_global_limit() -> Result<()> {
         roundtrip_test(Arc::new(GlobalLimitExec::new(
             Arc::new(EmptyExec::new(false, Arc::new(Schema::empty()))),
-            25,
+            0,
+            Some(25),
         )))
     }
 
@@ -1204,6 +1390,7 @@ mod roundtrip_tests {
                     Arc::new(EmptyExec::new(false, schema_left.clone())),
                     Arc::new(EmptyExec::new(false, schema_right.clone())),
                     on.clone(),
+                    None,
                     join_type,
                     *partition_mode,
                     &false,
@@ -1230,7 +1417,7 @@ mod roundtrip_tests {
 
         roundtrip_test(Arc::new(AggregateExec::try_new(
             AggregateMode::Final,
-            groups.clone(),
+            PhysicalGroupBy::new_single(groups.clone()),
             aggregates.clone(),
             Arc::new(EmptyExec::new(false, schema.clone())),
             schema,
@@ -1251,6 +1438,7 @@ mod roundtrip_tests {
                 lit(ScalarValue::Int64(Some(2))),
             ],
             false,
+            schema.as_ref(),
         ));
         let and = binary(not, Operator::And, in_list, &schema)?;
         roundtrip_test(Arc::new(FilterExec::try_new(
@@ -1298,13 +1486,14 @@ mod roundtrip_tests {
             Arc::new(EmptyExec::new(false, schema)),
             "".to_string(),
             Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 4)),
+            None,
         )?))
     }
 
     #[test]
     fn roundtrip_parquet_exec_with_pruning_predicate() -> Result<()> {
         let scan_config = FileScanConfig {
-            object_store: Arc::new(LocalFileSystem {}),
+            object_store_url: ObjectStoreUrl::local_filesystem(),
             file_schema: Arc::new(Schema::new(vec![Field::new(
                 "col",
                 DataType::Utf8,
@@ -1326,7 +1515,11 @@ mod roundtrip_tests {
         };
 
         let predicate = datafusion::prelude::col("col").eq(datafusion::prelude::lit("1"));
-        roundtrip_test(Arc::new(ParquetExec::new(scan_config, Some(predicate))))
+        roundtrip_test(Arc::new(ParquetExec::new(
+            scan_config,
+            Some(predicate),
+            Some(DEFAULT_METADATA_SIZE_HINT),
+        )))
     }
 
     #[test]

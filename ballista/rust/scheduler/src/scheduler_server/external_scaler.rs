@@ -20,8 +20,9 @@ use crate::scheduler_server::externalscaler::{
     GetMetricsResponse, IsActiveResponse, MetricSpec, MetricValue, ScaledObjectRef,
 };
 use crate::scheduler_server::SchedulerServer;
-use ballista_core::serde::{AsExecutionPlan, AsLogicalPlan};
-use log::debug;
+use ballista_core::serde::AsExecutionPlan;
+use datafusion::datafusion_proto::logical_plan::AsLogicalPlan;
+
 use tonic::{Request, Response};
 
 const INFLIGHT_TASKS_METRIC_NAME: &str = "inflight_tasks";
@@ -34,9 +35,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExternalScaler
         &self,
         _request: Request<ScaledObjectRef>,
     ) -> Result<Response<IsActiveResponse>, tonic::Status> {
-        let result = self.state.stage_manager.has_running_tasks();
-        debug!("Are there active tasks? {}", result);
-        Ok(Response::new(IsActiveResponse { result }))
+        Ok(Response::new(IsActiveResponse { result: true }))
     }
 
     async fn get_metric_spec(

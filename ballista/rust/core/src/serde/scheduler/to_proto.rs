@@ -15,12 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use std::convert::TryInto;
 
 use crate::error::BallistaError;
 use crate::serde::protobuf;
 use crate::serde::protobuf::action::ActionType;
-use crate::serde::scheduler::{Action, PartitionId, PartitionLocation, PartitionStats};
+
+use crate::serde::protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
+use crate::serde::scheduler::{
+    Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, PartitionId,
+    PartitionLocation, PartitionStats,
+};
 use datafusion::physical_plan::Partitioning;
 
 impl TryInto<protobuf::Action> for Action {
@@ -97,11 +103,134 @@ pub fn hash_partitioning_to_proto(
             }))
         }
         None => Ok(None),
-        other => {
-            return Err(BallistaError::General(format!(
-                "scheduler::to_proto() invalid partitioning for ExecutePartition: {:?}",
-                other
-            )))
+        other => Err(BallistaError::General(format!(
+            "scheduler::to_proto() invalid partitioning for ExecutePartition: {:?}",
+            other
+        ))),
+    }
+}
+
+impl TryInto<protobuf::OperatorMetric> for &MetricValue {
+    type Error = BallistaError;
+
+    fn try_into(self) -> Result<protobuf::OperatorMetric, Self::Error> {
+        match self {
+            MetricValue::OutputRows(count) => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::OutputRows(count.value() as u64)),
+            }),
+            MetricValue::ElapsedCompute(time) => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::ElapseTime(time.value() as u64)),
+            }),
+            MetricValue::SpillCount(count) => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::SpillCount(count.value() as u64)),
+            }),
+            MetricValue::SpilledBytes(count) => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::SpilledBytes(count.value() as u64)),
+            }),
+            MetricValue::CurrentMemoryUsage(gauge) => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::CurrentMemoryUsage(
+                    gauge.value() as u64
+                )),
+            }),
+            MetricValue::Count { name, count } => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::Count(NamedCount {
+                    name: name.to_string(),
+                    value: count.value() as u64,
+                })),
+            }),
+            MetricValue::Gauge { name, gauge } => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::Gauge(NamedGauge {
+                    name: name.to_string(),
+                    value: gauge.value() as u64,
+                })),
+            }),
+            MetricValue::Time { name, time } => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::Time(NamedTime {
+                    name: name.to_string(),
+                    value: time.value() as u64,
+                })),
+            }),
+            MetricValue::StartTimestamp(timestamp) => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::StartTimestamp(
+                    timestamp.value().map(|m| m.timestamp_nanos()).unwrap_or(0),
+                )),
+            }),
+            MetricValue::EndTimestamp(timestamp) => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::EndTimestamp(
+                    timestamp.value().map(|m| m.timestamp_nanos()).unwrap_or(0),
+                )),
+            }),
+        }
+    }
+}
+
+impl TryInto<protobuf::OperatorMetricsSet> for MetricsSet {
+    type Error = BallistaError;
+
+    fn try_into(self) -> Result<protobuf::OperatorMetricsSet, Self::Error> {
+        let metrics = self
+            .iter()
+            .map(|m| m.value().try_into())
+            .collect::<Result<Vec<_>, BallistaError>>()?;
+        Ok(protobuf::OperatorMetricsSet { metrics })
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<protobuf::ExecutorMetadata> for ExecutorMetadata {
+    fn into(self) -> protobuf::ExecutorMetadata {
+        protobuf::ExecutorMetadata {
+            id: self.id,
+            host: self.host,
+            port: self.port as u32,
+            grpc_port: self.grpc_port as u32,
+            specification: Some(self.specification.into()),
+        }
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<protobuf::ExecutorSpecification> for ExecutorSpecification {
+    fn into(self) -> protobuf::ExecutorSpecification {
+        protobuf::ExecutorSpecification {
+            resources: vec![protobuf::executor_resource::Resource::TaskSlots(
+                self.task_slots,
+            )]
+            .into_iter()
+            .map(|r| protobuf::ExecutorResource { resource: Some(r) })
+            .collect(),
+        }
+    }
+}
+
+struct ExecutorResourcePair {
+    total: protobuf::executor_resource::Resource,
+    available: protobuf::executor_resource::Resource,
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<protobuf::ExecutorData> for ExecutorData {
+    fn into(self) -> protobuf::ExecutorData {
+        protobuf::ExecutorData {
+            executor_id: self.executor_id,
+            resources: vec![ExecutorResourcePair {
+                total: protobuf::executor_resource::Resource::TaskSlots(
+                    self.total_task_slots,
+                ),
+                available: protobuf::executor_resource::Resource::TaskSlots(
+                    self.available_task_slots,
+                ),
+            }]
+            .into_iter()
+            .map(|r| protobuf::ExecutorResourcePair {
+                total: Some(protobuf::ExecutorResource {
+                    resource: Some(r.total),
+                }),
+                available: Some(protobuf::ExecutorResource {
+                    resource: Some(r.available),
+                }),
+            })
+            .collect(),
         }
     }
 }

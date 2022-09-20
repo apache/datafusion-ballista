@@ -19,9 +19,7 @@
 
 use std::fs::File;
 use std::pin::Pin;
-use std::sync::Arc;
 
-use crate::executor::Executor;
 use arrow_flight::SchemaAsIpc;
 use ballista_core::error::BallistaError;
 use ballista_core::serde::decode_protobuf;
@@ -52,14 +50,17 @@ type FlightDataReceiver = Receiver<Result<FlightData, Status>>;
 
 /// Service implementing the Apache Arrow Flight Protocol
 #[derive(Clone)]
-pub struct BallistaFlightService {
-    /// Executor
-    _executor: Arc<Executor>,
-}
+pub struct BallistaFlightService {}
 
 impl BallistaFlightService {
-    pub fn new(_executor: Arc<Executor>) -> Self {
-        Self { _executor }
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl Default for BallistaFlightService {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

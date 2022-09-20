@@ -18,11 +18,14 @@
 #![doc = include_str ! ("../README.md")]
 
 pub mod api;
+pub mod display;
 pub mod planner;
 pub mod scheduler_server;
 #[cfg(feature = "sled")]
 pub mod standalone;
 pub mod state;
 
+#[cfg(feature = "flight-sql")]
+pub mod flight_sql;
 #[cfg(test)]
 pub mod test_utils;

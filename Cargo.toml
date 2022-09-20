@@ -22,11 +22,19 @@ members = [
     "ballista/rust/core",
     "ballista/rust/executor",
     "ballista/rust/scheduler",
-    "ballista-examples",
+    "datafusion",
+    "examples",
+    "ballista-cli",
 ]
-exclude = ["ballista-cli"]
+exclude = ["python"]
 
-[profile.release]
+# cargo build --profile release-lto
+[profile.release-lto]
 codegen-units = 1
+inherits = "release"
 lto = true
 
+[patch.crates-io]
+arrow = { git = "https://github.com/coralogix/arrow-rs", branch = "master" }
+arrow-flight = { git = "https://github.com/coralogix/arrow-rs", branch = "master" }
+parquet = { git = "https://github.com/coralogix/arrow-rs", branch = "master" }

@@ -21,34 +21,33 @@ use std::convert::{TryFrom, TryInto};
 use std::ops::Deref;
 use std::sync::Arc;
 
-use crate::error::BallistaError;
-
-use crate::convert_required;
-use crate::serde::{from_proto_binary_op, proto_error, protobuf};
 use chrono::{TimeZone, Utc};
-
-use datafusion::datafusion_data_access::{
-    object_store::local::LocalFileSystem, FileMeta, SizedFile,
-};
+use datafusion::arrow::datatypes::Schema;
+use datafusion::datafusion_proto;
 use datafusion::datasource::listing::{FileRange, PartitionedFile};
+use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::execution::context::ExecutionProps;
-use datafusion::logical_plan::FunctionRegistry;
-
-use datafusion::physical_plan::file_format::FileScanConfig;
-
 use datafusion::logical_expr::window_function::WindowFunction;
-
+use datafusion::logical_plan::FunctionRegistry;
+use datafusion::physical_expr::expressions::DateTimeIntervalExpr;
+use datafusion::physical_expr::ScalarFunctionExpr;
+use datafusion::physical_plan::file_format::FileScanConfig;
 use datafusion::physical_plan::{
     expressions::{
         BinaryExpr, CaseExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr,
         Literal, NegativeExpr, NotExpr, TryCastExpr, DEFAULT_DATAFUSION_CAST_OPTIONS,
     },
-    functions::{self, ScalarFunctionExpr},
-    Partitioning,
+    functions, Partitioning,
 };
 use datafusion::physical_plan::{ColumnStatistics, PhysicalExpr, Statistics};
+use object_store::path::Path;
+use object_store::ObjectMeta;
 
 use protobuf::physical_expr_node::ExprType;
+
+use crate::convert_required;
+use crate::error::BallistaError;
+use crate::serde::{from_proto_binary_op, proto_error, protobuf};
 
 impl From<&protobuf::PhysicalColumn> for Column {
     fn from(c: &protobuf::PhysicalColumn) -> Column {
@@ -59,6 +58,7 @@ impl From<&protobuf::PhysicalColumn> for Column {
 pub(crate) fn parse_physical_expr(
     proto: &protobuf::PhysicalExprNode,
     registry: &dyn FunctionRegistry,
+    input_schema: &Schema,
 ) -> Result<Arc<dyn PhysicalExpr>, BallistaError> {
     let expr_type = proto
         .expr_type
@@ -70,14 +70,28 @@ pub(crate) fn parse_physical_expr(
             let pcol: Column = c.into();
             Arc::new(pcol)
         }
-        ExprType::Literal(scalar) => {
-            Arc::new(Literal::new(convert_required!(scalar.value)?))
-        }
+        ExprType::Literal(scalar) => Arc::new(Literal::new(scalar.try_into()?)),
         ExprType::BinaryExpr(binary_expr) => Arc::new(BinaryExpr::new(
-            parse_required_physical_box_expr(&binary_expr.l, registry, "left")?,
+            parse_required_physical_box_expr(
+                &binary_expr.l,
+                registry,
+                "left",
+                input_schema,
+            )?,
             from_proto_binary_op(&binary_expr.op)?,
-            parse_required_physical_box_expr(&binary_expr.r, registry, "right")?,
+            parse_required_physical_box_expr(
+                &binary_expr.r,
+                registry,
+                "right",
+                input_schema,
+            )?,
         )),
+        ExprType::DateTimeIntervalExpr(expr) => Arc::new(DateTimeIntervalExpr::try_new(
+            parse_required_physical_box_expr(&expr.l, registry, "left", input_schema)?,
+            from_proto_binary_op(&expr.op)?,
+            parse_required_physical_box_expr(&expr.r, registry, "right", input_schema)?,
+            input_schema,
+        )?),
         ExprType::AggregateExpr(_) => {
             return Err(BallistaError::General(
                 "Cannot convert aggregate expr node to physical expression".to_owned(),
@@ -94,29 +108,33 @@ pub(crate) fn parse_physical_expr(
             ));
         }
         ExprType::IsNullExpr(e) => Arc::new(IsNullExpr::new(
-            parse_required_physical_box_expr(&e.expr, registry, "expr")?,
+            parse_required_physical_box_expr(&e.expr, registry, "expr", input_schema)?,
         )),
         ExprType::IsNotNullExpr(e) => Arc::new(IsNotNullExpr::new(
-            parse_required_physical_box_expr(&e.expr, registry, "expr")?,
+            parse_required_physical_box_expr(&e.expr, registry, "expr", input_schema)?,
         )),
         ExprType::NotExpr(e) => Arc::new(NotExpr::new(parse_required_physical_box_expr(
-            &e.expr, registry, "expr",
+            &e.expr,
+            registry,
+            "expr",
+            input_schema,
         )?)),
         ExprType::Negative(e) => Arc::new(NegativeExpr::new(
-            parse_required_physical_box_expr(&e.expr, registry, "expr")?,
+            parse_required_physical_box_expr(&e.expr, registry, "expr", input_schema)?,
         )),
         ExprType::InList(e) => Arc::new(InListExpr::new(
-            parse_required_physical_box_expr(&e.expr, registry, "expr")?,
+            parse_required_physical_box_expr(&e.expr, registry, "expr", input_schema)?,
             e.list
                 .iter()
-                .map(|x| parse_physical_expr(x, registry))
+                .map(|x| parse_physical_expr(x, registry, input_schema))
                 .collect::<Result<Vec<_>, _>>()?,
             e.negated,
+            input_schema,
         )),
         ExprType::Case(e) => Arc::new(CaseExpr::try_new(
             e.expr
                 .as_ref()
-                .map(|e| parse_physical_expr(e.as_ref(), registry))
+                .map(|e| parse_physical_expr(e.as_ref(), registry, input_schema))
                 .transpose()?,
             e.when_then_expr
                 .iter()
@@ -126,28 +144,29 @@ pub(crate) fn parse_physical_expr(
                             &e.when_expr,
                             registry,
                             "when_expr",
+                            input_schema,
                         )?,
                         parse_required_physical_expr(
                             &e.then_expr,
                             registry,
                             "then_expr",
+                            input_schema,
                         )?,
                     ))
                 })
-                .collect::<Result<Vec<_>, BallistaError>>()?
-                .as_slice(),
+                .collect::<Result<Vec<_>, BallistaError>>()?,
             e.else_expr
                 .as_ref()
-                .map(|e| parse_physical_expr(e.as_ref(), registry))
+                .map(|e| parse_physical_expr(e.as_ref(), registry, input_schema))
                 .transpose()?,
         )?),
         ExprType::Cast(e) => Arc::new(CastExpr::new(
-            parse_required_physical_box_expr(&e.expr, registry, "expr")?,
+            parse_required_physical_box_expr(&e.expr, registry, "expr", input_schema)?,
             convert_required!(e.arrow_type)?,
             DEFAULT_DATAFUSION_CAST_OPTIONS,
         )),
         ExprType::TryCast(e) => Arc::new(TryCastExpr::new(
-            parse_required_physical_box_expr(&e.expr, registry, "expr")?,
+            parse_required_physical_box_expr(&e.expr, registry, "expr", input_schema)?,
             convert_required!(e.arrow_type)?,
         )),
         ExprType::ScalarFunction(e) => {
@@ -161,7 +180,7 @@ pub(crate) fn parse_physical_expr(
             let args = e
                 .args
                 .iter()
-                .map(|x| parse_physical_expr(x, registry))
+                .map(|x| parse_physical_expr(x, registry, input_schema))
                 .collect::<Result<Vec<_>, _>>()?;
 
             // TODO Do not create new the ExecutionProps
@@ -185,7 +204,7 @@ pub(crate) fn parse_physical_expr(
             let args = e
                 .args
                 .iter()
-                .map(|x| parse_physical_expr(x, registry))
+                .map(|x| parse_physical_expr(x, registry, input_schema))
                 .collect::<Result<Vec<_>, _>>()?;
 
             Arc::new(ScalarFunctionExpr::new(
@@ -204,9 +223,10 @@ fn parse_required_physical_box_expr(
     expr: &Option<Box<protobuf::PhysicalExprNode>>,
     registry: &dyn FunctionRegistry,
     field: &str,
+    input_schema: &Schema,
 ) -> Result<Arc<dyn PhysicalExpr>, BallistaError> {
     expr.as_ref()
-        .map(|e| parse_physical_expr(e.as_ref(), registry))
+        .map(|e| parse_physical_expr(e.as_ref(), registry, input_schema))
         .transpose()?
         .ok_or_else(|| {
             BallistaError::General(format!("Missing required field {:?}", field))
@@ -217,9 +237,10 @@ fn parse_required_physical_expr(
     expr: &Option<protobuf::PhysicalExprNode>,
     registry: &dyn FunctionRegistry,
     field: &str,
+    input_schema: &Schema,
 ) -> Result<Arc<dyn PhysicalExpr>, BallistaError> {
     expr.as_ref()
-        .map(|e| parse_physical_expr(e, registry))
+        .map(|e| parse_physical_expr(e, registry, input_schema))
         .transpose()?
         .ok_or_else(|| {
             BallistaError::General(format!("Missing required field {:?}", field))
@@ -262,13 +283,14 @@ impl TryFrom<&protobuf::physical_window_expr_node::WindowFunction> for WindowFun
 pub fn parse_protobuf_hash_partitioning(
     partitioning: Option<&protobuf::PhysicalHashRepartition>,
     registry: &dyn FunctionRegistry,
+    input_schema: &Schema,
 ) -> Result<Option<Partitioning>, BallistaError> {
     match partitioning {
         Some(hash_part) => {
             let expr = hash_part
                 .hash_expr
                 .iter()
-                .map(|e| parse_physical_expr(e, registry))
+                .map(|e| parse_physical_expr(e, registry, input_schema))
                 .collect::<Result<Vec<Arc<dyn PhysicalExpr>>, _>>()?;
 
             Ok(Some(Partitioning::Hash(
@@ -285,16 +307,10 @@ impl TryFrom<&protobuf::PartitionedFile> for PartitionedFile {
 
     fn try_from(val: &protobuf::PartitionedFile) -> Result<Self, Self::Error> {
         Ok(PartitionedFile {
-            file_meta: FileMeta {
-                sized_file: SizedFile {
-                    path: val.path.clone(),
-                    size: val.size,
-                },
-                last_modified: if val.last_modified_ns == 0 {
-                    None
-                } else {
-                    Some(Utc.timestamp_nanos(val.last_modified_ns as i64))
-                },
+            object_meta: ObjectMeta {
+                location: Path::from(val.path.as_str()),
+                last_modified: Utc.timestamp_nanos(val.last_modified_ns as i64),
+                size: val.size as usize,
             },
             partition_values: val
                 .partition_values
@@ -302,6 +318,7 @@ impl TryFrom<&protobuf::PartitionedFile> for PartitionedFile {
                 .map(|v| v.try_into())
                 .collect::<Result<Vec<_>, _>>()?,
             range: val.range.as_ref().map(|v| v.try_into()).transpose()?,
+            extensions: None,
         })
     }
 }
@@ -380,7 +397,7 @@ impl TryInto<FileScanConfig> for &protobuf::FileScanExecConf {
         let statistics = convert_required!(self.statistics)?;
 
         Ok(FileScanConfig {
-            object_store: Arc::new(LocalFileSystem {}),
+            object_store_url: ObjectStoreUrl::parse(&self.object_store_url)?,
             file_schema: schema,
             file_groups: self
                 .file_groups

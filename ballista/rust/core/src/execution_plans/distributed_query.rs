@@ -15,38 +15,36 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::any::Any;
-
-use std::fmt::Debug;
-use std::marker::PhantomData;
-
-use std::sync::Arc;
-use std::time::Duration;
-
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
+use crate::serde::protobuf::execute_query_params::OptionalSessionId;
 use crate::serde::protobuf::{
     execute_query_params::Query, job_status, scheduler_grpc_client::SchedulerGrpcClient,
     ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
     PartitionLocation,
 };
-
+use crate::utils::create_grpc_client_connection;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::error::{ArrowError, Result as ArrowResult};
+use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::datafusion_proto::logical_plan::{
+    AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
+};
 use datafusion::error::{DataFusionError, Result};
+use datafusion::execution::context::TaskContext;
 use datafusion::logical_plan::LogicalPlan;
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream, Statistics,
 };
-
-use crate::serde::protobuf::execute_query_params::OptionalSessionId;
-use crate::serde::{AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec};
-use datafusion::arrow::error::{ArrowError, Result as ArrowResult};
-use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::execution::context::TaskContext;
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use log::{error, info};
+use std::any::Any;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::time::Duration;
 
 /// This operator sends a logical plan to a Ballista scheduler for execution and
 /// polls the scheduler until the query is complete and then fetches the resulting
@@ -195,6 +193,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             optional_session_id: Some(OptionalSessionId::SessionId(
                 self.session_id.clone(),
             )),
+            optional_job_id: None,
         };
 
         let stream = futures::stream::once(
@@ -238,10 +237,11 @@ async fn execute_query(
 ) -> Result<impl Stream<Item = ArrowResult<RecordBatch>> + Send> {
     info!("Connecting to Ballista scheduler at {}", scheduler_url);
     // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
-
-    let mut scheduler = SchedulerGrpcClient::connect(scheduler_url.clone())
+    let connection = create_grpc_client_connection(scheduler_url)
         .await
         .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+
+    let mut scheduler = SchedulerGrpcClient::new(connection);
 
     let query_result = scheduler
         .execute_query(query)
@@ -265,32 +265,37 @@ async fn execute_query(
             .await
             .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?
             .into_inner();
-        let status = status.and_then(|s| s.status).ok_or_else(|| {
-            DataFusionError::Internal("Received empty status message".to_owned())
-        })?;
+        let status = status.and_then(|s| s.status);
         let wait_future = tokio::time::sleep(Duration::from_millis(100));
-        let has_status_change = prev_status.map(|x| x != status).unwrap_or(true);
+        let has_status_change = prev_status != status;
         match status {
-            job_status::Status::Queued(_) => {
+            None => {
+                if has_status_change {
+                    info!("Job {} still in initialization ...", job_id);
+                }
+                wait_future.await;
+                prev_status = status;
+            }
+            Some(job_status::Status::Queued(_)) => {
                 if has_status_change {
                     info!("Job {} still queued...", job_id);
                 }
                 wait_future.await;
-                prev_status = Some(status);
+                prev_status = status;
             }
-            job_status::Status::Running(_) => {
+            Some(job_status::Status::Running(_)) => {
                 if has_status_change {
                     info!("Job {} is running...", job_id);
                 }
                 wait_future.await;
-                prev_status = Some(status);
+                prev_status = status;
             }
-            job_status::Status::Failed(err) => {
+            Some(job_status::Status::Failed(err)) => {
                 let msg = format!("Job {} failed: {}", job_id, err.error);
                 error!("{}", msg);
                 break Err(DataFusionError::Execution(msg));
             }
-            job_status::Status::Completed(completed) => {
+            Some(job_status::Status::Completed(completed)) => {
                 let streams = completed.partition_location.into_iter().map(|p| {
                     let f = fetch_partition(p)
                         .map_err(|e| ArrowError::ExternalError(Box::new(e)));

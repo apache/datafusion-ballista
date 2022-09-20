@@ -15,44 +15,45 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::io::{BufWriter, Write};
-use std::marker::PhantomData;
-
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::{fs::File, pin::Pin};
-
+use crate::config::BallistaConfig;
 use crate::error::{BallistaError, Result};
 use crate::execution_plans::{
     DistributedQueryExec, ShuffleWriterExec, UnresolvedShuffleExec,
 };
 use crate::serde::scheduler::PartitionStats;
-
-use crate::config::BallistaConfig;
-use crate::serde::{AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec};
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::{ipc::writer::FileWriter, record_batch::RecordBatch};
+use datafusion::datafusion_proto::logical_plan::{
+    AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
+};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::{
     QueryPlanner, SessionConfig, SessionContext, SessionState,
 };
+use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::logical_plan::LogicalPlan;
-
+use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::common::batch_byte_size;
 use datafusion::physical_plan::empty::EmptyExec;
-
-use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
-use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::file_format::{CsvExec, ParquetExec};
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::hash_join::HashJoinExec;
+use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{metrics, ExecutionPlan, RecordBatchStream};
 use futures::StreamExt;
+use std::io::{BufWriter, Write};
+use std::marker::PhantomData;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use std::{fs::File, pin::Pin};
+use tonic::codegen::StdError;
+use tonic::transport::{Channel, Error, Server};
 
 /// Stream data to disk in Arrow IPC format
 
@@ -60,6 +61,7 @@ pub async fn write_stream_to_disk(
     stream: &mut Pin<Box<dyn RecordBatchStream + Send>>,
     path: &str,
     disk_write_metric: &metrics::Time,
+    max_bytes: Option<usize>,
 ) -> Result<PartitionStats> {
     let file = File::create(&path).map_err(|e| {
         BallistaError::General(format!(
@@ -80,6 +82,15 @@ pub async fn write_stream_to_disk(
         num_batches += 1;
         num_rows += batch.num_rows();
         num_bytes += batch_size_bytes;
+
+        if let Some(max_bytes) = max_bytes {
+            if num_bytes > max_bytes {
+                return Err(BallistaError::General(format!(
+                    "Exceeded limit on max bytes written to disk: {:?}",
+                    max_bytes
+                )));
+            }
+        }
 
         let timer = disk_write_metric.timer();
         writer.write(&batch)?;
@@ -312,4 +323,46 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
             ))),
         }
     }
+}
+
+pub async fn create_grpc_client_connection<D>(
+    dst: D,
+) -> std::result::Result<Channel, Error>
+where
+    D: std::convert::TryInto<tonic::transport::Endpoint>,
+    D::Error: Into<StdError>,
+{
+    let endpoint = tonic::transport::Endpoint::new(dst)?
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(20))
+        // Disable Nagle's Algorithm since we don't want packets to wait
+        .tcp_nodelay(true)
+        .tcp_keepalive(Option::Some(Duration::from_secs(3600)))
+        .http2_keep_alive_interval(Duration::from_secs(300))
+        .keep_alive_timeout(Duration::from_secs(20))
+        .keep_alive_while_idle(true);
+    endpoint.connect().await
+}
+
+pub fn create_grpc_server() -> Server {
+    Server::builder()
+        .timeout(Duration::from_secs(20))
+        // Disable Nagle's Algorithm since we don't want packets to wait
+        .tcp_nodelay(true)
+        .tcp_keepalive(Option::Some(Duration::from_secs(3600)))
+        .http2_keepalive_interval(Option::Some(Duration::from_secs(300)))
+        .http2_keepalive_timeout(Option::Some(Duration::from_secs(20)))
+}
+
+pub fn collect_plan_metrics(plan: &dyn ExecutionPlan) -> Vec<MetricsSet> {
+    let mut metrics_array = Vec::<MetricsSet>::new();
+    if let Some(metrics) = plan.metrics() {
+        metrics_array.push(metrics);
+    }
+    plan.children().iter().for_each(|c| {
+        collect_plan_metrics(c.as_ref())
+            .into_iter()
+            .for_each(|e| metrics_array.push(e))
+    });
+    metrics_array
 }

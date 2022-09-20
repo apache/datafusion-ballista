@@ -26,6 +26,7 @@ use std::any::Any;
 use std::future::Future;
 use std::iter::Iterator;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -53,9 +54,10 @@ use futures::{StreamExt, TryFutureExt, TryStreamExt};
 
 use datafusion::arrow::error::ArrowError;
 use datafusion::execution::context::TaskContext;
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::repartition::BatchPartitioner;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use log::{debug, info};
+use log::{debug, error, info};
 
 /// ShuffleWriterExec represents a section of a query plan that has consistent partitioning and
 /// can be executed as one unit with each partition being executed in parallel. The output of each
@@ -75,6 +77,8 @@ pub struct ShuffleWriterExec {
     shuffle_output_partitioning: Option<Partitioning>,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
+    /// Maximum shuffle bytes written per node
+    max_shuffle_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +117,7 @@ impl ShuffleWriterExec {
         plan: Arc<dyn ExecutionPlan>,
         work_dir: String,
         shuffle_output_partitioning: Option<Partitioning>,
+        max_shuffle_bytes: Option<usize>,
     ) -> Result<Self> {
         Ok(Self {
             job_id,
@@ -121,6 +126,7 @@ impl ShuffleWriterExec {
             work_dir,
             shuffle_output_partitioning,
             metrics: ExecutionPlanMetricsSet::new(),
+            max_shuffle_bytes,
         })
     }
 
@@ -139,6 +145,11 @@ impl ShuffleWriterExec {
         self.shuffle_output_partitioning.as_ref()
     }
 
+    /// Get the max shuffle bytes
+    pub fn max_shuffle_bytes(&self) -> Option<usize> {
+        self.max_shuffle_bytes
+    }
+
     pub fn execute_shuffle_write(
         &self,
         input_partition: usize,
@@ -151,10 +162,21 @@ impl ShuffleWriterExec {
         let write_metrics = ShuffleWriteMetrics::new(input_partition, &self.metrics);
         let output_partitioning = self.shuffle_output_partitioning.clone();
         let plan = self.plan.clone();
+        let max_shuffle_bytes = self.max_shuffle_bytes;
 
         async move {
             let now = Instant::now();
-            let mut stream = plan.execute(input_partition, context)?;
+            let mut stream = match plan.execute(input_partition, context) {
+                Ok(stream) => stream,
+                Err(e) => {
+                    error!(
+                        "Error executing partition: {:?}\n{}",
+                        e,
+                        DisplayableExecutionPlan::new(plan.as_ref()).indent()
+                    );
+                    return Err(e);
+                }
+            };
 
             match output_partitioning {
                 None => {
@@ -170,6 +192,7 @@ impl ShuffleWriterExec {
                         &mut stream,
                         path,
                         &write_metrics.write_time,
+                        max_shuffle_bytes,
                     )
                     .await
                     .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
@@ -211,6 +234,8 @@ impl ShuffleWriterExec {
                         write_metrics.repart_time.clone(),
                     )?;
 
+                    let total_bytes_count: AtomicUsize = AtomicUsize::new(0);
+
                     while let Some(result) = stream.next().await {
                         let input_batch = result?;
 
@@ -226,7 +251,9 @@ impl ShuffleWriterExec {
                                 let timer = write_metrics.write_time.timer();
                                 match &mut writers[output_partition] {
                                     Some(w) => {
+                                        let cur_bytes = w.num_bytes;
                                         w.write(&output_batch)?;
+                                        total_bytes_count.fetch_add((w.num_bytes - cur_bytes) as usize, Ordering::SeqCst);
                                     }
                                     None => {
                                         let mut path = path.clone();
@@ -245,11 +272,24 @@ impl ShuffleWriterExec {
                                         )?;
 
                                         writer.write(&output_batch)?;
+                                        total_bytes_count.fetch_add(writer.num_bytes  as usize, Ordering::Acquire);
+
                                         writers[output_partition] = Some(writer);
                                     }
                                 }
                                 write_metrics.output_rows.add(output_batch.num_rows());
                                 timer.done();
+
+                                if let Some(max_shuffle_bytes) = max_shuffle_bytes {
+                                    let total_bytes_count = total_bytes_count.load(Ordering::SeqCst);
+
+                                    if total_bytes_count > max_shuffle_bytes {
+                                        return Err(DataFusionError::Execution(format!(
+                                            "Exceeded limit on max bytes written to disk: {:?}", max_shuffle_bytes
+                                        )))
+                                    }
+                                }
+
                                 Ok(())
                             },
                         )?;
@@ -331,6 +371,7 @@ impl ExecutionPlan for ShuffleWriterExec {
             children[0].clone(),
             self.work_dir.clone(),
             self.shuffle_output_partitioning.clone(),
+            self.max_shuffle_bytes,
         )?))
     }
 
@@ -347,18 +388,19 @@ impl ExecutionPlan for ShuffleWriterExec {
             .and_then(|part_loc| async move {
                 // build metadata result batch
                 let num_writers = part_loc.len();
-                let mut partition_builder = UInt32Builder::new(num_writers);
-                let mut path_builder = StringBuilder::new(num_writers);
-                let mut num_rows_builder = UInt64Builder::new(num_writers);
-                let mut num_batches_builder = UInt64Builder::new(num_writers);
-                let mut num_bytes_builder = UInt64Builder::new(num_writers);
+                let mut partition_builder = UInt32Builder::with_capacity(num_writers);
+                let mut path_builder =
+                    StringBuilder::with_capacity(num_writers, num_writers * 100);
+                let mut num_rows_builder = UInt64Builder::with_capacity(num_writers);
+                let mut num_batches_builder = UInt64Builder::with_capacity(num_writers);
+                let mut num_bytes_builder = UInt64Builder::with_capacity(num_writers);
 
                 for loc in &part_loc {
-                    path_builder.append_value(loc.path.clone())?;
-                    partition_builder.append_value(loc.partition_id as u32)?;
-                    num_rows_builder.append_value(loc.num_rows)?;
-                    num_batches_builder.append_value(loc.num_batches)?;
-                    num_bytes_builder.append_value(loc.num_bytes)?;
+                    path_builder.append_value(loc.path.clone());
+                    partition_builder.append_value(loc.partition_id as u32);
+                    num_rows_builder.append_value(loc.num_rows);
+                    num_batches_builder.append_value(loc.num_batches);
+                    num_bytes_builder.append_value(loc.num_bytes);
                 }
 
                 // build arrays
@@ -374,7 +416,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     field_builders,
                 );
                 for _ in 0..num_writers {
-                    stats_builder.append(true)?;
+                    stats_builder.append(true);
                 }
                 let stats = Arc::new(stats_builder.finish());
 
@@ -456,6 +498,7 @@ mod tests {
             input_plan,
             work_dir.into_path().to_str().unwrap().to_owned(),
             Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
+            Some(1024 * 1024_usize),
         )?;
         let mut stream = query_stage.execute(0, task_ctx)?;
         let batches = utils::collect_stream(&mut stream)
@@ -513,6 +556,7 @@ mod tests {
             input_plan,
             work_dir.into_path().to_str().unwrap().to_owned(),
             Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
+            Some(1024 * 1024 * 1024_usize),
         )?;
         let mut stream = query_stage.execute(0, task_ctx)?;
         let batches = utils::collect_stream(&mut stream)
@@ -534,6 +578,50 @@ mod tests {
             .unwrap();
         assert_eq!(2, num_rows.value(0));
         assert_eq!(2, num_rows.value(1));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(not(feature = "force_hash_collisions"))]
+    async fn test_shuffle_fails_max_bytes() -> Result<()> {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+
+        let input_plan = Arc::new(CoalescePartitionsExec::new(create_input_plan()?));
+        let work_dir = TempDir::new()?;
+        let query_stage = ShuffleWriterExec::try_new(
+            "jobOne".to_owned(),
+            1,
+            input_plan,
+            work_dir.into_path().to_str().unwrap().to_owned(),
+            Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
+            Some(1_usize),
+        )?;
+        let mut stream = query_stage.execute(0, task_ctx)?;
+        assert!(utils::collect_stream(&mut stream).await.is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(not(feature = "force_hash_collisions"))]
+    async fn test_partitioned_fails_max_bytes() -> Result<()> {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+
+        let input_plan = create_input_plan()?;
+        let work_dir = TempDir::new()?;
+        let query_stage = ShuffleWriterExec::try_new(
+            "jobOne".to_owned(),
+            1,
+            input_plan,
+            work_dir.into_path().to_str().unwrap().to_owned(),
+            Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
+            Some(1_usize),
+        )?;
+        let mut stream = query_stage.execute(0, task_ctx)?;
+        assert!(utils::collect_stream(&mut stream).await.is_err());
 
         Ok(())
     }

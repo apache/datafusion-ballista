@@ -15,19 +15,55 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::physical_plan::ExecutionPlan;
+use crate::state::executor_manager::ExecutorReservation;
+
+use datafusion::logical_plan::LogicalPlan;
+
+use ballista_core::serde::protobuf::TaskStatus;
+use datafusion::prelude::SessionContext;
 use std::sync::Arc;
 
 #[derive(Clone)]
-pub(crate) enum SchedulerServerEvent {
-    // number of offer rounds
-    ReviveOffers(u32),
-}
-
-#[derive(Clone)]
 pub enum QueryStageSchedulerEvent {
-    JobSubmitted(String, Arc<dyn ExecutionPlan>),
-    StageFinished(String, u32),
-    JobFinished(String),
-    JobFailed(String, u32, String),
+    JobQueued {
+        job_id: String,
+        session_ctx: Arc<SessionContext>,
+        plan: Box<LogicalPlan>,
+        queued_at: u64,
+    },
+    JobSubmitted {
+        job_id: String,
+        queued_at: u64,
+        submitted_at: u64,
+    },
+    // For a job which failed during planning
+    JobPlanningFailed {
+        job_id: String,
+        fail_message: String,
+        queued_at: u64,
+        failed_at: u64,
+    },
+    JobFinished {
+        job_id: String,
+        queued_at: u64,
+        completed_at: u64,
+    },
+    // For a job fails with its execution graph setting failed
+    JobRunningFailed {
+        job_id: String,
+        queued_at: u64,
+        failed_at: u64,
+    },
+    JobUpdated {
+        job_id: String,
+    },
+    TaskUpdating {
+        executor_id: String,
+        tasks_status: Vec<TaskStatus>,
+    },
+    ReservationOffering(Vec<ExecutorReservation>),
+    ExecutorLost {
+        executor_id: String,
+        reason: Option<String>,
+    },
 }
