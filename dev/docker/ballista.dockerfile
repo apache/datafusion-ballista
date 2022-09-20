@@ -22,9 +22,9 @@
 # as a mounted directory.
 
 ARG RELEASE_FLAG=--release
-ARG VERSION=0.7.0
+ARG VERSION
 
-FROM ballista-base:$VERSION AS base
+FROM apache/arrow-ballista-base:$VERSION AS base
 WORKDIR /tmp/ballista
 RUN apt-get -y install cmake
 RUN cargo install cargo-chef --version 0.1.34
@@ -86,17 +86,13 @@ ENV RELEASE_FLAG=${RELEASE_FLAG}
 RUN if [ -z "$RELEASE_FLAG" ]; then mv /tmp/ballista/target/debug/tpch /tpch; else mv /tmp/ballista/target/release/tpch /tpch; fi
 
 # Copy the binary into a new container for a smaller docker image
-FROM ballista-base:$VERSION
+FROM apache/arrow-ballista-base:$VERSION
 
 COPY --from=builder /executor /
 
 COPY --from=builder /scheduler /
 
 COPY --from=builder /tpch /
-
-ADD benchmarks/run.sh /
-RUN mkdir /queries
-COPY benchmarks/queries/ /queries/
 
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full

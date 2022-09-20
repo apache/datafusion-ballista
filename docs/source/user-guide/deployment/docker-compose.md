@@ -33,7 +33,10 @@ cd arrow-datafusion
 ./dev/build-ballista-docker.sh
 ```
 
-This will create an image with the tag `ballista:0.7.0`.
+This will create the following images:
+
+- `apache/arrow-ballista-scheduler:0.8.0`
+- `apache/arrow-ballista-executor:0.8.0`
 
 ## Start a cluster
 
@@ -48,10 +51,11 @@ services:
     image: quay.io/coreos/etcd:v3.4.9
     command: "etcd -advertise-client-urls http://etcd:2379 -listen-client-urls http://0.0.0.0:2379"
   ballista-scheduler:
-    image: ballista:0.8.0
-    command: "/scheduler --config-backend etcd --etcd-urls etcd:2379 --bind-host 0.0.0.0 --bind-port 50050"
+    image: apache/arrow-ballista-scheduler:0.8.0
+    command: "--config-backend etcd --etcd-urls etcd:2379 --bind-host 0.0.0.0 --bind-port 50050"
     ports:
       - "50050:50050"
+      - "80:8080"
     environment:
       - RUST_LOG=info
     volumes:
@@ -59,8 +63,8 @@ services:
     depends_on:
       - etcd
   ballista-executor:
-    image: ballista:0.8.0
-    command: "/executor --bind-host 0.0.0.0 --bind-port 50051 --scheduler-host ballista-scheduler"
+    image: apache/arrow-ballista-executor:0.8.0
+    command: "--bind-host 0.0.0.0 --bind-port 50051 --scheduler-host ballista-scheduler"
     ports:
       - "50051:50051"
     environment:
@@ -95,3 +99,5 @@ ballista-executor_1   | [2021-08-28T15:55:22Z INFO  ballista_executor] Ballista 
 ```
 
 The scheduler listens on port 50050 and this is the port that clients will need to connect to.
+
+The scheduler web UI is available on port 80 in the scheduler.

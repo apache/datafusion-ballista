@@ -66,7 +66,7 @@ const App: React.FunctionComponent<any> = () => {
   const [schedulerState, setSchedulerState] = useState(undefined);
 
   function getSchedulerState() {
-    return fetch(`/state`, {
+    return fetch(`/api/state`, {
       method: "POST",
       headers: {
         Accept: "application/json",

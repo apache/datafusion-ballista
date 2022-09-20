@@ -67,7 +67,7 @@ export const Header: React.FunctionComponent<HeaderProps> = ({
             <a
               rel={"noreferrer"}
               target={"_blank"}
-              href={"https://ballistacompute.org/docs/"}
+              href={"https://arrow.apache.org/ballista/"}
             >
               <Button
                 mr={4}
@@ -80,7 +80,7 @@ export const Header: React.FunctionComponent<HeaderProps> = ({
             </a>
             <a
               rel="noreferrer"
-              href={"https://github.com/apache/arrow-datafusion"}
+              href={"https://github.com/apache/arrow-ballista"}
               target={"_blank"}
             >
               <Button colorScheme="blue" size="sm" rightIcon={<AiFillGithub />}>
