@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-version: '3.8'
+version: '3.3'
 services:
   etcd:
     image: quay.io/coreos/etcd:v3.4.9
@@ -48,7 +48,7 @@ services:
     depends_on:
       - ballista-scheduler
   ballista-client:
-    image: ballista-client
+    image: ballista-benchmarks
     build:
       dockerfile: dev/docker/ballista-benchmarks.Dockerfile
       context: .
