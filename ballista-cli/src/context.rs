@@ -58,11 +58,11 @@ impl Context {
             Context::Local(ballista) => ballista
                 .sql(sql)
                 .await
-                .map_err(|e| BallistaError::DataFusionError(e)),
+                .map_err(BallistaError::DataFusionError),
             Context::Remote(ballista) => ballista
                 .sql(sql)
                 .await
-                .map_err(|e| BallistaError::DataFusionError(e)),
+                .map_err(BallistaError::DataFusionError),
         }
     }
 }

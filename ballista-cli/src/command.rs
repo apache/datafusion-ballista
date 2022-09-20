@@ -59,20 +59,20 @@ impl Command {
         match self {
             Self::Help => print_options
                 .print_batches(&[all_commands_info()], now)
-                .map_err(|e| BallistaError::DataFusionError(e)),
+                .map_err(BallistaError::DataFusionError),
             Self::ListTables => {
                 let df = ctx.sql("SHOW TABLES").await?;
                 let batches = df.collect().await?;
                 print_options
                     .print_batches(&batches, now)
-                    .map_err(|e| BallistaError::DataFusionError(e))
+                    .map_err(BallistaError::DataFusionError)
             }
             Self::DescribeTable(name) => {
                 let df = ctx.sql(&format!("SHOW COLUMNS FROM {}", name)).await?;
                 let batches = df.collect().await?;
                 print_options
                     .print_batches(&batches, now)
-                    .map_err(|e| BallistaError::DataFusionError(e))
+                    .map_err(BallistaError::DataFusionError)
             }
             Self::QuietMode(quiet) => {
                 if let Some(quiet) = quiet {
@@ -93,7 +93,7 @@ impl Command {
                 "Unexpected quit, this should be handled outside".to_string(),
             )),
             Self::ListFunctions => {
-                display_all_functions().map_err(|e| BallistaError::DataFusionError(e))
+                display_all_functions().map_err(BallistaError::DataFusionError)
             }
             Self::SearchFunctions(function) => {
                 if let Ok(func) = function.parse::<Function>() {
