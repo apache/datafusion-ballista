@@ -15,16 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::env;
+use std::path::Path;
+
+use ballista::prelude::{BallistaConfig, Result};
 use ballista_cli::{
     context::Context, exec, print_format::PrintFormat, print_options::PrintOptions,
     BALLISTA_CLI_VERSION,
 };
 use clap::Parser;
-use datafusion::error::Result;
-use datafusion::execution::context::SessionConfig;
 use mimalloc::MiMalloc;
-use std::env;
-use std::path::Path;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -43,10 +43,17 @@ struct Args {
     #[clap(
         short = 'c',
         long,
-        help = "The batch size of each query, or use DataFusion default",
+        help = "The batch size of each query, or use Ballista default",
         validator(is_valid_batch_size)
     )]
     batch_size: Option<usize>,
+
+    #[clap(
+        long,
+        help = "The max concurrent tasks, only for Ballista local mode. Default: all available cores",
+        validator(is_valid_concurrent_tasks_size)
+    )]
+    concurrent_tasks: Option<usize>,
 
     #[clap(
         short,
@@ -61,7 +68,7 @@ struct Args {
         short = 'r',
         long,
         multiple_values = true,
-        help = "Run the provided files on startup instead of ~/.datafusionrc",
+        help = "Run the provided files on startup instead of ~/.ballistarc",
         validator(is_valid_file),
         conflicts_with = "file"
     )]
@@ -98,15 +105,26 @@ pub async fn main() -> Result<()> {
         env::set_current_dir(&p).unwrap();
     };
 
-    let mut session_config = SessionConfig::new().with_information_schema(true);
+    let mut ballista_config_builder =
+        BallistaConfig::builder().set("ballista.with_information_schema", "true");
 
     if let Some(batch_size) = args.batch_size {
-        session_config = session_config.with_batch_size(batch_size);
+        ballista_config_builder =
+            ballista_config_builder.set("ballista.batch.size", &batch_size.to_string());
     };
 
+    let ballista_config = ballista_config_builder.build()?;
+
     let mut ctx: Context = match (args.host, args.port) {
-        (Some(ref h), Some(p)) => Context::new_remote(h, p).await?,
-        _ => Context::new_local(&session_config),
+        (Some(ref h), Some(p)) => Context::new_remote(h, p, &ballista_config).await?,
+        _ => {
+            let concurrent_tasks = if let Some(concurrent_tasks) = args.concurrent_tasks {
+                concurrent_tasks
+            } else {
+                num_cpus::get()
+            };
+            Context::new_local(&ballista_config, concurrent_tasks).await?
+        }
     };
 
     let mut print_options = PrintOptions {
@@ -121,7 +139,7 @@ pub async fn main() -> Result<()> {
             let mut files = Vec::new();
             let home = dirs::home_dir();
             if let Some(p) = home {
-                let home_rc = p.join(".datafusionrc");
+                let home_rc = p.join(".ballistarc");
                 if home_rc.exists() {
                     files.push(home_rc.into_os_string().into_string().unwrap());
                 }
@@ -161,5 +179,12 @@ fn is_valid_batch_size(size: &str) -> std::result::Result<(), String> {
     match size.parse::<usize>() {
         Ok(size) if size > 0 => Ok(()),
         _ => Err(format!("Invalid batch size '{}'", size)),
+    }
+}
+
+fn is_valid_concurrent_tasks_size(size: &str) -> std::result::Result<(), String> {
+    match size.parse::<usize>() {
+        Ok(size) if size > 0 => Ok(()),
+        _ => Err(format!("Invalid concurrent_tasks size '{}'", size)),
     }
 }

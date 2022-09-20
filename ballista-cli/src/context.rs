@@ -17,56 +17,52 @@
 
 //! Context (remote or local)
 
-use datafusion::dataframe::DataFrame;
-use datafusion::error::{DataFusionError, Result};
-use datafusion::execution::context::{SessionConfig, SessionContext};
 use std::sync::Arc;
 
-/// The CLI supports using a local DataFusion context or a distributed BallistaContext
+use ballista::prelude::{BallistaConfig, BallistaContext, BallistaError, Result};
+use datafusion::dataframe::DataFrame;
+
+/// The CLI supports using a Ballista Standalone context or a Distributed BallistaContext
 pub enum Context {
-    /// In-process execution with DataFusion
-    Local(SessionContext),
+    /// In-process execution with Ballista Standalone
+    Local(BallistaContext),
     /// Distributed execution with Ballista (if available)
     Remote(BallistaContext),
 }
 
 impl Context {
     /// create a new remote context with given host and port
-    pub async fn new_remote(host: &str, port: u16) -> Result<Context> {
-        Ok(Context::Remote(BallistaContext::try_new(host, port).await?))
+    pub async fn new_remote(
+        host: &str,
+        port: u16,
+        config: &BallistaConfig,
+    ) -> Result<Context> {
+        Ok(Context::Remote(
+            BallistaContext::remote(host, port, config).await?,
+        ))
     }
 
     /// create a local context using the given config
-    pub fn new_local(config: &SessionConfig) -> Context {
-        Context::Local(SessionContext::with_config(config.clone()))
+    pub async fn new_local(
+        config: &BallistaConfig,
+        concurrent_tasks: usize,
+    ) -> Result<Context> {
+        Ok(Context::Local(
+            BallistaContext::standalone(config, concurrent_tasks).await?,
+        ))
     }
 
     /// execute an SQL statement against the context
     pub async fn sql(&mut self, sql: &str) -> Result<Arc<DataFrame>> {
         match self {
-            Context::Local(datafusion) => datafusion.sql(sql).await,
-            Context::Remote(ballista) => ballista.sql(sql).await,
+            Context::Local(ballista) => ballista
+                .sql(sql)
+                .await
+                .map_err(|e| BallistaError::DataFusionError(e)),
+            Context::Remote(ballista) => ballista
+                .sql(sql)
+                .await
+                .map_err(|e| BallistaError::DataFusionError(e)),
         }
-    }
-}
-
-pub struct BallistaContext(ballista::context::BallistaContext);
-
-impl BallistaContext {
-    pub async fn try_new(host: &str, port: u16) -> Result<Self> {
-        use ballista::context::BallistaContext;
-        use ballista::prelude::BallistaConfig;
-        let builder =
-            BallistaConfig::builder().set("ballista.with_information_schema", "true");
-        let config = builder
-            .build()
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
-        let remote_ctx = BallistaContext::remote(host, port, &config)
-            .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
-        Ok(Self(remote_ctx))
-    }
-    pub async fn sql(&mut self, sql: &str) -> Result<Arc<DataFrame>> {
-        self.0.sql(sql).await
     }
 }
