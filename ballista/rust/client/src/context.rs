@@ -274,9 +274,12 @@ impl BallistaContext {
         path: &str,
         options: CsvReadOptions<'_>,
     ) -> Result<()> {
-        let plan = self.read_csv(path, options)
+        let plan = self
+            .read_csv(path, options)
             .await
-            .map_err(|e| DataFusionError::Context(format!("Can't read CSV: {}", path), Box::new(e)))?
+            .map_err(|e| {
+                DataFusionError::Context(format!("Can't read CSV: {}", path), Box::new(e))
+            })?
             .to_logical_plan()?;
         match plan {
             LogicalPlan::TableScan(TableScan { source, .. }) => {
