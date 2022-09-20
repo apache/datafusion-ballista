@@ -29,6 +29,7 @@ FROM apache/arrow-ballista:$VERSION
 RUN apt -y install nginx
 RUN rm -rf /var/www/html/*
 COPY --from=ui-build /app/build /var/www/html
+COPY dev/docker/nginx.conf /etc/nginx/sites-enabled/default
 
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
