@@ -43,6 +43,8 @@ use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{metrics, ExecutionPlan, RecordBatchStream};
+#[cfg(feature = "hdfs")]
+use datafusion_objectstore_hdfs::object_store::hdfs::HadoopFileSystem;
 use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
@@ -82,7 +84,16 @@ pub struct FeatureBasedObjectStoreProvider;
 impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
     /// Detector a suitable object store based on its url if possible
     /// Return the key and object store
-    fn get_by_url(&self, _url: &Url) -> Option<Arc<dyn ObjectStore>> {
+    #[allow(unused_variables)]
+    fn get_by_url(&self, url: &Url) -> Option<Arc<dyn ObjectStore>> {
+        #[cfg(feature = "hdfs")]
+        {
+            let store = HadoopFileSystem::new(url.as_str());
+            if let Some(store) = store {
+                return Some(Arc::new(store));
+            }
+        }
+
         None
     }
 }
