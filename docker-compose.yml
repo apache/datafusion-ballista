@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-version: '2.2'
+version: '3.3'
 services:
   etcd:
     image: quay.io/coreos/etcd:v3.4.9
@@ -22,31 +22,41 @@ services:
     ports:
       - 2379:2379
   ballista-scheduler:
-    image: apache/arrow-ballista-scheduler:0.8.0
-    command: "--config-backend etcd --etcd-urls etcd:2379 --bind-host 0.0.0.0 --bind-port 50050"
+    image: ballista-scheduler
+    build:
+      dockerfile: dev/docker/ballista-scheduler.Dockerfile
+      context: .
+    command: "--config-backend etcd --etcd-urls etcd:2379 --bind-host 0.0.0.0"
     environment:
       - RUST_LOG=info
     volumes:
-      - ./data:/data
+      - ./benchmarks/data:/data
     depends_on:
       - etcd
   ballista-executor:
-    image: apache/arrow-ballista-executor:0.8.0
-    command: "--bind-host 0.0.0.0 --bind-port 50051 --scheduler-host ballista-scheduler"
-    scale: 2
+    image: ballista-executor
+    build:
+      dockerfile: dev/docker/ballista-executor.Dockerfile
+      context: .
+    command: "--bind-host 0.0.0.0 --scheduler-host ballista-scheduler"
+    deploy:
+      replicas: 2
     environment:
       - RUST_LOG=ballista=debug,info
     volumes:
-      - ./data:/data
+      - ./benchmarks/data:/data
     depends_on:
       - ballista-scheduler
   ballista-client:
-    image: apache/arrow-ballista-benchmarks:0.8.0
-    command: "/bin/sh" # do nothing
+    image: ballista-benchmarks
+    build:
+      dockerfile: dev/docker/ballista-benchmarks.Dockerfile
+      context: .
+    command: ["/bin/sh", "sleep", "infinity"]
     environment:
       - RUST_LOG=info
     volumes:
-      - ./data:/data
+      - ./benchmarks/data:/data
     depends_on:
       - ballista-scheduler
       - ballista-executor

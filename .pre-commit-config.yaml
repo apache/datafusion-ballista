@@ -48,7 +48,7 @@ repos:
         name: Docker Format
         language: docker_image
         types:
-         - dockerfile
+         - Dockerfile
         entry: --entrypoint /bin/hadolint hadolint/hadolint:latest -
         exclude: ^dev/.*$
   - repo: git://github.com/pre-commit/pre-commit-hooks

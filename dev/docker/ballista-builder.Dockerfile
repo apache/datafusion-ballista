@@ -15,30 +15,34 @@
 # specific language governing permissions and limitations
 # under the License.
 
-ARG VERSION
+FROM rust:1.63.0-buster
 
-# Use node image to build the scheduler UI
-FROM node:14.16.0-alpine as ui-build
-WORKDIR /app
-ENV PATH /app/node_modules/.bin:$PATH
-COPY ballista/ui/scheduler ./
-RUN yarn
-RUN yarn build
-
-FROM apache/arrow-ballista:$VERSION
-RUN apt -y install nginx
-RUN rm -rf /var/www/html/*
-COPY --from=ui-build /app/build /var/www/html
-COPY dev/docker/nginx.conf /etc/nginx/sites-enabled/default
+ARG EXT_UID
 
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Expose Ballista Scheduler web UI port
-EXPOSE 80
+RUN apt-get update && \
+    apt-get -y install libssl-dev openssl zlib1g zlib1g-dev libpq-dev cmake protobuf-compiler netcat curl unzip \
+    nodejs npm && \
+    npm install -g yarn
 
-# Expose Ballista Scheduler gRPC port
-EXPOSE 50050
+# create build user with same UID as 
+RUN adduser -q -u $EXT_UID builder --home /home/builder && \
+    mkdir -p /home/builder/workspace
+USER builder
 
-ADD dev/docker/scheduler-entrypoint.sh /
-ENTRYPOINT ["/scheduler-entrypoint.sh"]
+ENV NODE_VER=18.9.0
+ENV HOME=/home/builder
+ENV PATH=$HOME/.cargo/bin:$PATH
+
+# prepare rust
+RUN rustup update && \
+    rustup component add rustfmt && \
+    cargo install cargo-chef --version 0.1.34
+
+WORKDIR /home/builder/workspace
+
+COPY dev/docker/builder-entrypoint.sh /home/builder
+ENTRYPOINT ["/home/builder/builder-entrypoint.sh"]
