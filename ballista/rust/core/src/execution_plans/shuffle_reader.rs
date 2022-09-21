@@ -19,6 +19,7 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[cfg(not(test))]
 use crate::client::BallistaClient;
 use crate::serde::scheduler::{PartitionLocation, PartitionStats};
 
@@ -213,6 +214,7 @@ fn send_fetch_partitions(
     Ok(response_receiver)
 }
 
+#[cfg(not(test))]
 async fn fetch_partition(
     location: &PartitionLocation,
 ) -> Result<SendableRecordBatchStream> {
@@ -236,8 +238,21 @@ async fn fetch_partition(
 }
 
 #[cfg(test)]
+async fn fetch_partition(
+    location: &PartitionLocation,
+) -> Result<SendableRecordBatchStream> {
+    tests::fetch_test_partition(location)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::serde::scheduler::{ExecutorMetadata, ExecutorSpecification, PartitionId};
+    use datafusion::arrow::array::Int32Array;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::physical_plan::common;
+    use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 
     #[tokio::test]
     async fn test_stats_for_partitions_empty() {
@@ -305,5 +320,80 @@ mod tests {
         };
 
         assert_eq!(result, exptected);
+    }
+
+    #[tokio::test]
+    async fn test_send_fetch_partitions_1() {
+        test_send_fetch_partitions(1, 10).await;
+    }
+
+    #[tokio::test]
+    async fn test_send_fetch_partitions_n() {
+        test_send_fetch_partitions(4, 10).await;
+    }
+
+    async fn test_send_fetch_partitions(max_request_num: usize, partition_num: usize) {
+        let schema = get_test_partition_schema();
+        let partition_locations = get_test_partition_locations(partition_num);
+        let response_receiver =
+            send_fetch_partitions(partition_locations, max_request_num).unwrap();
+
+        let stream = RecordBatchStreamAdapter::new(
+            Arc::new(schema),
+            ReceiverStream::new(response_receiver).try_flatten(),
+        );
+
+        let result = common::collect(Box::pin(stream)).await.unwrap();
+        assert_eq!(partition_num, result.len());
+    }
+
+    fn get_test_partition_locations(n: usize) -> Vec<PartitionLocation> {
+        (0..n)
+            .into_iter()
+            .map(|partition_id| PartitionLocation {
+                partition_id: PartitionId {
+                    job_id: "job".to_string(),
+                    stage_id: 1,
+                    partition_id,
+                },
+                executor_meta: ExecutorMetadata {
+                    id: format!("exec{}", partition_id),
+                    host: "localhost".to_string(),
+                    port: 50051,
+                    grpc_port: 50052,
+                    specification: ExecutorSpecification { task_slots: 12 },
+                },
+                partition_stats: Default::default(),
+                path: format!("/tmp/job/1/{}", partition_id),
+            })
+            .collect()
+    }
+
+    pub(crate) fn fetch_test_partition(
+        location: &PartitionLocation,
+    ) -> Result<SendableRecordBatchStream> {
+        let id_array = Int32Array::from(vec![location.partition_id.partition_id as i32]);
+        let schema = Arc::new(get_test_partition_schema());
+
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(id_array)])?;
+
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+
+        // task simply sends data in order but in a separate
+        // thread (to ensure the batches are not available without the
+        // DelayedStream yielding).
+        let join_handle = tokio::task::spawn(async move {
+            println!("Sending batch via delayed stream");
+            if let Err(e) = tx.send(Ok(batch)).await {
+                println!("ERROR batch via delayed stream: {}", e);
+            }
+        });
+
+        // returned stream simply reads off the rx stream
+        Ok(RecordBatchReceiverStream::create(&schema, rx, join_handle))
+    }
+
+    fn get_test_partition_schema() -> Schema {
+        Schema::new(vec![Field::new("id", DataType::Int32, false)])
     }
 }
