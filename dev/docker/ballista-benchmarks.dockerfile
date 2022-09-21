@@ -1,5 +1,3 @@
-#!/bin/bash
-#
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -16,20 +14,15 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-#
 
-# Usage:
-# CHANGELOG_GITHUB_TOKEN=<TOKEN> ./update_change_log-datafusion.sh master 8.0.0 7.1.0
-# CHANGELOG_GITHUB_TOKEN=<TOKEN> ./update_change_log-datafusion.sh maint-7.x 7.1.0 7.0.0
+ARG VERSION
+FROM apache/arrow-ballista:$VERSION
 
-RELEASE_BRANCH=$1
-RELEASE_TAG=$2
-BASE_TAG=$3
+ADD benchmarks/run.sh /
+RUN mkdir /queries
+COPY benchmarks/queries/ /queries/
 
-SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-${SOURCE_DIR}/update_change_log.sh \
-    datafusion \
-    "${BASE_TAG}" \
-    --exclude-tags-regex "(python|ballista)-.+" \
-    --future-release "${RELEASE_TAG}" \
-    --release-branch "${RELEASE_BRANCH}"
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=full
+
+CMD ["/run.sh"]

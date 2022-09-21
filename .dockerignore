@@ -1,8 +1,9 @@
 .git
-ballista/ui/*
 ci
 conbench
-dev
+dev/dist
+dev/release
+python
 **/docs
 **/target
 **/CHANGELOG.md

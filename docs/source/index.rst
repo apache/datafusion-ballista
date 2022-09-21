@@ -34,6 +34,8 @@ Table of content
    user-guide/python
    user-guide/rust
    user-guide/cli
+   user-guide/configs
+   user-guide/tuning-guide
    user-guide/faq
 
 .. _toc.source:

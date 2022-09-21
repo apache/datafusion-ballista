@@ -35,7 +35,7 @@ use datafusion::arrow::{
     record_batch::RecordBatch,
 };
 use futures::{Stream, StreamExt};
-use log::{info, warn};
+use log::{debug, warn};
 use std::io::{Read, Seek};
 use tokio::sync::mpsc::channel;
 use tokio::{
@@ -88,7 +88,7 @@ impl FlightService for BallistaFlightService {
 
         match &action {
             BallistaAction::FetchPartition { path, .. } => {
-                info!("FetchPartition reading {}", &path);
+                debug!("FetchPartition reading {}", &path);
                 let file = File::open(&path)
                     .map_err(|e| {
                         BallistaError::General(format!(
@@ -224,7 +224,7 @@ where
             send_response(&tx, batch).await?;
         }
     }
-    info!("FetchPartition streamed {} rows", row_count);
+    debug!("FetchPartition streamed {} rows", row_count);
     Ok(())
 }
 

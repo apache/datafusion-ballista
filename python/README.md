@@ -43,7 +43,7 @@ import pyarrow
 f = ballista.functions
 
 # create a context
-ctx = ballista.SessionContext()
+ctx = ballista.BallistaContext("localhost", 50050)
 
 # create a RecordBatch and a new DataFrame from it
 batch = pyarrow.RecordBatch.from_arrays(
@@ -63,6 +63,14 @@ result = df.collect()[0]
 
 assert result.column(0) == pyarrow.array([5, 7, 9])
 assert result.column(1) == pyarrow.array([-3, -3, -3])
+```
+
+### Specifying Configuration Options
+
+Configuration settings can be specified when creating the context.
+
+```python
+ctx = ballista.BallistaContext("localhost", 50050, shuffle_partitions = 200, batch_size = 16384)
 ```
 
 ### UDFs

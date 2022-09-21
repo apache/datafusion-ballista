@@ -18,6 +18,7 @@
 apache-rat-*.jar
 arrow-src.tar
 arrow-src.tar.gz
+CHANGELOG.md.bak
 
 # Compiled source
 *.a

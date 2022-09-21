@@ -38,7 +38,7 @@ use crate::error::BallistaError;
 use datafusion::arrow::error::ArrowError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use log::info;
+use log::debug;
 
 /// ShuffleReaderExec reads partitions that have already been materialized by a ShuffleWriterExec
 /// being executed by an executor
@@ -106,7 +106,7 @@ impl ExecutionPlan for ShuffleReaderExec {
         partition: usize,
         _context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        info!("ShuffleReaderExec::execute({})", partition);
+        debug!("ShuffleReaderExec::execute({})", partition);
 
         let fetch_time =
             MetricBuilder::new(&self.metrics).subset_time("fetch_time", partition);
@@ -138,29 +138,7 @@ impl ExecutionPlan for ShuffleReaderExec {
     ) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default => {
-                let loc_str = self
-                    .partition
-                    .iter()
-                    .enumerate()
-                    .map(|(partition_id, locations)| {
-                        format!(
-                            "[partition={} paths={}]",
-                            partition_id,
-                            locations
-                                .iter()
-                                .map(|l| l.path.clone())
-                                .collect::<Vec<String>>()
-                                .join(",")
-                        )
-                    })
-                    .collect::<Vec<String>>()
-                    .join(", ");
-                write!(
-                    f,
-                    "ShuffleReaderExec: partition_locations({})={}",
-                    self.partition.len(),
-                    loc_str
-                )
+                write!(f, "ShuffleReaderExec: partitions={}", self.partition.len())
             }
         }
     }

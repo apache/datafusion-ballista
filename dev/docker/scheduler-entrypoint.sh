@@ -17,18 +17,6 @@
 # specific language governing permissions and limitations
 # under the License.
 #
-
-# Usage:
-# CHANGELOG_GITHUB_TOKEN=<TOKEN> ./update_change_log-ballista.sh master 0.7.0 0.6.0
-
-RELEASE_BRANCH=$1
-RELEASE_TAG=$2
-BASE_TAG=$3
-
-SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-${SOURCE_DIR}/update_change_log.sh \
-    ballista \
-    "${BASE_TAG}" \
-    --exclude-tags-regex "python-.+" \
-    --future-release "${RELEASE_TAG}" \
-    --release-branch "${RELEASE_BRANCH}"
+echo "Starting nginx to serve Ballista Scheduler web UI on port 80"
+nohup nginx -g "daemon off;" &
+/scheduler "$@"

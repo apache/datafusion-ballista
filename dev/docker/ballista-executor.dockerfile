@@ -1,5 +1,3 @@
-#!/bin/bash
-#
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -16,19 +14,15 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-#
 
-# Usage:
-# CHANGELOG_GITHUB_TOKEN=<TOKEN> ./update_change_log-ballista.sh master 0.7.0 0.6.0
+ARG VERSION
+FROM apache/arrow-ballista:$VERSION
 
-RELEASE_BRANCH=$1
-RELEASE_TAG=$2
-BASE_TAG=$3
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=full
 
-SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-${SOURCE_DIR}/update_change_log.sh \
-    ballista \
-    "${BASE_TAG}" \
-    --exclude-tags-regex "python-.+" \
-    --future-release "${RELEASE_TAG}" \
-    --release-branch "${RELEASE_BRANCH}"
+# Expose Ballista Executor gRPC port
+EXPOSE 50051
+
+ADD dev/docker/executor-entrypoint.sh /
+ENTRYPOINT ["/executor-entrypoint.sh"]

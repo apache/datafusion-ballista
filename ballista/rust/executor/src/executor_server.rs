@@ -32,7 +32,6 @@ use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partiti
 use ballista_core::serde::protobuf::executor_grpc_server::{
     ExecutorGrpc, ExecutorGrpcServer,
 };
-use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_core::serde::protobuf::{
     executor_metric, executor_status, CancelTasksParams, CancelTasksResult,
@@ -75,6 +74,7 @@ struct CuratorTaskStatus {
 
 pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     mut scheduler: SchedulerGrpcClient<Channel>,
+    bind_host: String,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
     stop_send: mpsc::Sender<bool>,
@@ -99,16 +99,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     // 1. Start executor grpc service
     let server = {
         let executor_meta = executor.metadata.clone();
-        let addr = format!(
-            "{}:{}",
-            executor_meta
-                .optional_host
-                .map(|h| match h {
-                    OptionalHost::Host(host) => host,
-                })
-                .unwrap_or_else(|| String::from("0.0.0.0")),
-            executor_meta.grpc_port
-        );
+        let addr = format!("{}:{}", bind_host, executor_meta.grpc_port);
         let addr = addr.parse().unwrap();
 
         info!(
