@@ -10,5 +10,5 @@ simd = ["upstream/simd"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-datafusion-proto = { git = "https://github.com/coralogix/arrow-datafusion", branch = "master" }
-upstream = { git = "https://github.com/coralogix/arrow-datafusion", branch = "master", package = "datafusion" }
+datafusion-proto = { git = "https://github.com/coralogix/arrow-datafusion", branch = "arrow23" }
+upstream = { git = "https://github.com/coralogix/arrow-datafusion", branch = "arrow23", package = "datafusion" }
