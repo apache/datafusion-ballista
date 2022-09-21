@@ -294,8 +294,8 @@ async fn execute_query(
                 error!("{}", msg);
                 break Err(DataFusionError::Execution(msg));
             }
-            Some(job_status::Status::Completed(completed)) => {
-                let streams = completed.partition_location.into_iter().map(|p| {
+            Some(job_status::Status::Successful(successful)) => {
+                let streams = successful.partition_location.into_iter().map(|p| {
                     let f = fetch_partition(p)
                         .map_err(|e| ArrowError::ExternalError(Box::new(e)));
 
@@ -323,11 +323,12 @@ async fn fetch_partition(
             .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
     ballista_client
         .fetch_partition(
+            &metadata.id,
             &partition_id.job_id,
             partition_id.stage_id as usize,
             partition_id.partition_id as usize,
             &location.path,
         )
         .await
-        .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))
+        .map_err(|e| DataFusionError::External(Box::new(e)))
 }

@@ -16,6 +16,7 @@
 // under the License.
 
 use std::any::Any;
+use std::result;
 use std::sync::Arc;
 
 use crate::client::BallistaClient;
@@ -33,6 +34,7 @@ use datafusion::physical_plan::{
 };
 use futures::{StreamExt, TryStreamExt};
 
+use crate::error::BallistaError;
 use datafusion::arrow::error::ArrowError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
@@ -202,7 +204,7 @@ fn stats_for_partitions(
 
 async fn fetch_partition(
     location: &PartitionLocation,
-) -> Result<SendableRecordBatchStream> {
+) -> result::Result<SendableRecordBatchStream, BallistaError> {
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
     // TODO for shuffle client connections, we should avoid creating new connections again and again.
@@ -210,16 +212,26 @@ async fn fetch_partition(
     let mut ballista_client =
         BallistaClient::try_new(metadata.host.as_str(), metadata.port as u16)
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+            .map_err(|error| match error {
+                // map grpc connection error to partition fetch error.
+                BallistaError::GrpcConnectionError(msg) => BallistaError::FetchFailed(
+                    metadata.id.clone(),
+                    partition_id.stage_id,
+                    partition_id.partition_id,
+                    msg,
+                ),
+                other => other,
+            })?;
+
     ballista_client
         .fetch_partition(
+            &metadata.id,
             &partition_id.job_id,
-            partition_id.stage_id as usize,
-            partition_id.partition_id as usize,
+            partition_id.stage_id,
+            partition_id.partition_id,
             &location.path,
         )
         .await
-        .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))
 }
 
 #[cfg(test)]

@@ -23,14 +23,15 @@ use crate::state::{decode_into, decode_protobuf, encode_protobuf, with_lock};
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf;
 
+use crate::state::execution_graph::RunningTaskInfo;
 use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 use ballista_core::serde::protobuf::{
-    executor_status, ExecutorHeartbeat, ExecutorStatus,
+    executor_status, CancelTasksParams, ExecutorHeartbeat, ExecutorStatus,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::utils::create_grpc_client_connection;
 use futures::StreamExt;
-use log::{debug, info};
+use log::{debug, error, info};
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -214,6 +215,47 @@ impl ExecutorManager {
             Ok(())
         })
         .await
+    }
+
+    /// Send rpc to Executors to cancel the running tasks
+    pub async fn cancel_running_tasks(&self, tasks: Vec<RunningTaskInfo>) -> Result<()> {
+        let mut tasks_to_cancel: HashMap<&str, Vec<protobuf::RunningTaskInfo>> =
+            Default::default();
+
+        for task_info in &tasks {
+            if let Some(infos) = tasks_to_cancel.get_mut(task_info.executor_id.as_str()) {
+                infos.push(protobuf::RunningTaskInfo {
+                    task_id: task_info.task_id as u32,
+                    job_id: task_info.job_id.clone(),
+                    stage_id: task_info.stage_id as u32,
+                    partition_id: task_info.partition_id as u32,
+                })
+            } else {
+                tasks_to_cancel.insert(
+                    task_info.executor_id.as_str(),
+                    vec![protobuf::RunningTaskInfo {
+                        task_id: task_info.task_id as u32,
+                        job_id: task_info.job_id.clone(),
+                        stage_id: task_info.stage_id as u32,
+                        partition_id: task_info.partition_id as u32,
+                    }],
+                );
+            }
+        }
+
+        for (executor_id, infos) in tasks_to_cancel {
+            if let Ok(mut client) = self.get_client(executor_id).await {
+                client
+                    .cancel_tasks(CancelTasksParams { task_infos: infos })
+                    .await?;
+            } else {
+                error!(
+                    "Failed to get client for executor ID {} to cancel tasks",
+                    executor_id
+                )
+            }
+        }
+        Ok(())
     }
 
     pub async fn get_client(
