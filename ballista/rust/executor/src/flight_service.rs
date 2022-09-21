@@ -102,10 +102,11 @@ impl FlightService for BallistaFlightService {
 
                 let (tx, rx): (FlightDataSender, FlightDataReceiver) = channel(2);
 
+                let file_path = path.to_owned();
                 // Arrow IPC reader does not implement Sync + Send so we need to use a channel
                 // to communicate
                 task::spawn(async move {
-                    if let Err(e) = stream_flight_data(reader, tx).await {
+                    if let Err(e) = stream_flight_data(file_path, reader, tx).await {
                         warn!("Error streaming results: {:?}", e);
                     }
                 });
@@ -202,6 +203,7 @@ fn create_flight_iter(
 }
 
 async fn stream_flight_data<T>(
+    file_path: String,
     reader: FileReader<T>,
     tx: FlightDataSender,
 ) -> Result<(), Status>
@@ -224,7 +226,10 @@ where
             send_response(&tx, batch).await?;
         }
     }
-    debug!("FetchPartition streamed {} rows", row_count);
+    debug!(
+        "FetchPartition streamed {} rows for file {}",
+        row_count, file_path
+    );
     Ok(())
 }
 

@@ -16,6 +16,7 @@
 // under the License.
 
 use std::any::Any;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::client::BallistaClient;
@@ -25,18 +26,21 @@ use datafusion::arrow::datatypes::SchemaRef;
 
 use datafusion::error::{DataFusionError, Result};
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
-use datafusion::physical_plan::metrics::{
-    ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
-};
+use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::{
     DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream, Statistics,
 };
-use futures::{StreamExt, TryStreamExt};
+use futures::TryStreamExt;
 
-use datafusion::arrow::error::ArrowError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use log::debug;
+use itertools::Itertools;
+use log::{error, info};
+use rand::prelude::SliceRandom;
+use rand::thread_rng;
+use tokio::sync::mpsc::Receiver;
+use tokio::sync::{mpsc, Semaphore};
+use tokio_stream::wrappers::ReceiverStream;
 
 /// ShuffleReaderExec reads partitions that have already been materialized by a ShuffleWriterExec
 /// being executed by an executor
@@ -102,29 +106,35 @@ impl ExecutionPlan for ShuffleReaderExec {
     fn execute(
         &self,
         partition: usize,
-        _context: Arc<TaskContext>,
+        context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        debug!("ShuffleReaderExec::execute({})", partition);
+        let task_id = context.task_id().unwrap_or_else(|| partition.to_string());
+        info!("ShuffleReaderExec::execute({})", task_id);
 
-        let fetch_time =
-            MetricBuilder::new(&self.metrics).subset_time("fetch_time", partition);
-
-        let locations = self.partition[partition].clone();
-        let stream = locations.into_iter().map(move |p| {
-            let fetch_time = fetch_time.clone();
-            futures::stream::once(async move {
-                let timer = fetch_time.timer();
-                let r = fetch_partition(&p).await;
-                timer.done();
-
-                r.map_err(|e| ArrowError::ExternalError(Box::new(e)))
-            })
-            .try_flatten()
-        });
+        // TODO make the maximum size configurable, or make it depends on global memory control
+        let max_request_num = 50usize;
+        let mut partition_locations = HashMap::new();
+        for p in &self.partition[partition] {
+            partition_locations
+                .entry(p.executor_meta.id.clone())
+                .or_insert_with(Vec::new)
+                .push(p.clone());
+        }
+        // Sort partitions for evenly send fetching partition requests to avoid hot executors within one task
+        let mut partition_locations: Vec<PartitionLocation> = partition_locations
+            .into_values()
+            .flat_map(|ps| ps.into_iter().enumerate())
+            .sorted_by(|(p1_idx, _), (p2_idx, _)| Ord::cmp(p1_idx, p2_idx))
+            .map(|(_, p)| p)
+            .collect();
+        // Shuffle partitions for evenly send fetching partition requests to avoid hot executors within multiple tasks
+        partition_locations.shuffle(&mut thread_rng());
+        let response_receiver =
+            send_fetch_partitions(partition_locations, max_request_num)?;
 
         let result = RecordBatchStreamAdapter::new(
             Arc::new(self.schema.as_ref().clone()),
-            futures::stream::iter(stream).flatten(),
+            ReceiverStream::new(response_receiver).try_flatten(),
         );
         Ok(Box::pin(result))
     }
@@ -176,6 +186,31 @@ fn stats_for_partitions(
             acc
         },
     )
+}
+
+fn send_fetch_partitions(
+    partition_locations: Vec<PartitionLocation>,
+    max_request_num: usize,
+) -> Result<Receiver<Result<SendableRecordBatchStream>>> {
+    let (response_sender, response_receiver) = mpsc::channel(max_request_num);
+    let semaphore = Arc::new(Semaphore::new(max_request_num));
+    for p in partition_locations.into_iter() {
+        let semaphore = semaphore.clone();
+        let response_sender = response_sender.clone();
+        tokio::spawn(async move {
+            // Block if exceeds max request number
+            let permit = semaphore.acquire_owned().await.unwrap();
+            let r = fetch_partition(&p).await;
+            // Block if the channel buffer is full
+            if let Err(e) = response_sender.send(r).await {
+                error!("Fail to send response event to the channel due to {}", e);
+            }
+            // Increase semaphore by dropping existing permits.
+            drop(permit);
+        });
+    }
+
+    Ok(response_receiver)
 }
 
 async fn fetch_partition(
