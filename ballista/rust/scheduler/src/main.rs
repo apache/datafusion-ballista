@@ -45,6 +45,7 @@ use ballista_scheduler::state::backend::{StateBackend, StateBackendClient};
 
 use ballista_core::config::TaskSchedulingPolicy;
 use ballista_core::serde::BallistaCodec;
+use ballista_core::utils::default_session_builder;
 use log::info;
 
 #[macro_use]
@@ -64,7 +65,6 @@ use ballista_core::utils::create_grpc_server;
 #[cfg(feature = "flight-sql")]
 use ballista_scheduler::flight_sql::FlightSqlServiceImpl;
 use config::prelude::*;
-use datafusion::execution::context::default_session_builder;
 use tracing_subscriber::EnvFilter;
 
 async fn start_server(
