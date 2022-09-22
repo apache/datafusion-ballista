@@ -19,7 +19,9 @@
 
 set -e
 
-./build-ballista-rust.sh
+docker build -t ballista-builder --build-arg EXT_UID="$(id -u)" -f dev/docker/ballista-builder.Dockerfile .
+
+docker run -v $(pwd):/home/builder/workspace ballista-builder
 
 docker-compose build
 
