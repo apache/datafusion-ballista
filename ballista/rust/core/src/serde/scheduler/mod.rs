@@ -21,12 +21,12 @@ use datafusion::arrow::array::{
     ArrayBuilder, StructArray, StructBuilder, UInt64Array, UInt64Builder,
 };
 use datafusion::arrow::datatypes::{DataType, Field};
-
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::Partitioning;
 use serde::Serialize;
 
 use crate::error::BallistaError;
+use crate::serde::protobuf::PhysicalHashRepartition;
 
 pub mod from_proto;
 pub mod to_proto;
@@ -267,4 +267,21 @@ impl ExecutePartitionResult {
     pub fn statistics(&self) -> &PartitionStats {
         &self.stats
     }
+}
+
+/// Unique identifier for the output partitions of a set of tasks.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PartitionIds {
+    pub job_id: String,
+    pub stage_id: usize,
+    pub partition_ids: Vec<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TaskDefinition {
+    pub task_id: PartitionId,
+    pub plan: Vec<u8>,
+    pub output_partitioning: Option<PhysicalHashRepartition>,
+    pub session_id: String,
+    pub props: HashMap<String, String>,
 }

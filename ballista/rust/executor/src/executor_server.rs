@@ -35,10 +35,11 @@ use ballista_core::serde::protobuf::executor_grpc_server::{
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_core::serde::protobuf::{
     executor_metric, executor_status, CancelTasksParams, CancelTasksResult,
-    ExecutorMetric, ExecutorStatus, HeartBeatParams, LaunchTaskParams, LaunchTaskResult,
-    RegisterExecutorParams, StopExecutorParams, StopExecutorResult, TaskDefinition,
-    TaskStatus, UpdateTaskStatusParams,
+    ExecutorMetric, ExecutorStatus, HeartBeatParams, LaunchMultiTaskParams,
+    LaunchMultiTaskResult, LaunchTaskParams, LaunchTaskResult, RegisterExecutorParams,
+    StopExecutorParams, StopExecutorResult, TaskStatus, UpdateTaskStatusParams,
 };
+use ballista_core::serde::scheduler::TaskDefinition;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use ballista_core::utils::{
     collect_plan_metrics, create_grpc_client_connection, create_grpc_server,
@@ -286,7 +287,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
     ) -> Result<(), BallistaError> {
         let scheduler_id = curator_task.scheduler_id;
         let task = curator_task.task;
-        let task_id = task.task_id.unwrap();
+        let task_id = task.task_id;
         let task_id_log = format!(
             "{}/{}/{}",
             task_id.job_id, task_id.stage_id, task_id.partition_id
@@ -295,10 +296,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
         let runtime = self.executor.runtime.clone();
         let session_id = task.session_id;
-        let mut task_props = HashMap::new();
-        for kv_pair in task.props {
-            task_props.insert(kv_pair.key, kv_pair.value);
-        }
+        let task_props = task.props;
 
         let mut task_scalar_functions = HashMap::new();
         let mut task_aggregate_functions = HashMap::new();
@@ -364,7 +362,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let task_status = as_task_status(
             execution_result,
             executor_id.clone(),
-            task_id,
+            task_id.into(),
             Some(operator_metrics),
         );
 
@@ -551,28 +549,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                     }
                 };
                 if let Some(curator_task) = maybe_task {
-                    if let Some(task_id) = &curator_task.task.task_id {
-                        let task_id_log = format!(
-                            "{}/{}/{}",
-                            task_id.job_id, task_id.stage_id, task_id.partition_id
-                        );
-                        info!("Received task {:?}", &task_id_log);
+                    let task_id = &curator_task.task.task_id;
+                    let task_id_log = format!(
+                        "{}/{}/{}",
+                        task_id.job_id, task_id.stage_id, task_id.partition_id
+                    );
+                    info!("Received task {:?}", &task_id_log);
 
-                        let server = executor_server.clone();
-                        dedicated_executor.spawn(async move {
-                            server.run_task(curator_task).await.unwrap_or_else(|e| {
-                                error!(
-                                    "Fail to run the task {:?} due to {:?}",
-                                    task_id_log, e
-                                );
-                            });
+                    let server = executor_server.clone();
+                    dedicated_executor.spawn(async move {
+                        server.run_task(curator_task).await.unwrap_or_else(|e| {
+                            error!(
+                                "Fail to run the task {:?} due to {:?}",
+                                task_id_log, e
+                            );
                         });
-                    } else {
-                        error!(
-                            "There's no task id in the task definition {:?}",
-                            curator_task
-                        );
-                    }
+                    });
                 } else {
                     info!("Channel is closed and will exit the task receive loop");
                     drop(task_runner_complete);
@@ -600,12 +592,42 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
             task_sender
                 .send(CuratorTaskDefinition {
                     scheduler_id: scheduler_id.clone(),
-                    task,
+                    task: task
+                        .try_into()
+                        .map_err(|e| Status::invalid_argument(format!("{}", e)))?,
                 })
                 .await
                 .unwrap();
         }
         Ok(Response::new(LaunchTaskResult { success: true }))
+    }
+
+    /// by this interface, it can reduce the deserialization cost for multiple tasks
+    /// belong to the same job stage running on the same one executor
+    async fn launch_multi_task(
+        &self,
+        request: Request<LaunchMultiTaskParams>,
+    ) -> Result<Response<LaunchMultiTaskResult>, Status> {
+        let LaunchMultiTaskParams {
+            multi_tasks,
+            scheduler_id,
+        } = request.into_inner();
+        let task_sender = self.executor_env.tx_task.clone();
+        for multi_task in multi_tasks {
+            let multi_task: Vec<TaskDefinition> = multi_task
+                .try_into()
+                .map_err(|e| Status::invalid_argument(format!("{}", e)))?;
+            for task in multi_task {
+                task_sender
+                    .send(CuratorTaskDefinition {
+                        scheduler_id: scheduler_id.clone(),
+                        task,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        Ok(Response::new(LaunchMultiTaskResult { success: true }))
     }
 
     async fn stop_executor(
