@@ -22,7 +22,7 @@
 One of the easiest ways to start with Ballista is to plug it into your existing data infrastructure using support for Arrow Flight SQL JDBC.
 
 Getting started involves these main steps:
-                                 
+
 1. [Installing prerequisites](#prereq)
 2. Build the [Ballista rust code](#rust)
 3. Build and run the [Ballista docker containers](#docker)
@@ -30,7 +30,7 @@ Getting started involves these main steps:
 5. [Install the driver](#tool) into your favorite JDBC tool
 6. Run a ["hello, world!"](#hello) query
 7. Register a table and run more complicated queries
-  
+
 ## <a name="prereq"/>Prerequisites
 
 ### Ubuntu
@@ -86,7 +86,7 @@ find . -name "*.jar"
 The important pieces of information:
 
 | Key              | Value                                              |
-|------------------|----------------------------------------------------|
+| ---------------- | -------------------------------------------------- |
 | Driver file      | flight-sql-jdbc-driver-10.0.0-SNAPSHOT.jar         |
 | Class Name       | org.apache.arrow.driver.jdbc.ArrowFlightJdbcDriver |
 | Authentication   | User & Password                                    |
