@@ -22,6 +22,7 @@ use crate::execution_plans::{
 };
 use crate::serde::scheduler::PartitionStats;
 use async_trait::async_trait;
+use chrono::{Duration as Cduration, DateTime, Utc};
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::{ipc::writer::FileWriter, record_batch::RecordBatch};
 use datafusion::error::DataFusionError;
@@ -52,6 +53,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use std::{fs::File, pin::Pin};
+use log::{info, warn};
+use tokio::fs;
 use tonic::codegen::StdError;
 use tonic::transport::{Channel, Error, Server};
 
@@ -355,4 +358,73 @@ pub fn collect_plan_metrics(plan: &dyn ExecutionPlan) -> Vec<MetricsSet> {
             .for_each(|e| metrics_array.push(e))
     });
     metrics_array
+}
+
+/// This function will scheduled periodically for cleanup log.
+pub async fn clean_log_loop(work_dir: &str, ttl_seconds: u32) -> Result<()> {
+    let mut dir = fs::read_dir(work_dir).await?;
+    let mut to_deleted = Vec::new();
+    let cutoff = Utc::now() - Cduration::seconds(ttl_seconds as i64);
+    let mut need_delete;
+    while let Some(child) = dir.next_entry().await? {
+        if let Ok(metadata) = child.metadata().await {
+            // only delete the log file
+            if metadata.is_file() {
+                let modified_time: DateTime<Utc> =
+                    metadata.modified().map(chrono::DateTime::from)?;
+                if modified_time < cutoff {
+                    need_delete = child.path().into_os_string();
+                    to_deleted.push(need_delete)
+                }
+            }
+        } else {
+            warn!("Found a dir {:?} in clean log skip it.", child)
+        }
+    }
+    info!(
+        "The log files {:?} that have not been modified for {:?} seconds will be deleted",
+        &to_deleted, ttl_seconds
+    );
+    for del in to_deleted {
+        fs::remove_file(del).await?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::utils::clean_log_loop;
+    use std::fs;
+    use std::fs::File;
+    use std::io::Write;
+    use std::time::Duration;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_clean_up_log() {
+        let work_dir = TempDir::new().unwrap().into_path();
+        let job_dir = work_dir.as_path().join("log");
+        let file_path = job_dir.as_path().join("1.log");
+        let data = "Jorge,2018-12-13T12:12:10.011Z\n\
+                    Andrew,2018-11-13T17:11:10.011Z";
+        fs::create_dir(job_dir.clone()).unwrap();
+        File::create(&file_path)
+            .expect("creating temp file")
+            .write_all(data.as_bytes())
+            .expect("writing data");
+
+        let count1 = fs::read_dir(job_dir.clone()).unwrap().count();
+        assert_eq!(count1, 1);
+        let mut handles = vec![];
+        let job_dir_clone = job_dir.clone();
+        handles.push(tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            clean_log_loop(job_dir_clone.to_str().unwrap(), 1)
+                .await
+                .unwrap();
+        }));
+        futures::future::join_all(handles).await;
+        let count2 = fs::read_dir(job_dir.clone()).unwrap().count();
+        assert_eq!(count2, 0);
+    }
 }

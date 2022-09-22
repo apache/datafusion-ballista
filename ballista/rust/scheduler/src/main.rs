@@ -24,6 +24,7 @@ use ballista_scheduler::scheduler_server::externalscaler::external_scaler_server
 use futures::future::{self, Either, TryFutureExt};
 use hyper::{server::conn::AddrStream, service::make_service_fn, Server};
 use std::convert::Infallible;
+use std::time::Duration;
 use std::{env, io, net::SocketAddr, sync::Arc};
 use tonic::transport::server::Connected;
 use tower::Service;
@@ -45,7 +46,8 @@ use ballista_scheduler::state::backend::{StateBackend, StateBackendClient};
 
 use ballista_core::config::TaskSchedulingPolicy;
 use ballista_core::serde::BallistaCodec;
-use log::info;
+use log::{error, info};
+use tokio::time;
 
 #[macro_use]
 extern crate configure_me;
@@ -168,13 +170,14 @@ async fn main() -> Result<()> {
     let port = opt.bind_port;
     let log_dir = opt.log_dir;
     let print_thread_info = opt.print_thread_info;
+    let cleanup_log_ttl = opt.cleanup_log_ttl;
     let log_file_name_prefix =
         format!("scheduler_{}_{}_{}", namespace, external_host, port);
     let scheduler_name = format!("{}:{}", external_host, port);
 
     // File layer
     if let Some(log_dir) = log_dir {
-        let log_file = tracing_appender::rolling::daily(log_dir, &log_file_name_prefix);
+        let log_file = tracing_appender::rolling::daily(&log_dir, &log_file_name_prefix);
         tracing_subscriber::fmt()
             .with_ansi(true)
             .with_thread_names(print_thread_info)
@@ -182,6 +185,30 @@ async fn main() -> Result<()> {
             .with_writer(log_file)
             .with_env_filter(special_mod_log_level)
             .init();
+
+        if cleanup_log_ttl > 0 {
+            // cleanup_log_ttl unit is hour
+            let ttl_seconds = opt.cleanup_log_ttl * 60 * 60;
+            let mut interval_time =
+                time::interval(Duration::from_secs((ttl_seconds / 2) as u64));
+            info!(
+            "Enable cleanup log loop which cleanup_log_ttl is {} hours in log_dir {}",
+            cleanup_log_ttl, &log_dir
+        );
+
+            tokio::spawn(async move {
+                loop {
+                    interval_time.tick().await;
+                    if let Err(e) =
+                    ballista_core::utils::clean_log_loop(&log_dir, ttl_seconds).await
+                    {
+                        error!("Ballista executor fail to clean_log {:?}", e)
+                    }
+                }
+            });
+        }
+
+
     } else {
         //Console layer
         let rust_log = env::var(EnvFilter::DEFAULT_ENV);

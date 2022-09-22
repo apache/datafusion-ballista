@@ -100,3 +100,9 @@ name = "log_level_setting"
 type = "String"
 doc = "special log level for sub mod. link: https://docs.rs/env_logger/latest/env_logger/#enabling-logging. For example we want whole level is INFO but datafusion mode is DEBUG"
 default = "std::string::String::from(\"INFO,datafusion=INFO\")"
+
+[[param]]
+name = "cleanup_log_ttl"
+type = "u32"
+doc = "The number of hours to retain log files on each node, zero means disable."
+default = "0"

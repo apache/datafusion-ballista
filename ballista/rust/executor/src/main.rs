@@ -91,12 +91,17 @@ async fn main() -> Result<()> {
     let grpc_port = opt.bind_grpc_port;
     let log_dir = opt.log_dir;
     let print_thread_info = opt.print_thread_info;
+    let cleanup_log_ttl = opt.cleanup_log_ttl;
 
     let scheduler_name = format!("executor_{}_{}", bind_host, port);
 
     // File layer
     if let Some(log_dir) = log_dir {
-        let log_file = tracing_appender::rolling::daily(log_dir, &scheduler_name);
+        let log_file = if cleanup_log_ttl > 24 {
+            tracing_appender::rolling::daily(log_dir.clone(), &scheduler_name)
+        } else {
+            tracing_appender::rolling::hourly(log_dir.clone(), &scheduler_name)
+        };
         tracing_subscriber::fmt()
             .with_ansi(true)
             .with_thread_names(print_thread_info)
@@ -104,6 +109,29 @@ async fn main() -> Result<()> {
             .with_writer(log_file)
             .with_env_filter(special_mod_log_level)
             .init();
+
+        if cleanup_log_ttl > 0 {
+            // cleanup_log_ttl unit is hour
+            let ttl_seconds = opt.cleanup_log_ttl * 60 * 60;
+            let mut interval_time =
+                time::interval(Core_Duration::from_secs((ttl_seconds / 2) as u64));
+
+            info!(
+                "Enable cleanup log loop which cleanup_log_ttl is {} hours in log_dir {}",
+                cleanup_log_ttl, &log_dir
+            );
+
+            tokio::spawn(async move {
+                loop {
+                    interval_time.tick().await;
+                    if let Err(e) =
+                        ballista_core::utils::clean_log_loop(&log_dir, ttl_seconds).await
+                    {
+                        error!("Ballista executor fail to clean_log {:?}", e)
+                    }
+                }
+            });
+        }
     } else {
         //Console layer
         let rust_log = env::var(EnvFilter::DEFAULT_ENV);
