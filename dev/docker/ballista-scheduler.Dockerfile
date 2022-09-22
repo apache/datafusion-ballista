@@ -17,19 +17,7 @@
 
 FROM ubuntu:22.04
 
-# Use node image to build the scheduler UI
-FROM node:14.16.0-alpine as ui-build
-WORKDIR /app
-ENV PATH /app/node_modules/.bin:$PATH
-COPY ballista/ui/scheduler ./
-RUN yarn
-RUN yarn build
-
-FROM apache/arrow-ballista:$VERSION
-RUN apt -y install nginx
-RUN rm -rf /var/www/html/*
-COPY --from=ui-build /app/build /var/www/html
-COPY dev/docker/nginx.conf /etc/nginx/sites-enabled/default
+ARG RELEASE_FLAG=release
 
 ENV RELEASE_FLAG=${RELEASE_FLAG}
 ENV RUST_LOG=info
