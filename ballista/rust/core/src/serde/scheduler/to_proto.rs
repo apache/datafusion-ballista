@@ -22,10 +22,12 @@ use crate::error::BallistaError;
 use crate::serde::protobuf;
 use crate::serde::protobuf::action::ActionType;
 
-use crate::serde::protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
+use crate::serde::protobuf::{
+    operator_metric, KeyValuePair, NamedCount, NamedGauge, NamedTime,
+};
 use crate::serde::scheduler::{
     Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, PartitionId,
-    PartitionLocation, PartitionStats,
+    PartitionIds, PartitionLocation, PartitionStats, TaskDefinition,
 };
 use datafusion::physical_plan::Partitioning;
 
@@ -231,6 +233,43 @@ impl Into<protobuf::ExecutorData> for ExecutorData {
                 }),
             })
             .collect(),
+        }
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<protobuf::PartitionIds> for PartitionIds {
+    fn into(self) -> protobuf::PartitionIds {
+        protobuf::PartitionIds {
+            job_id: self.job_id,
+            stage_id: self.stage_id as u32,
+            partition_ids: self
+                .partition_ids
+                .into_iter()
+                .map(|partition_id| partition_id as u32)
+                .collect(),
+        }
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<protobuf::TaskDefinition> for TaskDefinition {
+    fn into(self) -> protobuf::TaskDefinition {
+        let props = self
+            .props
+            .iter()
+            .map(|(k, v)| KeyValuePair {
+                key: k.to_owned(),
+                value: v.to_owned(),
+            })
+            .collect::<Vec<_>>();
+
+        protobuf::TaskDefinition {
+            task_id: Some(self.task_id.into()),
+            plan: self.plan,
+            output_partitioning: self.output_partitioning,
+            session_id: self.session_id,
+            props,
         }
     }
 }

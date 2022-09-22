@@ -15,24 +15,36 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Turn .dockerignore to .dockerallow by excluding everything and explicitly
-# allowing specific files and directories. This enables us to quickly add
-# dependency files to the docker content without scanning the whole directory.
-# This setup requires to all of our docker containers have arrow's source
-# as a mounted directory.
+FROM ubuntu:22.04
 
-FROM node:14.16.0-alpine as build
+# Use node image to build the scheduler UI
+FROM node:14.16.0-alpine as ui-build
 WORKDIR /app
 ENV PATH /app/node_modules/.bin:$PATH
-
-COPY package.json ./
-COPY yarn.lock ./
+COPY ballista/ui/scheduler ./
 RUN yarn
-
-COPY . ./
 RUN yarn build
 
-FROM nginx:stable-alpine
-COPY --from=build /app/build /usr/share/nginx/html
+FROM apache/arrow-ballista:$VERSION
+RUN apt -y install nginx
+RUN rm -rf /var/www/html/*
+COPY --from=ui-build /app/build /var/www/html
+COPY dev/docker/nginx.conf /etc/nginx/sites-enabled/default
+
+ENV RELEASE_FLAG=${RELEASE_FLAG}
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=full
+
+COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
+
+COPY ballista/ui/scheduler/build /var/www/html
+COPY dev/docker/nginx.conf /etc/nginx/sites-enabled/default
+
+# Expose Ballista Scheduler web UI port
 EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
+
+# Expose Ballista Scheduler gRPC port
+EXPOSE 50050
+
+COPY dev/docker/scheduler-entrypoint.sh /root/scheduler-entrypoint.sh
+ENTRYPOINT ["/root/scheduler-entrypoint.sh"]

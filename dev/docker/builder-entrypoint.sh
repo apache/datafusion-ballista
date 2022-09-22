@@ -1,4 +1,5 @@
 #!/bin/bash
+#
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -16,7 +17,12 @@
 # specific language governing permissions and limitations
 # under the License.
 
-set -e
-cd /tpch-dbgen
-./dbgen -vf -s 1
-mv *.tbl /data
+set -x
+
+printenv
+RELEASE_FLAG=${RELEASE_FLA:=release}
+cargo build --features flight-sql "--$RELEASE_FLAG" "$@"
+
+cd ballista/ui/scheduler
+yarn install
+yarn build

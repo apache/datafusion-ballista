@@ -15,18 +15,30 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM ubuntu
+# General purpose Dockerfile to take a Docker image containing R
+# and install Arrow R package dependencies
 
-RUN apt-get update && \
-    apt-get install -y git build-essential
+ARG base
+FROM ${base}
 
-RUN git clone https://github.com/databricks/tpch-dbgen.git && \
-    cd tpch-dbgen && \
-    make
+ARG r_bin=R
+ENV R_BIN=${r_bin}
 
-WORKDIR /tpch-dbgen
-ADD entrypoint.sh /tpch-dbgen/
+ARG r_dev=FALSE
+ENV ARROW_R_DEV=${r_dev}
 
-VOLUME /data
+ARG devtoolset_version=-1
+ENV DEVTOOLSET_VERSION=${devtoolset_version}
 
-ENTRYPOINT [ "bash", "./entrypoint.sh" ]
+# Make sure R is on the path for the R-hub devel versions (where RPREFIX is set in its Dockerfile)
+ENV PATH "${RPREFIX}/bin:${PATH}"
+
+# Patch up some of the docker images
+COPY ci/scripts/r_docker_configure.sh /arrow/ci/scripts/
+COPY ci/etc/rprofile /arrow/ci/etc/
+COPY ci/scripts/install_minio.sh /arrow/ci/scripts/
+RUN /arrow/ci/scripts/r_docker_configure.sh
+
+COPY ci/scripts/r_deps.sh /arrow/ci/scripts/
+COPY r/DESCRIPTION /arrow/r/
+RUN /arrow/ci/scripts/r_deps.sh /arrow
