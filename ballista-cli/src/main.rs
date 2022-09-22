@@ -18,10 +18,9 @@
 use std::env;
 use std::path::Path;
 
-use ballista::prelude::{BallistaConfig, Result};
+use ballista::prelude::{BallistaConfig, BallistaContext, Result};
 use ballista_cli::{
-    context::Context, exec, print_format::PrintFormat, print_options::PrintOptions,
-    BALLISTA_CLI_VERSION,
+    exec, print_format::PrintFormat, print_options::PrintOptions, BALLISTA_CLI_VERSION,
 };
 use clap::Parser;
 use mimalloc::MiMalloc;
@@ -115,15 +114,19 @@ pub async fn main() -> Result<()> {
 
     let ballista_config = ballista_config_builder.build()?;
 
-    let mut ctx: Context = match (args.host, args.port) {
-        (Some(ref h), Some(p)) => Context::new_remote(h, p, &ballista_config).await?,
+    let ctx = match (args.host, args.port) {
+        (Some(ref host), Some(port)) => {
+            // Distributed execution with Ballista Remote
+            BallistaContext::remote(host, port, &ballista_config).await?
+        }
         _ => {
             let concurrent_tasks = if let Some(concurrent_tasks) = args.concurrent_tasks {
                 concurrent_tasks
             } else {
                 num_cpus::get()
             };
-            Context::new_local(&ballista_config, concurrent_tasks).await?
+            // In-process execution with Ballista Standalone
+            BallistaContext::standalone(&ballista_config, concurrent_tasks).await?
         }
     };
 
@@ -148,12 +151,12 @@ pub async fn main() -> Result<()> {
         }
     };
     if !files.is_empty() {
-        exec::exec_from_files(files, &mut ctx, &print_options).await
+        exec::exec_from_files(files, &ctx, &print_options).await
     } else {
         if !rc.is_empty() {
-            exec::exec_from_files(rc, &mut ctx, &print_options).await
+            exec::exec_from_files(rc, &ctx, &print_options).await
         }
-        exec::exec_from_repl(&mut ctx, &mut print_options).await;
+        exec::exec_from_repl(&ctx, &mut print_options).await;
     }
 
     Ok(())
