@@ -624,7 +624,7 @@ order by
                 codec.physical_extension_codec(),
             )?;
         let runtime = ctx.runtime_env();
-        let result_exec_plan: Arc<dyn ExecutionPlan> = (&proto).try_into_physical_plan(
+        let result_exec_plan: Arc<dyn ExecutionPlan> = (proto).try_into_physical_plan(
             &ctx,
             runtime.deref(),
             codec.physical_extension_codec(),
