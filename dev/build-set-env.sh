@@ -17,4 +17,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-export BALLISTA_VERSION=$(awk -F'[ ="]+' '$1 == "version" { print $2 }' ballista/rust/core/Cargo.toml)
+cd ballista/rust/core/
+export BALLISTA_VERSION=$(cargo pkgid | cut '-d@' -f2)
+cd -

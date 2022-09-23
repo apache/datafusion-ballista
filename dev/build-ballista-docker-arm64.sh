@@ -19,7 +19,7 @@
 
 if [ -z "${DOCKER_REPO}" ]; then
   echo "DOCKER_REPO env var must be set"
-  exit -1
+  exit 1
 fi
 cargo install cross
 cross build --release --target aarch64-unknown-linux-gnu

@@ -1,4 +1,3 @@
-#!/bin/bash
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -16,7 +15,24 @@
 # specific language governing permissions and limitations
 # under the License.
 
-set -e
-cd /tpch-dbgen
-./dbgen -vf -s 1
-mv *.tbl /data
+FROM ubuntu:22.04
+
+ARG RELEASE_FLAG=release
+
+ENV RELEASE_FLAG=${RELEASE_FLAG}
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=full
+
+COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
+
+COPY ballista/ui/scheduler/build /var/www/html
+COPY dev/docker/nginx.conf /etc/nginx/sites-enabled/default
+
+# Expose Ballista Scheduler web UI port
+EXPOSE 80
+
+# Expose Ballista Scheduler gRPC port
+EXPOSE 50050
+
+COPY dev/docker/scheduler-entrypoint.sh /root/scheduler-entrypoint.sh
+ENTRYPOINT ["/root/scheduler-entrypoint.sh"]

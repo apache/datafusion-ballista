@@ -1,5 +1,3 @@
-#!/bin/bash
-
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -17,15 +15,21 @@
 # specific language governing permissions and limitations
 # under the License.
 
-set -e
+FROM ubuntu:22.04
 
-docker build -t ballista-builder --build-arg EXT_UID="$(id -u)" -f dev/docker/ballista-builder.Dockerfile .
+ARG RELEASE_FLAG=release
 
-docker run -v $(pwd):/home/builder/workspace ballista-builder
+ENV RELEASE_FLAG=${RELEASE_FLAG}
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=full
 
-docker-compose build
+COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
+COPY target/$RELEASE_FLAG/ballista-executor /root/ballista-executor
+COPY target/$RELEASE_FLAG/tpch /root/tpch
 
-. ./dev/build-set-env.sh
-docker tag ballista-executor "apache/arrow-ballista-executor:$BALLISTA_VERSION"
-docker tag ballista-scheduler "apache/arrow-ballista-scheduler:$BALLISTA_VERSION"
-docker tag ballista-benchmarks "apache/arrow-ballista-benchmarks:$BALLISTA_VERSION"
+COPY benchmarks/run.sh /root/run.sh
+COPY benchmarks/queries/ /root/benchmarks/queries
+
+WORKDIR /root
+
+CMD ["/root/run.sh"]

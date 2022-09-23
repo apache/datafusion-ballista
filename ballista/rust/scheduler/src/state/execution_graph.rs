@@ -55,7 +55,7 @@ use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use crate::display::print_stage_metrics;
 use crate::planner::DistributedPlanner;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use crate::state::execution_graph::execution_stage::{
+pub(crate) use crate::state::execution_graph::execution_stage::{
     CompletedStage, ExecutionStage, FailedStage, ResolvedStage, StageOutput,
     UnresolvedStage,
 };
@@ -166,6 +166,10 @@ impl ExecutionGraph {
 
     pub fn stage_count(&self) -> usize {
         self.stages.len()
+    }
+
+    pub(crate) fn stages(&self) -> &HashMap<usize, ExecutionStage> {
+        &self.stages
     }
 
     /// An ExecutionGraph is complete if all its stages are complete
@@ -562,7 +566,7 @@ impl ExecutionGraph {
                                 .iter()
                                 .enumerate()
                                 .filter_map(|(idx, loc)| {
-                                    (loc.executor_meta.id == executor_id).then(|| idx)
+                                    (loc.executor_meta.id == executor_id).then_some(idx)
                                 })
                                 .collect::<Vec<_>>();
 

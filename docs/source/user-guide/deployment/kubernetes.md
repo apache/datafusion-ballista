@@ -60,15 +60,20 @@ cd arrow-ballista
 ./dev/build-ballista-docker.sh
 ```
 
-This will create an image with the tag `ballista:0.7.0`.
+This will create the following images:
+
+- `apache/arrow-ballista-scheduler:0.8.0`
+- `apache/arrow-ballista-executor:0.8.0`
 
 ## Publishing your images
 
 Once the images have been built, you can retag them and can push them to your favourite docker registry.
 
 ```bash
-docker tag ballista:0.7.0 <your-repo>/ballista:0.7.0
-docker push <your-repo>/ballista:0.7.0
+docker tag apache/arrow-ballista-scheduler:0.8.0 <your-repo>/arrow-ballista-scheduler:0.8.0
+docker tag apache/arrow-ballista-executor:0.8.0 <your-repo>/arrow-ballista-executor:0.8.0
+docker push <your-repo>/arrow-ballista-scheduler:0.8.0
+docker push <your-repo>/arrow-ballista-executor:0.8.0
 ```
 
 ## Create Persistent Volume and Persistent Volume Claim
@@ -134,6 +139,8 @@ spec:
   ports:
     - port: 50050
       name: scheduler
+    - port: 80
+      name: scheduler-ui
   selector:
     app: ballista-scheduler
 ---
@@ -154,12 +161,13 @@ spec:
     spec:
       containers:
         - name: ballista-scheduler
-          image: <your-repo>/ballista:0.7.0
-          command: ["/scheduler"]
+          image: <your-repo>/arrow-ballista-scheduler:0.8.0
           args: ["--bind-port=50050"]
           ports:
             - containerPort: 50050
               name: flight
+            - containerPort: 80
+              name: webui
           volumeMounts:
             - mountPath: /mnt
               name: data
@@ -185,8 +193,7 @@ spec:
     spec:
       containers:
         - name: ballista-executor
-          image: <your-repo>/ballista:0.7.0
-          command: ["/executor"]
+          image: <your-repo>/arrow-ballista-executor:0.8.0
           args:
             - "--bind-port=50051"
             - "--scheduler-host=ballista-scheduler"

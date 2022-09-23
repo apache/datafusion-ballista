@@ -33,12 +33,9 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::{convert::TryInto, io::Cursor};
 
-// include the generated protobuf source as a submodule
-#[allow(clippy::all)]
-pub mod protobuf {
-    include!(concat!(env!("OUT_DIR"), "/ballista.protobuf.rs"));
-}
+pub use generated::ballista as protobuf;
 
+pub mod generated;
 pub mod physical_plan;
 pub mod scheduler;
 
@@ -167,7 +164,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> BallistaCodec<T, 
 macro_rules! convert_required {
     ($PB:expr) => {{
         if let Some(field) = $PB.as_ref() {
-            Ok(field.try_into()?)
+            Ok(field
+                .try_into()
+                .map_err(|_| proto_error("Failed to convert!"))?)
         } else {
             Err(proto_error("Missing required field in protobuf"))
         }

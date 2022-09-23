@@ -20,9 +20,6 @@ use warp::Rejection;
 #[derive(Debug, serde::Serialize)]
 struct StateResponse {
     executors: Vec<ExecutorMetaResponse>,
-    active_jobs: Vec<String>,
-    completed_jobs: Vec<String>,
-    failed_jobs: Vec<String>,
     started: u128,
     version: &'static str,
 }
@@ -33,6 +30,15 @@ pub struct ExecutorMetaResponse {
     pub host: String,
     pub port: u16,
     pub last_seen: u128,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct JobResponse {
+    pub job_id: String,
+    pub job_status: String,
+    pub num_stages: usize,
+    pub completed_stages: usize,
+    pub percent_complete: u8,
 }
 
 /// Return current scheduler state, including list of executors and active, completed, and failed
@@ -55,27 +61,41 @@ pub(crate) async fn get_state<T: AsLogicalPlan, U: AsExecutionPlan>(
             last_seen: duration.as_millis(),
         })
         .collect();
+
     let response = StateResponse {
         executors,
-        active_jobs: state
-            .task_manager
-            .get_active_job_ids()
-            .await
-            .map_err(|_| warp::reject())?,
-        completed_jobs: state
-            .task_manager
-            .get_completed_job_ids()
-            .await
-            .map_err(|_| warp::reject())?,
-        failed_jobs: state
-            .task_manager
-            .get_failed_job_ids()
-            .await
-            .map_err(|_| warp::reject())?,
         started: data_server.start_time,
         version: BALLISTA_VERSION,
     };
     Ok(warp::reply::json(&response))
+}
+
+/// Return list of jobs
+pub(crate) async fn get_jobs<T: AsLogicalPlan, U: AsExecutionPlan>(
+    data_server: SchedulerServer<T, U>,
+) -> Result<impl warp::Reply, Rejection> {
+    // TODO: Display last seen information in UI
+    let state = data_server.state;
+
+    let jobs = state
+        .task_manager
+        .get_jobs()
+        .await
+        .map_err(|_| warp::reject())?;
+
+    let jobs: Vec<JobResponse> = jobs
+        .iter()
+        .map(|job| JobResponse {
+            job_id: job.job_id.to_string(),
+            job_status: format!("{:?}", job.status),
+            num_stages: job.num_stages,
+            completed_stages: job.completed_stages,
+            percent_complete: ((job.completed_stages as f32 / job.num_stages as f32)
+                * 100_f32) as u8,
+        })
+        .collect();
+
+    Ok(warp::reply::json(&jobs))
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -106,7 +126,6 @@ pub(crate) async fn get_job_summary<T: AsLogicalPlan, U: AsExecutionPlan>(
         })),
     }
 }
-
 /// Generate a dot graph for the specified job id and return as plain text
 pub(crate) async fn get_job_dot_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
     data_server: SchedulerServer<T, U>,

@@ -15,22 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-digraph G {
+// include the generated protobuf source as a submodule
+#[allow(clippy::all)]
+#[rustfmt::skip]
+#[cfg(not(docsrs))]
+pub mod ballista;
 
-    ballista_core
-    ballista_scheduler
-    ballista_executor
-    ballista
-    ballista_cli
-
-    ballista_scheduler -> ballista_core
-
-    ballista_executor -> ballista_core
-
-    ballista -> ballista_core
-    ballista -> ballista_scheduler
-    ballista -> ballista_executor
-
-	ballista_cli -> ballista
-
+#[cfg(docsrs)]
+#[allow(clippy::all)]
+pub mod ballista {
+    include!(concat!(env!("OUT_DIR"), "/ballista.rs"));
 }

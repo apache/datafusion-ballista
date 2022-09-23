@@ -1,5 +1,5 @@
 #!/bin/bash
-
+#
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -17,15 +17,12 @@
 # specific language governing permissions and limitations
 # under the License.
 
-set -e
+set -x
 
-docker build -t ballista-builder --build-arg EXT_UID="$(id -u)" -f dev/docker/ballista-builder.Dockerfile .
+printenv
+RELEASE_FLAG=${RELEASE_FLA:=release}
+cargo build --features flight-sql "--$RELEASE_FLAG" "$@"
 
-docker run -v $(pwd):/home/builder/workspace ballista-builder
-
-docker-compose build
-
-. ./dev/build-set-env.sh
-docker tag ballista-executor "apache/arrow-ballista-executor:$BALLISTA_VERSION"
-docker tag ballista-scheduler "apache/arrow-ballista-scheduler:$BALLISTA_VERSION"
-docker tag ballista-benchmarks "apache/arrow-ballista-benchmarks:$BALLISTA_VERSION"
+cd ballista/ui/scheduler
+yarn install
+yarn build

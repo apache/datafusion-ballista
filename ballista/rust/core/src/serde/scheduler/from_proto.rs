@@ -20,6 +20,7 @@ use datafusion::physical_plan::metrics::{
     Count, Gauge, MetricValue, MetricsSet, Time, Timestamp,
 };
 use datafusion::physical_plan::Metric;
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,7 +31,7 @@ use crate::serde::protobuf::action::ActionType;
 use crate::serde::protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
 use crate::serde::scheduler::{
     Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, PartitionId,
-    PartitionLocation, PartitionStats,
+    PartitionIds, PartitionLocation, PartitionStats, TaskDefinition,
 };
 
 impl TryInto<Action> for protobuf::Action {
@@ -51,15 +52,14 @@ impl TryInto<Action> for protobuf::Action {
     }
 }
 
-impl TryInto<PartitionId> for protobuf::PartitionId {
-    type Error = BallistaError;
-
-    fn try_into(self) -> Result<PartitionId, Self::Error> {
-        Ok(PartitionId::new(
+#[allow(clippy::from_over_into)]
+impl Into<PartitionId> for protobuf::PartitionId {
+    fn into(self) -> PartitionId {
+        PartitionId::new(
             &self.job_id,
             self.stage_id as usize,
             self.partition_id as usize,
-        ))
+        )
     }
 }
 
@@ -94,7 +94,7 @@ impl TryInto<PartitionLocation> for protobuf::PartitionLocation {
                         "partition_id in PartitionLocation is missing.".to_owned(),
                     )
                 })?
-                .try_into()?,
+                .into(),
             executor_meta: self
                 .executor_meta
                 .ok_or_else(|| {
@@ -261,5 +261,85 @@ impl Into<ExecutorData> for protobuf::ExecutorData {
             };
         }
         ret
+    }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<PartitionIds> for protobuf::PartitionIds {
+    fn into(self) -> PartitionIds {
+        PartitionIds {
+            job_id: self.job_id.clone(),
+            stage_id: self.stage_id as usize,
+            partition_ids: self
+                .partition_ids
+                .into_iter()
+                .map(|partition_id| partition_id as usize)
+                .collect(),
+        }
+    }
+}
+
+impl TryInto<TaskDefinition> for protobuf::TaskDefinition {
+    type Error = BallistaError;
+
+    fn try_into(self) -> Result<TaskDefinition, Self::Error> {
+        let mut props = HashMap::new();
+        for kv_pair in self.props {
+            props.insert(kv_pair.key, kv_pair.value);
+        }
+
+        let task_id = self
+            .task_id
+            .ok_or_else(|| {
+                BallistaError::General("No task id in the TaskDefinition".to_owned())
+            })?
+            .into();
+
+        Ok(TaskDefinition {
+            task_id,
+            plan: self.plan,
+            output_partitioning: self.output_partitioning,
+            session_id: self.session_id,
+            props,
+        })
+    }
+}
+
+impl TryInto<Vec<TaskDefinition>> for protobuf::MultiTaskDefinition {
+    type Error = BallistaError;
+
+    fn try_into(self) -> Result<Vec<TaskDefinition>, Self::Error> {
+        let mut props = HashMap::new();
+        for kv_pair in self.props {
+            props.insert(kv_pair.key, kv_pair.value);
+        }
+
+        let plan = self.plan;
+        let output_partitioning = self.output_partitioning;
+        let session_id = self.session_id;
+        let task_ids: PartitionIds = self
+            .task_ids
+            .ok_or_else(|| {
+                BallistaError::General(
+                    "No task ids in the MultiTaskDefinition".to_owned(),
+                )
+            })?
+            .into();
+
+        Ok(task_ids
+            .partition_ids
+            .iter()
+            .map(|partition_id| TaskDefinition {
+                task_id: PartitionId::new(
+                    &task_ids.job_id,
+                    task_ids.stage_id,
+                    *partition_id,
+                ),
+                plan: plan.clone(),
+                output_partitioning: output_partitioning.clone(),
+                session_id: session_id.clone(),
+                props: props.clone(),
+            })
+            .collect())
     }
 }
