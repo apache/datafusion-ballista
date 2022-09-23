@@ -32,6 +32,7 @@ fn main() -> Result<(), String> {
         .compile(&["proto/ballista.proto"], &["proto"])
         .map_err(|e| format!("protobuf compilation failed: {}", e))?;
 
+    // TODO: undo when resolved: https://github.com/intellij-rust/intellij-rust/issues/9402
     #[cfg(feature = "docsrs")]
     let path = out.join("ballista.rs");
     #[cfg(not(feature = "docsrs"))]
