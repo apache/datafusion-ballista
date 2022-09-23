@@ -108,7 +108,7 @@ pub(crate) async fn get_jobs<T: AsLogicalPlan, U: AsExecutionPlan>(
             job_status: format!("{:?}", job.status),
             num_stages: job.num_stages,
             completed_stages: job.completed_stages,
-            percent_complete: (job.completed_stages as f32 / job.num_stages as f32) * 100_f32;
+            percent_complete: (job.completed_stages as f32 / job.num_stages as f32) * 100_f32
         })
         .collect();
 
