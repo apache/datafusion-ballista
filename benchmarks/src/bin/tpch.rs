@@ -1506,7 +1506,7 @@ mod tests {
                         codec.logical_extension_codec(),
                     )
                     .unwrap();
-                let round_trip: LogicalPlan = (&proto)
+                let round_trip: LogicalPlan = (proto)
                     .try_into_logical_plan(&ctx, codec.logical_extension_codec())
                     .unwrap();
                 assert_eq!(
@@ -1523,7 +1523,7 @@ mod tests {
                         codec.logical_extension_codec(),
                     )
                     .unwrap();
-                let round_trip: LogicalPlan = (&proto)
+                let round_trip: LogicalPlan = (proto)
                     .try_into_logical_plan(&ctx, codec.logical_extension_codec())
                     .unwrap();
                 assert_eq!(
@@ -1542,7 +1542,7 @@ mod tests {
                         )
                         .unwrap();
                     let runtime = ctx.runtime_env();
-                    let round_trip: Arc<dyn ExecutionPlan> = (&proto)
+                    let round_trip: Arc<dyn ExecutionPlan> = (proto)
                         .try_into_physical_plan(
                             &ctx,
                             runtime.deref(),

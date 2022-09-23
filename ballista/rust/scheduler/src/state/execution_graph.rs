@@ -551,7 +551,7 @@ impl ExecutionGraph {
                                 .iter()
                                 .enumerate()
                                 .filter_map(|(idx, loc)| {
-                                    (loc.executor_meta.id == executor_id).then(|| idx)
+                                    (loc.executor_meta.id == executor_id).then_some(idx)
                                 })
                                 .collect::<Vec<_>>();
 
