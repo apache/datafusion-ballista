@@ -108,20 +108,28 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     /// Get a list of active job ids
     pub async fn get_jobs(&self) -> Result<Vec<JobOverview>> {
-        let mut jobs = vec![];
+        let mut job_ids = vec![];
         for job_id in self.state.scan_keys(Keyspace::ActiveJobs).await? {
-            let graph = self.get_execution_graph(&job_id).await?;
+            job_ids.push(job_id);
+        }
+        for job_id in self.state.scan_keys(Keyspace::CompletedJobs).await? {
+            job_ids.push(job_id);
+        }
+        for job_id in self.state.scan_keys(Keyspace::FailedJobs).await? {
+            job_ids.push(job_id);
+        }
+
+        let mut jobs = vec![];
+        for job_id in &job_ids {
+            let graph = self.get_execution_graph(job_id).await?;
             let mut completed_stages = 0;
-            for (_, stage) in graph.stages() {
-                match stage {
-                    ExecutionStage::Completed(_) => {
-                        completed_stages += 1;
-                    }
-                    _ => {}
+            for stage in graph.stages().values() {
+                if let ExecutionStage::Completed(_) = stage {
+                    completed_stages += 1;
                 }
             }
             jobs.push(JobOverview {
-                job_id,
+                job_id: job_id.clone(),
                 status: graph.status(),
                 num_stages: graph.stage_count(),
                 completed_stages,

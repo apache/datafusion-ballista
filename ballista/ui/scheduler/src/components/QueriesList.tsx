@@ -28,7 +28,7 @@ import {
 } from "@chakra-ui/react";
 import { Column, DateCell, DataTable, LinkCell } from "./DataTable";
 import { FaStop } from "react-icons/fa";
-import { GrPowerReset } from "react-icons/gr";
+import {GrDocumentDownload, GrPowerReset} from "react-icons/gr";
 
 export enum QueryStatus {
   QUEUED = "QUEUED",
@@ -53,7 +53,7 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
     <Flex>
       <FaStop color={"red"} title={"stop"} />
       <Box mx={2}></Box>
-      <GrPowerReset title={"Retry"} />
+      <GrDocumentDownload title={"plan"} />
     </Flex>
   );
 };

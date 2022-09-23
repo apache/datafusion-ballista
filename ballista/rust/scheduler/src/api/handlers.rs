@@ -19,7 +19,6 @@ use warp::Rejection;
 #[derive(Debug, serde::Serialize)]
 struct StateResponse {
     executors: Vec<ExecutorMetaResponse>,
-    jobs: Vec<JobResponse>,
     started: u128,
     version: &'static str,
 }
@@ -38,7 +37,7 @@ pub struct JobResponse {
     pub job_status: String,
     pub num_stages: usize,
     pub completed_stages: usize,
-    pub percent_complete: f32,
+    pub percent_complete: u8,
 }
 
 /// Return current scheduler state, including list of executors and active, completed, and failed
@@ -62,26 +61,8 @@ pub(crate) async fn get_state<T: AsLogicalPlan, U: AsExecutionPlan>(
         })
         .collect();
 
-    let jobs = state
-        .task_manager
-        .get_jobs()
-        .await
-        .map_err(|_| warp::reject())?;
-
-    let jobs = jobs
-        .iter()
-        .map(|job| JobResponse {
-            job_id: job.job_id.to_string(),
-            job_status: format!("{:?}", job.status),
-            num_stages: job.num_stages,
-            completed_stages: job.completed_stages,
-            percent_complete: job.completed_stages as f32 / job.num_stages as f32
-        })
-        .collect();
-
     let response = StateResponse {
         executors,
-        jobs,
         started: data_server.start_time,
         version: BALLISTA_VERSION,
     };
@@ -108,7 +89,8 @@ pub(crate) async fn get_jobs<T: AsLogicalPlan, U: AsExecutionPlan>(
             job_status: format!("{:?}", job.status),
             num_stages: job.num_stages,
             completed_stages: job.completed_stages,
-            percent_complete: (job.completed_stages as f32 / job.num_stages as f32) * 100_f32
+            percent_complete: ((job.completed_stages as f32 / job.num_stages as f32)
+                * 100_f32) as u8,
         })
         .collect();
 
