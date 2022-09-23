@@ -49,7 +49,7 @@ use crate::display::DisplayableBallistaExecutionPlan;
 ///                                ↓
 ///                         CompletedStage
 #[derive(Clone)]
-pub(super) enum ExecutionStage {
+pub(crate) enum ExecutionStage {
     UnResolved(UnresolvedStage),
     Resolved(ResolvedStage),
     Running(RunningStage),
@@ -71,7 +71,7 @@ impl Debug for ExecutionStage {
 
 /// For a stage whose input stages are not all completed, we say it's a unresolved stage
 #[derive(Clone)]
-pub(super) struct UnresolvedStage {
+pub(crate) struct UnresolvedStage {
     /// Stage ID
     pub(super) stage_id: usize,
     /// Output partitioning for this stage.
@@ -89,7 +89,7 @@ pub(super) struct UnresolvedStage {
 /// For a stage, if it has no inputs or all of its input stages are completed,
 /// then we call it as a resolved stage
 #[derive(Clone)]
-pub(super) struct ResolvedStage {
+pub(crate) struct ResolvedStage {
     /// Stage ID
     pub(super) stage_id: usize,
     /// Total number of output partitions for this stage.
@@ -112,7 +112,7 @@ pub(super) struct ResolvedStage {
 /// 3. manage the stage-level combined metrics
 /// Running stages will only be maintained in memory and will not saved to the backend storage
 #[derive(Clone)]
-pub(super) struct RunningStage {
+pub(crate) struct RunningStage {
     /// Stage ID
     pub(super) stage_id: usize,
     /// Total number of output partitions for this stage.
@@ -135,7 +135,7 @@ pub(super) struct RunningStage {
 
 /// If a stage finishes successfully, its task statuses and metrics will be finalized
 #[derive(Clone)]
-pub(super) struct CompletedStage {
+pub(crate) struct CompletedStage {
     /// Stage ID
     pub(super) stage_id: usize,
     /// Total number of output partitions for this stage.
@@ -158,7 +158,7 @@ pub(super) struct CompletedStage {
 
 /// If a stage fails, it will be with an error message
 #[derive(Clone)]
-pub(super) struct FailedStage {
+pub(crate) struct FailedStage {
     /// Stage ID
     pub(super) stage_id: usize,
     /// Total number of output partitions for this stage.
@@ -987,7 +987,7 @@ impl Debug for FailedStage {
 /// Each `ExecutionStage` will hold a `StageOutput`s for each of its child stages.
 /// When all tasks for the child stage are complete, it will mark the `StageOutput`
 #[derive(Clone, Debug, Default)]
-pub(super) struct StageOutput {
+pub(crate) struct StageOutput {
     /// Map from partition -> partition locations
     pub partition_locations: HashMap<usize, Vec<PartitionLocation>>,
     /// Flag indicating whether all tasks are complete

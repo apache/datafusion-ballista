@@ -18,7 +18,7 @@
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::SessionBuilder;
 use crate::state::backend::{Keyspace, Lock, StateBackendClient};
-use crate::state::execution_graph::{ExecutionGraph, Task};
+use crate::state::execution_graph::{ExecutionGraph, ExecutionStage, Task};
 use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::{decode_protobuf, encode_protobuf, with_lock};
 use ballista_core::config::BallistaConfig;
@@ -107,21 +107,27 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Get a list of active job ids
-    pub async fn get_active_job_ids(&self) -> Result<Vec<String>> {
-        let keys = self.state.scan_keys(Keyspace::ActiveJobs).await?;
-        Ok(keys.iter().cloned().collect::<Vec<_>>())
-    }
-
-    /// Get a list of completed job ids
-    pub async fn get_completed_job_ids(&self) -> Result<Vec<String>> {
-        let keys = self.state.scan_keys(Keyspace::CompletedJobs).await?;
-        Ok(keys.iter().cloned().collect::<Vec<_>>())
-    }
-
-    /// Get a list of failed job ids
-    pub async fn get_failed_job_ids(&self) -> Result<Vec<String>> {
-        let keys = self.state.scan_keys(Keyspace::FailedJobs).await?;
-        Ok(keys.iter().cloned().collect::<Vec<_>>())
+    pub async fn get_jobs(&self) -> Result<Vec<JobOverview>> {
+        let mut jobs = vec![];
+        for job_id in self.state.scan_keys(Keyspace::ActiveJobs).await? {
+            let graph = self.get_execution_graph(&job_id).await?;
+            let mut completed_stages = 0;
+            for (_, stage) in graph.stages() {
+                match stage {
+                    ExecutionStage::Completed(_) => {
+                        completed_stages += 1;
+                    }
+                    _ => {}
+                }
+            }
+            jobs.push(JobOverview {
+                job_id,
+                status: graph.status(),
+                num_stages: graph.stage_count(),
+                completed_stages,
+            });
+        }
+        Ok(jobs)
     }
 
     /// Get the status of of a job. First look in the active cache.
@@ -583,4 +589,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .take(7)
             .collect()
     }
+}
+
+pub struct JobOverview {
+    pub job_id: String,
+    pub status: JobStatus,
+    pub num_stages: usize,
+    pub completed_stages: usize,
 }
