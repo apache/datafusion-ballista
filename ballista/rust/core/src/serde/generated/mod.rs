@@ -18,4 +18,11 @@
 // include the generated protobuf source as a submodule
 #[allow(clippy::all)]
 #[rustfmt::skip]
+#[cfg(not(docsrs))]
 pub mod ballista;
+
+#[cfg(docsrs)]
+#[allow(clippy::all)]
+pub mod ballista {
+    include!(concat!(env!("OUT_DIR"), "/ballista.rs"));
+}

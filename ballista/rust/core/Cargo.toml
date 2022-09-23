@@ -27,6 +27,9 @@ authors = ["Apache Arrow <dev@arrow.apache.org>"]
 edition = "2018"
 build = "build.rs"
 
+[package.metadata.docs.rs]
+rustc-args = ["--cfg", "docsrs"]
+
 [features]
 # Used for testing ONLY: causes all values to hash to the same value (test for collisions)
 force_hash_collisions = ["datafusion/force_hash_collisions"]

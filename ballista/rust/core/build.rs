@@ -32,11 +32,17 @@ fn main() -> Result<(), String> {
         .compile(&["proto/ballista.proto"], &["proto"])
         .map_err(|e| format!("protobuf compilation failed: {}", e))?;
 
+    #[cfg(feature = "docsrs")]
+    let path = out.join("ballista.rs");
+    #[cfg(not(feature = "docsrs"))]
+    let path = "src/serde/generated/ballista.rs";
+
     let code = std::fs::read_to_string(out.join("ballista.protobuf.rs")).unwrap();
     let mut file = std::fs::OpenOptions::new()
         .write(true)
+        .truncate(true)
         .create(true)
-        .open("src/serde/generated/ballista.rs")
+        .open(path)
         .unwrap();
     file.write_all(code.as_str().as_ref()).unwrap();
 
