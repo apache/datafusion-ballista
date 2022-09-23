@@ -46,8 +46,8 @@ const App: React.FunctionComponent<any> = () => {
         Accept: "application/json",
       },
     })
-        .then((res) => res.json())
-        .then((res) => setJobs(res));
+      .then((res) => res.json())
+      .then((res) => setJobs(res));
   }
 
   useEffect(() => {
