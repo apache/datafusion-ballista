@@ -53,6 +53,7 @@ use datafusion::datafusion_proto::protobuf::LogicalPlanNode;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use tokio::signal::unix::SignalKind;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing_subscriber::EnvFilter;
@@ -213,11 +214,11 @@ async fn main() -> Result<()> {
         });
     }
 
-    let mut service_handlers: FuturesUnordered<JoinHandle<Result<(), BallistaError>>> =
+    let service_handlers: FuturesUnordered<JoinHandle<Result<(), BallistaError>>> =
         FuturesUnordered::new();
 
     // Channels used to receive stop requests from Executor grpc service.
-    let (stop_send, mut stop_recv) = mpsc::channel::<bool>(10);
+    let (stop_send, stop_recv) = mpsc::channel::<bool>(10);
 
     match scheduler_policy {
         TaskSchedulingPolicy::PushStaged => {
@@ -246,25 +247,8 @@ async fn main() -> Result<()> {
         shutdown_noti.subscribe_for_shutdown(),
     )));
 
-    // Concurrently run the service checking and listen for the `shutdown` signal and wait for the stop request coming.
-    // The check_services runs until an error is encountered, so under normal circumstances, this `select!` statement runs
-    // until the `shutdown` signal is received or a stop request is coming.
-    let (notify_scheduler, stop_reason) = tokio::select! {
-        service_val = check_services(&mut service_handlers) => {
-            let msg = format!("executor services stopped with reason {:?}", service_val);
-            info!("{:?}", msg);
-            (true, msg)
-        },
-        _ = signal::ctrl_c() => {
-             // sometimes OS can not log ??
-            let msg = "executor received ctrl-c event.".to_string();
-             info!("{:?}", msg);
-            (true, msg)
-        },
-        _ = stop_recv.recv() => {
-            (false, "".to_string())
-        },
-    };
+    let (notify_scheduler, stop_reason) =
+        await_shutdown_signal(service_handlers, stop_recv).await?;
 
     if notify_scheduler {
         if let Err(error) = scheduler
@@ -298,6 +282,68 @@ async fn main() -> Result<()> {
     let _ = shutdown_complete_rx.recv().await;
     info!("Executor stopped.");
     Ok(())
+}
+
+#[cfg(unix)]
+async fn await_shutdown_signal(
+    mut service_handlers: FuturesUnordered<JoinHandle<Result<(), BallistaError>>>,
+    mut stop_recv: mpsc::Receiver<bool>,
+) -> Result<(bool, String)> {
+    let mut terminate_signals = signal::unix::signal(SignalKind::terminate())?;
+
+    // Concurrently run the service checking and listen for the `shutdown` signal and wait for the stop request coming.
+    // The check_services runs until an error is encountered, so under normal circumstances, this `select!` statement runs
+    // until the `shutdown` signal is received or a stop request is coming.
+    let (notify_scheduler, stop_reason) = tokio::select! {
+        service_val = check_services(&mut service_handlers) => {
+            let msg = format!("executor services stopped with reason {:?}", service_val);
+            info!("{:?}", msg);
+            (true, msg)
+        },
+        _ = terminate_signals.recv() => {
+            let msg = "executor received SIGTERM event.".to_string();
+             info!("{:?}", msg);
+            (true, msg)
+        }
+        _ = signal::ctrl_c() => {
+             // sometimes OS can not log ??
+            let msg = "executor received ctrl-c event.".to_string();
+             info!("{:?}", msg);
+            (true, msg)
+        },
+        _ = stop_recv.recv() => {
+            (false, "".to_string())
+        },
+    };
+
+    Ok((notify_scheduler, stop_reason))
+}
+
+#[cfg(not(unix))]
+async fn await_shutdown_signal(
+    service_handlers: FuturesUnordered<JoinHandle<Result<(), BallistaError>>>,
+) -> Result<((bool, String))> {
+    // Concurrently run the service checking and listen for the `shutdown` signal and wait for the stop request coming.
+    // The check_services runs until an error is encountered, so under normal circumstances, this `select!` statement runs
+    // until the `shutdown` signal is received or a stop request is coming.
+    let (notify_scheduler, stop_reason) = tokio::select! {
+        service_val = check_services(&mut service_handlers) => {
+            let msg = format!("executor services stopped with reason {:?}", service_val);
+            info!("{:?}", msg);
+            (true, msg)
+        },
+        _ = signal::ctrl_c() => {
+             // sometimes OS can not log ??
+            let msg = "executor received ctrl-c event.".to_string();
+             info!("{:?}", msg);
+            (true, msg)
+        },
+        _ = stop_recv.recv() => {
+            (false, "".to_string())
+        },
+    };
+
+    Ok((notify_scheduler, stop_reason))
 }
 
 // Arrow flight service
