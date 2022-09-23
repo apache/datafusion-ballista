@@ -228,9 +228,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             }
         };
 
-        dbg!(free_list.clone());
-        dbg!(pending_tasks);
-
         let mut new_reservations = vec![];
         if !free_list.is_empty() {
             // If any reserved slots remain, return them to the pool
