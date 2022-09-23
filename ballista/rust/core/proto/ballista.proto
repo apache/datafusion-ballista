@@ -517,6 +517,8 @@ message FetchPartition {
   uint32 stage_id = 2;
   uint32 partition_id = 3;
   string path = 4;
+  string host = 5;
+  uint32 port = 6;
 }
 
 // Mapping from partition id to executor id
