@@ -29,12 +29,28 @@ Table of content
    :maxdepth: 1
    :caption: User Guide
 
-   user-guide/introduction
-   user-guide/deployment/index
+   Introduction <user-guide/introduction>
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Cluster Deployment
+
+   Deployment <user-guide/deployment/index>
+   Scheduler <user-guide/scheduler>
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Clients
+
    Python <user-guide/python>
-   user-guide/rust
-   Flight SQL <user-guide/flightsql>
+   Rust <user-guide/rust>
+   Flight SQL JDBC <user-guide/flightsql>
    CLI <user-guide/cli>
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Reference
+
    user-guide/configs
    user-guide/tuning-guide
    user-guide/faq
