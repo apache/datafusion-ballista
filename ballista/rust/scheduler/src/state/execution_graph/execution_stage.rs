@@ -1008,6 +1008,7 @@ impl Debug for FailedStage {
 /// This data structure collects the partition locations for an `ExecutionStage`.
 /// Each `ExecutionStage` will hold a `StageOutput`s for each of its child stages.
 /// When all tasks for the child stage are complete, it will mark the `StageOutput`
+/// as complete.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct StageOutput {
     /// Map from partition -> partition locations

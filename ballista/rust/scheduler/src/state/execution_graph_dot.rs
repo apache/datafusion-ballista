@@ -31,6 +31,7 @@ use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::ExecutionPlan;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
+use log::debug;
 
 /// Utility for producing dot diagrams from execution graphs
 pub struct ExecutionGraphDot {
@@ -57,26 +58,26 @@ impl Display for ExecutionGraphDot {
         for id in &keys {
             let stage = stages.get(id).unwrap(); // safe unwrap
             let stage_name = format!("stage_{}", id);
-            writeln!(f, "	subgraph cluster{} {{", cluster)?;
+            writeln!(f, "\tsubgraph cluster{} {{", cluster)?;
             match stage {
                 ExecutionStage::UnResolved(stage) => {
-                    writeln!(f, "		label = \"Stage {} [UnResolved]\";", id)?;
+                    writeln!(f, "\t\tlabel = \"Stage {} [UnResolved]\";", id)?;
                     write_operator(f, &stage_name, &stage.plan, 0)?;
                 }
                 ExecutionStage::Resolved(stage) => {
-                    writeln!(f, "		label = \"Stage {} [Resolved]\";", id)?;
+                    writeln!(f, "\t\tlabel = \"Stage {} [Resolved]\";", id)?;
                     write_operator(f, &stage_name, &stage.plan, 0)?;
                 }
                 ExecutionStage::Running(stage) => {
-                    writeln!(f, "		label = \"Stage {} [Running]\";", id)?;
+                    writeln!(f, "\t\tlabel = \"Stage {} [Running]\";", id)?;
                     write_operator(f, &stage_name, &stage.plan, 0)?;
                 }
                 ExecutionStage::Completed(stage) => {
-                    writeln!(f, "		label = \"Stage {} [Completed]\";", id)?;
+                    writeln!(f, "\t\tlabel = \"Stage {} [Completed]\";", id)?;
                     write_operator(f, &stage_name, &stage.plan, 0)?;
                 }
                 ExecutionStage::Failed(stage) => {
-                    writeln!(f, "		label = \"Stage {} [FAILED]\";", id)?;
+                    writeln!(f, "\t\tlabel = \"Stage {} [FAILED]\";", id)?;
                     write_operator(f, &stage_name, &stage.plan, 0)?;
                 }
             }
@@ -94,7 +95,7 @@ impl Display for ExecutionGraphDot {
                 let parent_stage = stages.get(parent_stage_id).unwrap();
                 let first_node =
                     get_first_node_name(&parent_stage_name, parent_stage.plan(), 0);
-                writeln!(f, "	{} -> {}", last_node, first_node)?;
+                writeln!(f, "\t{} -> {}", last_node, first_node)?;
             }
         }
 
@@ -122,12 +123,11 @@ fn write_operator(
         }
     }
     if metrics_str.is_empty() {
-        writeln!(f, "		{} [shape=box, label=\"{}\"]", node_name, display_name)?;
+        writeln!(f, "\t\t{} [shape=box, label=\"{}\"]", node_name, display_name)?;
     } else {
         writeln!(
             f,
-            "		{} [shape=box, label=\"{}
-{}\"]",
+            "\t\t{} [shape=box, label=\"{}\n{}\"]",
             node_name,
             display_name,
             metrics_str.join(", ")
@@ -138,7 +138,7 @@ fn write_operator(
     for child in plan.children() {
         write_operator(f, &node_name, &child, j)?;
         // write link from child to parent
-        writeln!(f, "		{}_{} -> {}", node_name, j, node_name)?;
+        writeln!(f, "\t\t{}_{} -> {}", node_name, j, node_name)?;
         j += 1;
     }
 
@@ -240,6 +240,7 @@ fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
     } else if let Some(exec) = plan.as_any().downcast_ref::<LocalLimitExec>() {
         format!("LocalLimit({})", exec.fetch())
     } else {
+        debug!("Unknown physical operator when producing DOT graph: {:?}", plan);
         "Unknown Operator".to_string()
     }
 }
