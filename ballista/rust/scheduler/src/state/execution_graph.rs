@@ -642,11 +642,7 @@ impl ExecutionGraph {
                     self.complete_stage(stage_id);
                 }
                 StageEvent::StageFailed(stage_id, err_msg) => {
-                    job_err_msg = format!(
-                        "{}{}
-",
-                        job_err_msg, &err_msg
-                    );
+                    job_err_msg = format!("{}{}\n", job_err_msg, &err_msg);
                     self.fail_stage(stage_id, err_msg);
                 }
                 StageEvent::RollBackRunningStage(stage_id) => {
@@ -936,16 +932,8 @@ impl Debug for ExecutionGraph {
             .map(|(_, stage)| format!("{:?}", stage))
             .collect::<Vec<String>>()
             .join("");
-        write!(
-            f,
-            "ExecutionGraph[job_id={}, session_id={}, available_tasks={}, complete={}]
-{}",
-            self.job_id,
-            self.session_id,
-            self.available_tasks(),
-            self.complete(),
-            stages
-        )
+        write!(f, "ExecutionGraph[job_id={}, session_id={}, available_tasks={}, complete={}]\n{}",
+               self.job_id, self.session_id, self.available_tasks(), self.complete(), stages)
     }
 }
 
@@ -1078,8 +1066,7 @@ impl Debug for Task {
         let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent();
         write!(
             f,
-            "Task[session_id: {}, job: {}, stage: {}, partition: {}]
-{}",
+            "Task[session_id: {}, job: {}, stage: {}, partition: {}]\n{}",
             self.session_id,
             self.partition.job_id,
             self.partition.stage_id,
