@@ -31,9 +31,10 @@ Table of content
 
    user-guide/introduction
    user-guide/deployment/index
-   user-guide/python
+   Python <user-guide/python>
    user-guide/rust
-   user-guide/cli
+   Flight SQL <user-guide/flightsql>
+   CLI <user-guide/cli>
    user-guide/configs
    user-guide/tuning-guide
    user-guide/faq
