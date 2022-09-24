@@ -139,10 +139,7 @@ pub(crate) async fn get_job_dot_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
         .map_err(|_| warp::reject())?;
 
     match graph {
-        Some(x) => {
-            let dot = ExecutionGraphDot::new(x);
-            Ok(format!("{}", dot))
-        }
+        Some(x) => ExecutionGraphDot::generate(x).map_err(|_| warp::reject()),
         _ => Ok("Not Found".to_string()),
     }
 }
