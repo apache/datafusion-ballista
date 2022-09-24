@@ -68,6 +68,7 @@ impl TryInto<protobuf::PartitionLocation> for PartitionLocation {
 
     fn try_into(self) -> Result<protobuf::PartitionLocation, Self::Error> {
         Ok(protobuf::PartitionLocation {
+            map_partition_id: self.map_partition_id as u32,
             partition_id: Some(self.partition_id.into()),
             executor_meta: Some(self.executor_meta.into()),
             partition_stats: Some(self.partition_stats.into()),

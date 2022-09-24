@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
+use std::iter::FromIterator;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -89,6 +90,8 @@ pub(super) struct UnresolvedStage {
     pub(super) inputs: HashMap<usize, StageOutput>,
     /// `ExecutionPlan` for this stage
     pub(super) plan: Arc<dyn ExecutionPlan>,
+    /// Record last attempt's failure reasons to avoid duplicate resubmits
+    pub(super) last_attempt_failure_reasons: HashSet<String>,
 }
 
 /// For a stage, if it has no inputs or all of its input stages are completed,
@@ -99,7 +102,7 @@ pub(super) struct ResolvedStage {
     pub(super) stage_id: usize,
     /// Stage Attempt number
     pub(super) stage_attempt_num: usize,
-    /// Total number of output partitions for this stage.
+    /// Total number of partitions for this stage.
     /// This stage will produce on task for partition.
     pub(super) partitions: usize,
     /// Output partitioning for this stage.
@@ -111,6 +114,8 @@ pub(super) struct ResolvedStage {
     pub(super) inputs: HashMap<usize, StageOutput>,
     /// `ExecutionPlan` for this stage
     pub(super) plan: Arc<dyn ExecutionPlan>,
+    /// Record last attempt's failure reasons to avoid duplicate resubmits
+    pub(super) last_attempt_failure_reasons: HashSet<String>,
 }
 
 /// Different from the resolved stage, a running stage will
@@ -124,7 +129,7 @@ pub(super) struct RunningStage {
     pub(super) stage_id: usize,
     /// Stage Attempt number
     pub(super) stage_attempt_num: usize,
-    /// Total number of output partitions for this stage.
+    /// Total number of partitions for this stage.
     /// This stage will produce on task for partition.
     pub(super) partitions: usize,
     /// Output partitioning for this stage.
@@ -153,7 +158,7 @@ pub(super) struct SuccessfulStage {
     pub(super) stage_id: usize,
     /// Stage Attempt number
     pub(super) stage_attempt_num: usize,
-    /// Total number of output partitions for this stage.
+    /// Total number of partitions for this stage.
     /// This stage will produce on task for partition.
     pub(super) partitions: usize,
     /// Output partitioning for this stage.
@@ -179,7 +184,7 @@ pub(super) struct FailedStage {
     pub(super) stage_id: usize,
     /// Stage Attempt number
     pub(super) stage_attempt_num: usize,
-    /// Total number of output partitions for this stage.
+    /// Total number of partitions for this stage.
     /// This stage will produce on task for partition.
     pub(super) partitions: usize,
     /// Output partitioning for this stage.
@@ -236,6 +241,7 @@ impl UnresolvedStage {
             output_links,
             inputs,
             plan,
+            last_attempt_failure_reasons: Default::default(),
         }
     }
 
@@ -246,6 +252,7 @@ impl UnresolvedStage {
         output_partitioning: Option<Partitioning>,
         output_links: Vec<usize>,
         inputs: HashMap<usize, StageOutput>,
+        last_attempt_failure_reasons: HashSet<String>,
     ) -> Self {
         Self {
             stage_id,
@@ -254,6 +261,7 @@ impl UnresolvedStage {
             output_links,
             inputs,
             plan,
+            last_attempt_failure_reasons,
         }
     }
 
@@ -272,6 +280,35 @@ impl UnresolvedStage {
         }
 
         Ok(())
+    }
+
+    /// Remove input partitions from an input stage on a given executor.
+    /// Return the HashSet of removed map partition ids
+    pub(super) fn remove_input_partitions(
+        &mut self,
+        input_stage_id: usize,
+        _input_partition_id: usize,
+        executor_id: &str,
+    ) -> Result<HashSet<usize>> {
+        if let Some(stage_output) = self.inputs.get_mut(&input_stage_id) {
+            let mut bad_map_partitions = HashSet::new();
+            stage_output
+                .partition_locations
+                .iter_mut()
+                .for_each(|(_partition, locs)| {
+                    locs.iter().for_each(|loc| {
+                        if loc.executor_meta.id == executor_id {
+                            bad_map_partitions.insert(loc.map_partition_id);
+                        }
+                    });
+
+                    locs.retain(|loc| loc.executor_meta.id != executor_id);
+                });
+            stage_output.complete = false;
+            Ok(bad_map_partitions)
+        } else {
+            Err(BallistaError::Internal(format!("Error remove input partition for Stage {}, {} is not a valid child stage ID", self.stage_id, input_stage_id)))
+        }
     }
 
     /// Marks the input stage ID as complete.
@@ -305,6 +342,7 @@ impl UnresolvedStage {
             self.output_partitioning.clone(),
             self.output_links.clone(),
             self.inputs.clone(),
+            self.last_attempt_failure_reasons.clone(),
         ))
     }
 
@@ -335,6 +373,9 @@ impl UnresolvedStage {
             output_links: stage.output_links.into_iter().map(|l| l as usize).collect(),
             plan,
             inputs,
+            last_attempt_failure_reasons: HashSet::from_iter(
+                stage.last_attempt_failure_reasons,
+            ),
         })
     }
 
@@ -358,6 +399,9 @@ impl UnresolvedStage {
             output_links: stage.output_links.into_iter().map(|l| l as u32).collect(),
             inputs,
             plan,
+            last_attempt_failure_reasons: Vec::from_iter(
+                stage.last_attempt_failure_reasons,
+            ),
         })
     }
 }
@@ -386,6 +430,7 @@ impl ResolvedStage {
         output_partitioning: Option<Partitioning>,
         output_links: Vec<usize>,
         inputs: HashMap<usize, StageOutput>,
+        last_attempt_failure_reasons: HashSet<String>,
     ) -> Self {
         let partitions = plan.output_partitioning().partition_count();
 
@@ -397,6 +442,7 @@ impl ResolvedStage {
             output_links,
             inputs,
             plan,
+            last_attempt_failure_reasons,
         }
     }
 
@@ -424,6 +470,7 @@ impl ResolvedStage {
             self.output_partitioning.clone(),
             self.output_links.clone(),
             self.inputs.clone(),
+            self.last_attempt_failure_reasons.clone(),
         );
         Ok(unresolved)
     }
@@ -456,6 +503,9 @@ impl ResolvedStage {
             output_links: stage.output_links.into_iter().map(|l| l as usize).collect(),
             inputs,
             plan,
+            last_attempt_failure_reasons: HashSet::from_iter(
+                stage.last_attempt_failure_reasons,
+            ),
         })
     }
 
@@ -480,6 +530,9 @@ impl ResolvedStage {
             output_links: stage.output_links.into_iter().map(|l| l as u32).collect(),
             inputs,
             plan,
+            last_attempt_failure_reasons: Vec::from_iter(
+                stage.last_attempt_failure_reasons,
+            ),
         })
     }
 }
@@ -565,7 +618,7 @@ impl RunningStage {
         }
     }
 
-    ///  /// Change to the resolved state and bump the stage attempt number
+    /// Change to the resolved state and bump the stage attempt number
     pub(super) fn to_resolved(&self) -> ResolvedStage {
         ResolvedStage::new(
             self.stage_id,
@@ -574,11 +627,15 @@ impl RunningStage {
             self.output_partitioning.clone(),
             self.output_links.clone(),
             self.inputs.clone(),
+            HashSet::new(),
         )
     }
 
     /// Change to the unresolved state and bump the stage attempt number
-    pub(super) fn to_unresolved(&self) -> Result<UnresolvedStage> {
+    pub(super) fn to_unresolved(
+        &self,
+        failure_reasons: HashSet<String>,
+    ) -> Result<UnresolvedStage> {
         let new_plan = crate::planner::rollback_resolved_shuffles(self.plan.clone())?;
 
         let unresolved = UnresolvedStage::new_with_inputs(
@@ -588,6 +645,7 @@ impl RunningStage {
             self.output_partitioning.clone(),
             self.output_links.clone(),
             self.inputs.clone(),
+            failure_reasons,
         );
         Ok(unresolved)
     }
@@ -783,20 +841,33 @@ impl RunningStage {
         reset
     }
 
-    /// Remove input partition from an input stage.
-    pub(super) fn remove_input_partition(
+    /// Remove input partitions from an input stage on a given executor.
+    /// Return the HashSet of removed map partition ids
+    pub(super) fn remove_input_partitions(
         &mut self,
         input_stage_id: usize,
-        input_partition_id: usize,
-    ) -> Result<()> {
-        if let Some(stage_inputs) = self.inputs.get_mut(&input_stage_id) {
-            stage_inputs.remove_partition(input_partition_id);
-            stage_inputs.complete = false;
-        } else {
-            return Err(BallistaError::Internal(format!("Error remove input partition to stage {}, {} is not a valid child stage ID", self.stage_id, input_stage_id)));
-        }
+        _input_partition_id: usize,
+        executor_id: &str,
+    ) -> Result<HashSet<usize>> {
+        if let Some(stage_output) = self.inputs.get_mut(&input_stage_id) {
+            let mut bad_map_partitions = HashSet::new();
+            stage_output
+                .partition_locations
+                .iter_mut()
+                .for_each(|(_partition, locs)| {
+                    locs.iter().for_each(|loc| {
+                        if loc.executor_meta.id == executor_id {
+                            bad_map_partitions.insert(loc.map_partition_id);
+                        }
+                    });
 
-        Ok(())
+                    locs.retain(|loc| loc.executor_meta.id != executor_id);
+                });
+            stage_output.complete = false;
+            Ok(bad_map_partitions)
+        } else {
+            Err(BallistaError::Internal(format!("Error remove input partition for Stage {}, {} is not a valid child stage ID", self.stage_id, input_stage_id)))
+        }
     }
 }
 
@@ -1156,10 +1227,6 @@ impl StageOutput {
                 vec![partition_location],
             );
         }
-    }
-
-    pub(super) fn remove_partition(&mut self, partition_id: usize) {
-        self.partition_locations.remove(&partition_id);
     }
 
     pub(super) fn is_complete(&self) -> bool {

@@ -87,6 +87,7 @@ impl TryInto<PartitionLocation> for protobuf::PartitionLocation {
 
     fn try_into(self) -> Result<PartitionLocation, Self::Error> {
         Ok(PartitionLocation {
+            map_partition_id: self.map_partition_id as usize,
             partition_id: self
                 .partition_id
                 .ok_or_else(|| {

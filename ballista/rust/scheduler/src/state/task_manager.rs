@@ -66,10 +66,10 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
 #[derive(Clone)]
 pub struct UpdatedStages {
-    pub resolved_stages: Vec<usize>,
-    pub successful_stages: Vec<usize>,
+    pub resolved_stages: HashSet<usize>,
+    pub successful_stages: HashSet<usize>,
     pub failed_stages: HashMap<usize, String>,
-    pub rollback_running_stages: HashSet<usize>,
+    pub rollback_running_stages: HashMap<usize, HashSet<String>>,
     pub resubmit_successful_stages: HashSet<usize>,
 }
 

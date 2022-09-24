@@ -215,6 +215,10 @@ async fn fetch_partition(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::serde::scheduler::{ExecutorMetadata, ExecutorSpecification, PartitionId};
+    use crate::utils;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::prelude::SessionContext;
 
     #[tokio::test]
     async fn test_stats_for_partitions_empty() {
@@ -282,5 +286,54 @@ mod tests {
         };
 
         assert_eq!(result, exptected);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_partitions_error_mapping() -> Result<()> {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+            Field::new("c", DataType::Int32, false),
+        ]);
+
+        let job_id = "test_job_1";
+        let mut partitions: Vec<PartitionLocation> = vec![];
+        for partition_id in 0..4 {
+            partitions.push(PartitionLocation {
+                map_partition_id: 0,
+                partition_id: PartitionId {
+                    job_id: job_id.to_string(),
+                    stage_id: 2,
+                    partition_id,
+                },
+                executor_meta: ExecutorMetadata {
+                    id: "executor_1".to_string(),
+                    host: "executor_1".to_string(),
+                    port: 7070,
+                    grpc_port: 8080,
+                    specification: ExecutorSpecification { task_slots: 1 },
+                },
+                partition_stats: Default::default(),
+                path: "test_path".to_string(),
+            })
+        }
+
+        let shuffle_reader_exec =
+            ShuffleReaderExec::try_new(vec![partitions], Arc::new(schema))?;
+        let mut stream = shuffle_reader_exec.execute(0, task_ctx)?;
+        let batches = utils::collect_stream(&mut stream).await;
+
+        assert!(batches.is_err());
+
+        // BallistaError::FetchFailed -> ArrowError::ExternalError -> ballistaError::FetchFailed
+        let ballista_error = batches.unwrap_err();
+        assert!(matches!(
+            ballista_error,
+            BallistaError::FetchFailed(_, _, _, _)
+        ));
+
+        Ok(())
     }
 }

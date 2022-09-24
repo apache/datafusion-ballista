@@ -63,6 +63,7 @@ impl PartitionId {
 
 #[derive(Debug, Clone)]
 pub struct PartitionLocation {
+    pub map_partition_id: usize,
     pub partition_id: PartitionId,
     pub executor_meta: ExecutorMetadata,
     pub partition_stats: PartitionStats,

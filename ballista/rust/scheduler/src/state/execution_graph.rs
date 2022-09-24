@@ -241,6 +241,9 @@ impl ExecutionGraph {
         // It will be refined later
         self.revive();
 
+        let current_running_stages: HashSet<usize> =
+            HashSet::from_iter(self.running_stages());
+
         // Copy the failed stage attempts from self
         let mut failed_stage_attempts: HashMap<usize, HashSet<usize>> = HashMap::new();
         for (stage_id, attempts) in self.failed_stage_attempts.iter() {
@@ -248,14 +251,13 @@ impl ExecutionGraph {
                 .insert(*stage_id, HashSet::from_iter(attempts.iter().copied()));
         }
 
-        let mut resolved_stages = vec![];
-        let mut successful_stages = vec![];
-
+        let mut resolved_stages = HashSet::new();
+        let mut successful_stages = HashSet::new();
         let mut failed_stages = HashMap::new();
-
-        let mut rollback_running_stages = HashSet::new();
+        let mut rollback_running_stages = HashMap::new();
         let mut resubmit_successful_stages: HashMap<usize, HashSet<usize>> =
             HashMap::new();
+        let mut reset_running_stages: HashMap<usize, HashSet<usize>> = HashMap::new();
 
         for (stage_id, stage_task_statuses) in job_task_statuses {
             if let Some(stage) = self.stages.get_mut(&stage_id) {
@@ -272,6 +274,14 @@ impl ExecutionGraph {
                                 continue;
                             }
                             let partition_id = task_status.clone().partition_id as usize;
+                            let task_identity = format!(
+                                "TID {} {}/{}.{}/{}",
+                                task_status.task_id,
+                                job_id,
+                                stage_id,
+                                task_stage_attempt_num,
+                                partition_id
+                            );
                             let operator_metrics = task_status.metrics.clone();
 
                             if !running_stage
@@ -294,28 +304,48 @@ impl ExecutionGraph {
                                             .or_insert_with(HashSet::new);
                                         failed_attempts.insert(task_stage_attempt_num);
                                         if failed_attempts.len() < max_stage_failures {
-                                            let map_stage_id =
-                                                fetch_partiton_error.map_stage_id;
-                                            let map_partition_id =
-                                                fetch_partiton_error.map_partition_id;
+                                            let map_stage_id = fetch_partiton_error
+                                                .map_stage_id
+                                                as usize;
+                                            let map_partition_id = fetch_partiton_error
+                                                .map_partition_id
+                                                as usize;
+                                            let executor_id =
+                                                fetch_partiton_error.executor_id;
 
-                                            if failed_stages.contains_key(&stage_id) {
+                                            if !failed_stages.is_empty() {
                                                 let error_msg = format!(
-                                                        "Stage {} was marked failed, ignore FetchPartitionError from task with TID {}",stage_id, task_status.task_id);
+                                                        "Stages was marked failed, ignore FetchPartitionError from task {}", task_identity);
                                                 warn!("{}", error_msg);
                                             } else {
-                                                running_stage.remove_input_partition(
-                                                    map_stage_id as usize,
-                                                    map_partition_id as usize,
-                                                )?;
+                                                // There are different removal strategies here.
+                                                // We can choose just remove the map_partition_id in the FetchPartitionError, when resubmit the input stage, there are less tasks
+                                                // need to rerun, but this might miss many more bad input partitions, lead to more stage level retries in following.
+                                                // Here we choose remove all the bad input partitions which match the same executor id in this single input stage.
+                                                // There are other more aggressive approaches, like considering the executor is lost and check all the running stages in this graph.
+                                                // Or count the fetch failure number on executor and mark the executor lost globally.
+                                                let removed_map_partitions =
+                                                    running_stage
+                                                        .remove_input_partitions(
+                                                            map_stage_id,
+                                                            map_partition_id,
+                                                            &executor_id,
+                                                        )?;
 
-                                                rollback_running_stages.insert(stage_id);
+                                                let failure_reasons =
+                                                    rollback_running_stages
+                                                        .entry(stage_id)
+                                                        .or_insert_with(HashSet::new);
+                                                failure_reasons.insert(executor_id);
+
                                                 let missing_inputs =
                                                     resubmit_successful_stages
-                                                        .entry(map_stage_id as usize)
+                                                        .entry(map_stage_id)
                                                         .or_insert_with(HashSet::new);
                                                 missing_inputs
-                                                    .insert(map_partition_id as usize);
+                                                    .extend(removed_map_partitions);
+                                                warn!("Need to resubmit the current running Stage {} and its map Stage {} due to FetchPartitionError from task {}",
+                                                    stage_id, map_stage_id, task_identity)
                                             }
                                         } else {
                                             let error_msg = format!(
@@ -378,22 +408,24 @@ impl ExecutionGraph {
 
                                 locations.append(&mut partition_to_location(
                                     &job_id,
+                                    partition_id,
                                     stage_id,
                                     executor,
                                     successful_task.partitions,
                                 ));
                             } else {
                                 warn!(
-                                    "The task {}/{}/{}'s status is invalid for updating",
-                                    job_id, stage_id, partition_id
+                                    "The task {}'s status is invalid for updating",
+                                    task_identity
                                 );
                             }
                         }
                     }
-                    let is_successful = running_stage.is_successful();
-                    if is_successful {
-                        successful_stages.push(stage_id);
-                        // if this stage is successful, we want to combine the stage metrics to plan's metric set and print out the plan
+                    let is_final_successful = running_stage.is_successful()
+                        && !reset_running_stages.contains_key(&stage_id);
+                    if is_final_successful {
+                        successful_stages.insert(stage_id);
+                        // if this stage is final successful, we want to combine the stage metrics to plan's metric set and print out the plan
                         if let Some(stage_metrics) = running_stage.stage_metrics.as_ref()
                         {
                             print_stage_metrics(
@@ -406,12 +438,99 @@ impl ExecutionGraph {
                     }
 
                     let output_links = running_stage.output_links.clone();
-                    resolved_stages.append(&mut self.update_stage_output_links(
-                        stage_id,
-                        is_successful,
-                        locations,
-                        output_links,
-                    )?);
+                    resolved_stages.extend(
+                        &mut self
+                            .update_stage_output_links(
+                                stage_id,
+                                is_final_successful,
+                                locations,
+                                output_links,
+                            )?
+                            .into_iter(),
+                    );
+                } else if let ExecutionStage::UnResolved(unsolved_stage) = stage {
+                    for task_status in stage_task_statuses.into_iter() {
+                        let stage_id = stage_id as usize;
+                        let task_stage_attempt_num =
+                            task_status.stage_attempt_num as usize;
+                        let partition_id = task_status.clone().partition_id as usize;
+                        let task_identity = format!(
+                            "TID {} {}/{}.{}/{}",
+                            task_status.task_id,
+                            job_id,
+                            stage_id,
+                            task_stage_attempt_num,
+                            partition_id
+                        );
+                        let mut should_ignore = true;
+                        // handle delayed failed tasks if the stage's next attempt is still in UnResolved status.
+                        if let Some(task_status::Status::Failed(failed_task)) =
+                            task_status.status
+                        {
+                            if unsolved_stage.stage_attempt_num - task_stage_attempt_num
+                                == 1
+                            {
+                                let failed_reason = failed_task.failed_reason;
+                                match failed_reason {
+                                    Some(FailedReason::ExecutionError(_)) => {
+                                        should_ignore = false;
+                                        failed_stages.insert(stage_id, failed_task.error);
+                                    }
+                                    Some(FailedReason::FetchPartitionError(
+                                        fetch_partiton_error,
+                                    )) if failed_stages.is_empty()
+                                        && current_running_stages.contains(
+                                            &(fetch_partiton_error.map_stage_id as usize),
+                                        )
+                                        && !unsolved_stage
+                                            .last_attempt_failure_reasons
+                                            .contains(
+                                                &fetch_partiton_error.executor_id,
+                                            ) =>
+                                    {
+                                        should_ignore = false;
+                                        unsolved_stage
+                                            .last_attempt_failure_reasons
+                                            .insert(
+                                                fetch_partiton_error.executor_id.clone(),
+                                            );
+                                        let map_stage_id =
+                                            fetch_partiton_error.map_stage_id as usize;
+                                        let map_partition_id = fetch_partiton_error
+                                            .map_partition_id
+                                            as usize;
+                                        let executor_id =
+                                            fetch_partiton_error.executor_id;
+                                        let removed_map_partitions = unsolved_stage
+                                            .remove_input_partitions(
+                                                map_stage_id,
+                                                map_partition_id,
+                                                &executor_id,
+                                            )?;
+
+                                        let missing_inputs = reset_running_stages
+                                            .entry(map_stage_id)
+                                            .or_insert_with(HashSet::new);
+                                        missing_inputs.extend(removed_map_partitions);
+                                        warn!("Need to reset the current running Stage {} due to late come FetchPartitionError from its parent stage {} of task {}",
+                                                    map_stage_id, stage_id, task_identity);
+
+                                        // If the previous other task updates had already mark the map stage success, need to remove it.
+                                        if successful_stages.contains(&map_stage_id) {
+                                            successful_stages.remove(&map_stage_id);
+                                        }
+                                        if resolved_stages.contains(&stage_id) {
+                                            resolved_stages.remove(&stage_id);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        if should_ignore {
+                            warn!("Ignore TaskStatus update of task with TID {} as the Stage {}/{} is in UnResolved status", task_identity, job_id, stage_id);
+                        }
+                    }
                 } else {
                     warn!(
                         "Stage {}/{} is not in running when updating the status of tasks {:?}",
@@ -438,6 +557,12 @@ impl ExecutionGraph {
             if let Some(stage) = self.stages.get_mut(stage_id) {
                 if let ExecutionStage::Successful(success_stage) = stage {
                     for partition in missing_parts {
+                        if *partition > success_stage.partitions {
+                            return Err(BallistaError::Internal(format!(
+                                "Invalid partition ID {} in map stage {}",
+                                *partition, stage_id
+                            )));
+                        }
                         let task_info = &mut success_stage.task_infos[*partition];
                         // Update the task info to failed
                         task_info.task_status = task_status::Status::Failed(FailedTask {
@@ -450,6 +575,32 @@ impl ExecutionGraph {
                 } else {
                     warn!(
                         "Stage {}/{} is not in Successful state when try to resubmit this stage. ",
+                        job_id,
+                        stage_id);
+                }
+            } else {
+                return Err(BallistaError::Internal(format!(
+                    "Invalid stage ID {} for job {}",
+                    stage_id, job_id
+                )));
+            }
+        }
+
+        for (stage_id, missing_parts) in &reset_running_stages {
+            if let Some(stage) = self.stages.get_mut(stage_id) {
+                if let ExecutionStage::Running(running_stage) = stage {
+                    for partition in missing_parts {
+                        if *partition > running_stage.partitions {
+                            return Err(BallistaError::Internal(format!(
+                                "Invalid partition ID {} in map stage {}",
+                                *partition, stage_id
+                            )));
+                        }
+                        running_stage.reset_task_info(*partition);
+                    }
+                } else {
+                    warn!(
+                        "Stage {}/{} is not in Running state when try to reset the running task. ",
                         job_id,
                         stage_id);
                 }
@@ -501,8 +652,8 @@ impl ExecutionGraph {
         // Only handle the rollback logic when there are no failed stages
         if updated_stages.failed_stages.is_empty() {
             let mut running_tasks_to_cancel = vec![];
-            for stage_id in updated_stages.rollback_running_stages {
-                let tasks = self.rollback_running_stage(stage_id)?;
+            for (stage_id, failure_reasons) in updated_stages.rollback_running_stages {
+                let tasks = self.rollback_running_stage(stage_id, failure_reasons)?;
                 running_tasks_to_cancel.extend(tasks);
             }
 
@@ -645,6 +796,16 @@ impl ExecutionGraph {
     /// If the task is not launched the status must be reset to allow the task to
     /// be scheduled elsewhere.
     pub fn pop_next_task(&mut self, executor_id: &str) -> Result<Option<TaskDefinition>> {
+        if matches!(
+            self.status,
+            JobStatus {
+                status: Some(job_status::Status::Failed(_)),
+            }
+        ) {
+            warn!("Call pop_next_task on failed Job");
+            return Ok(None);
+        }
+
         let job_id = self.job_id.clone();
         let session_id = self.session_id.clone();
 
@@ -809,19 +970,9 @@ impl ExecutionGraph {
                     let mut match_found = false;
                     stage_output.partition_locations.iter_mut().for_each(
                         |(_partition, locs)| {
-                            let indexes = locs
-                                .iter()
-                                .enumerate()
-                                .filter_map(|(idx, loc)| {
-                                    (loc.executor_meta.id == executor_id).then(|| idx)
-                                })
-                                .collect::<Vec<_>>();
-
-                            // remove the matched partition locations
-                            if !indexes.is_empty() {
-                                for idx in &indexes {
-                                    locs.remove(*idx);
-                                }
+                            let before_len = locs.len();
+                            locs.retain(|loc| loc.executor_meta.id != executor_id);
+                            if locs.len() < before_len {
                                 match_found = true;
                             }
                         },
@@ -883,7 +1034,10 @@ impl ExecutionGraph {
 
         let mut all_running_tasks = vec![];
         for stage_id in rollback_running_stages.iter() {
-            let tasks = self.rollback_running_stage(*stage_id)?;
+            let tasks = self.rollback_running_stage(
+                *stage_id,
+                HashSet::from([executor_id.to_owned()]),
+            )?;
             all_running_tasks.extend(tasks);
         }
 
@@ -953,6 +1107,7 @@ impl ExecutionGraph {
     pub fn rollback_running_stage(
         &mut self,
         stage_id: usize,
+        failure_reasons: HashSet<String>,
     ) -> Result<Vec<RunningTaskInfo>> {
         if let Some(ExecutionStage::Running(stage)) = self.stages.remove(&stage_id) {
             let running_tasks = stage
@@ -968,8 +1123,10 @@ impl ExecutionGraph {
                     },
                 )
                 .collect();
-            self.stages
-                .insert(stage_id, ExecutionStage::UnResolved(stage.to_unresolved()?));
+            self.stages.insert(
+                stage_id,
+                ExecutionStage::UnResolved(stage.to_unresolved(failure_reasons)?),
+            );
             Ok(running_tasks)
         } else {
             warn!(
@@ -1264,6 +1421,7 @@ impl ExecutionStageBuilder {
                     partitioning,
                     output_links,
                     HashMap::new(),
+                    HashSet::new(),
                 ))
             } else {
                 ExecutionStage::UnResolved(UnresolvedStage::new(
@@ -1350,6 +1508,7 @@ impl Debug for TaskDefinition {
 
 fn partition_to_location(
     job_id: &str,
+    map_partition_id: usize,
     stage_id: usize,
     executor: &ExecutorMetadata,
     shuffles: Vec<ShuffleWritePartition>,
@@ -1357,6 +1516,7 @@ fn partition_to_location(
     shuffles
         .into_iter()
         .map(|shuffle| PartitionLocation {
+            map_partition_id,
             partition_id: PartitionId {
                 job_id: job_id.to_owned(),
                 stage_id,
@@ -1375,17 +1535,22 @@ fn partition_to_location(
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashSet;
     use std::sync::Arc;
 
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::logical_expr::{col, sum, Expr};
+    use datafusion::logical_expr::{col, count, sum, Expr};
     use datafusion::logical_plan::JoinType;
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion::test_util::scan_empty;
 
+    use crate::scheduler_server::event::QueryStageSchedulerEvent;
     use ballista_core::error::Result;
-    use ballista_core::serde::protobuf::{self, job_status, task_status, TaskStatus};
+    use ballista_core::serde::protobuf::{
+        self, failed_task, job_status, task_status, ExecutionError, FailedTask,
+        FetchPartitionError, IoError, JobStatus, TaskKilled, TaskStatus,
+    };
     use ballista_core::serde::scheduler::{ExecutorMetadata, ExecutorSpecification};
 
     use crate::state::execution_graph::{ExecutionGraph, TaskDefinition};
@@ -1469,7 +1634,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_reset_completed_stage() -> Result<()> {
+    async fn test_reset_completed_stage_executor_lost() -> Result<()> {
         let executor1 = mock_executor("executor-id1".to_string());
         let executor2 = mock_executor("executor-id2".to_string());
         let mut join_graph = test_join_plan(4).await;
@@ -1520,7 +1685,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_reset_resolved_stage() -> Result<()> {
+    async fn test_reset_resolved_stage_executor_lost() -> Result<()> {
         let executor1 = mock_executor("executor-id1".to_string());
         let executor2 = mock_executor("executor-id2".to_string());
         let mut join_graph = test_join_plan(4).await;
@@ -1621,6 +1786,915 @@ mod test {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn test_do_not_retry_killed_task() -> Result<()> {
+        let executor1 = mock_executor("executor-id1".to_string());
+        let executor2 = mock_executor("executor-id2".to_string());
+        let mut agg_graph = test_aggregation_plan(4).await;
+        // Call revive to move the leaf Resolved stages to Running
+        agg_graph.revive();
+
+        // Complete the first stage
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            let task_status = mock_completed_task(task, &executor1.id);
+            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
+        }
+
+        // 1st task in the second stage
+        let task1 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task_status1 = mock_completed_task(task1, &executor2.id);
+
+        // 2rd task in the second stage
+        let task2 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task_status2 = mock_failed_task(
+            task2,
+            FailedTask {
+                error: "Killed".to_string(),
+                retryable: false,
+                count_to_failures: false,
+                failed_reason: Some(failed_task::FailedReason::TaskKilled(TaskKilled {})),
+            },
+        );
+
+        agg_graph.update_task_status(
+            &executor2,
+            vec![task_status1, task_status2],
+            4,
+            4,
+        )?;
+
+        // TODO the JobStatus is not 'Running' here, no place to mark it to 'Running' in current code base.
+        assert!(
+            matches!(
+                agg_graph.status,
+                JobStatus {
+                    status: Some(job_status::Status::Queued(_))
+                }
+            ),
+            "Expected job status to be running"
+        );
+
+        assert_eq!(agg_graph.available_tasks(), 2);
+        drain_tasks(&mut agg_graph)?;
+        assert_eq!(agg_graph.available_tasks(), 0);
+
+        assert!(
+            !agg_graph.is_successful(),
+            "Expected the agg graph can not complete"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_max_task_failed_count() -> Result<()> {
+        let executor1 = mock_executor("executor-id1".to_string());
+        let executor2 = mock_executor("executor-id2".to_string());
+        let mut agg_graph = test_aggregation_plan(2).await;
+        // Call revive to move the leaf Resolved stages to Running
+        agg_graph.revive();
+
+        // Complete the first stage
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            let task_status = mock_completed_task(task, &executor1.id);
+            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
+        }
+
+        // 1st task in the second stage
+        let task1 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task_status1 = mock_completed_task(task1, &executor2.id);
+
+        // 2rd task in the second stage, failed due to IOError
+        let task2 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task_status2 = mock_failed_task(
+            task2.clone(),
+            FailedTask {
+                error: "IOError".to_string(),
+                retryable: true,
+                count_to_failures: true,
+                failed_reason: Some(failed_task::FailedReason::IoError(IoError {})),
+            },
+        );
+
+        agg_graph.update_task_status(
+            &executor2,
+            vec![task_status1, task_status2],
+            4,
+            4,
+        )?;
+
+        assert_eq!(agg_graph.available_tasks(), 1);
+
+        let mut last_attempt = 0;
+        // 2rd task's attempts
+        for attempt in 1..5 {
+            if let Some(task2_attempt) = agg_graph.pop_next_task(&executor2.id)? {
+                assert_eq!(
+                    task2_attempt.partition.partition_id,
+                    task2.partition.partition_id
+                );
+                assert_eq!(task2_attempt.task_attempt, attempt);
+                last_attempt = task2_attempt.task_attempt;
+                let task_status = mock_failed_task(
+                    task2_attempt.clone(),
+                    FailedTask {
+                        error: "IOError".to_string(),
+                        retryable: true,
+                        count_to_failures: true,
+                        failed_reason: Some(failed_task::FailedReason::IoError(
+                            IoError {},
+                        )),
+                    },
+                );
+                agg_graph.update_task_status(&executor2, vec![task_status], 4, 4)?;
+            }
+        }
+
+        assert!(
+            matches!(
+                agg_graph.status,
+                JobStatus {
+                    status: Some(job_status::Status::Failed(_))
+                }
+            ),
+            "Expected job status to be Failed"
+        );
+
+        assert_eq!(last_attempt, 3);
+
+        let failure_reason = format!("{:?}", agg_graph.status);
+        assert!(failure_reason.contains("Task 1 in Stage 2 failed 4 times, fail the stage, most recent failure reason"));
+        assert!(failure_reason.contains("IOError"));
+        assert!(!agg_graph.is_successful());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_long_delayed_failed_task_after_executor_lost() -> Result<()> {
+        let executor1 = mock_executor("executor-id1".to_string());
+        let executor2 = mock_executor("executor-id2".to_string());
+        let mut agg_graph = test_aggregation_plan(4).await;
+        // Call revive to move the leaf Resolved stages to Running
+        agg_graph.revive();
+
+        // Complete the Stage 1
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            let task_status = mock_completed_task(task, &executor1.id);
+            agg_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
+        }
+
+        // 1st task in the Stage 2
+        if let Some(task) = agg_graph.pop_next_task(&executor2.id)? {
+            let task_status = mock_completed_task(task, &executor2.id);
+            agg_graph.update_task_status(&executor2, vec![task_status], 1, 1)?;
+        }
+
+        // 2rd task in the Stage 2
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            let task_status = mock_completed_task(task, &executor1.id);
+            agg_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
+        }
+
+        // 3rd task in the Stage 2, scheduled on executor 2 but not completed
+        let task = agg_graph.pop_next_task(&executor2.id)?;
+
+        // There is 1 task pending schedule now
+        assert_eq!(agg_graph.available_tasks(), 1);
+
+        // executor 1 lost
+        let reset = agg_graph.reset_stages_on_lost_executor(&executor1.id)?;
+
+        // Two stages were reset, Stage 2 rollback to Unresolved and Stage 1 move to Running
+        assert_eq!(reset.0.len(), 2);
+        assert_eq!(agg_graph.available_tasks(), 1);
+
+        // Complete the Stage 1 again
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            let task_status = mock_completed_task(task, &executor1.id);
+            agg_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
+        }
+
+        // Stage 2 move to Running
+        agg_graph.revive();
+        assert_eq!(agg_graph.available_tasks(), 4);
+
+        // 3rd task in Stage 2 update comes very late due to runtime execution error.
+        let task_status = mock_failed_task(
+            task.unwrap(),
+            FailedTask {
+                error: "ExecutionError".to_string(),
+                retryable: false,
+                count_to_failures: false,
+                failed_reason: Some(failed_task::FailedReason::ExecutionError(
+                    ExecutionError {},
+                )),
+            },
+        );
+
+        // This long delayed failed task should not failure the stage/job and should not trigger any query stage events
+        let query_stage_events =
+            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
+        assert!(query_stage_events.is_empty());
+
+        drain_tasks(&mut agg_graph)?;
+        assert!(agg_graph.is_successful(), "Failed to complete agg plan");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_normal_fetch_failure() -> Result<()> {
+        let executor1 = mock_executor("executor-id1".to_string());
+        let executor2 = mock_executor("executor-id2".to_string());
+        let mut agg_graph = test_aggregation_plan(4).await;
+        // Call revive to move the leaf Resolved stages to Running
+        agg_graph.revive();
+
+        // Complete the Stage 1
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            let task_status = mock_completed_task(task, &executor1.id);
+            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
+        }
+
+        // 1st task in the Stage 2
+        let task1 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task_status1 = mock_completed_task(task1, &executor2.id);
+
+        // 2nd task in the Stage 2, failed due to FetchPartitionError
+        let task2 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task_status2 = mock_failed_task(
+            task2,
+            FailedTask {
+                error: "FetchPartitionError".to_string(),
+                retryable: false,
+                count_to_failures: false,
+                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
+                    FetchPartitionError {
+                        executor_id: executor1.id.clone(),
+                        map_stage_id: 1,
+                        map_partition_id: 0,
+                    },
+                )),
+            },
+        );
+
+        let mut running_task_count = 0;
+        while let Some(_task) = agg_graph.pop_next_task(&executor2.id)? {
+            running_task_count += 1;
+        }
+        assert_eq!(running_task_count, 2);
+
+        let stage_events = agg_graph.update_task_status(
+            &executor2,
+            vec![task_status1, task_status2],
+            4,
+            4,
+        )?;
+
+        assert_eq!(stage_events.len(), 1);
+        assert!(matches!(
+            stage_events[0],
+            QueryStageSchedulerEvent::CancelTasks(_)
+        ));
+
+        // Stage 1 is running
+        let running_stage = agg_graph.running_stages();
+        assert_eq!(running_stage.len(), 1);
+        assert_eq!(running_stage[0], 1);
+        assert_eq!(agg_graph.available_tasks(), 1);
+
+        drain_tasks(&mut agg_graph)?;
+        assert!(agg_graph.is_successful(), "Failed to complete agg plan");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_many_fetch_failures_in_one_stage() -> Result<()> {
+        let executor1 = mock_executor("executor-id1".to_string());
+        let executor2 = mock_executor("executor-id2".to_string());
+        let executor3 = mock_executor("executor-id3".to_string());
+        let mut agg_graph = test_two_aggregations_plan(8).await;
+
+        agg_graph.revive();
+        assert_eq!(agg_graph.stage_count(), 3);
+
+        // Complete the Stage 1
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            let task_status = mock_completed_task(task, &executor1.id);
+            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
+        }
+
+        // Complete the Stage 2, 5 tasks run on executor_2 and 3 tasks run on executor_1
+        for _i in 0..5 {
+            if let Some(task) = agg_graph.pop_next_task(&executor2.id)? {
+                let task_status = mock_completed_task(task, &executor2.id);
+                agg_graph.update_task_status(&executor2, vec![task_status], 4, 4)?;
+            }
+        }
+        assert_eq!(agg_graph.available_tasks(), 3);
+        for _i in 0..3 {
+            if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+                let task_status = mock_completed_task(task, &executor1.id);
+                agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
+            }
+        }
+
+        // Run Stage 3, 6 tasks failed due to FetchPartitionError on different map partitions on executor_2
+        let mut many_fetch_failure_status = vec![];
+        for part in 2..8 {
+            if let Some(task) = agg_graph.pop_next_task(&executor3.id)? {
+                let task_status = mock_failed_task(
+                    task,
+                    FailedTask {
+                        error: "FetchPartitionError".to_string(),
+                        retryable: false,
+                        count_to_failures: false,
+                        failed_reason: Some(
+                            failed_task::FailedReason::FetchPartitionError(
+                                FetchPartitionError {
+                                    executor_id: executor2.id.clone(),
+                                    map_stage_id: 2,
+                                    map_partition_id: part,
+                                },
+                            ),
+                        ),
+                    },
+                );
+                many_fetch_failure_status.push(task_status);
+            }
+        }
+        assert_eq!(many_fetch_failure_status.len(), 6);
+        agg_graph.update_task_status(&executor3, many_fetch_failure_status, 4, 4)?;
+
+        // The Running stage should be Stage 2 now
+        let running_stage = agg_graph.running_stages();
+        assert_eq!(running_stage.len(), 1);
+        assert_eq!(running_stage[0], 2);
+        assert_eq!(agg_graph.available_tasks(), 5);
+
+        drain_tasks(&mut agg_graph)?;
+        assert!(agg_graph.is_successful(), "Failed to complete agg plan");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_many_consecutive_stage_fetch_failures() -> Result<()> {
+        let executor1 = mock_executor("executor-id1".to_string());
+        let executor2 = mock_executor("executor-id2".to_string());
+        let mut agg_graph = test_aggregation_plan(4).await;
+        // Call revive to move the leaf Resolved stages to Running
+        agg_graph.revive();
+
+        for attempt in 0..6 {
+            if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+                let task_status = mock_completed_task(task, &executor1.id);
+                agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
+            }
+
+            // 1rd task in the Stage 2, failed due to FetchPartitionError
+            if let Some(task1) = agg_graph.pop_next_task(&executor2.id)? {
+                let task_status1 = mock_failed_task(
+                    task1.clone(),
+                    FailedTask {
+                        error: "FetchPartitionError".to_string(),
+                        retryable: false,
+                        count_to_failures: false,
+                        failed_reason: Some(
+                            failed_task::FailedReason::FetchPartitionError(
+                                FetchPartitionError {
+                                    executor_id: executor1.id.clone(),
+                                    map_stage_id: 1,
+                                    map_partition_id: 0,
+                                },
+                            ),
+                        ),
+                    },
+                );
+
+                let stage_events =
+                    agg_graph.update_task_status(&executor2, vec![task_status1], 4, 4)?;
+
+                if attempt < 3 {
+                    // No JobRunningFailed stage events
+                    assert_eq!(stage_events.len(), 0);
+                    // Stage 1 is running
+                    let running_stage = agg_graph.running_stages();
+                    assert_eq!(running_stage.len(), 1);
+                    assert_eq!(running_stage[0], 1);
+                    assert_eq!(agg_graph.available_tasks(), 1);
+                } else {
+                    // Job is failed after exceeds the max_stage_failures
+                    assert_eq!(stage_events.len(), 1);
+                    assert!(matches!(
+                        stage_events[0],
+                        QueryStageSchedulerEvent::JobRunningFailed(_, _)
+                    ));
+                    // Stage 2 is still running
+                    let running_stage = agg_graph.running_stages();
+                    assert_eq!(running_stage.len(), 1);
+                    assert_eq!(running_stage[0], 2);
+                }
+            }
+        }
+
+        drain_tasks(&mut agg_graph)?;
+        assert!(!agg_graph.is_successful(), "Expect to fail the agg plan");
+
+        let failure_reason = format!("{:?}", agg_graph.status);
+        assert!(failure_reason.contains("Job failed due to stage 2 failed: Stage 2 has failed 4 times, most recent failure reason"));
+        assert!(failure_reason.contains("FetchPartitionError"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_long_delayed_fetch_failures() -> Result<()> {
+        let executor1 = mock_executor("executor-id1".to_string());
+        let executor2 = mock_executor("executor-id2".to_string());
+        let executor3 = mock_executor("executor-id3".to_string());
+        let mut agg_graph = test_two_aggregations_plan(8).await;
+
+        agg_graph.revive();
+        assert_eq!(agg_graph.stage_count(), 3);
+
+        // Complete the Stage 1
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            let task_status = mock_completed_task(task, &executor1.id);
+            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
+        }
+
+        // Complete the Stage 2, 5 tasks run on executor_2, 2 tasks run on executor_1, 1 task runs on executor_3
+        for _i in 0..5 {
+            if let Some(task) = agg_graph.pop_next_task(&executor2.id)? {
+                let task_status = mock_completed_task(task, &executor2.id);
+                agg_graph.update_task_status(&executor2, vec![task_status], 4, 4)?;
+            }
+        }
+        assert_eq!(agg_graph.available_tasks(), 3);
+
+        for _i in 0..2 {
+            if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+                let task_status = mock_completed_task(task, &executor1.id);
+                agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
+            }
+        }
+
+        if let Some(task) = agg_graph.pop_next_task(&executor3.id)? {
+            let task_status = mock_completed_task(task, &executor3.id);
+            agg_graph.update_task_status(&executor3, vec![task_status], 4, 4)?;
+        }
+        assert_eq!(agg_graph.available_tasks(), 0);
+
+        //Run Stage 3
+        // 1st task scheduled
+        let task_1 = agg_graph.pop_next_task(&executor3.id)?.unwrap();
+        // 2nd task scheduled
+        let task_2 = agg_graph.pop_next_task(&executor3.id)?.unwrap();
+        // 3rd task scheduled
+        let task_3 = agg_graph.pop_next_task(&executor3.id)?.unwrap();
+        // 4th task scheduled
+        let task_4 = agg_graph.pop_next_task(&executor3.id)?.unwrap();
+        // 5th task scheduled
+        let task_5 = agg_graph.pop_next_task(&executor3.id)?.unwrap();
+
+        // Stage 3, 1st task failed due to FetchPartitionError(executor2)
+        let task_status_1 = mock_failed_task(
+            task_1,
+            FailedTask {
+                error: "FetchPartitionError".to_string(),
+                retryable: false,
+                count_to_failures: false,
+                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
+                    FetchPartitionError {
+                        executor_id: executor2.id.clone(),
+                        map_stage_id: 2,
+                        map_partition_id: 0,
+                    },
+                )),
+            },
+        );
+        agg_graph.update_task_status(&executor3, vec![task_status_1], 4, 4)?;
+
+        // The Running stage is Stage 2 now
+        let running_stage = agg_graph.running_stages();
+        assert_eq!(running_stage.len(), 1);
+        assert_eq!(running_stage[0], 2);
+        assert_eq!(agg_graph.available_tasks(), 5);
+
+        // Stage 3, 2nd task failed due to FetchPartitionError(executor2)
+        let task_status_2 = mock_failed_task(
+            task_2,
+            FailedTask {
+                error: "FetchPartitionError".to_string(),
+                retryable: false,
+                count_to_failures: false,
+                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
+                    FetchPartitionError {
+                        executor_id: executor2.id.clone(),
+                        map_stage_id: 2,
+                        map_partition_id: 1,
+                    },
+                )),
+            },
+        );
+        // This task update should be ignored
+        agg_graph.update_task_status(&executor3, vec![task_status_2], 4, 4)?;
+        let running_stage = agg_graph.running_stages();
+        assert_eq!(running_stage.len(), 1);
+        assert_eq!(running_stage[0], 2);
+        assert_eq!(agg_graph.available_tasks(), 5);
+
+        // Stage 3, 3rd task failed due to FetchPartitionError(executor1)
+        let task_status_3 = mock_failed_task(
+            task_3,
+            FailedTask {
+                error: "FetchPartitionError".to_string(),
+                retryable: false,
+                count_to_failures: false,
+                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
+                    FetchPartitionError {
+                        executor_id: executor1.id.clone(),
+                        map_stage_id: 2,
+                        map_partition_id: 1,
+                    },
+                )),
+            },
+        );
+        // This task update should be handled because it has a different failure reason
+        agg_graph.update_task_status(&executor3, vec![task_status_3], 4, 4)?;
+        // Running stage is still Stage 2, but available tasks changed to 7
+        assert_eq!(running_stage.len(), 1);
+        assert_eq!(running_stage[0], 2);
+        assert_eq!(agg_graph.available_tasks(), 7);
+
+        // Finish 4 tasks in Stage 2, to make some progress
+        for _i in 0..4 {
+            if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+                let task_status = mock_completed_task(task, &executor1.id);
+                agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
+            }
+        }
+        assert_eq!(running_stage.len(), 1);
+        assert_eq!(running_stage[0], 2);
+        assert_eq!(agg_graph.available_tasks(), 3);
+
+        // Stage 3, 4th task failed due to FetchPartitionError(executor1)
+        let task_status_4 = mock_failed_task(
+            task_4,
+            FailedTask {
+                error: "FetchPartitionError".to_string(),
+                retryable: false,
+                count_to_failures: false,
+                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
+                    FetchPartitionError {
+                        executor_id: executor1.id.clone(),
+                        map_stage_id: 2,
+                        map_partition_id: 1,
+                    },
+                )),
+            },
+        );
+        // This task update should be ignored because the same failure reason is already handled
+        agg_graph.update_task_status(&executor3, vec![task_status_4], 4, 4)?;
+        let running_stage = agg_graph.running_stages();
+        assert_eq!(running_stage.len(), 1);
+        assert_eq!(running_stage[0], 2);
+        assert_eq!(agg_graph.available_tasks(), 3);
+
+        // Finish the other 3 tasks in Stage 2
+        for _i in 0..3 {
+            if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+                let task_status = mock_completed_task(task, &executor1.id);
+                agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
+            }
+        }
+        assert_eq!(agg_graph.available_tasks(), 0);
+
+        // Stage 3, the very long delayed 5th task failed due to FetchPartitionError(executor3)
+        // Although the failure reason is new, but this task should sbe ignored
+        // Because its map stage's new attempt is finished and this stage's new attempt is running
+        let task_status_5 = mock_failed_task(
+            task_5,
+            FailedTask {
+                error: "FetchPartitionError".to_string(),
+                retryable: false,
+                count_to_failures: false,
+                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
+                    FetchPartitionError {
+                        executor_id: executor3.id.clone(),
+                        map_stage_id: 2,
+                        map_partition_id: 1,
+                    },
+                )),
+            },
+        );
+        agg_graph.update_task_status(&executor3, vec![task_status_5], 4, 4)?;
+        // Stage 3's new attempt is running
+        let running_stage = agg_graph.running_stages();
+        assert_eq!(running_stage.len(), 1);
+        assert_eq!(running_stage[0], 3);
+        assert_eq!(agg_graph.available_tasks(), 8);
+
+        // There is one failed stage attempts: Stage 3. Stage 2 does not count to failed attempts
+        assert_eq!(agg_graph.failed_stage_attempts.len(), 1);
+        assert_eq!(
+            agg_graph.failed_stage_attempts.get(&3).cloned(),
+            Some(HashSet::from([0]))
+        );
+        drain_tasks(&mut agg_graph)?;
+        assert!(agg_graph.is_successful(), "Failed to complete agg plan");
+        // Failed stage attempts are cleaned
+        assert_eq!(agg_graph.failed_stage_attempts.len(), 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    // This test case covers a race condition in delayed fetch failure handling:
+    // TaskStatus of input stage's new attempt come together with the parent stage's delayed FetchFailure
+    async fn test_long_delayed_fetch_failures_race_condition() -> Result<()> {
+        let executor1 = mock_executor("executor-id1".to_string());
+        let executor2 = mock_executor("executor-id2".to_string());
+        let executor3 = mock_executor("executor-id3".to_string());
+        let mut agg_graph = test_two_aggregations_plan(8).await;
+
+        agg_graph.revive();
+        assert_eq!(agg_graph.stage_count(), 3);
+
+        // Complete the Stage 1
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            let task_status = mock_completed_task(task, &executor1.id);
+            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
+        }
+
+        // Complete the Stage 2, 5 tasks run on executor_2, 3 tasks run on executor_1
+        for _i in 0..5 {
+            if let Some(task) = agg_graph.pop_next_task(&executor2.id)? {
+                let task_status = mock_completed_task(task, &executor2.id);
+                agg_graph.update_task_status(&executor2, vec![task_status], 4, 4)?;
+            }
+        }
+        assert_eq!(agg_graph.available_tasks(), 3);
+
+        for _i in 0..3 {
+            if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+                let task_status = mock_completed_task(task, &executor1.id);
+                agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
+            }
+        }
+        assert_eq!(agg_graph.available_tasks(), 0);
+
+        // Run Stage 3
+        // 1st task scheduled
+        let task_1 = agg_graph.pop_next_task(&executor3.id)?.unwrap();
+        // 2nd task scheduled
+        let task_2 = agg_graph.pop_next_task(&executor3.id)?.unwrap();
+
+        // Stage 3, 1st task failed due to FetchPartitionError(executor2)
+        let task_status_1 = mock_failed_task(
+            task_1,
+            FailedTask {
+                error: "FetchPartitionError".to_string(),
+                retryable: false,
+                count_to_failures: false,
+                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
+                    FetchPartitionError {
+                        executor_id: executor2.id.clone(),
+                        map_stage_id: 2,
+                        map_partition_id: 0,
+                    },
+                )),
+            },
+        );
+        agg_graph.update_task_status(&executor3, vec![task_status_1], 4, 4)?;
+
+        // The Running stage is Stage 2 now
+        let running_stage = agg_graph.running_stages();
+        assert_eq!(running_stage.len(), 1);
+        assert_eq!(running_stage[0], 2);
+        assert_eq!(agg_graph.available_tasks(), 5);
+
+        // Complete the 5 tasks in Stage 2's new attempts
+        let mut task_status_vec = vec![];
+        for _i in 0..5 {
+            if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+                task_status_vec.push(mock_completed_task(task, &executor1.id))
+            }
+        }
+
+        // Stage 3, 2nd task failed due to FetchPartitionError(executor1)
+        let task_status_2 = mock_failed_task(
+            task_2,
+            FailedTask {
+                error: "FetchPartitionError".to_string(),
+                retryable: false,
+                count_to_failures: false,
+                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
+                    FetchPartitionError {
+                        executor_id: executor1.id.clone(),
+                        map_stage_id: 2,
+                        map_partition_id: 1,
+                    },
+                )),
+            },
+        );
+        task_status_vec.push(task_status_2);
+
+        // TaskStatus of Stage 2 come together with Stage 3 delayed FetchFailure update.
+        // The successful tasks from Stage 2 would try to succeed the Stage2 and the delayed fetch failure try to reset the TaskInfo
+        agg_graph.update_task_status(&executor3, task_status_vec, 4, 4)?;
+        //The Running stage is still Stage 2, 3 new pending tasks added due to FetchPartitionError(executor1)
+        assert_eq!(running_stage.len(), 1);
+        assert_eq!(running_stage[0], 2);
+        assert_eq!(agg_graph.available_tasks(), 3);
+
+        drain_tasks(&mut agg_graph)?;
+        assert!(agg_graph.is_successful(), "Failed to complete agg plan");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_fetch_failures_in_different_stages() -> Result<()> {
+        let executor1 = mock_executor("executor-id1".to_string());
+        let executor2 = mock_executor("executor-id2".to_string());
+        let executor3 = mock_executor("executor-id3".to_string());
+        let mut agg_graph = test_two_aggregations_plan(8).await;
+
+        agg_graph.revive();
+        assert_eq!(agg_graph.stage_count(), 3);
+
+        // Complete the Stage 1
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            let task_status = mock_completed_task(task, &executor1.id);
+            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
+        }
+
+        // Complete the Stage 2, 5 tasks run on executor_2, 3 tasks run on executor_1
+        for _i in 0..5 {
+            if let Some(task) = agg_graph.pop_next_task(&executor2.id)? {
+                let task_status = mock_completed_task(task, &executor2.id);
+                agg_graph.update_task_status(&executor2, vec![task_status], 4, 4)?;
+            }
+        }
+        assert_eq!(agg_graph.available_tasks(), 3);
+        for _i in 0..3 {
+            if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+                let task_status = mock_completed_task(task, &executor1.id);
+                agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
+            }
+        }
+        assert_eq!(agg_graph.available_tasks(), 0);
+
+        // Run Stage 3
+        // 1rd task in the Stage 3, failed due to FetchPartitionError(executor1)
+        if let Some(task1) = agg_graph.pop_next_task(&executor3.id)? {
+            let task_status1 = mock_failed_task(
+                task1,
+                FailedTask {
+                    error: "FetchPartitionError".to_string(),
+                    retryable: false,
+                    count_to_failures: false,
+                    failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
+                        FetchPartitionError {
+                            executor_id: executor1.id.clone(),
+                            map_stage_id: 2,
+                            map_partition_id: 0,
+                        },
+                    )),
+                },
+            );
+
+            let _stage_events =
+                agg_graph.update_task_status(&executor3, vec![task_status1], 4, 4)?;
+        }
+        // The Running stage is Stage 2 now
+        let running_stage = agg_graph.running_stages();
+        assert_eq!(running_stage.len(), 1);
+        assert_eq!(running_stage[0], 2);
+        assert_eq!(agg_graph.available_tasks(), 3);
+
+        // 1rd task in the Stage 2's new attempt, failed due to FetchPartitionError(executor1)
+        if let Some(task1) = agg_graph.pop_next_task(&executor3.id)? {
+            let task_status1 = mock_failed_task(
+                task1,
+                FailedTask {
+                    error: "FetchPartitionError".to_string(),
+                    retryable: false,
+                    count_to_failures: false,
+                    failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
+                        FetchPartitionError {
+                            executor_id: executor1.id.clone(),
+                            map_stage_id: 1,
+                            map_partition_id: 0,
+                        },
+                    )),
+                },
+            );
+            let _stage_events =
+                agg_graph.update_task_status(&executor3, vec![task_status1], 4, 4)?;
+        }
+        // The Running stage is Stage 1 now
+        let running_stage = agg_graph.running_stages();
+        assert_eq!(running_stage.len(), 1);
+        assert_eq!(running_stage[0], 1);
+        assert_eq!(agg_graph.available_tasks(), 1);
+
+        // There are two failed stage attempts: Stage 2 and Stage 3
+        assert_eq!(agg_graph.failed_stage_attempts.len(), 2);
+        assert_eq!(
+            agg_graph.failed_stage_attempts.get(&2).cloned(),
+            Some(HashSet::from([1]))
+        );
+        assert_eq!(
+            agg_graph.failed_stage_attempts.get(&3).cloned(),
+            Some(HashSet::from([0]))
+        );
+
+        drain_tasks(&mut agg_graph)?;
+        assert!(agg_graph.is_successful(), "Failed to complete agg plan");
+        assert_eq!(agg_graph.failed_stage_attempts.len(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_fetch_failure_with_normal_task_failure() -> Result<()> {
+        let executor1 = mock_executor("executor-id1".to_string());
+        let executor2 = mock_executor("executor-id2".to_string());
+        let mut agg_graph = test_aggregation_plan(4).await;
+        // Call revive to move the leaf Resolved stages to Running
+        agg_graph.revive();
+
+        // Complete the Stage 1
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            let task_status = mock_completed_task(task, &executor1.id);
+            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
+        }
+
+        // 1st task in the Stage 2
+        let task1 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task_status1 = mock_completed_task(task1, &executor2.id);
+
+        // 2nd task in the Stage 2, failed due to FetchPartitionError
+        let task2 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task_status2 = mock_failed_task(
+            task2,
+            FailedTask {
+                error: "FetchPartitionError".to_string(),
+                retryable: false,
+                count_to_failures: false,
+                failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
+                    FetchPartitionError {
+                        executor_id: executor1.id.clone(),
+                        map_stage_id: 1,
+                        map_partition_id: 0,
+                    },
+                )),
+            },
+        );
+
+        // 3rd task in the Stage 2, failed due to ExecutionError
+        let task3 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task_status3 = mock_failed_task(
+            task3,
+            FailedTask {
+                error: "ExecutionError".to_string(),
+                retryable: false,
+                count_to_failures: false,
+                failed_reason: Some(failed_task::FailedReason::ExecutionError(
+                    ExecutionError {},
+                )),
+            },
+        );
+
+        let stage_events = agg_graph.update_task_status(
+            &executor2,
+            vec![task_status1, task_status2, task_status3],
+            4,
+            4,
+        )?;
+
+        assert_eq!(stage_events.len(), 1);
+        assert!(matches!(
+            stage_events[0],
+            QueryStageSchedulerEvent::JobRunningFailed(_, _)
+        ));
+
+        drain_tasks(&mut agg_graph)?;
+        assert!(!agg_graph.is_successful(), "Expect to fail the agg plan");
+
+        let failure_reason = format!("{:?}", agg_graph.status);
+        assert!(failure_reason.contains("Job failed due to stage 2 failed"));
+        assert!(failure_reason.contains("ExecutionError"));
+
+        Ok(())
+    }
+
+    // #[tokio::test]
+    // async fn test_shuffle_files_should_cleaned_after_fetch_failure() -> Result<()> {
+    //     todo!()
+    // }
+
     fn drain_tasks(graph: &mut ExecutionGraph) -> Result<()> {
         let executor = mock_executor("executor-id1".to_string());
         while let Some(task) = graph.pop_next_task(&executor.id)? {
@@ -1643,6 +2717,34 @@ mod test {
         let logical_plan = scan_empty(None, &schema, Some(vec![0, 1]))
             .unwrap()
             .aggregate(vec![col("id")], vec![sum(col("gmv"))])
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+
+        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+
+        println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
+
+        ExecutionGraph::new("localhost:50050", "job", "session", plan).unwrap()
+    }
+
+    async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
+        let config = SessionConfig::new().with_target_partitions(partition);
+        let ctx = Arc::new(SessionContext::with_config(config));
+
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("gmv", DataType::UInt64, false),
+        ]);
+
+        let logical_plan = scan_empty(None, &schema, Some(vec![0, 1, 2]))
+            .unwrap()
+            .aggregate(vec![col("id"), col("name")], vec![sum(col("gmv"))])
+            .unwrap()
+            .aggregate(vec![col("id")], vec![count(col("id"))])
             .unwrap()
             .build()
             .unwrap();
@@ -1823,6 +2925,44 @@ mod test {
                 executor_id: executor_id.to_owned(),
                 partitions,
             })),
+        }
+    }
+
+    fn mock_failed_task(task: TaskDefinition, failed_task: FailedTask) -> TaskStatus {
+        let mut partitions: Vec<protobuf::ShuffleWritePartition> = vec![];
+
+        let num_partitions = task
+            .output_partitioning
+            .map(|p| p.partition_count())
+            .unwrap_or(1);
+
+        for partition_id in 0..num_partitions {
+            partitions.push(protobuf::ShuffleWritePartition {
+                partition_id: partition_id as u64,
+                path: format!(
+                    "/{}/{}/{}",
+                    task.partition.job_id,
+                    task.partition.stage_id,
+                    task.partition.partition_id
+                ),
+                num_batches: 1,
+                num_rows: 1,
+                num_bytes: 1,
+            })
+        }
+
+        // Fail the task
+        protobuf::TaskStatus {
+            task_id: task.task_id as u32,
+            job_id: task.partition.job_id.clone(),
+            stage_id: task.partition.stage_id as u32,
+            stage_attempt_num: task.stage_attempt_num as u32,
+            partition_id: task.partition.partition_id as u32,
+            launch_time: 0,
+            start_exec_time: 0,
+            end_exec_time: 0,
+            metrics: vec![],
+            status: Some(task_status::Status::Failed(failed_task)),
         }
     }
 }

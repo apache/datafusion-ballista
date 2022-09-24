@@ -449,6 +449,7 @@ message UnResolvedStage {
   repeated uint32 output_links = 4;
   repeated  GraphStageInput inputs = 5;
   bytes plan = 6;
+  repeated string last_attempt_failure_reasons = 7;
 }
 
 message ResolvedStage {
@@ -459,6 +460,7 @@ message ResolvedStage {
   repeated uint32 output_links = 5;
   repeated  GraphStageInput inputs = 6;
   bytes plan = 7;
+  repeated string last_attempt_failure_reasons = 8;
 }
 
 message SuccessfulStage {
@@ -550,12 +552,12 @@ message FetchPartition {
   string path = 4;
 }
 
-// Mapping from partition id to executor id
 message PartitionLocation {
-  PartitionId partition_id = 1;
-  ExecutorMetadata executor_meta = 2;
-  PartitionStats partition_stats = 3;
-  string path = 4;
+  uint32 map_partition_id = 1;
+  PartitionId partition_id = 2;
+  ExecutorMetadata executor_meta = 3;
+  PartitionStats partition_stats = 4;
+  string path = 5;
 }
 
 // Unique identifier for a materialized partition of data
