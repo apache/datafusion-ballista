@@ -21,6 +21,7 @@ use crate::state::execution_graph::{ExecutionGraph, ExecutionStage};
 use ballista_core::execution_plans::{
     ShuffleReaderExec, ShuffleWriterExec, UnresolvedShuffleExec,
 };
+use datafusion::datasource::listing::PartitionedFile;
 use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
@@ -36,6 +37,7 @@ use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::ExecutionPlan;
 use log::debug;
+use object_store::path::Path;
 use std::collections::HashMap;
 use std::fmt::{self, Write};
 use std::sync::Arc;
@@ -338,24 +340,33 @@ fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
     }
 }
 
+/// Get summary of file scan locations
 fn get_file_scan(scan: &FileScanConfig) -> String {
     if !scan.file_groups.is_empty() {
-        let x = &scan.file_groups[0];
-        match x.len() {
-            0 => "".to_owned(),
+        let partitioned_files: Vec<PartitionedFile> = scan
+            .file_groups
+            .iter()
+            .flat_map(|part_file| part_file.clone())
+            .collect();
+        let paths: Vec<Path> = partitioned_files
+            .iter()
+            .map(|part_file| part_file.object_meta.location.clone())
+            .collect();
+        match paths.len() {
+            0 => "No files found".to_owned(),
             1 => {
                 // single file
-                format!("{}", x[0].object_meta.location)
+                format!("{}", paths[0])
             }
             _ => {
                 // multiple files so show parent directory
-                let path = format!("{}", x[0].object_meta.location);
+                let path = format!("{}", paths[0]);
                 let path = if let Some(i) = path.rfind('/') {
                     &path[0..i]
                 } else {
                     &path
                 };
-                format!("{} [{} files]", path, x.len())
+                format!("{} [{} files]", path, paths.len())
             }
         }
     } else {
