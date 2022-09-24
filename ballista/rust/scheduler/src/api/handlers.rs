@@ -11,7 +11,7 @@
 // limitations under the License.
 
 use crate::scheduler_server::SchedulerServer;
-use crate::state::execution_graph::ExecutionGraphDot;
+use crate::state::execution_graph_dot::ExecutionGraphDot;
 use ballista_core::serde::AsExecutionPlan;
 use ballista_core::BALLISTA_VERSION;
 use datafusion_proto::logical_plan::AsLogicalPlan;

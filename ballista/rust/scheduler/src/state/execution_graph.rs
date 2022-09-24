@@ -17,19 +17,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
-use datafusion::physical_plan::aggregates::AggregateExec;
-use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
-use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
-use datafusion::physical_plan::file_format::ParquetExec;
-use datafusion::physical_plan::filter::FilterExec;
-use datafusion::physical_plan::hash_join::HashJoinExec;
-use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
-use datafusion::physical_plan::projection::ProjectionExec;
-use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{
     accept, ExecutionPlan, ExecutionPlanVisitor, Partitioning,
 };
@@ -38,9 +29,7 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::{error, info, warn};
 
 use ballista_core::error::{BallistaError, Result};
-use ballista_core::execution_plans::{
-    ShuffleReaderExec, ShuffleWriterExec, UnresolvedShuffleExec,
-};
+use ballista_core::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
 use ballista_core::serde::protobuf::{
     self, execution_graph_stage::StageType, CompletedJob, JobStatus, QueuedJob,
     TaskStatus,
@@ -653,7 +642,11 @@ impl ExecutionGraph {
                     self.complete_stage(stage_id);
                 }
                 StageEvent::StageFailed(stage_id, err_msg) => {
-                    job_err_msg = format!("{}{}\n", job_err_msg, &err_msg);
+                    job_err_msg = format!(
+                        "{}{}
+",
+                        job_err_msg, &err_msg
+                    );
                     self.fail_stage(stage_id, err_msg);
                 }
                 StageEvent::RollBackRunningStage(stage_id) => {
@@ -943,175 +936,16 @@ impl Debug for ExecutionGraph {
             .map(|(_, stage)| format!("{:?}", stage))
             .collect::<Vec<String>>()
             .join("");
-        write!(f, "ExecutionGraph[job_id={}, session_id={}, available_tasks={}, complete={}]\n{}",
-               self.job_id, self.session_id, self.available_tasks(), self.complete(), stages)
-    }
-}
-
-pub struct ExecutionGraphDot {
-    graph: Arc<ExecutionGraph>,
-}
-
-impl ExecutionGraphDot {
-    pub fn new(graph: Arc<ExecutionGraph>) -> Self {
-        Self { graph }
-    }
-}
-
-impl Display for ExecutionGraphDot {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut cluster = 0;
-        writeln!(f, "digraph G {{")?;
-
-        for (id, stage) in &self.graph.stages {
-            let stage_name = format!("stage_{}", id);
-            writeln!(f, "\tsubgraph cluster{} {{", cluster)?;
-            writeln!(f, "\t\tlabel = \"Stage {}\";", id)?;
-            match stage {
-                ExecutionStage::UnResolved(stage) => {
-                    write_operator(f, &stage_name, &stage.plan, 0)?;
-                }
-                ExecutionStage::Resolved(stage) => {
-                    write_operator(f, &stage_name, &stage.plan, 0)?;
-                }
-                ExecutionStage::Running(stage) => {
-                    write_operator(f, &stage_name, &stage.plan, 0)?;
-                }
-                ExecutionStage::Completed(stage) => {
-                    write_operator(f, &stage_name, &stage.plan, 0)?;
-                }
-                ExecutionStage::Failed(stage) => {
-                    write_operator(f, &stage_name, &stage.plan, 0)?;
-                }
-            }
-            cluster += 1;
-            writeln!(f, "\t}}")?; // end of subgraph
-        }
-
-        // links
-        for (id, stage) in &self.graph.stages {
-            let stage_name = format!("stage_{}", id);
-            let last_node = get_last_node_name(&stage_name, 0);
-            for parent_stage_id in stage.output_links() {
-                let parent_stage_name = format!("stage_{}", parent_stage_id);
-                let parent_stage = self.graph.stages.get(parent_stage_id).unwrap();
-                let first_node =
-                    get_first_node_name(&parent_stage_name, parent_stage.plan(), 0);
-                writeln!(f, "\t{} -> {}", last_node, first_node)?;
-            }
-        }
-
-        writeln!(f, "}}") // end of digraph
-    }
-}
-
-fn write_operator(
-    f: &mut Formatter<'_>,
-    prefix: &str,
-    plan: &Arc<dyn ExecutionPlan>,
-    i: usize,
-) -> std::fmt::Result {
-    let node_name = format!("{}_{}", prefix, i);
-    let operator_name = get_operator_name(plan);
-    let display_name = sanitize_name(&operator_name);
-
-    let mut metrics_str = vec![];
-    if let Some(metrics) = plan.metrics() {
-        if let Some(x) = metrics.output_rows() {
-            metrics_str.push(format!("output_rows={}", x))
-        }
-        if let Some(x) = metrics.elapsed_compute() {
-            metrics_str.push(format!("elapsed_compute={}", x))
-        }
-    }
-    if metrics_str.is_empty() {
-        writeln!(
+        write!(
             f,
-            "\t\t{} [shape=box, label=\"{}\"]",
-            node_name, display_name
-        )?;
-    } else {
-        writeln!(
-            f,
-            "\t\t{} [shape=box, label=\"{}\n{}\"]",
-            node_name,
-            display_name,
-            metrics_str.join(", ")
-        )?;
-    }
-
-    let mut j = 0;
-    for child in plan.children() {
-        write_operator(f, &node_name, &child, j)?;
-        // write link from child to parent
-        writeln!(f, "\t\t{}_{} -> {}", node_name, j, node_name)?;
-        j += 1;
-    }
-
-    Ok(())
-}
-
-fn get_last_node_name(prefix: &str, i: usize) -> String {
-    format!("{}_{}", prefix, i)
-}
-
-fn get_first_node_name(prefix: &str, plan: &dyn ExecutionPlan, i: usize) -> String {
-    let node_name = format!("{}_{}", prefix, i);
-    let mut j = 0;
-    let mut last_name = node_name.clone();
-    for child in plan.children() {
-        last_name = get_first_node_name(&node_name, child.as_ref(), j);
-        j += 1;
-    }
-    last_name
-}
-
-/// Make strings dot-friendly
-fn sanitize_name(str: &str) -> String {
-    let x = str.to_string().replace('"', "\"");
-    x.trim().to_string()
-}
-
-fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
-    if let Some(exec) = plan.as_any().downcast_ref::<FilterExec>() {
-        format!("Filter: {}", exec.predicate())
-    } else if let Some(_) = plan.as_any().downcast_ref::<ProjectionExec>() {
-        "Projection".to_string()
-    } else if let Some(exec) = plan.as_any().downcast_ref::<SortExec>() {
-        //format!("Sort: {:?}", exec.expr())
-        "Sort".to_string()
-    } else if let Some(exec) = plan.as_any().downcast_ref::<AggregateExec>() {
-        //format!("Aggregate[groupBy={:?}, aggr={:?}]", exec.group_expr(), exec.aggr_expr())
-        "Aggregate".to_string()
-    } else if let Some(_) = plan.as_any().downcast_ref::<CoalesceBatchesExec>() {
-        "CoalesceBatches".to_string()
-    } else if let Some(_) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() {
-        "CoalescePartitions".to_string()
-    } else if let Some(exec) = plan.as_any().downcast_ref::<HashJoinExec>() {
-        //format!("HashJoin: {:?}", exec.on())
-        "HashJoin".to_string()
-    } else if let Some(exec) = plan.as_any().downcast_ref::<ShuffleReaderExec>() {
-        format!("ShuffleReader [{} partitions]", exec.partition.len())
-    } else if let Some(exec) = plan.as_any().downcast_ref::<ShuffleWriterExec>() {
-        format!(
-            "ShuffleWriter [{} partitions]",
-            exec.output_partitioning().partition_count()
+            "ExecutionGraph[job_id={}, session_id={}, available_tasks={}, complete={}]
+{}",
+            self.job_id,
+            self.session_id,
+            self.available_tasks(),
+            self.complete(),
+            stages
         )
-    } else if let Some(exec) = plan.as_any().downcast_ref::<ParquetExec>() {
-        let parts = exec.output_partitioning().partition_count();
-        // TODO make robust
-        let filename = &exec.base_config().file_groups[0][0].object_meta.location;
-        format!("Parquet: {} [{} partitions]", filename, parts)
-    } else if let Some(exec) = plan.as_any().downcast_ref::<GlobalLimitExec>() {
-        format!(
-            "GlobalLimit(skip={}, fetch={:?})",
-            exec.skip(),
-            exec.fetch()
-        )
-    } else if let Some(exec) = plan.as_any().downcast_ref::<LocalLimitExec>() {
-        format!("LocalLimit({})", exec.fetch())
-    } else {
-        "Unknown Operator".to_string()
     }
 }
 
@@ -1244,7 +1078,8 @@ impl Debug for Task {
         let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent();
         write!(
             f,
-            "Task[session_id: {}, job: {}, stage: {}, partition: {}]\n{}",
+            "Task[session_id: {}, job: {}, stage: {}, partition: {}]
+{}",
             self.session_id,
             self.partition.job_id,
             self.partition.stage_id,
