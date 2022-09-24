@@ -25,7 +25,7 @@ use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::file_format::{
-    AvroExec, CsvExec, NdJsonExec, ParquetExec,
+    AvroExec, CsvExec, FileScanConfig, NdJsonExec, ParquetExec,
 };
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::hash_join::HashJoinExec;
@@ -64,6 +64,8 @@ impl ExecutionGraphDot {
 
         let mut cluster = 0;
         let mut stage_meta = vec![];
+
+        #[allow(clippy::explicit_counter_loop)]
         for id in &stage_ids {
             let stage = stages.get(id).unwrap(); // safe unwrap
             let stage_name = format!("stage_{}", id);
@@ -172,6 +174,8 @@ fn write_stage_plan2(
                     .insert(node_name.clone(), loc.partition_id.stage_id);
             }
         }
+    } else if let Some(reader) = plan.as_any().downcast_ref::<UnresolvedShuffleExec>() {
+        state.readers.insert(node_name.clone(), reader.stage_id);
     }
 
     let mut metrics_str = vec![];
@@ -199,12 +203,10 @@ fn write_stage_plan2(
         )?;
     }
 
-    let mut j = 0;
-    for child in plan.children() {
+    for (j, child) in plan.children().into_iter().enumerate() {
         write_stage_plan2(f, &node_name, &child, j, state)?;
         // write link from child to parent
         writeln!(f, "\t\t{}_{} -> {}", node_name, j, node_name)?;
-        j += 1;
     }
 
     Ok(())
@@ -218,14 +220,14 @@ struct StagePlanState {
 
 /// Make strings dot-friendly
 fn sanitize(str: &str) -> String {
-    let x = str.to_string().replace('"', "\"");
-    x.trim().to_string()
+    // TODO
+    str.to_string()
 }
 
 fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
     if let Some(exec) = plan.as_any().downcast_ref::<FilterExec>() {
         format!("Filter: {}", exec.predicate())
-    } else if let Some(_) = plan.as_any().downcast_ref::<ProjectionExec>() {
+    } else if plan.as_any().downcast_ref::<ProjectionExec>().is_some() {
         "Projection".to_string()
     } else if let Some(exec) = plan.as_any().downcast_ref::<SortExec>() {
         let sort_expr = exec
@@ -261,10 +263,14 @@ fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
             sanitize(&group_expr),
             sanitize(&aggr_expr)
         )
-    } else if let Some(_) = plan.as_any().downcast_ref::<CoalesceBatchesExec>() {
-        "CoalesceBatches".to_string()
-    } else if let Some(_) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() {
-        "CoalescePartitions".to_string()
+    } else if let Some(exec) = plan.as_any().downcast_ref::<CoalesceBatchesExec>() {
+        format!("CoalesceBatches[batchSize={}]", exec.target_batch_size())
+    } else if let Some(exec) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() {
+        // TODO show the partition strategy
+        format!(
+            "CoalescePartitions [{} partitions]",
+            exec.output_partitioning().partition_count()
+        )
     } else if let Some(exec) = plan.as_any().downcast_ref::<HashJoinExec>() {
         let join_expr = exec
             .on()
@@ -275,8 +281,8 @@ fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
         // TODO join filter
         //let filter_expr = exec.filter().map(|f| f.expression())
         format!("HashJoin: {}", sanitize(&join_expr))
-    } else if let Some(_) = plan.as_any().downcast_ref::<UnresolvedShuffleExec>() {
-        "UnresolvedShuffleExec".to_string()
+    } else if let Some(exec) = plan.as_any().downcast_ref::<UnresolvedShuffleExec>() {
+        format!("UnresolvedShuffleExec [stage_id={}]", exec.stage_id)
     } else if let Some(exec) = plan.as_any().downcast_ref::<ShuffleReaderExec>() {
         format!("ShuffleReader [{} partitions]", exec.partition.len())
     } else if let Some(exec) = plan.as_any().downcast_ref::<ShuffleWriterExec>() {
@@ -284,19 +290,32 @@ fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
             "ShuffleWriter [{} partitions]",
             exec.output_partitioning().partition_count()
         )
-    } else if let Some(_) = plan.as_any().downcast_ref::<MemoryExec>() {
+    } else if plan.as_any().downcast_ref::<MemoryExec>().is_some() {
         "MemoryExec".to_string()
-    } else if let Some(_) = plan.as_any().downcast_ref::<CsvExec>() {
-        "CsvExec".to_string()
-    } else if let Some(_) = plan.as_any().downcast_ref::<NdJsonExec>() {
-        "NdJsonExec".to_string()
-    } else if let Some(_) = plan.as_any().downcast_ref::<AvroExec>() {
-        "AvroExec".to_string()
+    } else if let Some(exec) = plan.as_any().downcast_ref::<CsvExec>() {
+        let parts = exec.output_partitioning().partition_count();
+        format!(
+            "CSV: {} [{} partitions]",
+            get_file_scan(exec.base_config()),
+            parts
+        )
+    } else if let Some(exec) = plan.as_any().downcast_ref::<NdJsonExec>() {
+        let parts = exec.output_partitioning().partition_count();
+        format!("JSON [{} partitions]", parts)
+    } else if let Some(exec) = plan.as_any().downcast_ref::<AvroExec>() {
+        let parts = exec.output_partitioning().partition_count();
+        format!(
+            "Avro: {} [{} partitions]",
+            get_file_scan(exec.base_config()),
+            parts
+        )
     } else if let Some(exec) = plan.as_any().downcast_ref::<ParquetExec>() {
         let parts = exec.output_partitioning().partition_count();
-        // TODO make robust
-        let filename = &exec.base_config().file_groups[0][0].object_meta.location;
-        format!("Parquet: {} [{} partitions]", filename, parts)
+        format!(
+            "Parquet: {} [{} partitions]",
+            get_file_scan(exec.base_config()),
+            parts
+        )
     } else if let Some(exec) = plan.as_any().downcast_ref::<GlobalLimitExec>() {
         format!(
             "GlobalLimit(skip={}, fetch={:?})",
@@ -316,6 +335,31 @@ fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
             plan
         );
         "Unknown Operator".to_string()
+    }
+}
+
+fn get_file_scan(scan: &FileScanConfig) -> String {
+    if !scan.file_groups.is_empty() {
+        let x = &scan.file_groups[0];
+        match x.len() {
+            0 => "".to_owned(),
+            1 => {
+                // single file
+                format!("{}", x[0].object_meta.location)
+            }
+            _ => {
+                // multiple files so show parent directory
+                let path = format!("{}", x[0].object_meta.location);
+                let path = if let Some(i) = path.rfind('/') {
+                    &path[0..i]
+                } else {
+                    &path
+                };
+                format!("{} [{} files]", path, x.len())
+            }
+        }
+    } else {
+        "".to_string()
     }
 }
 
@@ -346,35 +390,31 @@ mod tests {
         let graph = ExecutionGraph::new("scheduler_id", "job_id", "session_id", plan)?;
         let dot = ExecutionGraphDot::generate(Arc::new(graph))
             .map_err(|e| BallistaError::Internal(format!("{:?}", e)))?;
-        println!("{}", dot);
-        let dot = format!("{}", dot);
-
-        println!("{}", dot);
 
         let expected = r#"digraph G {
 	subgraph cluster0 {
 		label = "Stage 1 [Resolved]";
 		stage_1_0 [shape=box, label="ShuffleWriter [0 partitions]"]
-		stage_1_0_0 [shape=box, label="Unknown Operator"]
+		stage_1_0_0 [shape=box, label="MemoryExec"]
 		stage_1_0_0 -> stage_1_0
 	}
 	subgraph cluster1 {
 		label = "Stage 2 [Resolved]";
 		stage_2_0 [shape=box, label="ShuffleWriter [0 partitions]"]
-		stage_2_0_0 [shape=box, label="Unknown Operator"]
+		stage_2_0_0 [shape=box, label="MemoryExec"]
 		stage_2_0_0 -> stage_2_0
 	}
 	subgraph cluster2 {
 		label = "Stage 3 [UnResolved]";
 		stage_3_0 [shape=box, label="ShuffleWriter [48 partitions]"]
-		stage_3_0_0 [shape=box, label="CoalesceBatches"]
+		stage_3_0_0 [shape=box, label="CoalesceBatches[batchSize=4096]"]
 		stage_3_0_0_0 [shape=box, label="HashJoin: a@0 = a@0"]
-		stage_3_0_0_0_0 [shape=box, label="CoalesceBatches"]
-		stage_3_0_0_0_0_0 [shape=box, label="Unknown Operator"]
+		stage_3_0_0_0_0 [shape=box, label="CoalesceBatches[batchSize=4096]"]
+		stage_3_0_0_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=1]"]
 		stage_3_0_0_0_0_0 -> stage_3_0_0_0_0
 		stage_3_0_0_0_0 -> stage_3_0_0_0
-		stage_3_0_0_0_1 [shape=box, label="CoalesceBatches"]
-		stage_3_0_0_0_1_0 [shape=box, label="Unknown Operator"]
+		stage_3_0_0_0_1 [shape=box, label="CoalesceBatches[batchSize=4096]"]
+		stage_3_0_0_0_1_0 [shape=box, label="UnresolvedShuffleExec [stage_id=2]"]
 		stage_3_0_0_0_1_0 -> stage_3_0_0_0_1
 		stage_3_0_0_0_1 -> stage_3_0_0_0
 		stage_3_0_0_0 -> stage_3_0_0
@@ -383,34 +423,34 @@ mod tests {
 	subgraph cluster3 {
 		label = "Stage 4 [Resolved]";
 		stage_4_0 [shape=box, label="ShuffleWriter [0 partitions]"]
-		stage_4_0_0 [shape=box, label="Unknown Operator"]
+		stage_4_0_0 [shape=box, label="MemoryExec"]
 		stage_4_0_0 -> stage_4_0
 	}
 	subgraph cluster4 {
 		label = "Stage 5 [UnResolved]";
 		stage_5_0 [shape=box, label="ShuffleWriter [48 partitions]"]
 		stage_5_0_0 [shape=box, label="Projection"]
-		stage_5_0_0_0 [shape=box, label="CoalesceBatches"]
+		stage_5_0_0_0 [shape=box, label="CoalesceBatches[batchSize=4096]"]
 		stage_5_0_0_0_0 [shape=box, label="HashJoin: a@1 = a@0"]
-		stage_5_0_0_0_0_0 [shape=box, label="CoalesceBatches"]
-		stage_5_0_0_0_0_0_0 [shape=box, label="Unknown Operator"]
+		stage_5_0_0_0_0_0 [shape=box, label="CoalesceBatches[batchSize=4096]"]
+		stage_5_0_0_0_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=3]"]
 		stage_5_0_0_0_0_0_0 -> stage_5_0_0_0_0_0
 		stage_5_0_0_0_0_0 -> stage_5_0_0_0_0
-		stage_5_0_0_0_0_1 [shape=box, label="CoalesceBatches"]
-		stage_5_0_0_0_0_1_0 [shape=box, label="Unknown Operator"]
+		stage_5_0_0_0_0_1 [shape=box, label="CoalesceBatches[batchSize=4096]"]
+		stage_5_0_0_0_0_1_0 [shape=box, label="UnresolvedShuffleExec [stage_id=4]"]
 		stage_5_0_0_0_0_1_0 -> stage_5_0_0_0_0_1
 		stage_5_0_0_0_0_1 -> stage_5_0_0_0_0
 		stage_5_0_0_0_0 -> stage_5_0_0_0
 		stage_5_0_0_0 -> stage_5_0_0
 		stage_5_0_0 -> stage_5_0
 	}
-	stage_1_0 -> stage_3_0_0_0_1_0
+	stage_1_0 -> stage_3_0_0_0_0_0
 	stage_2_0 -> stage_3_0_0_0_1_0
-	stage_3_0 -> stage_5_0_0_0_0_1_0
+	stage_3_0 -> stage_5_0_0_0_0_0_0
 	stage_4_0 -> stage_5_0_0_0_0_1_0
 }
 "#;
-        // assert_eq!(expected, &dot);
+        assert_eq!(expected, &dot);
         Ok(())
     }
 }
