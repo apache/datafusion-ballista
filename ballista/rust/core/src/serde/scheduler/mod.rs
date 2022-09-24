@@ -40,6 +40,8 @@ pub enum Action {
         stage_id: usize,
         partition_id: usize,
         path: String,
+        host: String,
+        port: u16,
     },
 }
 
