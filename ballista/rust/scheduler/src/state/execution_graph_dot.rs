@@ -381,12 +381,13 @@ mod tests {
     use ballista_core::error::{BallistaError, Result};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::MemTable;
-    use datafusion::prelude::SessionContext;
+    use datafusion::prelude::{SessionConfig, SessionContext};
     use std::sync::Arc;
 
     #[tokio::test]
     async fn dot() -> Result<()> {
-        let ctx = SessionContext::new();
+        let ctx =
+            SessionContext::with_config(SessionConfig::new().with_target_partitions(48));
         let schema =
             Arc::new(Schema::new(vec![Field::new("a", DataType::UInt32, false)]));
         let table = Arc::new(MemTable::try_new(schema.clone(), vec![])?);
