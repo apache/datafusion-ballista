@@ -121,15 +121,13 @@ impl ExecutionGraphDot {
 
         // write links between stages
         for meta in &stage_meta {
-            println!("{:?}", meta);
-
             for (reader_node, parent_stage_id) in &meta.readers {
                 // shuffle write node is always node zero
                 let parent_shuffle_write_node = format!("stage_{}_0", parent_stage_id);
                 writeln!(
                     &mut dot,
                     "\t{} -> {}",
-                    reader_node, parent_shuffle_write_node
+                    parent_shuffle_write_node, reader_node,
                 )?;
             }
         }
@@ -169,10 +167,6 @@ fn write_stage_plan2(
     if let Some(reader) = plan.as_any().downcast_ref::<ShuffleReaderExec>() {
         for part in &reader.partition {
             for loc in part {
-                println!(
-                    "{} reads from stage {}",
-                    node_name, loc.partition_id.stage_id
-                );
                 state
                     .readers
                     .insert(node_name.clone(), loc.partition_id.stage_id);
@@ -207,7 +201,7 @@ fn write_stage_plan2(
 
     let mut j = 0;
     for child in plan.children() {
-        write_stage_plan(f, &node_name, &child, j)?;
+        write_stage_plan2(f, &node_name, &child, j, state)?;
         // write link from child to parent
         writeln!(f, "\t\t{}_{} -> {}", node_name, j, node_name)?;
         j += 1;
