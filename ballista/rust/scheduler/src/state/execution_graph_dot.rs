@@ -18,20 +18,26 @@
 //! Utilities for producing dot diagrams from execution graphs
 
 use crate::state::execution_graph::{ExecutionGraph, ExecutionStage};
-use ballista_core::execution_plans::{ShuffleReaderExec, ShuffleWriterExec};
+use ballista_core::execution_plans::{
+    ShuffleReaderExec, ShuffleWriterExec, UnresolvedShuffleExec,
+};
 use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::file_format::ParquetExec;
+use datafusion::physical_plan::file_format::{
+    AvroExec, CsvExec, NdJsonExec, ParquetExec,
+};
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::hash_join::HashJoinExec;
 use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
+use datafusion::physical_plan::memory::MemoryExec;
 use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::ExecutionPlan;
 use log::debug;
-use std::fmt::Write;
-use std::fmt::{self, Display, Formatter};
+use std::collections::HashMap;
+use std::fmt::{self, Write};
 use std::sync::Arc;
 
 /// Utility for producing dot diagrams from execution graphs
@@ -113,7 +119,20 @@ impl ExecutionGraphDot {
             writeln!(&mut dot, "\t}}")?; // end of subgraph
         }
 
-        // TODO write links between stages
+        // write links between stages
+        for meta in &stage_meta {
+            println!("{:?}", meta);
+
+            for (reader_node, parent_stage_id) in &meta.readers {
+                // shuffle write node is always node zero
+                let parent_shuffle_write_node = format!("stage_{}_0", parent_stage_id);
+                writeln!(
+                    &mut dot,
+                    "\t{} -> {}",
+                    reader_node, parent_shuffle_write_node
+                )?;
+            }
+        }
 
         writeln!(&mut dot, "}}")?; // end of digraph
 
@@ -129,9 +148,37 @@ fn write_stage_plan(
     plan: &Arc<dyn ExecutionPlan>,
     i: usize,
 ) -> Result<StagePlanState, fmt::Error> {
+    let mut state = StagePlanState {
+        readers: HashMap::new(),
+    };
+    write_stage_plan2(f, prefix, plan, i, &mut state)?;
+    Ok(state)
+}
+
+fn write_stage_plan2(
+    f: &mut String,
+    prefix: &str,
+    plan: &Arc<dyn ExecutionPlan>,
+    i: usize,
+    state: &mut StagePlanState,
+) -> Result<(), fmt::Error> {
     let node_name = format!("{}_{}", prefix, i);
     let operator_name = get_operator_name(plan);
     let display_name = sanitize(&operator_name);
+
+    if let Some(reader) = plan.as_any().downcast_ref::<ShuffleReaderExec>() {
+        for part in &reader.partition {
+            for loc in part {
+                println!(
+                    "{} reads from stage {}",
+                    node_name, loc.partition_id.stage_id
+                );
+                state
+                    .readers
+                    .insert(node_name.clone(), loc.partition_id.stage_id);
+            }
+        }
+    }
 
     let mut metrics_str = vec![];
     if let Some(metrics) = plan.metrics() {
@@ -166,10 +213,14 @@ fn write_stage_plan(
         j += 1;
     }
 
-    Ok(StagePlanState {})
+    Ok(())
 }
 
-struct StagePlanState {}
+#[derive(Debug)]
+struct StagePlanState {
+    /// map from reader node name to parent stage id
+    readers: HashMap<String, usize>,
+}
 
 /// Make strings dot-friendly
 fn sanitize(str: &str) -> String {
@@ -230,6 +281,8 @@ fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
         // TODO join filter
         //let filter_expr = exec.filter().map(|f| f.expression())
         format!("HashJoin: {}", sanitize(&join_expr))
+    } else if let Some(_) = plan.as_any().downcast_ref::<UnresolvedShuffleExec>() {
+        "UnresolvedShuffleExec".to_string()
     } else if let Some(exec) = plan.as_any().downcast_ref::<ShuffleReaderExec>() {
         format!("ShuffleReader [{} partitions]", exec.partition.len())
     } else if let Some(exec) = plan.as_any().downcast_ref::<ShuffleWriterExec>() {
@@ -237,6 +290,14 @@ fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
             "ShuffleWriter [{} partitions]",
             exec.output_partitioning().partition_count()
         )
+    } else if let Some(_) = plan.as_any().downcast_ref::<MemoryExec>() {
+        "MemoryExec".to_string()
+    } else if let Some(_) = plan.as_any().downcast_ref::<CsvExec>() {
+        "CsvExec".to_string()
+    } else if let Some(_) = plan.as_any().downcast_ref::<NdJsonExec>() {
+        "NdJsonExec".to_string()
+    } else if let Some(_) = plan.as_any().downcast_ref::<AvroExec>() {
+        "AvroExec".to_string()
     } else if let Some(exec) = plan.as_any().downcast_ref::<ParquetExec>() {
         let parts = exec.output_partitioning().partition_count();
         // TODO make robust
@@ -250,6 +311,11 @@ fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
         )
     } else if let Some(exec) = plan.as_any().downcast_ref::<LocalLimitExec>() {
         format!("LocalLimit({})", exec.fetch())
+    } else if let Some(exec) = plan.as_any().downcast_ref::<RepartitionExec>() {
+        format!(
+            "RepartitionExec [{} partitions]",
+            exec.output_partitioning().partition_count()
+        )
     } else {
         debug!(
             "Unknown physical operator when producing DOT graph: {:?}",
@@ -267,7 +333,6 @@ mod tests {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::MemTable;
     use datafusion::prelude::SessionContext;
-    use std::fmt;
     use std::sync::Arc;
 
     #[tokio::test]
@@ -289,6 +354,9 @@ mod tests {
             .map_err(|e| BallistaError::Internal(format!("{:?}", e)))?;
         println!("{}", dot);
         let dot = format!("{}", dot);
+
+        println!("{}", dot);
+
         let expected = r#"digraph G {
 	subgraph cluster0 {
 		label = "Stage 1 [Resolved]";
