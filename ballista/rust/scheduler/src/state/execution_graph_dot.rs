@@ -25,6 +25,7 @@ use datafusion::datasource::listing::PartitionedFile;
 use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::cross_join::CrossJoinExec;
 use datafusion::physical_plan::file_format::{
     AvroExec, CsvExec, FileScanConfig, NdJsonExec, ParquetExec,
 };
@@ -35,7 +36,8 @@ use datafusion::physical_plan::memory::MemoryExec;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::union::UnionExec;
+use datafusion::physical_plan::{ExecutionPlan, Partitioning, PhysicalExpr};
 use log::debug;
 use object_store::path::Path;
 use std::collections::HashMap;
@@ -167,8 +169,7 @@ fn write_plan_recursive(
     state: &mut StagePlanState,
 ) -> Result<(), fmt::Error> {
     let node_name = format!("{}_{}", prefix, i);
-    let operator_name = get_operator_name(plan);
-    let display_name = sanitize(&operator_name);
+    let display_name = get_operator_name(plan);
 
     if let Some(reader) = plan.as_any().downcast_ref::<ShuffleReaderExec>() {
         for part in &reader.partition {
@@ -200,7 +201,8 @@ fn write_plan_recursive(
     } else {
         writeln!(
             f,
-            "\t\t{} [shape=box, label=\"{}\n{}\"]",
+            "\t\t{} [shape=box, label=\"{}
+{}\"]",
             node_name,
             display_name,
             metrics_str.join(", ")
@@ -223,16 +225,47 @@ struct StagePlanState {
 }
 
 /// Make strings dot-friendly
-fn sanitize(str: &str) -> String {
-    // TODO remove any characters not valid in dot format
-    str.to_string()
+fn sanitize_dot_label(str: &str) -> String {
+    // TODO make max length configurable eventually
+    sanitize(str, Some(100))
+}
+
+/// Make strings dot-friendly
+fn sanitize(str: &str, max_len: Option<usize>) -> String {
+    let mut sanitized = String::new();
+    for ch in str.chars() {
+        match ch {
+            '"' => sanitized.push('`'),
+            ' ' | '_' | '+' | '-' | '*' | '/' | '(' | ')' | '[' | ']' | '{' | '}'
+            | '!' | '@' | '#' | '$' | '%' | '&' | '=' | ':' | ';' | '\\' | '\'' | '.'
+            | ',' | '<' | '>' | '`' => sanitized.push(ch),
+            _ if ch.is_ascii_alphanumeric() || ch.is_ascii_whitespace() => {
+                sanitized.push(ch)
+            }
+            _ => sanitized.push('?'),
+        }
+    }
+    // truncate after translation because we know we only have ASCII chars at this point
+    // so the slice is safe (not splitting unicode character bytes)
+    if let Some(limit) = max_len {
+        if sanitized.len() > limit {
+            return String::from(&sanitized[..limit]) + " ...";
+        }
+    }
+    sanitized
 }
 
 fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
     if let Some(exec) = plan.as_any().downcast_ref::<FilterExec>() {
         format!("Filter: {}", exec.predicate())
-    } else if plan.as_any().downcast_ref::<ProjectionExec>().is_some() {
-        "Projection".to_string()
+    } else if let Some(exec) = plan.as_any().downcast_ref::<ProjectionExec>() {
+        let expr = exec
+            .expr()
+            .iter()
+            .map(|(e, _)| format!("{}", e))
+            .collect::<Vec<String>>()
+            .join(", ");
+        format!("Projection: {}", sanitize_dot_label(&expr))
     } else if let Some(exec) = plan.as_any().downcast_ref::<SortExec>() {
         let sort_expr = exec
             .expr()
@@ -248,7 +281,7 @@ fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
             })
             .collect::<Vec<String>>()
             .join(", ");
-        format!("Sort: {}", sanitize(&sort_expr))
+        format!("Sort: {}", sanitize_dot_label(&sort_expr))
     } else if let Some(exec) = plan.as_any().downcast_ref::<AggregateExec>() {
         let group_exprs_with_alias = exec.group_expr().expr();
         let group_expr = group_exprs_with_alias
@@ -263,17 +296,23 @@ fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
             .collect::<Vec<String>>()
             .join(", ");
         format!(
-            "Aggregate[groupBy={}, aggr={}]",
-            sanitize(&group_expr),
-            sanitize(&aggr_expr)
+            "Aggregate
+groupBy=[{}]
+aggr=[{}]",
+            sanitize_dot_label(&group_expr),
+            sanitize_dot_label(&aggr_expr)
         )
     } else if let Some(exec) = plan.as_any().downcast_ref::<CoalesceBatchesExec>() {
-        format!("CoalesceBatches[batchSize={}]", exec.target_batch_size())
+        format!("CoalesceBatches [batchSize={}]", exec.target_batch_size())
     } else if let Some(exec) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() {
-        // TODO show the partition strategy
         format!(
-            "CoalescePartitions [{} partitions]",
-            exec.output_partitioning().partition_count()
+            "CoalescePartitions [{}]",
+            format_partitioning(exec.output_partitioning())
+        )
+    } else if let Some(exec) = plan.as_any().downcast_ref::<RepartitionExec>() {
+        format!(
+            "RepartitionExec [{}]",
+            format_partitioning(exec.output_partitioning())
         )
     } else if let Some(exec) = plan.as_any().downcast_ref::<HashJoinExec>() {
         let join_expr = exec
@@ -282,9 +321,22 @@ fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
             .map(|(l, r)| format!("{} = {}", l, r))
             .collect::<Vec<String>>()
             .join(" AND ");
-        // TODO join filter
-        //let filter_expr = exec.filter().map(|f| f.expression())
-        format!("HashJoin: {}", sanitize(&join_expr))
+        let filter_expr = if let Some(f) = exec.filter() {
+            format!("{}", f.expression())
+        } else {
+            "".to_string()
+        };
+        format!(
+            "HashJoin
+join_expr={}
+filter_expr={}",
+            sanitize_dot_label(&join_expr),
+            sanitize_dot_label(&filter_expr)
+        )
+    } else if plan.as_any().downcast_ref::<CrossJoinExec>().is_some() {
+        "CrossJoin".to_string()
+    } else if plan.as_any().downcast_ref::<UnionExec>().is_some() {
+        "Union".to_string()
     } else if let Some(exec) = plan.as_any().downcast_ref::<UnresolvedShuffleExec>() {
         format!("UnresolvedShuffleExec [stage_id={}]", exec.stage_id)
     } else if let Some(exec) = plan.as_any().downcast_ref::<ShuffleReaderExec>() {
@@ -328,11 +380,6 @@ fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
         )
     } else if let Some(exec) = plan.as_any().downcast_ref::<LocalLimitExec>() {
         format!("LocalLimit({})", exec.fetch())
-    } else if let Some(exec) = plan.as_any().downcast_ref::<RepartitionExec>() {
-        format!(
-            "RepartitionExec [{} partitions]",
-            exec.output_partitioning().partition_count()
-        )
     } else {
         debug!(
             "Unknown physical operator when producing DOT graph: {:?}",
@@ -340,6 +387,22 @@ fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
         );
         "Unknown Operator".to_string()
     }
+}
+
+fn format_partitioning(x: Partitioning) -> String {
+    match x {
+        Partitioning::UnknownPartitioning(n) | Partitioning::RoundRobinBatch(n) => {
+            format!("{} partitions", n)
+        }
+        Partitioning::Hash(expr, n) => {
+            format!("{} partitions, expr={}", n, format_expr_list(&expr))
+        }
+    }
+}
+
+fn format_expr_list(exprs: &[Arc<dyn PhysicalExpr>]) -> String {
+    let expr_strings: Vec<String> = exprs.iter().map(|e| format!("{}", e)).collect();
+    expr_strings.join(", ")
 }
 
 /// Get summary of file scan locations
@@ -421,13 +484,15 @@ mod tests {
 	subgraph cluster2 {
 		label = "Stage 3 [UnResolved]";
 		stage_3_0 [shape=box, label="ShuffleWriter [48 partitions]"]
-		stage_3_0_0 [shape=box, label="CoalesceBatches[batchSize=4096]"]
-		stage_3_0_0_0 [shape=box, label="HashJoin: a@0 = a@0"]
-		stage_3_0_0_0_0 [shape=box, label="CoalesceBatches[batchSize=4096]"]
+		stage_3_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
+		stage_3_0_0_0 [shape=box, label="HashJoin
+join_expr=a@0 = a@0
+filter_expr="]
+		stage_3_0_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
 		stage_3_0_0_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=1]"]
 		stage_3_0_0_0_0_0 -> stage_3_0_0_0_0
 		stage_3_0_0_0_0 -> stage_3_0_0_0
-		stage_3_0_0_0_1 [shape=box, label="CoalesceBatches[batchSize=4096]"]
+		stage_3_0_0_0_1 [shape=box, label="CoalesceBatches [batchSize=4096]"]
 		stage_3_0_0_0_1_0 [shape=box, label="UnresolvedShuffleExec [stage_id=2]"]
 		stage_3_0_0_0_1_0 -> stage_3_0_0_0_1
 		stage_3_0_0_0_1 -> stage_3_0_0_0
@@ -443,14 +508,16 @@ mod tests {
 	subgraph cluster4 {
 		label = "Stage 5 [UnResolved]";
 		stage_5_0 [shape=box, label="ShuffleWriter [48 partitions]"]
-		stage_5_0_0 [shape=box, label="Projection"]
-		stage_5_0_0_0 [shape=box, label="CoalesceBatches[batchSize=4096]"]
-		stage_5_0_0_0_0 [shape=box, label="HashJoin: a@1 = a@0"]
-		stage_5_0_0_0_0_0 [shape=box, label="CoalesceBatches[batchSize=4096]"]
+		stage_5_0_0 [shape=box, label="Projection: a@0, a@1, a@2"]
+		stage_5_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
+		stage_5_0_0_0_0 [shape=box, label="HashJoin
+join_expr=a@1 = a@0
+filter_expr="]
+		stage_5_0_0_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
 		stage_5_0_0_0_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=3]"]
 		stage_5_0_0_0_0_0_0 -> stage_5_0_0_0_0_0
 		stage_5_0_0_0_0_0 -> stage_5_0_0_0_0
-		stage_5_0_0_0_0_1 [shape=box, label="CoalesceBatches[batchSize=4096]"]
+		stage_5_0_0_0_0_1 [shape=box, label="CoalesceBatches [batchSize=4096]"]
 		stage_5_0_0_0_0_1_0 [shape=box, label="UnresolvedShuffleExec [stage_id=4]"]
 		stage_5_0_0_0_0_1_0 -> stage_5_0_0_0_0_1
 		stage_5_0_0_0_0_1 -> stage_5_0_0_0_0
