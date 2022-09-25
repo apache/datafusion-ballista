@@ -88,3 +88,5 @@ dot -Tpng query.dot > query.png
 ```
 
 Here is an example query plan:
+
+![query plan](images/example-query-plan.png)
