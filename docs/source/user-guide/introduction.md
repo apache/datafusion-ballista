@@ -19,13 +19,13 @@
 
 # Overview
 
-Ballista is a distributed compute platform primarily implemented in Rust, and powered by Apache Arrow. 
+Ballista is a distributed compute platform primarily implemented in Rust, and powered by Apache Arrow.
 
-Ballista has a scheduler and an executor process that are standard Rust executables and can be executed directly, but 
+Ballista has a scheduler and an executor process that are standard Rust executables and can be executed directly, but
 Dockerfiles are provided to build images for use in containerized environments, such as Docker, Docker Compose, and
 Kubernetes. See the [deployment guide](deployment.md) for more information
 
-SQL and DataFrame queries can be submitted from Python and Rust, and SQL queries can be submitted via the Arrow 
+SQL and DataFrame queries can be submitted from Python and Rust, and SQL queries can be submitted via the Arrow
 Flight SQL JDBC driver, supporting your favorite JDBC compliant tools such as [DataGrip](datagrip)
 or [tableau](tableau). For setup instructions, please see the [FlightSQL guide](flightsql.md).
 

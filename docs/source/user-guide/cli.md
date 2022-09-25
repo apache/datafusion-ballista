@@ -19,7 +19,7 @@
 
 # Ballista Command-line Interface
 
-The Ballista CLI allows SQL queries to be executed against a Ballista cluster, or in standalone mode in a single 
+The Ballista CLI allows SQL queries to be executed against a Ballista cluster, or in standalone mode in a single
 process.
 
 Use Cargo to install:
