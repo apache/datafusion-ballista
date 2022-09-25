@@ -204,13 +204,7 @@ async fn fetch_partition(
             })?;
 
     ballista_client
-        .fetch_partition(
-            &metadata.id,
-            partition_id,
-            &location.path,
-            host,
-            port,
-        )
+        .fetch_partition(&metadata.id, partition_id, &location.path, host, port)
         .await
 }
 
