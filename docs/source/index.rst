@@ -45,7 +45,7 @@ Table of content
    Python <user-guide/python>
    Rust <user-guide/rust>
    Flight SQL JDBC <user-guide/flightsql>
-   CLI <user-guide/cli>
+   SQL CLI <user-guide/cli>
 
 .. toctree::
    :maxdepth: 1

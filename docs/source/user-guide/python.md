@@ -21,6 +21,18 @@
 
 Ballista provides Python bindings, allowing SQL and DataFrame queries to be executed from the Python shell.
 
+Like PySpark, it allows you to build a plan through SQL or a DataFrame API against Parquet, CSV, JSON, and other
+popular file formats files, run it in a distributed environment, and obtain the result back in Python.
+
+It also allows you to use UDFs and UDAFs for complex operations (note that this is not implemented yet and the
+tracking issue is [#173](https://github.com/apache/arrow-ballista/issues/173))
+
+The major advantage of this library over other execution engines is that this library achieves zero-copy between
+Python and its execution engine: there is no cost in using UDFs, UDAFs, and collecting the results to Python apart
+from having to lock the GIL when running those operations.
+
+Technically, zero-copy is achieved via the [c data interface](https://arrow.apache.org/docs/format/CDataInterface.html).
+
 ## Connecting to a Cluster
 
 The following code demonstrates how to create a Ballista context and connect to a scheduler.
@@ -30,7 +42,47 @@ The following code demonstrates how to create a Ballista context and connect to 
 >>> ctx = ballista.BallistaContext("localhost", 50050)
 ```
 
-## Registering Tables
+## DataFrame
+
+The following example demonstrates creating arrays with PyArrow and then creating a Ballista DataFrame.
+
+```python
+import ballista
+import pyarrow
+
+# an alias
+f = ballista.functions
+
+# create a context
+ctx = ballista.BallistaContext("localhost", 50050)
+
+# create a RecordBatch and a new DataFrame from it
+batch = pyarrow.RecordBatch.from_arrays(
+    [pyarrow.array([1, 2, 3]), pyarrow.array([4, 5, 6])],
+    names=["a", "b"],
+)
+df = ctx.create_dataframe([[batch]])
+
+# create a new statement
+df = df.select(
+    f.col("a") + f.col("b"),
+    f.col("a") - f.col("b"),
+)
+
+# execute and collect the first (and only) batch
+result = df.collect()[0]
+
+assert result.column(0) == pyarrow.array([5, 7, 9])
+assert result.column(1) == pyarrow.array([-3, -3, -3])
+```
+
+## SQL
+
+The Python bindings support executing SQL queries as well.
+
+### Registering Tables
+
+Before SQL queries can be executed, tables need to be registered with the context.
 
 Tables can be registered against the context by calling one of the `register` methods, or by executing SQL.
 
@@ -42,7 +94,7 @@ Tables can be registered against the context by calling one of the `register` me
 >>> ctx.sql("CREATE EXTERNAL TABLE trips STORED AS PARQUET LOCATION '/mnt/bigdata/nyctaxi'")
 ```
 
-## Executing Queries
+### Executing Queries
 
 The `sql` method creates a `DataFrame`. The query is executed when an action such as `show` or `collect` is executed.
 
