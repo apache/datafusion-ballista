@@ -47,7 +47,7 @@ use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use crate::display::print_stage_metrics;
 use crate::planner::DistributedPlanner;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use crate::state::execution_graph::execution_stage::{
+pub(crate) use crate::state::execution_graph::execution_stage::{
     ExecutionStage, FailedStage, ResolvedStage, StageOutput, SuccessfulStage, TaskInfo,
     UnresolvedStage,
 };
@@ -181,6 +181,10 @@ impl ExecutionGraph {
         let new_tid = self.tid_generator;
         self.tid_generator += 1;
         new_tid
+    }
+
+    pub(crate) fn stages(&self) -> &HashMap<usize, ExecutionStage> {
+        &self.stages
     }
 
     /// An ExecutionGraph is successful if all its stages are successful
@@ -795,7 +799,10 @@ impl ExecutionGraph {
     /// available to the scheduler.
     /// If the task is not launched the status must be reset to allow the task to
     /// be scheduled elsewhere.
-    pub fn pop_next_task(&mut self, executor_id: &str) -> Result<Option<TaskDefinition>> {
+    pub fn pop_next_task(
+        &mut self,
+        executor_id: &str,
+    ) -> Result<Option<TaskDescription>> {
         if matches!(
             self.status,
             JobStatus {
@@ -866,7 +873,7 @@ impl ExecutionGraph {
                 // Set the task info to Running for new task
                 stage.task_infos[partition_id] = Some(task_info);
 
-                Ok(TaskDefinition {
+                Ok(TaskDescription {
                     session_id,
                     partition,
                     stage_attempt_num: stage.stage_attempt_num,
@@ -1478,7 +1485,7 @@ impl ExecutionPlanVisitor for ExecutionStageBuilder {
 /// Represents the basic unit of work for the Ballista executor. Will execute
 /// one partition of one stage on one task slot.
 #[derive(Clone)]
-pub struct TaskDefinition {
+pub struct TaskDescription {
     pub session_id: String,
     pub partition: PartitionId,
     pub stage_attempt_num: usize,
@@ -1488,12 +1495,12 @@ pub struct TaskDefinition {
     pub output_partitioning: Option<Partitioning>,
 }
 
-impl Debug for TaskDefinition {
+impl Debug for TaskDescription {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent();
         write!(
             f,
-            "TaskDefinition[session_id: {},job: {}, stage: {}.{}, partition: {} task_id {}, task attempt {}]\n{}",
+            "TaskDescription[session_id: {},job: {}, stage: {}.{}, partition: {} task_id {}, task attempt {}]\n{}",
             self.session_id,
             self.partition.job_id,
             self.partition.stage_id,
@@ -1553,7 +1560,7 @@ mod test {
     };
     use ballista_core::serde::scheduler::{ExecutorMetadata, ExecutorSpecification};
 
-    use crate::state::execution_graph::{ExecutionGraph, TaskDefinition};
+    use crate::state::execution_graph::{ExecutionGraph, TaskDescription};
 
     #[tokio::test]
     async fn test_drain_tasks() -> Result<()> {
@@ -2371,7 +2378,7 @@ mod test {
         assert_eq!(agg_graph.available_tasks(), 0);
 
         // Stage 3, the very long delayed 5th task failed due to FetchPartitionError(executor3)
-        // Although the failure reason is new, but this task should sbe ignored
+        // Although the failure reason is new, but this task should be ignored
         // Because its map stage's new attempt is finished and this stage's new attempt is running
         let task_status_5 = mock_failed_task(
             task_5,
@@ -2887,7 +2894,7 @@ mod test {
         }
     }
 
-    fn mock_completed_task(task: TaskDefinition, executor_id: &str) -> TaskStatus {
+    fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStatus {
         let mut partitions: Vec<protobuf::ShuffleWritePartition> = vec![];
 
         let num_partitions = task
@@ -2928,7 +2935,7 @@ mod test {
         }
     }
 
-    fn mock_failed_task(task: TaskDefinition, failed_task: FailedTask) -> TaskStatus {
+    fn mock_failed_task(task: TaskDescription, failed_task: FailedTask) -> TaskStatus {
         let mut partitions: Vec<protobuf::ShuffleWritePartition> = vec![];
 
         let num_partitions = task

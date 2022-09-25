@@ -15,30 +15,34 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# General purpose Dockerfile to take a Docker image containing R
-# and install Arrow R package dependencies
+FROM rust:1.63.0-buster
 
-ARG base
-FROM ${base}
+ARG EXT_UID
 
-ARG r_bin=R
-ENV R_BIN=${r_bin}
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=full
+ENV DEBIAN_FRONTEND=noninteractive
 
-ARG r_dev=FALSE
-ENV ARROW_R_DEV=${r_dev}
+RUN apt-get update && \
+    apt-get -y install libssl-dev openssl zlib1g zlib1g-dev libpq-dev cmake protobuf-compiler netcat curl unzip \
+    nodejs npm && \
+    npm install -g yarn
 
-ARG devtoolset_version=-1
-ENV DEVTOOLSET_VERSION=${devtoolset_version}
+# create build user with same UID as 
+RUN adduser -q -u $EXT_UID builder --home /home/builder && \
+    mkdir -p /home/builder/workspace
+USER builder
 
-# Make sure R is on the path for the R-hub devel versions (where RPREFIX is set in its dockerfile)
-ENV PATH "${RPREFIX}/bin:${PATH}"
+ENV NODE_VER=18.9.0
+ENV HOME=/home/builder
+ENV PATH=$HOME/.cargo/bin:$PATH
 
-# Patch up some of the docker images
-COPY ci/scripts/r_docker_configure.sh /arrow/ci/scripts/
-COPY ci/etc/rprofile /arrow/ci/etc/
-COPY ci/scripts/install_minio.sh /arrow/ci/scripts/
-RUN /arrow/ci/scripts/r_docker_configure.sh
+# prepare rust
+RUN rustup update && \
+    rustup component add rustfmt && \
+    cargo install cargo-chef --version 0.1.34
 
-COPY ci/scripts/r_deps.sh /arrow/ci/scripts/
-COPY r/DESCRIPTION /arrow/r/
-RUN /arrow/ci/scripts/r_deps.sh /arrow
+WORKDIR /home/builder/workspace
+
+COPY dev/docker/builder-entrypoint.sh /home/builder
+ENTRYPOINT ["/home/builder/builder-entrypoint.sh"]

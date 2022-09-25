@@ -35,11 +35,12 @@ use ballista_core::serde::protobuf::executor_grpc_server::{
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_core::serde::protobuf::{
     executor_metric, executor_status, CancelTasksParams, CancelTasksResult,
-    ExecutorMetric, ExecutorStatus, HeartBeatParams, LaunchTaskParams, LaunchTaskResult,
-    RegisterExecutorParams, StopExecutorParams, StopExecutorResult, TaskDefinition,
-    TaskStatus, UpdateTaskStatusParams,
+    ExecutorMetric, ExecutorStatus, HeartBeatParams, LaunchMultiTaskParams,
+    LaunchMultiTaskResult, LaunchTaskParams, LaunchTaskResult, RegisterExecutorParams,
+    StopExecutorParams, StopExecutorResult, TaskStatus, UpdateTaskStatusParams,
 };
 use ballista_core::serde::scheduler::PartitionId;
+use ballista_core::serde::scheduler::TaskDefinition;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use ballista_core::utils::{
     collect_plan_metrics, create_grpc_client_connection, create_grpc_server,
@@ -292,10 +293,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             .as_millis() as u64;
         info!("Start to run task {}", task_identity);
         let task = curator_task.task;
-        let mut task_props = HashMap::new();
-        for kv_pair in task.props {
-            task_props.insert(kv_pair.key, kv_pair.value);
-        }
+        let task_props = task.props;
 
         let mut task_scalar_functions = HashMap::new();
         let mut task_aggregate_functions = HashMap::new();
@@ -624,12 +622,42 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
             task_sender
                 .send(CuratorTaskDefinition {
                     scheduler_id: scheduler_id.clone(),
-                    task,
+                    task: task
+                        .try_into()
+                        .map_err(|e| Status::invalid_argument(format!("{}", e)))?,
                 })
                 .await
                 .unwrap();
         }
         Ok(Response::new(LaunchTaskResult { success: true }))
+    }
+
+    /// by this interface, it can reduce the deserialization cost for multiple tasks
+    /// belong to the same job stage running on the same one executor
+    async fn launch_multi_task(
+        &self,
+        request: Request<LaunchMultiTaskParams>,
+    ) -> Result<Response<LaunchMultiTaskResult>, Status> {
+        let LaunchMultiTaskParams {
+            multi_tasks,
+            scheduler_id,
+        } = request.into_inner();
+        let task_sender = self.executor_env.tx_task.clone();
+        for multi_task in multi_tasks {
+            let multi_task: Vec<TaskDefinition> = multi_task
+                .try_into()
+                .map_err(|e| Status::invalid_argument(format!("{}", e)))?;
+            for task in multi_task {
+                task_sender
+                    .send(CuratorTaskDefinition {
+                        scheduler_id: scheduler_id.clone(),
+                        task,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        Ok(Response::new(LaunchMultiTaskResult { success: true }))
     }
 
     async fn stop_executor(

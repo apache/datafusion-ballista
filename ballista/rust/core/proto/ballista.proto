@@ -567,6 +567,12 @@ message PartitionId {
   uint32 partition_id = 4;
 }
 
+message TaskId {
+  uint32 task_id = 1;
+  uint32 task_attempt_num = 2;
+  uint32 partition_id = 3;
+}
+
 message PartitionStats {
   int64 num_rows = 1;
   int64 num_batches = 2;
@@ -777,6 +783,20 @@ message TaskDefinition {
   repeated KeyValuePair props = 11;
 }
 
+// A set of tasks in the same stage
+message MultiTaskDefinition {
+  repeated TaskId task_ids = 1;
+  string job_id = 2;
+  uint32 stage_id = 3;
+  uint32 stage_attempt_num = 4;
+  bytes plan = 5;
+  // Output partition for shuffle writer
+  PhysicalHashRepartition output_partitioning = 6;
+  string session_id = 7;
+  uint64 launch_time = 8;
+  repeated KeyValuePair props = 9;
+}
+
 message SessionSettings {
   repeated KeyValuePair configs = 1;
 }
@@ -915,7 +935,18 @@ message LaunchTaskParams {
   string scheduler_id = 2;
 }
 
+message LaunchMultiTaskParams {
+  // Allow to launch a task set to an executor at once
+  repeated MultiTaskDefinition multi_tasks = 1;
+  string scheduler_id = 2;
+}
+
 message LaunchTaskResult {
+  bool success = 1;
+  // TODO when part of the task set are scheduled successfully
+}
+
+message LaunchMultiTaskResult {
   bool success = 1;
   // TODO when part of the task set are scheduled successfully
 }
@@ -961,6 +992,8 @@ service SchedulerGrpc {
 
 service ExecutorGrpc {
   rpc LaunchTask (LaunchTaskParams) returns (LaunchTaskResult) {}
+
+  rpc LaunchMultiTask (LaunchMultiTaskParams) returns (LaunchMultiTaskResult) {}
 
   rpc StopExecutor (StopExecutorParams) returns (StopExecutorResult) {}
 

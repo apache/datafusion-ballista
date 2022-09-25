@@ -248,8 +248,8 @@ async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecution
         let _ = task_status_sender.send(as_task_status(
             execution_result,
             executor.metadata.id.clone(),
-            task_id,
-            stage_attempt_num,
+            task_id as usize,
+            stage_attempt_num as usize,
             part,
             operator_metrics,
             task_execution_times,

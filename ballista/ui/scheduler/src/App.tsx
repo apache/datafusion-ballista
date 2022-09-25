@@ -24,46 +24,9 @@ import { Footer } from "./components/Footer";
 
 import "./App.css";
 
-function uuidv4() {
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
-    var r = (Math.random() * 16) | 0,
-      v = c === "x" ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
-}
-
-const getRandomQueries = (num: number): Query[] => {
-  const nodes: Query[] = [];
-
-  for (let i = 0; i < num; i++) {
-    nodes.push({
-      started: new Date().toISOString(),
-      query:
-        "SELECT \n" +
-        "    employee.id,\n" +
-        "    employee.first_name,\n" +
-        "    employee.last_name,\n" +
-        '    SUM(DATEDIFF("SECOND", call.start_time, call.end_time)) AS call_duration_sum\n' +
-        "FROM call\n" +
-        "INNER JOIN employee ON call.employee_id = employee.id\n" +
-        "GROUP BY\n" +
-        "    employee.id,\n" +
-        "    employee.first_name,\n" +
-        "    employee.last_name\n" +
-        "ORDER BY\n" +
-        "    employee.id ASC;",
-      status: QueryStatus.RUNNING,
-      progress: Math.round(Math.random() * 100),
-      uuid: uuidv4(),
-    });
-  }
-  return nodes;
-};
-
-const queries = getRandomQueries(17);
-
 const App: React.FunctionComponent<any> = () => {
   const [schedulerState, setSchedulerState] = useState(undefined);
+  const [jobs, setJobs] = useState(undefined);
 
   function getSchedulerState() {
     return fetch(`/api/state`, {
@@ -76,9 +39,23 @@ const App: React.FunctionComponent<any> = () => {
       .then((res) => setSchedulerState(res));
   }
 
+  function getJobs() {
+    return fetch(`/api/jobs`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+      },
+    })
+      .then((res) => res.json())
+      .then((res) => setJobs(res));
+  }
+
   useEffect(() => {
     getSchedulerState();
+    getJobs();
   }, []);
+
+  console.log(JSON.stringify(schedulerState));
 
   return (
     <Box>
@@ -86,7 +63,7 @@ const App: React.FunctionComponent<any> = () => {
         <VStack alignItems={"flex-start"} spacing={0} width={"100%"}>
           <Header schedulerState={schedulerState} />
           <Summary schedulerState={schedulerState} />
-          <QueriesList queries={queries} />
+          <QueriesList queries={jobs} />
           <Footer />
         </VStack>
       </Grid>

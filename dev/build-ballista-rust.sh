@@ -1,3 +1,5 @@
+#!/bin/bash
+
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -15,30 +17,8 @@
 # specific language governing permissions and limitations
 # under the License.
 
-ARG VERSION
+set -e
 
-# Use node image to build the scheduler UI
-FROM node:14.16.0-alpine as ui-build
-WORKDIR /app
-ENV PATH /app/node_modules/.bin:$PATH
-COPY ballista/ui/scheduler ./
-RUN yarn
-RUN yarn build
+docker build -t ballista-builder --build-arg EXT_UID="$(id -u)" -f dev/docker/ballista-builder.Dockerfile .
 
-FROM apache/arrow-ballista:$VERSION
-RUN apt -y install nginx
-RUN rm -rf /var/www/html/*
-COPY --from=ui-build /app/build /var/www/html
-COPY dev/docker/nginx.conf /etc/nginx/sites-enabled/default
-
-ENV RUST_LOG=info
-ENV RUST_BACKTRACE=full
-
-# Expose Ballista Scheduler web UI port
-EXPOSE 80
-
-# Expose Ballista Scheduler gRPC port
-EXPOSE 50050
-
-ADD dev/docker/scheduler-entrypoint.sh /
-ENTRYPOINT ["/scheduler-entrypoint.sh"]
+docker run -v $(pwd):/home/builder/workspace ballista-builder

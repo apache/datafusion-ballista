@@ -48,3 +48,7 @@ Although Ballista is largely inspired by Apache Spark, there are some key differ
 ## Status
 
 Ballista is still in the early stages of development but is capable of executing complex analytical queries at scale.
+
+## Usage
+
+Ballista can be used from your favorite JDBC compliant tools such as [DataGrip](https://www.jetbrains.com/datagrip/) or [tableau](https://help.tableau.com/current/pro/desktop/en-us/examples_otherdatabases_jdbc.htm). For setup instructions, please see the [FlightSQL guide](flightsql.md).

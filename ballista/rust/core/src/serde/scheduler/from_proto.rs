@@ -20,6 +20,7 @@ use datafusion::physical_plan::metrics::{
     Count, Gauge, MetricValue, MetricsSet, Time, Timestamp,
 };
 use datafusion::physical_plan::Metric;
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,7 +31,7 @@ use crate::serde::protobuf::action::ActionType;
 use crate::serde::protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
 use crate::serde::scheduler::{
     Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, PartitionId,
-    PartitionLocation, PartitionStats,
+    PartitionLocation, PartitionStats, TaskDefinition,
 };
 
 impl TryInto<Action> for protobuf::Action {
@@ -51,15 +52,14 @@ impl TryInto<Action> for protobuf::Action {
     }
 }
 
-impl TryInto<PartitionId> for protobuf::PartitionId {
-    type Error = BallistaError;
-
-    fn try_into(self) -> Result<PartitionId, Self::Error> {
-        Ok(PartitionId::new(
+#[allow(clippy::from_over_into)]
+impl Into<PartitionId> for protobuf::PartitionId {
+    fn into(self) -> PartitionId {
+        PartitionId::new(
             &self.job_id,
             self.stage_id as usize,
             self.partition_id as usize,
-        ))
+        )
     }
 }
 
@@ -95,7 +95,7 @@ impl TryInto<PartitionLocation> for protobuf::PartitionLocation {
                         "partition_id in PartitionLocation is missing.".to_owned(),
                     )
                 })?
-                .try_into()?,
+                .into(),
             executor_meta: self
                 .executor_meta
                 .ok_or_else(|| {
@@ -262,5 +262,67 @@ impl Into<ExecutorData> for protobuf::ExecutorData {
             };
         }
         ret
+    }
+}
+
+impl TryInto<TaskDefinition> for protobuf::TaskDefinition {
+    type Error = BallistaError;
+
+    fn try_into(self) -> Result<TaskDefinition, Self::Error> {
+        let mut props = HashMap::new();
+        for kv_pair in self.props {
+            props.insert(kv_pair.key, kv_pair.value);
+        }
+
+        Ok(TaskDefinition {
+            task_id: self.task_id as usize,
+            task_attempt_num: self.task_attempt_num as usize,
+            job_id: self.job_id,
+            stage_id: self.stage_id as usize,
+            stage_attempt_num: self.stage_attempt_num as usize,
+            partition_id: self.partition_id as usize,
+            plan: self.plan,
+            output_partitioning: self.output_partitioning,
+            session_id: self.session_id,
+            launch_time: self.launch_time,
+            props,
+        })
+    }
+}
+
+impl TryInto<Vec<TaskDefinition>> for protobuf::MultiTaskDefinition {
+    type Error = BallistaError;
+
+    fn try_into(self) -> Result<Vec<TaskDefinition>, Self::Error> {
+        let mut props = HashMap::new();
+        for kv_pair in self.props {
+            props.insert(kv_pair.key, kv_pair.value);
+        }
+
+        let plan = self.plan;
+        let output_partitioning = self.output_partitioning;
+        let session_id = self.session_id;
+        let job_id = self.job_id;
+        let stage_id = self.stage_id as usize;
+        let stage_attempt_num = self.stage_attempt_num as usize;
+        let launch_time = self.launch_time;
+        let task_ids = self.task_ids;
+
+        Ok(task_ids
+            .iter()
+            .map(|task_id| TaskDefinition {
+                task_id: task_id.task_id as usize,
+                task_attempt_num: task_id.task_attempt_num as usize,
+                job_id: job_id.clone(),
+                stage_id,
+                stage_attempt_num,
+                partition_id: task_id.partition_id as usize,
+                plan: plan.clone(),
+                output_partitioning: output_partitioning.clone(),
+                session_id: session_id.clone(),
+                launch_time,
+                props: props.clone(),
+            })
+            .collect())
     }
 }

@@ -48,8 +48,8 @@ pub struct TaskExecutionTimes {
 pub fn as_task_status(
     execution_result: ballista_core::error::Result<Vec<ShuffleWritePartition>>,
     executor_id: String,
-    task_id: u32,
-    stage_attempt_num: u32,
+    task_id: usize,
+    stage_attempt_num: usize,
     partition_id: PartitionId,
     operator_metrics: Option<Vec<OperatorMetricsSet>>,
     execution_times: TaskExecutionTimes,
@@ -63,10 +63,10 @@ pub fn as_task_status(
                 metrics.len()
             );
             TaskStatus {
-                task_id,
+                task_id: task_id as u32,
                 job_id: partition_id.job_id,
                 stage_id: partition_id.stage_id as u32,
-                stage_attempt_num,
+                stage_attempt_num: stage_attempt_num as u32,
                 partition_id: partition_id.partition_id as u32,
                 launch_time: execution_times.launch_time,
                 start_exec_time: execution_times.start_exec_time,
@@ -83,10 +83,10 @@ pub fn as_task_status(
             info!("Task {:?} failed: {}", task_id, error_msg);
 
             TaskStatus {
-                task_id,
+                task_id: task_id as u32,
                 job_id: partition_id.job_id,
                 stage_id: partition_id.stage_id as u32,
-                stage_attempt_num,
+                stage_attempt_num: stage_attempt_num as u32,
                 partition_id: partition_id.partition_id as u32,
                 launch_time: execution_times.launch_time,
                 start_exec_time: execution_times.start_exec_time,
