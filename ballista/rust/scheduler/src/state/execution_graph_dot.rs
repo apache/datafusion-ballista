@@ -125,14 +125,16 @@ impl ExecutionGraphDot {
 
         // write links between stages
         for meta in &stage_meta {
+            let mut links = vec![];
             for (reader_node, parent_stage_id) in &meta.readers {
                 // shuffle write node is always node zero
                 let parent_shuffle_write_node = format!("stage_{}_0", parent_stage_id);
-                writeln!(
-                    &mut dot,
-                    "\t{} -> {}",
-                    parent_shuffle_write_node, reader_node,
-                )?;
+                links.push(format!("{} -> {}", parent_shuffle_write_node, reader_node,));
+            }
+            // keep the order deterministic
+            links.sort();
+            for link in links {
+                writeln!(&mut dot, "\t{}", link)?;
             }
         }
 
@@ -153,11 +155,11 @@ fn write_stage_plan(
     let mut state = StagePlanState {
         readers: HashMap::new(),
     };
-    write_stage_plan2(f, prefix, plan, i, &mut state)?;
+    write_plan_recursive(f, prefix, plan, i, &mut state)?;
     Ok(state)
 }
 
-fn write_stage_plan2(
+fn write_plan_recursive(
     f: &mut String,
     prefix: &str,
     plan: &Arc<dyn ExecutionPlan>,
@@ -206,7 +208,7 @@ fn write_stage_plan2(
     }
 
     for (j, child) in plan.children().into_iter().enumerate() {
-        write_stage_plan2(f, &node_name, &child, j, state)?;
+        write_plan_recursive(f, &node_name, &child, j, state)?;
         // write link from child to parent
         writeln!(f, "\t\t{}_{} -> {}", node_name, j, node_name)?;
     }
@@ -222,7 +224,7 @@ struct StagePlanState {
 
 /// Make strings dot-friendly
 fn sanitize(str: &str) -> String {
-    // TODO
+    // TODO remove any characters not valid in dot format
     str.to_string()
 }
 
