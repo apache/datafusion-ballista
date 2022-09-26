@@ -53,7 +53,12 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
     <Flex>
       <FaStop color={"red"} title={"Stop this job"} />
       <Box mx={2}></Box>
-      <a href={"/api/job/" + props.value + "/dot"} download={props.value + ".dot"}><GrDocumentDownload title={"Download DOT Plan"} /></a>
+      <a
+        href={"/api/job/" + props.value + "/dot"}
+        download={props.value + ".dot"}
+      >
+        <GrDocumentDownload title={"Download DOT Plan"} />
+      </a>
     </Flex>
   );
 };
