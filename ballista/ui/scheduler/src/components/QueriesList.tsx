@@ -51,9 +51,9 @@ export interface QueriesListProps {
 export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
   return (
     <Flex>
-      <FaStop color={"red"} title={"stop"} />
+      <FaStop color={"red"} title={"Stop this job"} />
       <Box mx={2}></Box>
-      <GrDocumentDownload title={"plan"} />
+      <a href={"/api/job/" + props.value + "/dot"} download={props.value + ".dot"}><GrDocumentDownload title={"Download DOT Plan"} /></a>
     </Flex>
   );
 };
@@ -87,7 +87,8 @@ const columns: Column<any>[] = [
   },
   {
     Header: "Actions",
-    accessor: "",
+    accessor: "job_id",
+    id: "action_cell",
     Cell: ActionsCell,
   },
 ];
