@@ -16,18 +16,19 @@
 // under the License.
 
 #[cfg(unix)]
+use tokio::signal::unix::SignalKind;
+#[cfg(unix)]
 use tokio::signal::unix::{self as os_impl};
 #[cfg(windows)]
 use tokio::signal::windows::{self as os_impl};
 
 use std::io;
-use tokio::signal::unix::SignalKind;
 
 pub async fn sig_term() -> io::Result<()> {
     #[cfg(unix)]
     os_impl::signal(SignalKind::terminate())?.recv().await;
     #[cfg(windows)]
-    // TODO need to fix windows terminate
+    // TODO fix windows terminate after upgrading to latest tokio
     os_impl::ctrl_break()?.recv().await;
     Ok(())
 }
