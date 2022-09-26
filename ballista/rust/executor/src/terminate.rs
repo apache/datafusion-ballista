@@ -24,6 +24,10 @@ use std::io;
 use tokio::signal::unix::SignalKind;
 
 pub async fn sig_term() -> io::Result<()> {
+    #[cfg(unix)]
     os_impl::signal(SignalKind::terminate())?.recv().await;
+    #[cfg(windows)]
+    // TODO need to fix windows terminate
+    os_impl::ctrl_break()?.recv().await;
     Ok(())
 }
