@@ -31,12 +31,23 @@ pub struct ExecutorMetaResponse {
     pub last_seen: u128,
 }
 
-pub(crate) async fn scheduler_state<T: AsLogicalPlan, U: AsExecutionPlan>(
+#[derive(Debug, serde::Serialize)]
+pub struct JobResponse {
+    pub job_id: String,
+    pub job_status: String,
+    pub num_stages: usize,
+    pub completed_stages: usize,
+    pub percent_complete: u8,
+}
+
+/// Return current scheduler state, including list of executors and active, completed, and failed
+/// job ids.
+pub(crate) async fn get_state<T: AsLogicalPlan, U: AsExecutionPlan>(
     data_server: SchedulerServer<T, U>,
 ) -> Result<impl warp::Reply, Rejection> {
     // TODO: Display last seen information in UI
-    let executors: Vec<ExecutorMetaResponse> = data_server
-        .state
+    let state = data_server.state;
+    let executors: Vec<ExecutorMetaResponse> = state
         .executor_manager
         .get_executor_state()
         .await
@@ -49,10 +60,68 @@ pub(crate) async fn scheduler_state<T: AsLogicalPlan, U: AsExecutionPlan>(
             last_seen: duration.as_millis(),
         })
         .collect();
+
     let response = StateResponse {
         executors,
         started: data_server.start_time,
         version: BALLISTA_VERSION,
     };
     Ok(warp::reply::json(&response))
+}
+
+/// Return list of jobs
+pub(crate) async fn get_jobs<T: AsLogicalPlan, U: AsExecutionPlan>(
+    data_server: SchedulerServer<T, U>,
+) -> Result<impl warp::Reply, Rejection> {
+    // TODO: Display last seen information in UI
+    let state = data_server.state;
+
+    let jobs = state
+        .task_manager
+        .get_jobs()
+        .await
+        .map_err(|_| warp::reject())?;
+
+    let jobs: Vec<JobResponse> = jobs
+        .iter()
+        .map(|job| JobResponse {
+            job_id: job.job_id.to_string(),
+            job_status: format!("{:?}", job.status),
+            num_stages: job.num_stages,
+            completed_stages: job.completed_stages,
+            percent_complete: ((job.completed_stages as f32 / job.num_stages as f32)
+                * 100_f32) as u8,
+        })
+        .collect();
+
+    Ok(warp::reply::json(&jobs))
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct JobSummaryResponse {
+    /// Just show debug output for now but what we really want here is a list of stages with
+    /// plans and metrics and the relationship between them
+    pub summary: String,
+}
+
+/// Get the execution graph for the specified job id
+pub(crate) async fn get_job_summary<T: AsLogicalPlan, U: AsExecutionPlan>(
+    data_server: SchedulerServer<T, U>,
+    job_id: String,
+) -> Result<impl warp::Reply, Rejection> {
+    let graph = data_server
+        .state
+        .task_manager
+        .get_job_execution_graph(&job_id)
+        .await
+        .map_err(|_| warp::reject())?;
+
+    match graph {
+        Some(x) => Ok(warp::reply::json(&JobSummaryResponse {
+            summary: format!("{:?}", x),
+        })),
+        _ => Ok(warp::reply::json(&JobSummaryResponse {
+            summary: "Not Found".to_string(),
+        })),
+    }
 }

@@ -16,20 +16,13 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-#
 
-# Usage:
-# CHANGELOG_GITHUB_TOKEN=<TOKEN> ./update_change_log-datafusion.sh master 8.0.0 7.1.0
-# CHANGELOG_GITHUB_TOKEN=<TOKEN> ./update_change_log-datafusion.sh maint-7.x 7.1.0 7.0.0
+set -x
 
-RELEASE_BRANCH=$1
-RELEASE_TAG=$2
-BASE_TAG=$3
+printenv
+RELEASE_FLAG=${RELEASE_FLA:=release}
+cargo build --features flight-sql "--$RELEASE_FLAG" "$@"
 
-SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-${SOURCE_DIR}/update_change_log.sh \
-    datafusion \
-    "${BASE_TAG}" \
-    --exclude-tags-regex "(python|ballista)-.+" \
-    --future-release "${RELEASE_TAG}" \
-    --release-branch "${RELEASE_BRANCH}"
+cd ballista/ui/scheduler
+yarn install
+yarn build

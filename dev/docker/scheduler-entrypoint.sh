@@ -1,3 +1,5 @@
+#!/bin/bash
+#
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -15,24 +17,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Turn .dockerignore to .dockerallow by excluding everything and explicitly
-# allowing specific files and directories. This enables us to quickly add
-# dependency files to the docker content without scanning the whole directory.
-# This setup requires to all of our docker containers have arrow's source
-# as a mounted directory.
-
-FROM node:14.16.0-alpine as build
-WORKDIR /app
-ENV PATH /app/node_modules/.bin:$PATH
-
-COPY package.json ./
-COPY yarn.lock ./
-RUN yarn
-
-COPY . ./
-RUN yarn build
-
-FROM nginx:stable-alpine
-COPY --from=build /app/build /usr/share/nginx/html
-EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
+echo "Starting nginx to serve Ballista Scheduler web UI on port 80"
+nohup nginx -g "daemon off;" &
+/root/ballista-scheduler "$@"

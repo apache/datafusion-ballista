@@ -15,18 +15,18 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM ubuntu
+FROM ubuntu:22.04
 
-RUN apt-get update && \
-    apt-get install -y git build-essential
+ARG RELEASE_FLAG=release
 
-RUN git clone https://github.com/databricks/tpch-dbgen.git && \
-    cd tpch-dbgen && \
-    make
+ENV RELEASE_FLAG=${RELEASE_FLAG}
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=full
 
-WORKDIR /tpch-dbgen
-ADD entrypoint.sh /tpch-dbgen/
+COPY target/$RELEASE_FLAG/ballista-executor /root/ballista-executor
 
-VOLUME /data
+# Expose Ballista Executor gRPC port
+EXPOSE 50051
 
-ENTRYPOINT [ "bash", "./entrypoint.sh" ]
+COPY dev/docker/executor-entrypoint.sh /root/executor-entrypoint.sh
+ENTRYPOINT ["/root/executor-entrypoint.sh"]

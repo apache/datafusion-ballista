@@ -18,7 +18,7 @@
 [package]
 name = "ballista-examples"
 description = "Ballista usage examples"
-version = "0.6.0"
+version = "0.8.0"
 homepage = "https://github.com/apache/arrow-ballista"
 repository = "https://github.com/apache/arrow-ballista"
 authors = ["Apache Arrow <dev@arrow.apache.org>"]
@@ -34,8 +34,8 @@ path = "examples/standalone-sql.rs"
 required-features = ["ballista/standalone"]
 
 [dependencies]
-ballista = { path = "../ballista/rust/client", version = "0.7.0" }
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "312a7dd3b9642e64555bd0cfa90f4e10145ea103" }
+ballista = { path = "../ballista/rust/client", version = "0.8.0" }
+datafusion = "12.0.0"
 futures = "0.3"
 num_cpus = "1.13.0"
 prost = "0.11"

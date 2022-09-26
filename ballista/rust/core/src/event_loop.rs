@@ -123,6 +123,7 @@ impl<E: Send + 'static> EventLoop<E> {
     }
 }
 
+#[derive(Clone)]
 pub struct EventSender<E> {
     tx_event: mpsc::Sender<E>,
 }

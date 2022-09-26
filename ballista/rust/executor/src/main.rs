@@ -21,6 +21,7 @@ use chrono::{DateTime, Duration, Utc};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration as Core_Duration;
+use std::{env, io};
 
 use anyhow::{Context, Result};
 use arrow_flight::flight_service_server::FlightServiceServer;
@@ -36,7 +37,7 @@ use ballista_core::config::TaskSchedulingPolicy;
 use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf::{
     executor_registration, scheduler_grpc_client::SchedulerGrpcClient,
-    ExecutorRegistration, PhysicalPlanNode,
+    ExecutorRegistration, ExecutorStoppedParams, PhysicalPlanNode,
 };
 use ballista_core::serde::scheduler::ExecutorSpecification;
 use ballista_core::serde::BallistaCodec;
@@ -54,6 +55,7 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tracing_subscriber::EnvFilter;
 
 #[macro_use]
 extern crate configure_me;
@@ -90,15 +92,29 @@ async fn main() -> Result<()> {
     let print_thread_info = opt.print_thread_info;
 
     let scheduler_name = format!("executor_{}_{}", bind_host, port);
-    let log_file = tracing_appender::rolling::daily(log_dir, &scheduler_name);
 
-    tracing_subscriber::fmt()
-        .with_ansi(true)
-        .with_thread_names(print_thread_info)
-        .with_thread_ids(print_thread_info)
-        .with_writer(log_file)
-        .with_env_filter(special_mod_log_level)
-        .init();
+    // File layer
+    if let Some(log_dir) = log_dir {
+        let log_file = tracing_appender::rolling::daily(log_dir, &scheduler_name);
+        tracing_subscriber::fmt()
+            .with_ansi(true)
+            .with_thread_names(print_thread_info)
+            .with_thread_ids(print_thread_info)
+            .with_writer(log_file)
+            .with_env_filter(special_mod_log_level)
+            .init();
+    } else {
+        //Console layer
+        let rust_log = env::var(EnvFilter::DEFAULT_ENV);
+        let std_filter = EnvFilter::new(rust_log.unwrap_or_else(|_| "INFO".to_string()));
+        tracing_subscriber::fmt()
+            .with_ansi(true)
+            .with_thread_names(print_thread_info)
+            .with_thread_ids(print_thread_info)
+            .with_writer(io::stdout)
+            .with_env_filter(std_filter)
+            .init();
+    }
 
     let addr = format!("{}:{}", bind_host, port);
     let addr = addr
@@ -116,12 +132,22 @@ async fn main() -> Result<()> {
             .into_string()
             .unwrap(),
     );
+
+    let concurrent_tasks = if opt.concurrent_tasks == 0 {
+        // use all available cores if no concurrency level is specified
+        num_cpus::get()
+    } else {
+        opt.concurrent_tasks
+    };
+
     info!("Running with config:");
     info!("work_dir: {}", work_dir);
-    info!("concurrent_tasks: {}", opt.concurrent_tasks);
+    info!("concurrent_tasks: {}", concurrent_tasks);
 
+    // assign this executor an unique ID
+    let executor_id = Uuid::new_v4().to_string();
     let executor_meta = ExecutorRegistration {
-        id: Uuid::new_v4().to_string(), // assign this executor a unique ID
+        id: executor_id.clone(),
         optional_host: external_host
             .clone()
             .map(executor_registration::OptionalHost::Host),
@@ -129,7 +155,7 @@ async fn main() -> Result<()> {
         grpc_port: grpc_port as u32,
         specification: Some(
             ExecutorSpecification {
-                task_slots: opt.concurrent_tasks as u32,
+                task_slots: concurrent_tasks as u32,
             }
             .into(),
         ),
@@ -147,14 +173,14 @@ async fn main() -> Result<()> {
         &work_dir,
         runtime,
         metrics_collector,
-        opt.concurrent_tasks,
+        concurrent_tasks,
     ));
 
     let connection = create_grpc_client_connection(scheduler_url)
         .await
         .context("Could not connect to scheduler")?;
 
-    let scheduler = SchedulerGrpcClient::new(connection);
+    let mut scheduler = SchedulerGrpcClient::new(connection);
 
     let default_codec: BallistaCodec<LogicalPlanNode, PhysicalPlanNode> =
         BallistaCodec::default();
@@ -206,7 +232,8 @@ async fn main() -> Result<()> {
             service_handlers.push(
                 //If there is executor registration error during startup, return the error and stop early.
                 executor_server::startup(
-                    scheduler,
+                    scheduler.clone(),
+                    bind_host,
                     executor.clone(),
                     default_codec,
                     stop_send,
@@ -217,7 +244,7 @@ async fn main() -> Result<()> {
         }
         _ => {
             service_handlers.push(tokio::spawn(execution_loop::poll_loop(
-                scheduler,
+                scheduler.clone(),
                 executor.clone(),
                 default_codec,
             )));
@@ -231,15 +258,33 @@ async fn main() -> Result<()> {
     // Concurrently run the service checking and listen for the `shutdown` signal and wait for the stop request coming.
     // The check_services runs until an error is encountered, so under normal circumstances, this `select!` statement runs
     // until the `shutdown` signal is received or a stop request is coming.
-    tokio::select! {
+    let (notify_scheduler, stop_reason) = tokio::select! {
         service_val = check_services(&mut service_handlers) => {
-             info!("services stopped with reason {:?}", service_val);
+            let msg = format!("executor services stopped with reason {:?}", service_val);
+            info!("{:?}", msg);
+            (true, msg)
         },
         _ = signal::ctrl_c() => {
              // sometimes OS can not log ??
-             info!("received ctrl-c event.");
+            let msg = "executor received ctrl-c event.".to_string();
+             info!("{:?}", msg);
+            (true, msg)
         },
-        _ = stop_recv.recv() => {},
+        _ = stop_recv.recv() => {
+            (false, "".to_string())
+        },
+    };
+
+    if notify_scheduler {
+        if let Err(error) = scheduler
+            .executor_stopped(ExecutorStoppedParams {
+                executor_id,
+                reason: stop_reason,
+            })
+            .await
+        {
+            error!("ExecutorStopped grpc failed: {:?}", error);
+        }
     }
 
     // Extract the `shutdown_complete` receiver and transmitter

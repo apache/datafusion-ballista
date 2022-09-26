@@ -1,10 +1,14 @@
 .git
-ballista/ui/*
 ci
 conbench
-dev
+dev/dist
+dev/release
+python
 **/docs
-**/target
+target/
 **/CHANGELOG.md
 **/tests
 **/data
+!target/release/ballista-scheduler
+!target/release/ballista-executor
+!target/release/tpch

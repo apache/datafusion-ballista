@@ -36,14 +36,14 @@ use futures::{StreamExt, TryStreamExt};
 use datafusion::arrow::error::ArrowError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use log::info;
+use log::debug;
 
 /// ShuffleReaderExec reads partitions that have already been materialized by a ShuffleWriterExec
 /// being executed by an executor
 #[derive(Debug, Clone)]
 pub struct ShuffleReaderExec {
     /// Each partition of a shuffle can read data from multiple locations
-    pub(crate) partition: Vec<Vec<PartitionLocation>>,
+    pub partition: Vec<Vec<PartitionLocation>>,
     pub(crate) schema: SchemaRef,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
@@ -104,7 +104,7 @@ impl ExecutionPlan for ShuffleReaderExec {
         partition: usize,
         _context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        info!("ShuffleReaderExec::execute({})", partition);
+        debug!("ShuffleReaderExec::execute({})", partition);
 
         let fetch_time =
             MetricBuilder::new(&self.metrics).subset_time("fetch_time", partition);
@@ -136,29 +136,7 @@ impl ExecutionPlan for ShuffleReaderExec {
     ) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default => {
-                let loc_str = self
-                    .partition
-                    .iter()
-                    .enumerate()
-                    .map(|(partition_id, locations)| {
-                        format!(
-                            "[partition={} paths={}]",
-                            partition_id,
-                            locations
-                                .iter()
-                                .map(|l| l.path.clone())
-                                .collect::<Vec<String>>()
-                                .join(",")
-                        )
-                    })
-                    .collect::<Vec<String>>()
-                    .join(", ");
-                write!(
-                    f,
-                    "ShuffleReaderExec: partition_locations({})={}",
-                    self.partition.len(),
-                    loc_str
-                )
+                write!(f, "ShuffleReaderExec: partitions={}", self.partition.len())
             }
         }
     }
@@ -207,16 +185,19 @@ async fn fetch_partition(
     let partition_id = &location.partition_id;
     // TODO for shuffle client connections, we should avoid creating new connections again and again.
     // And we should also avoid to keep alive too many connections for long time.
-    let mut ballista_client =
-        BallistaClient::try_new(metadata.host.as_str(), metadata.port as u16)
-            .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+    let host = metadata.host.as_str();
+    let port = metadata.port as u16;
+    let mut ballista_client = BallistaClient::try_new(host, port)
+        .await
+        .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
     ballista_client
         .fetch_partition(
             &partition_id.job_id,
             partition_id.stage_id as usize,
             partition_id.partition_id as usize,
             &location.path,
+            host,
+            port,
         )
         .await
         .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))

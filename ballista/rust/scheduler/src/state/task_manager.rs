@@ -18,7 +18,7 @@
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::SessionBuilder;
 use crate::state::backend::{Keyspace, Lock, StateBackendClient};
-use crate::state::execution_graph::{ExecutionGraph, Task};
+use crate::state::execution_graph::{ExecutionGraph, ExecutionStage, Task};
 use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::{decode_protobuf, encode_protobuf, with_lock};
 use ballista_core::config::BallistaConfig;
@@ -105,6 +105,38 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(())
     }
 
+    /// Get a list of active job ids
+    pub async fn get_jobs(&self) -> Result<Vec<JobOverview>> {
+        let mut job_ids = vec![];
+        for job_id in self.state.scan_keys(Keyspace::ActiveJobs).await? {
+            job_ids.push(job_id);
+        }
+        for job_id in self.state.scan_keys(Keyspace::CompletedJobs).await? {
+            job_ids.push(job_id);
+        }
+        for job_id in self.state.scan_keys(Keyspace::FailedJobs).await? {
+            job_ids.push(job_id);
+        }
+
+        let mut jobs = vec![];
+        for job_id in &job_ids {
+            let graph = self.get_execution_graph(job_id).await?;
+            let mut completed_stages = 0;
+            for stage in graph.stages().values() {
+                if let ExecutionStage::Completed(_) = stage {
+                    completed_stages += 1;
+                }
+            }
+            jobs.push(JobOverview {
+                job_id: job_id.clone(),
+                status: graph.status(),
+                num_stages: graph.stage_count(),
+                completed_stages,
+            });
+        }
+        Ok(jobs)
+    }
+
     /// Get the status of of a job. First look in the active cache.
     /// If no one found, then in the Active/Completed jobs, and then in Failed jobs
     pub async fn get_job_status(&self, job_id: &str) -> Result<Option<JobStatus>> {
@@ -122,6 +154,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             } else {
                 Ok(None)
             }
+        }
+    }
+
+    /// Get the execution graph of of a job. First look in the active cache.
+    /// If no one found, then in the Active/Completed jobs.
+    pub async fn get_job_execution_graph(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<Arc<ExecutionGraph>>> {
+        if let Some(graph) = self.get_active_execution_graph(job_id).await {
+            Ok(Some(Arc::new(graph.read().await.clone())))
+        } else if let Ok(graph) = self.get_execution_graph(job_id).await {
+            Ok(Some(Arc::new(graph)))
+        } else {
+            // if the job failed then we return no graph for now
+            Ok(None)
         }
     }
 
@@ -451,6 +499,36 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(())
     }
 
+    pub async fn executor_lost(&self, executor_id: &str) -> Result<()> {
+        // Collect graphs we update so we can update them in storage
+        let mut updated_graphs: HashMap<String, ExecutionGraph> = HashMap::new();
+        {
+            let job_cache = self.active_job_cache.read().await;
+            for (job_id, graph) in job_cache.iter() {
+                let mut graph = graph.write().await;
+                let reset = graph.reset_stages(executor_id)?;
+                if !reset.is_empty() {
+                    updated_graphs.insert(job_id.to_owned(), graph.clone());
+                }
+            }
+        }
+
+        let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
+        with_lock(lock, async {
+            // Transactional update graphs
+            let txn_ops: Vec<(Keyspace, String, Vec<u8>)> = updated_graphs
+                .into_iter()
+                .map(|(job_id, graph)| {
+                    let value = self.encode_execution_graph(graph)?;
+                    Ok((Keyspace::ActiveJobs, job_id, value))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            self.state.put_txn(txn_ops).await?;
+            Ok(())
+        })
+        .await
+    }
+
     #[cfg(not(test))]
     /// Launch the given task on the specified executor
     pub(crate) async fn launch_task(
@@ -639,4 +717,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             });
         }
     }
+}
+
+pub struct JobOverview {
+    pub job_id: String,
+    pub status: JobStatus,
+    pub num_stages: usize,
+    pub completed_stages: usize,
 }

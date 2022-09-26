@@ -24,7 +24,7 @@
 # https://github.com/github-changelog-generator/github-changelog-generator
 #
 # With the config located in
-# arrow-datafusion/.github_changelog_generator
+# arrow-ballista/.github_changelog_generator
 #
 # Usage:
 # CHANGELOG_GITHUB_TOKEN=<TOKEN> ./update_change_log.sh <PROJECT> <SINCE_TAG> <EXTRA_ARGS...>
@@ -60,9 +60,8 @@ docker run -it --rm \
     -v "$(pwd)":/usr/local/src/your-app \
     githubchangeloggenerator/github-changelog-generator \
     --user apache \
-    --project arrow-datafusion \
+    --project arrow-ballista \
     --since-tag "${SINCE_TAG}" \
-    --include-labels "${PROJECT}" \
     --base "${OUTPUT_PATH}" \
     --output "${OUTPUT_PATH}" \
     "$@"

@@ -19,6 +19,7 @@
 //! as convenience code for interacting with the generated code.
 
 use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
+use arrow_flight::sql::ProstMessageExt;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::logical_plan::{FunctionRegistry, Operator};
 use datafusion::physical_plan::join_utils::JoinSide;
@@ -33,14 +34,24 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::{convert::TryInto, io::Cursor};
 
-// include the generated protobuf source as a submodule
-#[allow(clippy::all)]
-pub mod protobuf {
-    include!(concat!(env!("OUT_DIR"), "/ballista.protobuf.rs"));
-}
+pub use generated::ballista as protobuf;
 
+pub mod generated;
 pub mod physical_plan;
 pub mod scheduler;
+
+impl ProstMessageExt for protobuf::Action {
+    fn type_url() -> &'static str {
+        "type.googleapis.com/arrow.flight.protocol.sql.Action"
+    }
+
+    fn as_any(&self) -> prost_types::Any {
+        prost_types::Any {
+            type_url: protobuf::Action::type_url().to_string(),
+            value: self.encode_to_vec(),
+        }
+    }
+}
 
 pub fn decode_protobuf(bytes: &[u8]) -> Result<BallistaAction, BallistaError> {
     let mut buf = Cursor::new(bytes);
@@ -167,7 +178,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> BallistaCodec<T, 
 macro_rules! convert_required {
     ($PB:expr) => {{
         if let Some(field) = $PB.as_ref() {
-            Ok(field.try_into()?)
+            Ok(field
+                .try_into()
+                .map_err(|_| proto_error("Failed to convert!"))?)
         } else {
             Err(proto_error("Missing required field in protobuf"))
         }
@@ -213,13 +226,23 @@ pub(crate) fn from_proto_binary_op(op: &str) -> Result<Operator, BallistaError> 
         "Modulo" => Ok(Operator::Modulo),
         "Like" => Ok(Operator::Like),
         "NotLike" => Ok(Operator::NotLike),
+        "IsDistinctFrom" => Ok(Operator::IsDistinctFrom),
+        "IsNotDistinctFrom" => Ok(Operator::IsNotDistinctFrom),
+        "BitwiseAnd" => Ok(Operator::BitwiseAnd),
+        "BitwiseOr" => Ok(Operator::BitwiseOr),
+        "BitwiseShiftLeft" => Ok(Operator::BitwiseShiftLeft),
+        "BitwiseShiftRight" => Ok(Operator::BitwiseShiftRight),
+        "RegexIMatch" => Ok(Operator::RegexIMatch),
+        "RegexMatch" => Ok(Operator::RegexMatch),
+        "RegexNotIMatch" => Ok(Operator::RegexNotIMatch),
+        "RegexNotMatch" => Ok(Operator::RegexNotMatch),
+        "StringConcat" => Ok(Operator::StringConcat),
         other => Err(proto_error(format!(
             "Unsupported binary operator '{:?}'",
             other
         ))),
     }
 }
-
 impl From<protobuf::JoinSide> for JoinSide {
     fn from(t: protobuf::JoinSide) -> Self {
         match t {

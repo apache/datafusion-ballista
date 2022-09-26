@@ -33,15 +33,15 @@ use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partiti
 use ballista_core::serde::protobuf::executor_grpc_server::{
     ExecutorGrpc, ExecutorGrpcServer,
 };
-use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_core::serde::protobuf::{
-    CancelTasksParams, CancelTasksResult, HeartBeatParams, LaunchTaskParams,
-    LaunchTaskResult, RegisterExecutorParams, RemoveJobDataParams, RemoveJobDataResult,
-    StopExecutorParams, StopExecutorResult, TaskDefinition, TaskStatus,
-    UpdateTaskStatusParams,
+    executor_metric, executor_status, CancelTasksParams, CancelTasksResult,
+    ExecutorMetric, ExecutorStatus, HeartBeatParams, LaunchMultiTaskParams,
+    LaunchMultiTaskResult, LaunchTaskParams, LaunchTaskResult, RegisterExecutorParams,
+    RemoveJobDataParams, RemoveJobDataResult, StopExecutorParams, StopExecutorResult,
+    TaskStatus, UpdateTaskStatusParams,
 };
-use ballista_core::serde::scheduler::ExecutorState;
+use ballista_core::serde::scheduler::TaskDefinition;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use ballista_core::utils::{
     collect_plan_metrics, create_grpc_client_connection, create_grpc_server,
@@ -76,6 +76,7 @@ struct CuratorTaskStatus {
 
 pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     mut scheduler: SchedulerGrpcClient<Channel>,
+    bind_host: String,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
     stop_send: mpsc::Sender<bool>,
@@ -100,16 +101,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     // 1. Start executor grpc service
     let server = {
         let executor_meta = executor.metadata.clone();
-        let addr = format!(
-            "{}:{}",
-            executor_meta
-                .optional_host
-                .map(|h| match h {
-                    OptionalHost::Host(host) => host,
-                })
-                .unwrap_or_else(|| String::from("0.0.0.0")),
-            executor_meta.grpc_port
-        );
+        let addr = format!("{}:{}", bind_host, executor_meta.grpc_port);
         let addr = addr.parse().unwrap();
 
         info!(
@@ -251,7 +243,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
     async fn heartbeat(&self) {
         let heartbeat_params = HeartBeatParams {
             executor_id: self.executor.metadata.id.clone(),
-            state: Some(self.get_executor_state().into()),
+            metrics: self.get_executor_metrics(),
+            status: Some(ExecutorStatus {
+                status: Some(executor_status::Status::Active("".to_string())),
+            }),
         };
         let mut scheduler = self.scheduler_to_register.clone();
         match scheduler
@@ -294,7 +289,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
     ) -> Result<(), BallistaError> {
         let scheduler_id = curator_task.scheduler_id;
         let task = curator_task.task;
-        let task_id = task.task_id.unwrap();
+        let task_id = task.task_id;
         let task_id_log = format!(
             "{}/{}/{}",
             task_id.job_id, task_id.stage_id, task_id.partition_id
@@ -303,10 +298,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
         let runtime = self.executor.runtime.clone();
         let session_id = task.session_id;
-        let mut task_props = HashMap::new();
-        for kv_pair in task.props {
-            task_props.insert(kv_pair.key, kv_pair.value);
-        }
+        let task_props = task.props;
 
         let mut task_scalar_functions = HashMap::new();
         let mut task_aggregate_functions = HashMap::new();
@@ -372,7 +364,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let task_status = as_task_status(
             execution_result,
             executor_id.clone(),
-            task_id,
+            task_id.into(),
             Some(operator_metrics),
         );
 
@@ -387,11 +379,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         Ok(())
     }
 
-    // TODO with real state
-    fn get_executor_state(&self) -> ExecutorState {
-        ExecutorState {
-            available_memory_size: u64::MAX,
-        }
+    // TODO populate with real metrics
+    fn get_executor_metrics(&self) -> Vec<ExecutorMetric> {
+        let available_memory = ExecutorMetric {
+            metric: Some(executor_metric::Metric::AvailableMemory(u64::MAX)),
+        };
+        let executor_metrics = vec![available_memory];
+        executor_metrics
     }
 }
 
@@ -557,28 +551,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                     }
                 };
                 if let Some(curator_task) = maybe_task {
-                    if let Some(task_id) = &curator_task.task.task_id {
-                        let task_id_log = format!(
-                            "{}/{}/{}",
-                            task_id.job_id, task_id.stage_id, task_id.partition_id
-                        );
-                        info!("Received task {:?}", &task_id_log);
+                    let task_id = &curator_task.task.task_id;
+                    let task_id_log = format!(
+                        "{}/{}/{}",
+                        task_id.job_id, task_id.stage_id, task_id.partition_id
+                    );
+                    info!("Received task {:?}", &task_id_log);
 
-                        let server = executor_server.clone();
-                        dedicated_executor.spawn(async move {
-                            server.run_task(curator_task).await.unwrap_or_else(|e| {
-                                error!(
-                                    "Fail to run the task {:?} due to {:?}",
-                                    task_id_log, e
-                                );
-                            });
+                    let server = executor_server.clone();
+                    dedicated_executor.spawn(async move {
+                        server.run_task(curator_task).await.unwrap_or_else(|e| {
+                            error!(
+                                "Fail to run the task {:?} due to {:?}",
+                                task_id_log, e
+                            );
                         });
-                    } else {
-                        error!(
-                            "There's no task id in the task definition {:?}",
-                            curator_task
-                        );
-                    }
+                    });
                 } else {
                     info!("Channel is closed and will exit the task receive loop");
                     drop(task_runner_complete);
@@ -606,12 +594,42 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
             task_sender
                 .send(CuratorTaskDefinition {
                     scheduler_id: scheduler_id.clone(),
-                    task,
+                    task: task
+                        .try_into()
+                        .map_err(|e| Status::invalid_argument(format!("{}", e)))?,
                 })
                 .await
                 .unwrap();
         }
         Ok(Response::new(LaunchTaskResult { success: true }))
+    }
+
+    /// by this interface, it can reduce the deserialization cost for multiple tasks
+    /// belong to the same job stage running on the same one executor
+    async fn launch_multi_task(
+        &self,
+        request: Request<LaunchMultiTaskParams>,
+    ) -> Result<Response<LaunchMultiTaskResult>, Status> {
+        let LaunchMultiTaskParams {
+            multi_tasks,
+            scheduler_id,
+        } = request.into_inner();
+        let task_sender = self.executor_env.tx_task.clone();
+        for multi_task in multi_tasks {
+            let multi_task: Vec<TaskDefinition> = multi_task
+                .try_into()
+                .map_err(|e| Status::invalid_argument(format!("{}", e)))?;
+            for task in multi_task {
+                task_sender
+                    .send(CuratorTaskDefinition {
+                        scheduler_id: scheduler_id.clone(),
+                        task,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        Ok(Response::new(LaunchMultiTaskResult { success: true }))
     }
 
     async fn stop_executor(

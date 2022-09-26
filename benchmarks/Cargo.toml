@@ -18,7 +18,7 @@
 [package]
 name = "ballista-benchmarks"
 description = "Ballista Benchmarks"
-version = "5.0.0"
+version = "0.8.0"
 edition = "2021"
 authors = ["Apache Arrow <dev@arrow.apache.org>"]
 homepage = "https://github.com/apache/arrow-ballista"
@@ -32,9 +32,9 @@ simd = ["datafusion/simd"]
 snmalloc = ["snmalloc-rs"]
 
 [dependencies]
-ballista = { path = "../ballista/rust/client" }
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "312a7dd3b9642e64555bd0cfa90f4e10145ea103" }
-datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "312a7dd3b9642e64555bd0cfa90f4e10145ea103" }
+ballista = { path = "../ballista/rust/client", version = "0.8.0" }
+datafusion = "12.0.0"
+datafusion-proto = "12.0.0"
 env_logger = "0.9"
 futures = "0.3"
 mimalloc = { version = "0.1", optional = true, default-features = false }
@@ -47,4 +47,4 @@ structopt = { version = "0.3", default-features = false }
 tokio = { version = "^1.0", features = ["macros", "rt", "rt-multi-thread", "parking_lot"] }
 
 [dev-dependencies]
-ballista-core = { path = "../ballista/rust/core" }
+ballista-core = { path = "../ballista/rust/core", version = "0.8.0" }

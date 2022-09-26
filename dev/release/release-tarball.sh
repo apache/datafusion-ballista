@@ -43,7 +43,7 @@ fi
 version=$1
 rc=$2
 
-tmp_dir=tmp-apache-arrow-datafusion-dist
+tmp_dir=tmp-apache-arrow-ballista-dist
 
 echo "Recreate temporary directory: ${tmp_dir}"
 rm -rf ${tmp_dir}
@@ -52,20 +52,20 @@ mkdir -p ${tmp_dir}
 echo "Clone dev dist repository"
 svn \
   co \
-  https://dist.apache.org/repos/dist/dev/arrow/apache-arrow-datafusion-${version}-rc${rc} \
+  https://dist.apache.org/repos/dist/dev/arrow/apache-arrow-ballista-${version}-rc${rc} \
   ${tmp_dir}/dev
 
 echo "Clone release dist repository"
 svn co https://dist.apache.org/repos/dist/release/arrow ${tmp_dir}/release
 
 echo "Copy ${version}-rc${rc} to release working copy"
-release_version=arrow-datafusion-${version}
+release_version=arrow-ballista-${version}
 mkdir -p ${tmp_dir}/release/${release_version}
 cp -r ${tmp_dir}/dev/* ${tmp_dir}/release/${release_version}/
 svn add ${tmp_dir}/release/${release_version}
 
 echo "Commit release"
-svn ci -m "Apache Arrow DataFusion ${version}" ${tmp_dir}/release
+svn ci -m "Apache Arrow Ballista ${version}" ${tmp_dir}/release
 
 echo "Clean up"
 rm -rf ${tmp_dir}

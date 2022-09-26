@@ -18,7 +18,7 @@
 [package]
 name = "ballista-cli"
 description = "Command Line Client for Ballista distributed query engine."
-version = "0.7.0"
+version = "0.8.0"
 authors = ["Apache Arrow <dev@arrow.apache.org>"]
 edition = "2021"
 keywords = [ "ballista", "cli", ]
@@ -29,10 +29,10 @@ rust-version = "1.59"
 readme = "README.md"
 
 [dependencies]
-ballista = { path = "../ballista/rust/client", version = "0.7.0" }
+ballista = { path = "../ballista/rust/client", version = "0.8.0" }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "312a7dd3b9642e64555bd0cfa90f4e10145ea103" }
-datafusion-cli = { git = "https://github.com/apache/arrow-datafusion", rev = "312a7dd3b9642e64555bd0cfa90f4e10145ea103" }
+datafusion = "12.0.0"
+datafusion-cli = "12.0.0"
 dirs = "4.0.0"
 env_logger = "0.9"
 mimalloc = { version = "0.1", default-features = false }

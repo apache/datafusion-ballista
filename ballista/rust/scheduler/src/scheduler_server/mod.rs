@@ -16,22 +16,26 @@
 // under the License.
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ballista_core::config::TaskSchedulingPolicy;
 use ballista_core::error::Result;
-use ballista_core::event_loop::EventLoop;
-use ballista_core::serde::protobuf::TaskStatus;
+use ballista_core::event_loop::{EventLoop, EventSender};
+use ballista_core::serde::protobuf::{StopExecutorParams, TaskStatus};
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use datafusion::execution::context::{default_session_builder, SessionState};
 use datafusion::logical_plan::LogicalPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 
+use log::{error, warn};
+
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
 use crate::state::backend::StateBackendClient;
-use crate::state::executor_manager::ExecutorReservation;
+use crate::state::executor_manager::{
+    ExecutorManager, ExecutorReservation, DEFAULT_EXECUTOR_TIMEOUT_SECONDS,
+};
 use crate::state::SchedulerState;
 
 // include the generated protobuf source as a submodule
@@ -127,6 +131,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     pub async fn init(&mut self) -> Result<()> {
         self.state.init().await?;
         self.query_stage_event_loop.start()?;
+        self.expire_dead_executors()?;
 
         Ok(())
     }
@@ -154,6 +159,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         executor_id: &str,
         tasks_status: Vec<TaskStatus>,
     ) -> Result<()> {
+        // We might receive buggy task updates from dead executors.
+        if self.state.executor_manager.is_dead_executor(executor_id) {
+            let error_msg = format!(
+                "Receive buggy tasks status from dead Executor {}, task status update ignored.",
+                executor_id
+            );
+            warn!("{}", error_msg);
+            return Ok(());
+        }
         self.query_stage_event_loop
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::TaskUpdating(
@@ -171,6 +185,91 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::ReservationOffering(reservations))
             .await
+    }
+
+    /// Spawn an async task which periodically check the active executors' status and
+    /// expire the dead executors
+    fn expire_dead_executors(&self) -> Result<()> {
+        let state = self.state.clone();
+        let event_sender = self.query_stage_event_loop.get_sender()?;
+        tokio::task::spawn(async move {
+            loop {
+                let expired_executors = state.executor_manager.get_expired_executors();
+                for expired in expired_executors {
+                    let executor_id = expired.executor_id.clone();
+                    let executor_manager = state.executor_manager.clone();
+                    let stop_reason = format!(
+                        "Executor {} heartbeat timed out after {}s",
+                        executor_id.clone(),
+                        DEFAULT_EXECUTOR_TIMEOUT_SECONDS
+                    );
+                    warn!("{}", stop_reason.clone());
+                    let sender_clone = event_sender.clone();
+                    Self::remove_executor(
+                        executor_manager,
+                        sender_clone,
+                        &executor_id,
+                        Some(stop_reason.clone()),
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        let msg = format!(
+                            "Error to remove Executor in Scheduler due to {:?}",
+                            e
+                        );
+                        error!("{}", msg);
+                    });
+
+                    match state.executor_manager.get_client(&executor_id).await {
+                        Ok(mut client) => {
+                            tokio::task::spawn(async move {
+                                match client
+                                    .stop_executor(StopExecutorParams {
+                                        reason: stop_reason,
+                                        force: true,
+                                    })
+                                    .await
+                                {
+                                    Err(error) => {
+                                        warn!(
+                                            "Failed to send stop_executor rpc due to, {}",
+                                            error
+                                        );
+                                    }
+                                    Ok(_value) => {}
+                                }
+                            });
+                        }
+                        Err(_) => {
+                            warn!("Executor is already dead, failed to connect to Executor {}", executor_id);
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(DEFAULT_EXECUTOR_TIMEOUT_SECONDS))
+                    .await;
+            }
+        });
+        Ok(())
+    }
+
+    pub(crate) async fn remove_executor(
+        executor_manager: ExecutorManager,
+        event_sender: EventSender<QueryStageSchedulerEvent>,
+        executor_id: &str,
+        reason: Option<String>,
+    ) -> Result<()> {
+        // Update the executor manager immediately here
+        executor_manager
+            .remove_executor(executor_id, reason.clone())
+            .await?;
+
+        event_sender
+            .post_event(QueryStageSchedulerEvent::ExecutorLost(
+                executor_id.to_owned(),
+                reason,
+            ))
+            .await?;
+        Ok(())
     }
 }
 
@@ -311,9 +410,7 @@ mod test {
         Ok(())
     }
 
-    /// This test will exercise the push-based scheduling. We setup our scheduler server
-    /// with `SchedulerEventObserver` to listen to `SchedulerServerEvents` and then just immediately
-    /// complete the tasks.
+    /// This test will exercise the push-based scheduling.
     #[tokio::test]
     async fn test_push_scheduling() -> Result<()> {
         let plan = test_plan();
