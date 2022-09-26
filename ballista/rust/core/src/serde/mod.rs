@@ -19,6 +19,7 @@
 //! as convenience code for interacting with the generated code.
 
 use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
+use arrow_flight::sql::ProstMessageExt;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::logical_plan::{FunctionRegistry, Operator};
 use datafusion::physical_plan::join_utils::JoinSide;
@@ -38,6 +39,19 @@ pub use generated::ballista as protobuf;
 pub mod generated;
 pub mod physical_plan;
 pub mod scheduler;
+
+impl ProstMessageExt for protobuf::Action {
+    fn type_url() -> &'static str {
+        "type.googleapis.com/arrow.flight.protocol.sql.Action"
+    }
+
+    fn as_any(&self) -> prost_types::Any {
+        prost_types::Any {
+            type_url: protobuf::Action::type_url().to_string(),
+            value: self.encode_to_vec(),
+        }
+    }
+}
 
 pub fn decode_protobuf(bytes: &[u8]) -> Result<BallistaAction, BallistaError> {
     let mut buf = Cursor::new(bytes);

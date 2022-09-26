@@ -44,6 +44,8 @@ impl TryInto<Action> for protobuf::Action {
                 stage_id: fetch.stage_id as usize,
                 partition_id: fetch.partition_id as usize,
                 path: fetch.path,
+                host: fetch.host,
+                port: fetch.port as u16,
             }),
             _ => Err(BallistaError::General(
                 "scheduler::from_proto(Action) invalid or missing action".to_owned(),
