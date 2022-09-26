@@ -48,6 +48,7 @@ use ballista_executor::flight_service::BallistaFlightService;
 use ballista_executor::metrics::LoggingMetricsCollector;
 use ballista_executor::shutdown::Shutdown;
 use ballista_executor::shutdown::ShutdownNotifier;
+use ballista_executor::terminate;
 use config::prelude::*;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion_proto::protobuf::LogicalPlanNode;
@@ -265,8 +266,12 @@ async fn main() -> Result<()> {
             (true, msg)
         },
         _ = signal::ctrl_c() => {
-             // sometimes OS can not log ??
             let msg = "executor received ctrl-c event.".to_string();
+             info!("{:?}", msg);
+            (true, msg)
+        },
+        _ = terminate::sig_term() => {
+            let msg = "executor received terminate signal.".to_string();
              info!("{:?}", msg);
             (true, msg)
         },
