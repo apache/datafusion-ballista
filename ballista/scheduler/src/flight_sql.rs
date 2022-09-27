@@ -235,26 +235,41 @@ impl FlightSqlServiceImpl {
     ) -> Result<Vec<FlightEndpoint>, Status> {
         let mut fieps: Vec<_> = vec![];
         for loc in completed.partition_location.iter() {
-            let (host, port) = if let Some(ref md) = loc.executor_meta {
+            let (exec_host, exec_port) = if let Some(ref md) = loc.executor_meta {
                 (md.host.clone(), md.port)
             } else {
                 Err(Status::internal(
-                    "Invalid partition location, missing executor metadata".to_string(),
+                    "Invalid partition location, missing executor metadata and advertise_endpoint flag is undefined.".to_string(),
                 ))?
             };
+
+            let (host, port) = match &self.server.advertise_endpoint {
+                Some(endpoint) => {
+                    let advertise_endpoint_vec: Vec<&str> = endpoint.split(":").collect();
+                    match advertise_endpoint_vec.as_slice() {
+                        [host_ip, port] => {
+                            (String::from(*host_ip), FromStr::from_str(*port).expect("Failed to parse port from advertise-endpoint."))
+                        }
+                        _ => {
+                            Err(Status::internal("advertise-endpoint flag has incorrect format. Expected IP:Port".to_string()))?
+                        }
+                    }
+                }
+                None => (exec_host.clone(), exec_port.clone()),
+            };
+
             let fetch = if let Some(ref id) = loc.partition_id {
                 let fetch = protobuf::FetchPartition {
                     job_id: id.job_id.clone(),
                     stage_id: id.stage_id,
                     partition_id: id.partition_id,
                     path: loc.path.clone(),
-                    host: host.clone(),
-                    port,
+                    // Use executor ip:port for routing to flight result
+                    host: exec_host.clone(),
+                    port: exec_port,
                 };
                 protobuf::Action {
-                    action_type: Some(protobuf::action::ActionType::FetchPartition(
-                        fetch,
-                    )),
+                    action_type: Some(FetchPartition(fetch)),
                     settings: vec![],
                 }
             } else {
@@ -266,7 +281,7 @@ impl FlightSqlServiceImpl {
             } else {
                 Err(Status::internal("Error getting stats".to_string()))?
             }
-            let authority = format!("{}:{}", &host, &port); // TODO: my host & port
+            let authority = format!("{}:{}", &host, &port);
             let loc = Location {
                 uri: format!("grpc+tcp://{}", authority),
             };

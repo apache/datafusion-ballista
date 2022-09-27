@@ -45,7 +45,7 @@ use ballista_scheduler::state::backend::{StateBackend, StateBackendClient};
 
 use ballista_core::config::TaskSchedulingPolicy;
 use ballista_core::serde::BallistaCodec;
-use ballista_core::utils::default_session_builder;
+
 use log::info;
 
 #[macro_use]
@@ -75,6 +75,7 @@ async fn start_server(
     scheduling_policy: TaskSchedulingPolicy,
     slots_policy: SlotsPolicy,
     event_loop_buffer_size: usize,
+    advertise_endpoint: Option<String>,
 ) -> Result<()> {
     info!(
         "Ballista v{} Scheduler listening on {:?}",
@@ -85,6 +86,7 @@ async fn start_server(
         "Starting Scheduler grpc server with task scheduling policy of {:?}",
         scheduling_policy
     );
+
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
         match scheduling_policy {
             TaskSchedulingPolicy::PushStaged => SchedulerServer::new_with_policy(
@@ -93,14 +95,15 @@ async fn start_server(
                 scheduling_policy,
                 slots_policy,
                 BallistaCodec::default(),
-                default_session_builder,
                 event_loop_buffer_size,
+                advertise_endpoint,
             ),
             _ => SchedulerServer::new(
                 scheduler_name,
                 config_backend.clone(),
                 BallistaCodec::default(),
                 event_loop_buffer_size,
+                advertise_endpoint,
             ),
         };
 
@@ -255,6 +258,7 @@ async fn main() -> Result<()> {
         scheduling_policy,
         slots_policy,
         event_loop_buffer_size,
+        opt.advertise_endpoint,
     )
     .await?;
     Ok(())

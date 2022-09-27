@@ -25,6 +25,11 @@ name = "version"
 doc = "Print version of this executable"
 
 [[param]]
+name = "advertise_endpoint"
+type = "String"
+doc = "Route for proxying flight results via scheduler. Should be of the form 'IP:PORT'"
+
+[[param]]
 abbr = "b"
 name = "config_backend"
 type = "ballista_scheduler::state::backend::StateBackend"
