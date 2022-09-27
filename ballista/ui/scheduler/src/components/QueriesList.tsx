@@ -29,6 +29,7 @@ import {
 import { Column, DateCell, DataTable, LinkCell } from "./DataTable";
 import { FaStop } from "react-icons/fa";
 import { GrDocumentDownload, GrPowerReset } from "react-icons/gr";
+import fileDownload from "js-file-download";
 
 export enum QueryStatus {
   QUEUED = "QUEUED",
@@ -49,11 +50,31 @@ export interface QueriesListProps {
 }
 
 export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
+  const handleDownload = (url: string, filename: string) => {
+    fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+    }).then(async (res) => {
+      fileDownload(await res.arrayBuffer(), filename);
+    });
+  };
   return (
     <Flex>
-      <FaStop color={"red"} title={"stop"} />
+      <FaStop color={"red"} title={"Stop this job"} />
       <Box mx={2}></Box>
-      <GrDocumentDownload title={"plan"} />
+      <a
+        onClick={() => {
+          handleDownload(
+            "/api/job" + props.value + "/dot",
+            props.value + ".dot"
+          );
+        }}
+        href={"/api/job/" + props.value + "/dot"}
+      >
+        <GrDocumentDownload title={"Download DOT Plan"} />
+      </a>
     </Flex>
   );
 };
@@ -87,7 +108,8 @@ const columns: Column<any>[] = [
   },
   {
     Header: "Actions",
-    accessor: "",
+    accessor: "job_id",
+    id: "action_cell",
     Cell: ActionsCell,
   },
 ];

@@ -11,6 +11,7 @@
 // limitations under the License.
 
 use crate::scheduler_server::SchedulerServer;
+use crate::state::execution_graph_dot::ExecutionGraphDot;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::AsExecutionPlan;
 use ballista_core::BALLISTA_VERSION;
@@ -157,5 +158,22 @@ pub(crate) async fn get_job_summary<T: AsLogicalPlan, U: AsExecutionPlan>(
         _ => Ok(warp::reply::json(&JobSummaryResponse {
             summary: "Not Found".to_string(),
         })),
+    }
+}
+/// Generate a dot graph for the specified job id and return as plain text
+pub(crate) async fn get_job_dot_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
+    data_server: SchedulerServer<T, U>,
+    job_id: String,
+) -> Result<String, Rejection> {
+    let graph = data_server
+        .state
+        .task_manager
+        .get_job_execution_graph(&job_id)
+        .await
+        .map_err(|_| warp::reject())?;
+
+    match graph {
+        Some(x) => ExecutionGraphDot::generate(x).map_err(|_| warp::reject()),
+        _ => Ok("Not Found".to_string()),
     }
 }
