@@ -57,6 +57,5 @@ Now access to http://localhost:3000/
 **NOTE**: If you get an error when running the `yarn start` command above, make sure
 to use the `lts` version of npm.
 
-You can install it by running: `npm install --lts`, then issue the command
-`npm use --lts`. This should fix any errors that may occur when trying to start
-the Ballista UI project.
+You can install it by running: `npm install --lts`. This should fix any errors that
+may occur when trying to start the Ballista UI project.
