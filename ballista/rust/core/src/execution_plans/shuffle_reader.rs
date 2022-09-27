@@ -31,16 +31,17 @@ use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::{
     DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream, Statistics,
 };
-use futures::TryStreamExt;
+use futures::{Stream, StreamExt, TryStreamExt};
 
 use datafusion::execution::context::TaskContext;
+use datafusion::physical_plan::common::AbortOnDropMany;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use itertools::Itertools;
 use log::{error, info};
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
-use tokio::sync::mpsc::Receiver;
 use tokio::sync::{mpsc, Semaphore};
+use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
 
 /// ShuffleReaderExec reads partitions that have already been materialized by a ShuffleWriterExec
@@ -131,11 +132,11 @@ impl ExecutionPlan for ShuffleReaderExec {
         // Shuffle partitions for evenly send fetching partition requests to avoid hot executors within multiple tasks
         partition_locations.shuffle(&mut thread_rng());
         let response_receiver =
-            send_fetch_partitions(partition_locations, max_request_num)?;
+            send_fetch_partitions(partition_locations, max_request_num);
 
         let result = RecordBatchStreamAdapter::new(
             Arc::new(self.schema.as_ref().clone()),
-            ReceiverStream::new(response_receiver).try_flatten(),
+            response_receiver.try_flatten(),
         );
         Ok(Box::pin(result))
     }
@@ -189,16 +190,50 @@ fn stats_for_partitions(
     )
 }
 
+/// Adapter for a tokio ReceiverStream that implements the SendableRecordBatchStream interface
+struct AbortableReceiverStream {
+    inner: ReceiverStream<Result<SendableRecordBatchStream>>,
+
+    #[allow(dead_code)]
+    drop_helper: AbortOnDropMany<()>,
+}
+
+impl AbortableReceiverStream {
+    /// Construct a new SendableRecordBatchReceiverStream which will send batches of the specified schema from inner
+    pub fn create(
+        rx: tokio::sync::mpsc::Receiver<Result<SendableRecordBatchStream>>,
+        join_handles: Vec<JoinHandle<()>>,
+    ) -> AbortableReceiverStream {
+        let inner = ReceiverStream::new(rx);
+        Self {
+            inner,
+            drop_helper: AbortOnDropMany(join_handles),
+        }
+    }
+}
+
+impl Stream for AbortableReceiverStream {
+    type Item = Result<SendableRecordBatchStream>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.inner.poll_next_unpin(cx)
+    }
+}
+
 fn send_fetch_partitions(
     partition_locations: Vec<PartitionLocation>,
     max_request_num: usize,
-) -> Result<Receiver<Result<SendableRecordBatchStream>>> {
+) -> AbortableReceiverStream {
     let (response_sender, response_receiver) = mpsc::channel(max_request_num);
     let semaphore = Arc::new(Semaphore::new(max_request_num));
+    let mut join_handles = vec![];
     for p in partition_locations.into_iter() {
         let semaphore = semaphore.clone();
         let response_sender = response_sender.clone();
-        tokio::spawn(async move {
+        let join_handle = tokio::spawn(async move {
             // Block if exceeds max request number
             let permit = semaphore.acquire_owned().await.unwrap();
             let r = fetch_partition(&p).await;
@@ -209,9 +244,10 @@ fn send_fetch_partitions(
             // Increase semaphore by dropping existing permits.
             drop(permit);
         });
+        join_handles.push(join_handle);
     }
 
-    Ok(response_receiver)
+    AbortableReceiverStream::create(response_receiver, join_handles)
 }
 
 #[cfg(not(test))]
@@ -336,11 +372,11 @@ mod tests {
         let schema = get_test_partition_schema();
         let partition_locations = get_test_partition_locations(partition_num);
         let response_receiver =
-            send_fetch_partitions(partition_locations, max_request_num).unwrap();
+            send_fetch_partitions(partition_locations, max_request_num);
 
         let stream = RecordBatchStreamAdapter::new(
             Arc::new(schema),
-            ReceiverStream::new(response_receiver).try_flatten(),
+            response_receiver.try_flatten(),
         );
 
         let result = common::collect(Box::pin(stream)).await.unwrap();
