@@ -249,7 +249,8 @@ fn sanitize(str: &str, max_len: Option<usize>) -> String {
     // so the slice is safe (not splitting unicode character bytes)
     if let Some(limit) = max_len {
         if sanitized.len() > limit {
-            return String::from(&sanitized[..limit]) + " ...";
+            sanitized.truncate(limit);
+            return sanitized + " ...";
         }
     }
     sanitized
