@@ -192,23 +192,21 @@ async fn main() -> Result<()> {
             let mut interval_time =
                 time::interval(Duration::from_secs((ttl_seconds / 2) as u64));
             info!(
-            "Enable cleanup log loop which cleanup_log_ttl is {} hours in log_dir {}",
-            cleanup_log_ttl, &log_dir
-        );
+                "Enable cleanup log loop which cleanup_log_ttl is {} hours in log_dir {}",
+                cleanup_log_ttl, &log_dir
+            );
 
             tokio::spawn(async move {
                 loop {
                     interval_time.tick().await;
                     if let Err(e) =
-                    ballista_core::utils::clean_log_loop(&log_dir, ttl_seconds).await
+                        ballista_core::utils::clean_log_loop(&log_dir, ttl_seconds).await
                     {
                         error!("Ballista executor fail to clean_log {:?}", e)
                     }
                 }
             });
         }
-
-
     } else {
         //Console layer
         let rust_log = env::var(EnvFilter::DEFAULT_ENV);

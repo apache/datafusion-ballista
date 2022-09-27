@@ -22,7 +22,7 @@ use crate::execution_plans::{
 };
 use crate::serde::scheduler::PartitionStats;
 use async_trait::async_trait;
-use chrono::{Duration as Cduration, DateTime, Utc};
+use chrono::{DateTime, Duration as Cduration, Utc};
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::{ipc::writer::FileWriter, record_batch::RecordBatch};
 use datafusion::error::DataFusionError;
@@ -47,13 +47,13 @@ use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
 use futures::StreamExt;
+use log::{info, warn};
 use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use std::{fs::File, pin::Pin};
-use log::{info, warn};
 use tokio::fs;
 use tonic::codegen::StdError;
 use tonic::transport::{Channel, Error, Server};
