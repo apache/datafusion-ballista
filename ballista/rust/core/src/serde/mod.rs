@@ -325,6 +325,7 @@ mod tests {
     use crate::serde::{
         AsExecutionPlan, AsLogicalPlan, LogicalExtensionCodec, PhysicalExtensionCodec,
     };
+    use crate::utils::with_object_store_provider;
     use datafusion_proto::protobuf::LogicalPlanNode;
     use proto::{TopKExecProto, TopKPlanProto};
 
@@ -627,7 +628,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_extension_plan() -> crate::error::Result<()> {
-        let runtime = Arc::new(RuntimeEnv::new(RuntimeConfig::default()).unwrap());
+        let runtime = Arc::new(
+            RuntimeEnv::new(with_object_store_provider(RuntimeConfig::default()))
+                .unwrap(),
+        );
         let session_state =
             SessionState::with_config_rt(SessionConfig::new(), runtime.clone())
                 .with_query_planner(Arc::new(TopKQueryPlanner {}));
