@@ -41,7 +41,9 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::ExecutorSpecification;
 use ballista_core::serde::BallistaCodec;
-use ballista_core::utils::{create_grpc_client_connection, create_grpc_server};
+use ballista_core::utils::{
+    create_grpc_client_connection, create_grpc_server, with_object_store_provider,
+};
 use ballista_core::{print_version, BALLISTA_VERSION};
 use ballista_executor::executor::Executor;
 use ballista_executor::flight_service::BallistaFlightService;
@@ -162,7 +164,9 @@ async fn main() -> Result<()> {
         ),
     };
 
-    let config = RuntimeConfig::new().with_temp_file_path(work_dir.clone());
+    let config = with_object_store_provider(
+        RuntimeConfig::new().with_temp_file_path(work_dir.clone()),
+    );
     let runtime = Arc::new(RuntimeEnv::new(config).map_err(|_| {
         BallistaError::Internal("Failed to init Executor RuntimeEnv".to_owned())
     })?);

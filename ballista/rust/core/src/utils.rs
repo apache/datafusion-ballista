@@ -24,6 +24,7 @@ use crate::serde::scheduler::PartitionStats;
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::{ipc::writer::FileWriter, record_batch::RecordBatch};
+use datafusion::datasource::object_store::{ObjectStoreProvider, ObjectStoreRegistry};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::{
     QueryPlanner, SessionConfig, SessionContext, SessionState,
@@ -46,6 +47,7 @@ use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
 use futures::StreamExt;
+use object_store::ObjectStore;
 use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -54,9 +56,38 @@ use std::time::Duration;
 use std::{fs::File, pin::Pin};
 use tonic::codegen::StdError;
 use tonic::transport::{Channel, Error, Server};
+use url::Url;
+
+/// Default session builder using the provided configuration
+pub fn default_session_builder(config: SessionConfig) -> SessionState {
+    SessionState::with_config_rt(
+        config,
+        Arc::new(
+            RuntimeEnv::new(with_object_store_provider(RuntimeConfig::default()))
+                .unwrap(),
+        ),
+    )
+}
+
+/// Get a RuntimeConfig with specific ObjectStoreDetector in the ObjectStoreRegistry
+pub fn with_object_store_provider(config: RuntimeConfig) -> RuntimeConfig {
+    config.with_object_store_registry(Arc::new(ObjectStoreRegistry::new_with_provider(
+        Some(Arc::new(FeatureBasedObjectStoreProvider)),
+    )))
+}
+
+/// An object store detector based on which features are enable for different kinds of object stores
+pub struct FeatureBasedObjectStoreProvider;
+
+impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
+    /// Detector a suitable object store based on its url if possible
+    /// Return the key and object store
+    fn get_by_url(&self, _url: &Url) -> Option<Arc<dyn ObjectStore>> {
+        None
+    }
+}
 
 /// Stream data to disk in Arrow IPC format
-
 pub async fn write_stream_to_disk(
     stream: &mut Pin<Box<dyn RecordBatchStream + Send>>,
     path: &str,
@@ -238,7 +269,10 @@ pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
         .with_information_schema(true);
     let mut session_state = SessionState::with_config_rt(
         session_config,
-        Arc::new(RuntimeEnv::new(RuntimeConfig::default()).unwrap()),
+        Arc::new(
+            RuntimeEnv::new(with_object_store_provider(RuntimeConfig::default()))
+                .unwrap(),
+        ),
     )
     .with_query_planner(planner);
     session_state.session_id = session_id;

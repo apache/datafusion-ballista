@@ -294,8 +294,9 @@ mod test {
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
     };
     use ballista_core::serde::BallistaCodec;
+    use ballista_core::utils::default_session_builder;
+
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::execution::context::default_session_builder;
     use datafusion::logical_expr::{col, sum};
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::prelude::SessionContext;
