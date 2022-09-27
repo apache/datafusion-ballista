@@ -64,17 +64,16 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
     <Flex>
       <FaStop color={"red"} title={"Stop this job"} />
       <Box mx={2}></Box>
-      <a
+      <button
         onClick={() => {
           handleDownload(
-            "/api/job" + props.value + "/dot",
+            "/api/job/" + props.value + "/dot",
             props.value + ".dot"
           );
         }}
-        href={"/api/job/" + props.value + "/dot"}
       >
         <GrDocumentDownload title={"Download DOT Plan"} />
-      </a>
+      </button>
     </Flex>
   );
 };
