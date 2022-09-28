@@ -94,7 +94,10 @@ impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
             }
         }
 
-        Err(DataFusionError::Execution(format!("No object store available for {}", url)))
+        Err(DataFusionError::Execution(format!(
+            "No object store available for {}",
+            url
+        )))
     }
 }
 

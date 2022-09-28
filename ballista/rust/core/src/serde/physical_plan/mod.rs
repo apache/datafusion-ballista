@@ -1447,7 +1447,7 @@ mod roundtrip_tests {
         roundtrip_test(Arc::new(SortExec::try_new(
             sort_exprs,
             Arc::new(EmptyExec::new(false, schema)),
-            None
+            None,
         )?))
     }
 
