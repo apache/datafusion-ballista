@@ -96,6 +96,11 @@ cargo run --release --bin sql
 ### Source code for distributed SQL example
 
 ```rust
+use ballista::prelude::*;
+use datafusion::prelude::CsvReadOptions;
+
+/// This example demonstrates executing a simple query against an Arrow data source (CSV) and
+/// fetching results, using SQL
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = BallistaConfig::builder()
@@ -103,14 +108,23 @@ async fn main() -> Result<()> {
         .build()?;
     let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
 
-    let filename = "testdata/alltypes_plain.parquet";
+    // register csv file with the execution context
+    ctx.register_csv(
+        "test",
+        "testdata/aggregate_test_100.csv",
+        CsvReadOptions::new(),
+    )
+    .await?;
 
-    // define the query using the DataFrame trait
+    // execute the query
     let df = ctx
-        .read_parquet(filename, ParquetReadOptions::default())
-        .await?
-        .select_columns(&["id", "bool_col", "timestamp_col"])?
-        .filter(col("id").gt(lit(1)))?;
+        .sql(
+            "SELECT c1, MIN(c12), MAX(c12) \
+        FROM test \
+        WHERE c11 > 0.1 AND c11 < 0.9 \
+        GROUP BY c1",
+        )
+        .await?;
 
     // print the results
     df.show().await?;
