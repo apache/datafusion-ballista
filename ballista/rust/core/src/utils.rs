@@ -45,6 +45,8 @@ use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{metrics, ExecutionPlan, RecordBatchStream};
 #[cfg(feature = "hdfs")]
 use datafusion_objectstore_hdfs::object_store::hdfs::HadoopFileSystem;
+#[cfg(feature = "s3")]
+use object_store::aws::AmazonS3Builder;
 use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
@@ -90,6 +92,19 @@ impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
         {
             let store = HadoopFileSystem::new(url.as_str());
             if let Some(store) = store {
+                return Ok(Arc::new(store));
+            }
+        }
+
+        #[cfg(feature = "s3")]
+        {
+            // TODO check if starts with s3://
+
+            println!("get_by_url() {}", url);
+
+            if let Some(bucket_name) = url.host_str() {
+                let store = AmazonS3Builder::from_env()
+                    .with_bucket_name(bucket_name).build()?;
                 return Ok(Arc::new(store));
             }
         }
