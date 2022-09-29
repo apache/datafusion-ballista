@@ -15,20 +15,27 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM ubuntu:22.04
+name: TypeScript Release Build
 
-ARG RELEASE_FLAG=release
+on:
+  # always trigger
+  push:
+  pull_request:
 
-ENV RELEASE_FLAG=${RELEASE_FLAG}
-ENV RUST_LOG=info
-ENV RUST_BACKTRACE=full
+jobs:
+  yarn-build:
+    name: Yarn build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nodejs npm
+          npm install -g yarn
 
-RUN apt-get update && apt-get install -y netcat
-
-COPY target/$RELEASE_FLAG/ballista-executor /root/ballista-executor
-
-# Expose Ballista Executor gRPC port
-EXPOSE 50051
-
-COPY dev/docker/executor-entrypoint.sh /root/executor-entrypoint.sh
-ENTRYPOINT ["/root/executor-entrypoint.sh"]
+      - name: Run yarn build
+        run: |
+          cd ballista/ui/scheduler
+          yarn install
+          CI=false yarn build # TODO: fix warnings then remove CI=false

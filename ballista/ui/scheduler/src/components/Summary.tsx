@@ -46,7 +46,13 @@ export const Summary: React.FunctionComponent<SummaryProps> = ({
   schedulerState,
 }) => {
   if (!schedulerState) {
-    return <Text>Scheduler isn't running</Text>;
+    return (
+      <div>
+        <Text color={"red"}>
+          Scheduler unavailable: Server may be down or unreachable
+        </Text>
+      </div>
+    );
   }
 
   return (

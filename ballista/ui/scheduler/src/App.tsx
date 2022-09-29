@@ -19,7 +19,7 @@ import React, { useState, useEffect } from "react";
 import { Box, Grid, VStack } from "@chakra-ui/react";
 import { Header } from "./components/Header";
 import { Summary } from "./components/Summary";
-import { QueriesList, Query, QueryStatus } from "./components/QueriesList";
+import { QueriesList } from "./components/QueriesList";
 import { Footer } from "./components/Footer";
 
 import "./App.css";
