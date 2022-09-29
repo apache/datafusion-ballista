@@ -77,18 +77,8 @@ pub fn default_session_builder(config: SessionConfig) -> SessionState {
 pub fn with_object_store_provider(config: RuntimeConfig) -> RuntimeConfig {
     let feature_based_provider: Arc<dyn ObjectStoreProvider> =
         Arc::new(FeatureBasedObjectStoreProvider);
-    // TODO this registers the provider for urls starting with `file://` only
     let registry =
         ObjectStoreRegistry::new_with_provider(Some(feature_based_provider.clone()));
-
-    // TODO HACK so I can continue testing
-    let url = Url::parse("s3://andygrove-benchmark-data/test.csv").unwrap();
-    registry.register_store(
-        "s3",
-        "andygrove-benchmark-data",
-        feature_based_provider.get_by_url(&url).unwrap(),
-    );
-
     config.with_object_store_registry(Arc::new(registry))
 }
 
@@ -100,7 +90,7 @@ impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
     /// Return the key and object store
     #[allow(unused_variables)]
     fn get_by_url(&self, url: &Url) -> datafusion::error::Result<Arc<dyn ObjectStore>> {
-        println!("get_by_url() {}", url);
+        println!("FeatureBasedObjectStoreProvider::get_by_url() {}", url);
 
         #[cfg(feature = "hdfs")]
         {
@@ -112,12 +102,13 @@ impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
 
         #[cfg(feature = "s3")]
         {
-            // TODO check if starts with s3://
-            if let Some(bucket_name) = url.host_str() {
-                let store = AmazonS3Builder::from_env()
-                    .with_bucket_name(bucket_name)
-                    .build()?;
-                return Ok(Arc::new(store));
+            if url.to_string().starts_with("s3://") {
+                if let Some(bucket_name) = url.host_str() {
+                    let store = AmazonS3Builder::from_env()
+                        .with_bucket_name(bucket_name)
+                        .build()?;
+                    return Ok(Arc::new(store));
+                }
             }
         }
 
