@@ -26,9 +26,9 @@ import {
   Flex,
   Box,
 } from "@chakra-ui/react";
-import { Column, DateCell, DataTable, LinkCell } from "./DataTable";
+import { Column, DataTable, LinkCell } from "./DataTable";
 import { FaStop } from "react-icons/fa";
-import { GrDocumentDownload, GrPowerReset } from "react-icons/gr";
+import { GrDocumentDownload } from "react-icons/gr";
 import fileDownload from "js-file-download";
 
 export enum QueryStatus {

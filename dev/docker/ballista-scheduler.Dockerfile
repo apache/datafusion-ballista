@@ -22,6 +22,9 @@ ARG RELEASE_FLAG=release
 ENV RELEASE_FLAG=${RELEASE_FLAG}
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y nginx netcat
 
 COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
 
