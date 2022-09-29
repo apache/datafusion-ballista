@@ -98,15 +98,15 @@ pub async fn main() -> Result<()> {
         env::set_current_dir(&p).unwrap();
     };
 
-    let mut session_config = SessionConfig::new().with_information_schema(true);
-
-    if let Some(batch_size) = args.batch_size {
-        session_config = session_config.with_batch_size(batch_size);
-    };
-
     let mut ctx: Context = match (args.host, args.port) {
         (Some(ref h), Some(p)) => Context::new_remote(h, p).await?,
-        _ => Context::new_local(&session_config),
+        _ => {
+            let mut session_config = SessionConfig::new().with_information_schema(true);
+            if let Some(batch_size) = args.batch_size {
+                session_config = session_config.with_batch_size(batch_size);
+            };
+            Context::new_local(&session_config)
+        }
     };
 
     let mut print_options = PrintOptions {

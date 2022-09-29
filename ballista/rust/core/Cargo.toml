@@ -35,6 +35,7 @@ rustc-args = ["--cfg", "docsrs"]
 force_hash_collisions = ["datafusion/force_hash_collisions"]
 # Used to enable hdfs to be registered in the ObjectStoreRegistry by default
 hdfs = ["datafusion-objectstore-hdfs"]
+s3 = ["object_store/aws"]
 simd = ["datafusion/simd"]
 
 [dependencies]

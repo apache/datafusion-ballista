@@ -49,6 +49,8 @@ use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
 use futures::StreamExt;
+#[cfg(feature = "s3")]
+use object_store::aws::AmazonS3Builder;
 use object_store::ObjectStore;
 use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
@@ -91,6 +93,18 @@ impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
             let store = HadoopFileSystem::new(url.as_str());
             if let Some(store) = store {
                 return Ok(Arc::new(store));
+            }
+        }
+
+        #[cfg(feature = "s3")]
+        {
+            if url.to_string().starts_with("s3://") {
+                if let Some(bucket_name) = url.host_str() {
+                    let store = AmazonS3Builder::from_env()
+                        .with_bucket_name(bucket_name)
+                        .build()?;
+                    return Ok(Arc::new(store));
+                }
             }
         }
 
