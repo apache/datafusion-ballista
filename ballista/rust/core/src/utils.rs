@@ -45,12 +45,12 @@ use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{metrics, ExecutionPlan, RecordBatchStream};
 #[cfg(feature = "hdfs")]
 use datafusion_objectstore_hdfs::object_store::hdfs::HadoopFileSystem;
-#[cfg(feature = "s3")]
-use object_store::aws::AmazonS3Builder;
 use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
 use futures::StreamExt;
+#[cfg(feature = "s3")]
+use object_store::aws::AmazonS3Builder;
 use object_store::ObjectStore;
 use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
@@ -75,14 +75,19 @@ pub fn default_session_builder(config: SessionConfig) -> SessionState {
 
 /// Get a RuntimeConfig with specific ObjectStoreDetector in the ObjectStoreRegistry
 pub fn with_object_store_provider(config: RuntimeConfig) -> RuntimeConfig {
-    let feature_based_provider: Arc<dyn ObjectStoreProvider> = Arc::new(FeatureBasedObjectStoreProvider);
+    let feature_based_provider: Arc<dyn ObjectStoreProvider> =
+        Arc::new(FeatureBasedObjectStoreProvider);
     // TODO this registers the provider for urls starting with `file://` only
-    let registry = ObjectStoreRegistry::new_with_provider(Some(feature_based_provider.clone()));
+    let registry =
+        ObjectStoreRegistry::new_with_provider(Some(feature_based_provider.clone()));
 
     // TODO HACK so I can continue testing
     let url = Url::parse("s3://andygrove-benchmark-data/test.csv").unwrap();
-    registry.register_store("s3", "andygrove-benchmark-data",
-                            feature_based_provider.get_by_url(&url).unwrap());
+    registry.register_store(
+        "s3",
+        "andygrove-benchmark-data",
+        feature_based_provider.get_by_url(&url).unwrap(),
+    );
 
     config.with_object_store_registry(Arc::new(registry))
 }
@@ -110,7 +115,8 @@ impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
             // TODO check if starts with s3://
             if let Some(bucket_name) = url.host_str() {
                 let store = AmazonS3Builder::from_env()
-                    .with_bucket_name(bucket_name).build()?;
+                    .with_bucket_name(bucket_name)
+                    .build()?;
                 return Ok(Arc::new(store));
             }
         }

@@ -106,7 +106,7 @@ pub async fn main() -> Result<()> {
                 session_config = session_config.with_batch_size(batch_size);
             };
             Context::new_local(&session_config)
-        },
+        }
     };
 
     let mut print_options = PrintOptions {
