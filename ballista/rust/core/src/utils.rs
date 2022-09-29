@@ -75,11 +75,9 @@ pub fn default_session_builder(config: SessionConfig) -> SessionState {
 
 /// Get a RuntimeConfig with specific ObjectStoreDetector in the ObjectStoreRegistry
 pub fn with_object_store_provider(config: RuntimeConfig) -> RuntimeConfig {
-    let feature_based_provider: Arc<dyn ObjectStoreProvider> =
-        Arc::new(FeatureBasedObjectStoreProvider);
-    let registry =
-        ObjectStoreRegistry::new_with_provider(Some(feature_based_provider.clone()));
-    config.with_object_store_registry(Arc::new(registry))
+    config.with_object_store_registry(Arc::new(ObjectStoreRegistry::new_with_provider(
+        Some(Arc::new(FeatureBasedObjectStoreProvider)),
+    )))
 }
 
 /// An object store detector based on which features are enable for different kinds of object stores
