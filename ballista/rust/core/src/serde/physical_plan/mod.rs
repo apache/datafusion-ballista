@@ -658,7 +658,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         }
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(Arc::new(SortExec::try_new(exprs, input)?))
+                Ok(Arc::new(SortExec::try_new(exprs, input, None)?))
             }
             PhysicalPlanType::Unresolved(unresolved_shuffle) => {
                 let schema = Arc::new(convert_required!(unresolved_shuffle.schema)?);
@@ -1259,6 +1259,7 @@ mod roundtrip_tests {
     use crate::serde::protobuf::PhysicalPlanNode;
     use crate::serde::{AsExecutionPlan, BallistaCodec};
     use datafusion::datafusion_proto::protobuf::LogicalPlanNode;
+    use datafusion::physical_plan::file_format::ParquetScanOptions;
 
     use super::super::super::error::Result;
     use super::super::protobuf;
@@ -1471,6 +1472,7 @@ mod roundtrip_tests {
         roundtrip_test(Arc::new(SortExec::try_new(
             sort_exprs,
             Arc::new(EmptyExec::new(false, schema)),
+            None,
         )?))
     }
 
@@ -1515,11 +1517,18 @@ mod roundtrip_tests {
         };
 
         let predicate = datafusion::prelude::col("col").eq(datafusion::prelude::lit("1"));
-        roundtrip_test(Arc::new(ParquetExec::new(
-            scan_config,
-            Some(predicate),
-            Some(DEFAULT_METADATA_SIZE_HINT),
-        )))
+        roundtrip_test(Arc::new(
+            ParquetExec::new(
+                scan_config,
+                Some(predicate),
+                Some(DEFAULT_METADATA_SIZE_HINT),
+            )
+            .with_scan_options(
+                ParquetScanOptions::default()
+                    .with_pushdown_filters(true)
+                    .with_reorder_predicates(true),
+            ),
+        ))
     }
 
     #[test]
