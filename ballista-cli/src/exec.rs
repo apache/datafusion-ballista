@@ -90,7 +90,7 @@ pub async fn exec_from_files(
 
 /// run and execute SQL statements and commands against a context with the given print options
 pub async fn exec_from_repl(ctx: &BallistaContext, print_options: &mut PrintOptions) {
-    let mut rl = Editor::<CliHelper>::new();
+    let mut rl = Editor::<CliHelper>::new().expect("created editor");
     rl.set_helper(Some(CliHelper::default()));
     rl.load_history(".history").ok();
 

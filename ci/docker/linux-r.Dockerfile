@@ -30,7 +30,7 @@ ENV ARROW_R_DEV=${r_dev}
 ARG devtoolset_version=-1
 ENV DEVTOOLSET_VERSION=${devtoolset_version}
 
-# Make sure R is on the path for the R-hub devel versions (where RPREFIX is set in its dockerfile)
+# Make sure R is on the path for the R-hub devel versions (where RPREFIX is set in its Dockerfile)
 ENV PATH "${RPREFIX}/bin:${PATH}"
 
 # Patch up some of the docker images

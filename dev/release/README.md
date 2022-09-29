@@ -80,7 +80,7 @@ release.
 
 See [#801](https://github.com/apache/arrow-ballista/pull/801) for an example.
 
-Here are the commands that could be used to prepare the `5.1.0` release:
+Here are the commands that could be used to prepare the `0.8.0` release:
 
 ### Update Version
 
@@ -105,8 +105,8 @@ git commit -a -m 'Update version'
 
 ### Update CHANGELOG.md
 
-Define release branch (e.g. `master`), base version tag (e.g. `0.8.0`) and future version tag (e.g. `0.9.0`). Commits between the base version tag and the release branch will be used to
-populate the changelog content.
+Define release branch (e.g. `master`), base version tag (e.g. `0.8.0`) and future version tag (e.g. `0.9.0`). Commits
+between the base version tag and the release branch will be used to populate the changelog content.
 
 You will need a GitHub Personal Access Token for the following steps. Follow
 [these instructions](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token)
@@ -148,7 +148,7 @@ Pick numbers in sequential order, with `0` for `rc0`, `1` for `rc1`, etc.
 While the official release artifacts are signed tarballs and zip files, we also
 tag the commit it was created for convenience and code archaeology.
 
-Using a string such as `5.1.0` as the `<version>`, create and push the tag by running these commands:
+Using a string such as `0.8.0` as the `<version>`, create and push the tag by running these commands:
 
 ```shell
 git fetch apache
@@ -162,7 +162,7 @@ git push apache <version>
 Run `create-tarball.sh` with the `<version>` tag and `<rc>` and you found in previous steps:
 
 ```shell
-GH_TOKEN=<TOKEN> ./dev/release/create-tarball.sh 5.1.0 0
+GH_TOKEN=<TOKEN> ./dev/release/create-tarball.sh 0.8.0 0
 ```
 
 The `create-tarball.sh` script
@@ -180,12 +180,12 @@ Send the email output from the script to dev@arrow.apache.org. The email should 
 
 ```
 To: dev@arrow.apache.org
-Subject: [VOTE][Ballista] Release Apache Arrow Ballista 5.1.0 RC0
+Subject: [VOTE][Ballista] Release Apache Arrow Ballista 0.8.0 RC0
 
 Hi,
 
 I would like to propose a release of Apache Arrow Ballista Implementation,
-version 5.1.0.
+version 0.8.0.
 
 This release candidate is based on commit: a5dd428f57e62db20a945e8b1895de91405958c4 [1]
 The proposed release artifacts and signatures are hosted at [2].
@@ -196,12 +196,12 @@ and vote on the release.
 
 The vote will be open for at least 72 hours.
 
-[ ] +1 Release this as Apache Arrow Ballista 5.1.0
+[ ] +1 Release this as Apache Arrow Ballista 0.8.0
 [ ] +0
-[ ] -1 Do not release this as Apache Arrow Ballista 5.1.0 because...
+[ ] -1 Do not release this as Apache Arrow Ballista 0.8.0 because...
 
 [1]: https://github.com/apache/arrow-ballista/tree/a5dd428f57e62db20a945e8b1895de91405958c4
-[2]: https://dist.apache.org/repos/dist/dev/arrow/apache-arrow-ballista-5.1.0
+[2]: https://dist.apache.org/repos/dist/dev/arrow/apache-arrow-ballista-0.8.0
 [3]: https://github.com/apache/arrow-ballista/blob/a5dd428f57e62db20a945e8b1895de91405958c4/CHANGELOG.md
 ```
 
@@ -212,7 +212,7 @@ For the release to become "official" it needs at least three PMC members to vote
 The `dev/release/verify-release-candidate.sh` is a script in this repository that can assist in the verification process. Run it like:
 
 ```
-./dev/release/verify-release-candidate.sh 5.1.0 0
+./dev/release/verify-release-candidate.sh 0.8.0 0
 ```
 
 #### If the release is not approved
@@ -227,11 +227,11 @@ NOTE: steps in this section can only be done by PMC members.
 ### After the release is approved
 
 Move artifacts to the release location in SVN, e.g.
-https://dist.apache.org/repos/dist/release/arrow/arrow-ballista-5.1.0/, using
+https://dist.apache.org/repos/dist/release/arrow/arrow-ballista-0.8.0/, using
 the `release-tarball.sh` script:
 
 ```shell
-./dev/release/release-tarball.sh 5.1.0 0
+./dev/release/release-tarball.sh 0.8.0 0
 ```
 
 Congratulations! The release is now official!
@@ -260,15 +260,6 @@ instructions](https://doc.rust-lang.org/cargo/reference/publishing.html) to
 create an account and login to crates.io before asking to be added as an owner
 of the following crates:
 
-- [datafusion](https://crates.io/crates/datafusion)
-- [datafusion-cli](https://crates.io/crates/datafusion-cli)
-- [datafusion-common](https://crates.io/crates/datafusion-common)
-- [datafusion-data-access](https://crates.io/crates/datafusion-data-access)
-- [datafusion-expr](https://crates.io/crates/datafusion-expr)
-- [datafusion-jit](https://crates.io/crates/datafusion-jit)
-- [datafusion-physical-expr](https://crates.io/crates/datafusion-physical-expr)
-- [datafusion-proto](https://crates.io/crates/datafusion-proto)
-- [datafusion-row](https://crates.io/crates/datafusion-row)
 - [ballista](https://crates.io/crates/ballista)
 - [ballista-cli](https://crates.io/crates/ballista-cli)
 - [ballista-core](https://crates.io/crates/ballista-core)
@@ -278,7 +269,7 @@ of the following crates:
 Download and unpack the official release tarball
 
 Verify that the Cargo.toml in the tarball contains the correct version
-(e.g. `version = "5.1.0"`) and then publish the crates with the
+(e.g. `version = "0.8.0"`) and then publish the crates with the
 following commands. Crates need to be published in the correct order as shown in this diagram.
 
 ![](crate-deps.svg)
@@ -290,20 +281,6 @@ dot -Tsvg dev/release/crate-deps.dot > dev/release/crate-deps.svg
 ```
 
 ```shell
-(cd datafusion/data-access && cargo publish)
-(cd datafusion/common && cargo publish)
-(cd datafusion/expr && cargo publish)
-(cd datafusion/physical-expr && cargo publish)
-(cd datafusion/jit && cargo publish)
-(cd datafusion/row && cargo publish)
-(cd datafusion && cargo publish)
-(cd datafusion/proto && cargo publish)
-(cd datafusion-cli && cargo publish)
-```
-
-If there is a ballista release, run
-
-```shell
 (cd ballista/rust/core && cargo publish)
 (cd ballista/rust/executor && cargo publish)
 (cd ballista/rust/scheduler && cargo publish)
@@ -311,17 +288,21 @@ If there is a ballista release, run
 (cd ballista-cli && cargo publish)
 ```
 
-### Publish datafusion-cli on Homebrew and crates.io
+### Publish Docker Images
 
-For Homebrew, Send a simple PR to update tag and commit hash for the datafusion
-formula in homebrew-core. Here is an example PR:
-https://github.com/Homebrew/homebrew-core/pull/89562.
+We do not yet publish Docker images to the official Apache DockerHub account but there is an issue open for this
+([#236](https://github.com/apache/arrow-ballista/issues/236)).
 
-For crates.io, run
+To build Docker images:
 
 ```shell
-(cd datafusion-cli && cargo publish)
+BALLISTA_VERSION=0.8.0 ./dev/build-ballista-docker.sh
 ```
+
+Note that it is not currently possible to build the Docker images on Apple silicon. Tracking issue is
+[#17](https://github.com/apache/arrow-ballista/issues/17).
+
+The Docker image is tagged as `apache/arrow-ballista:0.8.0`.
 
 ### Call the vote
 
@@ -336,22 +317,39 @@ The vote has passed with <NUMBER> +1 votes. Thank you to all who helped
 with the release verification.
 ```
 
-You can include mention crates.io and PyPI version URLs in the email if applicable.
+### Delete old RCs and Releases
 
+See the ASF documentation on [when to archive](https://www.apache.org/legal/release-policy.html#when-to-archive)
+for more information.
+
+#### Deleting old release candidates from `dev` svn
+
+Release candidates should be deleted once the release is published.
+
+Get a list of Ballista release candidates:
+
+```bash
+svn ls https://dist.apache.org/repos/dist/dev/arrow | grep ballista
 ```
-We have published new versions of datafusion and ballista to crates.io:
 
-https://crates.io/crates/datafusion/8.0.0
-https://crates.io/crates/datafusion-cli/8.0.0
-https://crates.io/crates/datafusion-expr/8.0.0
-https://crates.io/crates/datafusion-common/8.0.0
-https://crates.io/crates/datafusion-jit/8.0.0
-https://crates.io/crates/datafusion-physical-expr/8.0.0
-https://crates.io/crates/datafusion-proto/8.0.0
-https://crates.io/crates/datafusion-data-access/8.0.0
-https://crates.io/crates/ballista/0.7.0
-https://crates.io/crates/ballista-cli/0.7.0
-https://crates.io/crates/ballista-core/0.7.0
-https://crates.io/crates/ballista-executor/0.7.0
-https://crates.io/crates/ballista-scheduler/0.7.0
+Delete a release candidate:
+
+```bash
+svn delete -m "delete old Ballista RC" https://dist.apache.org/repos/dist/dev/arrow/apache-arrow-ballista-0.8.0-rc1/
+```
+
+#### Deleting old releases from `release` svn
+
+Only the latest release should be available. Delete old releases after publishing the new release.
+
+Get a list of Ballista releases:
+
+```bash
+svn ls https://dist.apache.org/repos/dist/release/arrow | grep ballista
+```
+
+Delete a release:
+
+```bash
+svn delete -m "delete old Ballista release" https://dist.apache.org/repos/dist/release/arrow/arrow-ballista-0.8.0
 ```

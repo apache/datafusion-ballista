@@ -26,9 +26,10 @@ import {
   Flex,
   Box,
 } from "@chakra-ui/react";
-import { Column, DateCell, DataTable, LinkCell } from "./DataTable";
+import { Column, DataTable, LinkCell } from "./DataTable";
 import { FaStop } from "react-icons/fa";
-import { GrPowerReset } from "react-icons/gr";
+import { GrDocumentDownload } from "react-icons/gr";
+import fileDownload from "js-file-download";
 
 export enum QueryStatus {
   QUEUED = "QUEUED",
@@ -38,11 +39,10 @@ export enum QueryStatus {
 }
 
 export interface Query {
-  uuid: string;
-  query: string;
+  job_id: string;
   status: QueryStatus;
-  progress: number;
-  started: string;
+  num_stages: number;
+  percent_complete: number;
 }
 
 export interface QueriesListProps {
@@ -50,11 +50,30 @@ export interface QueriesListProps {
 }
 
 export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
+  const handleDownload = (url: string, filename: string) => {
+    fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+    }).then(async (res) => {
+      fileDownload(await res.arrayBuffer(), filename);
+    });
+  };
   return (
     <Flex>
-      <FaStop color={"red"} title={"stop"} />
+      <FaStop color={"red"} title={"Stop this job"} />
       <Box mx={2}></Box>
-      <GrPowerReset title={"Retry"} />
+      <button
+        onClick={() => {
+          handleDownload(
+            "/api/job/" + props.value + "/dot",
+            props.value + ".dot"
+          );
+        }}
+      >
+        <GrDocumentDownload title={"Download DOT Plan"} />
+      </button>
     </Flex>
   );
 };
@@ -69,38 +88,33 @@ export const ProgressCell: (props: any) => React.ReactNode = (props: any) => {
 
 const columns: Column<any>[] = [
   {
-    Header: "UUID",
-    accessor: "uuid",
+    Header: "Job ID",
+    accessor: "job_id",
     Cell: LinkCell,
   },
   {
-    Header: "Query",
-    accessor: "query",
+    Header: "Status",
+    accessor: "job_status",
   },
   {
-    Header: "Status",
-    accessor: "status",
+    Header: "Number of Stages",
+    accessor: "num_stages",
   },
   {
     Header: "Progress",
-    accessor: "progress",
+    accessor: "percent_complete",
     Cell: ProgressCell,
   },
   {
-    Header: "Started",
-    accessor: "started",
-    Cell: DateCell,
-  },
-  {
     Header: "Actions",
-    accessor: "",
+    accessor: "job_id",
+    id: "action_cell",
     Cell: ActionsCell,
   },
 ];
 
 const getSkeletion = () => (
   <>
-    <Skeleton height={5} />
     <Skeleton height={5} />
     <Skeleton height={5} />
     <Skeleton height={5} />
@@ -114,15 +128,8 @@ export const QueriesList: React.FunctionComponent<QueriesListProps> = ({
 }) => {
   const isLoaded = typeof queries !== "undefined";
 
-  //TODO: Remove blur once queries api is ready
   return (
-    <VStack
-      flex={1}
-      p={4}
-      w={"100%"}
-      alignItems={"flex-start"}
-      filter="blur(3px)"
-    >
+    <VStack flex={1} p={4} w={"100%"} alignItems={"flex-start"}>
       <Text mb={4}>Queries</Text>
       <Stack w={"100%"} flex={1}>
         {isLoaded ? (

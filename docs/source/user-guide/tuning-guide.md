@@ -69,3 +69,24 @@ Pull-based scheduling works in a similar way to Apache Spark and push-based sche
 
 The scheduling policy can be specified in the `--scheduler_policy` parameter when starting the scheduler and executor
 processes. The default is `pull-based`.
+
+## Viewing Query Plans and Metrics
+
+The scheduler provides a web user interface as well as a REST API for monitoring jobs. See the
+[scheduler documentation](scheduler.md) for more information.
+
+To download a query plan in dot format from the scheduler, submit a request to the following API endpoint
+
+```
+http://localhost:50050/api/job/{job_id}/dot
+```
+
+The resulting file can be converted into an image using `graphviz`:
+
+```bash
+dot -Tpng query.dot > query.png
+```
+
+Here is an example query plan:
+
+![query plan](images/example-query-plan.png)

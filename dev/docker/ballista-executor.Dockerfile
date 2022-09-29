@@ -1,4 +1,3 @@
-#!/bin/bash
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -16,7 +15,20 @@
 # specific language governing permissions and limitations
 # under the License.
 
-set -e
-cd /tpch-dbgen
-./dbgen -vf -s 1
-mv *.tbl /data
+FROM ubuntu:22.04
+
+ARG RELEASE_FLAG=release
+
+ENV RELEASE_FLAG=${RELEASE_FLAG}
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=full
+
+RUN apt-get update && apt-get install -y netcat
+
+COPY target/$RELEASE_FLAG/ballista-executor /root/ballista-executor
+
+# Expose Ballista Executor gRPC port
+EXPOSE 50051
+
+COPY dev/docker/executor-entrypoint.sh /root/executor-entrypoint.sh
+ENTRYPOINT ["/root/executor-entrypoint.sh"]

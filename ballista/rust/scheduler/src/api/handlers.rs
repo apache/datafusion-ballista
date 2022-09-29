@@ -11,6 +11,8 @@
 // limitations under the License.
 
 use crate::scheduler_server::SchedulerServer;
+use crate::state::execution_graph_dot::ExecutionGraphDot;
+use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::AsExecutionPlan;
 use ballista_core::BALLISTA_VERSION;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -31,12 +33,23 @@ pub struct ExecutorMetaResponse {
     pub last_seen: u128,
 }
 
-pub(crate) async fn scheduler_state<T: AsLogicalPlan, U: AsExecutionPlan>(
+#[derive(Debug, serde::Serialize)]
+pub struct JobResponse {
+    pub job_id: String,
+    pub job_status: String,
+    pub num_stages: usize,
+    pub completed_stages: usize,
+    pub percent_complete: u8,
+}
+
+/// Return current scheduler state, including list of executors and active, completed, and failed
+/// job ids.
+pub(crate) async fn get_state<T: AsLogicalPlan, U: AsExecutionPlan>(
     data_server: SchedulerServer<T, U>,
 ) -> Result<impl warp::Reply, Rejection> {
     // TODO: Display last seen information in UI
-    let executors: Vec<ExecutorMetaResponse> = data_server
-        .state
+    let state = data_server.state;
+    let executors: Vec<ExecutorMetaResponse> = state
         .executor_manager
         .get_executor_state()
         .await
@@ -49,10 +62,118 @@ pub(crate) async fn scheduler_state<T: AsLogicalPlan, U: AsExecutionPlan>(
             last_seen: duration.as_millis(),
         })
         .collect();
+
     let response = StateResponse {
         executors,
         started: data_server.start_time,
         version: BALLISTA_VERSION,
     };
     Ok(warp::reply::json(&response))
+}
+
+/// Return list of jobs
+pub(crate) async fn get_jobs<T: AsLogicalPlan, U: AsExecutionPlan>(
+    data_server: SchedulerServer<T, U>,
+) -> Result<impl warp::Reply, Rejection> {
+    // TODO: Display last seen information in UI
+    let state = data_server.state;
+
+    let jobs = state
+        .task_manager
+        .get_jobs()
+        .await
+        .map_err(|_| warp::reject())?;
+
+    let jobs: Vec<JobResponse> = jobs
+        .iter()
+        .map(|job| {
+            let status = &job.status;
+            let job_status = match &status.status {
+                Some(Status::Queued(_)) => "Queued".to_string(),
+                Some(Status::Running(_)) => "Running".to_string(),
+                Some(Status::Failed(error)) => format!("Failed: {}", error.error),
+                Some(Status::Completed(completed)) => {
+                    let num_rows = completed
+                        .partition_location
+                        .iter()
+                        .map(|p| {
+                            p.partition_stats.as_ref().map(|s| s.num_rows).unwrap_or(0)
+                        })
+                        .sum::<i64>();
+                    let num_rows_term = if num_rows == 1 { "row" } else { "rows" };
+                    let num_partitions = completed.partition_location.len();
+                    let num_partitions_term = if num_partitions == 1 {
+                        "partition"
+                    } else {
+                        "partitions"
+                    };
+                    format!(
+                        "Completed. Produced {} {} containing {} {}.",
+                        num_partitions, num_partitions_term, num_rows, num_rows_term,
+                    )
+                }
+                _ => "Invalid State".to_string(),
+            };
+
+            // calculate progress based on completed stages for now, but we could use completed
+            // tasks in the future to make this more accurate
+            let percent_complete =
+                ((job.completed_stages as f32 / job.num_stages as f32) * 100_f32) as u8;
+            JobResponse {
+                job_id: job.job_id.to_string(),
+                job_status,
+                num_stages: job.num_stages,
+                completed_stages: job.completed_stages,
+                percent_complete,
+            }
+        })
+        .collect();
+
+    Ok(warp::reply::json(&jobs))
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct JobSummaryResponse {
+    /// Just show debug output for now but what we really want here is a list of stages with
+    /// plans and metrics and the relationship between them
+    pub summary: String,
+}
+
+/// Get the execution graph for the specified job id
+pub(crate) async fn get_job_summary<T: AsLogicalPlan, U: AsExecutionPlan>(
+    data_server: SchedulerServer<T, U>,
+    job_id: String,
+) -> Result<impl warp::Reply, Rejection> {
+    let graph = data_server
+        .state
+        .task_manager
+        .get_job_execution_graph(&job_id)
+        .await
+        .map_err(|_| warp::reject())?;
+
+    match graph {
+        Some(x) => Ok(warp::reply::json(&JobSummaryResponse {
+            summary: format!("{:?}", x),
+        })),
+        _ => Ok(warp::reply::json(&JobSummaryResponse {
+            summary: "Not Found".to_string(),
+        })),
+    }
+}
+/// Generate a dot graph for the specified job id and return as plain text
+pub(crate) async fn get_job_dot_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
+    data_server: SchedulerServer<T, U>,
+    job_id: String,
+) -> Result<String, Rejection> {
+    let graph = data_server
+        .state
+        .task_manager
+        .get_job_execution_graph(&job_id)
+        .await
+        .map_err(|_| warp::reject())?;
+
+    match graph {
+        Some(x) => ExecutionGraphDot::generate(x).map_err(|_| warp::reject()),
+        _ => Ok("Not Found".to_string()),
+    }
 }

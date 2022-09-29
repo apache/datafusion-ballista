@@ -17,6 +17,7 @@
 
 //! Implementation of the Apache Arrow Flight protocol that wraps an executor.
 
+use std::convert::TryFrom;
 use std::fs::File;
 use std::pin::Pin;
 
@@ -35,7 +36,7 @@ use datafusion::arrow::{
     record_batch::RecordBatch,
 };
 use futures::{Stream, StreamExt};
-use log::{debug, warn};
+use log::{debug, info, warn};
 use std::io::{Read, Seek};
 use tokio::sync::mpsc::channel;
 use tokio::{
@@ -43,6 +44,7 @@ use tokio::{
     task,
 };
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::metadata::MetadataValue;
 use tonic::{Request, Response, Status, Streaming};
 
 type FlightDataSender = Sender<Result<FlightData, Status>>;
@@ -102,10 +104,11 @@ impl FlightService for BallistaFlightService {
 
                 let (tx, rx): (FlightDataSender, FlightDataReceiver) = channel(2);
 
+                let file_path = path.to_owned();
                 // Arrow IPC reader does not implement Sync + Send so we need to use a channel
                 // to communicate
                 task::spawn(async move {
-                    if let Err(e) = stream_flight_data(reader, tx).await {
+                    if let Err(e) = stream_flight_data(file_path, reader, tx).await {
                         warn!("Error streaming results: {:?}", e);
                     }
                 });
@@ -135,7 +138,23 @@ impl FlightService for BallistaFlightService {
         &self,
         _request: Request<Streaming<HandshakeRequest>>,
     ) -> Result<Response<Self::HandshakeStream>, Status> {
-        Err(Status::unimplemented("handshake"))
+        let token = uuid::Uuid::new_v4();
+        info!("do_handshake token={}", token);
+
+        let result = HandshakeResponse {
+            protocol_version: 0,
+            payload: token.as_bytes().to_vec(),
+        };
+        let result = Ok(result);
+        let output = futures::stream::iter(vec![result]);
+        let str = format!("Bearer {}", token);
+        let mut resp: Response<
+            Pin<Box<dyn Stream<Item = Result<_, Status>> + Sync + Send>>,
+        > = Response::new(Box::pin(output));
+        let md = MetadataValue::try_from(str)
+            .map_err(|_| Status::invalid_argument("authorization not parsable"))?;
+        resp.metadata_mut().insert("authorization", md);
+        Ok(resp)
     }
 
     async fn list_flights(
@@ -202,6 +221,7 @@ fn create_flight_iter(
 }
 
 async fn stream_flight_data<T>(
+    file_path: String,
     reader: FileReader<T>,
     tx: FlightDataSender,
 ) -> Result<(), Status>
@@ -224,7 +244,10 @@ where
             send_response(&tx, batch).await?;
         }
     }
-    debug!("FetchPartition streamed {} rows", row_count);
+    debug!(
+        "FetchPartition streamed {} rows for file {}",
+        row_count, file_path
+    );
     Ok(())
 }
 

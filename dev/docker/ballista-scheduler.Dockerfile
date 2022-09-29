@@ -14,14 +14,28 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-FROM arm64v8/ubuntu
 
-ADD ballista-scheduler /
-ADD ballista-executor /
+FROM ubuntu:22.04
 
-# Add benchmarks
-ADD tpch /
-RUN mkdir /queries
-ADD queries/*.sql /queries/
+ARG RELEASE_FLAG=release
 
+ENV RELEASE_FLAG=${RELEASE_FLAG}
 ENV RUST_LOG=info
+ENV RUST_BACKTRACE=full
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y nginx netcat
+
+COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
+
+COPY ballista/ui/scheduler/build /var/www/html
+COPY dev/docker/nginx.conf /etc/nginx/sites-enabled/default
+
+# Expose Ballista Scheduler web UI port
+EXPOSE 80
+
+# Expose Ballista Scheduler gRPC port
+EXPOSE 50050
+
+COPY dev/docker/scheduler-entrypoint.sh /root/scheduler-entrypoint.sh
+ENTRYPOINT ["/root/scheduler-entrypoint.sh"]

@@ -33,13 +33,13 @@ ballista = { path = "../ballista/rust/client", version = "0.8.0", features = [
     "standalone",
 ] }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = "12.0.0"
-datafusion-cli = "12.0.0"
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "06a4f79f02fcb6ea85303925b7c5a9b0231e3fee" }
+datafusion-cli = { git = "https://github.com/apache/arrow-datafusion", rev = "06a4f79f02fcb6ea85303925b7c5a9b0231e3fee" }
 dirs = "4.0.0"
 env_logger = "0.9"
 mimalloc = { version = "0.1", default-features = false }
 num_cpus = "1.13.0"
-rustyline = "9.0"
+rustyline = "10.0"
 tokio = { version = "1.0", features = [
     "macros",
     "rt",
@@ -47,3 +47,6 @@ tokio = { version = "1.0", features = [
     "sync",
     "parking_lot",
 ] }
+
+[features]
+s3 = ["ballista/s3"]
