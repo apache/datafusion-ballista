@@ -1449,6 +1449,36 @@ mod roundtrip_tests {
     }
 
     #[test]
+    fn roundtrip_filter_match() -> Result<()> {
+        let field_a = Field::new("a", DataType::Utf8, false);
+        let field_b = Field::new("b", DataType::Int64, false);
+        let field_c = Field::new("c", DataType::Int64, false);
+        let schema = Arc::new(Schema::new(vec![field_a, field_b, field_c]));
+
+        let lhs = col("a", &schema)?;
+        let rhs = lit("pattern");
+
+        let match_expr = binary(lhs.clone(), Operator::RegexMatch, rhs.clone(), &schema)?;
+        roundtrip_test(Arc::new(FilterExec::try_new(
+            match_expr,
+            Arc::new(EmptyExec::new(false, schema.clone())),
+        )?))?;
+
+        let match_expr =
+            binary(lhs.clone(), Operator::RegexIMatch, rhs.clone(), &schema)?;
+        roundtrip_test(Arc::new(FilterExec::try_new(
+            match_expr,
+            Arc::new(EmptyExec::new(false, schema.clone())),
+        )?))?;
+
+        let match_expr = binary(lhs, Operator::RegexNotIMatch, rhs, &schema)?;
+        roundtrip_test(Arc::new(FilterExec::try_new(
+            match_expr,
+            Arc::new(EmptyExec::new(false, schema.clone())),
+        )?))
+    }
+
+    #[test]
     fn roundtrip_sort() -> Result<()> {
         let field_a = Field::new("a", DataType::Boolean, false);
         let field_b = Field::new("b", DataType::Int64, false);

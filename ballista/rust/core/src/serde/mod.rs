@@ -213,6 +213,9 @@ pub(crate) fn from_proto_binary_op(op: &str) -> Result<Operator, BallistaError> 
         "Modulo" => Ok(Operator::Modulo),
         "Like" => Ok(Operator::Like),
         "NotLike" => Ok(Operator::NotLike),
+        "RegexIMatch" => Ok(Operator::RegexIMatch),
+        "RegexNotIMatch" => Ok(Operator::RegexNotIMatch),
+        "RegexMatch" => Ok(Operator::RegexMatch),
         other => Err(proto_error(format!(
             "Unsupported binary operator '{:?}'",
             other
