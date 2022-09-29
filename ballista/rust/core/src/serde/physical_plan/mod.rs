@@ -640,7 +640,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         }
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(Arc::new(SortExec::try_new(exprs, input)?))
+                Ok(Arc::new(SortExec::try_new(exprs, input, None)?))
             }
             PhysicalPlanType::Unresolved(unresolved_shuffle) => {
                 let schema = Arc::new(convert_required!(unresolved_shuffle.schema)?);
@@ -1447,6 +1447,7 @@ mod roundtrip_tests {
         roundtrip_test(Arc::new(SortExec::try_new(
             sort_exprs,
             Arc::new(EmptyExec::new(false, schema)),
+            None,
         )?))
     }
 

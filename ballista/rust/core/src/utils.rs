@@ -85,16 +85,19 @@ impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
     /// Detector a suitable object store based on its url if possible
     /// Return the key and object store
     #[allow(unused_variables)]
-    fn get_by_url(&self, url: &Url) -> Option<Arc<dyn ObjectStore>> {
+    fn get_by_url(&self, url: &Url) -> datafusion::error::Result<Arc<dyn ObjectStore>> {
         #[cfg(feature = "hdfs")]
         {
             let store = HadoopFileSystem::new(url.as_str());
             if let Some(store) = store {
-                return Some(Arc::new(store));
+                return Ok(Arc::new(store));
             }
         }
 
-        None
+        Err(DataFusionError::Execution(format!(
+            "No object store available for {}",
+            url
+        )))
     }
 }
 
