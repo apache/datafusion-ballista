@@ -91,10 +91,11 @@ tokio = "1.0"
 
 The following example runs a simple aggregate SQL query against a Parquet file (`yellow_tripdata_2022-01.parquet`) from the
 [New York Taxi and Limousine Commission](https://www1.nyc.gov/site/tlc/about/tlc-trip-record-data.page)
-data set. Download the file and add it to the `testdata` folder before running the example. 
+data set. Download the file and add it to the `testdata` folder before running the example.
 
 ```rust,no_run
 use ballista::prelude::*;
+use datafusion::prelude::{col, min, max, avg, sum, ParquetReadOptions};
 use datafusion::arrow::util::pretty;
 use datafusion::prelude::CsvReadOptions;
 
@@ -123,17 +124,17 @@ async fn main() -> Result<()> {
     //     FROM tripdata
     //     GROUP BY passenger_count
     //     ORDER BY passenger_count
-    
+
     // print the results
     df.show().await?;
-    
+
     Ok(())
 }
 ```
 
 The output should look similar to the following table.
 
-```
+```{r eval=FALSE}
 +-----------------+--------------------------+--------------------------+--------------------------+--------------------------+
 | passenger_count | MIN(?table?.fare_amount) | MAX(?table?.fare_amount) | AVG(?table?.fare_amount) | SUM(?table?.fare_amount) |
 +-----------------+--------------------------+--------------------------+--------------------------+--------------------------+
