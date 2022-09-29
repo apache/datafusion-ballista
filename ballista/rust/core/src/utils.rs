@@ -75,6 +75,8 @@ pub fn default_session_builder(config: SessionConfig) -> SessionState {
 
 /// Get a RuntimeConfig with specific ObjectStoreDetector in the ObjectStoreRegistry
 pub fn with_object_store_provider(config: RuntimeConfig) -> RuntimeConfig {
+    // TODO this registers the provider for urls starting with `file://` only so does not yet
+    // support s3
     config.with_object_store_registry(Arc::new(ObjectStoreRegistry::new_with_provider(
         Some(Arc::new(FeatureBasedObjectStoreProvider)),
     )))
@@ -88,6 +90,8 @@ impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
     /// Return the key and object store
     #[allow(unused_variables)]
     fn get_by_url(&self, url: &Url) -> datafusion::error::Result<Arc<dyn ObjectStore>> {
+        println!("get_by_url() {}", url);
+
         #[cfg(feature = "hdfs")]
         {
             let store = HadoopFileSystem::new(url.as_str());
@@ -99,9 +103,6 @@ impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
         #[cfg(feature = "s3")]
         {
             // TODO check if starts with s3://
-
-            println!("get_by_url() {}", url);
-
             if let Some(bucket_name) = url.host_str() {
                 let store = AmazonS3Builder::from_env()
                     .with_bucket_name(bucket_name).build()?;
