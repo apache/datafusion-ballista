@@ -75,11 +75,16 @@ pub fn default_session_builder(config: SessionConfig) -> SessionState {
 
 /// Get a RuntimeConfig with specific ObjectStoreDetector in the ObjectStoreRegistry
 pub fn with_object_store_provider(config: RuntimeConfig) -> RuntimeConfig {
-    // TODO this registers the provider for urls starting with `file://` only so does not yet
-    // support s3
-    config.with_object_store_registry(Arc::new(ObjectStoreRegistry::new_with_provider(
-        Some(Arc::new(FeatureBasedObjectStoreProvider)),
-    )))
+    let feature_based_provider: Arc<dyn ObjectStoreProvider> = Arc::new(FeatureBasedObjectStoreProvider);
+    // TODO this registers the provider for urls starting with `file://` only
+    let registry = ObjectStoreRegistry::new_with_provider(Some(feature_based_provider.clone()));
+
+    // TODO HACK so I can continue testing
+    let url = Url::parse("s3://andygrove-benchmark-data/test.csv").unwrap();
+    registry.register_store("s3", "andygrove-benchmark-data",
+                            feature_based_provider.get_by_url(&url).unwrap());
+
+    config.with_object_store_registry(Arc::new(registry))
 }
 
 /// An object store detector based on which features are enable for different kinds of object stores
