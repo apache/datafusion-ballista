@@ -19,16 +19,19 @@
 
 # Overview
 
-Ballista is a distributed compute platform primarily implemented in Rust, and powered by Apache Arrow. It is
-built on an architecture that allows other programming languages to be supported as first-class citizens without paying
-a penalty for serialization costs.
+Ballista is a distributed compute platform primarily implemented in Rust, and powered by Apache Arrow.
 
-The foundational technologies in Ballista are:
+Ballista has a scheduler and an executor process that are standard Rust executables and can be executed directly, but
+Dockerfiles are provided to build images for use in containerized environments, such as Docker, Docker Compose, and
+Kubernetes. See the [deployment guide](deployment.md) for more information
 
-- [Apache Arrow](https://arrow.apache.org/) memory model and compute kernels for efficient processing of data.
-- [Apache Arrow Flight Protocol](https://arrow.apache.org/blog/2019/10/13/introducing-arrow-flight/) for efficient data transfer between processes.
-- [Google Protocol Buffers](https://developers.google.com/protocol-buffers) for serializing query plans.
-- [DataFusion](https://github.com/apache/arrow-datafusion/) for query execution.
+SQL and DataFrame queries can be submitted from Python and Rust, and SQL queries can be submitted via the Arrow
+Flight SQL JDBC driver, supporting your favorite JDBC compliant tools such as [DataGrip](datagrip)
+or [tableau](tableau). For setup instructions, please see the [FlightSQL guide](flightsql.md).
+
+The scheduler has a web user interface for monitoring query status as well as a REST API.
+
+![Ballista Scheduler Web UI](./images/ballista-web-ui.png)
 
 ## How does this compare to Apache Spark?
 
@@ -45,10 +48,6 @@ Although Ballista is largely inspired by Apache Spark, there are some key differ
 - The use of Apache Arrow as the memory model and network protocol means that data can be exchanged between executors
   in any programming language with minimal serialization overhead.
 
-## Status
-
-Ballista is still in the early stages of development but is capable of executing complex analytical queries at scale.
-
-## Usage
-
-Ballista can be used from your favorite JDBC compliant tools such as [DataGrip](https://www.jetbrains.com/datagrip/) or [tableau](https://help.tableau.com/current/pro/desktop/en-us/examples_otherdatabases_jdbc.htm). For setup instructions, please see the [FlightSQL guide](flightsql.md).
+[deployment](./deployment)
+[datagrip](https://www.jetbrains.com/datagrip/)
+[tableau](https://help.tableau.com/current/pro/desktop/en-us/examples_otherdatabases_jdbc.htm)

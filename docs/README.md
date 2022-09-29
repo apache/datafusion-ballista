@@ -17,16 +17,20 @@
   under the License.
 -->
 
-# Developer Documentation
+# Ballista Documentation
+
+## User Documentation
+
+Documentation for the current published release can be found at https://arrow.apache.org/ballista and the source
+content is located [here](source/user-guide/introduction.md).
+
+## Developer Documentation
 
 Developer documentation can be found [here](developer/README.md).
-User documentation can be found [here](source/user-guide/introduction.md).
 
-# User Documentation
+## Building the User Guide
 
-_These instructions were forked from the `arrow-datafusion` repository and are outdated_
-
-## Dependencies
+### Dependencies
 
 It's recommended to install build dependencies and build the documentation
 inside a Python virtualenv.
@@ -38,21 +42,21 @@ inside a Python virtualenv.
 ## Build
 
 ```bash
-make html
+./build.sh
 ```
 
 ## Release
 
-The documentation is served through the
-[arrow-site](https://github.com/apache/arrow-site/) repo. To release a new
-version of the docs, follow these steps:
+The documentation is served through the [arrow-site](https://github.com/apache/arrow-site/) repository. To release
+a new version of the documentation, follow these steps:
 
-1. Run `make html` inside `docs` folder to generate the docs website inside the `build/html` folder.
-2. Clone the arrow-site repo
-3. Checkout to the `asf-site` branch (NOT `master`)
-4. Copy build artifacts into `arrow-site` repo's `datafusion` folder with a command such as
+1. Download the release source tarball (we can only publish documentation from official releases)
+2. Run `./build.sh` inside `docs` folder to generate the docs website inside the `build/html` folder.
+3. Clone the arrow-site repo
+4. Checkout to the `asf-site` branch (NOT `master`)
+5. Copy build artifacts into `arrow-site` repo's `ballista` folder with a command such as
 
-- `cp -rT ./build/html/ ../../arrow-site/datafusion/` (doesn't work on mac)
-- `rsync -avzr ./build/html/ ../../arrow-site/datafusion/`
+- `cp -rT ./build/html/ ../../arrow-site/ballista/` (doesn't work on mac)
+- `rsync -avzr ./build/html/ ../../arrow-site/ballista/`
 
-5. Commit changes in `arrow-site` and send a PR.
+6. Commit changes in `arrow-site` and send a PR.
