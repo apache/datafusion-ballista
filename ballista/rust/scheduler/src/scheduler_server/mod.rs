@@ -23,7 +23,9 @@ use ballista_core::error::Result;
 use ballista_core::event_loop::{EventLoop, EventSender};
 use ballista_core::serde::protobuf::{StopExecutorParams, TaskStatus};
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
-use datafusion::execution::context::{default_session_builder, SessionState};
+use ballista_core::utils::default_session_builder;
+
+use datafusion::execution::context::SessionState;
 use datafusion::logical_plan::LogicalPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -279,7 +281,6 @@ mod test {
     use std::time::Duration;
 
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::execution::context::default_session_builder;
     use datafusion::logical_plan::{col, sum, LogicalPlan};
 
     use datafusion::test_util::scan_empty;
@@ -298,6 +299,7 @@ mod test {
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
     };
     use ballista_core::serde::BallistaCodec;
+    use ballista_core::utils::default_session_builder;
 
     use crate::scheduler_server::SchedulerServer;
     use crate::state::backend::standalone::StandaloneClient;

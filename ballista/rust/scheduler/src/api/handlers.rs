@@ -11,6 +11,8 @@
 // limitations under the License.
 
 use crate::scheduler_server::SchedulerServer;
+use crate::state::execution_graph_dot::ExecutionGraphDot;
+use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::AsExecutionPlan;
 use ballista_core::BALLISTA_VERSION;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -84,13 +86,46 @@ pub(crate) async fn get_jobs<T: AsLogicalPlan, U: AsExecutionPlan>(
 
     let jobs: Vec<JobResponse> = jobs
         .iter()
-        .map(|job| JobResponse {
-            job_id: job.job_id.to_string(),
-            job_status: format!("{:?}", job.status),
-            num_stages: job.num_stages,
-            completed_stages: job.completed_stages,
-            percent_complete: ((job.completed_stages as f32 / job.num_stages as f32)
-                * 100_f32) as u8,
+        .map(|job| {
+            let status = &job.status;
+            let job_status = match &status.status {
+                Some(Status::Queued(_)) => "Queued".to_string(),
+                Some(Status::Running(_)) => "Running".to_string(),
+                Some(Status::Failed(error)) => format!("Failed: {}", error.error),
+                Some(Status::Completed(completed)) => {
+                    let num_rows = completed
+                        .partition_location
+                        .iter()
+                        .map(|p| {
+                            p.partition_stats.as_ref().map(|s| s.num_rows).unwrap_or(0)
+                        })
+                        .sum::<i64>();
+                    let num_rows_term = if num_rows == 1 { "row" } else { "rows" };
+                    let num_partitions = completed.partition_location.len();
+                    let num_partitions_term = if num_partitions == 1 {
+                        "partition"
+                    } else {
+                        "partitions"
+                    };
+                    format!(
+                        "Completed. Produced {} {} containing {} {}.",
+                        num_partitions, num_partitions_term, num_rows, num_rows_term,
+                    )
+                }
+                _ => "Invalid State".to_string(),
+            };
+
+            // calculate progress based on completed stages for now, but we could use completed
+            // tasks in the future to make this more accurate
+            let percent_complete =
+                ((job.completed_stages as f32 / job.num_stages as f32) * 100_f32) as u8;
+            JobResponse {
+                job_id: job.job_id.to_string(),
+                job_status,
+                num_stages: job.num_stages,
+                completed_stages: job.completed_stages,
+                percent_complete,
+            }
         })
         .collect();
 
@@ -123,5 +158,22 @@ pub(crate) async fn get_job_summary<T: AsLogicalPlan, U: AsExecutionPlan>(
         _ => Ok(warp::reply::json(&JobSummaryResponse {
             summary: "Not Found".to_string(),
         })),
+    }
+}
+/// Generate a dot graph for the specified job id and return as plain text
+pub(crate) async fn get_job_dot_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
+    data_server: SchedulerServer<T, U>,
+    job_id: String,
+) -> Result<String, Rejection> {
+    let graph = data_server
+        .state
+        .task_manager
+        .get_job_execution_graph(&job_id)
+        .await
+        .map_err(|_| warp::reject())?;
+
+    match graph {
+        Some(x) => ExecutionGraphDot::generate(x).map_err(|_| warp::reject()),
+        _ => Ok("Not Found".to_string()),
     }
 }
