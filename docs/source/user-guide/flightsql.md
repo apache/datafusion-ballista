@@ -54,9 +54,17 @@ choco install docker-desktop docker-compose
 
 ## <a name="rust"/>Building Ballista
 
+To build in docker (non-linux systems):
+
 ```shell
 git clone https://github.com/apache/arrow-ballista.git
 dev/build-ballista-rust.sh
+```
+
+Or in linux-based systems with the correct dependencies installed, one can simply:
+
+```shell
+cargo build --release --all --features flight-sql
 ```
 
 ## <a name="docker"/> Run Docker Containers

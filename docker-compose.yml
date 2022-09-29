@@ -14,25 +14,33 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-version: '3.3'
+version: '3.8'
 services:
   etcd:
     image: quay.io/coreos/etcd:v3.4.9
     command: "etcd -advertise-client-urls http://etcd:2379 -listen-client-urls http://0.0.0.0:2379"
     ports:
-      - 2379:2379
+      - "2379:2379"
   ballista-scheduler:
     image: ballista-scheduler
     build:
       dockerfile: dev/docker/ballista-scheduler.Dockerfile
       context: .
     command: "--config-backend etcd --etcd-urls etcd:2379 --bind-host 0.0.0.0"
+    ports:
+      - "80:80"
+      - "50050:50050"
     environment:
       - RUST_LOG=info
     volumes:
       - ./benchmarks/data:/data
     depends_on:
       - etcd
+    healthcheck:
+      test: ["CMD", "nc", "-z", "ballista-scheduler", "50050"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
   ballista-executor:
     image: ballista-executor
     build:
@@ -46,13 +54,21 @@ services:
     volumes:
       - ./benchmarks/data:/data
     depends_on:
-      - ballista-scheduler
+      ballista-scheduler:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "nc", "-z", "ballista-executor", "50051"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
   ballista-client:
     image: ballista-benchmarks
     build:
       dockerfile: dev/docker/ballista-benchmarks.Dockerfile
       context: .
-    command: ["/bin/sh", "sleep", "infinity"]
+    command: ["/bin/bash", "-c", "sleep infinity"]
+    ports:
+      - "50051:50051"
     environment:
       - RUST_LOG=info
     volumes:
