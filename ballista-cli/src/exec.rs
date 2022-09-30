@@ -17,23 +17,24 @@
 
 //! Execution functions
 
-use crate::{
-    command::{Command, OutputFormat},
-    context::Context,
-    helper::CliHelper,
-    print_options::PrintOptions,
-};
-use datafusion::error::Result;
-use rustyline::error::ReadlineError;
-use rustyline::Editor;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::time::Instant;
 
+use ballista::prelude::{BallistaContext, Result};
+use rustyline::error::ReadlineError;
+use rustyline::Editor;
+
+use crate::{
+    command::{Command, OutputFormat},
+    helper::CliHelper,
+    print_options::PrintOptions,
+};
+
 /// run and execute SQL statements and commands from a file, against a context with the given print options
 pub async fn exec_from_lines(
-    ctx: &mut Context,
+    ctx: &BallistaContext,
     reader: &mut BufReader<File>,
     print_options: &PrintOptions,
 ) {
@@ -74,7 +75,7 @@ pub async fn exec_from_lines(
 
 pub async fn exec_from_files(
     files: Vec<String>,
-    ctx: &mut Context,
+    ctx: &BallistaContext,
     print_options: &PrintOptions,
 ) {
     let files = files
@@ -88,7 +89,7 @@ pub async fn exec_from_files(
 }
 
 /// run and execute SQL statements and commands against a context with the given print options
-pub async fn exec_from_repl(ctx: &mut Context, print_options: &mut PrintOptions) {
+pub async fn exec_from_repl(ctx: &BallistaContext, print_options: &mut PrintOptions) {
     let mut rl = Editor::<CliHelper>::new().expect("created editor");
     rl.set_helper(Some(CliHelper::default()));
     rl.load_history(".history").ok();
@@ -157,7 +158,7 @@ pub async fn exec_from_repl(ctx: &mut Context, print_options: &mut PrintOptions)
 }
 
 async fn exec_and_print(
-    ctx: &mut Context,
+    ctx: &BallistaContext,
     print_options: &PrintOptions,
     sql: String,
 ) -> Result<()> {
