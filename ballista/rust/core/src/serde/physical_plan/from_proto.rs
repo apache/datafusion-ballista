@@ -39,6 +39,7 @@ use datafusion::physical_plan::{
     functions, Partitioning,
 };
 use datafusion::physical_plan::{ColumnStatistics, PhysicalExpr, Statistics};
+use datafusion_proto::from_proto::from_proto_binary_op;
 use object_store::path::Path;
 use object_store::ObjectMeta;
 
@@ -46,7 +47,7 @@ use crate::serde::protobuf::physical_expr_node::ExprType;
 
 use crate::convert_required;
 use crate::error::BallistaError;
-use crate::serde::{from_proto_binary_op, proto_error, protobuf};
+use crate::serde::{proto_error, protobuf};
 
 impl From<&protobuf::PhysicalColumn> for Column {
     fn from(c: &protobuf::PhysicalColumn) -> Column {
