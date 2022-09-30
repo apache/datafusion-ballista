@@ -21,7 +21,7 @@
 use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 use arrow_flight::sql::ProstMessageExt;
 use datafusion::execution::runtime_env::RuntimeEnv;
-use datafusion::logical_plan::{FunctionRegistry, Operator};
+use datafusion::logical_plan::FunctionRegistry;
 use datafusion::physical_plan::join_utils::JoinSide;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::{
@@ -209,40 +209,6 @@ macro_rules! convert_box_required {
     }};
 }
 
-pub(crate) fn from_proto_binary_op(op: &str) -> Result<Operator, BallistaError> {
-    match op {
-        "And" => Ok(Operator::And),
-        "Or" => Ok(Operator::Or),
-        "Eq" => Ok(Operator::Eq),
-        "NotEq" => Ok(Operator::NotEq),
-        "LtEq" => Ok(Operator::LtEq),
-        "Lt" => Ok(Operator::Lt),
-        "Gt" => Ok(Operator::Gt),
-        "GtEq" => Ok(Operator::GtEq),
-        "Plus" => Ok(Operator::Plus),
-        "Minus" => Ok(Operator::Minus),
-        "Multiply" => Ok(Operator::Multiply),
-        "Divide" => Ok(Operator::Divide),
-        "Modulo" => Ok(Operator::Modulo),
-        "Like" => Ok(Operator::Like),
-        "NotLike" => Ok(Operator::NotLike),
-        "IsDistinctFrom" => Ok(Operator::IsDistinctFrom),
-        "IsNotDistinctFrom" => Ok(Operator::IsNotDistinctFrom),
-        "BitwiseAnd" => Ok(Operator::BitwiseAnd),
-        "BitwiseOr" => Ok(Operator::BitwiseOr),
-        "BitwiseShiftLeft" => Ok(Operator::BitwiseShiftLeft),
-        "BitwiseShiftRight" => Ok(Operator::BitwiseShiftRight),
-        "RegexIMatch" => Ok(Operator::RegexIMatch),
-        "RegexMatch" => Ok(Operator::RegexMatch),
-        "RegexNotIMatch" => Ok(Operator::RegexNotIMatch),
-        "RegexNotMatch" => Ok(Operator::RegexNotMatch),
-        "StringConcat" => Ok(Operator::StringConcat),
-        other => Err(proto_error(format!(
-            "Unsupported binary operator '{:?}'",
-            other
-        ))),
-    }
-}
 impl From<protobuf::JoinSide> for JoinSide {
     fn from(t: protobuf::JoinSide) -> Self {
         match t {
