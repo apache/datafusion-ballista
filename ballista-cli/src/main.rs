@@ -127,7 +127,6 @@ pub async fn main() -> Result<()> {
             };
             // In-process execution with Ballista Standalone
             BallistaContext::standalone(&ballista_config, concurrent_tasks).await?
-
         }
     };
 
