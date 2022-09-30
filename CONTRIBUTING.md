@@ -36,7 +36,7 @@ list to help you get started.
 This section describes how you can get started at developing DataFusion.
 
 For information on developing with Ballista, see the
-[Ballista developer documentation](ballista/docs/README.md).
+[Ballista developer documentation](docs/developer/README.md).
 
 ### Bootstrap environment
 
