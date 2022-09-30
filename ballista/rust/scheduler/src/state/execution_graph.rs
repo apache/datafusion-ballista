@@ -115,7 +115,7 @@ pub struct ExecutionGraph {
     /// Locations of this `ExecutionGraph` final output locations
     output_locations: Vec<PartitionLocation>,
     /// Task ID generator, generate unique TID in the execution graph
-    tid_generator: usize,
+    task_id_gen: usize,
     /// Failed stage attempts, record the failed stage attempts to limit the retry times.
     /// Map from Stage ID -> Set<Stage_ATTPMPT_NUM>
     failed_stage_attempts: HashMap<usize, HashSet<usize>>,
@@ -156,7 +156,7 @@ impl ExecutionGraph {
             stages,
             output_partitions,
             output_locations: vec![],
-            tid_generator: 0,
+            task_id_gen: 0,
             failed_stage_attempts: HashMap::new(),
         })
     }
@@ -178,8 +178,8 @@ impl ExecutionGraph {
     }
 
     pub fn next_task_id(&mut self) -> usize {
-        let new_tid = self.tid_generator;
-        self.tid_generator += 1;
+        let new_tid = self.task_id_gen;
+        self.task_id_gen += 1;
         new_tid
     }
 
@@ -1285,7 +1285,7 @@ impl ExecutionGraph {
             stages,
             output_partitions: proto.output_partitions as usize,
             output_locations,
-            tid_generator: proto.tid_gen as usize,
+            task_id_gen: proto.task_id_gen as usize,
             failed_stage_attempts,
         })
     }
@@ -1357,7 +1357,7 @@ impl ExecutionGraph {
             output_partitions: graph.output_partitions as u64,
             output_locations,
             scheduler_id: graph.scheduler_id,
-            tid_gen: graph.tid_generator as u32,
+            task_id_gen: graph.task_id_gen as u32,
             failed_attempts,
         })
     }

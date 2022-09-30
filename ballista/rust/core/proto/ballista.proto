@@ -424,7 +424,7 @@ message ExecutionGraph {
   uint64 output_partitions = 5;
   repeated PartitionLocation output_locations = 6;
   string scheduler_id = 7;
-  uint32 tid_gen = 8;
+  uint32 task_id_gen = 8;
   repeated StageAttempts failed_attempts = 9;
 }
 
@@ -444,47 +444,47 @@ message ExecutionGraphStage {
 
 message UnResolvedStage {
   uint32 stage_id = 1;
-  uint32 stage_attempt_num = 2;
-  PhysicalHashRepartition output_partitioning = 3;
-  repeated uint32 output_links = 4;
-  repeated  GraphStageInput inputs = 5;
-  bytes plan = 6;
+  PhysicalHashRepartition output_partitioning = 2;
+  repeated uint32 output_links = 3;
+  repeated  GraphStageInput inputs = 4;
+  bytes plan = 5;
+  uint32 stage_attempt_num = 6;
   repeated string last_attempt_failure_reasons = 7;
 }
 
 message ResolvedStage {
   uint32 stage_id = 1;
-  uint32 stage_attempt_num = 2;
-  uint32 partitions = 3;
-  PhysicalHashRepartition output_partitioning = 4;
-  repeated uint32 output_links = 5;
-  repeated  GraphStageInput inputs = 6;
-  bytes plan = 7;
+  uint32 partitions = 2;
+  PhysicalHashRepartition output_partitioning = 3;
+  repeated uint32 output_links = 4;
+  repeated  GraphStageInput inputs = 5;
+  bytes plan = 6;
+  uint32 stage_attempt_num = 7;
   repeated string last_attempt_failure_reasons = 8;
 }
 
 message SuccessfulStage {
   uint32 stage_id = 1;
-  uint32 stage_attempt_num = 2;
-  uint32 partitions = 3;
-  PhysicalHashRepartition output_partitioning = 4;
-  repeated uint32 output_links = 5;
-  repeated  GraphStageInput inputs = 6;
-  bytes plan = 7;
-  repeated TaskInfo task_infos = 8;
-  repeated OperatorMetricsSet stage_metrics = 9;
+  uint32 partitions = 2;
+  PhysicalHashRepartition output_partitioning = 3;
+  repeated uint32 output_links = 4;
+  repeated  GraphStageInput inputs = 5;
+  bytes plan = 6;
+  repeated TaskInfo task_infos = 7;
+  repeated OperatorMetricsSet stage_metrics = 8;
+  uint32 stage_attempt_num = 9;
 }
 
 message FailedStage {
   uint32 stage_id = 1;
-  uint32 stage_attempt_num = 2;
-  uint32 partitions = 3;
-  PhysicalHashRepartition output_partitioning = 4;
-  repeated uint32 output_links = 5;
-  bytes plan = 6;
-  repeated TaskInfo task_infos = 7;
-  repeated OperatorMetricsSet stage_metrics = 8;
-  string error_message = 9;
+  uint32 partitions = 2;
+  PhysicalHashRepartition output_partitioning = 3;
+  repeated uint32 output_links = 4;
+  bytes plan = 5;
+  repeated TaskInfo task_infos = 6;
+  repeated OperatorMetricsSet stage_metrics = 7;
+  string error_message = 8;
+  uint32 stage_attempt_num = 9;
 }
 
 message TaskInfo {
@@ -555,7 +555,9 @@ message FetchPartition {
 }
 
 message PartitionLocation {
+  // partition_id of the map stage who produces the shuffle.
   uint32 map_partition_id = 1;
+  // partition_id of the shuffle, a composition of(job_id + map_stage_id + partition_id).
   PartitionId partition_id = 2;
   ExecutorMetadata executor_meta = 3;
   PartitionStats partition_stats = 4;
