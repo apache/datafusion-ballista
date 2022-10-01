@@ -384,11 +384,6 @@ message SortPreservingMergeExecNode {
   repeated PhysicalExprNode expr = 2;
 }
 
-message SortPreservingMergeExecNode {
-  PhysicalPlanNode input = 1;
-  repeated PhysicalExprNode expr = 2;
-}
-
 message CoalesceBatchesExecNode {
   PhysicalPlanNode input = 1;
   uint32 target_batch_size = 2;

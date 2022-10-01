@@ -689,47 +689,6 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Arc::new(SortPreservingMergeExec::new(exprs, input)))
             }
-            PhysicalPlanType::SortPreservingMerge(sort) => {
-                let input: Arc<dyn ExecutionPlan> =
-                    into_physical_plan!(sort.input, registry, runtime, extension_codec)?;
-                let exprs = sort
-                    .expr
-                    .iter()
-                    .map(|expr| {
-                        let expr = expr.expr_type.as_ref().ok_or_else(|| {
-                            proto_error(format!(
-                                "physical_plan::from_proto() Unexpected expr {:?}",
-                                self
-                            ))
-                        })?;
-                        if let protobuf::physical_expr_node::ExprType::Sort(sort_expr) = expr {
-                            let expr = sort_expr
-                                .expr
-                                .as_ref()
-                                .ok_or_else(|| {
-                                    proto_error(format!(
-                                        "physical_plan::from_proto() Unexpected sort expr {:?}",
-                                        self
-                                    ))
-                                })?
-                                .as_ref();
-                            Ok(PhysicalSortExpr {
-                                expr: parse_physical_expr(expr,registry, input.schema().as_ref())?,
-                                options: SortOptions {
-                                    descending: !sort_expr.asc,
-                                    nulls_first: sort_expr.nulls_first,
-                                },
-                            })
-                        } else {
-                            Err(BallistaError::General(format!(
-                                "physical_plan::from_proto() {:?}",
-                                self
-                            )))
-                        }
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(Arc::new(SortPreservingMergeExec::new(exprs, input)))
-            }
             PhysicalPlanType::Unresolved(unresolved_shuffle) => {
                 let schema = Arc::new(convert_required!(unresolved_shuffle.schema)?);
                 Ok(Arc::new(UnresolvedShuffleExec {
