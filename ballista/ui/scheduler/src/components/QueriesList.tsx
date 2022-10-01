@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   CircularProgress,
   CircularProgressLabel,
@@ -25,11 +25,21 @@ import {
   Text,
   Flex,
   Box,
+  useDisclosure,
+  Button,
+  Modal,
+  ModalBody,
+  ModalCloseButton,
+  ModalContent,
+  ModalFooter,
+  ModalHeader,
+  ModalOverlay,
 } from "@chakra-ui/react";
 import { Column, DataTable, LinkCell } from "./DataTable";
 import { FaStop } from "react-icons/fa";
 import { GrDocumentDownload } from "react-icons/gr";
 import fileDownload from "js-file-download";
+import * as d3 from "d3-graphviz"; 
 
 export enum QueryStatus {
   QUEUED = "QUEUED",
@@ -86,6 +96,51 @@ export const ProgressCell: (props: any) => React.ReactNode = (props: any) => {
   );
 };
 
+export const GraphCell: (props: any) => React.ReactNode = (props: any) => {
+
+  const  [dot_data, setData] = useState("")
+  const { isOpen, onOpen, onClose } = useDisclosure()
+
+  const dot = () => {
+    fetch("/api/job/" + props.value + "/dot", {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+    }).then(async (res) => {
+      setData(await res.text())
+    });
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      dot();
+      d3.graphviz("#graph-body").renderDot(dot_data)
+    }
+  })
+
+  return (
+    <>
+      <Button onClick={onOpen}>View Graph</Button>
+      <Modal isOpen={isOpen} onClose={onClose}>
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Graph for {props.value} job</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody>
+            <div id="graph-body"></div>
+          </ModalBody>
+          <ModalFooter>
+            <Button colorScheme='blue' mr={3} onClick={onClose}>
+              Close
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+    </>
+  )
+}
+
 const columns: Column<any>[] = [
   {
     Header: "Job ID",
@@ -110,6 +165,13 @@ const columns: Column<any>[] = [
     accessor: "job_id",
     id: "action_cell",
     Cell: ActionsCell,
+  },
+
+  {
+    Header: "Graph",
+    accessor: "job_id",
+    id: "graph_cell",
+    Cell: GraphCell,
   },
 ];
 
