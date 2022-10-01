@@ -39,7 +39,7 @@ import { Column, DataTable, LinkCell } from "./DataTable";
 import { FaStop } from "react-icons/fa";
 import { GrDocumentDownload } from "react-icons/gr";
 import fileDownload from "js-file-download";
-import * as d3 from "d3-graphviz"; 
+import * as d3 from "d3-graphviz";
 
 export enum QueryStatus {
   QUEUED = "QUEUED",
@@ -98,7 +98,7 @@ export const ProgressCell: (props: any) => React.ReactNode = (props: any) => {
 
 export const GraphCell: (props: any) => React.ReactNode = (props: any) => {
 
-  const  [dot_data, setData] = useState("")
+  const [dot_data, setData] = useState("")
   const { isOpen, onOpen, onClose } = useDisclosure()
 
   const dot = () => {
@@ -108,14 +108,14 @@ export const GraphCell: (props: any) => React.ReactNode = (props: any) => {
         Accept: "application/json",
       },
     }).then(async (res) => {
-      setData(await res.text())
+      setData(await res.text());
     });
   };
 
   useEffect(() => {
     if (isOpen) {
       dot();
-      d3.graphviz("#graph-body").renderDot(dot_data)
+      d3.graphviz("#graph-body").renderDot(dot_data);
     }
   })
 
@@ -131,15 +131,15 @@ export const GraphCell: (props: any) => React.ReactNode = (props: any) => {
             <div id="graph-body"></div>
           </ModalBody>
           <ModalFooter>
-            <Button colorScheme='blue' mr={3} onClick={onClose}>
+            <Button colorScheme="blue" mr={3} onClick={onClose}>
               Close
             </Button>
           </ModalFooter>
         </ModalContent>
       </Modal>
     </>
-  )
-}
+  );
+};
 
 const columns: Column<any>[] = [
   {
