@@ -197,7 +197,7 @@ pub(crate) async fn get_query_stages<T: AsLogicalPlan, U: AsExecutionPlan>(
                                 .stage_metrics
                                 .as_ref()
                                 .map(|m| get_elapsed_compute_nanos(m.as_slice()))
-                                .unwrap_or("".to_string());
+                                .unwrap_or_default();
                         }
                         ExecutionStage::Completed(completed_stage) => {
                             summary.stage_status = "Completed".to_string();
@@ -225,7 +225,7 @@ pub(crate) async fn get_query_stages<T: AsLogicalPlan, U: AsExecutionPlan>(
 }
 
 fn get_elapsed_compute_nanos(metrics: &[MetricsSet]) -> String {
-    let durations: Vec<usize> = metrics
+    let nanos: usize = metrics
         .iter()
         .flat_map(|vec| {
             vec.iter().map(|metric| match metric.as_ref().value() {
@@ -233,15 +233,14 @@ fn get_elapsed_compute_nanos(metrics: &[MetricsSet]) -> String {
                 _ => 0,
             })
         })
-        .collect();
-    let nanos: usize = durations.into_iter().sum();
+        .sum();
     let t = Time::new();
     t.add_duration(Duration::from_nanos(nanos as u64));
     t.to_string()
 }
 
 fn get_combined_count(metrics: &[MetricsSet], name: &str) -> usize {
-    let counts: Vec<usize> = metrics
+    metrics
         .iter()
         .flat_map(|vec| {
             vec.iter().map(|metric| {
@@ -253,8 +252,7 @@ fn get_combined_count(metrics: &[MetricsSet], name: &str) -> usize {
                 }
             })
         })
-        .collect();
-    counts.into_iter().sum()
+        .sum()
 }
 
 /// Generate a dot graph for the specified job id and return as plain text
