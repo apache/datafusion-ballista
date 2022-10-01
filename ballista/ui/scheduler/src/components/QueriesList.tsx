@@ -97,9 +97,8 @@ export const ProgressCell: (props: any) => React.ReactNode = (props: any) => {
 };
 
 export const GraphCell: (props: any) => React.ReactNode = (props: any) => {
-
-  const [dot_data, setData] = useState("")
-  const { isOpen, onOpen, onClose } = useDisclosure()
+  const [dot_data, setData] = useState("");
+  const { isOpen, onOpen, onClose } = useDisclosure();
 
   const dot = () => {
     fetch("/api/job/" + props.value + "/dot", {
@@ -117,7 +116,7 @@ export const GraphCell: (props: any) => React.ReactNode = (props: any) => {
       dot();
       d3.graphviz("#graph-body").renderDot(dot_data);
     }
-  })
+  });
 
   return (
     <>
