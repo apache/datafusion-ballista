@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   CircularProgress,
   CircularProgressLabel,
