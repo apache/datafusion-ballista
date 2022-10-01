@@ -240,10 +240,10 @@ impl AsExecutionPlan for PhysicalPlanNode {
             PhysicalPlanType::GlobalLimit(limit) => {
                 let input: Arc<dyn ExecutionPlan> =
                     into_physical_plan!(limit.input, registry, runtime, extension_codec)?;
-                let fetch = if limit.fetch > 0 {
-                    Some(limit.fetch as usize)
-                } else {
+                let fetch = if limit.fetch < 0 {
                     None
+                } else {
+                    Some(limit.fetch as usize)
                 };
                 Ok(Arc::new(GlobalLimitExec::new(
                     input,
@@ -738,8 +738,8 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::GlobalLimit(Box::new(
                     protobuf::GlobalLimitExecNode {
                         input: Some(Box::new(input)),
-                        skip: limit.skip() as u32,
-                        fetch: *limit.fetch().unwrap_or(&0) as u32,
+                        skip: limit.skip() as i64,
+                        fetch: *limit.fetch().unwrap_or(&0) as i64,
                     },
                 ))),
             })
@@ -752,7 +752,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::LocalLimit(Box::new(
                     protobuf::LocalLimitExecNode {
                         input: Some(Box::new(input)),
-                        fetch: limit.fetch() as u32,
+                        fetch: limit.fetch() as i64,
                     },
                 ))),
             })
@@ -1336,6 +1336,15 @@ mod roundtrip_tests {
             Arc::new(EmptyExec::new(false, Arc::new(Schema::empty()))),
             0,
             Some(25),
+        )))
+    }
+
+    #[test]
+    fn roundtrip_global_skip_no_limit() -> Result<()> {
+        roundtrip_test(Arc::new(GlobalLimitExec::new(
+            Arc::new(EmptyExec::new(false, Arc::new(Schema::empty()))),
+            10,
+            None, // no limit
         )))
     }
 
