@@ -16,7 +16,9 @@ use crate::state::execution_graph_dot::ExecutionGraphDot;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::AsExecutionPlan;
 use ballista_core::BALLISTA_VERSION;
+use datafusion::physical_plan::metrics::{MetricValue, MetricsSet, Time};
 use datafusion_proto::logical_plan::AsLogicalPlan;
+use std::time::Duration;
 use warp::Rejection;
 
 #[derive(Debug, serde::Serialize)]
@@ -47,7 +49,9 @@ pub struct JobResponse {
 pub struct QueryStageSummary {
     pub stage_id: String,
     pub stage_status: String,
-    pub summary: String,
+    pub input_rows: usize,
+    pub output_rows: usize,
+    pub elapsed_compute: String,
 }
 
 /// Return current scheduler state, including list of executors and active, completed, and failed
@@ -166,7 +170,9 @@ pub(crate) async fn get_query_stages<T: AsLogicalPlan, U: AsExecutionPlan>(
                     let mut summary = QueryStageSummary {
                         stage_id: id.to_string(),
                         stage_status: "".to_string(),
-                        summary: "".to_string(),
+                        input_rows: 0,
+                        output_rows: 0,
+                        elapsed_compute: "".to_string(),
                     };
                     match stage {
                         ExecutionStage::UnResolved(_) => {
@@ -177,25 +183,34 @@ pub(crate) async fn get_query_stages<T: AsLogicalPlan, U: AsExecutionPlan>(
                         }
                         ExecutionStage::Running(running_stage) => {
                             summary.stage_status = "Running".to_string();
-                            summary.summary = running_stage
+                            summary.input_rows = running_stage
                                 .stage_metrics
-                                .iter()
-                                .flat_map(|vec| {
-                                    vec.iter().map(|metric| format!("{}", metric))
-                                })
-                                .collect::<Vec<String>>()
-                                .join(", ");
+                                .as_ref()
+                                .map(|m| get_combined_count(m.as_slice(), "input_rows"))
+                                .unwrap_or(0);
+                            summary.output_rows = running_stage
+                                .stage_metrics
+                                .as_ref()
+                                .map(|m| get_combined_count(m.as_slice(), "output_rows"))
+                                .unwrap_or(0);
+                            summary.elapsed_compute = running_stage
+                                .stage_metrics
+                                .as_ref()
+                                .map(|m| get_elapsed_compute_nanos(m.as_slice()))
+                                .unwrap_or("".to_string());
                         }
                         ExecutionStage::Completed(completed_stage) => {
                             summary.stage_status = "Completed".to_string();
-                            summary.summary = completed_stage
-                                .stage_metrics
-                                .iter()
-                                .flat_map(|vec| {
-                                    vec.iter().map(|metric| format!("{}", metric))
-                                })
-                                .collect::<Vec<String>>()
-                                .join(", ");
+                            summary.input_rows = get_combined_count(
+                                &completed_stage.stage_metrics,
+                                "input_rows",
+                            );
+                            summary.output_rows = get_combined_count(
+                                &completed_stage.stage_metrics,
+                                "output_rows",
+                            );
+                            summary.elapsed_compute =
+                                get_elapsed_compute_nanos(&completed_stage.stage_metrics);
                         }
                         ExecutionStage::Failed(_) => {
                             summary.stage_status = "Failed".to_string();
@@ -208,6 +223,40 @@ pub(crate) async fn get_query_stages<T: AsLogicalPlan, U: AsExecutionPlan>(
         _ => Ok(warp::reply::json(&QueryStagesResponse { stages: vec![] })),
     }
 }
+
+fn get_elapsed_compute_nanos(metrics: &[MetricsSet]) -> String {
+    let durations: Vec<usize> = metrics
+        .iter()
+        .flat_map(|vec| {
+            vec.iter().map(|metric| match metric.as_ref().value() {
+                MetricValue::ElapsedCompute(time) => time.value(),
+                _ => 0,
+            })
+        })
+        .collect();
+    let nanos: usize = durations.into_iter().sum();
+    let t = Time::new();
+    t.add_duration(Duration::from_nanos(nanos as u64));
+    t.to_string()
+}
+
+fn get_combined_count(metrics: &[MetricsSet], name: &str) -> usize {
+    let counts: Vec<usize> = metrics
+        .iter()
+        .flat_map(|vec| {
+            vec.iter().map(|metric| {
+                let metric_value = metric.value();
+                if metric_value.name() == name {
+                    metric_value.as_usize()
+                } else {
+                    0
+                }
+            })
+        })
+        .collect();
+    counts.into_iter().sum()
+}
+
 /// Generate a dot graph for the specified job id and return as plain text
 pub(crate) async fn get_job_dot_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
     data_server: SchedulerServer<T, U>,
