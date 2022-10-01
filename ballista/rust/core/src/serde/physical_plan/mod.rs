@@ -641,7 +641,53 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         }
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(Arc::new(SortExec::try_new(exprs, input, None)?))
+                let fetch = if sort.fetch < 0 {
+                    None
+                } else {
+                    Some(sort.fetch as usize)
+                };
+                Ok(Arc::new(SortExec::try_new(exprs, input, fetch)?))
+            }
+            PhysicalPlanType::SortPreservingMerge(sort) => {
+                let input: Arc<dyn ExecutionPlan> =
+                    into_physical_plan!(sort.input, registry, runtime, extension_codec)?;
+                let exprs = sort
+                    .expr
+                    .iter()
+                    .map(|expr| {
+                        let expr = expr.expr_type.as_ref().ok_or_else(|| {
+                            proto_error(format!(
+                                "physical_plan::from_proto() Unexpected expr {:?}",
+                                self
+                            ))
+                        })?;
+                        if let protobuf::physical_expr_node::ExprType::Sort(sort_expr) = expr {
+                            let expr = sort_expr
+                                .expr
+                                .as_ref()
+                                .ok_or_else(|| {
+                                    proto_error(format!(
+                                        "physical_plan::from_proto() Unexpected sort expr {:?}",
+                                        self
+                                    ))
+                                })?
+                                .as_ref();
+                            Ok(PhysicalSortExpr {
+                                expr: parse_physical_expr(expr,registry, input.schema().as_ref())?,
+                                options: SortOptions {
+                                    descending: !sort_expr.asc,
+                                    nulls_first: sort_expr.nulls_first,
+                                },
+                            })
+                        } else {
+                            Err(BallistaError::General(format!(
+                                "physical_plan::from_proto() {:?}",
+                                self
+                            )))
+                        }
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Arc::new(SortPreservingMergeExec::new(exprs, input)))
             }
             PhysicalPlanType::SortPreservingMerge(sort) => {
                 let input: Arc<dyn ExecutionPlan> =
@@ -1104,6 +1150,10 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     protobuf::SortExecNode {
                         input: Some(Box::new(input)),
                         expr,
+                        fetch: match exec.fetch() {
+                            Some(n) => n as i64,
+                            _ => -1,
+                        },
                     },
                 ))),
             })
