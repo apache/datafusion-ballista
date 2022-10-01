@@ -47,6 +47,7 @@ pub struct JobResponse {
 pub struct QueryStageSummary {
     pub stage_id: String,
     pub stage_status: String,
+    pub summary: String,
 }
 
 /// Return current scheduler state, including list of executors and active, completed, and failed
@@ -149,40 +150,58 @@ pub(crate) async fn get_query_stages<T: AsLogicalPlan, U: AsExecutionPlan>(
     data_server: SchedulerServer<T, U>,
     job_id: String,
 ) -> Result<impl warp::Reply, Rejection> {
-    let graph = data_server
+    let maybe_graph = data_server
         .state
         .task_manager
         .get_job_execution_graph(&job_id)
         .await
         .map_err(|_| warp::reject())?;
 
-    match graph {
-        Some(x) => Ok(warp::reply::json(&QueryStagesResponse {
-            stages: x
+    match maybe_graph {
+        Some(graph) => Ok(warp::reply::json(&QueryStagesResponse {
+            stages: graph
                 .stages()
                 .iter()
                 .map(|(id, stage)| {
                     let mut summary = QueryStageSummary {
                         stage_id: id.to_string(),
                         stage_status: "".to_string(),
+                        summary: "".to_string(),
                     };
                     match stage {
-                        ExecutionStage::UnResolved(unresolved_stage) => {
+                        ExecutionStage::UnResolved(_) => {
                             summary.stage_status = "Unresolved".to_string();
                         }
-                        ExecutionStage::Resolved(resolved_stage) => {
+                        ExecutionStage::Resolved(_) => {
                             summary.stage_status = "Resolved".to_string();
                         }
                         ExecutionStage::Running(running_stage) => {
                             summary.stage_status = "Running".to_string();
+                            summary.summary = running_stage
+                                .stage_metrics
+                                .iter()
+                                .flat_map(|vec| {
+                                    vec.iter().map(|metric| format!("{}", metric))
+                                })
+                                .collect::<Vec<String>>()
+                                .join(", ");
                         }
                         ExecutionStage::Completed(completed_stage) => {
                             summary.stage_status = "Completed".to_string();
+                            summary.summary = completed_stage
+                                .stage_metrics
+                                .iter()
+                                .flat_map(|vec| {
+                                    vec.iter().map(|metric| format!("{}", metric))
+                                })
+                                .collect::<Vec<String>>()
+                                .join(", ");
                         }
-                        ExecutionStage::Failed(failed_stage) => {
+                        ExecutionStage::Failed(_) => {
                             summary.stage_status = "Failed".to_string();
                         }
                     }
+                    summary
                 })
                 .collect(),
         })),
