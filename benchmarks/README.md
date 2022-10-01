@@ -39,7 +39,18 @@ generator.
 Data will be generated into the `data` subdirectory and will not be checked in because this directory has been added
 to the `.gitignore` file.
 
-## Running the DataFusion Benchmarks
+## Running the DataFusion Benchmarks in Python
+
+Build the Python bindings and then run:
+
+```bash
+python tpch.py q1 /path/to/data [parquet]
+```
+
+Note that this Python script currently only supports running against file formats than contain a schema 
+definition (such as Parquet).
+
+## Running the DataFusion Benchmarks in Rust
 
 The benchmark can then be run (assuming the data created from `dbgen` is in `./data`) with a command such as:
 
