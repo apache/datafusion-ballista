@@ -79,6 +79,7 @@ message PhysicalPlanNode {
     PhysicalExtensionNode extension = 21;
     UnionExecNode union = 22;
     ExplainExecNode explain = 23;
+    SortPreservingMergeExecNode sort_preserving_merge = 24;
   }
 }
 
@@ -372,6 +373,11 @@ message LocalLimitExecNode {
 }
 
 message SortExecNode {
+  PhysicalPlanNode input = 1;
+  repeated PhysicalExprNode expr = 2;
+}
+
+message SortPreservingMergeExecNode {
   PhysicalPlanNode input = 1;
   repeated PhysicalExprNode expr = 2;
 }

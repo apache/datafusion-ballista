@@ -33,10 +33,10 @@ import time
 start = time.time()
 
 df = ctx.sql(sql)
-df.collect()
+# df.collect()
 
 # show fails with PhysicalExtensionCodec is not provided
-# df.show()
+df.show()
 
 end = time.time()
 print("Query", query, "took", end - start, "second(s)")
