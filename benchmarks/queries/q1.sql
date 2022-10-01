@@ -18,5 +18,4 @@ group by
     l_linestatus
 order by
     l_returnflag,
-    l_linestatus
-limit 10;
+    l_linestatus;

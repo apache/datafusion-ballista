@@ -360,14 +360,15 @@ message ShuffleReaderPartition {
 
 message GlobalLimitExecNode {
   PhysicalPlanNode input = 1;
-  int64 skip = 2;
-  // negative number means no limit on number of rows to fetch
+  // The number of rows to skip before fetch
+  uint32 skip = 2;
+  // Maximum number of rows to fetch; negative means no limit
   int64 fetch = 3;
 }
 
 message LocalLimitExecNode {
   PhysicalPlanNode input = 1;
-  int64 fetch = 2;
+  uint32 fetch = 2;
 }
 
 message SortExecNode {

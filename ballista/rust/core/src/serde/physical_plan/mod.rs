@@ -240,10 +240,10 @@ impl AsExecutionPlan for PhysicalPlanNode {
             PhysicalPlanType::GlobalLimit(limit) => {
                 let input: Arc<dyn ExecutionPlan> =
                     into_physical_plan!(limit.input, registry, runtime, extension_codec)?;
-                let fetch = if limit.fetch < 0 {
-                    None
-                } else {
+                let fetch = if limit.fetch >= 0 {
                     Some(limit.fetch as usize)
+                } else {
+                    None
                 };
                 Ok(Arc::new(GlobalLimitExec::new(
                     input,
@@ -738,8 +738,11 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::GlobalLimit(Box::new(
                     protobuf::GlobalLimitExecNode {
                         input: Some(Box::new(input)),
-                        skip: limit.skip() as i64,
-                        fetch: *limit.fetch().unwrap_or(&0) as i64,
+                        skip: limit.skip() as u32,
+                        fetch: match limit.fetch() {
+                            Some(n) => *n as i64,
+                            _ => -1, // no limit
+                        },
                     },
                 ))),
             })
@@ -752,7 +755,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::LocalLimit(Box::new(
                     protobuf::LocalLimitExecNode {
                         input: Some(Box::new(input)),
-                        fetch: limit.fetch() as i64,
+                        fetch: limit.fetch() as u32,
                     },
                 ))),
             })
