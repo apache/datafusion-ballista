@@ -11,6 +11,7 @@
 // limitations under the License.
 
 use crate::scheduler_server::SchedulerServer;
+use crate::state::execution_graph::ExecutionStage;
 use crate::state::execution_graph_dot::ExecutionGraphDot;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::AsExecutionPlan;
@@ -40,6 +41,12 @@ pub struct JobResponse {
     pub num_stages: usize,
     pub completed_stages: usize,
     pub percent_complete: u8,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct QueryStageSummary {
+    pub stage_id: String,
+    pub stage_status: String,
 }
 
 /// Return current scheduler state, including list of executors and active, completed, and failed
@@ -133,14 +140,12 @@ pub(crate) async fn get_jobs<T: AsLogicalPlan, U: AsExecutionPlan>(
 }
 
 #[derive(Debug, serde::Serialize)]
-pub struct JobSummaryResponse {
-    /// Just show debug output for now but what we really want here is a list of stages with
-    /// plans and metrics and the relationship between them
-    pub summary: String,
+pub struct QueryStagesResponse {
+    pub stages: Vec<QueryStageSummary>,
 }
 
 /// Get the execution graph for the specified job id
-pub(crate) async fn get_job_summary<T: AsLogicalPlan, U: AsExecutionPlan>(
+pub(crate) async fn get_query_stages<T: AsLogicalPlan, U: AsExecutionPlan>(
     data_server: SchedulerServer<T, U>,
     job_id: String,
 ) -> Result<impl warp::Reply, Rejection> {
@@ -152,12 +157,36 @@ pub(crate) async fn get_job_summary<T: AsLogicalPlan, U: AsExecutionPlan>(
         .map_err(|_| warp::reject())?;
 
     match graph {
-        Some(x) => Ok(warp::reply::json(&JobSummaryResponse {
-            summary: format!("{:?}", x),
+        Some(x) => Ok(warp::reply::json(&QueryStagesResponse {
+            stages: x
+                .stages()
+                .iter()
+                .map(|(id, stage)| {
+                    let mut summary = QueryStageSummary {
+                        stage_id: id.to_string(),
+                        stage_status: "".to_string(),
+                    };
+                    match stage {
+                        ExecutionStage::UnResolved(unresolved_stage) => {
+                            summary.stage_status = "Unresolved".to_string();
+                        }
+                        ExecutionStage::Resolved(resolved_stage) => {
+                            summary.stage_status = "Resolved".to_string();
+                        }
+                        ExecutionStage::Running(running_stage) => {
+                            summary.stage_status = "Running".to_string();
+                        }
+                        ExecutionStage::Completed(completed_stage) => {
+                            summary.stage_status = "Completed".to_string();
+                        }
+                        ExecutionStage::Failed(failed_stage) => {
+                            summary.stage_status = "Failed".to_string();
+                        }
+                    }
+                })
+                .collect(),
         })),
-        _ => Ok(warp::reply::json(&JobSummaryResponse {
-            summary: "Not Found".to_string(),
-        })),
+        _ => Ok(warp::reply::json(&QueryStagesResponse { stages: vec![] })),
     }
 }
 /// Generate a dot graph for the specified job id and return as plain text

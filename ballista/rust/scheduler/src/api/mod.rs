@@ -93,9 +93,9 @@ pub fn get_routes<T: AsLogicalPlan + Clone, U: 'static + AsExecutionPlan>(
         .and(with_data_server(scheduler_server.clone()))
         .and_then(|data_server| handlers::get_jobs(data_server));
 
-    let route_job_summary = warp::path!("api" / "job" / String)
+    let route_job_summary = warp::path!("api" / "job" / String / "stages")
         .and(with_data_server(scheduler_server.clone()))
-        .and_then(|job_id, data_server| handlers::get_job_summary(data_server, job_id));
+        .and_then(|job_id, data_server| handlers::get_query_stages(data_server, job_id));
 
     let route_job_dot = warp::path!("api" / "job" / String / "dot")
         .and(with_data_server(scheduler_server))
