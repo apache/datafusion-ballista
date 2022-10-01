@@ -79,6 +79,7 @@ message PhysicalPlanNode {
     PhysicalExtensionNode extension = 21;
     UnionExecNode union = 22;
     ExplainExecNode explain = 23;
+    SortPreservingMergeExecNode sort_preserving_merge = 24;
   }
 }
 
@@ -360,8 +361,10 @@ message ShuffleReaderPartition {
 
 message GlobalLimitExecNode {
   PhysicalPlanNode input = 1;
+  // The number of rows to skip before fetch
   uint32 skip = 2;
-  uint32 fetch = 3;
+  // Maximum number of rows to fetch; negative means no limit
+  int64 fetch = 3;
 }
 
 message LocalLimitExecNode {
@@ -370,6 +373,13 @@ message LocalLimitExecNode {
 }
 
 message SortExecNode {
+  PhysicalPlanNode input = 1;
+  repeated PhysicalExprNode expr = 2;
+  // Maximum number of highest/lowest rows to fetch; negative means no limit
+  int64 fetch = 3;
+}
+
+message SortPreservingMergeExecNode {
   PhysicalPlanNode input = 1;
   repeated PhysicalExprNode expr = 2;
 }
