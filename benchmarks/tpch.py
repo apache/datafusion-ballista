@@ -33,9 +33,6 @@ import time
 start = time.time()
 
 df = ctx.sql(sql)
-# df.collect()
-
-# show fails with PhysicalExtensionCodec is not provided
 df.show()
 
 end = time.time()
