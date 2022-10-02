@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   CircularProgress,
   CircularProgressLabel,
@@ -60,6 +60,31 @@ export interface QueriesListProps {
 }
 
 export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
+  // const openSVG = () => {
+  //   // window.open("/api/job/" + props.value + "/dot_svg", '_blank', 'noopener,noreferrer');
+  //   window.open("/api/job/" + props.value + "/dot_svg", "mozillaTab");
+  // };
+
+  const openSVG = async () => {
+    // Change this to use your HTTP client
+    fetch("/api/job/" + props.value + "/dot_svg", {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+    }).then((response) => response.text())
+    .then((blob) => { // RETRIEVE THE BLOB AND CREATE LOCAL URL
+      // var _url = window.URL.createObjectURL();
+      // if (_url !=null) {
+        // window.open(_url, "_blank").focus(); // window.open + focus
+        window.open(blob, "mozillaTab");
+        
+      // }
+      
+    });
+      
+    
+  };
   const handleDownload = (url: string, filename: string) => {
     fetch(url, {
       method: "GET",
@@ -84,6 +109,11 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
       >
         <GrDocumentDownload title={"Download DOT Plan"} />
       </button>
+      <button onClick={() => openSVG()}>
+        Open google
+      </button>
+
+      
     </Flex>
   );
 };
@@ -99,9 +129,12 @@ export const ProgressCell: (props: any) => React.ReactNode = (props: any) => {
 export const GraphCell: (props: any) => React.ReactNode = (props: any) => {
   const [dot_data, setData] = useState("");
   const { isOpen, onOpen, onClose } = useDisclosure();
+  const [ready, setReady] = useState(false);
+  const imgRef = React.useRef<HTMLImageElement>(null)
+
 
   const dot = () => {
-    fetch("/api/job/" + props.value + "/dot", {
+    fetch("/api/job/" + props.value + "/dot_svg", {
       method: "GET",
       headers: {
         Accept: "application/json",
@@ -114,9 +147,21 @@ export const GraphCell: (props: any) => React.ReactNode = (props: any) => {
   useEffect(() => {
     if (isOpen) {
       dot();
-      d3.graphviz("#graph-body").renderDot(dot_data);
+        console.log(dot_data);
+        console.log(imgRef.current);
+        if (imgRef.current != null) {
+        imgRef.current.innerText = dot_data
+        }
     }
-  });
+  },[]);
+
+  useEffect(() => {
+    imgRef?.current?.complete && setReady(true);
+  }, []);
+
+  const getState = useMemo(() => {
+    return !ready && dot_data ? "loading" : "ready";
+  }, [dot_data, ready]);
 
   return (
     <>
@@ -127,7 +172,13 @@ export const GraphCell: (props: any) => React.ReactNode = (props: any) => {
           <ModalHeader>Graph for {props.value} job</ModalHeader>
           <ModalCloseButton />
           <ModalBody>
-            <div id="graph-body"></div>
+            <img
+	          ref={imgRef}
+	          className={"image"}
+	          data-statxe={getState}
+	          src={dot_data}
+            onLoad={() => setReady(true)}
+	        />
           </ModalBody>
           <ModalFooter>
             <Button colorScheme="blue" mr={3} onClick={onClose}>
