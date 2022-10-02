@@ -52,7 +52,8 @@ use futures::StreamExt;
 use log::error;
 #[cfg(feature = "s3")]
 use object_store::aws::AmazonS3Builder;
-use object_store::ObjectStore;
+#[cfg(feature = "gcs")]
+use object_store::gcp::GoogleCloudStorageBuilder;
 use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -102,6 +103,18 @@ impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
             if url.to_string().starts_with("s3://") {
                 if let Some(bucket_name) = url.host_str() {
                     let store = AmazonS3Builder::from_env()
+                        .with_bucket_name(bucket_name)
+                        .build()?;
+                    return Ok(Arc::new(store));
+                }
+            }
+        }
+
+        #[cfg(feature = "gcs")]
+        {
+            if url.to_string().starts_with("gcs://") {
+                if let Some(bucket_name) = url.host_str() {
+                    let store = GoogleCloudStorageBuilder::from_env()
                         .with_bucket_name(bucket_name)
                         .build()?;
                     return Ok(Arc::new(store));

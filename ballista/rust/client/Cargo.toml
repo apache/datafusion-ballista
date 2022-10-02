@@ -44,4 +44,5 @@ tokio = "1.0"
 default = []
 hdfs = ["ballista-core/hdfs"]
 s3 = ["ballista-core/s3"]
+gcs = ["ballista-core/gcs"]
 standalone = ["ballista-executor", "ballista-scheduler"]
