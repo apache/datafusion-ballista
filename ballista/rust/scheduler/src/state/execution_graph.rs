@@ -140,8 +140,6 @@ impl ExecutionGraph {
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Self> {
-        println!("ExecutionGraph::new() job_name={:?}", job_name);
-
         let mut planner = DistributedPlanner::new();
 
         let output_partitions = plan.output_partitioning().partition_count();
@@ -154,7 +152,7 @@ impl ExecutionGraph {
         Ok(Self {
             scheduler_id: scheduler_id.to_string(),
             job_id: job_id.to_string(),
-            job_name: job_name.map(|name| name.to_string()),
+            job_name,
             session_id: session_id.to_string(),
             status: JobStatus {
                 status: Some(job_status::Status::Queued(QueuedJob {})),
