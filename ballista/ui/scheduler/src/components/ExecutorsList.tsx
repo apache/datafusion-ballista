@@ -66,7 +66,7 @@ export const ExecutorsList: React.FunctionComponent<ExecutorsListProps> = ({
 }) => {
   return (
     <Box flex={1}>
-      <DataTable maxW={960} columns={columns} data={executors} pageSize={4} />
+      <DataTable columns={columns} data={executors} pageSize={4} />
     </Box>
   );
 };
