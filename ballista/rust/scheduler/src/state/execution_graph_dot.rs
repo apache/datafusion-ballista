@@ -56,6 +56,23 @@ impl ExecutionGraphDot {
         dot._generate()
     }
 
+    /// Create a DOT graph for one query stage from the provided ExecutionGraph
+    pub fn generate_for_query_stage(
+        graph: Arc<ExecutionGraph>,
+        stage_id: usize,
+    ) -> Result<String, fmt::Error> {
+        if let Some(stage) = graph.stages().get(&stage_id) {
+            let mut dot = String::new();
+            writeln!(&mut dot, "digraph G {{")?;
+            let stage_name = format!("stage_{}", stage_id);
+            write_stage_plan(&mut dot, &stage_name, stage.plan(), 0)?;
+            writeln!(&mut dot, "}}")?;
+            Ok(dot)
+        } else {
+            Err(fmt::Error::default())
+        }
+    }
+
     fn _generate(&mut self) -> Result<String, fmt::Error> {
         // sort the stages by key for deterministic output for tests
         let stages = self.graph.stages();
@@ -80,7 +97,7 @@ impl ExecutionGraphDot {
                     stage_meta.push(write_stage_plan(
                         &mut dot,
                         &stage_name,
-                        &stage.plan,
+                        stage.plan.as_ref(),
                         0,
                     )?);
                 }
@@ -89,7 +106,7 @@ impl ExecutionGraphDot {
                     stage_meta.push(write_stage_plan(
                         &mut dot,
                         &stage_name,
-                        &stage.plan,
+                        stage.plan.as_ref(),
                         0,
                     )?);
                 }
@@ -98,7 +115,7 @@ impl ExecutionGraphDot {
                     stage_meta.push(write_stage_plan(
                         &mut dot,
                         &stage_name,
-                        &stage.plan,
+                        stage.plan.as_ref(),
                         0,
                     )?);
                 }
@@ -107,7 +124,7 @@ impl ExecutionGraphDot {
                     stage_meta.push(write_stage_plan(
                         &mut dot,
                         &stage_name,
-                        &stage.plan,
+                        stage.plan.as_ref(),
                         0,
                     )?);
                 }
@@ -116,7 +133,7 @@ impl ExecutionGraphDot {
                     stage_meta.push(write_stage_plan(
                         &mut dot,
                         &stage_name,
-                        &stage.plan,
+                        stage.plan.as_ref(),
                         0,
                     )?);
                 }
@@ -151,7 +168,7 @@ impl ExecutionGraphDot {
 fn write_stage_plan(
     f: &mut String,
     prefix: &str,
-    plan: &Arc<dyn ExecutionPlan>,
+    plan: &dyn ExecutionPlan,
     i: usize,
 ) -> Result<StagePlanState, fmt::Error> {
     let mut state = StagePlanState {
@@ -164,7 +181,7 @@ fn write_stage_plan(
 fn write_plan_recursive(
     f: &mut String,
     prefix: &str,
-    plan: &Arc<dyn ExecutionPlan>,
+    plan: &dyn ExecutionPlan,
     i: usize,
     state: &mut StagePlanState,
 ) -> Result<(), fmt::Error> {
@@ -210,7 +227,7 @@ fn write_plan_recursive(
     }
 
     for (j, child) in plan.children().into_iter().enumerate() {
-        write_plan_recursive(f, &node_name, &child, j, state)?;
+        write_plan_recursive(f, &node_name, child.as_ref(), j, state)?;
         // write link from child to parent
         writeln!(f, "\t\t{}_{} -> {}", node_name, j, node_name)?;
     }
@@ -256,7 +273,7 @@ fn sanitize(str: &str, max_len: Option<usize>) -> String {
     sanitized
 }
 
-fn get_operator_name(plan: &Arc<dyn ExecutionPlan>) -> String {
+fn get_operator_name(plan: &dyn ExecutionPlan) -> String {
     if let Some(exec) = plan.as_any().downcast_ref::<FilterExec>() {
         format!("Filter: {}", exec.predicate())
     } else if let Some(exec) = plan.as_any().downcast_ref::<ProjectionExec>() {
@@ -530,6 +547,47 @@ filter_expr="]
 	stage_2_0 -> stage_3_0_0_0_1_0
 	stage_3_0 -> stage_5_0_0_0_0_0_0
 	stage_4_0 -> stage_5_0_0_0_0_1_0
+}
+"#;
+        assert_eq!(expected, &dot);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn query_stage() -> Result<()> {
+        let ctx =
+            SessionContext::with_config(SessionConfig::new().with_target_partitions(48));
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("a", DataType::UInt32, false)]));
+        let table = Arc::new(MemTable::try_new(schema.clone(), vec![])?);
+        ctx.register_table("foo", table.clone())?;
+        ctx.register_table("bar", table.clone())?;
+        ctx.register_table("baz", table)?;
+        let df = ctx
+            .sql("SELECT * FROM foo JOIN bar ON foo.a = bar.a JOIN baz on bar.a = baz.a")
+            .await?;
+        let plan = df.to_logical_plan()?;
+        let plan = ctx.create_physical_plan(&plan).await?;
+        let graph = ExecutionGraph::new("scheduler_id", "job_id", "session_id", plan)?;
+        let dot = ExecutionGraphDot::generate_for_query_stage(Arc::new(graph), 3)
+            .map_err(|e| BallistaError::Internal(format!("{:?}", e)))?;
+
+        let expected = r#"digraph G {
+		stage_3_0 [shape=box, label="ShuffleWriter [48 partitions]"]
+		stage_3_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
+		stage_3_0_0_0 [shape=box, label="HashJoin
+join_expr=a@0 = a@0
+filter_expr="]
+		stage_3_0_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
+		stage_3_0_0_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=1]"]
+		stage_3_0_0_0_0_0 -> stage_3_0_0_0_0
+		stage_3_0_0_0_0 -> stage_3_0_0_0
+		stage_3_0_0_0_1 [shape=box, label="CoalesceBatches [batchSize=4096]"]
+		stage_3_0_0_0_1_0 [shape=box, label="UnresolvedShuffleExec [stage_id=2]"]
+		stage_3_0_0_0_1_0 -> stage_3_0_0_0_1
+		stage_3_0_0_0_1 -> stage_3_0_0_0
+		stage_3_0_0_0 -> stage_3_0_0
+		stage_3_0_0 -> stage_3_0
 }
 "#;
         assert_eq!(expected, &dot);
