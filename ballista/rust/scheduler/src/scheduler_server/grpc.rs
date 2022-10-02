@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista_core::config::{BallistaConfig, TaskSchedulingPolicy, BALLISTA_APP_NAME};
+use ballista_core::config::{BallistaConfig, TaskSchedulingPolicy, BALLISTA_JOB_NAME};
 use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
 use std::convert::TryInto;
 
@@ -424,7 +424,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             debug!("Received plan for execution: {:?}", plan);
 
             let job_id = self.state.task_manager.generate_job_id();
-            let job_name = config.settings().get(BALLISTA_APP_NAME);
+            let job_name = config.settings().get(BALLISTA_JOB_NAME);
 
             self.submit_job(&job_id, job_name.cloned(), session_ctx, &plan)
                 .await
