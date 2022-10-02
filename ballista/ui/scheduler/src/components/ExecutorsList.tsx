@@ -61,8 +61,6 @@ const columns: Column<any>[] = [
   },
 ];
 
-
-
 export const ExecutorsList: React.FunctionComponent<ExecutorsListProps> = ({
   executors = [],
 }) => {

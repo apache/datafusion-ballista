@@ -16,7 +16,16 @@
 // under the License.
 
 import React, { useState, useEffect } from "react";
-import {Box, Grid, Tab, TabList, TabPanel, TabPanels, Tabs, VStack} from "@chakra-ui/react";
+import {
+  Box,
+  Grid,
+  Tab,
+  TabList,
+  TabPanel,
+  TabPanels,
+  Tabs,
+  VStack,
+} from "@chakra-ui/react";
 import { Header } from "./components/Header";
 import { Summary } from "./components/Summary";
 import { ExecutorsList } from "./components/ExecutorsList";
@@ -58,8 +67,8 @@ const App: React.FunctionComponent<any> = () => {
         Accept: "application/json",
       },
     })
-        .then((res) => res.json())
-        .then((res) => setExecutors(res));
+      .then((res) => res.json())
+      .then((res) => setExecutors(res));
   }
 
   useEffect(() => {
