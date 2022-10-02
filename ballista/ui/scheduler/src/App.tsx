@@ -84,7 +84,7 @@ const App: React.FunctionComponent<any> = () => {
                 <QueriesList queries={jobs} />
               </TabPanel>
               <TabPanel>
-                {/*<ExecutorsList executors={executors} />*/}
+                <ExecutorsList executors={executors} />
               </TabPanel>
             </TabPanels>
           </Tabs>

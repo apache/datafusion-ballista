@@ -97,10 +97,7 @@ pub(crate) async fn get_executors<T: AsLogicalPlan, U: AsExecutionPlan>(
         })
         .collect();
 
-    let response = ExecutorsResponse {
-        executors,
-    };
-    Ok(warp::reply::json(&response))
+    Ok(warp::reply::json(&executors))
 }
 
 /// Return list of jobs
