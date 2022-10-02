@@ -49,6 +49,7 @@ use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
 use futures::StreamExt;
+use log::error;
 #[cfg(feature = "s3")]
 use object_store::aws::AmazonS3Builder;
 use object_store::ObjectStore;
@@ -122,10 +123,8 @@ pub async fn write_stream_to_disk(
     disk_write_metric: &metrics::Time,
 ) -> Result<PartitionStats> {
     let file = File::create(&path).map_err(|e| {
-        BallistaError::General(format!(
-            "Failed to create partition file at {}: {:?}",
-            path, e
-        ))
+        error!("Failed to create partition file at {}: {:?}", path, e);
+        BallistaError::IoError(e)
     })?;
 
     let mut num_rows = 0;

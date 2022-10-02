@@ -102,7 +102,7 @@ impl ExecutionGraphDot {
                         0,
                     )?);
                 }
-                ExecutionStage::Completed(stage) => {
+                ExecutionStage::Successful(stage) => {
                     writeln!(&mut dot, "\t\tlabel = \"Stage {} [Completed]\";", id)?;
                     stage_meta.push(write_stage_plan(
                         &mut dot,

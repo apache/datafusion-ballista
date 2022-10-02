@@ -37,7 +37,7 @@ use futures::future::AbortHandle;
 use ballista_core::serde::scheduler::PartitionId;
 use tokio::sync::Mutex;
 
-type AbortHandles = Arc<Mutex<HashMap<PartitionId, AbortHandle>>>;
+type AbortHandles = Arc<Mutex<HashMap<(usize, PartitionId), AbortHandle>>>;
 
 /// Ballista executor
 #[derive(Clone)]
@@ -96,39 +96,34 @@ impl Executor {
     /// and statistics.
     pub async fn execute_shuffle_write(
         &self,
-        job_id: String,
-        stage_id: usize,
-        part: usize,
+        task_id: usize,
+        partition: PartitionId,
         shuffle_writer: Arc<ShuffleWriterExec>,
         task_ctx: Arc<TaskContext>,
         _shuffle_output_partitioning: Option<Partitioning>,
     ) -> Result<Vec<protobuf::ShuffleWritePartition>, BallistaError> {
         let (task, abort_handle) = futures::future::abortable(
-            shuffle_writer.execute_shuffle_write(part, task_ctx),
+            shuffle_writer.execute_shuffle_write(partition.partition_id, task_ctx),
         );
 
         {
             let mut abort_handles = self.abort_handles.lock().await;
-            abort_handles.insert(
-                PartitionId {
-                    job_id: job_id.clone(),
-                    stage_id,
-                    partition_id: part,
-                },
-                abort_handle,
-            );
+            abort_handles.insert((task_id, partition.clone()), abort_handle);
         }
 
         let partitions = task.await??;
 
-        self.abort_handles.lock().await.remove(&PartitionId {
-            job_id: job_id.clone(),
-            stage_id,
-            partition_id: part,
-        });
+        self.abort_handles
+            .lock()
+            .await
+            .remove(&(task_id, partition.clone()));
 
-        self.metrics_collector
-            .record_stage(&job_id, stage_id, part, shuffle_writer);
+        self.metrics_collector.record_stage(
+            &partition.job_id,
+            partition.stage_id,
+            partition.partition_id,
+            shuffle_writer,
+        );
 
         Ok(partitions)
     }
@@ -162,15 +157,19 @@ impl Executor {
 
     pub async fn cancel_task(
         &self,
+        task_id: usize,
         job_id: String,
         stage_id: usize,
         partition_id: usize,
     ) -> Result<bool, BallistaError> {
-        if let Some(handle) = self.abort_handles.lock().await.remove(&PartitionId {
-            job_id,
-            stage_id,
-            partition_id,
-        }) {
+        if let Some(handle) = self.abort_handles.lock().await.remove(&(
+            task_id,
+            PartitionId {
+                job_id,
+                stage_id,
+                partition_id,
+            },
+        )) {
             handle.abort();
             Ok(true)
         } else {
@@ -194,6 +193,7 @@ mod test {
     use ballista_core::serde::protobuf::ExecutorRegistration;
     use datafusion::execution::context::TaskContext;
 
+    use ballista_core::serde::scheduler::PartitionId;
     use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_plan::{
         ExecutionPlan, Partitioning, RecordBatchStream, SendableRecordBatchStream,
@@ -314,11 +314,15 @@ mod test {
         // Spawn our non-terminating task on a separate fiber.
         let executor_clone = executor.clone();
         tokio::task::spawn(async move {
+            let part = PartitionId {
+                job_id: "job-id".to_owned(),
+                stage_id: 1,
+                partition_id: 0,
+            };
             let task_result = executor_clone
                 .execute_shuffle_write(
-                    "job-id".to_owned(),
                     1,
-                    0,
+                    part,
                     Arc::new(shuffle_write),
                     ctx.task_ctx(),
                     None,
@@ -331,7 +335,7 @@ mod test {
         // poll until that happens.
         for _ in 0..20 {
             if executor
-                .cancel_task("job-id".to_owned(), 1, 0)
+                .cancel_task(1, "job-id".to_owned(), 1, 0)
                 .await
                 .expect("cancelling task")
             {

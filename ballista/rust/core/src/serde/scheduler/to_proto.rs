@@ -27,7 +27,7 @@ use crate::serde::protobuf::{
 };
 use crate::serde::scheduler::{
     Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, PartitionId,
-    PartitionIds, PartitionLocation, PartitionStats, TaskDefinition,
+    PartitionLocation, PartitionStats, TaskDefinition,
 };
 use datafusion::physical_plan::Partitioning;
 
@@ -74,6 +74,7 @@ impl TryInto<protobuf::PartitionLocation> for PartitionLocation {
 
     fn try_into(self) -> Result<protobuf::PartitionLocation, Self::Error> {
         Ok(protobuf::PartitionLocation {
+            map_partition_id: self.map_partition_id as u32,
             partition_id: Some(self.partition_id.into()),
             executor_meta: Some(self.executor_meta.into()),
             partition_stats: Some(self.partition_stats.into()),
@@ -242,21 +243,6 @@ impl Into<protobuf::ExecutorData> for ExecutorData {
 }
 
 #[allow(clippy::from_over_into)]
-impl Into<protobuf::PartitionIds> for PartitionIds {
-    fn into(self) -> protobuf::PartitionIds {
-        protobuf::PartitionIds {
-            job_id: self.job_id,
-            stage_id: self.stage_id as u32,
-            partition_ids: self
-                .partition_ids
-                .into_iter()
-                .map(|partition_id| partition_id as u32)
-                .collect(),
-        }
-    }
-}
-
-#[allow(clippy::from_over_into)]
 impl Into<protobuf::TaskDefinition> for TaskDefinition {
     fn into(self) -> protobuf::TaskDefinition {
         let props = self
@@ -269,10 +255,16 @@ impl Into<protobuf::TaskDefinition> for TaskDefinition {
             .collect::<Vec<_>>();
 
         protobuf::TaskDefinition {
-            task_id: Some(self.task_id.into()),
+            task_id: self.task_id as u32,
+            task_attempt_num: self.task_attempt_num as u32,
+            job_id: self.job_id,
+            stage_id: self.stage_id as u32,
+            stage_attempt_num: self.stage_attempt_num as u32,
+            partition_id: self.partition_id as u32,
             plan: self.plan,
             output_partitioning: self.output_partitioning,
             session_id: self.session_id,
+            launch_time: self.launch_time,
             props,
         }
     }

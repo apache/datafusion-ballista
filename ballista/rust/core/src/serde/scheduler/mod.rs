@@ -65,6 +65,7 @@ impl PartitionId {
 
 #[derive(Debug, Clone)]
 pub struct PartitionLocation {
+    pub map_partition_id: usize,
     pub partition_id: PartitionId,
     pub executor_meta: ExecutorMetadata,
     pub partition_stats: PartitionStats,
@@ -271,19 +272,17 @@ impl ExecutePartitionResult {
     }
 }
 
-/// Unique identifier for the output partitions of a set of tasks.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PartitionIds {
-    pub job_id: String,
-    pub stage_id: usize,
-    pub partition_ids: Vec<usize>,
-}
-
 #[derive(Debug, Clone)]
 pub struct TaskDefinition {
-    pub task_id: PartitionId,
+    pub task_id: usize,
+    pub task_attempt_num: usize,
+    pub job_id: String,
+    pub stage_id: usize,
+    pub stage_attempt_num: usize,
+    pub partition_id: usize,
     pub plan: Vec<u8>,
     pub output_partitioning: Option<PhysicalHashRepartition>,
     pub session_id: String,
+    pub launch_time: u64,
     pub props: HashMap<String, String>,
 }

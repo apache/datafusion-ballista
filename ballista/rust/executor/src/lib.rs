@@ -34,15 +34,26 @@ pub use standalone::new_standalone_executor;
 use log::info;
 
 use ballista_core::serde::protobuf::{
-    task_status, CompletedTask, FailedTask, OperatorMetricsSet, PartitionId,
-    ShuffleWritePartition, TaskStatus,
+    task_status, FailedTask, OperatorMetricsSet, ShuffleWritePartition, SuccessfulTask,
+    TaskStatus,
 };
+use ballista_core::serde::scheduler::PartitionId;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TaskExecutionTimes {
+    launch_time: u64,
+    start_exec_time: u64,
+    end_exec_time: u64,
+}
 
 pub fn as_task_status(
     execution_result: ballista_core::error::Result<Vec<ShuffleWritePartition>>,
     executor_id: String,
-    task_id: PartitionId,
+    task_id: usize,
+    stage_attempt_num: usize,
+    partition_id: PartitionId,
     operator_metrics: Option<Vec<OperatorMetricsSet>>,
+    execution_times: TaskExecutionTimes,
 ) -> TaskStatus {
     let metrics = operator_metrics.unwrap_or_default();
     match execution_result {
@@ -53,9 +64,16 @@ pub fn as_task_status(
                 metrics.len()
             );
             TaskStatus {
-                task_id: Some(task_id),
+                task_id: task_id as u32,
+                job_id: partition_id.job_id,
+                stage_id: partition_id.stage_id as u32,
+                stage_attempt_num: stage_attempt_num as u32,
+                partition_id: partition_id.partition_id as u32,
+                launch_time: execution_times.launch_time,
+                start_exec_time: execution_times.start_exec_time,
+                end_exec_time: execution_times.end_exec_time,
                 metrics,
-                status: Some(task_status::Status::Completed(CompletedTask {
+                status: Some(task_status::Status::Successful(SuccessfulTask {
                     executor_id,
                     partitions,
                 })),
@@ -66,11 +84,16 @@ pub fn as_task_status(
             info!("Task {:?} failed: {}", task_id, error_msg);
 
             TaskStatus {
-                task_id: Some(task_id),
+                task_id: task_id as u32,
+                job_id: partition_id.job_id,
+                stage_id: partition_id.stage_id as u32,
+                stage_attempt_num: stage_attempt_num as u32,
+                partition_id: partition_id.partition_id as u32,
+                launch_time: execution_times.launch_time,
+                start_exec_time: execution_times.start_exec_time,
+                end_exec_time: execution_times.end_exec_time,
                 metrics,
-                status: Some(task_status::Status::Failed(FailedTask {
-                    error: format!("Task failed due to Tokio error: {}", error_msg),
-                })),
+                status: Some(task_status::Status::Failed(FailedTask::from(e))),
             }
         }
     }

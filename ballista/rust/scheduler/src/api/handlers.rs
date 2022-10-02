@@ -18,6 +18,9 @@ use ballista_core::serde::AsExecutionPlan;
 use ballista_core::BALLISTA_VERSION;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet, Time};
 use datafusion_proto::logical_plan::AsLogicalPlan;
+use graphviz_rust::cmd::{CommandArg, Format};
+use graphviz_rust::exec;
+use graphviz_rust::printer::PrinterContext;
 use std::time::Duration;
 use warp::Rejection;
 
@@ -104,7 +107,7 @@ pub(crate) async fn get_jobs<T: AsLogicalPlan, U: AsExecutionPlan>(
                 Some(Status::Queued(_)) => "Queued".to_string(),
                 Some(Status::Running(_)) => "Running".to_string(),
                 Some(Status::Failed(error)) => format!("Failed: {}", error.error),
-                Some(Status::Completed(completed)) => {
+                Some(Status::Successful(completed)) => {
                     let num_rows = completed
                         .partition_location
                         .iter()
@@ -199,7 +202,7 @@ pub(crate) async fn get_query_stages<T: AsLogicalPlan, U: AsExecutionPlan>(
                                 .map(|m| get_elapsed_compute_nanos(m.as_slice()))
                                 .unwrap_or_default();
                         }
-                        ExecutionStage::Completed(completed_stage) => {
+                        ExecutionStage::Successful(completed_stage) => {
                             summary.stage_status = "Completed".to_string();
                             summary.input_rows = get_combined_count(
                                 &completed_stage.stage_metrics,
@@ -269,6 +272,30 @@ pub(crate) async fn get_job_dot_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
 
     match graph {
         Some(x) => ExecutionGraphDot::generate(x).map_err(|_| warp::reject()),
+        _ => Ok("Not Found".to_string()),
+    }
+}
+
+/// Generate an SVG graph for the specified job id and return it as plain text
+pub(crate) async fn get_job_svg_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
+    data_server: SchedulerServer<T, U>,
+    job_id: String,
+) -> Result<String, Rejection> {
+    let dot = get_job_dot_graph(data_server, job_id).await;
+    match dot {
+        Ok(dot) => {
+            let graph = graphviz_rust::parse(&dot);
+            if let Ok(graph) = graph {
+                exec(
+                    graph,
+                    &mut PrinterContext::default(),
+                    vec![CommandArg::Format(Format::Svg)],
+                )
+                .map_err(|_| warp::reject())
+            } else {
+                Ok("Cannot parse graph".to_string())
+            }
+        }
         _ => Ok("Not Found".to_string()),
     }
 }
