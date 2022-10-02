@@ -83,7 +83,7 @@ const App: React.FunctionComponent<any> = () => {
         <VStack alignItems={"flex-start"} spacing={0} width={"100%"}>
           <Header schedulerState={schedulerState} />
           <Summary schedulerState={schedulerState} />
-          <Tabs>
+          <Tabs width={"100%"}>
             <TabList>
               <Tab>Jobs</Tab>
               <Tab>Executors</Tab>
