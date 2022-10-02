@@ -163,20 +163,41 @@ pub(crate) async fn get_job_summary<T: AsLogicalPlan, U: AsExecutionPlan>(
         })),
     }
 }
+
 /// Generate a dot graph for the specified job id and return as plain text
 pub(crate) async fn get_job_dot_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
     data_server: SchedulerServer<T, U>,
     job_id: String,
 ) -> Result<String, Rejection> {
-    let graph = data_server
+    let maybe_graph = data_server
         .state
         .task_manager
         .get_job_execution_graph(&job_id)
         .await
         .map_err(|_| warp::reject())?;
 
-    match graph {
-        Some(x) => ExecutionGraphDot::generate(x).map_err(|_| warp::reject()),
+    match maybe_graph {
+        Some(graph) => ExecutionGraphDot::generate(graph).map_err(|_| warp::reject()),
+        _ => Ok("Not Found".to_string()),
+    }
+}
+
+/// Generate a dot graph for the specified job id and query stage and return as plain text
+pub(crate) async fn get_query_stage_dot_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
+    data_server: SchedulerServer<T, U>,
+    job_id: String,
+    stage_id: usize,
+) -> Result<String, Rejection> {
+    let maybe_graph = data_server
+        .state
+        .task_manager
+        .get_job_execution_graph(&job_id)
+        .await
+        .map_err(|_| warp::reject())?;
+
+    match maybe_graph {
+        Some(graph) => ExecutionGraphDot::generate_for_query_stage(graph, stage_id)
+            .map_err(|_| warp::reject()),
         _ => Ok("Not Found".to_string()),
     }
 }

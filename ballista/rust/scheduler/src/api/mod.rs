@@ -100,6 +100,14 @@ pub fn get_routes<T: AsLogicalPlan + Clone, U: 'static + AsExecutionPlan>(
     let route_job_dot = warp::path!("api" / "job" / String / "dot")
         .and(with_data_server(scheduler_server.clone()))
         .and_then(|job_id, data_server| handlers::get_job_dot_graph(data_server, job_id));
+
+    let route_query_stage_dot =
+        warp::path!("api" / "job" / String / "stage" / usize / "dot")
+            .and(with_data_server(scheduler_server.clone()))
+            .and_then(|job_id, stage_id, data_server| {
+                handlers::get_query_stage_dot_graph(data_server, job_id, stage_id)
+            });
+
     let route_job_dot_svg = warp::path!("api" / "job" / String / "dot_svg")
         .and(with_data_server(scheduler_server))
         .and_then(|job_id, data_server| handlers::get_job_svg_graph(data_server, job_id));
@@ -108,6 +116,7 @@ pub fn get_routes<T: AsLogicalPlan + Clone, U: 'static + AsExecutionPlan>(
         .or(route_jobs)
         .or(route_job_summary)
         .or(route_job_dot)
+        .or(route_query_stage_dot)
         .or(route_job_dot_svg);
     routes.boxed()
 }
