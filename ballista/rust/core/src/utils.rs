@@ -50,11 +50,11 @@ use datafusion_proto::logical_plan::{
 };
 use futures::StreamExt;
 use log::error;
-use object_store::ObjectStore;
 #[cfg(feature = "s3")]
 use object_store::aws::AmazonS3Builder;
 #[cfg(feature = "gcs")]
 use object_store::gcp::GoogleCloudStorageBuilder;
+use object_store::ObjectStore;
 use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
