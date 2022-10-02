@@ -23,6 +23,8 @@ use std::{
     io, result,
 };
 
+use crate::serde::protobuf::failed_task::FailedReason;
+use crate::serde::protobuf::{ExecutionError, FailedTask, FetchPartitionError, IoError};
 use datafusion::arrow::error::ArrowError;
 use datafusion::error::DataFusionError;
 use futures::future::Aborted;
@@ -47,7 +49,11 @@ pub enum BallistaError {
     // KubeAPIResponseError(k8s_openapi::ResponseError),
     TonicError(tonic::transport::Error),
     GrpcError(tonic::Status),
+    GrpcConnectionError(String),
     TokioError(tokio::task::JoinError),
+    GrpcActionError(String),
+    // (executor_id, map_stage_id, map_partition_id, message)
+    FetchFailed(String, usize, usize, String),
     Cancelled,
 }
 
@@ -70,7 +76,19 @@ impl From<String> for BallistaError {
 
 impl From<ArrowError> for BallistaError {
     fn from(e: ArrowError) -> Self {
-        BallistaError::ArrowError(e)
+        match e {
+            ArrowError::ExternalError(e)
+                if e.downcast_ref::<BallistaError>().is_some() =>
+            {
+                *e.downcast::<BallistaError>().unwrap()
+            }
+            ArrowError::ExternalError(e)
+                if e.downcast_ref::<DataFusionError>().is_some() =>
+            {
+                BallistaError::DataFusionError(*e.downcast::<DataFusionError>().unwrap())
+            }
+            other => BallistaError::ArrowError(other),
+        }
     }
 }
 
@@ -182,11 +200,76 @@ impl Display for BallistaError {
             // }
             BallistaError::TonicError(desc) => write!(f, "Tonic error: {}", desc),
             BallistaError::GrpcError(desc) => write!(f, "Grpc error: {}", desc),
+            BallistaError::GrpcConnectionError(desc) => {
+                write!(f, "Grpc connection error: {}", desc)
+            }
             BallistaError::Internal(desc) => {
                 write!(f, "Internal Ballista error: {}", desc)
             }
             BallistaError::TokioError(desc) => write!(f, "Tokio join error: {}", desc),
+            BallistaError::GrpcActionError(desc) => {
+                write!(f, "Grpc Execute Action error: {}", desc)
+            }
+            BallistaError::FetchFailed(executor_id, map_stage, map_partition, desc) => {
+                write!(
+                    f,
+                    "Shuffle fetch partition error from Executor {}, map_stage {}, \
+                map_partition {}, error desc: {}",
+                    executor_id, map_stage, map_partition, desc
+                )
+            }
             BallistaError::Cancelled => write!(f, "Task cancelled"),
+        }
+    }
+}
+
+impl From<BallistaError> for FailedTask {
+    fn from(e: BallistaError) -> Self {
+        match e {
+            BallistaError::FetchFailed(
+                executor_id,
+                map_stage_id,
+                map_partition_id,
+                desc,
+            ) => {
+                FailedTask {
+                    error: desc,
+                    // fetch partition error is considered to be non-retryable
+                    retryable: false,
+                    count_to_failures: false,
+                    failed_reason: Some(FailedReason::FetchPartitionError(
+                        FetchPartitionError {
+                            executor_id,
+                            map_stage_id: map_stage_id as u32,
+                            map_partition_id: map_partition_id as u32,
+                        },
+                    )),
+                }
+            }
+            BallistaError::IoError(io) => {
+                FailedTask {
+                    error: format!("Task failed due to Ballista IO error: {:?}", io),
+                    // IO error is considered to be temporary and retryable
+                    retryable: true,
+                    count_to_failures: true,
+                    failed_reason: Some(FailedReason::IoError(IoError {})),
+                }
+            }
+            BallistaError::DataFusionError(DataFusionError::IoError(io)) => {
+                FailedTask {
+                    error: format!("Task failed due to DataFusion IO error: {:?}", io),
+                    // IO error is considered to be temporary and retryable
+                    retryable: true,
+                    count_to_failures: true,
+                    failed_reason: Some(FailedReason::IoError(IoError {})),
+                }
+            }
+            other => FailedTask {
+                error: format!("Task failed due to runtime execution error: {:?}", other),
+                retryable: false,
+                count_to_failures: false,
+                failed_reason: Some(FailedReason::ExecutionError(ExecutionError {})),
+            },
         }
     }
 }

@@ -47,9 +47,9 @@ use ballista_core::config::BallistaConfig;
 use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::action::ActionType::FetchPartition;
 use ballista_core::serde::protobuf::job_status;
-use ballista_core::serde::protobuf::CompletedJob;
 use ballista_core::serde::protobuf::JobStatus;
 use ballista_core::serde::protobuf::PhysicalPlanNode;
+use ballista_core::serde::protobuf::SuccessfulJob;
 use ballista_core::utils::create_grpc_client_connection;
 use datafusion::arrow;
 use datafusion::arrow::datatypes::Schema;
@@ -146,7 +146,7 @@ impl FlightSqlServiceImpl {
         Ok(plan)
     }
 
-    async fn check_job(&self, job_id: &String) -> Result<Option<CompletedJob>, Status> {
+    async fn check_job(&self, job_id: &String) -> Result<Option<SuccessfulJob>, Status> {
         let status = self
             .server
             .state
@@ -184,13 +184,13 @@ impl FlightSqlServiceImpl {
                     e.error
                 )))?
             }
-            job_status::Status::Completed(comp) => Ok(Some(comp)),
+            job_status::Status::Successful(comp) => Ok(Some(comp)),
         }
     }
 
     async fn job_to_fetch_part(
         &self,
-        completed: CompletedJob,
+        completed: SuccessfulJob,
         num_rows: &mut i64,
         num_bytes: &mut i64,
     ) -> Result<Vec<FlightEndpoint>, Status> {

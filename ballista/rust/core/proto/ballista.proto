@@ -434,54 +434,87 @@ message ExecutionGraph {
   uint64 output_partitions = 5;
   repeated PartitionLocation output_locations = 6;
   string scheduler_id = 7;
+  uint32 task_id_gen = 8;
+  repeated StageAttempts failed_attempts = 9;
+}
+
+message StageAttempts {
+  uint32 stage_id = 1;
+  repeated uint32 stage_attempt_num = 2;
 }
 
 message ExecutionGraphStage {
   oneof StageType {
       UnResolvedStage unresolved_stage = 1;
       ResolvedStage resolved_stage = 2;
-      CompletedStage completed_stage = 3;
+      SuccessfulStage successful_stage = 3;
       FailedStage failed_stage = 4;
   }
 }
 
 message UnResolvedStage {
-  uint64 stage_id = 1;
+  uint32 stage_id = 1;
   PhysicalHashRepartition output_partitioning = 2;
   repeated uint32 output_links = 3;
   repeated  GraphStageInput inputs = 4;
   bytes plan = 5;
+  uint32 stage_attempt_num = 6;
+  repeated string last_attempt_failure_reasons = 7;
 }
 
 message ResolvedStage {
-  uint64 stage_id = 1;
+  uint32 stage_id = 1;
   uint32 partitions = 2;
   PhysicalHashRepartition output_partitioning = 3;
   repeated uint32 output_links = 4;
   repeated  GraphStageInput inputs = 5;
   bytes plan = 6;
+  uint32 stage_attempt_num = 7;
+  repeated string last_attempt_failure_reasons = 8;
 }
 
-message CompletedStage {
-  uint64 stage_id = 1;
+message SuccessfulStage {
+  uint32 stage_id = 1;
   uint32 partitions = 2;
   PhysicalHashRepartition output_partitioning = 3;
   repeated uint32 output_links = 4;
   repeated  GraphStageInput inputs = 5;
   bytes plan = 6;
-  repeated TaskStatus task_statuses = 7;
+  repeated TaskInfo task_infos = 7;
   repeated OperatorMetricsSet stage_metrics = 8;
+  uint32 stage_attempt_num = 9;
 }
 
 message FailedStage {
-  uint64 stage_id = 1;
+  uint32 stage_id = 1;
   uint32 partitions = 2;
   PhysicalHashRepartition output_partitioning = 3;
   repeated uint32 output_links = 4;
   bytes plan = 5;
-  repeated TaskStatus task_statuses = 6;
+  repeated TaskInfo task_infos = 6;
   repeated OperatorMetricsSet stage_metrics = 7;
   string error_message = 8;
+  uint32 stage_attempt_num = 9;
+}
+
+message TaskInfo {
+  uint32 task_id = 1;
+  uint32 partition_id = 2;
+  // Scheduler schedule time
+  uint64 scheduled_time = 3;
+  // Scheduler launch time
+  uint64 launch_time = 4;
+  // The time the Executor start to run the task
+  uint64 start_exec_time = 5;
+  // The time the Executor finish the task
+  uint64 end_exec_time = 6;
+  // Scheduler side finish time
+  uint64 finish_time = 7;
+  oneof status {
+    RunningTask running = 8;
+    FailedTask failed = 9;
+    SuccessfulTask successful = 10;
+  }
 }
 
 message GraphStageInput {
@@ -531,12 +564,14 @@ message FetchPartition {
   uint32 port = 6;
 }
 
-// Mapping from partition id to executor id
 message PartitionLocation {
-  PartitionId partition_id = 1;
-  ExecutorMetadata executor_meta = 2;
-  PartitionStats partition_stats = 3;
-  string path = 4;
+  // partition_id of the map stage who produces the shuffle.
+  uint32 map_partition_id = 1;
+  // partition_id of the shuffle, a composition of(job_id + map_stage_id + partition_id).
+  PartitionId partition_id = 2;
+  ExecutorMetadata executor_meta = 3;
+  PartitionStats partition_stats = 4;
+  string path = 5;
 }
 
 // Unique identifier for a materialized partition of data
@@ -546,11 +581,10 @@ message PartitionId {
   uint32 partition_id = 4;
 }
 
-// Multiple partitions in the same stage
-message PartitionIds {
-  string job_id = 1;
-  uint32 stage_id = 2;
-  repeated uint32 partition_ids = 4;
+message TaskId {
+  uint32 task_id = 1;
+  uint32 task_attempt_num = 2;
+  uint32 partition_id = 3;
 }
 
 message PartitionStats {
@@ -674,13 +708,46 @@ message RunningTask {
 
 message FailedTask {
   string error = 1;
+  bool retryable = 2;
+  // Whether this task failure should be counted to the maximum number of times the task is allowed to retry
+  bool count_to_failures = 3;
+  oneof failed_reason {
+    ExecutionError execution_error = 4;
+    FetchPartitionError fetch_partition_error = 5;
+    IOError io_error = 6;
+    ExecutorLost executor_lost = 7;
+    // A successful task's result is lost due to executor lost
+    ResultLost result_lost = 8;
+    TaskKilled task_killed = 9;
+  }
 }
 
-message CompletedTask {
+message SuccessfulTask {
   string executor_id = 1;
   // TODO tasks are currently always shuffle writes but this will not always be the case
   // so we might want to think about some refactoring of the task definitions
   repeated ShuffleWritePartition partitions = 2;
+}
+
+message ExecutionError {
+}
+
+message FetchPartitionError {
+  string executor_id = 1;
+  uint32 map_stage_id = 2;
+  uint32 map_partition_id = 3;
+}
+
+message IOError {
+}
+
+message ExecutorLost {
+}
+
+message ResultLost {
+}
+
+message TaskKilled {
 }
 
 message ShuffleWritePartition {
@@ -692,13 +759,20 @@ message ShuffleWritePartition {
 }
 
 message TaskStatus {
-  PartitionId task_id = 1;
+  uint32 task_id = 1;
+  string job_id = 2;
+  uint32 stage_id = 3;
+  uint32 stage_attempt_num = 4;
+  uint32 partition_id = 5;
+  uint64 launch_time = 6;
+  uint64 start_exec_time = 7;
+  uint64 end_exec_time = 8;
   oneof status {
-    RunningTask running = 2;
-    FailedTask failed = 3;
-    CompletedTask completed = 4;
+    RunningTask running = 9;
+    FailedTask failed = 10;
+    SuccessfulTask successful = 11;
   }
-  repeated OperatorMetricsSet metrics = 5;
+  repeated OperatorMetricsSet metrics = 12;
 }
 
 message PollWorkParams {
@@ -709,22 +783,32 @@ message PollWorkParams {
 }
 
 message TaskDefinition {
-  PartitionId task_id = 1;
-  bytes plan = 2;
+  uint32 task_id = 1;
+  uint32 task_attempt_num = 2;
+  string job_id = 3;
+  uint32 stage_id = 4;
+  uint32 stage_attempt_num = 5;
+  uint32 partition_id = 6;
+  bytes plan = 7;
   // Output partition for shuffle writer
-  PhysicalHashRepartition output_partitioning = 3;
-  string session_id = 4;
-  repeated KeyValuePair props = 5;
+  PhysicalHashRepartition output_partitioning = 8;
+  string session_id = 9;
+  uint64 launch_time = 10;
+  repeated KeyValuePair props = 11;
 }
 
 // A set of tasks in the same stage
 message MultiTaskDefinition {
-  PartitionIds task_ids = 1;
-  bytes plan = 2;
+  repeated TaskId task_ids = 1;
+  string job_id = 2;
+  uint32 stage_id = 3;
+  uint32 stage_attempt_num = 4;
+  bytes plan = 5;
   // Output partition for shuffle writer
-  PhysicalHashRepartition output_partitioning = 3;
-  string session_id = 4;
-  repeated KeyValuePair props = 5;
+  PhysicalHashRepartition output_partitioning = 6;
+  string session_id = 7;
+  uint64 launch_time = 8;
+  repeated KeyValuePair props = 9;
 }
 
 message SessionSettings {
@@ -812,7 +896,7 @@ message GetJobStatusParams {
   string job_id = 1;
 }
 
-message CompletedJob {
+message SuccessfulJob {
   repeated PartitionLocation partition_location = 1;
 }
 
@@ -830,7 +914,7 @@ message JobStatus {
     QueuedJob queued = 1;
     RunningJob running = 2;
     FailedJob failed = 3;
-    CompletedJob completed = 4;
+    SuccessfulJob successful = 4;
   }
 }
 
@@ -882,11 +966,18 @@ message LaunchMultiTaskResult {
 }
 
 message CancelTasksParams {
-  repeated PartitionId partition_id = 1;
+  repeated RunningTaskInfo task_infos = 1;
 }
 
 message CancelTasksResult {
   bool cancelled = 1;
+}
+
+message RunningTaskInfo {
+  uint32 task_id = 1;
+  string job_id = 2;
+  uint32 stage_id = 3;
+  uint32 partition_id = 4;;
 }
 
 service SchedulerGrpc {

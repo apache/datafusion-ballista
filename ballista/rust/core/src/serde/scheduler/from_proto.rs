@@ -31,7 +31,7 @@ use crate::serde::protobuf::action::ActionType;
 use crate::serde::protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
 use crate::serde::scheduler::{
     Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, PartitionId,
-    PartitionIds, PartitionLocation, PartitionStats, TaskDefinition,
+    PartitionLocation, PartitionStats, TaskDefinition,
 };
 
 impl TryInto<Action> for protobuf::Action {
@@ -89,6 +89,7 @@ impl TryInto<PartitionLocation> for protobuf::PartitionLocation {
 
     fn try_into(self) -> Result<PartitionLocation, Self::Error> {
         Ok(PartitionLocation {
+            map_partition_id: self.map_partition_id as usize,
             partition_id: self
                 .partition_id
                 .ok_or_else(|| {
@@ -266,21 +267,6 @@ impl Into<ExecutorData> for protobuf::ExecutorData {
     }
 }
 
-#[allow(clippy::from_over_into)]
-impl Into<PartitionIds> for protobuf::PartitionIds {
-    fn into(self) -> PartitionIds {
-        PartitionIds {
-            job_id: self.job_id.clone(),
-            stage_id: self.stage_id as usize,
-            partition_ids: self
-                .partition_ids
-                .into_iter()
-                .map(|partition_id| partition_id as usize)
-                .collect(),
-        }
-    }
-}
-
 impl TryInto<TaskDefinition> for protobuf::TaskDefinition {
     type Error = BallistaError;
 
@@ -290,18 +276,17 @@ impl TryInto<TaskDefinition> for protobuf::TaskDefinition {
             props.insert(kv_pair.key, kv_pair.value);
         }
 
-        let task_id = self
-            .task_id
-            .ok_or_else(|| {
-                BallistaError::General("No task id in the TaskDefinition".to_owned())
-            })?
-            .into();
-
         Ok(TaskDefinition {
-            task_id,
+            task_id: self.task_id as usize,
+            task_attempt_num: self.task_attempt_num as usize,
+            job_id: self.job_id,
+            stage_id: self.stage_id as usize,
+            stage_attempt_num: self.stage_attempt_num as usize,
+            partition_id: self.partition_id as usize,
             plan: self.plan,
             output_partitioning: self.output_partitioning,
             session_id: self.session_id,
+            launch_time: self.launch_time,
             props,
         })
     }
@@ -319,27 +304,25 @@ impl TryInto<Vec<TaskDefinition>> for protobuf::MultiTaskDefinition {
         let plan = self.plan;
         let output_partitioning = self.output_partitioning;
         let session_id = self.session_id;
-        let task_ids: PartitionIds = self
-            .task_ids
-            .ok_or_else(|| {
-                BallistaError::General(
-                    "No task ids in the MultiTaskDefinition".to_owned(),
-                )
-            })?
-            .into();
+        let job_id = self.job_id;
+        let stage_id = self.stage_id as usize;
+        let stage_attempt_num = self.stage_attempt_num as usize;
+        let launch_time = self.launch_time;
+        let task_ids = self.task_ids;
 
         Ok(task_ids
-            .partition_ids
             .iter()
-            .map(|partition_id| TaskDefinition {
-                task_id: PartitionId::new(
-                    &task_ids.job_id,
-                    task_ids.stage_id,
-                    *partition_id,
-                ),
+            .map(|task_id| TaskDefinition {
+                task_id: task_id.task_id as usize,
+                task_attempt_num: task_id.task_attempt_num as usize,
+                job_id: job_id.clone(),
+                stage_id,
+                stage_attempt_num,
+                partition_id: task_id.partition_id as usize,
                 plan: plan.clone(),
                 output_partitioning: output_partitioning.clone(),
                 session_id: session_id.clone(),
+                launch_time,
                 props: props.clone(),
             })
             .collect())

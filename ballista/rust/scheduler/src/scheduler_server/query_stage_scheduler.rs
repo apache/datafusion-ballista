@@ -125,20 +125,29 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .await?;
                 }
             }
-            QueryStageSchedulerEvent::JobPlanningFailed(job_id, fail_message) => {
-                error!("Job {} failed: {}", job_id, fail_message);
+            QueryStageSchedulerEvent::JobPlanningFailed(job_id, failure_reason) => {
+                error!("Job {} failed: {}", job_id, failure_reason);
                 self.state
                     .task_manager
-                    .fail_job(&job_id, fail_message)
+                    .fail_unscheduled_job(&job_id, failure_reason)
                     .await?;
             }
             QueryStageSchedulerEvent::JobFinished(job_id) => {
-                info!("Job {} complete", job_id);
-                self.state.task_manager.complete_job(&job_id).await?;
+                info!("Job {} success", job_id);
+                self.state.task_manager.succeed_job(&job_id).await?;
             }
-            QueryStageSchedulerEvent::JobRunningFailed(job_id) => {
+            QueryStageSchedulerEvent::JobRunningFailed(job_id, failure_reason) => {
                 error!("Job {} running failed", job_id);
-                self.state.task_manager.fail_running_job(&job_id).await?;
+                let tasks = self
+                    .state
+                    .task_manager
+                    .abort_job(&job_id, failure_reason)
+                    .await?;
+                if !tasks.is_empty() {
+                    tx_event
+                        .post_event(QueryStageSchedulerEvent::CancelTasks(tasks))
+                        .await?;
+                }
             }
             QueryStageSchedulerEvent::JobUpdated(job_id) => {
                 info!("Job {} Updated", job_id);
@@ -184,17 +193,28 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 }
             }
             QueryStageSchedulerEvent::ExecutorLost(executor_id, _) => {
-                self.state
-                    .task_manager
-                    .executor_lost(&executor_id)
-                    .await
-                    .unwrap_or_else(|e| {
+                match self.state.task_manager.executor_lost(&executor_id).await {
+                    Ok(tasks) => {
+                        if !tasks.is_empty() {
+                            tx_event
+                                .post_event(QueryStageSchedulerEvent::CancelTasks(tasks))
+                                .await?;
+                        }
+                    }
+                    Err(e) => {
                         let msg = format!(
                             "TaskManager error to handle Executor {} lost: {}",
                             executor_id, e
                         );
                         error!("{}", msg);
-                    });
+                    }
+                }
+            }
+            QueryStageSchedulerEvent::CancelTasks(tasks) => {
+                self.state
+                    .executor_manager
+                    .cancel_running_tasks(tasks)
+                    .await?
             }
         }
 
