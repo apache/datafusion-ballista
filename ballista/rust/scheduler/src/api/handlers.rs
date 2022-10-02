@@ -29,6 +29,11 @@ struct StateResponse {
 }
 
 #[derive(Debug, serde::Serialize)]
+struct ExecutorsResponse {
+    executors: Vec<ExecutorMetaResponse>,
+}
+
+#[derive(Debug, serde::Serialize)]
 pub struct ExecutorMetaResponse {
     pub id: String,
     pub host: String,
@@ -47,10 +52,9 @@ pub struct JobResponse {
 
 /// Return current scheduler state, including list of executors and active, completed, and failed
 /// job ids.
-pub(crate) async fn get_state<T: AsLogicalPlan, U: AsExecutionPlan>(
+pub(crate) async fn get_scheduler_state<T: AsLogicalPlan, U: AsExecutionPlan>(
     data_server: SchedulerServer<T, U>,
 ) -> Result<impl warp::Reply, Rejection> {
-    // TODO: Display last seen information in UI
     let state = data_server.state;
     let executors: Vec<ExecutorMetaResponse> = state
         .executor_manager
@@ -70,6 +74,31 @@ pub(crate) async fn get_state<T: AsLogicalPlan, U: AsExecutionPlan>(
         executors,
         started: data_server.start_time,
         version: BALLISTA_VERSION,
+    };
+    Ok(warp::reply::json(&response))
+}
+
+/// Return list of executors
+pub(crate) async fn get_executors<T: AsLogicalPlan, U: AsExecutionPlan>(
+    data_server: SchedulerServer<T, U>,
+) -> Result<impl warp::Reply, Rejection> {
+    let state = data_server.state;
+    let executors: Vec<ExecutorMetaResponse> = state
+        .executor_manager
+        .get_executor_state()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(metadata, duration)| ExecutorMetaResponse {
+            id: metadata.id,
+            host: metadata.host,
+            port: metadata.port,
+            last_seen: duration.as_millis(),
+        })
+        .collect();
+
+    let response = ExecutorsResponse {
+        executors,
     };
     Ok(warp::reply::json(&response))
 }
