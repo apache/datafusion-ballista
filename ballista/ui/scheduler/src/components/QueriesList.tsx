@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import {
   CircularProgress,
   CircularProgressLabel,
@@ -25,11 +25,21 @@ import {
   Text,
   Flex,
   Box,
+  useDisclosure,
+  Button,
+  Modal,
+  ModalBody,
+  ModalCloseButton,
+  ModalContent,
+  ModalFooter,
+  ModalHeader,
+  ModalOverlay,
 } from "@chakra-ui/react";
 import { Column, DataTable, LinkCell } from "./DataTable";
 import { FaStop } from "react-icons/fa";
-import { GrDocumentDownload } from "react-icons/gr";
+import { GrDocumentDownload, GrOverview } from "react-icons/gr";
 import fileDownload from "js-file-download";
+import SVG from "react-inlinesvg";
 
 export enum QueryStatus {
   QUEUED = "QUEUED",
@@ -50,6 +60,27 @@ export interface QueriesListProps {
 }
 
 export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
+  const [dot_data, setData] = useState("");
+  const { isOpen, onOpen, onClose } = useDisclosure();
+  const ref = React.useRef<SVGElement>(null);
+
+  const dot_svg = (url: string) => {
+    fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+    }).then(async (res) => {
+      setData(await res.text());
+    });
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      dot_svg("/api/job/" + props.value + "/dot_svg");
+    }
+  }, [ref.current, dot_data, isOpen]);
+
   const handleDownload = (url: string, filename: string) => {
     fetch(url, {
       method: "GET",
@@ -74,6 +105,25 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
       >
         <GrDocumentDownload title={"Download DOT Plan"} />
       </button>
+      <Box mx={2}></Box>
+      <button onClick={onOpen}>
+        <GrOverview title={"View Graph"} />
+      </button>
+      <Modal isOpen={isOpen} size="small" onClose={onClose}>
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Graph for {props.value} job</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody margin="auto">
+            <SVG innerRef={ref} src={dot_data} width="auto" />
+          </ModalBody>
+          <ModalFooter>
+            <Button colorScheme="blue" mr={3} onClick={onClose}>
+              Close
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
     </Flex>
   );
 };
@@ -115,7 +165,6 @@ const columns: Column<any>[] = [
 
 const getSkeletion = () => (
   <>
-    <Skeleton height={5} />
     <Skeleton height={5} />
     <Skeleton height={5} />
     <Skeleton height={5} />
