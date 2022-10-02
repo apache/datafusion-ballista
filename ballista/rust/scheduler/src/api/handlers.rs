@@ -16,13 +16,10 @@ use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::AsExecutionPlan;
 use ballista_core::BALLISTA_VERSION;
 use datafusion_proto::logical_plan::AsLogicalPlan;
-use graphviz_rust::dot_structures::Graph;
-use warp::Rejection;
-use graphviz_rust::{exec, parse};
 use graphviz_rust::cmd::{CommandArg, Format};
-use graphviz_rust::printer::{PrinterContext, DotPrinter};
-use graphviz_rust::dot_structures::*;
-use graphviz_rust::dot_generator::*;
+use graphviz_rust::exec;
+use graphviz_rust::printer::PrinterContext;
+use warp::Rejection;
 
 #[derive(Debug, serde::Serialize)]
 struct StateResponse {
@@ -184,34 +181,26 @@ pub(crate) async fn get_job_dot_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
     }
 }
 
-/// Generate an svg from the dot graph for the specified job id
+/// Generate an SVG graph for the specified job id and return it as plain text
 pub(crate) async fn get_job_svg_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
     data_server: SchedulerServer<T, U>,
     job_id: String,
 ) -> Result<String, Rejection> {
-    let graph = data_server
-        .state
-        .task_manager
-        .get_job_execution_graph(&job_id)
-        .await
-        .map_err(|_| warp::reject())?;
-
-    match graph {
-        Some(x) => {
-            let dot_graph = ExecutionGraphDot::generate(x).map_err(|_| warp::reject());
-            if let Ok(graph) = dot_graph {
-                let g = graphviz_rust::parse(&graph);
-
-                exec(g.unwrap(), &mut PrinterContext::default(), vec![
-                    CommandArg::Format(Format::Svg),
-                ]).map_err(|_| warp::reject())
-                
+    let dot = get_job_dot_graph(data_server, job_id).await;
+    match dot {
+        Ok(dot) => {
+            let graph = graphviz_rust::parse(&dot);
+            if let Ok(graph) = graph {
+                exec(
+                    graph,
+                    &mut PrinterContext::default(),
+                    vec![CommandArg::Format(Format::Svg)],
+                )
+                .map_err(|_| warp::reject())
             } else {
-                Ok("Error".to_string())
+                Ok("Cannot parse graph".to_string())
             }
-
-        },
+        }
         _ => Ok("Not Found".to_string()),
-        
     }
 }
