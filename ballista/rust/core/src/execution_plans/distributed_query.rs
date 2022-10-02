@@ -195,6 +195,11 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             )),
         };
 
+        println!(
+            "submitting query with configs: {:?}",
+            self.config.settings()
+        );
+
         let stream = futures::stream::once(
             execute_query(self.scheduler_url.clone(), self.session_id.clone(), query)
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),

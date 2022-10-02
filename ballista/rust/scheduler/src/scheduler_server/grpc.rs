@@ -424,8 +424,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             debug!("Received plan for execution: {:?}", plan);
 
             let job_id = self.state.task_manager.generate_job_id();
+            let job_name = config.settings().get("ballista.app.name");
 
-            self.submit_job(&job_id, session_ctx, &plan)
+            self.submit_job(&job_id, job_name.cloned(), session_ctx, &plan)
                 .await
                 .map_err(|e| {
                     let msg =
