@@ -50,6 +50,7 @@ datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "
 etcd-client = { version = "0.9", optional = true }
 flatbuffers = { version = "2.1.2" }
 futures = "0.3"
+graphviz-rust = "0.3.0"
 http = "0.2"
 http-body = "0.4"
 hyper = "0.14.4"
