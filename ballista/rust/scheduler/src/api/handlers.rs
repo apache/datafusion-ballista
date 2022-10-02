@@ -22,8 +22,7 @@ use graphviz_rust::printer::PrinterContext;
 use warp::Rejection;
 
 #[derive(Debug, serde::Serialize)]
-struct StateResponse {
-    executors: Vec<ExecutorMetaResponse>,
+struct SchedulerStateResponse {
     started: u128,
     version: &'static str,
 }
@@ -50,28 +49,11 @@ pub struct JobResponse {
     pub percent_complete: u8,
 }
 
-/// Return current scheduler state, including list of executors and active, completed, and failed
-/// job ids.
+/// Return current scheduler state
 pub(crate) async fn get_scheduler_state<T: AsLogicalPlan, U: AsExecutionPlan>(
     data_server: SchedulerServer<T, U>,
 ) -> Result<impl warp::Reply, Rejection> {
-    let state = data_server.state;
-    let executors: Vec<ExecutorMetaResponse> = state
-        .executor_manager
-        .get_executor_state()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(metadata, duration)| ExecutorMetaResponse {
-            id: metadata.id,
-            host: metadata.host,
-            port: metadata.port,
-            last_seen: duration.as_millis(),
-        })
-        .collect();
-
-    let response = StateResponse {
-        executors,
+    let response = SchedulerStateResponse {
         started: data_server.start_time,
         version: BALLISTA_VERSION,
     };
