@@ -17,7 +17,7 @@
 
 //! Utilities for producing dot diagrams from execution graphs
 
-use crate::state::execution_graph::{ExecutionGraph, ExecutionStage};
+use crate::state::execution_graph::ExecutionGraph;
 use ballista_core::execution_plans::{
     ShuffleReaderExec, ShuffleWriterExec, UnresolvedShuffleExec,
 };
@@ -91,53 +91,8 @@ impl ExecutionGraphDot {
             let stage = stages.get(id).unwrap(); // safe unwrap
             let stage_name = format!("stage_{}", id);
             writeln!(&mut dot, "\tsubgraph cluster{} {{", cluster)?;
-            match stage {
-                ExecutionStage::UnResolved(stage) => {
-                    writeln!(&mut dot, "\t\tlabel = \"Stage {} [UnResolved]\";", id)?;
-                    stage_meta.push(write_stage_plan(
-                        &mut dot,
-                        &stage_name,
-                        stage.plan.as_ref(),
-                        0,
-                    )?);
-                }
-                ExecutionStage::Resolved(stage) => {
-                    writeln!(&mut dot, "\t\tlabel = \"Stage {} [Resolved]\";", id)?;
-                    stage_meta.push(write_stage_plan(
-                        &mut dot,
-                        &stage_name,
-                        stage.plan.as_ref(),
-                        0,
-                    )?);
-                }
-                ExecutionStage::Running(stage) => {
-                    writeln!(&mut dot, "\t\tlabel = \"Stage {} [Running]\";", id)?;
-                    stage_meta.push(write_stage_plan(
-                        &mut dot,
-                        &stage_name,
-                        stage.plan.as_ref(),
-                        0,
-                    )?);
-                }
-                ExecutionStage::Successful(stage) => {
-                    writeln!(&mut dot, "\t\tlabel = \"Stage {} [Completed]\";", id)?;
-                    stage_meta.push(write_stage_plan(
-                        &mut dot,
-                        &stage_name,
-                        stage.plan.as_ref(),
-                        0,
-                    )?);
-                }
-                ExecutionStage::Failed(stage) => {
-                    writeln!(&mut dot, "\t\tlabel = \"Stage {} [FAILED]\";", id)?;
-                    stage_meta.push(write_stage_plan(
-                        &mut dot,
-                        &stage_name,
-                        stage.plan.as_ref(),
-                        0,
-                    )?);
-                }
-            }
+            writeln!(&mut dot, "\t\tlabel = \"Stage {} [{}]\";", id, stage.name())?;
+            stage_meta.push(write_stage_plan(&mut dot, &stage_name, stage.plan(), 0)?);
             cluster += 1;
             writeln!(&mut dot, "\t}}")?; // end of subgraph
         }
@@ -469,20 +424,7 @@ mod tests {
 
     #[tokio::test]
     async fn dot() -> Result<()> {
-        let ctx =
-            SessionContext::with_config(SessionConfig::new().with_target_partitions(48));
-        let schema =
-            Arc::new(Schema::new(vec![Field::new("a", DataType::UInt32, false)]));
-        let table = Arc::new(MemTable::try_new(schema.clone(), vec![])?);
-        ctx.register_table("foo", table.clone())?;
-        ctx.register_table("bar", table.clone())?;
-        ctx.register_table("baz", table)?;
-        let df = ctx
-            .sql("SELECT * FROM foo JOIN bar ON foo.a = bar.a JOIN baz on bar.a = baz.a")
-            .await?;
-        let plan = df.to_logical_plan()?;
-        let plan = ctx.create_physical_plan(&plan).await?;
-        let graph = ExecutionGraph::new("scheduler_id", "job_id", "session_id", plan)?;
+        let graph = test_graph().await?;
         let dot = ExecutionGraphDot::generate(Arc::new(graph))
             .map_err(|e| BallistaError::Internal(format!("{:?}", e)))?;
 
@@ -500,7 +442,7 @@ mod tests {
 		stage_2_0_0 -> stage_2_0
 	}
 	subgraph cluster2 {
-		label = "Stage 3 [UnResolved]";
+		label = "Stage 3 [Unresolved]";
 		stage_3_0 [shape=box, label="ShuffleWriter [48 partitions]"]
 		stage_3_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
 		stage_3_0_0_0 [shape=box, label="HashJoin
@@ -524,7 +466,7 @@ filter_expr="]
 		stage_4_0_0 -> stage_4_0
 	}
 	subgraph cluster4 {
-		label = "Stage 5 [UnResolved]";
+		label = "Stage 5 [Unresolved]";
 		stage_5_0 [shape=box, label="ShuffleWriter [48 partitions]"]
 		stage_5_0_0 [shape=box, label="Projection: a@0, a@1, a@2"]
 		stage_5_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
@@ -555,20 +497,7 @@ filter_expr="]
 
     #[tokio::test]
     async fn query_stage() -> Result<()> {
-        let ctx =
-            SessionContext::with_config(SessionConfig::new().with_target_partitions(48));
-        let schema =
-            Arc::new(Schema::new(vec![Field::new("a", DataType::UInt32, false)]));
-        let table = Arc::new(MemTable::try_new(schema.clone(), vec![])?);
-        ctx.register_table("foo", table.clone())?;
-        ctx.register_table("bar", table.clone())?;
-        ctx.register_table("baz", table)?;
-        let df = ctx
-            .sql("SELECT * FROM foo JOIN bar ON foo.a = bar.a JOIN baz on bar.a = baz.a")
-            .await?;
-        let plan = df.to_logical_plan()?;
-        let plan = ctx.create_physical_plan(&plan).await?;
-        let graph = ExecutionGraph::new("scheduler_id", "job_id", "session_id", plan)?;
+        let graph = test_graph().await?;
         let dot = ExecutionGraphDot::generate_for_query_stage(Arc::new(graph), 3)
             .map_err(|e| BallistaError::Internal(format!("{:?}", e)))?;
 
@@ -592,5 +521,22 @@ filter_expr="]
 "#;
         assert_eq!(expected, &dot);
         Ok(())
+    }
+
+    async fn test_graph() -> Result<ExecutionGraph> {
+        let ctx =
+            SessionContext::with_config(SessionConfig::new().with_target_partitions(48));
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("a", DataType::UInt32, false)]));
+        let table = Arc::new(MemTable::try_new(schema.clone(), vec![])?);
+        ctx.register_table("foo", table.clone())?;
+        ctx.register_table("bar", table.clone())?;
+        ctx.register_table("baz", table)?;
+        let df = ctx
+            .sql("SELECT * FROM foo JOIN bar ON foo.a = bar.a JOIN baz on bar.a = baz.a")
+            .await?;
+        let plan = df.to_logical_plan()?;
+        let plan = ctx.create_physical_plan(&plan).await?;
+        ExecutionGraph::new("scheduler_id", "job_id", "session_id", plan)
     }
 }

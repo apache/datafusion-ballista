@@ -74,6 +74,17 @@ impl Debug for ExecutionStage {
 }
 
 impl ExecutionStage {
+    /// Get the name of the variant
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            ExecutionStage::UnResolved(_) => "Unresolved",
+            ExecutionStage::Resolved(_) => "Resolved",
+            ExecutionStage::Running(_) => "Running",
+            ExecutionStage::Successful(_) => "Successful",
+            ExecutionStage::Failed(_) => "Failed",
+        }
+    }
+
     /// Get the query plan for this query stage
     pub(crate) fn plan(&self) -> &dyn ExecutionPlan {
         match self {
