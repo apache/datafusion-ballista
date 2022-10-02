@@ -37,7 +37,7 @@ import {
 } from "@chakra-ui/react";
 import { Column, DataTable, LinkCell } from "./DataTable";
 import { FaStop } from "react-icons/fa";
-import { GrDocumentDownload } from "react-icons/gr";
+import { GrDocumentDownload, GrOverview } from "react-icons/gr";
 import fileDownload from "js-file-download";
 import SVG from "react-inlinesvg";
 
@@ -60,6 +60,27 @@ export interface QueriesListProps {
 }
 
 export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
+  const [dot_data, setData] = useState("");
+  const { isOpen, onOpen, onClose } = useDisclosure();
+  const ref = React.useRef<SVGElement>(null);
+
+  const dot_svg = (url: string) => {
+    fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+    }).then(async (res) => {
+      setData(await res.text());
+    });
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      dot_svg("/api/job/" + props.value + "/dot_svg");
+    }
+  }, [ref.current, dot_data, isOpen]);
+
   const handleDownload = (url: string, filename: string) => {
     fetch(url, {
       method: "GET",
@@ -84,43 +105,10 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
       >
         <GrDocumentDownload title={"Download DOT Plan"} />
       </button>
-    </Flex>
-  );
-};
-
-export const ProgressCell: (props: any) => React.ReactNode = (props: any) => {
-  return (
-    <CircularProgress value={props.value} color="orange.400">
-      <CircularProgressLabel>{props.value}%</CircularProgressLabel>
-    </CircularProgress>
-  );
-};
-
-export const GraphCell: (props: any) => React.ReactNode = (props: any) => {
-  const [dot_data, setData] = useState("");
-  const { isOpen, onOpen, onClose } = useDisclosure();
-  const ref = React.useRef<SVGElement>(null);
-
-  const dot = () => {
-    fetch("/api/job/" + props.value + "/dot_svg", {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-      },
-    }).then(async (res) => {
-      setData(await res.text());
-    });
-  };
-
-  useEffect(() => {
-    if (isOpen) {
-      dot();
-    }
-  }, [ref.current, dot_data, isOpen]);
-
-  return (
-    <>
-      <Button onClick={onOpen}>View Graph</Button>
+      <Box mx={2}></Box>
+      <button onClick={onOpen}>
+        <GrOverview title={"View Graph"} />
+      </button>
       <Modal isOpen={isOpen} size="small" onClose={onClose}>
         <ModalOverlay />
         <ModalContent>
@@ -136,7 +124,15 @@ export const GraphCell: (props: any) => React.ReactNode = (props: any) => {
           </ModalFooter>
         </ModalContent>
       </Modal>
-    </>
+    </Flex>
+  );
+};
+
+export const ProgressCell: (props: any) => React.ReactNode = (props: any) => {
+  return (
+    <CircularProgress value={props.value} color="orange.400">
+      <CircularProgressLabel>{props.value}%</CircularProgressLabel>
+    </CircularProgress>
   );
 };
 
@@ -165,18 +161,10 @@ const columns: Column<any>[] = [
     id: "action_cell",
     Cell: ActionsCell,
   },
-
-  {
-    Header: "Graph",
-    accessor: "job_id",
-    id: "graph_cell",
-    Cell: GraphCell,
-  },
 ];
 
 const getSkeletion = () => (
   <>
-    <Skeleton height={5} />
     <Skeleton height={5} />
     <Skeleton height={5} />
     <Skeleton height={5} />
