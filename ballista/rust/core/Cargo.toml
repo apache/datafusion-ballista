@@ -37,6 +37,7 @@ force_hash_collisions = ["datafusion/force_hash_collisions"]
 hdfs = ["datafusion-objectstore-hdfs"]
 s3 = ["object_store/aws"]
 gcs = ["object_store/gcp"]
+azure = ["object_store/azure"]
 simd = ["datafusion/simd"]
 
 [dependencies]

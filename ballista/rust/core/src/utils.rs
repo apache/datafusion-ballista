@@ -50,11 +50,13 @@ use datafusion_proto::logical_plan::{
 };
 use futures::StreamExt;
 use log::error;
-use object_store::ObjectStore;
 #[cfg(feature = "s3")]
 use object_store::aws::AmazonS3Builder;
+#[cfg(feature = "azure")]
+use object_store::azure::MicrosoftAzureBuilder;
 #[cfg(feature = "gcs")]
 use object_store::gcp::GoogleCloudStorageBuilder;
+use object_store::ObjectStore;
 use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -117,6 +119,18 @@ impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
                 if let Some(bucket_name) = url.host_str() {
                     let store = GoogleCloudStorageBuilder::from_env()
                         .with_bucket_name(bucket_name)
+                        .build()?;
+                    return Ok(Arc::new(store));
+                }
+            }
+        }
+
+        #[cfg(feature = "azure")]
+        {
+            if url.to_string().starts_with("azure://") {
+                if let Some(bucket_name) = url.host_str() {
+                    let store = MicrosoftAzureBuilder::from_env()
+                        .with_container_name(bucket_name)
                         .build()?;
                     return Ok(Arc::new(store));
                 }
