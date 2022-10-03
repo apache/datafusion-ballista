@@ -296,7 +296,7 @@ impl FlightSqlServiceImpl {
     ) -> Result<String, Status> {
         let job_id = self.server.state.task_manager.generate_job_id();
         self.server
-            .submit_job(&job_id, ctx, plan)
+            .submit_job(&job_id, None, ctx, plan)
             .await
             .map_err(|e| {
                 let msg =
