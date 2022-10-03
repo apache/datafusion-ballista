@@ -50,6 +50,7 @@ export enum QueryStatus {
 
 export interface Query {
   job_id: string;
+  job_name: string;
   status: QueryStatus;
   num_stages: number;
   percent_complete: number;
@@ -143,6 +144,10 @@ const columns: Column<any>[] = [
     Cell: LinkCell,
   },
   {
+    Header: "Job Name",
+    accessor: "job_name",
+  },
+  {
     Header: "Status",
     accessor: "job_status",
   },
@@ -165,6 +170,7 @@ const columns: Column<any>[] = [
 
 const getSkeleton = () => (
   <>
+    <Skeleton height={5} />
     <Skeleton height={5} />
     <Skeleton height={5} />
     <Skeleton height={5} />

@@ -465,7 +465,8 @@ mod tests {
             .await?;
         let plan = df.to_logical_plan()?;
         let plan = ctx.create_physical_plan(&plan).await?;
-        let graph = ExecutionGraph::new("scheduler_id", "job_id", "session_id", plan)?;
+        let graph =
+            ExecutionGraph::new("scheduler_id", "job_id", None, "session_id", plan)?;
         let dot = ExecutionGraphDot::generate(Arc::new(graph))
             .map_err(|e| BallistaError::Internal(format!("{:?}", e)))?;
 

@@ -43,6 +43,7 @@ pub struct ExecutorMetaResponse {
 #[derive(Debug, serde::Serialize)]
 pub struct JobResponse {
     pub job_id: String,
+    pub job_name: String,
     pub job_status: String,
     pub num_stages: usize,
     pub completed_stages: usize,
@@ -132,6 +133,7 @@ pub(crate) async fn get_jobs<T: AsLogicalPlan, U: AsExecutionPlan>(
                 ((job.completed_stages as f32 / job.num_stages as f32) * 100_f32) as u8;
             JobResponse {
                 job_id: job.job_id.to_string(),
+                job_name: job.job_name.to_owned().unwrap_or_default(),
                 job_status,
                 num_stages: job.num_stages,
                 completed_stages: job.completed_stages,

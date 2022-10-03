@@ -436,6 +436,7 @@ message ExecutionGraph {
   string scheduler_id = 7;
   uint32 task_id_gen = 8;
   repeated StageAttempts failed_attempts = 9;
+  string job_name = 10;
 }
 
 message StageAttempts {
