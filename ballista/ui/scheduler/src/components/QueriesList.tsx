@@ -185,20 +185,17 @@ export const QueriesList: React.FunctionComponent<QueriesListProps> = ({
   const isLoaded = typeof queries !== "undefined";
 
   return (
-    <VStack flex={1} p={4} w={"100%"} alignItems={"flex-start"}>
-      <Text mb={4}>Queries</Text>
-      <Stack w={"100%"} flex={1}>
-        {isLoaded ? (
-          <DataTable
-            columns={columns}
-            data={queries || []}
-            pageSize={10}
-            pb={10}
-          />
-        ) : (
-          getSkeleton()
-        )}
-      </Stack>
-    </VStack>
+    <Box w={"100%"} flex={1}>
+      {isLoaded ? (
+        <DataTable
+          columns={columns}
+          data={queries || []}
+          pageSize={10}
+          pb={10}
+        />
+      ) : (
+        getSkeleton()
+      )}
+    </Box>
   );
 };

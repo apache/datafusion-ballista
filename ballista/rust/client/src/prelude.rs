@@ -17,10 +17,16 @@
 
 //! Ballista Prelude (common imports)
 
-pub use crate::context::BallistaContext;
-pub use ballista_core::config::BallistaConfig;
-pub use ballista_core::config::BALLISTA_DEFAULT_BATCH_SIZE;
-pub use ballista_core::config::BALLISTA_DEFAULT_SHUFFLE_PARTITIONS;
-pub use ballista_core::error::{BallistaError, Result};
+pub use ballista_core::{
+    config::{
+        BallistaConfig, BALLISTA_DEFAULT_BATCH_SIZE, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
+        BALLISTA_JOB_NAME, BALLISTA_PARQUET_PRUNING, BALLISTA_PLUGIN_DIR,
+        BALLISTA_REPARTITION_AGGREGATIONS, BALLISTA_REPARTITION_JOINS,
+        BALLISTA_REPARTITION_WINDOWS, BALLISTA_WITH_INFORMATION_SCHEMA,
+    },
+    error::{BallistaError, Result},
+};
 
 pub use futures::StreamExt;
+
+pub use crate::context::BallistaContext;
