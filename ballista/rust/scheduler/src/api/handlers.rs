@@ -22,10 +22,14 @@ use graphviz_rust::printer::PrinterContext;
 use warp::Rejection;
 
 #[derive(Debug, serde::Serialize)]
-struct StateResponse {
-    executors: Vec<ExecutorMetaResponse>,
+struct SchedulerStateResponse {
     started: u128,
     version: &'static str,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ExecutorsResponse {
+    executors: Vec<ExecutorMetaResponse>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -45,12 +49,21 @@ pub struct JobResponse {
     pub percent_complete: u8,
 }
 
-/// Return current scheduler state, including list of executors and active, completed, and failed
-/// job ids.
-pub(crate) async fn get_state<T: AsLogicalPlan, U: AsExecutionPlan>(
+/// Return current scheduler state
+pub(crate) async fn get_scheduler_state<T: AsLogicalPlan, U: AsExecutionPlan>(
     data_server: SchedulerServer<T, U>,
 ) -> Result<impl warp::Reply, Rejection> {
-    // TODO: Display last seen information in UI
+    let response = SchedulerStateResponse {
+        started: data_server.start_time,
+        version: BALLISTA_VERSION,
+    };
+    Ok(warp::reply::json(&response))
+}
+
+/// Return list of executors
+pub(crate) async fn get_executors<T: AsLogicalPlan, U: AsExecutionPlan>(
+    data_server: SchedulerServer<T, U>,
+) -> Result<impl warp::Reply, Rejection> {
     let state = data_server.state;
     let executors: Vec<ExecutorMetaResponse> = state
         .executor_manager
@@ -66,12 +79,7 @@ pub(crate) async fn get_state<T: AsLogicalPlan, U: AsExecutionPlan>(
         })
         .collect();
 
-    let response = StateResponse {
-        executors,
-        started: data_server.start_time,
-        version: BALLISTA_VERSION,
-    };
-    Ok(warp::reply::json(&response))
+    Ok(warp::reply::json(&executors))
 }
 
 /// Return list of jobs

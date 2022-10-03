@@ -85,9 +85,13 @@ fn with_data_server<T: AsLogicalPlan + Clone, U: 'static + AsExecutionPlan>(
 pub fn get_routes<T: AsLogicalPlan + Clone, U: 'static + AsExecutionPlan>(
     scheduler_server: SchedulerServer<T, U>,
 ) -> BoxedFilter<(impl Reply,)> {
-    let route_state = warp::path!("api" / "state")
+    let route_scheduler_state = warp::path!("api" / "state")
         .and(with_data_server(scheduler_server.clone()))
-        .and_then(handlers::get_state);
+        .and_then(handlers::get_scheduler_state);
+
+    let route_executors = warp::path!("api" / "executors")
+        .and(with_data_server(scheduler_server.clone()))
+        .and_then(handlers::get_executors);
 
     let route_jobs = warp::path!("api" / "jobs")
         .and(with_data_server(scheduler_server.clone()))
@@ -104,7 +108,8 @@ pub fn get_routes<T: AsLogicalPlan + Clone, U: 'static + AsExecutionPlan>(
         .and(with_data_server(scheduler_server))
         .and_then(|job_id, data_server| handlers::get_job_svg_graph(data_server, job_id));
 
-    let routes = route_state
+    let routes = route_scheduler_state
+        .or(route_executors)
         .or(route_jobs)
         .or(route_job_summary)
         .or(route_job_dot)
