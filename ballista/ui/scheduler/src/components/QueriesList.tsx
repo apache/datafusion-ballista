@@ -50,6 +50,7 @@ export enum QueryStatus {
 
 export interface Query {
   job_id: string;
+  job_name: string;
   status: QueryStatus;
   num_stages: number;
   percent_complete: number;
@@ -143,6 +144,10 @@ const columns: Column<any>[] = [
     Cell: LinkCell,
   },
   {
+    Header: "Job Name",
+    accessor: "job_name",
+  },
+  {
     Header: "Status",
     accessor: "job_status",
   },
@@ -163,8 +168,10 @@ const columns: Column<any>[] = [
   },
 ];
 
-const getSkeletion = () => (
+const getSkeleton = () => (
   <>
+    <Skeleton height={5} />
+    <Skeleton height={5} />
     <Skeleton height={5} />
     <Skeleton height={5} />
     <Skeleton height={5} />
@@ -178,20 +185,17 @@ export const QueriesList: React.FunctionComponent<QueriesListProps> = ({
   const isLoaded = typeof queries !== "undefined";
 
   return (
-    <VStack flex={1} p={4} w={"100%"} alignItems={"flex-start"}>
-      <Text mb={4}>Queries</Text>
-      <Stack w={"100%"} flex={1}>
-        {isLoaded ? (
-          <DataTable
-            columns={columns}
-            data={queries || []}
-            pageSize={10}
-            pb={10}
-          />
-        ) : (
-          getSkeletion()
-        )}
-      </Stack>
-    </VStack>
+    <Box w={"100%"} flex={1}>
+      {isLoaded ? (
+        <DataTable
+          columns={columns}
+          data={queries || []}
+          pageSize={10}
+          pb={10}
+        />
+      ) : (
+        getSkeleton()
+      )}
+    </Box>
   );
 };

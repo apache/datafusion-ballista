@@ -19,22 +19,27 @@ import React from "react";
 import { Box } from "@chakra-ui/react";
 import { Column, ElapsedCell, DataTable } from "./DataTable";
 
-export enum NodeStatus {
+export enum ExecutorStatus {
   RUNNING = "RUNNING",
   TERMINATED = "TERMINATED",
 }
 
-export interface NodeInfo {
+export interface ExecutorsListProps {
+  executors?: ExecutorMeta[];
+}
+
+export interface ExecutorMeta {
   id: string;
   host: string;
   port: number;
-  status: NodeStatus;
+  last_seen: number;
+  status: ExecutorStatus;
   started: string;
 }
 
 const columns: Column<any>[] = [
   {
-    Header: "Node",
+    Header: "ID",
     accessor: "id",
   },
   {
@@ -56,16 +61,12 @@ const columns: Column<any>[] = [
   },
 ];
 
-interface NodesListProps {
-  nodes: NodeInfo[];
-}
-
-export const NodesList: React.FunctionComponent<NodesListProps> = ({
-  nodes = [],
+export const ExecutorsList: React.FunctionComponent<ExecutorsListProps> = ({
+  executors = [],
 }) => {
   return (
     <Box flex={1}>
-      <DataTable maxW={960} columns={columns} data={nodes} pageSize={4} />
+      <DataTable columns={columns} data={executors} pageSize={4} />
     </Box>
   );
 };

@@ -72,14 +72,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         match event {
             QueryStageSchedulerEvent::JobQueued {
                 job_id,
+                job_name,
                 session_ctx,
                 plan,
             } => {
-                info!("Job {} queued", job_id);
+                info!("Job {} queued with name {:?}", job_id, job_name);
                 let state = self.state.clone();
                 tokio::spawn(async move {
-                    let event = if let Err(e) =
-                        state.submit_job(&job_id, session_ctx, &plan).await
+                    let event = if let Err(e) = state
+                        .submit_job(&job_id, job_name, session_ctx, &plan)
+                        .await
                     {
                         let msg = format!("Error planning job {}: {:?}", job_id, e);
                         error!("{}", &msg);

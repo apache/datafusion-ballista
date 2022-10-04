@@ -16,17 +16,27 @@
 // under the License.
 
 import React, { useState, useEffect } from "react";
-import { Box, Grid, VStack } from "@chakra-ui/react";
+import {
+  Box,
+  Grid,
+  Tab,
+  TabList,
+  TabPanel,
+  TabPanels,
+  Tabs,
+  VStack,
+} from "@chakra-ui/react";
 import { Header } from "./components/Header";
 import { Summary } from "./components/Summary";
+import { ExecutorsList } from "./components/ExecutorsList";
 import { QueriesList } from "./components/QueriesList";
 import { Footer } from "./components/Footer";
-
 import "./App.css";
 
 const App: React.FunctionComponent<any> = () => {
   const [schedulerState, setSchedulerState] = useState(undefined);
   const [jobs, setJobs] = useState(undefined);
+  const [executors, setExecutors] = useState(undefined);
 
   function getSchedulerState() {
     return fetch(`/api/state`, {
@@ -50,12 +60,22 @@ const App: React.FunctionComponent<any> = () => {
       .then((res) => setJobs(res));
   }
 
+  function getExecutors() {
+    return fetch(`/api/executors`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+      },
+    })
+      .then((res) => res.json())
+      .then((res) => setExecutors(res));
+  }
+
   useEffect(() => {
     getSchedulerState();
     getJobs();
+    getExecutors();
   }, []);
-
-  console.log(JSON.stringify(schedulerState));
 
   return (
     <Box>
@@ -63,7 +83,20 @@ const App: React.FunctionComponent<any> = () => {
         <VStack alignItems={"flex-start"} spacing={0} width={"100%"}>
           <Header schedulerState={schedulerState} />
           <Summary schedulerState={schedulerState} />
-          <QueriesList queries={jobs} />
+          <Tabs width={"100%"}>
+            <TabList>
+              <Tab>Jobs</Tab>
+              <Tab>Executors</Tab>
+            </TabList>
+            <TabPanels>
+              <TabPanel>
+                <QueriesList queries={jobs} />
+              </TabPanel>
+              <TabPanel>
+                <ExecutorsList executors={executors} />
+              </TabPanel>
+            </TabPanels>
+          </Tabs>
           <Footer />
         </VStack>
       </Grid>
