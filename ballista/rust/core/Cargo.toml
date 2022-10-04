@@ -63,7 +63,7 @@ prost = "0.11"
 prost-types = "0.11"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
-sqlparser = "0.23"
+sqlparser = "0.25"
 tokio = "1.0"
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = "0.8"
