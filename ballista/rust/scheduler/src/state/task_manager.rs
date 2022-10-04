@@ -151,7 +151,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         let mut events: Vec<QueryStageSchedulerEvent> = vec![];
         for (job_id, statuses) in job_updates {
             let num_tasks = statuses.len();
-            debug!("Updating {} tasks in job {}", num_tasks, job_id);
+            info!("Updating {} tasks in job {}", num_tasks, job_id);
 
             let graph = self.get_active_execution_graph(&job_id).await;
             let job_event = if let Some(graph) = graph {
