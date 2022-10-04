@@ -383,18 +383,37 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     pub async fn executor_lost(&self, executor_id: &str) -> Result<()> {
+        let mut fail_jobs = vec![];
         {
             let job_cache = self.active_job_cache.read().await;
             for (job_id, graph) in job_cache.iter() {
                 let graph = graph.read().await;
 
-                for (_, running_task_executor_id) in graph.running_tasks().iter() {
+                for (partition_id, running_task_executor_id) in
+                    graph.running_tasks().iter()
+                {
                     if executor_id == running_task_executor_id {
-                        self.fail_running_job(job_id).await?
+                        fail_jobs.push((
+                            job_id.clone(),
+                            format!(
+                                "Executor {} running partition {}/{}/{} died",
+                                executor_id,
+                                partition_id.job_id,
+                                partition_id.stage_id,
+                                partition_id.partition_id
+                            ),
+                        ));
                     }
                 }
             }
         }
+
+        for (job_id, message) in fail_jobs.into_iter() {
+            if let Err(e) = self.fail_job(&job_id, message).await {
+                warn!("Could not fail job {}: {:?}", job_id, e);
+            }
+        }
+
         Ok(())
     }
 
