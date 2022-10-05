@@ -104,8 +104,8 @@ pub struct ExecutionGraph {
     scheduler_id: String,
     /// ID for this job
     job_id: String,
-    /// Optional job name
-    job_name: Option<String>,
+    /// Job name, can be empty string
+    job_name: String,
     /// Session ID for this job
     session_id: String,
     /// Status of this job
@@ -136,7 +136,7 @@ impl ExecutionGraph {
     pub fn new(
         scheduler_id: &str,
         job_id: &str,
-        job_name: Option<String>,
+        job_name: &str,
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Self> {
@@ -152,7 +152,7 @@ impl ExecutionGraph {
         Ok(Self {
             scheduler_id: scheduler_id.to_string(),
             job_id: job_id.to_string(),
-            job_name,
+            job_name: job_name.to_string(),
             session_id: session_id.to_string(),
             status: JobStatus {
                 status: Some(job_status::Status::Queued(QueuedJob {})),
@@ -169,8 +169,8 @@ impl ExecutionGraph {
         self.job_id.as_str()
     }
 
-    pub fn job_name(&self) -> Option<&String> {
-        self.job_name.as_ref()
+    pub fn job_name(&self) -> &str {
+        self.job_name.as_str()
     }
 
     pub fn session_id(&self) -> &str {
@@ -1284,11 +1284,7 @@ impl ExecutionGraph {
         Ok(ExecutionGraph {
             scheduler_id: proto.scheduler_id,
             job_id: proto.job_id,
-            job_name: if proto.job_name.is_empty() {
-                None
-            } else {
-                Some(proto.job_name)
-            },
+            job_name: proto.job_name,
             session_id: proto.session_id,
             status: proto.status.ok_or_else(|| {
                 BallistaError::Internal(
@@ -1364,7 +1360,7 @@ impl ExecutionGraph {
 
         Ok(protobuf::ExecutionGraph {
             job_id: graph.job_id,
-            job_name: graph.job_name.unwrap_or_default(),
+            job_name: graph.job_name,
             session_id: graph.session_id,
             status: Some(graph.status),
             stages,
@@ -2748,7 +2744,7 @@ mod test {
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
-        ExecutionGraph::new("localhost:50050", "job", None, "session", plan).unwrap()
+        ExecutionGraph::new("localhost:50050", "job", "", "session", plan).unwrap()
     }
 
     async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
@@ -2776,7 +2772,7 @@ mod test {
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
-        ExecutionGraph::new("localhost:50050", "job", None, "session", plan).unwrap()
+        ExecutionGraph::new("localhost:50050", "job", "", "session", plan).unwrap()
     }
 
     async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
@@ -2799,7 +2795,7 @@ mod test {
 
         let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
 
-        ExecutionGraph::new("localhost:50050", "job", None, "session", plan).unwrap()
+        ExecutionGraph::new("localhost:50050", "job", "", "session", plan).unwrap()
     }
 
     async fn test_join_plan(partition: usize) -> ExecutionGraph {
@@ -2841,7 +2837,7 @@ mod test {
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
         let graph =
-            ExecutionGraph::new("localhost:50050", "job", None, "session", plan).unwrap();
+            ExecutionGraph::new("localhost:50050", "job", "", "session", plan).unwrap();
 
         println!("{:?}", graph);
 
@@ -2866,7 +2862,7 @@ mod test {
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
         let graph =
-            ExecutionGraph::new("localhost:50050", "job", None, "session", plan).unwrap();
+            ExecutionGraph::new("localhost:50050", "job", "", "session", plan).unwrap();
 
         println!("{:?}", graph);
 
@@ -2891,7 +2887,7 @@ mod test {
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
         let graph =
-            ExecutionGraph::new("localhost:50050", "job", None, "session", plan).unwrap();
+            ExecutionGraph::new("localhost:50050", "job", "", "session", plan).unwrap();
 
         println!("{:?}", graph);
 

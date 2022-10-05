@@ -145,7 +145,7 @@ pub(crate) async fn get_jobs<T: AsLogicalPlan, U: AsExecutionPlan>(
                 ((job.completed_stages as f32 / job.num_stages as f32) * 100_f32) as u8;
             JobResponse {
                 job_id: job.job_id.to_string(),
-                job_name: job.job_name.to_owned().unwrap_or_default(),
+                job_name: job.job_name.to_string(),
                 job_status,
                 num_stages: job.num_stages,
                 completed_stages: job.completed_stages,
@@ -167,35 +167,27 @@ pub(crate) async fn get_query_stages<T: AsLogicalPlan, U: AsExecutionPlan>(
     data_server: SchedulerServer<T, U>,
     job_id: String,
 ) -> Result<impl warp::Reply, Rejection> {
-    let maybe_graph = data_server
+    if let Some(graph) = data_server
         .state
         .task_manager
         .get_job_execution_graph(&job_id)
         .await
-        .map_err(|_| warp::reject())?;
-
-    match maybe_graph {
-        Some(graph) => Ok(warp::reply::json(&QueryStagesResponse {
+        .map_err(|_| warp::reject())?
+    {
+        Ok(warp::reply::json(&QueryStagesResponse {
             stages: graph
                 .stages()
                 .iter()
                 .map(|(id, stage)| {
                     let mut summary = QueryStageSummary {
                         stage_id: id.to_string(),
-                        stage_status: "".to_string(),
+                        stage_status: stage.variant_name().to_string(),
                         input_rows: 0,
                         output_rows: 0,
                         elapsed_compute: "".to_string(),
                     };
                     match stage {
-                        ExecutionStage::UnResolved(_) => {
-                            summary.stage_status = "Unresolved".to_string();
-                        }
-                        ExecutionStage::Resolved(_) => {
-                            summary.stage_status = "Resolved".to_string();
-                        }
                         ExecutionStage::Running(running_stage) => {
-                            summary.stage_status = "Running".to_string();
                             summary.input_rows = running_stage
                                 .stage_metrics
                                 .as_ref()
@@ -213,7 +205,6 @@ pub(crate) async fn get_query_stages<T: AsLogicalPlan, U: AsExecutionPlan>(
                                 .unwrap_or_default();
                         }
                         ExecutionStage::Successful(completed_stage) => {
-                            summary.stage_status = "Completed".to_string();
                             summary.input_rows = get_combined_count(
                                 &completed_stage.stage_metrics,
                                 "input_rows",
@@ -225,15 +216,14 @@ pub(crate) async fn get_query_stages<T: AsLogicalPlan, U: AsExecutionPlan>(
                             summary.elapsed_compute =
                                 get_elapsed_compute_nanos(&completed_stage.stage_metrics);
                         }
-                        ExecutionStage::Failed(_) => {
-                            summary.stage_status = "Failed".to_string();
-                        }
+                        _ => {}
                     }
                     summary
                 })
                 .collect(),
-        })),
-        _ => Ok(warp::reply::json(&QueryStagesResponse { stages: vec![] })),
+        }))
+    } else {
+        Ok(warp::reply::json(&QueryStagesResponse { stages: vec![] }))
     }
 }
 
@@ -273,16 +263,36 @@ pub(crate) async fn get_job_dot_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
     data_server: SchedulerServer<T, U>,
     job_id: String,
 ) -> Result<String, Rejection> {
-    let graph = data_server
+    if let Some(graph) = data_server
         .state
         .task_manager
         .get_job_execution_graph(&job_id)
         .await
-        .map_err(|_| warp::reject())?;
+        .map_err(|_| warp::reject())?
+    {
+        ExecutionGraphDot::generate(graph).map_err(|_| warp::reject())
+    } else {
+        Ok("Not Found".to_string())
+    }
+}
 
-    match graph {
-        Some(x) => ExecutionGraphDot::generate(x).map_err(|_| warp::reject()),
-        _ => Ok("Not Found".to_string()),
+/// Generate a dot graph for the specified job id and query stage and return as plain text
+pub(crate) async fn get_query_stage_dot_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
+    data_server: SchedulerServer<T, U>,
+    job_id: String,
+    stage_id: usize,
+) -> Result<String, Rejection> {
+    if let Some(graph) = data_server
+        .state
+        .task_manager
+        .get_job_execution_graph(&job_id)
+        .await
+        .map_err(|_| warp::reject())?
+    {
+        ExecutionGraphDot::generate_for_query_stage(graph, stage_id)
+            .map_err(|_| warp::reject())
+    } else {
+        Ok("Not Found".to_string())
     }
 }
 

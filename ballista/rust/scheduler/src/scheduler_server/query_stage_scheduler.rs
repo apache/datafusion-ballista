@@ -80,7 +80,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 let state = self.state.clone();
                 tokio::spawn(async move {
                     let event = if let Err(e) = state
-                        .submit_job(&job_id, job_name, session_ctx, &plan)
+                        .submit_job(&job_id, &job_name, session_ctx, &plan)
                         .await
                     {
                         let msg = format!("Error planning job {}: {:?}", job_id, e);

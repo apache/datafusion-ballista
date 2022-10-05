@@ -73,6 +73,30 @@ impl Debug for ExecutionStage {
     }
 }
 
+impl ExecutionStage {
+    /// Get the name of the variant
+    pub(crate) fn variant_name(&self) -> &str {
+        match self {
+            ExecutionStage::UnResolved(_) => "Unresolved",
+            ExecutionStage::Resolved(_) => "Resolved",
+            ExecutionStage::Running(_) => "Running",
+            ExecutionStage::Successful(_) => "Successful",
+            ExecutionStage::Failed(_) => "Failed",
+        }
+    }
+
+    /// Get the query plan for this query stage
+    pub(crate) fn plan(&self) -> &dyn ExecutionPlan {
+        match self {
+            ExecutionStage::UnResolved(stage) => stage.plan.as_ref(),
+            ExecutionStage::Resolved(stage) => stage.plan.as_ref(),
+            ExecutionStage::Running(stage) => stage.plan.as_ref(),
+            ExecutionStage::Successful(stage) => stage.plan.as_ref(),
+            ExecutionStage::Failed(stage) => stage.plan.as_ref(),
+        }
+    }
+}
+
 /// For a stage whose input stages are not all completed, we say it's a unresolved stage
 #[derive(Clone)]
 pub(crate) struct UnresolvedStage {
