@@ -95,11 +95,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     pub async fn submit_job(
         &self,
         job_id: &str,
+        job_name: Option<String>,
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<()> {
         let mut graph =
-            ExecutionGraph::new(&self.scheduler_id, job_id, session_id, plan)?;
+            ExecutionGraph::new(&self.scheduler_id, job_id, job_name, session_id, plan)?;
         info!("Submitting execution graph: {:?}", graph);
         self.state
             .put(
@@ -141,6 +142,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             }
             jobs.push(JobOverview {
                 job_id: job_id.clone(),
+                job_name: graph.job_name().cloned(),
                 status: graph.status(),
                 num_stages: graph.stage_count(),
                 completed_stages,
@@ -585,6 +587,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
 pub struct JobOverview {
     pub job_id: String,
+    pub job_name: Option<String>,
     pub status: JobStatus,
     pub num_stages: usize,
     pub completed_stages: usize,

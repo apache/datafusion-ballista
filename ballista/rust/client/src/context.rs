@@ -381,16 +381,15 @@ impl BallistaContext {
                 match (if_not_exists, table_exists) {
                     (_, false) => match file_type.to_lowercase().as_str() {
                         "csv" => {
-                            self.register_csv(
-                                name,
-                                location,
-                                CsvReadOptions::new()
-                                    .schema(&schema.as_ref().to_owned().into())
-                                    .has_header(*has_header)
-                                    .delimiter(*delimiter as u8)
-                                    .table_partition_cols(table_partition_cols.to_vec()),
-                            )
-                            .await?;
+                            let mut options = CsvReadOptions::new()
+                                .has_header(*has_header)
+                                .delimiter(*delimiter as u8)
+                                .table_partition_cols(table_partition_cols.to_vec());
+                            let csv_schema = schema.as_ref().to_owned().into();
+                            if !schema.fields().is_empty() {
+                                options = options.schema(&csv_schema);
+                            }
+                            self.register_csv(name, location, options).await?;
                             Ok(Arc::new(DataFrame::new(ctx.state.clone(), &plan)))
                         }
                         "parquet" => {
