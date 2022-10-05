@@ -57,10 +57,9 @@ that, refer to the [Getting Started Guide](ballista/rust/client/README.md).
 
 ## Project Status
 
-A common question is whether Ballista is production-ready. The answer is "it depends". We encourage you to try 
-Ballista for your use case and make your own determination.
-
 Ballista supports a wide range of SQL, including CTEs, Joins, and Subqueries and can execute complex queries at scale.
+
+Ballista is maturing quickly and is now working towards being production ready. See the following roadmap for more details.
 
 ## Roadmap
 
@@ -70,9 +69,26 @@ Ballista.
 
 The current focus is on the following items:
 
-- Improve stability and scalability
-- Add support for low-latency query execution based on a streaming model
-- Move towards Morsel-based scheduling
+- Make production ready
+  - Shuffle file cleanup
+    - Periodically
+    - Add grpc interface for clients to actively call the cleanup for a job or the whole system
+  - Fill functional gaps between DataFusion and Ballista
+  - Improve task scheduling and data exchange efficiency
+  - Better error handling
+    - Schedule restart
+  - Improve monitoring and logging
+  - Auto scaling support
+  - Better configuration management
+- All-at-once job task scheduling
+- Shuffle improvement
+  - Shuffle memory control
+  - Improve shuffle IO to avoid producing too many files
+  - Support sort-based shuffle
+  - Support range partition
+- Support for multi-scheduler deployments. Initially for resiliency and fault tolerance but ultimately to support 
+  sharding for scalability and more efficient caching.
+- Executor deployment grouping based on resource allocation
 
 ## Architecture Overview
 
