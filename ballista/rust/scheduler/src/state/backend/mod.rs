@@ -107,8 +107,7 @@ pub trait StateBackendClient: Send + Sync {
     ) -> Result<Vec<Box<dyn Lock>>> {
         // We always acquire locks in a specific order to avoid deadlocks.
         ids.sort_by_key(|n| format!("/{:?}/{}", n.0, n.1));
-        future::try_join_all(ids.into_iter().map(move |(ks, key)| self.lock(ks, key)))
-            .await
+        future::try_join_all(ids.into_iter().map(|(ks, key)| self.lock(ks, key))).await
     }
 
     /// Atomically move the given key from one keyspace to another
