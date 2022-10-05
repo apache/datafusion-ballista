@@ -17,75 +17,63 @@
   under the License.
 -->
 
-# Ballista: Distributed SQL Query Engine, built on Apache Arrow
+# Ballista: Distributed Compute with Rust, Apache Arrow, and DataFusion
 
-Ballista is a distributed SQL query engine powered by the Rust implementation of [Apache Arrow](arrow) and
-[DataFusion](datafusion). 
+Ballista is a distributed SQL query engine primarily implemented in Rust, and powered by Apache Arrow and
+DataFusion. It is built on an architecture that allows other programming languages (such as Python, C++, and
+Java) to be supported as first-class citizens without paying a penalty for serialization costs.
 
-If you are looking for documentation for a released version of Ballista, please refer to the 
-[Ballista User Guide](user-guide).
+The foundational technologies in Ballista are:
 
-## Overview
+- [Apache Arrow](https://arrow.apache.org/) memory model and compute kernels for efficient processing of data.
+- [DataFusion Query Engine](https://github.com/apache/arrow-datafusion) for query execution
+- [Apache Arrow Flight Protocol](https://arrow.apache.org/blog/2019/10/13/introducing-arrow-flight/) for efficient
+  data transfer between processes.
+- [Google Protocol Buffers](https://developers.google.com/protocol-buffers) for serializing query plans, with [plans to
+  eventually use substrait.io here](https://github.com/apache/arrow-ballista/issues/32).
 
 Ballista implements a similar design to Apache Spark (particularly Spark SQL), but there are some key differences:
 
-- The choice of Rust as the main execution language avoids the overhead of GC pauses and results in deterministic 
-  processing times.
+- The choice of Rust as the main execution language avoids the overhead of GC pauses.
 - Ballista is designed from the ground up to use columnar data, enabling a number of efficiencies such as vectorized
-  processing (SIMD) and efficient compression. Although Spark does have some columnar support, it is still
+  processing (SIMD and GPU) and efficient compression. Although Spark does have some columnar support, it is still
   largely row-based today.
 - The combination of Rust and Arrow provides excellent memory efficiency and memory usage can be 5x - 10x lower than
   Apache Spark in some cases, which means that more processing can fit on a single node, reducing the overhead of
   distributed compute.
-- The use of Apache Arrow as the memory model and network protocol means that data can be exchanged efficiently between 
-  executors using the [Flight Protocol](flight), and between clients and schedulers/executors using the 
-  [Flight SQL Protocol](flight-sql)
+- The use of Apache Arrow as the memory model and network protocol means that data can be exchanged between executors
+  in any programming language with minimal serialization overhead.
 
-## Features
+Ballista can be deployed as a standalone cluster and also supports [Kubernetes](https://kubernetes.io/). In either
+case, the scheduler can be configured to use [etcd](https://etcd.io/) as a backing store to (eventually) provide
+redundancy in the case of a scheduler failing.
 
-- Supports HDFS as well as cloud object stores. S3 is supported today and GCS and Azure support is planned.
-- DataFrame and SQL APIs available from Python and Rust.
-- Clients can connect to a Ballista cluster using [Flight SQL](flight-sql).
-- JDBC support via Arrow Flight SQL JDBC Driver
-- Scheduler web interface and REST UI for monitoring query progress and viewing query plans and metrics.
-- Support for Docker, Docker Compose, and Kubernetes deployment, as well as manual deployment on bare metal. 
+# Project Status and Roadmap
+
+Ballista is currently a proof-of-concept and provides batch execution of SQL queries. Although it is already capable of
+executing complex queries, it is not yet scalable or robust.
+
+There is an excellent discussion in https://github.com/apache/arrow-ballista/issues/30 about the future of the project
+and we encourage you to participate and add your feedback there if you are interested in using or contributing to
+Ballista.
+
+The current initiatives being considered are:
+
+- Continue to improve the current batch-based execution
+- Add support for low-latency query execution based on a streaming model
+- Adopt [substrait.io](https://substrait.io/) to allow other query engines to be integrated
 
 # Getting Started
 
 The easiest way to get started is to run one of the standalone or distributed [examples](./examples/README.md). After
 that, refer to the [Getting Started Guide](ballista/rust/client/README.md).
 
-## Project Status
-
-A common question is whether Ballista is production-ready. The answer is "it depends". We encourage you to try 
-Ballista for your use case and make your own determination.
-
-Ballista supports a wide range of SQL, including CTEs, Joins, and Subqueries and can execute complex queries at scale.
-
-## Roadmap
-
-There is an excellent discussion in https://github.com/apache/arrow-ballista/issues/30 about the future of the project
-and we encourage you to participate and add your feedback there if you are interested in using or contributing to
-Ballista.
-
-The current focus is on the following items:
-
-- Improve stability and scalability
-- Add support for low-latency query execution based on a streaming model
-- Move towards Morsel-based scheduling
-
 ## Architecture Overview
 
-There are currently no up-to-date architecture documents available. You can get a general overview of the architecture 
-by watching the [Ballista: Distributed Compute with Rust and Apache Arrow](ballista-talk) talk from the New York Open 
-Statistical Programming Meetup (Feb 2021).
+- Refer to the [developer documentation](docs/developer) for the [Architecture Overview](/docs/developer/architecture.md)
+- Watch the [Ballista: Distributed Compute with Rust and Apache Arrow](https://www.youtube.com/watch?v=ZZHQaOap9pQ)
+  talk from the New York Open Statistical Programming Meetup (Feb 2021)
 
 ## Contribution Guide
 
 Please see [Contribution Guide](CONTRIBUTING.md) for information about contributing to DataFusion.
-
-[arrow]: https://arrow.apache.org/
-[datafusion]: https://github.com/apache/arrow-datafusion
-[flight]: https://arrow.apache.org/blog/2019/10/13/introducing-arrow-flight/
-[flight-sql]: https://arrow.apache.org/blog/2022/02/16/introducing-arrow-flight-sql/
-[ballista-talk]: https://www.youtube.com/watch?v=ZZHQaOap9pQ
