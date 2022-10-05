@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ballista-executor
+  labels:
+    {{- include "ballista.labels" . | nindent 4 }}
+spec:
+  serviceName: executor
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      run: ballista-executor
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        run: ballista-executor
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "ballista.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}-executor
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}/{{ .Values.image.executor }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/root/ballista-executor", "--scheduler-host=ballista-scheduler"]
+          env:
+            - name: AWS_DEFAULT_REGION
+              value: {{.Values.config.s3.region}}
+            - name: AWS_ENDPOINT
+              value: {{.Values.config.s3.endpoint}}
+            - name: AWS_ALLOW_HTTP
+              value: {{.Values.config.s3.allowHttp | quote}}
+            - name: AWS_ACCESS_KEY_ID
+              value: {{.Values.minio.auth.rootUser}}
+            - name: AWS_SECRET_ACCESS_KEY
+              value: {{.Values.minio.auth.rootPassword}}
+          ports:
+            - name: flight
+              containerPort: 50051
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: 50051
+          readinessProbe:
+            tcpSocket:
+              port: 50051
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ballista-executor
+  labels:
+    run: ballista-executor
+spec:
+  type: {{ .Values.service.executor.type }}
+  ports:
+    - port: {{ .Values.service.executor.port }}
+      targetPort: 50051
+      protocol: TCP
+      name: flight
+  selector:
+    run: ballista-executor
