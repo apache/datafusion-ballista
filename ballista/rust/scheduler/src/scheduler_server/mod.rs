@@ -141,7 +141,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     pub(crate) async fn submit_job(
         &self,
         job_id: &str,
-        job_name: Option<String>,
+        job_name: &str,
         ctx: Arc<SessionContext>,
         plan: &LogicalPlan,
     ) -> Result<()> {
@@ -149,7 +149,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::JobQueued {
                 job_id: job_id.to_owned(),
-                job_name,
+                job_name: job_name.to_owned(),
                 session_ctx: ctx,
                 plan: Box::new(plan.clone()),
             })
@@ -339,7 +339,7 @@ mod test {
         // Submit job
         scheduler
             .state
-            .submit_job(job_id, None, ctx, &plan)
+            .submit_job(job_id, "", ctx, &plan)
             .await
             .expect("submitting plan");
 
@@ -444,7 +444,7 @@ mod test {
 
         let job_id = "job";
 
-        scheduler.state.submit_job(job_id, None, ctx, &plan).await?;
+        scheduler.state.submit_job(job_id, "", ctx, &plan).await?;
 
         // Complete tasks that are offered through scheduler events
         loop {
@@ -593,7 +593,7 @@ mod test {
 
         let job_id = "job";
 
-        scheduler.state.submit_job(job_id, None, ctx, &plan).await?;
+        scheduler.state.submit_job(job_id, "", ctx, &plan).await?;
 
         let available_tasks = scheduler
             .state
@@ -729,7 +729,7 @@ mod test {
         let job_id = "job";
 
         // This should fail when we try and create the physical plan
-        scheduler.submit_job(job_id, None, ctx, &plan).await?;
+        scheduler.submit_job(job_id, "", ctx, &plan).await?;
 
         let scheduler = scheduler.clone();
 

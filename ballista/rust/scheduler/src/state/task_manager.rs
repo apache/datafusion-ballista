@@ -95,7 +95,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     pub async fn submit_job(
         &self,
         job_id: &str,
-        job_name: Option<String>,
+        job_name: &str,
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<()> {
@@ -142,7 +142,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             }
             jobs.push(JobOverview {
                 job_id: job_id.clone(),
-                job_name: graph.job_name().cloned(),
+                job_name: graph.job_name().to_string(),
                 status: graph.status(),
                 num_stages: graph.stage_count(),
                 completed_stages,
@@ -587,7 +587,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
 pub struct JobOverview {
     pub job_id: String,
-    pub job_name: Option<String>,
+    pub job_name: String,
     pub status: JobStatus,
     pub num_stages: usize,
     pub completed_stages: usize,

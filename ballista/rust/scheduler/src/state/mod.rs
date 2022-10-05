@@ -251,7 +251,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     pub(crate) async fn submit_job(
         &self,
         job_id: &str,
-        job_name: Option<String>,
+        job_name: &str,
         session_ctx: Arc<SessionContext>,
         plan: &LogicalPlan,
     ) -> Result<()> {
@@ -358,39 +358,19 @@ mod test {
         // Create 4 jobs so we have four pending tasks
         state
             .task_manager
-            .submit_job(
-                "job-1",
-                None,
-                session_ctx.session_id().as_str(),
-                plan.clone(),
-            )
+            .submit_job("job-1", "", session_ctx.session_id().as_str(), plan.clone())
             .await?;
         state
             .task_manager
-            .submit_job(
-                "job-2",
-                None,
-                session_ctx.session_id().as_str(),
-                plan.clone(),
-            )
+            .submit_job("job-2", "", session_ctx.session_id().as_str(), plan.clone())
             .await?;
         state
             .task_manager
-            .submit_job(
-                "job-3",
-                None,
-                session_ctx.session_id().as_str(),
-                plan.clone(),
-            )
+            .submit_job("job-3", "", session_ctx.session_id().as_str(), plan.clone())
             .await?;
         state
             .task_manager
-            .submit_job(
-                "job-4",
-                None,
-                session_ctx.session_id().as_str(),
-                plan.clone(),
-            )
+            .submit_job("job-4", "", session_ctx.session_id().as_str(), plan.clone())
             .await?;
 
         let executors = test_executors(1, 4);
@@ -435,12 +415,7 @@ mod test {
         // Create a job
         state
             .task_manager
-            .submit_job(
-                "job-1",
-                None,
-                session_ctx.session_id().as_str(),
-                plan.clone(),
-            )
+            .submit_job("job-1", "", session_ctx.session_id().as_str(), plan.clone())
             .await?;
 
         let executors = test_executors(1, 4);

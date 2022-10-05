@@ -28,7 +28,7 @@ use std::sync::Arc;
 pub enum QueryStageSchedulerEvent {
     JobQueued {
         job_id: String,
-        job_name: Option<String>,
+        job_name: String,
         session_ctx: Arc<SessionContext>,
         plan: Box<LogicalPlan>,
     },

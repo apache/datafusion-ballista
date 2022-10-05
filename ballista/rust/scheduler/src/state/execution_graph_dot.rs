@@ -91,7 +91,12 @@ impl ExecutionGraphDot {
             let stage = stages.get(id).unwrap(); // safe unwrap
             let stage_name = format!("stage_{}", id);
             writeln!(&mut dot, "\tsubgraph cluster{} {{", cluster)?;
-            writeln!(&mut dot, "\t\tlabel = \"Stage {} [{}]\";", id, stage.name())?;
+            writeln!(
+                &mut dot,
+                "\t\tlabel = \"Stage {} [{}]\";",
+                id,
+                stage.variant_name()
+            )?;
             stage_meta.push(write_stage_plan(&mut dot, &stage_name, stage.plan(), 0)?);
             cluster += 1;
             writeln!(&mut dot, "\t}}")?; // end of subgraph
@@ -537,6 +542,6 @@ filter_expr="]
             .await?;
         let plan = df.to_logical_plan()?;
         let plan = ctx.create_physical_plan(&plan).await?;
-        ExecutionGraph::new("scheduler_id", "job_id", "session_id", plan)
+        ExecutionGraph::new("scheduler_id", "job_id", "job_name", "session_id", plan)
     }
 }

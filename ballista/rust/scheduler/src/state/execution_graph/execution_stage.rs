@@ -75,7 +75,7 @@ impl Debug for ExecutionStage {
 
 impl ExecutionStage {
     /// Get the name of the variant
-    pub(crate) fn name(&self) -> &str {
+    pub(crate) fn variant_name(&self) -> &str {
         match self {
             ExecutionStage::UnResolved(_) => "Unresolved",
             ExecutionStage::Resolved(_) => "Resolved",
