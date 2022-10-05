@@ -281,6 +281,19 @@ pub async fn with_lock<Out, F: Future<Output = Out>>(lock: Box<dyn Lock>, op: F)
 
     result
 }
+/// It takes multiple locks and reverse the order for releasing them to prevent a race condition.
+pub async fn with_locks<Out, F: Future<Output = Out>>(
+    locks: Vec<Box<dyn Lock>>,
+    op: F,
+) -> Out {
+    let mut locks = locks;
+    let result = op.await;
+    locks.reverse();
+    for mut lock in locks {
+        lock.unlock().await;
+    }
+    result
+}
 
 #[cfg(test)]
 mod test {

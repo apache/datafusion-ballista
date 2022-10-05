@@ -15,15 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use dashmap::DashMap;
 use datafusion::prelude::SessionContext;
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// A Registry holds all the datafusion session contexts
 pub struct SessionContextRegistry {
     /// A map from session_id to SessionContext
-    pub running_sessions: RwLock<HashMap<String, Arc<SessionContext>>>,
+    pub running_sessions: DashMap<String, Arc<SessionContext>>,
 }
 
 impl Default for SessionContextRegistry {
@@ -37,7 +36,7 @@ impl SessionContextRegistry {
     /// ['LocalFileSystem'] store is registered in by default to support read local files natively.
     pub fn new() -> Self {
         Self {
-            running_sessions: RwLock::new(HashMap::new()),
+            running_sessions: DashMap::new(),
         }
     }
 
@@ -47,14 +46,14 @@ impl SessionContextRegistry {
         session_ctx: Arc<SessionContext>,
     ) -> Option<Arc<SessionContext>> {
         let session_id = session_ctx.session_id();
-        let mut sessions = self.running_sessions.write().await;
-        sessions.insert(session_id, session_ctx)
+        self.running_sessions.insert(session_id, session_ctx)
     }
 
     /// Lookup the session context registered
     pub async fn lookup_session(&self, session_id: &str) -> Option<Arc<SessionContext>> {
-        let sessions = self.running_sessions.read().await;
-        sessions.get(session_id).cloned()
+        self.running_sessions
+            .get(session_id)
+            .map(|value| value.clone())
     }
 
     /// Remove a session from this registry.
@@ -62,7 +61,9 @@ impl SessionContextRegistry {
         &self,
         session_id: &str,
     ) -> Option<Arc<SessionContext>> {
-        let mut sessions = self.running_sessions.write().await;
-        sessions.remove(session_id)
+        match self.running_sessions.remove(session_id) {
+            None => None,
+            Some(value) => Some(value.1),
+        }
     }
 }
