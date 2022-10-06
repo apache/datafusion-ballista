@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { ExternalLinkIcon } from '@chakra-ui/icons';
 import {
   CircularProgress,
@@ -113,7 +113,7 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
       <Modal isOpen={isOpen} size="small" onClose={onClose}>
         <ModalOverlay />
         <ModalContent>
-          <ModalHeader>Graph for {props.value} job</ModalHeader>
+          <ModalHeader textAlign={"center"}>Graph for {props.value} job</ModalHeader>
           <ModalCloseButton />
           <ModalBody margin="auto">
             <SVG innerRef={ref} src={dot_data} width="auto" />
@@ -129,14 +129,10 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
   );
 };
 
-
-
 export const JobLinkCell: (props: any) => React.ReactNode = (props: any) => {
   const [stages, setData] = useState();
   const [loaded, setLoaded] = useState(false);
   const { isOpen, onOpen, onClose } = useDisclosure();
-  const h1Ref = useRef<HTMLHeadingElement>(null);
-
 
   const getStages = (url: string) => {
     fetch(url, {
@@ -145,7 +141,7 @@ export const JobLinkCell: (props: any) => React.ReactNode = (props: any) => {
         Accept: "application/json",
       },
     }).then(async (res) => {
-      const jsonObj = JSON.parse(await res.text());
+      const jsonObj = await res.json();
       setData(jsonObj["stages"]);
     });
   };
@@ -154,13 +150,9 @@ export const JobLinkCell: (props: any) => React.ReactNode = (props: any) => {
     if (isOpen && !loaded){ 
       getStages("/api/job/" + props.value + "/stages");
       setLoaded(true);
-       
-    } else if (isOpen && loaded) {
-      console.log(stages);
-      
     }
     
-  }, [stages, h1Ref.current, isOpen]);
+  }, [stages, isOpen]);
 
   return (
     <Flex>
@@ -169,7 +161,7 @@ export const JobLinkCell: (props: any) => React.ReactNode = (props: any) => {
       <Modal isOpen={isOpen} size="small" onClose={onClose}>
         <ModalOverlay />
         <ModalContent>
-          <ModalHeader alignContent={"center"}>Stages metrics for {props.value} job</ModalHeader>
+          <ModalHeader textAlign={"center"}>Stages metrics for {props.value} job</ModalHeader>
           <ModalCloseButton />
           <ModalBody margin="auto">
             <JobStagesQueries stages={stages} />
