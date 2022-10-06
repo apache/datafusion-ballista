@@ -258,6 +258,7 @@ impl ExecutionGraph {
                                         "Task {}/{}/{} failed: {}",
                                         job_id, stage_id, partition_id, failed_task.error
                                     ),
+                                    failed_task.failed_at,
                                 ));
                                 break;
                             } else if let task_status::Status::Completed(completed_task) =
@@ -502,8 +503,14 @@ impl ExecutionGraph {
     /// Returns the reset stage ids
     pub fn reset_stages(&mut self, executor_id: &str) -> Result<HashSet<usize>> {
         let mut reset = HashSet::new();
+
+        let failed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+
         loop {
-            let reset_stage = self.reset_stages_internal(executor_id)?;
+            let reset_stage = self.reset_stages_internal(executor_id, failed_at)?;
             if !reset_stage.is_empty() {
                 reset.extend(reset_stage.iter());
             } else {
@@ -512,7 +519,11 @@ impl ExecutionGraph {
         }
     }
 
-    fn reset_stages_internal(&mut self, executor_id: &str) -> Result<HashSet<usize>> {
+    fn reset_stages_internal(
+        &mut self,
+        executor_id: &str,
+        failed_at: u64,
+    ) -> Result<HashSet<usize>> {
         let mut reset_stage = HashSet::new();
         let job_id = self.job_id.clone();
         let mut stage_events = vec![];
@@ -609,7 +620,7 @@ impl ExecutionGraph {
                     }
                 })
                 .for_each(|stage| {
-                    let reset = stage.reset_tasks(executor_id);
+                    let reset = stage.reset_tasks(executor_id, failed_at);
                     if reset > 0 {
                         stage_events
                             .push(StageEvent::ReRunCompletedStage(stage.stage_id));
@@ -632,6 +643,7 @@ impl ExecutionGraph {
     ) -> Result<Option<QueryStageSchedulerEvent>> {
         let mut has_resolved = false;
         let mut job_err_msg = "".to_owned();
+        let mut failed_at_time = 0;
         for event in events {
             match event {
                 StageEvent::StageResolved(stage_id) => {
@@ -641,8 +653,9 @@ impl ExecutionGraph {
                 StageEvent::StageCompleted(stage_id) => {
                     self.complete_stage(stage_id);
                 }
-                StageEvent::StageFailed(stage_id, err_msg) => {
+                StageEvent::StageFailed(stage_id, err_msg, failed_at) => {
                     job_err_msg = format!("{}{}\n", job_err_msg, &err_msg);
+                    failed_at_time = failed_at;
                     self.fail_stage(stage_id, err_msg);
                 }
                 StageEvent::RollBackRunningStage(stage_id) => {
@@ -660,15 +673,12 @@ impl ExecutionGraph {
         let event = if !job_err_msg.is_empty() {
             // If this ExecutionGraph is complete, fail it
             info!("Job {} is failed", self.job_id());
-            self.fail_job(job_err_msg);
+            self.fail_job(job_err_msg, failed_at_time);
 
             Some(QueryStageSchedulerEvent::JobRunningFailed {
                 job_id: self.job_id.clone(),
                 queued_at: self.queued_at,
-                failed_at: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    .as_secs(),
+                failed_at: failed_at_time,
             })
         } else if self.complete() {
             // If this ExecutionGraph is complete, finalize it
@@ -793,9 +803,9 @@ impl ExecutionGraph {
     }
 
     /// fail job with error message
-    pub fn fail_job(&mut self, error: String) {
+    pub fn fail_job(&mut self, error: String, failed_at: u64) {
         self.status = JobStatus {
-            status: Some(job_status::Status::Failed(FailedJob { error })),
+            status: Some(job_status::Status::Failed(FailedJob { error, failed_at })),
         };
     }
 
@@ -1075,7 +1085,7 @@ impl ExecutionPlanVisitor for ExecutionStageBuilder {
 pub enum StageEvent {
     StageResolved(usize),
     StageCompleted(usize),
-    StageFailed(usize, String),
+    StageFailed(usize, String, u64),
     RollBackRunningStage(usize),
     RollBackResolvedStage(usize),
     ReRunCompletedStage(usize),

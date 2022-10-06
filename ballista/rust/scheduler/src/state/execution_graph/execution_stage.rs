@@ -705,7 +705,7 @@ impl CompletedStage {
 
     /// Reset the completed tasks on a given executor
     /// Returns the number of running tasks that were reset
-    pub fn reset_tasks(&mut self, executor: &str) -> usize {
+    pub fn reset_tasks(&mut self, executor: &str, failed_at: u64) -> usize {
         let mut reset = 0;
         let failure_reason = format!("Task failure due to Executor {} lost", executor);
         for task in self.task_statuses.iter_mut() {
@@ -716,6 +716,7 @@ impl CompletedStage {
                 }) if *executor == *executor_id => {
                     *task = task_status::Status::Failed(FailedTask {
                         error: failure_reason.clone(),
+                        failed_at,
                     });
                     reset += 1;
                 }

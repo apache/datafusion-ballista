@@ -659,6 +659,7 @@ message RunningTask {
 
 message FailedTask {
   string error = 1;
+  uint64 failed_at = 2;
 }
 
 message CompletedTask {
@@ -802,6 +803,7 @@ message RunningJob {}
 
 message FailedJob {
   string error = 1;
+  uint64 failed_at = 2;
 }
 
 message JobStatus {

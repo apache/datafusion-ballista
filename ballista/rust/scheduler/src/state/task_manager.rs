@@ -43,6 +43,7 @@ use rand::{thread_rng, Rng};
 use std::collections::HashMap;
 use std::default::Default;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tonic::transport::Channel;
 
@@ -264,7 +265,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             job_id
         );
 
-        self.fail_job_inner(lock, job_id, "Cancelled".to_owned())
+        let failed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+
+        self.fail_job_inner(lock, job_id, "Cancelled".to_owned(), failed_at)
             .await?;
 
         let mut tasks: HashMap<&str, Vec<protobuf::PartitionId>> = Default::default();
@@ -306,10 +312,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Mark a job as failed. This will create a key under the FailedJobs keyspace
     /// and remove the job from ActiveJobs or QueuedJobs
     /// TODO this should be atomic
-    pub async fn fail_job(&self, job_id: &str, error_message: String) -> Result<()> {
+    pub async fn fail_job(
+        &self,
+        job_id: &str,
+        error_message: String,
+        failed_at: u64,
+    ) -> Result<()> {
         debug!("Moving job {} from Active or Queue to Failed", job_id);
         let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
-        self.fail_job_inner(lock, job_id, error_message).await
+        self.fail_job_inner(lock, job_id, error_message, failed_at)
+            .await
     }
 
     async fn fail_job_inner(
@@ -317,12 +329,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         lock: Box<dyn Lock>,
         job_id: &str,
         error_message: String,
+        failed_at: u64,
     ) -> Result<()> {
         with_lock(lock, self.state.delete(Keyspace::ActiveJobs, job_id)).await?;
 
         let value = if let Some(graph) = self.get_active_execution_graph(job_id).await {
             let mut graph = graph.write().await;
-            graph.fail_job(error_message);
+            graph.fail_job(error_message, failed_at);
             let graph = graph.clone();
 
             self.encode_execution_graph(graph)?
@@ -332,6 +345,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let status = JobStatus {
                 status: Some(job_status::Status::Failed(FailedJob {
                     error: error_message.clone(),
+                    failed_at,
                 })),
             };
             encode_protobuf(&status)?
@@ -408,8 +422,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             }
         }
 
+        let failed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+
         for (job_id, message) in fail_jobs.into_iter() {
-            if let Err(e) = self.fail_job(&job_id, message).await {
+            if let Err(e) = self.fail_job(&job_id, message, failed_at).await {
                 warn!("Could not fail job {}: {:?}", job_id, e);
             }
         }
