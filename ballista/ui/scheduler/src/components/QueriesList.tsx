@@ -15,14 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { ExternalLinkIcon } from '@chakra-ui/icons';
 import {
   CircularProgress,
   CircularProgressLabel,
-  VStack,
   Skeleton,
-  Stack,
-  Text,
   Flex,
   Box,
   useDisclosure,
@@ -34,12 +32,14 @@ import {
   ModalFooter,
   ModalHeader,
   ModalOverlay,
+  Link,
 } from "@chakra-ui/react";
-import { Column, DataTable, LinkCell } from "./DataTable";
+import { Column, DataTable } from "./DataTable";
 import { FaStop } from "react-icons/fa";
 import { GrDocumentDownload, GrOverview } from "react-icons/gr";
 import fileDownload from "js-file-download";
 import SVG from "react-inlinesvg";
+import { JobStagesQueries } from "./JobStagesMetrics";
 
 export enum QueryStatus {
   QUEUED = "QUEUED",
@@ -129,6 +129,62 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
   );
 };
 
+
+
+export const JobLinkCell: (props: any) => React.ReactNode = (props: any) => {
+  const [stages, setData] = useState();
+  const [loaded, setLoaded] = useState(false);
+  const { isOpen, onOpen, onClose } = useDisclosure();
+  const h1Ref = useRef<HTMLHeadingElement>(null);
+
+
+  const getStages = (url: string) => {
+    fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+    }).then(async (res) => {
+      const jsonObj = JSON.parse(await res.text());
+      setData(jsonObj["stages"]);
+    });
+  };
+
+  useEffect(() => {
+    if (isOpen && !loaded){ 
+      getStages("/api/job/" + props.value + "/stages");
+      setLoaded(true);
+       
+    } else if (isOpen && loaded) {
+      console.log(stages);
+      
+    }
+    
+  }, [stages, h1Ref.current, isOpen]);
+
+  return (
+    <Flex>
+    <Link onClick={onOpen} icon>{props.value} <ExternalLinkIcon mx='2px' />
+      </Link>
+      <Modal isOpen={isOpen} size="small" onClose={onClose}>
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader alignContent={"center"}>Stages metrics for {props.value} job</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody margin="auto">
+            <JobStagesQueries stages={stages} />
+          </ModalBody>
+          <ModalFooter>
+            <Button colorScheme="blue" mr={3} onClick={onClose}>
+              Close
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+      </Flex>
+  );
+};
+
 export const ProgressCell: (props: any) => React.ReactNode = (props: any) => {
   return (
     <CircularProgress value={props.value} color="orange.400">
@@ -141,7 +197,7 @@ const columns: Column<any>[] = [
   {
     Header: "Job ID",
     accessor: "job_id",
-    Cell: LinkCell,
+    Cell: JobLinkCell,
   },
   {
     Header: "Job Name",
