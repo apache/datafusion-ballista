@@ -26,7 +26,9 @@ updates:
     labels: [auto-dependencies]
 ignore:
   # arrow and datafusion are bumped manually
-  - dependency-name: "arrow"
+  - dependency-name: "arrow*"
       update-types: ["version-update:semver-major"]
   - dependency-name: "datafusion*"
+      update-types: ["version-update:semver-major"]
+  - dependency-name: "sqlparser"
       update-types: ["version-update:semver-major"]
