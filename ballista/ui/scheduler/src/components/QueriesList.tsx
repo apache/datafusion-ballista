@@ -16,7 +16,7 @@
 // under the License.
 
 import React, { useEffect, useState } from "react";
-import { ExternalLinkIcon } from '@chakra-ui/icons';
+import { ExternalLinkIcon } from "@chakra-ui/icons";
 import {
   CircularProgress,
   CircularProgressLabel,
@@ -113,7 +113,9 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
       <Modal isOpen={isOpen} size="small" onClose={onClose}>
         <ModalOverlay />
         <ModalContent>
-          <ModalHeader textAlign={"center"}>Graph for {props.value} job</ModalHeader>
+          <ModalHeader textAlign={"center"}>
+            Graph for {props.value} job
+          </ModalHeader>
           <ModalCloseButton />
           <ModalBody margin="auto">
             <SVG innerRef={ref} src={dot_data} width="auto" />
@@ -147,21 +149,23 @@ export const JobLinkCell: (props: any) => React.ReactNode = (props: any) => {
   };
 
   useEffect(() => {
-    if (isOpen && !loaded){ 
+    if (isOpen && !loaded) {
       getStages("/api/job/" + props.value + "/stages");
       setLoaded(true);
     }
-    
   }, [stages, isOpen]);
 
   return (
     <Flex>
-    <Link onClick={onOpen} icon>{props.value} <ExternalLinkIcon mx='2px' />
+      <Link onClick={onOpen} icon>
+        {props.value} <ExternalLinkIcon mx="2px" />
       </Link>
       <Modal isOpen={isOpen} size="small" onClose={onClose}>
         <ModalOverlay />
         <ModalContent>
-          <ModalHeader textAlign={"center"}>Stages metrics for {props.value} job</ModalHeader>
+          <ModalHeader textAlign={"center"}>
+            Stages metrics for {props.value} job
+          </ModalHeader>
           <ModalCloseButton />
           <ModalBody margin="auto">
             <JobStagesQueries stages={stages} />
@@ -173,7 +177,7 @@ export const JobLinkCell: (props: any) => React.ReactNode = (props: any) => {
           </ModalFooter>
         </ModalContent>
       </Modal>
-      </Flex>
+    </Flex>
   );
 };
 

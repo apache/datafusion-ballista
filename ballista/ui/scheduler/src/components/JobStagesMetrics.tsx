@@ -15,27 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import React, { useEffect, useState } from "react";
-import {
-  CircularProgress,
-  CircularProgressLabel,
-  VStack,
-  Skeleton,
-  Stack,
-  Text,
-  Flex,
-  Box,
-  useDisclosure,
-  Button,
-  Modal,
-  ModalBody,
-  ModalCloseButton,
-  ModalContent,
-  ModalFooter,
-  ModalHeader,
-  ModalOverlay,
-  propNames,
-} from "@chakra-ui/react";
+import { Skeleton, Box } from "@chakra-ui/react";
 import { Column, DataTable } from "./DataTable";
 
 export enum StageStatus {
@@ -49,7 +29,7 @@ export interface Stage {
   stage_id: string;
   stage_status: StageStatus;
   input_rows: number;
-  output_rows: number
+  output_rows: number;
   elapsed_compute: string;
 }
 
@@ -77,7 +57,6 @@ const columns: Column<any>[] = [
   {
     Header: "Computation time",
     accessor: "elapsed_compute",
-    
   },
 ];
 
@@ -94,8 +73,6 @@ const getSkeleton = () => (
 export const JobStagesQueries: React.FunctionComponent<StagesListProps> = ({
   stages,
 }) => {
-
-  
   const isLoaded = typeof stages !== "undefined";
 
   return (
