@@ -20,6 +20,7 @@ dev/build-ballista-docker.sh
 ## Deploy
 
 ```shell
+# See https://iximiuz.com/en/posts/kubernetes-kind-load-docker-image/
 ~/go/bin/kind load docker-image ballista-scheduler:latest
 ~/go/bin/kind load docker-image ballista-executor:latest
 
