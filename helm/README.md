@@ -8,6 +8,7 @@ including all the major cloud providers. For the purposes of this documentation,
 ```shell
 sudo apt install kubectl docker.io docker-compose
 sudo snap install go --classic
+go install sigs.k8s.io/kind@v0.16.0
 ~/go/bin/kind create cluster
 ```
 
