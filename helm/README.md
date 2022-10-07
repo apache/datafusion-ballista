@@ -1,7 +1,8 @@
 # Ballista Helm Chart
 
 Helm is a convenient way to install applications into Kubernetes. It can work against any Kubeneretes environement,
-including all the major cloud providers. For the purposes of this documentation, we will use microk8s to install locally.
+including all the major cloud providers. 
+For the purposes of this documentation, we will use Kubernetes-in-Docker (kind) to install locally.
 
 ## Prerequisites
 
