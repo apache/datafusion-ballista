@@ -647,24 +647,30 @@ impl ExecutionGraph {
         for event in events {
             match event {
                 StageEvent::StageResolved(stage_id) => {
+                    info!("stage {}/{} resolved", self.job_id, stage_id);
                     self.resolve_stage(stage_id)?;
                     has_resolved = true;
                 }
                 StageEvent::StageCompleted(stage_id) => {
+                    info!("stage {}/{} completed", self.job_id, stage_id);
                     self.complete_stage(stage_id);
                 }
                 StageEvent::StageFailed(stage_id, err_msg, failed_at) => {
+                    error!("stage {}/{} failed: {}", self.job_id, stage_id, err_msg);
                     job_err_msg = format!("{}{}\n", job_err_msg, &err_msg);
                     failed_at_time = failed_at;
                     self.fail_stage(stage_id, err_msg);
                 }
                 StageEvent::RollBackRunningStage(stage_id) => {
+                    warn!("running stage {}/{} rolled back", self.job_id, stage_id);
                     self.rollback_running_stage(stage_id)?;
                 }
                 StageEvent::RollBackResolvedStage(stage_id) => {
+                    warn!("running stage {}/{} rolled back", self.job_id, stage_id);
                     self.rollback_resolved_stage(stage_id)?;
                 }
                 StageEvent::ReRunCompletedStage(stage_id) => {
+                    info!("re-running completed stage {}/{}", self.job_id, stage_id);
                     self.rerun_completed_stage(stage_id);
                 }
             }
