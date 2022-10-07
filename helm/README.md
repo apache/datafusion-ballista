@@ -1,0 +1,37 @@
+# Ballista Helm Chart
+
+Helm is a convenient way to install applications into Kubernetes. It can work against any Kubeneretes environement,
+including all the major cloud providers. For the purposes of this documentation, we will use microk8s to install locally.
+
+## Prerequisites
+
+```shell
+sudo apt install kubectl docker.io docker-compose
+sudo snap install go --classic
+~/go/bin/kind create cluster
+```
+
+## Build
+
+```shell
+dev/build-ballista-docker.sh
+```
+
+## Deploy
+
+```shell
+~/go/bin/kind load docker-image ballista-scheduler:latest
+~/go/bin/kind load docker-image ballista-executor:latest
+
+cd helm/ballista
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm dep update 
+helm dep build 
+helm install ballista .
+```
+
+## Teardown
+
+```shell
+helm uninstall ballista
+```

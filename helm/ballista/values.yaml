@@ -5,10 +5,10 @@
 replicaCount: 1
 
 image:
-  repository: dev-registry:36556
-  scheduler: arrow-ballista_scheduler
-  executor: arrow-ballista_executor
-  pullPolicy: IfNotPresent
+  repository: ""
+  scheduler: ballista-scheduler
+  executor: ballista-executor
+  pullPolicy: Never
   # Overrides the image tag whose default is the chart appVersion.
   tag: "latest"
 
