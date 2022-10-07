@@ -82,6 +82,7 @@ impl Accumulator for RustAccumulator {
 
             // 1. cast states to Pyarrow array
             let state = state
+                .data()
                 .to_pyarrow(py)
                 .map_err(|e| DataFusionError::Execution(format!("{}", e)))?;
 
