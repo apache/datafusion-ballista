@@ -33,6 +33,13 @@ helm dep build
 helm install ballista .
 ```
 
+## Connect
+
+```shell
+kubectl port-forward ballista-scheduler-0 50050:50050
+sqline # ... see FlightSQL instructions
+```
+
 ## Teardown
 
 ```shell
