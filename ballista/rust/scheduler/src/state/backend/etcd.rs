@@ -30,7 +30,9 @@ use etcd_client::{
 use futures::{Stream, StreamExt};
 use log::{debug, error, warn};
 
-use crate::state::backend::{Keyspace, Lock, StateBackendClient, Watch, WatchEvent};
+use crate::state::backend::{
+    Keyspace, Lock, Operation, StateBackendClient, Watch, WatchEvent,
+};
 
 /// A [`StateBackendClient`] implementation that uses etcd to save cluster configuration.
 #[derive(Clone)]
@@ -137,29 +139,31 @@ impl StateBackendClient for EtcdClient {
             .await
             .map_err(|e| {
                 warn!("etcd put failed: {}", e);
-                ballista_error("etcd put failed")
+                ballista_error(&*format!("etcd put failed: {}", e))
             })
             .map(|_| ())
     }
 
-    async fn put_txn(&self, ops: Vec<(Keyspace, String, Vec<u8>)>) -> Result<()> {
+    /// Apply multiple operations in a single transaction.
+    async fn apply_txn(&self, ops: Vec<(Operation, Keyspace, String)>) -> Result<()> {
         let mut etcd = self.etcd.clone();
 
         let txn_ops: Vec<TxnOp> = ops
             .into_iter()
-            .map(|(ks, key, value)| {
+            .map(|(operation, ks, key)| {
                 let key = format!("/{}/{:?}/{}", self.namespace, ks, key);
-                TxnOp::put(key, value, None)
+                match operation {
+                    Operation::Put(value) => TxnOp::put(key, value, None),
+                    Operation::Delete => TxnOp::delete(key, None),
+                }
             })
             .collect();
 
-        let txn = Txn::new().and_then(txn_ops);
-
-        etcd.txn(txn)
+        etcd.txn(Txn::new().and_then(txn_ops))
             .await
             .map_err(|e| {
-                error!("etcd put failed: {}", e);
-                ballista_error("etcd transaction put failed")
+                error!("etcd operation failed: {}", e);
+                ballista_error(&*format!("etcd operation failed: {}", e))
             })
             .map(|_| ())
     }

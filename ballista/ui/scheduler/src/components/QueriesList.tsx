@@ -16,13 +16,11 @@
 // under the License.
 
 import React, { useEffect, useState } from "react";
+import { ExternalLinkIcon } from "@chakra-ui/icons";
 import {
   CircularProgress,
   CircularProgressLabel,
-  VStack,
   Skeleton,
-  Stack,
-  Text,
   Flex,
   Box,
   useDisclosure,
@@ -34,12 +32,14 @@ import {
   ModalFooter,
   ModalHeader,
   ModalOverlay,
+  Link,
 } from "@chakra-ui/react";
-import { Column, DataTable, LinkCell } from "./DataTable";
+import { Column, DataTable } from "./DataTable";
 import { FaStop } from "react-icons/fa";
 import { GrDocumentDownload, GrOverview } from "react-icons/gr";
 import fileDownload from "js-file-download";
 import SVG from "react-inlinesvg";
+import { JobStagesQueries } from "./JobStagesMetrics";
 
 export enum QueryStatus {
   QUEUED = "QUEUED",
@@ -113,10 +113,62 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
       <Modal isOpen={isOpen} size="small" onClose={onClose}>
         <ModalOverlay />
         <ModalContent>
-          <ModalHeader>Graph for {props.value} job</ModalHeader>
+          <ModalHeader textAlign={"center"}>
+            Graph for {props.value} job
+          </ModalHeader>
           <ModalCloseButton />
           <ModalBody margin="auto">
             <SVG innerRef={ref} src={dot_data} width="auto" />
+          </ModalBody>
+          <ModalFooter>
+            <Button colorScheme="blue" mr={3} onClick={onClose}>
+              Close
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+    </Flex>
+  );
+};
+
+export const JobLinkCell: (props: any) => React.ReactNode = (props: any) => {
+  const [stages, setData] = useState();
+  const [loaded, setLoaded] = useState(false);
+  const { isOpen, onOpen, onClose } = useDisclosure();
+
+  const getStages = (url: string) => {
+    fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+    }).then(async (res) => {
+      const jsonObj = await res.json();
+      setData(jsonObj["stages"]);
+    });
+  };
+
+  useEffect(() => {
+    if (isOpen && !loaded) {
+      getStages("/api/job/" + props.value + "/stages");
+      setLoaded(true);
+    }
+  }, [stages, isOpen]);
+
+  return (
+    <Flex>
+      <Link onClick={onOpen} icon>
+        {props.value} <ExternalLinkIcon mx="2px" />
+      </Link>
+      <Modal isOpen={isOpen} size="small" onClose={onClose}>
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader textAlign={"center"}>
+            Stages metrics for {props.value} job
+          </ModalHeader>
+          <ModalCloseButton />
+          <ModalBody margin="auto">
+            <JobStagesQueries stages={stages} />
           </ModalBody>
           <ModalFooter>
             <Button colorScheme="blue" mr={3} onClick={onClose}>
@@ -141,7 +193,7 @@ const columns: Column<any>[] = [
   {
     Header: "Job ID",
     accessor: "job_id",
-    Cell: LinkCell,
+    Cell: JobLinkCell,
   },
   {
     Header: "Job Name",

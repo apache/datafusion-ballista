@@ -251,7 +251,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     pub(crate) async fn submit_job(
         &self,
         job_id: &str,
-        job_name: Option<String>,
+        job_name: &str,
         session_ctx: Arc<SessionContext>,
         plan: &LogicalPlan,
     ) -> Result<()> {
@@ -274,11 +274,23 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     }
 }
 
-pub async fn with_lock<Out, F: Future<Output = Out>>(lock: Box<dyn Lock>, op: F) -> Out {
-    let mut lock = lock;
+pub async fn with_lock<Out, F: Future<Output = Out>>(
+    mut lock: Box<dyn Lock>,
+    op: F,
+) -> Out {
     let result = op.await;
     lock.unlock().await;
-
+    result
+}
+/// It takes multiple locks and reverse the order for releasing them to prevent a race condition.
+pub async fn with_locks<Out, F: Future<Output = Out>>(
+    locks: Vec<Box<dyn Lock>>,
+    op: F,
+) -> Out {
+    let result = op.await;
+    for mut lock in locks.into_iter().rev() {
+        lock.unlock().await;
+    }
     result
 }
 
@@ -358,39 +370,19 @@ mod test {
         // Create 4 jobs so we have four pending tasks
         state
             .task_manager
-            .submit_job(
-                "job-1",
-                None,
-                session_ctx.session_id().as_str(),
-                plan.clone(),
-            )
+            .submit_job("job-1", "", session_ctx.session_id().as_str(), plan.clone())
             .await?;
         state
             .task_manager
-            .submit_job(
-                "job-2",
-                None,
-                session_ctx.session_id().as_str(),
-                plan.clone(),
-            )
+            .submit_job("job-2", "", session_ctx.session_id().as_str(), plan.clone())
             .await?;
         state
             .task_manager
-            .submit_job(
-                "job-3",
-                None,
-                session_ctx.session_id().as_str(),
-                plan.clone(),
-            )
+            .submit_job("job-3", "", session_ctx.session_id().as_str(), plan.clone())
             .await?;
         state
             .task_manager
-            .submit_job(
-                "job-4",
-                None,
-                session_ctx.session_id().as_str(),
-                plan.clone(),
-            )
+            .submit_job("job-4", "", session_ctx.session_id().as_str(), plan.clone())
             .await?;
 
         let executors = test_executors(1, 4);
@@ -435,12 +427,7 @@ mod test {
         // Create a job
         state
             .task_manager
-            .submit_job(
-                "job-1",
-                None,
-                session_ctx.session_id().as_str(),
-                plan.clone(),
-            )
+            .submit_job("job-1", "", session_ctx.session_id().as_str(), plan.clone())
             .await?;
 
         let executors = test_executors(1, 4);
