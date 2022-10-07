@@ -274,11 +274,23 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     }
 }
 
-pub async fn with_lock<Out, F: Future<Output = Out>>(lock: Box<dyn Lock>, op: F) -> Out {
-    let mut lock = lock;
+pub async fn with_lock<Out, F: Future<Output = Out>>(
+    mut lock: Box<dyn Lock>,
+    op: F,
+) -> Out {
     let result = op.await;
     lock.unlock().await;
-
+    result
+}
+/// It takes multiple locks and reverse the order for releasing them to prevent a race condition.
+pub async fn with_locks<Out, F: Future<Output = Out>>(
+    locks: Vec<Box<dyn Lock>>,
+    op: F,
+) -> Out {
+    let result = op.await;
+    for mut lock in locks.into_iter().rev() {
+        lock.unlock().await;
+    }
     result
 }
 
