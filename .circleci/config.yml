@@ -151,7 +151,7 @@ jobs:
           kubectl create namespace $NAMESPACE || true
           kubectl config set-context --current --namespace=$NAMESPACE
           kubectl create secret docker-registry regcred \
-            --docker-server=https://spaceandtime.jfrog.io/sxt-docker-docker \
+            --docker-server=https://spaceandtime.jfrog.io/dw-docker-local \
             --docker-username=$ARTIFACTORY_USER \
             --docker-password=$ARTIFACTORY_API_KEY \
             --docker-email=$ARTIFACTORY_EMAIL || true
