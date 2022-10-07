@@ -21,6 +21,7 @@ dev/build-ballista-docker.sh
 
 ```shell
 # See https://iximiuz.com/en/posts/kubernetes-kind-load-docker-image/
+# https://kind.sigs.k8s.io/docs/user/quick-start/#loading-an-image-into-your-cluster
 ~/go/bin/kind load docker-image ballista-scheduler:latest
 ~/go/bin/kind load docker-image ballista-executor:latest
 
