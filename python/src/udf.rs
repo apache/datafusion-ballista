@@ -21,7 +21,7 @@ use pyo3::{prelude::*, types::PyTuple};
 
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::datatypes::DataType;
-use datafusion::arrow::pyarrow::PyArrowConvert;
+use datafusion::arrow::pyarrow::{PyArrowConvert, PyArrowType};
 use datafusion::error::DataFusionError;
 use datafusion::logical_expr::{self, function::ScalarFunctionImplementation};
 use datafusion::physical_plan::functions::make_scalar_function;
@@ -72,14 +72,14 @@ impl PyScalarUDF {
     fn new(
         name: &str,
         func: PyObject,
-        input_types: Vec<DataType>,
-        return_type: DataType,
+        input_types: PyArrowType<Vec<DataType>>,
+        return_type: PyArrowType<DataType>,
         volatility: &str,
     ) -> PyResult<Self> {
         let function = logical_expr::create_udf(
             name,
-            input_types,
-            Arc::new(return_type),
+            input_types.0,
+            Arc::new(return_type.0),
             parse_volatility(volatility)?,
             to_rust_function(func),
         );
