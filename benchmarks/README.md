@@ -39,7 +39,27 @@ generator.
 Data will be generated into the `data` subdirectory and will not be checked in because this directory has been added
 to the `.gitignore` file.
 
-## Running the DataFusion Benchmarks
+## Running the DataFusion Benchmarks in Python
+
+Build the Python bindings and then run:
+
+```bash
+$ python tpch.py --query q1 --path /mnt/bigdata/tpch/sf1-parquet/ 
+Registering table part at path /mnt/bigdata/tpch/sf1-parquet//part
+Registering table supplier at path /mnt/bigdata/tpch/sf1-parquet//supplier
+Registering table partsupp at path /mnt/bigdata/tpch/sf1-parquet//partsupp
+Registering table customer at path /mnt/bigdata/tpch/sf1-parquet//customer
+Registering table orders at path /mnt/bigdata/tpch/sf1-parquet//orders
+Registering table lineitem at path /mnt/bigdata/tpch/sf1-parquet//lineitem
+Registering table nation at path /mnt/bigdata/tpch/sf1-parquet//nation
+Registering table region at path /mnt/bigdata/tpch/sf1-parquet//region
+Query q1 took 9.668351173400879 second(s)
+```
+
+Note that this Python script currently only supports running against file formats than contain a schema 
+definition (such as Parquet).
+
+## Running the DataFusion Benchmarks in Rust
 
 The benchmark can then be run (assuming the data created from `dbgen` is in `./data`) with a command such as:
 
