@@ -28,6 +28,7 @@ use futures::stream;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::error::Result as ArrowResult;
+use datafusion::arrow::pyarrow::PyArrowType;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError as InnerDataFusionError, Result as DFResult};
 use datafusion::execution::context::TaskContext;
@@ -54,7 +55,7 @@ impl Iterator for PyArrowBatchesAdapter {
             Some(
                 batches
                     .next()?
-                    .and_then(|batch| batch.extract())
+                    .and_then(|batch| Ok(batch.extract::<PyArrowType<_>>()?.0))
                     .map_err(|err| ArrowError::ExternalError(Box::new(err))),
             )
         })
@@ -109,7 +110,12 @@ impl DatasetExec {
 
         let scanner = dataset.call_method("scanner", (), Some(kwargs))?;
 
-        let schema = Arc::new(scanner.getattr("projected_schema")?.extract()?);
+        let schema = Arc::new(
+            scanner
+                .getattr("projected_schema")?
+                .extract::<PyArrowType<_>>()?
+                .0,
+        );
 
         let builtins = Python::import(py, "builtins")?;
         let pylist = builtins.getattr("list")?;
@@ -211,7 +217,7 @@ impl ExecutionPlan for DatasetExec {
             let schema: SchemaRef = Arc::new(
                 scanner
                     .getattr("projected_schema")
-                    .and_then(|schema| schema.extract())
+                    .and_then(|schema| Ok(schema.extract::<PyArrowType<_>>()?.0))
                     .map_err(|err| InnerDataFusionError::External(Box::new(err)))?,
             );
             let record_batches: &PyIterator = scanner
