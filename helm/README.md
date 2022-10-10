@@ -7,8 +7,8 @@ For the purposes of this documentation, we will use Kubernetes-in-Docker (kind) 
 ## Prerequisites
 
 ```shell
-sudo apt install kubectl docker.io docker-compose
-sudo snap install go --classic
+sudo apt install docker.io docker-compose
+sudo snap install go kubectl helm --classic
 go install sigs.k8s.io/kind@v0.16.0
 ~/go/bin/kind create cluster
 ```
