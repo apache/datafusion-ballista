@@ -94,6 +94,7 @@ dev/tasks/linux-packages/apache-arrow/debian/source/format
 dev/tasks/linux-packages/apache-arrow/debian/watch
 dev/tasks/requirements*.txt
 dev/tasks/conda-recipes/*
+helm/ballista/Chart.lock
 pax_global_header
 MANIFEST.in
 __init__.pxd
