@@ -29,6 +29,7 @@ use ballista_core::{
 };
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::windows::WindowAggExec;
 use datafusion::physical_plan::{
     with_new_children_if_necessary, ExecutionPlan, Partitioning,
@@ -102,6 +103,32 @@ impl DistributedPlanner {
             .as_any()
             .downcast_ref::<CoalescePartitionsExec>()
         {
+            let shuffle_writer = create_shuffle_writer(
+                job_id,
+                self.next_stage_id(),
+                children[0].clone(),
+                None,
+            )?;
+            let unresolved_shuffle = Arc::new(UnresolvedShuffleExec::new(
+                shuffle_writer.stage_id(),
+                shuffle_writer.schema(),
+                shuffle_writer.output_partitioning().partition_count(),
+                shuffle_writer
+                    .shuffle_output_partitioning()
+                    .map(|p| p.partition_count())
+                    .unwrap_or_else(|| {
+                        shuffle_writer.output_partitioning().partition_count()
+                    }),
+            ));
+            stages.push(shuffle_writer);
+            Ok((
+                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
+                stages,
+            ))
+        } else if let Some(_sort_preserving_merge) = execution_plan
+            .as_any()
+            .downcast_ref::<SortPreservingMergeExec>(
+        ) {
             let shuffle_writer = create_shuffle_writer(
                 job_id,
                 self.next_stage_id(),
