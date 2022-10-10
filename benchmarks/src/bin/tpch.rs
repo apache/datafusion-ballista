@@ -1500,7 +1500,6 @@ mod tests {
             // test logical plan round trip
             let plans = create_logical_plans(&ctx, n)?;
             for plan in plans {
-
                 // test optimized logical plan round trip
                 let plan = ctx.optimize(&plan)?;
                 let proto: datafusion_proto::protobuf::LogicalPlanNode =
