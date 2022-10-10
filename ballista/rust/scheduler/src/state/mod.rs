@@ -272,6 +272,26 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
         Ok(())
     }
+
+    pub(crate) async fn cancel_job(&self, job_id: &str) -> Result<bool> {
+        info!("Received cancellation request for job {}", job_id);
+
+        match self.task_manager.cancel_job(job_id).await {
+            Ok(tasks) => {
+                self.executor_manager.cancel_running_tasks(tasks).await.map_err(|e| {
+                        let msg = format!("Error to cancel running tasks when cancelling job {} due to {:?}", job_id, e);
+                        error!("{}", msg);
+                        BallistaError::Internal(msg)
+                })?;
+                Ok(true)
+            }
+            Err(e) => {
+                let msg = format!("Error cancelling job {}: {:?}", job_id, e);
+                error!("{}", msg);
+                Ok(false)
+            }
+        }
+    }
 }
 
 pub async fn with_lock<Out, F: Future<Output = Out>>(

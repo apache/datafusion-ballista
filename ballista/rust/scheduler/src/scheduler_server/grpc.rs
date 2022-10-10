@@ -529,22 +529,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         request: Request<CancelJobParams>,
     ) -> Result<Response<CancelJobResult>, Status> {
         let job_id = request.into_inner().job_id;
-        info!("Received cancellation request for job {}", job_id);
-
-        match self.state.task_manager.cancel_job(&job_id).await {
-            Ok(tasks) => {
-                self.state.executor_manager.cancel_running_tasks(tasks).await.map_err(|e| {
-                        let msg = format!("Error to cancel running task when cancel the job {} due to {:?}", job_id, e);
-                        error!("{}", msg);
-                        Status::internal(msg)
-                })?;
-                Ok(Response::new(CancelJobResult { cancelled: true }))
-            }
-            Err(e) => {
-                let msg = format!("Error cancelling job {}: {:?}", job_id, e);
-                error!("{}", msg);
-                Ok(Response::new(CancelJobResult { cancelled: false }))
-            }
+        match self.state.cancel_job(&job_id).await {
+            Ok(cancelled) => Ok(Response::new(CancelJobResult { cancelled })),
+            Err(e) => Err(Status::internal(e.to_string())),
         }
     }
 }
