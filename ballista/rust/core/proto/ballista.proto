@@ -845,10 +845,11 @@ message HeartBeatResult {
 }
 
 message StopExecutorParams {
+  string executor_id = 1;
   // stop reason
-  string reason = 1;
+  string reason = 2;
   // force to stop the executor immediately
-  bool force = 2;
+  bool force = 3;
 }
 
 message StopExecutorResult {

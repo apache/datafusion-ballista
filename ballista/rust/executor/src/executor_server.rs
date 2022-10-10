@@ -665,6 +665,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         request: Request<StopExecutorParams>,
     ) -> Result<Response<StopExecutorResult>, Status> {
         let stop_request = request.into_inner();
+        if stop_request.executor_id != self.executor.metadata.id {
+            warn!(
+                "The executor id {} in request is different from {}. The stop request will be ignored",
+                stop_request.executor_id, self.executor.metadata.id
+            );
+            return Ok(Response::new(StopExecutorResult {}));
+        }
         let stop_reason = stop_request.reason;
         let force = stop_request.force;
         info!(
