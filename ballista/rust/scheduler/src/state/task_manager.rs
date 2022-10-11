@@ -22,7 +22,6 @@ use crate::state::execution_graph::{ExecutionGraph, Task};
 use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::{decode_protobuf, encode_protobuf, with_lock};
 use ballista_core::config::BallistaConfig;
-// #[cfg(not(test))]
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
@@ -287,7 +286,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         if let Ok(graph) = self.get_execution_graph(job_id).await {
             let running_tasks = graph.running_tasks();
             let mut tasks: HashMap<&str, Vec<protobuf::PartitionId>> = Default::default();
-            
+
             info!(
                 "Cancelling {} running tasks for job {}",
                 running_tasks.len(),
