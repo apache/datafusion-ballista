@@ -22,7 +22,7 @@ use crate::state::execution_graph::{ExecutionGraph, Task};
 use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::{decode_protobuf, encode_protobuf, with_lock};
 use ballista_core::config::BallistaConfig;
-#[cfg(not(test))]
+// #[cfg(not(test))]
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
@@ -42,6 +42,7 @@ use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use std::collections::HashMap;
 use std::default::Default;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tonic::transport::Channel;
@@ -49,7 +50,6 @@ use tonic::transport::Channel;
 type ExecutorClients = Arc<RwLock<HashMap<String, ExecutorGrpcClient<Channel>>>>;
 type ExecutionGraphCache = Arc<RwLock<HashMap<String, Arc<RwLock<ExecutionGraph>>>>>;
 
-#[derive(Clone)]
 pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
     state: Arc<dyn StateBackendClient>,
     #[allow(dead_code)]
@@ -59,6 +59,25 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     scheduler_id: String,
     // Cache for active execution graphs curated by this scheduler
     active_job_cache: ExecutionGraphCache,
+    pending_task_queue_size: AtomicUsize,
+}
+
+impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> Clone
+    for TaskManager<T, U>
+{
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            clients: self.clients.clone(),
+            session_builder: self.session_builder,
+            codec: self.codec.clone(),
+            scheduler_id: self.scheduler_id.clone(),
+            active_job_cache: self.active_job_cache.clone(),
+            pending_task_queue_size: AtomicUsize::new(
+                self.pending_task_queue_size.load(Ordering::SeqCst),
+            ),
+        }
+    }
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U> {
@@ -75,6 +94,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             codec,
             scheduler_id,
             active_job_cache: Arc::new(RwLock::new(HashMap::new())),
+            pending_task_queue_size: AtomicUsize::new(0),
         }
     }
 
@@ -90,6 +110,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     ) -> Result<()> {
         let mut graph =
             ExecutionGraph::new(&self.scheduler_id, job_id, session_id, plan, queued_at)?;
+
         info!("Submitting execution graph: {}", graph);
         self.state
             .put(
@@ -195,21 +216,25 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .collect();
 
         let mut assignments: Vec<(String, Task)> = vec![];
-        let mut pending_tasks = 0usize;
         let mut assign_tasks = 0usize;
+
         let job_cache = self.active_job_cache.read().await;
+
         for (_job_id, graph) in job_cache.iter() {
             let mut graph = graph.write().await;
+
             for reservation in free_reservations.iter().skip(assign_tasks) {
                 if let Some(task) = graph.pop_next_task(&reservation.executor_id)? {
                     assignments.push((reservation.executor_id.clone(), task));
                     assign_tasks += 1;
+                    self.decrease_pending_queue_size(1)?;
                 } else {
                     break;
                 }
             }
+
             if assign_tasks >= free_reservations.len() {
-                pending_tasks = graph.available_tasks();
+                self.increase_pending_queue_size(graph.available_tasks())?;
                 break;
             }
         }
@@ -218,7 +243,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         for reservation in free_reservations.iter().skip(assign_tasks) {
             unassigned.push(reservation.clone());
         }
-        Ok((assignments, unassigned, pending_tasks))
+        Ok((assignments, unassigned, self.get_pending_task_queue_size()))
     }
 
     /// Mark a job as completed. This will create a key under the CompletedJobs keyspace
@@ -252,53 +277,53 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     ) -> Result<()> {
         let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
 
-        let running_tasks = self
-            .get_execution_graph(job_id)
-            .await
-            .map(|graph| graph.running_tasks())
-            .unwrap_or_else(|_| vec![]);
+        if let Ok(graph) = self.get_execution_graph(job_id).await {
+            let running_tasks = graph.running_tasks();
 
-        info!(
-            "Cancelling {} running tasks for job {}",
-            running_tasks.len(),
-            job_id
-        );
+            info!(
+                "Cancelling {} running tasks for job {}",
+                running_tasks.len(),
+                job_id
+            );
 
-        self.fail_job_inner(lock, job_id, "Cancelled".to_owned())
-            .await?;
+            let mut tasks: HashMap<&str, Vec<protobuf::PartitionId>> = Default::default();
 
-        let mut tasks: HashMap<&str, Vec<protobuf::PartitionId>> = Default::default();
-
-        for (partition, executor_id) in &running_tasks {
-            if let Some(parts) = tasks.get_mut(executor_id.as_str()) {
-                parts.push(protobuf::PartitionId {
-                    job_id: job_id.to_owned(),
-                    stage_id: partition.stage_id as u32,
-                    partition_id: partition.partition_id as u32,
-                })
-            } else {
-                tasks.insert(
-                    executor_id.as_str(),
-                    vec![protobuf::PartitionId {
+            for (partition, executor_id) in &running_tasks {
+                if let Some(parts) = tasks.get_mut(executor_id.as_str()) {
+                    parts.push(protobuf::PartitionId {
                         job_id: job_id.to_owned(),
                         stage_id: partition.stage_id as u32,
                         partition_id: partition.partition_id as u32,
-                    }],
-                );
+                    })
+                } else {
+                    tasks.insert(
+                        executor_id.as_str(),
+                        vec![protobuf::PartitionId {
+                            job_id: job_id.to_owned(),
+                            stage_id: partition.stage_id as u32,
+                            partition_id: partition.partition_id as u32,
+                        }],
+                    );
+                }
             }
+
+            for (executor_id, partitions) in tasks {
+                if let Ok(mut client) = executor_manager.get_client(executor_id).await {
+                    client
+                        .cancel_tasks(CancelTasksParams {
+                            partition_id: partitions,
+                        })
+                        .await?;
+                } else {
+                    error!("Failed to get client for executor ID {}", executor_id)
+                }
+            }
+
+            self.decrease_pending_queue_size(graph.available_tasks())?;
         }
 
-        for (executor_id, partitions) in tasks {
-            if let Ok(mut client) = executor_manager.get_client(executor_id).await {
-                client
-                    .cancel_tasks(CancelTasksParams {
-                        partition_id: partitions,
-                    })
-                    .await?;
-            } else {
-                error!("Failed to get client for executor ID {}", executor_id)
-            }
-        }
+        self.fail_job_inner(lock, job_id, "Cancelled".to_owned())
+            .await?;
 
         Ok(())
     }
@@ -349,8 +374,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// TODO this should be atomic
     pub async fn fail_running_job(&self, job_id: &str) -> Result<()> {
         if let Some(graph) = self.get_active_execution_graph(job_id).await {
-            let graph = graph.read().await.clone();
-            let value = self.encode_execution_graph(graph)?;
+            let graph = graph.read().await;
+            let value = self.encode_execution_graph(graph.clone())?;
 
             debug!("Moving job {} from Active to Failed", job_id);
             let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
@@ -358,6 +383,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             self.state
                 .put(Keyspace::FailedJobs, job_id.to_owned(), value)
                 .await?;
+            self.decrease_pending_queue_size(graph.available_tasks())?
         } else {
             warn!("Fail to find job {} in the cache", job_id);
         }
@@ -370,11 +396,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         if let Some(graph) = self.get_active_execution_graph(job_id).await {
             let mut graph = graph.write().await;
             graph.revive();
-            let graph = graph.clone();
-            let value = self.encode_execution_graph(graph)?;
+            let value = self.encode_execution_graph(graph.clone())?;
+
             self.state
                 .put(Keyspace::ActiveJobs, job_id.to_owned(), value)
                 .await?;
+            self.increase_pending_queue_size(graph.available_tasks())?;
         } else {
             warn!("Fail to find job {} in the cache", job_id);
         }
@@ -383,22 +410,23 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     pub async fn executor_lost(&self, executor_id: &str) -> Result<()> {
-        {
-            let job_cache = self.active_job_cache.read().await;
-            for (job_id, graph) in job_cache.iter() {
-                let graph = graph.read().await;
-
-                for (_, running_task_executor_id) in graph.running_tasks().iter() {
-                    if executor_id == running_task_executor_id {
-                        self.fail_running_job(job_id).await?
-                    }
+        let job_cache = self.active_job_cache.read().await;
+        for (job_id, graph) in job_cache.iter() {
+            let graph = graph.read().await;
+            for (_, running_task_executor_id) in graph.running_tasks().iter() {
+                if executor_id == running_task_executor_id {
+                    info!(
+                        "Failing job_id: {} as executor_id: {} is lost",
+                        job_id, executor_id
+                    );
+                    self.fail_running_job(job_id).await?
                 }
             }
         }
         Ok(())
     }
 
-    #[cfg(not(test))]
+    // #[cfg(not(test))]
     /// Launch the given task on the specified executor
     pub(crate) async fn launch_task(
         &self,
@@ -424,16 +452,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(())
     }
 
-    /// In unit tests, we do not have actual executors running, so it simplifies things to just noop.
-    #[cfg(test)]
-    pub(crate) async fn launch_task(
-        &self,
-        _executor: &ExecutorMetadata,
-        _task: Task,
-        _executor_manager: &ExecutorManager,
-    ) -> Result<()> {
-        Ok(())
-    }
+    // /// In unit tests, we do not have actual executors running, so it simplifies things to just noop.
+    // #[cfg(test)]
+    // pub(crate) async fn launch_task(
+    //     &self,
+    //     _executor: &ExecutorMetadata,
+    //     _task: Task,
+    //     _executor_manager: &ExecutorManager,
+    // ) -> Result<()> {
+    //     Ok(())
+    // }
 
     /// Retrieve the number of available tasks for the given job. The value returned
     /// is strictly a point-in-time snapshot
@@ -535,5 +563,35 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .map(char::from)
             .take(7)
             .collect()
+    }
+
+    pub fn increase_pending_queue_size(&self, num: usize) -> Result<()> {
+        match self.pending_task_queue_size.fetch_update(
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+            |s| Some(s + num),
+        ) {
+            Ok(_) => Ok(()),
+            Err(_) => Err(BallistaError::Internal(
+                "Unable to update pending task counter".to_owned(),
+            )),
+        }
+    }
+
+    pub fn decrease_pending_queue_size(&self, num: usize) -> Result<()> {
+        match self.pending_task_queue_size.fetch_update(
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+            |s| Some(s - num),
+        ) {
+            Ok(_) => Ok(()),
+            Err(_) => Err(BallistaError::Internal(
+                "Unable to update pending task counter".to_owned(),
+            )),
+        }
+    }
+
+    pub fn get_pending_task_queue_size(&self) -> usize {
+        self.pending_task_queue_size.load(Ordering::SeqCst)
     }
 }
