@@ -58,7 +58,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExternalScaler
             metric_values: vec![MetricValue {
                 metric_name: INFLIGHT_TASKS_METRIC_NAME.to_string(),
                 metric_value: self.state.task_manager.get_pending_task_queue_size()
-                    as i64, // A very high number to saturate the HPA
+                    as i64,
             }],
         }))
     }
