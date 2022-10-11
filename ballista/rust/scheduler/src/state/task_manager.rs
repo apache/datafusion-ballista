@@ -276,15 +276,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     ) -> Result<()> {
         let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
 
-        if let Ok(graph) = self.get_execution_graph(job_id).await {
-            let running_tasks = graph.running_tasks();
-
-            info!(
-                "Cancelling {} running tasks for job {}",
-                running_tasks.len(),
-                job_id
-            );
-
         let failed_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards")
@@ -293,8 +284,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         self.fail_job_inner(lock, job_id, "Cancelled".to_owned(), failed_at)
             .await?;
 
-        let mut tasks: HashMap<&str, Vec<protobuf::PartitionId>> = Default::default();
-
+        if let Ok(graph) = self.get_execution_graph(job_id).await {
+            let running_tasks = graph.running_tasks();
+            let mut tasks: HashMap<&str, Vec<protobuf::PartitionId>> = Default::default();
+            
+            info!(
+                "Cancelling {} running tasks for job {}",
+                running_tasks.len(),
+                job_id
+            );
             for (partition, executor_id) in &running_tasks {
                 if let Some(parts) = tasks.get_mut(executor_id.as_str()) {
                     parts.push(protobuf::PartitionId {
@@ -325,13 +323,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     error!("Failed to get client for executor ID {}", executor_id)
                 }
             }
-
             self.decrease_pending_queue_size(graph.available_tasks())?;
         }
-
-        self.fail_job_inner(lock, job_id, "Cancelled".to_owned())
-            .await?;
-
         Ok(())
     }
 
