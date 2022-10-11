@@ -110,7 +110,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     ) -> Result<()> {
         let mut graph =
             ExecutionGraph::new(&self.scheduler_id, job_id, session_id, plan, queued_at)?;
-
         info!("Submitting execution graph: {}", graph);
         self.state
             .put(
@@ -222,7 +221,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
         for (_job_id, graph) in job_cache.iter() {
             let mut graph = graph.write().await;
-
             for reservation in free_reservations.iter().skip(assign_tasks) {
                 if let Some(task) = graph.pop_next_task(&reservation.executor_id)? {
                     assignments.push((reservation.executor_id.clone(), task));
@@ -426,7 +424,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(())
     }
 
-    // #[cfg(not(test))]
+    #[cfg(not(test))]
     /// Launch the given task on the specified executor
     pub(crate) async fn launch_task(
         &self,
@@ -452,16 +450,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(())
     }
 
-    // /// In unit tests, we do not have actual executors running, so it simplifies things to just noop.
-    // #[cfg(test)]
-    // pub(crate) async fn launch_task(
-    //     &self,
-    //     _executor: &ExecutorMetadata,
-    //     _task: Task,
-    //     _executor_manager: &ExecutorManager,
-    // ) -> Result<()> {
-    //     Ok(())
-    // }
+    /// In unit tests, we do not have actual executors running, so it simplifies things to just noop.
+    #[cfg(test)]
+    pub(crate) async fn launch_task(
+        &self,
+        _executor: &ExecutorMetadata,
+        _task: Task,
+        _executor_manager: &ExecutorManager,
+    ) -> Result<()> {
+        Ok(())
+    }
 
     /// Retrieve the number of available tasks for the given job. The value returned
     /// is strictly a point-in-time snapshot
