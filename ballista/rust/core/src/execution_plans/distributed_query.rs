@@ -20,8 +20,8 @@ use crate::config::BallistaConfig;
 use crate::serde::protobuf::execute_query_params::OptionalSessionId;
 use crate::serde::protobuf::{
     execute_query_params::Query, job_status, scheduler_grpc_client::SchedulerGrpcClient,
-    ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
-    PartitionLocation,
+    ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, JobStatus, KeyValuePair,
+    PartitionLocation, QueuedJob,
 };
 use crate::utils::create_grpc_client_connection;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -45,6 +45,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
+use tonic::Code;
 
 /// This operator sends a logical plan to a Ballista scheduler for execution and
 /// polls the scheduler until the query is complete and then fetches the resulting
@@ -258,13 +259,21 @@ async fn execute_query(
     let mut prev_status: Option<job_status::Status> = None;
 
     loop {
-        let GetJobStatusResult { status } = scheduler
+        let GetJobStatusResult { status } = match scheduler
             .get_job_status(GetJobStatusParams {
                 job_id: job_id.clone(),
             })
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?
-            .into_inner();
+        {
+            Ok(response) => Ok(response.into_inner()),
+            Err(status) if status.code() == Code::NotFound => Ok(GetJobStatusResult {
+                status: Some(JobStatus {
+                    status: Some(job_status::Status::Queued(QueuedJob {})),
+                }),
+            }),
+            Err(e) => Err(DataFusionError::Execution(format!("{:?}", e))),
+        }?;
+
         let status = status.and_then(|s| s.status);
         let wait_future = tokio::time::sleep(Duration::from_millis(100));
         let has_status_change = prev_status != status;

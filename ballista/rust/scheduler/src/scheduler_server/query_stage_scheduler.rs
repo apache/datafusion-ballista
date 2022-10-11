@@ -167,7 +167,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .record_failed(&job_id, queued_at, failed_at);
                 self.state
                     .task_manager
-                    .fail_job(&job_id, fail_message)
+                    .fail_job(&job_id, fail_message, failed_at)
                     .await?;
             }
             QueryStageSchedulerEvent::JobFinished {

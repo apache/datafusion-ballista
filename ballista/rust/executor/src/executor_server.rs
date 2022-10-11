@@ -16,9 +16,11 @@
 // under the License.
 
 use ballista_core::BALLISTA_VERSION;
+use futures::FutureExt;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::ops::Deref;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, RwLock};
@@ -52,6 +54,7 @@ use tokio::task::JoinHandle;
 
 use crate::as_task_status;
 use crate::cpu_bound_executor::DedicatedExecutor;
+use crate::execution_loop::any_to_string;
 use crate::executor::Executor;
 use crate::shutdown::ShutdownNotifier;
 
@@ -196,8 +199,6 @@ struct ExecutorEnv {
     /// Receive stop executor request from rpc.
     tx_stop: mpsc::Sender<bool>,
 }
-
-unsafe impl Sync for ExecutorEnv {}
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T, U> {
     fn new(
@@ -350,17 +351,26 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             plan,
         )?;
 
-        let execution_result = self
-            .executor
-            .execute_shuffle_write(
+        let execution_result =
+            match AssertUnwindSafe(self.executor.execute_shuffle_write(
                 task_id.job_id.clone(),
                 task_id.stage_id as usize,
                 task_id.partition_id as usize,
                 shuffle_writer_plan.clone(),
                 task_context,
                 shuffle_output_partitioning,
-            )
-            .await;
+            ))
+            .catch_unwind()
+            .await
+            {
+                Ok(Ok(r)) => Ok(r),
+                Ok(Err(r)) => Err(r),
+                Err(r) => {
+                    error!("Error executing task: {:?}", any_to_string(&r));
+                    Err(BallistaError::Internal(format!("{:#?}", any_to_string(&r))))
+                }
+            };
+
         info!("Done with task {}", task_id_log);
         debug!("Statistics: {:?}", execution_result);
 
@@ -606,13 +616,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         } = request.into_inner();
         let task_sender = self.executor_env.tx_task.clone();
         for task in tasks {
-            task_sender
+            if let Err(e) = task_sender
                 .send(CuratorTaskDefinition {
                     scheduler_id: scheduler_id.clone(),
                     task,
                 })
                 .await
-                .unwrap();
+            {
+                let msg = format!(
+                    "Error launching tasks, failed to send to task channel: {:?}",
+                    e
+                );
+                error!("{}", msg);
+                return Err(Status::internal(msg));
+            }
         }
         Ok(Response::new(LaunchTaskResult { success: true }))
     }

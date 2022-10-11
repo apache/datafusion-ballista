@@ -44,6 +44,7 @@ use std::collections::HashMap;
 use std::default::Default;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tonic::transport::Channel;
 
@@ -170,7 +171,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         let mut events: Vec<QueryStageSchedulerEvent> = vec![];
         for (job_id, statuses) in job_updates {
             let num_tasks = statuses.len();
-            debug!("Updating {} tasks in job {}", num_tasks, job_id);
+            info!("Updating {} tasks in job {}", num_tasks, job_id);
 
             let graph = self.get_active_execution_graph(&job_id).await;
             let job_event = if let Some(graph) = graph {
@@ -284,7 +285,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 job_id
             );
 
-            let mut tasks: HashMap<&str, Vec<protobuf::PartitionId>> = Default::default();
+        let failed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+
+        self.fail_job_inner(lock, job_id, "Cancelled".to_owned(), failed_at)
+            .await?;
+
+        let mut tasks: HashMap<&str, Vec<protobuf::PartitionId>> = Default::default();
 
             for (partition, executor_id) in &running_tasks {
                 if let Some(parts) = tasks.get_mut(executor_id.as_str()) {
@@ -329,10 +338,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Mark a job as failed. This will create a key under the FailedJobs keyspace
     /// and remove the job from ActiveJobs or QueuedJobs
     /// TODO this should be atomic
-    pub async fn fail_job(&self, job_id: &str, error_message: String) -> Result<()> {
+    pub async fn fail_job(
+        &self,
+        job_id: &str,
+        error_message: String,
+        failed_at: u64,
+    ) -> Result<()> {
         debug!("Moving job {} from Active or Queue to Failed", job_id);
         let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
-        self.fail_job_inner(lock, job_id, error_message).await
+        self.fail_job_inner(lock, job_id, error_message, failed_at)
+            .await
     }
 
     async fn fail_job_inner(
@@ -340,12 +355,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         lock: Box<dyn Lock>,
         job_id: &str,
         error_message: String,
+        failed_at: u64,
     ) -> Result<()> {
         with_lock(lock, self.state.delete(Keyspace::ActiveJobs, job_id)).await?;
 
         let value = if let Some(graph) = self.get_active_execution_graph(job_id).await {
             let mut graph = graph.write().await;
-            graph.fail_job(error_message);
+            graph.fail_job(error_message, failed_at);
             let graph = graph.clone();
 
             self.encode_execution_graph(graph)?
@@ -355,6 +371,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let status = JobStatus {
                 status: Some(job_status::Status::Failed(FailedJob {
                     error: error_message.clone(),
+                    failed_at,
                 })),
             };
             encode_protobuf(&status)?
@@ -408,19 +425,42 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     pub async fn executor_lost(&self, executor_id: &str) -> Result<()> {
-        let job_cache = self.active_job_cache.read().await;
-        for (job_id, graph) in job_cache.iter() {
-            let graph = graph.read().await;
-            for (_, running_task_executor_id) in graph.running_tasks().iter() {
-                if executor_id == running_task_executor_id {
-                    info!(
-                        "Failing job_id: {} as executor_id: {} is lost",
-                        job_id, executor_id
-                    );
-                    self.fail_running_job(job_id).await?
+        let mut fail_jobs = vec![];
+        {
+            let job_cache = self.active_job_cache.read().await;
+            for (job_id, graph) in job_cache.iter() {
+                let graph = graph.read().await;
+
+                for (partition_id, running_task_executor_id) in
+                    graph.running_tasks().iter()
+                {
+                    if executor_id == running_task_executor_id {
+                        fail_jobs.push((
+                            job_id.clone(),
+                            format!(
+                                "Executor {} running partition {}/{}/{} died",
+                                executor_id,
+                                partition_id.job_id,
+                                partition_id.stage_id,
+                                partition_id.partition_id
+                            ),
+                        ));
+                    }
                 }
             }
         }
+
+        let failed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+
+        for (job_id, message) in fail_jobs.into_iter() {
+            if let Err(e) = self.fail_job(&job_id, message, failed_at).await {
+                warn!("Could not fail job {}: {:?}", job_id, e);
+            }
+        }
+
         Ok(())
     }
 

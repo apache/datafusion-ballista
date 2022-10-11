@@ -652,6 +652,7 @@ mod test {
                             let task_status = TaskStatus {
                                 status: Some(task_status::Status::Failed(FailedTask {
                                     error: "".to_string(),
+                                    failed_at: 0,
                                 })),
                                 metrics: vec![],
                                 task_id: Some(PartitionId {

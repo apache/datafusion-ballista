@@ -37,6 +37,8 @@ use ballista_core::serde::protobuf::{
     ShuffleWritePartition, TaskStatus,
 };
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 pub fn as_task_status(
     execution_result: ballista_core::error::Result<Vec<ShuffleWritePartition>>,
     executor_id: String,
@@ -64,11 +66,17 @@ pub fn as_task_status(
             let error_msg = e.to_string();
             info!("Task {:?} failed: {}", task_id, error_msg);
 
+            let failed_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_secs();
+
             TaskStatus {
                 task_id: Some(task_id),
                 metrics,
                 status: Some(task_status::Status::Failed(FailedTask {
                     error: format!("Task failed due to Tokio error: {}", error_msg),
+                    failed_at,
                 })),
             }
         }
