@@ -54,6 +54,11 @@ pub struct JobResponse {
 }
 
 #[derive(Debug, serde::Serialize)]
+struct CancelJobResponse {
+    pub cancelled: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
 pub struct QueryStageSummary {
     pub stage_id: String,
     pub stage_status: String,
@@ -155,6 +160,28 @@ pub(crate) async fn get_jobs<T: AsLogicalPlan, U: AsExecutionPlan>(
         .collect();
 
     Ok(warp::reply::json(&jobs))
+}
+
+pub(crate) async fn cancel_job<T: AsLogicalPlan, U: AsExecutionPlan>(
+    data_server: SchedulerServer<T, U>,
+    job_id: String,
+) -> Result<impl warp::Reply, Rejection> {
+    // 404 if job doesn't exist
+    data_server
+        .state
+        .task_manager
+        .get_job_status(&job_id)
+        .await
+        .map_err(|_| warp::reject())?
+        .ok_or_else(warp::reject)?;
+
+    let cancelled = data_server
+        .state
+        .cancel_job(&job_id)
+        .await
+        .map_err(|_| warp::reject())?;
+
+    Ok(warp::reply::json(&CancelJobResponse { cancelled }))
 }
 
 #[derive(Debug, serde::Serialize)]
