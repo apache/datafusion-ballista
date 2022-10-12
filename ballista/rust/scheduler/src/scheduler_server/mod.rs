@@ -229,6 +229,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                             tokio::task::spawn(async move {
                                 match client
                                     .stop_executor(StopExecutorParams {
+                                        executor_id,
                                         reason: stop_reason,
                                         force: true,
                                     })

@@ -46,8 +46,8 @@ base64 = { version = "0.13", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
 configure_me = "0.4.0"
 dashmap = "5.4.0"
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "13.0.0-rc1" }
-datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "13.0.0-rc1" }
+datafusion = "13.0.0"
+datafusion-proto = "13.0.0"
 etcd-client = { version = "0.9", optional = true }
 flatbuffers = { version = "2.1.2" }
 futures = "0.3"

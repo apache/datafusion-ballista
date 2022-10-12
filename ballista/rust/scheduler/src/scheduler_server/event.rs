@@ -39,6 +39,7 @@ pub enum QueryStageSchedulerEvent {
     // For a job fails with its execution graph setting failed
     JobRunningFailed(String, String),
     JobUpdated(String),
+    JobCancel(String),
     TaskUpdating(String, Vec<TaskStatus>),
     ReservationOffering(Vec<ExecutorReservation>),
     ExecutorLost(String, Option<String>),

@@ -97,6 +97,11 @@ pub fn get_routes<T: AsLogicalPlan + Clone, U: 'static + AsExecutionPlan>(
         .and(with_data_server(scheduler_server.clone()))
         .and_then(|data_server| handlers::get_jobs(data_server));
 
+    let route_cancel_job = warp::path!("api" / "job" / String)
+        .and(warp::patch())
+        .and(with_data_server(scheduler_server.clone()))
+        .and_then(|job_id, data_server| handlers::cancel_job(data_server, job_id));
+
     let route_query_stages = warp::path!("api" / "job" / String / "stages")
         .and(with_data_server(scheduler_server.clone()))
         .and_then(|job_id, data_server| handlers::get_query_stages(data_server, job_id));
@@ -119,6 +124,7 @@ pub fn get_routes<T: AsLogicalPlan + Clone, U: 'static + AsExecutionPlan>(
     let routes = route_scheduler_state
         .or(route_executors)
         .or(route_jobs)
+        .or(route_cancel_job)
         .or(route_query_stages)
         .or(route_job_dot)
         .or(route_query_stage_dot)

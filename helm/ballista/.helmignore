@@ -15,29 +15,23 @@
 # specific language governing permissions and limitations
 # under the License.
 
-[package]
-name = "ballista-examples"
-description = "Ballista usage examples"
-version = "0.8.0"
-homepage = "https://github.com/apache/arrow-ballista"
-repository = "https://github.com/apache/arrow-ballista"
-authors = ["Apache Arrow <dev@arrow.apache.org>"]
-license = "Apache-2.0"
-keywords = [ "arrow", "distributed", "query", "sql" ]
-edition = "2021"
-publish = false
-rust-version = "1.59"
-
-[[example]]
-name = "standalone_sql"
-path = "examples/standalone-sql.rs"
-required-features = ["ballista/standalone"]
-
-[dependencies]
-ballista = { path = "../ballista/rust/client", version = "0.8.0" }
-datafusion = "13.0.0"
-futures = "0.3"
-num_cpus = "1.13.0"
-prost = "0.11"
-tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "sync", "parking_lot"] }
-tonic = "0.8"
+.DS_Store
+# Common VCS dirs
+.git/
+.gitignore
+.bzr/
+.bzrignore
+.hg/
+.hgignore
+.svn/
+# Common backup files
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+# Various IDEs
+.project
+.idea/
+*.tmproj
+.vscode/

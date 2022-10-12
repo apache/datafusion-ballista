@@ -27,12 +27,13 @@ use crate::state::execution_graph::RunningTaskInfo;
 use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 use ballista_core::serde::protobuf::{
     executor_status, CancelTasksParams, ExecutorHeartbeat, ExecutorStatus,
+    RemoveJobDataParams,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::utils::create_grpc_client_connection;
 use dashmap::{DashMap, DashSet};
 use futures::StreamExt;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tonic::transport::Channel;
@@ -256,6 +257,33 @@ impl ExecutorManager {
             }
         }
         Ok(())
+    }
+
+    /// Send rpc to Executors to clean up the job data
+    pub async fn clean_up_executors_data(&self, job_id: String) {
+        let alive_executors = self.get_alive_executors_within_one_minute();
+        for executor in alive_executors {
+            let job_id_clone = job_id.to_owned();
+            if let Ok(mut client) = self.get_client(&executor).await {
+                tokio::spawn(async move {
+                    {
+                        if let Err(err) = client
+                            .remove_job_data(RemoveJobDataParams {
+                                job_id: job_id_clone,
+                            })
+                            .await
+                        {
+                            warn!(
+                            "Failed to call remove_job_data on Executor {} due to {:?}",
+                            executor, err
+                        )
+                        }
+                    }
+                });
+            } else {
+                warn!("Failed to get client for Executor {}", executor)
+            }
+        }
     }
 
     pub async fn get_client(
