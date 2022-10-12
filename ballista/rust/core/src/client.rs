@@ -25,8 +25,8 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::error::{ballista_error, BallistaError, Result};
-use crate::serde::scheduler::Action;
+use crate::error::{BallistaError, Result};
+use crate::serde::scheduler::{Action, PartitionId};
 
 use arrow_flight::utils::flight_data_to_arrow_batch;
 use arrow_flight::Ticket;
@@ -62,7 +62,7 @@ impl BallistaClient {
             create_grpc_client_connection(addr.clone())
                 .await
                 .map_err(|e| {
-                    BallistaError::General(format!(
+                    BallistaError::GrpcConnectionError(format!(
                         "Error connecting to Ballista scheduler or executor at {}: {:?}",
                         addr, e
                     ))
@@ -76,22 +76,32 @@ impl BallistaClient {
     /// Fetch a partition from an executor
     pub async fn fetch_partition(
         &mut self,
-        job_id: &str,
-        stage_id: usize,
-        partition_id: usize,
+        executor_id: &str,
+        partition_id: &PartitionId,
         path: &str,
         host: &str,
         port: u16,
     ) -> Result<SendableRecordBatchStream> {
         let action = Action::FetchPartition {
-            job_id: job_id.to_string(),
-            stage_id,
-            partition_id,
+            job_id: partition_id.job_id.clone(),
+            stage_id: partition_id.stage_id,
+            partition_id: partition_id.partition_id,
             path: path.to_owned(),
-            host: host.to_string(),
+            host: host.to_owned(),
             port,
         };
-        self.execute_action(&action).await
+        self.execute_action(&action)
+            .await
+            .map_err(|error| match error {
+                // map grpc connection error to partition fetch error.
+                BallistaError::GrpcActionError(msg) => BallistaError::FetchFailed(
+                    executor_id.to_owned(),
+                    partition_id.stage_id,
+                    partition_id.partition_id,
+                    msg,
+                ),
+                other => other,
+            })
     }
 
     /// Execute an action and retrieve the results
@@ -105,7 +115,7 @@ impl BallistaClient {
 
         serialized_action
             .encode(&mut buf)
-            .map_err(|e| BallistaError::General(format!("{:?}", e)))?;
+            .map_err(|e| BallistaError::GrpcActionError(format!("{:?}", e)))?;
 
         let request = tonic::Request::new(Ticket { ticket: buf });
 
@@ -113,14 +123,14 @@ impl BallistaClient {
             .flight_client
             .do_get(request)
             .await
-            .map_err(|e| BallistaError::General(format!("{:?}", e)))?
+            .map_err(|e| BallistaError::GrpcActionError(format!("{:?}", e)))?
             .into_inner();
 
         // the schema should be the first message returned, else client should error
         match stream
             .message()
             .await
-            .map_err(|e| BallistaError::General(format!("{:?}", e)))?
+            .map_err(|e| BallistaError::GrpcActionError(format!("{:?}", e)))?
         {
             Some(flight_data) => {
                 // convert FlightData to a stream
@@ -129,8 +139,8 @@ impl BallistaClient {
                 // all the remaining stream messages should be dictionary and record batches
                 Ok(Box::pin(FlightDataStream::new(stream, schema)))
             }
-            None => Err(ballista_error(
-                "Did not receive schema batch from flight server",
+            None => Err(BallistaError::GrpcActionError(
+                "Did not receive schema batch from flight server".to_string(),
             )),
         }
     }

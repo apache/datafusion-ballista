@@ -24,3 +24,11 @@ updates:
     open-pull-requests-limit: 10
     target-branch: master
     labels: [auto-dependencies]
+ignore:
+  # arrow and datafusion are bumped manually
+  - dependency-name: "arrow*"
+      update-types: ["version-update:semver-major"]
+  - dependency-name: "datafusion*"
+      update-types: ["version-update:semver-major"]
+  - dependency-name: "sqlparser"
+      update-types: ["version-update:semver-major"]

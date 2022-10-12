@@ -17,7 +17,7 @@
 
 use ballista_core::error::Result;
 use clap::ArgEnum;
-use futures::Stream;
+use futures::{future, Stream};
 use std::collections::HashSet;
 use std::fmt;
 use tokio::sync::OwnedMutexGuard;
@@ -60,6 +60,12 @@ pub enum Keyspace {
     Heartbeats,
 }
 
+#[derive(Debug, Eq, PartialEq, Hash)]
+pub enum Operation {
+    Put(Vec<u8>),
+    Delete,
+}
+
 /// A trait that contains the necessary methods to save and retrieve the state and configuration of a cluster.
 #[tonic::async_trait]
 pub trait StateBackendClient: Send + Sync {
@@ -90,8 +96,19 @@ pub trait StateBackendClient: Send + Sync {
     /// Saves the value into the provided key, overriding any previous data that might have been associated to that key.
     async fn put(&self, keyspace: Keyspace, key: String, value: Vec<u8>) -> Result<()>;
 
-    /// Save multiple values in a single transaction. Either all values should be saved, or all should fail
-    async fn put_txn(&self, ops: Vec<(Keyspace, String, Vec<u8>)>) -> Result<()>;
+    /// Bundle multiple operation in a single transaction. Either all values should be saved, or all should fail.
+    /// It can support multiple types of operations and keyspaces. If the count of the unique keyspace is more than one,
+    /// more than one locks has to be acquired.
+    async fn apply_txn(&self, ops: Vec<(Operation, Keyspace, String)>) -> Result<()>;
+    /// Acquire mutex with specified IDs.
+    async fn acquire_locks(
+        &self,
+        mut ids: Vec<(Keyspace, &str)>,
+    ) -> Result<Vec<Box<dyn Lock>>> {
+        // We always acquire locks in a specific order to avoid deadlocks.
+        ids.sort_by_key(|n| format!("/{:?}/{}", n.0, n.1));
+        future::try_join_all(ids.into_iter().map(|(ks, key)| self.lock(ks, key))).await
+    }
 
     /// Atomically move the given key from one keyspace to another
     async fn mv(

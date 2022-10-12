@@ -17,26 +17,28 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::state::backend::{Keyspace, StateBackendClient, WatchEvent};
+use crate::state::backend::{Keyspace, Operation, StateBackendClient, WatchEvent};
 
 use crate::state::{decode_into, decode_protobuf, encode_protobuf, with_lock};
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf;
 
+use crate::state::execution_graph::RunningTaskInfo;
 use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 use ballista_core::serde::protobuf::{
-    executor_status, ExecutorHeartbeat, ExecutorStatus,
+    executor_status, CancelTasksParams, ExecutorHeartbeat, ExecutorStatus,
+    RemoveJobDataParams,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::utils::create_grpc_client_connection;
+use dashmap::{DashMap, DashSet};
 use futures::StreamExt;
-use log::{debug, info};
-use parking_lot::RwLock;
+use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tonic::transport::Channel;
 
-type ExecutorClients = Arc<RwLock<HashMap<String, ExecutorGrpcClient<Channel>>>>;
+type ExecutorClients = Arc<DashMap<String, ExecutorGrpcClient<Channel>>>;
 
 /// Represents a task slot that is reserved (i.e. available for scheduling but not visible to the
 /// rest of the system).
@@ -84,11 +86,11 @@ pub const DEFAULT_EXECUTOR_TIMEOUT_SECONDS: u64 = 180;
 pub(crate) struct ExecutorManager {
     state: Arc<dyn StateBackendClient>,
     // executor_id -> ExecutorMetadata map
-    executor_metadata: Arc<RwLock<HashMap<String, ExecutorMetadata>>>,
+    executor_metadata: Arc<DashMap<String, ExecutorMetadata>>,
     // executor_id -> ExecutorHeartbeat map
-    executors_heartbeat: Arc<RwLock<HashMap<String, protobuf::ExecutorHeartbeat>>>,
+    executors_heartbeat: Arc<DashMap<String, protobuf::ExecutorHeartbeat>>,
     // dead executor sets:
-    dead_executors: Arc<RwLock<HashSet<String>>>,
+    dead_executors: Arc<DashSet<String>>,
     clients: ExecutorClients,
 }
 
@@ -96,9 +98,9 @@ impl ExecutorManager {
     pub(crate) fn new(state: Arc<dyn StateBackendClient>) -> Self {
         Self {
             state,
-            executor_metadata: Arc::new(RwLock::new(HashMap::new())),
-            executors_heartbeat: Arc::new(RwLock::new(HashMap::new())),
-            dead_executors: Arc::new(RwLock::new(HashSet::new())),
+            executor_metadata: Arc::new(DashMap::new()),
+            executors_heartbeat: Arc::new(DashMap::new()),
+            dead_executors: Arc::new(DashSet::new()),
             clients: Default::default(),
         }
     }
@@ -129,7 +131,7 @@ impl ExecutorManager {
 
             let alive_executors = self.get_alive_executors_within_one_minute();
 
-            let mut txn_ops: Vec<(Keyspace, String, Vec<u8>)> = vec![];
+            let mut txn_ops: Vec<(Operation, Keyspace, String)> = vec![];
 
             for executor_id in alive_executors {
                 let value = self.state.get(Keyspace::Slots, &executor_id).await?;
@@ -145,14 +147,14 @@ impl ExecutorManager {
 
                 let proto: protobuf::ExecutorData = data.into();
                 let new_data = encode_protobuf(&proto)?;
-                txn_ops.push((Keyspace::Slots, executor_id, new_data));
+                txn_ops.push((Operation::Put(new_data), Keyspace::Slots, executor_id));
 
                 if desired == 0 {
                     break;
                 }
             }
 
-            self.state.put_txn(txn_ops).await?;
+            self.state.apply_txn(txn_ops).await?;
 
             let elapsed = start.elapsed();
             info!(
@@ -194,16 +196,16 @@ impl ExecutorManager {
                 }
             }
 
-            let txn_ops: Vec<(Keyspace, String, Vec<u8>)> = executor_slots
+            let txn_ops: Vec<(Operation, Keyspace, String)> = executor_slots
                 .into_iter()
                 .map(|(executor_id, data)| {
                     let proto: protobuf::ExecutorData = data.into();
                     let new_data = encode_protobuf(&proto)?;
-                    Ok((Keyspace::Slots, executor_id, new_data))
+                    Ok((Operation::Put(new_data), Keyspace::Slots, executor_id))
                 })
                 .collect::<Result<Vec<_>>>()?;
 
-            self.state.put_txn(txn_ops).await?;
+            self.state.apply_txn(txn_ops).await?;
 
             let elapsed = start.elapsed();
             info!(
@@ -216,14 +218,79 @@ impl ExecutorManager {
         .await
     }
 
+    /// Send rpc to Executors to cancel the running tasks
+    pub async fn cancel_running_tasks(&self, tasks: Vec<RunningTaskInfo>) -> Result<()> {
+        let mut tasks_to_cancel: HashMap<&str, Vec<protobuf::RunningTaskInfo>> =
+            Default::default();
+
+        for task_info in &tasks {
+            if let Some(infos) = tasks_to_cancel.get_mut(task_info.executor_id.as_str()) {
+                infos.push(protobuf::RunningTaskInfo {
+                    task_id: task_info.task_id as u32,
+                    job_id: task_info.job_id.clone(),
+                    stage_id: task_info.stage_id as u32,
+                    partition_id: task_info.partition_id as u32,
+                })
+            } else {
+                tasks_to_cancel.insert(
+                    task_info.executor_id.as_str(),
+                    vec![protobuf::RunningTaskInfo {
+                        task_id: task_info.task_id as u32,
+                        job_id: task_info.job_id.clone(),
+                        stage_id: task_info.stage_id as u32,
+                        partition_id: task_info.partition_id as u32,
+                    }],
+                );
+            }
+        }
+
+        for (executor_id, infos) in tasks_to_cancel {
+            if let Ok(mut client) = self.get_client(executor_id).await {
+                client
+                    .cancel_tasks(CancelTasksParams { task_infos: infos })
+                    .await?;
+            } else {
+                error!(
+                    "Failed to get client for executor ID {} to cancel tasks",
+                    executor_id
+                )
+            }
+        }
+        Ok(())
+    }
+
+    /// Send rpc to Executors to clean up the job data
+    pub async fn clean_up_executors_data(&self, job_id: String) {
+        let alive_executors = self.get_alive_executors_within_one_minute();
+        for executor in alive_executors {
+            let job_id_clone = job_id.to_owned();
+            if let Ok(mut client) = self.get_client(&executor).await {
+                tokio::spawn(async move {
+                    {
+                        if let Err(err) = client
+                            .remove_job_data(RemoveJobDataParams {
+                                job_id: job_id_clone,
+                            })
+                            .await
+                        {
+                            warn!(
+                            "Failed to call remove_job_data on Executor {} due to {:?}",
+                            executor, err
+                        )
+                        }
+                    }
+                });
+            } else {
+                warn!("Failed to get client for Executor {}", executor)
+            }
+        }
+    }
+
     pub async fn get_client(
         &self,
         executor_id: &str,
     ) -> Result<ExecutorGrpcClient<Channel>> {
-        let client = {
-            let clients = self.clients.read();
-            clients.get(executor_id).cloned()
-        };
+        let client = self.clients.get(executor_id).map(|value| value.clone());
 
         if let Some(client) = client {
             Ok(client)
@@ -237,8 +304,7 @@ impl ExecutorManager {
             let client = ExecutorGrpcClient::new(connection);
 
             {
-                let mut clients = self.clients.write();
-                clients.insert(executor_id.to_owned(), client.clone());
+                self.clients.insert(executor_id.to_owned(), client.clone());
             }
             Ok(client)
         }
@@ -247,11 +313,10 @@ impl ExecutorManager {
     /// Get a list of all executors along with the timestamp of their last recorded heartbeat
     pub async fn get_executor_state(&self) -> Result<Vec<(ExecutorMetadata, Duration)>> {
         let heartbeat_timestamps: Vec<(String, u64)> = {
-            let heartbeats = self.executors_heartbeat.read();
-
-            heartbeats
+            self.executors_heartbeat
                 .iter()
-                .map(|(executor_id, heartbeat)| {
+                .map(|item| {
+                    let (executor_id, heartbeat) = item.pair();
                     (executor_id.clone(), heartbeat.timestamp)
                 })
                 .collect()
@@ -274,8 +339,7 @@ impl ExecutorManager {
         executor_id: &str,
     ) -> Result<ExecutorMetadata> {
         {
-            let metadata_cache = self.executor_metadata.read();
-            if let Some(cached) = metadata_cache.get(executor_id) {
+            if let Some(cached) = self.executor_metadata.get(executor_id) {
                 return Ok(cached.clone());
             }
         }
@@ -426,8 +490,8 @@ impl ExecutorManager {
             .put(Keyspace::Heartbeats, executor_id, value)
             .await?;
 
-        let mut executors_heartbeat = self.executors_heartbeat.write();
-        executors_heartbeat.insert(heartbeat.executor_id.clone(), heartbeat);
+        self.executors_heartbeat
+            .insert(heartbeat.executor_id.clone(), heartbeat);
 
         Ok(())
     }
@@ -442,22 +506,19 @@ impl ExecutorManager {
             .put(Keyspace::Heartbeats, executor_id.clone(), value)
             .await?;
 
-        let mut executors_heartbeat = self.executors_heartbeat.write();
-        executors_heartbeat.remove(&heartbeat.executor_id.clone());
-
-        let mut dead_executors = self.dead_executors.write();
-        dead_executors.insert(executor_id);
+        self.executors_heartbeat
+            .remove(&heartbeat.executor_id.clone());
+        self.dead_executors.insert(executor_id);
         Ok(())
     }
 
     pub(crate) fn is_dead_executor(&self, executor_id: &str) -> bool {
-        self.dead_executors.read().contains(executor_id)
+        self.dead_executors.contains(executor_id)
     }
 
     /// Initialize the set of active executor heartbeats from storage
     async fn init_active_executor_heartbeats(&self) -> Result<()> {
         let heartbeats = self.state.scan(Keyspace::Heartbeats, None).await?;
-        let mut cache = self.executors_heartbeat.write();
 
         for (_, value) in heartbeats {
             let data: protobuf::ExecutorHeartbeat = decode_protobuf(&value)?;
@@ -466,7 +527,7 @@ impl ExecutorManager {
                 status: Some(executor_status::Status::Active(_)),
             }) = data.status
             {
-                cache.insert(executor_id, data);
+                self.executors_heartbeat.insert(executor_id, data);
             }
         }
         Ok(())
@@ -478,10 +539,10 @@ impl ExecutorManager {
         &self,
         last_seen_ts_threshold: u64,
     ) -> HashSet<String> {
-        let executors_heartbeat = self.executors_heartbeat.read();
-        executors_heartbeat
+        self.executors_heartbeat
             .iter()
-            .filter_map(|(exec, heartbeat)| {
+            .filter_map(|pair| {
+                let (exec, heartbeat) = pair.pair();
                 (heartbeat.timestamp > last_seen_ts_threshold).then(|| exec.clone())
             })
             .collect()
@@ -497,10 +558,11 @@ impl ExecutorManager {
             .unwrap_or_else(|| Duration::from_secs(0))
             .as_secs();
 
-        let lock = self.executors_heartbeat.read();
-        let expired_executors = lock
+        let expired_executors = self
+            .executors_heartbeat
             .iter()
-            .filter_map(|(_exec, heartbeat)| {
+            .filter_map(|pair| {
+                let (_exec, heartbeat) = pair.pair();
                 (heartbeat.timestamp <= last_seen_threshold).then(|| heartbeat.clone())
             })
             .collect::<Vec<_>>();
@@ -523,15 +585,15 @@ impl ExecutorManager {
 /// and maintain an in-memory copy of the executor heartbeats.
 struct ExecutorHeartbeatListener {
     state: Arc<dyn StateBackendClient>,
-    executors_heartbeat: Arc<RwLock<HashMap<String, protobuf::ExecutorHeartbeat>>>,
-    dead_executors: Arc<RwLock<HashSet<String>>>,
+    executors_heartbeat: Arc<DashMap<String, protobuf::ExecutorHeartbeat>>,
+    dead_executors: Arc<DashSet<String>>,
 }
 
 impl ExecutorHeartbeatListener {
     pub fn new(
         state: Arc<dyn StateBackendClient>,
-        executors_heartbeat: Arc<RwLock<HashMap<String, protobuf::ExecutorHeartbeat>>>,
-        dead_executors: Arc<RwLock<HashSet<String>>>,
+        executors_heartbeat: Arc<DashMap<String, protobuf::ExecutorHeartbeat>>,
+        dead_executors: Arc<DashSet<String>>,
     ) -> Self {
         Self {
             state,
@@ -556,14 +618,13 @@ impl ExecutorHeartbeatListener {
                         decode_protobuf::<protobuf::ExecutorHeartbeat>(&value)
                     {
                         let executor_id = data.executor_id.clone();
-                        let mut heartbeats = heartbeats.write();
                         // Remove dead executors
                         if let Some(ExecutorStatus {
                             status: Some(executor_status::Status::Dead(_)),
                         }) = data.status
                         {
                             heartbeats.remove(&executor_id);
-                            dead_executors.write().insert(executor_id);
+                            dead_executors.insert(executor_id);
                         } else {
                             heartbeats.insert(executor_id, data);
                         }

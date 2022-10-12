@@ -26,8 +26,8 @@ There is no officially published Docker image so it is currently necessary to bu
 Run the following commands to clone the source repository and build the Docker image.
 
 ```bash
-git clone git@github.com:apache/arrow-datafusion.git -b 8.0.0
-cd arrow-datafusion
+git clone git@github.com:apache/arrow-ballista.git -b 8.0.0
+cd arrow-ballista
 ./dev/build-ballista-docker.sh
 ```
 

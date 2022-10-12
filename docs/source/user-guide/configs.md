@@ -36,6 +36,7 @@ let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
 
 | key                               | type    | default | description                                                                                                                                                               |
 | --------------------------------- | ------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ballista.job.name                 | Utf8    | N/A     | Sets the job name that will appear in the web user interface for any submitted jobs.                                                                                      |
 | ballista.shuffle.partitions       | UInt16  | 16      | Sets the default number of partitions to create when repartitioning query stages.                                                                                         |
 | ballista.batch.size               | UInt16  | 8192    | Sets the default batch size.                                                                                                                                              |
 | ballista.repartition.joins        | Boolean | true    | When set to true, Ballista will repartition data using the join keys to execute joins in parallel using the provided `ballista.shuffle.partitions` level.                 |

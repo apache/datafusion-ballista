@@ -27,6 +27,7 @@ use crate::error::{BallistaError, Result};
 
 use datafusion::arrow::datatypes::DataType;
 
+pub const BALLISTA_JOB_NAME: &str = "ballista.job.name";
 pub const BALLISTA_DEFAULT_SHUFFLE_PARTITIONS: &str = "ballista.shuffle.partitions";
 pub const BALLISTA_DEFAULT_BATCH_SIZE: &str = "ballista.batch.size";
 pub const BALLISTA_REPARTITION_JOINS: &str = "ballista.repartition.joins";
@@ -118,6 +119,8 @@ impl BallistaConfig {
                 Self::parse_value(v.as_str(), entry._data_type.clone()).map_err(|e| BallistaError::General(format!("Failed to parse user-supplied value '{}' for configuration setting '{}': {}", name, v, e)))?;
             } else if let Some(v) = entry.default_value.clone() {
                 Self::parse_value(v.as_str(), entry._data_type.clone()).map_err(|e| BallistaError::General(format!("Failed to parse default value '{}' for configuration setting '{}': {}", name, v, e)))?;
+            } else if entry.default_value.is_none() {
+                // optional config
             } else {
                 return Err(BallistaError::General(format!(
                     "No value specified for mandatory configuration setting '{}'",
@@ -155,6 +158,9 @@ impl BallistaConfig {
     /// All available configuration options
     pub fn valid_entries() -> HashMap<String, ConfigEntry> {
         let entries = vec![
+            ConfigEntry::new(BALLISTA_JOB_NAME.to_string(),
+                             "Sets the job name that will appear in the web user interface for any submitted jobs".to_string(),
+                             DataType::Utf8, None),
             ConfigEntry::new(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS.to_string(),
                              "Sets the default number of partitions to create when repartitioning query stages".to_string(),
                              DataType::UInt16, Some("16".to_string())),

@@ -1500,21 +1500,6 @@ mod tests {
             // test logical plan round trip
             let plans = create_logical_plans(&ctx, n)?;
             for plan in plans {
-                let proto: datafusion_proto::protobuf::LogicalPlanNode =
-                    datafusion_proto::protobuf::LogicalPlanNode::try_from_logical_plan(
-                        &plan,
-                        codec.logical_extension_codec(),
-                    )
-                    .unwrap();
-                let round_trip: LogicalPlan = proto
-                    .try_into_logical_plan(&ctx, codec.logical_extension_codec())
-                    .unwrap();
-                assert_eq!(
-                    format!("{:?}", plan),
-                    format!("{:?}", round_trip),
-                    "logical plan round trip failed"
-                );
-
                 // test optimized logical plan round trip
                 let plan = ctx.optimize(&plan)?;
                 let proto: datafusion_proto::protobuf::LogicalPlanNode =
@@ -1570,14 +1555,26 @@ mod tests {
         }
 
         test_round_trip!(q1, 1);
+        test_round_trip!(q2, 2);
         test_round_trip!(q3, 3);
+        test_round_trip!(q4, 4);
         test_round_trip!(q5, 5);
         test_round_trip!(q6, 6);
         test_round_trip!(q7, 7);
         test_round_trip!(q8, 8);
         test_round_trip!(q9, 9);
         test_round_trip!(q10, 10);
+        test_round_trip!(q11, 11);
         test_round_trip!(q12, 12);
         test_round_trip!(q13, 13);
+        test_round_trip!(q14, 14);
+        // test_round_trip!(q15, 15); https://github.com/apache/arrow-ballista/issues/330
+        // test_round_trip!(q16, 16); https://github.com/apache/arrow-ballista/issues/330
+        test_round_trip!(q17, 17);
+        test_round_trip!(q18, 18);
+        test_round_trip!(q19, 19);
+        test_round_trip!(q20, 20);
+        test_round_trip!(q21, 21);
+        // test_round_trip!(q22, 22); https://github.com/apache/arrow-ballista/issues/330
     }
 }

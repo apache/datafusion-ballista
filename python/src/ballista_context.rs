@@ -25,6 +25,7 @@ use crate::dataframe::PyDataFrame;
 use crate::errors::BallistaError;
 use ballista::prelude::{BallistaConfig, BallistaContext};
 use datafusion::arrow::datatypes::Schema;
+use datafusion::arrow::pyarrow::PyArrowType;
 use datafusion::prelude::{AvroReadOptions, CsvReadOptions, ParquetReadOptions};
 
 /// `PyBallistaContext` is able to plan and execute DataFusion plans.
@@ -83,7 +84,7 @@ impl PyBallistaContext {
         &mut self,
         name: &str,
         path: PathBuf,
-        schema: Option<Schema>,
+        schema: Option<PyArrowType<Schema>>,
         has_header: bool,
         delimiter: &str,
         schema_infer_max_records: usize,
@@ -108,7 +109,7 @@ impl PyBallistaContext {
             .delimiter(delimiter[0])
             .schema_infer_max_records(schema_infer_max_records)
             .file_extension(file_extension);
-        options.schema = schema.as_ref();
+        options.schema = schema.as_ref().map(|x| &x.0);
 
         let result = ctx.register_csv(name, path, options);
         wait_for_future(py, result).map_err(BallistaError::from)?;

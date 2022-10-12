@@ -22,7 +22,7 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 
 use log::{debug, error, info, warn};
 use tonic::transport::Channel;
@@ -41,24 +41,26 @@ use ballista_core::serde::protobuf::{
     RemoveJobDataParams, RemoveJobDataResult, StopExecutorParams, StopExecutorResult,
     TaskStatus, UpdateTaskStatusParams,
 };
+use ballista_core::serde::scheduler::PartitionId;
 use ballista_core::serde::scheduler::TaskDefinition;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use ballista_core::utils::{
     collect_plan_metrics, create_grpc_client_connection, create_grpc_server,
 };
+use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
 
-use crate::as_task_status;
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
 use crate::shutdown::ShutdownNotifier;
+use crate::{as_task_status, TaskExecutionTimes};
 
 type ServerHandle = JoinHandle<Result<(), BallistaError>>;
-type SchedulerClients = Arc<RwLock<HashMap<String, SchedulerGrpcClient<Channel>>>>;
+type SchedulerClients = Arc<DashMap<String, SchedulerGrpcClient<Channel>>>;
 
 /// Wrap TaskDefinition with its curator scheduler id for task update to its specific curator scheduler later
 #[derive(Debug)]
@@ -217,10 +219,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         &self,
         scheduler_id: &str,
     ) -> Result<SchedulerGrpcClient<Channel>, BallistaError> {
-        let scheduler = {
-            let schedulers = self.schedulers.read().await;
-            schedulers.get(scheduler_id).cloned()
-        };
+        let scheduler = self.schedulers.get(scheduler_id).map(|value| value.clone());
         // If channel does not exist, create a new one
         if let Some(scheduler) = scheduler {
             Ok(scheduler)
@@ -230,8 +229,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             let scheduler = SchedulerGrpcClient::new(connection);
 
             {
-                let mut schedulers = self.schedulers.write().await;
-                schedulers.insert(scheduler_id.to_owned(), scheduler.clone());
+                self.schedulers
+                    .insert(scheduler_id.to_owned(), scheduler.clone());
             }
 
             Ok(scheduler)
@@ -264,8 +263,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             }
         };
 
-        let schedulers = self.schedulers.read().await.clone();
-        for (scheduler_id, mut scheduler) in schedulers {
+        for mut item in self.schedulers.iter_mut() {
+            let scheduler_id = item.key().clone();
+            let scheduler = item.value_mut();
+
             match scheduler
                 .heart_beat_from_executor(heartbeat_params.clone())
                 .await
@@ -285,19 +286,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
     async fn run_task(
         &self,
+        task_identity: String,
         curator_task: CuratorTaskDefinition,
     ) -> Result<(), BallistaError> {
-        let scheduler_id = curator_task.scheduler_id;
+        let start_exec_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        info!("Start to run task {}", task_identity);
         let task = curator_task.task;
-        let task_id = task.task_id;
-        let task_id_log = format!(
-            "{}/{}/{}",
-            task_id.job_id, task_id.stage_id, task_id.partition_id
-        );
-        info!("Start to run task {}", task_id_log);
-
-        let runtime = self.executor.runtime.clone();
-        let session_id = task.session_id;
         let task_props = task.props;
 
         let mut task_scalar_functions = HashMap::new();
@@ -309,8 +306,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         for agg_func in self.executor.aggregate_functions.clone() {
             task_aggregate_functions.insert(agg_func.0, agg_func.1);
         }
+
+        let session_id = task.session_id;
+        let runtime = self.executor.runtime.clone();
         let task_context = Arc::new(TaskContext::new(
-            task_id_log.clone(),
+            task_identity.clone(),
             session_id,
             task_props,
             task_scalar_functions,
@@ -335,24 +335,32 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             plan.schema().as_ref(),
         )?;
 
-        let shuffle_writer_plan = self.executor.new_shuffle_writer(
-            task_id.job_id.clone(),
-            task_id.stage_id as usize,
-            plan,
-        )?;
+        let task_id = task.task_id;
+        let job_id = task.job_id;
+        let stage_id = task.stage_id;
+        let stage_attempt_num = task.stage_attempt_num;
+        let partition_id = task.partition_id;
+        let shuffle_writer_plan =
+            self.executor
+                .new_shuffle_writer(job_id.clone(), stage_id as usize, plan)?;
+
+        let part = PartitionId {
+            job_id: job_id.clone(),
+            stage_id: stage_id as usize,
+            partition_id: partition_id as usize,
+        };
 
         let execution_result = self
             .executor
             .execute_shuffle_write(
-                task_id.job_id.clone(),
-                task_id.stage_id as usize,
-                task_id.partition_id as usize,
+                task_id as usize,
+                part.clone(),
                 shuffle_writer_plan.clone(),
                 task_context,
                 shuffle_output_partitioning,
             )
             .await;
-        info!("Done with task {}", task_id_log);
+        info!("Done with task {}", task_identity);
         debug!("Statistics: {:?}", execution_result);
 
         let plan_metrics = collect_plan_metrics(shuffle_writer_plan.as_ref());
@@ -361,13 +369,28 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             .map(|m| m.try_into())
             .collect::<Result<Vec<_>, BallistaError>>()?;
         let executor_id = &self.executor.metadata.id;
+
+        let end_exec_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let task_execution_times = TaskExecutionTimes {
+            launch_time: task.launch_time,
+            start_exec_time,
+            end_exec_time,
+        };
+
         let task_status = as_task_status(
             execution_result,
             executor_id.clone(),
-            task_id.into(),
+            task_id,
+            stage_attempt_num,
+            part,
             Some(operator_metrics),
+            task_execution_times,
         );
 
+        let scheduler_id = curator_task.scheduler_id;
         let task_status_sender = self.executor_env.tx_task_status.clone();
         task_status_sender
             .send(CuratorTaskStatus {
@@ -551,21 +574,28 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                     }
                 };
                 if let Some(curator_task) = maybe_task {
-                    let task_id = &curator_task.task.task_id;
-                    let task_id_log = format!(
-                        "{}/{}/{}",
-                        task_id.job_id, task_id.stage_id, task_id.partition_id
+                    let task_identity = format!(
+                        "TID {} {}/{}.{}/{}.{}",
+                        &curator_task.task.task_id,
+                        &curator_task.task.job_id,
+                        &curator_task.task.stage_id,
+                        &curator_task.task.stage_attempt_num,
+                        &curator_task.task.partition_id,
+                        &curator_task.task.task_attempt_num,
                     );
-                    info!("Received task {:?}", &task_id_log);
+                    info!("Received task {:?}", &task_identity);
 
                     let server = executor_server.clone();
                     dedicated_executor.spawn(async move {
-                        server.run_task(curator_task).await.unwrap_or_else(|e| {
-                            error!(
-                                "Fail to run the task {:?} due to {:?}",
-                                task_id_log, e
-                            );
-                        });
+                        server
+                            .run_task(task_identity.clone(), curator_task)
+                            .await
+                            .unwrap_or_else(|e| {
+                                error!(
+                                    "Fail to run the task {:?} due to {:?}",
+                                    task_identity, e
+                                );
+                            });
                     });
                 } else {
                     info!("Channel is closed and will exit the task receive loop");
@@ -637,6 +667,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         request: Request<StopExecutorParams>,
     ) -> Result<Response<StopExecutorResult>, Status> {
         let stop_request = request.into_inner();
+        if stop_request.executor_id != self.executor.metadata.id {
+            warn!(
+                "The executor id {} in request is different from {}. The stop request will be ignored",
+                stop_request.executor_id, self.executor.metadata.id
+            );
+            return Ok(Response::new(StopExecutorResult {}));
+        }
         let stop_reason = stop_request.reason;
         let force = stop_request.force;
         info!(
@@ -652,18 +689,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         &self,
         request: Request<CancelTasksParams>,
     ) -> Result<Response<CancelTasksResult>, Status> {
-        let partitions = request.into_inner().partition_id;
-        info!("Cancelling partition tasks for {:?}", partitions);
+        let task_infos = request.into_inner().task_infos;
+        info!("Cancelling tasks for {:?}", task_infos);
 
         let mut cancelled = true;
 
-        for partition in partitions {
+        for task in task_infos {
             if let Err(e) = self
                 .executor
                 .cancel_task(
-                    partition.job_id,
-                    partition.stage_id as usize,
-                    partition.partition_id as usize,
+                    task.task_id as usize,
+                    task.job_id,
+                    task.stage_id as usize,
+                    task.partition_id as usize,
                 )
                 .await
             {

@@ -38,18 +38,20 @@ sled = ["sled_package", "tokio-stream"]
 
 [dependencies]
 anyhow = "1"
-arrow-flight = { version = "22.0.0", features = ["flight-sql-experimental"] }
+arrow-flight = { version = "24.0.0", features = ["flight-sql-experimental"] }
 async-recursion = "1.0.0"
 async-trait = "0.1.41"
 ballista-core = { path = "../core", version = "0.8.0" }
 base64 = { version = "0.13", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
 configure_me = "0.4.0"
-datafusion = "12.0.0"
-datafusion-proto = "12.0.0"
+dashmap = "5.4.0"
+datafusion = "13.0.0"
+datafusion-proto = "13.0.0"
 etcd-client = { version = "0.9", optional = true }
 flatbuffers = { version = "2.1.2" }
 futures = "0.3"
+graphviz-rust = "0.3.0"
 http = "0.2"
 http-body = "0.4"
 hyper = "0.14.4"

@@ -27,6 +27,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::pyarrow::PyArrowType;
 use datafusion::datasource::datasource::TableProviderFilterPushDown;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::error::{DataFusionError, Result as DFResult};
@@ -74,7 +75,14 @@ impl TableProvider for Dataset {
         Python::with_gil(|py| {
             let dataset = self.dataset.as_ref(py);
             // This can panic but since we checked that self.dataset is a pyarrow.dataset.Dataset it should never
-            Arc::new(dataset.getattr("schema").unwrap().extract().unwrap())
+            Arc::new(
+                dataset
+                    .getattr("schema")
+                    .unwrap()
+                    .extract::<PyArrowType<_>>()
+                    .unwrap()
+                    .0,
+            )
         })
     }
 

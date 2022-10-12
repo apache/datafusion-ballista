@@ -15,20 +15,31 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import React from "react";
+import React, { useEffect, useState } from "react";
+import { ExternalLinkIcon } from "@chakra-ui/icons";
 import {
   CircularProgress,
   CircularProgressLabel,
-  VStack,
   Skeleton,
-  Stack,
-  Text,
   Flex,
   Box,
+  useDisclosure,
+  Button,
+  Modal,
+  ModalBody,
+  ModalCloseButton,
+  ModalContent,
+  ModalFooter,
+  ModalHeader,
+  ModalOverlay,
+  Link,
 } from "@chakra-ui/react";
-import { Column, DateCell, DataTable, LinkCell } from "./DataTable";
+import { Column, DataTable } from "./DataTable";
 import { FaStop } from "react-icons/fa";
-import { GrDocumentDownload, GrPowerReset } from "react-icons/gr";
+import { GrDocumentDownload, GrOverview } from "react-icons/gr";
+import fileDownload from "js-file-download";
+import SVG from "react-inlinesvg";
+import { JobStagesQueries } from "./JobStagesMetrics";
 
 export enum QueryStatus {
   QUEUED = "QUEUED",
@@ -39,6 +50,7 @@ export enum QueryStatus {
 
 export interface Query {
   job_id: string;
+  job_name: string;
   status: QueryStatus;
   num_stages: number;
   percent_complete: number;
@@ -49,11 +61,122 @@ export interface QueriesListProps {
 }
 
 export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
+  const [dot_data, setData] = useState("");
+  const { isOpen, onOpen, onClose } = useDisclosure();
+  const ref = React.useRef<SVGElement>(null);
+
+  const dot_svg = (url: string) => {
+    fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+    }).then(async (res) => {
+      setData(await res.text());
+    });
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      dot_svg("/api/job/" + props.value + "/dot_svg");
+    }
+  }, [ref.current, dot_data, isOpen]);
+
+  const handleDownload = (url: string, filename: string) => {
+    fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+    }).then(async (res) => {
+      fileDownload(await res.arrayBuffer(), filename);
+    });
+  };
   return (
     <Flex>
-      <FaStop color={"red"} title={"stop"} />
+      <FaStop color={"red"} title={"Stop this job"} />
       <Box mx={2}></Box>
-      <GrDocumentDownload title={"plan"} />
+      <button
+        onClick={() => {
+          handleDownload(
+            "/api/job/" + props.value + "/dot",
+            props.value + ".dot"
+          );
+        }}
+      >
+        <GrDocumentDownload title={"Download DOT Plan"} />
+      </button>
+      <Box mx={2}></Box>
+      <button onClick={onOpen}>
+        <GrOverview title={"View Graph"} />
+      </button>
+      <Modal isOpen={isOpen} size="small" onClose={onClose}>
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader textAlign={"center"}>
+            Graph for {props.value} job
+          </ModalHeader>
+          <ModalCloseButton />
+          <ModalBody margin="auto">
+            <SVG innerRef={ref} src={dot_data} width="auto" />
+          </ModalBody>
+          <ModalFooter>
+            <Button colorScheme="blue" mr={3} onClick={onClose}>
+              Close
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+    </Flex>
+  );
+};
+
+export const JobLinkCell: (props: any) => React.ReactNode = (props: any) => {
+  const [stages, setData] = useState();
+  const [loaded, setLoaded] = useState(false);
+  const { isOpen, onOpen, onClose } = useDisclosure();
+
+  const getStages = (url: string) => {
+    fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+    }).then(async (res) => {
+      const jsonObj = await res.json();
+      setData(jsonObj["stages"]);
+    });
+  };
+
+  useEffect(() => {
+    if (isOpen && !loaded) {
+      getStages("/api/job/" + props.value + "/stages");
+      setLoaded(true);
+    }
+  }, [stages, isOpen]);
+
+  return (
+    <Flex>
+      <Link onClick={onOpen} icon>
+        {props.value} <ExternalLinkIcon mx="2px" />
+      </Link>
+      <Modal isOpen={isOpen} size="small" onClose={onClose}>
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader textAlign={"center"}>
+            Stages metrics for {props.value} job
+          </ModalHeader>
+          <ModalCloseButton />
+          <ModalBody margin="auto">
+            <JobStagesQueries stages={stages} />
+          </ModalBody>
+          <ModalFooter>
+            <Button colorScheme="blue" mr={3} onClick={onClose}>
+              Close
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
     </Flex>
   );
 };
@@ -70,7 +193,11 @@ const columns: Column<any>[] = [
   {
     Header: "Job ID",
     accessor: "job_id",
-    Cell: LinkCell,
+    Cell: JobLinkCell,
+  },
+  {
+    Header: "Job Name",
+    accessor: "job_name",
   },
   {
     Header: "Status",
@@ -87,13 +214,15 @@ const columns: Column<any>[] = [
   },
   {
     Header: "Actions",
-    accessor: "",
+    accessor: "job_id",
+    id: "action_cell",
     Cell: ActionsCell,
   },
 ];
 
-const getSkeletion = () => (
+const getSkeleton = () => (
   <>
+    <Skeleton height={5} />
     <Skeleton height={5} />
     <Skeleton height={5} />
     <Skeleton height={5} />
@@ -108,20 +237,17 @@ export const QueriesList: React.FunctionComponent<QueriesListProps> = ({
   const isLoaded = typeof queries !== "undefined";
 
   return (
-    <VStack flex={1} p={4} w={"100%"} alignItems={"flex-start"}>
-      <Text mb={4}>Queries</Text>
-      <Stack w={"100%"} flex={1}>
-        {isLoaded ? (
-          <DataTable
-            columns={columns}
-            data={queries || []}
-            pageSize={10}
-            pb={10}
-          />
-        ) : (
-          getSkeletion()
-        )}
-      </Stack>
-    </VStack>
+    <Box w={"100%"} flex={1}>
+      {isLoaded ? (
+        <DataTable
+          columns={columns}
+          data={queries || []}
+          pageSize={10}
+          pb={10}
+        />
+      ) : (
+        getSkeleton()
+      )}
+    </Box>
   );
 };

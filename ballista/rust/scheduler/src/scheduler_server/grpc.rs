@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista_core::config::{BallistaConfig, TaskSchedulingPolicy};
+use ballista_core::config::{BallistaConfig, TaskSchedulingPolicy, BALLISTA_JOB_NAME};
 use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
 use std::convert::TryInto;
 
@@ -426,8 +426,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             debug!("Received plan for execution: {:?}", plan);
 
             let job_id = self.state.task_manager.generate_job_id();
+            let job_name = config
+                .settings()
+                .get(BALLISTA_JOB_NAME)
+                .cloned()
+                .unwrap_or_default();
 
-            self.submit_job(&job_id, session_ctx, &plan)
+            self.submit_job(&job_id, &job_name, session_ctx, &plan)
                 .await
                 .map_err(|e| {
                     let msg =
@@ -551,7 +556,6 @@ mod test {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use datafusion::execution::context::default_session_builder;
     use datafusion_proto::protobuf::LogicalPlanNode;
     use tonic::Request;
 
@@ -563,6 +567,7 @@ mod test {
     };
     use ballista_core::serde::scheduler::ExecutorSpecification;
     use ballista_core::serde::BallistaCodec;
+    use ballista_core::utils::default_session_builder;
 
     use crate::state::executor_manager::DEFAULT_EXECUTOR_TIMEOUT_SECONDS;
     use crate::state::{backend::standalone::StandaloneClient, SchedulerState};

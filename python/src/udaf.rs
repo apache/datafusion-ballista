@@ -21,7 +21,7 @@ use pyo3::{prelude::*, types::PyTuple};
 
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::datatypes::DataType;
-use datafusion::arrow::pyarrow::PyArrowConvert;
+use datafusion::arrow::pyarrow::{PyArrowConvert, PyArrowType};
 use datafusion::common::ScalarValue;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::{
@@ -82,6 +82,7 @@ impl Accumulator for RustAccumulator {
 
             // 1. cast states to Pyarrow array
             let state = state
+                .data()
                 .to_pyarrow(py)
                 .map_err(|e| DataFusionError::Execution(format!("{}", e)))?;
 
@@ -120,18 +121,18 @@ impl PyAggregateUDF {
     fn new(
         name: &str,
         accumulator: PyObject,
-        input_type: DataType,
-        return_type: DataType,
-        state_type: Vec<DataType>,
+        input_type: PyArrowType<DataType>,
+        return_type: PyArrowType<DataType>,
+        state_type: PyArrowType<Vec<DataType>>,
         volatility: &str,
     ) -> PyResult<Self> {
         let function = logical_expr::create_udaf(
             name,
-            input_type,
-            Arc::new(return_type),
+            input_type.0,
+            Arc::new(return_type.0),
             parse_volatility(volatility)?,
             to_rust_accumulator(accumulator),
-            Arc::new(state_type),
+            Arc::new(state_type.0),
         );
         Ok(Self { function })
     }

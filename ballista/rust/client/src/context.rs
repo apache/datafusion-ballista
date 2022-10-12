@@ -21,8 +21,6 @@ use log::info;
 use parking_lot::Mutex;
 use sqlparser::ast::Statement;
 use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use ballista_core::config::BallistaConfig;
@@ -216,12 +214,7 @@ impl BallistaContext {
         path: &str,
         options: AvroReadOptions<'_>,
     ) -> Result<Arc<DataFrame>> {
-        // convert to absolute path because the executor likely has a different working directory
-        let path = PathBuf::from(path);
-        let path = fs::canonicalize(&path)?;
-
-        let ctx = self.context.clone();
-        let df = ctx.read_avro(path.to_str().unwrap(), options).await?;
+        let df = self.context.read_avro(path, options).await?;
         Ok(df)
     }
 
@@ -232,12 +225,7 @@ impl BallistaContext {
         path: &str,
         options: ParquetReadOptions<'_>,
     ) -> Result<Arc<DataFrame>> {
-        // convert to absolute path because the executor likely has a different working directory
-        let path = PathBuf::from(path);
-        let path = fs::canonicalize(&path)?;
-
-        let ctx = self.context.clone();
-        let df = ctx.read_parquet(path.to_str().unwrap(), options).await?;
+        let df = self.context.read_parquet(path, options).await?;
         Ok(df)
     }
 
@@ -248,12 +236,7 @@ impl BallistaContext {
         path: &str,
         options: CsvReadOptions<'_>,
     ) -> Result<Arc<DataFrame>> {
-        // convert to absolute path because the executor likely has a different working directory
-        let path = PathBuf::from(path);
-        let path = fs::canonicalize(&path)?;
-
-        let ctx = self.context.clone();
-        let df = ctx.read_csv(path.to_str().unwrap(), options).await?;
+        let df = self.context.read_csv(path, options).await?;
         Ok(df)
     }
 
@@ -398,16 +381,15 @@ impl BallistaContext {
                 match (if_not_exists, table_exists) {
                     (_, false) => match file_type.to_lowercase().as_str() {
                         "csv" => {
-                            self.register_csv(
-                                name,
-                                location,
-                                CsvReadOptions::new()
-                                    .schema(&schema.as_ref().to_owned().into())
-                                    .has_header(*has_header)
-                                    .delimiter(*delimiter as u8)
-                                    .table_partition_cols(table_partition_cols.to_vec()),
-                            )
-                            .await?;
+                            let mut options = CsvReadOptions::new()
+                                .has_header(*has_header)
+                                .delimiter(*delimiter as u8)
+                                .table_partition_cols(table_partition_cols.to_vec());
+                            let csv_schema = schema.as_ref().to_owned().into();
+                            if !schema.fields().is_empty() {
+                                options = options.schema(&csv_schema);
+                            }
+                            self.register_csv(name, location, options).await?;
                             Ok(Arc::new(DataFrame::new(ctx.state.clone(), &plan)))
                         }
                         "parquet" => {

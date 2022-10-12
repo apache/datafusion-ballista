@@ -22,11 +22,11 @@ use ballista_core::serde::protobuf::{
     TaskDefinition, TaskStatus,
 };
 
-use crate::as_task_status;
 use crate::executor::Executor;
+use crate::{as_task_status, TaskExecutionTimes};
 use ballista_core::error::BallistaError;
 use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
-use ballista_core::serde::scheduler::ExecutorSpecification;
+use ballista_core::serde::scheduler::{ExecutorSpecification, PartitionId};
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use ballista_core::utils::collect_plan_metrics;
 use datafusion::execution::context::TaskContext;
@@ -40,6 +40,7 @@ use std::error::Error;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{sync::Arc, time::Duration};
 use tonic::transport::Channel;
 
@@ -136,16 +137,24 @@ async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecution
     task: TaskDefinition,
     codec: &BallistaCodec<T, U>,
 ) -> Result<(), BallistaError> {
-    let task_id = task.task_id.unwrap();
-    let task_id_log = format!(
-        "{}/{}/{}",
-        task_id.job_id, task_id.stage_id, task_id.partition_id
+    let task_id = task.task_id;
+    let task_attempt_num = task.task_attempt_num;
+    let job_id = task.job_id;
+    let stage_id = task.stage_id;
+    let stage_attempt_num = task.stage_attempt_num;
+    let task_launch_time = task.launch_time;
+    let partition_id = task.partition_id;
+    let start_exec_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let task_identity = format!(
+        "TID {} {}/{}.{}/{}.{}",
+        task_id, job_id, stage_id, stage_attempt_num, partition_id, task_attempt_num
     );
-    info!("Received task {}", task_id_log);
+    info!("Received task {}", task_identity);
     available_tasks_slots.fetch_sub(1, Ordering::SeqCst);
 
-    let runtime = executor.runtime.clone();
-    let session_id = task.session_id;
     let mut task_props = HashMap::new();
     for kv_pair in task.props {
         task_props.insert(kv_pair.key, kv_pair.value);
@@ -160,8 +169,10 @@ async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecution
     for agg_func in executor.aggregate_functions.clone() {
         task_aggregate_functions.insert(agg_func.0, agg_func.1);
     }
+    let runtime = executor.runtime.clone();
+    let session_id = task.session_id.clone();
     let task_context = Arc::new(TaskContext::new(
-        task_id_log.clone(),
+        task_identity.clone(),
         session_id,
         task_props,
         task_scalar_functions,
@@ -184,17 +195,19 @@ async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecution
         plan.schema().as_ref(),
     )?;
 
-    let shuffle_writer_plan = executor.new_shuffle_writer(
-        task_id.job_id.clone(),
-        task_id.stage_id as usize,
-        plan,
-    )?;
+    let shuffle_writer_plan =
+        executor.new_shuffle_writer(job_id.clone(), stage_id as usize, plan)?;
     tokio::spawn(async move {
         use std::panic::AssertUnwindSafe;
+        let part = PartitionId {
+            job_id: job_id.clone(),
+            stage_id: stage_id as usize,
+            partition_id: partition_id as usize,
+        };
+
         let execution_result = match AssertUnwindSafe(executor.execute_shuffle_write(
-            task_id.job_id.clone(),
-            task_id.stage_id as usize,
-            task_id.partition_id as usize,
+            task_id as usize,
+            part.clone(),
             shuffle_writer_plan.clone(),
             task_context,
             shuffle_output_partitioning,
@@ -210,7 +223,7 @@ async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecution
             }
         };
 
-        info!("Done with task {}", task_id_log);
+        info!("Done with task {}", task_identity);
         debug!("Statistics: {:?}", execution_result);
         available_tasks_slots.fetch_add(1, Ordering::SeqCst);
 
@@ -221,11 +234,25 @@ async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecution
             .collect::<Result<Vec<_>, BallistaError>>()
             .ok();
 
+        let end_exec_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let task_execution_times = TaskExecutionTimes {
+            launch_time: task_launch_time,
+            start_exec_time,
+            end_exec_time,
+        };
+
         let _ = task_status_sender.send(as_task_status(
             execution_result,
             executor.metadata.id.clone(),
-            task_id,
+            task_id as usize,
+            stage_attempt_num as usize,
+            part,
             operator_metrics,
+            task_execution_times,
         ));
     });
 

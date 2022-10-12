@@ -17,18 +17,19 @@
 
 //! Command within CLI
 
-use crate::context::Context;
-use crate::functions::{display_all_functions, Function};
-use crate::print_format::PrintFormat;
-use crate::print_options::PrintOptions;
+use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Instant;
+
+use ballista::prelude::{BallistaContext, BallistaError, Result};
 use clap::ArgEnum;
 use datafusion::arrow::array::{ArrayRef, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::error::{DataFusionError, Result};
-use std::str::FromStr;
-use std::sync::Arc;
-use std::time::Instant;
+
+use crate::functions::{display_all_functions, Function};
+use crate::print_format::PrintFormat;
+use crate::print_options::PrintOptions;
 
 /// Command
 #[derive(Debug)]
@@ -50,27 +51,27 @@ pub enum OutputFormat {
 impl Command {
     pub async fn execute(
         &self,
-        ctx: &mut Context,
+        ctx: &BallistaContext,
         print_options: &mut PrintOptions,
     ) -> Result<()> {
         let now = Instant::now();
         match self {
             Self::Help => print_options
                 .print_batches(&[all_commands_info()], now)
-                .map_err(|e| DataFusionError::Execution(e.to_string())),
+                .map_err(BallistaError::DataFusionError),
             Self::ListTables => {
                 let df = ctx.sql("SHOW TABLES").await?;
                 let batches = df.collect().await?;
                 print_options
                     .print_batches(&batches, now)
-                    .map_err(|e| DataFusionError::Execution(e.to_string()))
+                    .map_err(BallistaError::DataFusionError)
             }
             Self::DescribeTable(name) => {
                 let df = ctx.sql(&format!("SHOW COLUMNS FROM {}", name)).await?;
                 let batches = df.collect().await?;
                 print_options
                     .print_batches(&batches, now)
-                    .map_err(|e| DataFusionError::Execution(e.to_string()))
+                    .map_err(BallistaError::DataFusionError)
             }
             Self::QuietMode(quiet) => {
                 if let Some(quiet) = quiet {
@@ -87,10 +88,12 @@ impl Command {
                 }
                 Ok(())
             }
-            Self::Quit => Err(DataFusionError::Execution(
-                "Unexpected quit, this should be handled outside".into(),
+            Self::Quit => Err(BallistaError::Internal(
+                "Unexpected quit, this should be handled outside".to_string(),
             )),
-            Self::ListFunctions => display_all_functions(),
+            Self::ListFunctions => {
+                display_all_functions().map_err(BallistaError::DataFusionError)
+            }
             Self::SearchFunctions(function) => {
                 if let Ok(func) = function.parse::<Function>() {
                     let details = func.function_details()?;
@@ -98,18 +101,19 @@ impl Command {
                     Ok(())
                 } else {
                     let msg = format!("{} is not a supported function", function);
-                    Err(DataFusionError::Execution(msg))
+                    Err(BallistaError::NotImplemented(msg))
                 }
             }
-            Self::OutputFormat(_) => Err(DataFusionError::Execution(
-                "Unexpected change output format, this should be handled outside".into(),
+            Self::OutputFormat(_) => Err(BallistaError::Internal(
+                "Unexpected change output format, this should be handled outside"
+                    .to_string(),
             )),
         }
     }
 
     fn get_name_and_description(&self) -> (&'static str, &'static str) {
         match self {
-            Self::Quit => ("\\q", "quit datafusion-cli"),
+            Self::Quit => ("\\q", "quit ballista-cli"),
             Self::ListTables => ("\\d", "list tables"),
             Self::DescribeTable(_) => ("\\d name", "describe table"),
             Self::Help => ("\\?", "help"),
@@ -210,7 +214,7 @@ impl OutputFormat {
                     println!("Output format is {:?}.", print_options.format);
                     Ok(())
                 } else {
-                    Err(DataFusionError::Execution(format!(
+                    Err(BallistaError::General(format!(
                         "{:?} is not a valid format type [possible values: {:?}]",
                         format,
                         PrintFormat::value_variants()
