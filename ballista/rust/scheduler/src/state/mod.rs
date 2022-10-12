@@ -422,11 +422,15 @@ mod test {
 
         let plan = test_graph(session_ctx.clone()).await;
 
+        assert_eq!(state.task_manager.get_pending_task_queue_size(), 0);
+
         // Create a job
         state
             .task_manager
             .submit_job("job-1", session_ctx.session_id().as_str(), plan.clone(), 0)
             .await?;
+
+        assert_eq!(state.task_manager.get_pending_task_queue_size(), 1);
 
         let executors = test_executors(1, 4);
 
@@ -463,6 +467,8 @@ mod test {
                 }],
             )
             .await?;
+
+        assert_eq!(state.task_manager.get_pending_task_queue_size(), 1);
 
         state
             .executor_manager
