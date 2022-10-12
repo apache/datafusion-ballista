@@ -276,7 +276,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     pub(crate) async fn cancel_job(&self, job_id: &str) -> Result<bool> {
         info!("Received cancellation request for job {}", job_id);
 
-        match self.task_manager.cancel_job(job_id).await {
+        match self.task_manager.cancel_job(job_id, 300).await {
             Ok(tasks) => {
                 self.executor_manager.cancel_running_tasks(tasks).await.map_err(|e| {
                         let msg = format!("Error to cancel running tasks when cancelling job {} due to {:?}", job_id, e);

@@ -42,6 +42,8 @@ use log::{debug, error, info, warn};
 
 use std::ops::Deref;
 use std::sync::Arc;
+
+use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
@@ -529,10 +531,23 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         request: Request<CancelJobParams>,
     ) -> Result<Response<CancelJobResult>, Status> {
         let job_id = request.into_inner().job_id;
-        match self.state.cancel_job(&job_id).await {
-            Ok(cancelled) => Ok(Response::new(CancelJobResult { cancelled })),
-            Err(e) => Err(Status::internal(e.to_string())),
-        }
+        info!("Received cancellation request for job {}", job_id);
+
+        self.query_stage_event_loop
+            .get_sender()
+            .map_err(|e| {
+                let msg = format!("Get query stage event loop error due to {:?}", e);
+                error!("{}", msg);
+                Status::internal(msg)
+            })?
+            .post_event(QueryStageSchedulerEvent::JobCancel(job_id))
+            .await
+            .map_err(|e| {
+                let msg = format!("Post to query stage event loop error due to {:?}", e);
+                error!("{}", msg);
+                Status::internal(msg)
+            })?;
+        Ok(Response::new(CancelJobResult { cancelled: true }))
     }
 }
 

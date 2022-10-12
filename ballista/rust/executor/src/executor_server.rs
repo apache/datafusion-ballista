@@ -19,6 +19,7 @@ use ballista_core::BALLISTA_VERSION;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::ops::Deref;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -37,7 +38,8 @@ use ballista_core::serde::protobuf::{
     executor_metric, executor_status, CancelTasksParams, CancelTasksResult,
     ExecutorMetric, ExecutorStatus, HeartBeatParams, LaunchMultiTaskParams,
     LaunchMultiTaskResult, LaunchTaskParams, LaunchTaskResult, RegisterExecutorParams,
-    StopExecutorParams, StopExecutorResult, TaskStatus, UpdateTaskStatusParams,
+    RemoveJobDataParams, RemoveJobDataResult, StopExecutorParams, StopExecutorResult,
+    TaskStatus, UpdateTaskStatusParams,
 };
 use ballista_core::serde::scheduler::PartitionId;
 use ballista_core::serde::scheduler::TaskDefinition;
@@ -709,5 +711,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         }
 
         Ok(Response::new(CancelTasksResult { cancelled }))
+    }
+
+    async fn remove_job_data(
+        &self,
+        request: Request<RemoveJobDataParams>,
+    ) -> Result<Response<RemoveJobDataResult>, Status> {
+        let job_id = request.into_inner().job_id;
+        let work_dir = self.executor.work_dir.clone();
+        let mut path = PathBuf::from(work_dir);
+        path.push(job_id.clone());
+        if path.is_dir() {
+            info!("Remove data for job {:?}", job_id);
+            std::fs::remove_dir_all(&path)?;
+        }
+        Ok(Response::new(RemoveJobDataResult {}))
     }
 }

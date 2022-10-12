@@ -975,6 +975,13 @@ message CancelTasksResult {
   bool cancelled = 1;
 }
 
+message RemoveJobDataParams {
+  string job_id = 1;
+}
+
+message RemoveJobDataResult {
+}
+
 message RunningTaskInfo {
   uint32 task_id = 1;
   string job_id = 2;
@@ -1014,4 +1021,6 @@ service ExecutorGrpc {
   rpc StopExecutor (StopExecutorParams) returns (StopExecutorResult) {}
 
   rpc CancelTasks (CancelTasksParams) returns (CancelTasksResult) {}
+
+  rpc RemoveJobData (RemoveJobDataParams) returns (RemoveJobDataResult) {}
 }
