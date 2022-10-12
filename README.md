@@ -86,6 +86,7 @@ The current focus is on the following items:
   - Improve shuffle IO to avoid producing too many files
   - Support sort-based shuffle
   - Support range partition
+  - Support broadcast shuffle
 - Support for multi-scheduler deployments. Initially for resiliency and fault tolerance but ultimately to support 
   sharding for scalability and more efficient caching.
 - Executor deployment grouping based on resource allocation
