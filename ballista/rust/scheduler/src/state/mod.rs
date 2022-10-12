@@ -351,23 +351,36 @@ mod test {
 
         let plan = test_graph(session_ctx.clone()).await;
 
+        assert_eq!(state.task_manager.get_pending_task_queue_size(), 0);
+
         // Create 4 jobs so we have four pending tasks
         state
             .task_manager
             .submit_job("job-1", session_ctx.session_id().as_str(), plan.clone(), 0)
             .await?;
+
+        assert_eq!(state.task_manager.get_pending_task_queue_size(), 1);
+
         state
             .task_manager
             .submit_job("job-2", session_ctx.session_id().as_str(), plan.clone(), 0)
             .await?;
+
+        assert_eq!(state.task_manager.get_pending_task_queue_size(), 2);
+
         state
             .task_manager
             .submit_job("job-3", session_ctx.session_id().as_str(), plan.clone(), 0)
             .await?;
+
+        assert_eq!(state.task_manager.get_pending_task_queue_size(), 3);
+
         state
             .task_manager
             .submit_job("job-4", session_ctx.session_id().as_str(), plan.clone(), 0)
             .await?;
+
+        assert_eq!(state.task_manager.get_pending_task_queue_size(), 4);
 
         let executors = test_executors(1, 4);
 
@@ -381,6 +394,7 @@ mod test {
         let result = state.offer_reservation(reservations).await?;
 
         assert!(result.is_empty());
+        assert_eq!(state.task_manager.get_pending_task_queue_size(), 0);
 
         // All task slots should be assigned so we should not be able to reserve more tasks
         let reservations = state.executor_manager.reserve_slots(4).await?;

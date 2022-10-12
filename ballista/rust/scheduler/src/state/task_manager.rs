@@ -122,9 +122,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         graph.revive();
 
         let mut active_graph_cache = self.active_job_cache.write().await;
-        active_graph_cache.insert(job_id.to_owned(), Arc::new(RwLock::new(graph)));
+        active_graph_cache
+            .insert(job_id.to_owned(), Arc::new(RwLock::new(graph.clone())));
 
-        Ok(())
+        self.increase_pending_queue_size(graph.available_tasks())
     }
 
     /// Get the status of of a job. First look in the active cache.
@@ -232,7 +233,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             }
 
             if assign_tasks >= free_reservations.len() {
-                self.increase_pending_queue_size(graph.available_tasks())?;
                 break;
             }
         }
