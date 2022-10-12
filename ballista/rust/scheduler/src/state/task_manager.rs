@@ -120,12 +120,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .await?;
 
         graph.revive();
+        let available_tasks = graph.available_tasks();
 
         let mut active_graph_cache = self.active_job_cache.write().await;
-        active_graph_cache
-            .insert(job_id.to_owned(), Arc::new(RwLock::new(graph.clone())));
+        active_graph_cache.insert(job_id.to_owned(), Arc::new(RwLock::new(graph)));
 
-        self.increase_pending_queue_size(graph.available_tasks())
+        self.increase_pending_queue_size(available_tasks)
     }
 
     /// Get the status of of a job. First look in the active cache.
@@ -381,8 +381,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// TODO this should be atomic
     pub async fn fail_running_job(&self, job_id: &str) -> Result<()> {
         if let Some(graph) = self.get_active_execution_graph(job_id).await {
-            let graph = graph.read().await;
-            let value = self.encode_execution_graph(graph.clone())?;
+            let graph = graph.read().await.clone();
+            let available_tasks = graph.available_tasks();
+            let value = self.encode_execution_graph(graph)?;
 
             debug!("Moving job {} from Active to Failed", job_id);
             let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
@@ -390,7 +391,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             self.state
                 .put(Keyspace::FailedJobs, job_id.to_owned(), value)
                 .await?;
-            self.decrease_pending_queue_size(graph.available_tasks())?
+            self.decrease_pending_queue_size(available_tasks)?
         } else {
             warn!("Fail to find job {} in the cache", job_id);
         }
@@ -403,12 +404,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         if let Some(graph) = self.get_active_execution_graph(job_id).await {
             let mut graph = graph.write().await;
             graph.revive();
-            let value = self.encode_execution_graph(graph.clone())?;
+            let graph = graph.clone();
+            let available_tasks = graph.available_tasks();
+            let value = self.encode_execution_graph(graph)?;
 
             self.state
                 .put(Keyspace::ActiveJobs, job_id.to_owned(), value)
                 .await?;
-            self.increase_pending_queue_size(graph.available_tasks())?;
+            self.increase_pending_queue_size(available_tasks)?;
         } else {
             warn!("Fail to find job {} in the cache", job_id);
         }
