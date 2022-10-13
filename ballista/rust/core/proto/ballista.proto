@@ -437,6 +437,8 @@ message ExecutionGraph {
   uint32 task_id_gen = 8;
   repeated StageAttempts failed_attempts = 9;
   string job_name = 10;
+  uint64 start_time = 11;
+  uint64 end_time = 12;
 }
 
 message StageAttempts {

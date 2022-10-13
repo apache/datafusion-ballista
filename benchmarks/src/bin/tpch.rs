@@ -27,6 +27,7 @@ use datafusion::datasource::file_format::parquet::DEFAULT_PARQUET_EXTENSION;
 use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::error::{DataFusionError, Result};
+use datafusion::execution::context::SessionState;
 use datafusion::logical_plan::LogicalPlan;
 use datafusion::parquet::basic::Compression;
 use datafusion::parquet::file::properties::WriterProperties;
@@ -57,7 +58,6 @@ use std::{
     sync::Arc,
     time::{Instant, SystemTime},
 };
-use datafusion::execution::context::SessionState;
 use structopt::StructOpt;
 
 #[cfg(feature = "snmalloc")]
@@ -292,7 +292,8 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
                 table,
                 opt.file_format.as_str(),
                 opt.partitions,
-            ).await?
+            )
+            .await?
         };
         if opt.mem_table {
             println!("Loading table '{}' into memory", table);
@@ -787,7 +788,6 @@ async fn get_table(
     } else {
         config.with_schema(schema)
     };
-
 
     Ok(Arc::new(ListingTable::try_new(config)?))
 }
