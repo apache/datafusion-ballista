@@ -274,6 +274,7 @@ async fn main() -> Result<()> {
     }
 }
 
+#[allow(clippy::await_holding_lock)]
 async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordBatch>> {
     println!("Running benchmarks with the following options: {:?}", opt);
     let mut benchmark_run = BenchmarkRun::new(opt.query);
@@ -284,9 +285,8 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
 
     // register tables
     for table in TABLES {
-        let mut session_state = ctx.state.write();
         let table_provider = {
-            #[allow(clippy::await_holding_lock)]
+            let mut session_state = ctx.state.write();
             get_table(
                 &mut session_state,
                 opt.path.to_str().unwrap(),
