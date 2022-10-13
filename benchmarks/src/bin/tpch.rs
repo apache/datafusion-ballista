@@ -286,6 +286,7 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
     for table in TABLES {
         let mut session_state = ctx.state.write();
         let table_provider = {
+            #[allow(clippy::await_holding_lock)]
             get_table(
                 &mut session_state,
                 opt.path.to_str().unwrap(),
