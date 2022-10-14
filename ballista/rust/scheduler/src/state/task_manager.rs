@@ -134,6 +134,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         let mut jobs = vec![];
         for job_id in &job_ids {
             let graph = self.get_execution_graph(job_id).await?;
+
             let mut completed_stages = 0;
             for stage in graph.stages().values() {
                 if let ExecutionStage::Successful(_) = stage {
@@ -144,6 +145,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 job_id: job_id.clone(),
                 job_name: graph.job_name().to_string(),
                 status: graph.status(),
+                start_time: graph.start_time(),
+                end_time: graph.end_time(),
                 num_stages: graph.stage_count(),
                 completed_stages,
             });
@@ -669,6 +672,8 @@ pub struct JobOverview {
     pub job_id: String,
     pub job_name: String,
     pub status: JobStatus,
+    pub start_time: u64,
+    pub end_time: u64,
     pub num_stages: usize,
     pub completed_stages: usize,
 }

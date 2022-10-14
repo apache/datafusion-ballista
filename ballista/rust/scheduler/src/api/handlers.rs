@@ -137,8 +137,9 @@ pub(crate) async fn get_jobs<T: AsLogicalPlan, U: AsExecutionPlan>(
                         "partitions"
                     };
                     format!(
-                        "Completed. Produced {} {} containing {} {}.",
+                        "Completed. Produced {} {} containing {} {}. Elapsed time: {} ms.",
                         num_partitions, num_partitions_term, num_rows, num_rows_term,
+                        job.end_time - job.start_time
                     )
                 }
                 _ => "Invalid State".to_string(),

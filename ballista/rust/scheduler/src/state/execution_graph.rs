@@ -110,6 +110,10 @@ pub struct ExecutionGraph {
     session_id: String,
     /// Status of this job
     status: JobStatus,
+    /// Job start time
+    start_time: u64,
+    /// Job end time
+    end_time: u64,
     /// Map from Stage ID -> ExecutionStage
     stages: HashMap<usize, ExecutionStage>,
     /// Total number fo output partitions
@@ -157,6 +161,11 @@ impl ExecutionGraph {
             status: JobStatus {
                 status: Some(job_status::Status::Queued(QueuedJob {})),
             },
+            start_time: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+            end_time: 0,
             stages,
             output_partitions,
             output_locations: vec![],
@@ -179,6 +188,14 @@ impl ExecutionGraph {
 
     pub fn status(&self) -> JobStatus {
         self.status.clone()
+    }
+
+    pub fn start_time(&self) -> u64 {
+        self.start_time
+    }
+
+    pub fn end_time(&self) -> u64 {
+        self.end_time
     }
 
     pub fn stage_count(&self) -> usize {
@@ -1212,6 +1229,10 @@ impl ExecutionGraph {
                 partition_location,
             })),
         };
+        self.end_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
 
         Ok(())
     }
@@ -1291,6 +1312,8 @@ impl ExecutionGraph {
                     "Invalid Execution Graph: missing job status".to_owned(),
                 )
             })?,
+            start_time: proto.start_time,
+            end_time: proto.end_time,
             stages,
             output_partitions: proto.output_partitions as usize,
             output_locations,
@@ -1363,6 +1386,8 @@ impl ExecutionGraph {
             job_name: graph.job_name,
             session_id: graph.session_id,
             status: Some(graph.status),
+            start_time: graph.start_time,
+            end_time: graph.end_time,
             stages,
             output_partitions: graph.output_partitions as u64,
             output_locations,
