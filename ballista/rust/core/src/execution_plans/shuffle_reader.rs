@@ -18,20 +18,26 @@
 use async_trait::async_trait;
 use std::any::Any;
 use std::collections::HashMap;
+use std::fs::File;
+use std::pin::Pin;
 use std::result;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use crate::client::BallistaClient;
 use crate::serde::scheduler::{PartitionLocation, PartitionStats};
 
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::error::ArrowError;
+use datafusion::arrow::error::{ArrowError, Result as ArrowResult};
+use datafusion::arrow::ipc::reader::FileReader;
+use datafusion::arrow::record_batch::RecordBatch;
 
 use datafusion::error::{DataFusionError, Result};
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::{
-    DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream, Statistics,
+    DisplayFormatType, ExecutionPlan, Partitioning, RecordBatchStream,
+    SendableRecordBatchStream, Statistics,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
 
@@ -40,7 +46,7 @@ use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::common::AbortOnDropMany;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use itertools::Itertools;
-use log::{error, info};
+use log::{debug, error, info};
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
 use tokio::sync::{mpsc, Semaphore};
@@ -135,9 +141,8 @@ impl ExecutionPlan for ShuffleReaderExec {
         // Shuffle partitions for evenly send fetching partition requests to avoid hot executors within multiple tasks
         partition_locations.shuffle(&mut thread_rng());
 
-        let partition_reader = FlightPartitionReader {};
         let response_receiver =
-            send_fetch_partitions(partition_locations, max_request_num, partition_reader);
+            send_fetch_partitions(partition_locations, max_request_num);
 
         let result = RecordBatchStreamAdapter::new(
             Arc::new(self.schema.as_ref().clone()),
@@ -195,6 +200,36 @@ fn stats_for_partitions(
     )
 }
 
+struct LocalShuffleStream {
+    reader: FileReader<File>,
+}
+
+impl LocalShuffleStream {
+    pub fn new(reader: FileReader<File>) -> Self {
+        LocalShuffleStream { reader }
+    }
+}
+
+impl Stream for LocalShuffleStream {
+    type Item = ArrowResult<RecordBatch>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        if let Some(batch) = self.reader.next() {
+            return Poll::Ready(Some(batch));
+        }
+        Poll::Ready(None)
+    }
+}
+
+impl RecordBatchStream for LocalShuffleStream {
+    fn schema(&self) -> SchemaRef {
+        self.reader.schema()
+    }
+}
+
 /// Adapter for a tokio ReceiverStream that implements the SendableRecordBatchStream interface
 struct AbortableReceiverStream {
     inner: ReceiverStream<result::Result<SendableRecordBatchStream, BallistaError>>,
@@ -232,33 +267,51 @@ impl Stream for AbortableReceiverStream {
     }
 }
 
-fn send_fetch_partitions<R: PartitionReader + 'static>(
+fn send_fetch_partitions(
     partition_locations: Vec<PartitionLocation>,
     max_request_num: usize,
-    partition_reader: R,
 ) -> AbortableReceiverStream {
     let (response_sender, response_receiver) = mpsc::channel(max_request_num);
     let semaphore = Arc::new(Semaphore::new(max_request_num));
     let mut join_handles = vec![];
     for p in partition_locations.into_iter() {
-        let semaphore = semaphore.clone();
-        let response_sender = response_sender.clone();
-        let partition_reader_clone = partition_reader.clone();
-        let join_handle = tokio::spawn(async move {
-            // Block if exceeds max request number
-            let permit = semaphore.acquire_owned().await.unwrap();
-            let r = partition_reader_clone.fetch_partition(&p).await;
-            // Block if the channel buffer is full
-            if let Err(e) = response_sender.send(r).await {
-                error!("Fail to send response event to the channel due to {}", e);
-            }
-            // Increase semaphore by dropping existing permits.
-            drop(permit);
-        });
-        join_handles.push(join_handle);
+        if check_is_local_location(&p.executor_meta.host) {
+            // local shuffle reader should not be restrict
+            debug!("Get local partition file from {}", &p.executor_meta.host);
+            let response_sender = response_sender.clone();
+            let join_handle = tokio::spawn(async move {
+                let r = PartitionReaderEnum::Local.fetch_partition(&p).await;
+                if let Err(e) = response_sender.send(r).await {
+                    error!("Fail to send response event to the channel due to {}", e);
+                }
+            });
+            join_handles.push(join_handle);
+        } else {
+            debug!("Get remote partition file from {}", &p.executor_meta.host);
+            let semaphore = semaphore.clone();
+            let response_sender = response_sender.clone();
+            let join_handle = tokio::spawn(async move {
+                // Block if exceeds max request number
+                let permit = semaphore.acquire_owned().await.unwrap();
+                let r = PartitionReaderEnum::FlightRemote.fetch_partition(&p).await;
+                // Block if the channel buffer is ful
+                if let Err(e) = response_sender.send(r).await {
+                    error!("Fail to send response event to the channel due to {}", e);
+                }
+                // Increase semaphore by dropping existing permits.
+                drop(permit);
+            });
+            join_handles.push(join_handle);
+        }
     }
 
     AbortableReceiverStream::create(response_receiver, join_handles)
+}
+
+fn check_is_local_location(host: &str) -> bool {
+    host == "localhost"
+        || host == "127.0.0.1"
+        || host == sys_info::hostname().unwrap_or_else(|_| "localhost".to_string())
 }
 
 /// Partition reader Trait, different partition reader can have
@@ -272,61 +325,94 @@ trait PartitionReader: Send + Sync + Clone {
 }
 
 #[derive(Clone)]
-struct FlightPartitionReader {}
+enum PartitionReaderEnum {
+    Local,
+    FlightRemote,
+    #[allow(dead_code)]
+    ObjectStoreRemote,
+}
 
 #[async_trait]
-impl PartitionReader for FlightPartitionReader {
+impl PartitionReader for PartitionReaderEnum {
     async fn fetch_partition(
         &self,
         location: &PartitionLocation,
     ) -> result::Result<SendableRecordBatchStream, BallistaError> {
-        let metadata = &location.executor_meta;
-        let partition_id = &location.partition_id;
-        // TODO for shuffle client connections, we should avoid creating new connections again and again.
-        // And we should also avoid to keep alive too many connections for long time.
-        let host = metadata.host.as_str();
-        let port = metadata.port as u16;
-        let mut ballista_client =
-            BallistaClient::try_new(host, port)
-                .await
-                .map_err(|error| match error {
-                    // map grpc connection error to partition fetch error.
-                    BallistaError::GrpcConnectionError(msg) => {
-                        BallistaError::FetchFailed(
-                            metadata.id.clone(),
-                            partition_id.stage_id,
-                            partition_id.partition_id,
-                            msg,
-                        )
-                    }
-                    other => other,
-                })?;
-
-        ballista_client
-            .fetch_partition(&metadata.id, partition_id, &location.path, host, port)
-            .await
+        match self {
+            PartitionReaderEnum::FlightRemote => fetch_partition_remote(location).await,
+            PartitionReaderEnum::Local => fetch_partition_local(&location.path).await,
+            PartitionReaderEnum::ObjectStoreRemote => {
+                fetch_partition_object_store(location).await
+            }
+        }
     }
 }
 
-#[allow(dead_code)]
-// TODO
-struct LocalPartitionReader {}
+async fn fetch_partition_remote(
+    location: &PartitionLocation,
+) -> result::Result<SendableRecordBatchStream, BallistaError> {
+    let metadata = &location.executor_meta;
+    let partition_id = &location.partition_id;
+    // TODO for shuffle client connections, we should avoid creating new connections again and again.
+    // And we should also avoid to keep alive too many connections for long time.
+    let host = metadata.host.as_str();
+    let port = metadata.port as u16;
+    let mut ballista_client =
+        BallistaClient::try_new(host, port)
+            .await
+            .map_err(|error| match error {
+                // map grpc connection error to partition fetch error.
+                BallistaError::GrpcConnectionError(msg) => BallistaError::FetchFailed(
+                    metadata.id.clone(),
+                    partition_id.stage_id,
+                    partition_id.partition_id,
+                    msg,
+                ),
+                other => other,
+            })?;
 
-#[allow(dead_code)]
-// TODO
-struct ObjectStorePartitionReader {}
+    ballista_client
+        .fetch_partition(&metadata.id, partition_id, &location.path, host, port)
+        .await
+}
+
+async fn fetch_partition_local(
+    path: &str,
+) -> result::Result<SendableRecordBatchStream, BallistaError> {
+    debug!("FetchPartition local reading {}", &path);
+    let file = File::open(&path).map_err(|e| {
+        BallistaError::General(format!(
+            "Failed to open partition file at {}: {:?}",
+            path, e
+        ))
+    })?;
+    let reader = FileReader::try_new(file, None).map_err(BallistaError::ArrowError)?;
+    Ok(Box::pin(LocalShuffleStream::new(reader)))
+}
+
+async fn fetch_partition_object_store(
+    _location: &PartitionLocation,
+) -> result::Result<SendableRecordBatchStream, BallistaError> {
+    Err(BallistaError::NotImplemented(
+        "Should not use ObjectStorePartitionReader".to_string(),
+    ))
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_plans::ShuffleWriterExec;
     use crate::serde::scheduler::{ExecutorMetadata, ExecutorSpecification, PartitionId};
     use crate::utils;
-    use datafusion::arrow::array::Int32Array;
+    use datafusion::arrow::array::{Int32Array, StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::ipc::writer::FileWriter;
     use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::common;
-    use datafusion::physical_plan::stream::RecordBatchReceiverStream;
+    use datafusion::physical_plan::memory::MemoryExec;
     use datafusion::prelude::SessionContext;
+    use tempfile::{tempdir, TempDir};
 
     #[tokio::test]
     async fn test_stats_for_partitions_empty() {
@@ -455,12 +541,67 @@ mod tests {
         test_send_fetch_partitions(4, 10).await;
     }
 
+    #[tokio::test]
+    async fn test_read_local_shuffle() {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+        let work_dir = TempDir::new().unwrap();
+        let input = ShuffleWriterExec::try_new(
+            "local_file".to_owned(),
+            1,
+            create_test_data_plan().unwrap(),
+            work_dir.into_path().to_str().unwrap().to_owned(),
+            Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 1)),
+        )
+        .unwrap();
+
+        let mut stream = input.execute(0, task_ctx).unwrap();
+
+        let batches = utils::collect_stream(&mut stream)
+            .await
+            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))
+            .unwrap();
+
+        let path = batches[0].columns()[1]
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+
+        // from to input partitions test the first one with two batches
+        let file_path = path.value(0);
+        let mut stream = fetch_partition_local(file_path).await.unwrap();
+
+        let result = utils::collect_stream(&mut stream)
+            .await
+            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))
+            .unwrap();
+
+        assert_eq!(result.len(), 2);
+        for b in result {
+            assert_eq!(b, create_test_batch())
+        }
+    }
+
     async fn test_send_fetch_partitions(max_request_num: usize, partition_num: usize) {
         let schema = get_test_partition_schema();
-        let partition_locations = get_test_partition_locations(partition_num);
-        let partition_reader = MockPartitionReader {};
+        let data_array = Int32Array::from(vec![1]);
+        let batch =
+            RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(data_array)])
+                .unwrap();
+        let tmp_dir = tempdir().unwrap();
+        let file_path = tmp_dir.path().join("shuffle_data");
+        let file = File::create(&file_path).unwrap();
+        let mut writer = FileWriter::try_new(file, &schema).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+
+        let partition_locations = get_test_partition_locations(
+            partition_num,
+            file_path.to_str().unwrap().to_string(),
+        );
+
         let response_receiver =
-            send_fetch_partitions(partition_locations, max_request_num, partition_reader);
+            send_fetch_partitions(partition_locations, max_request_num);
 
         let stream = RecordBatchStreamAdapter::new(
             Arc::new(schema),
@@ -471,7 +612,7 @@ mod tests {
         assert_eq!(partition_num, result.len());
     }
 
-    fn get_test_partition_locations(n: usize) -> Vec<PartitionLocation> {
+    fn get_test_partition_locations(n: usize, path: String) -> Vec<PartitionLocation> {
         (0..n)
             .into_iter()
             .map(|partition_id| PartitionLocation {
@@ -489,7 +630,7 @@ mod tests {
                     specification: ExecutorSpecification { task_slots: 12 },
                 },
                 partition_stats: Default::default(),
-                path: format!("/tmp/job/1/{}", partition_id),
+                path: path.clone(),
             })
             .collect()
     }
@@ -498,36 +639,37 @@ mod tests {
         Schema::new(vec![Field::new("id", DataType::Int32, false)])
     }
 
-    #[derive(Clone)]
-    struct MockPartitionReader {}
+    // create two partitions each has two same batches
+    fn create_test_data_plan() -> Result<Arc<dyn ExecutionPlan>> {
+        let batch = create_test_batch();
+        let partition = vec![batch.clone(), batch];
+        let partitions = vec![partition.clone(), partition];
+        Ok(Arc::new(MemoryExec::try_new(
+            &partitions,
+            create_test_schema(),
+            None,
+        )?))
+    }
 
-    #[async_trait]
-    impl PartitionReader for MockPartitionReader {
-        async fn fetch_partition(
-            &self,
-            location: &PartitionLocation,
-        ) -> result::Result<SendableRecordBatchStream, BallistaError> {
-            let id_array =
-                Int32Array::from(vec![location.partition_id.partition_id as i32]);
-            let schema =
-                Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    fn create_test_batch() -> RecordBatch {
+        RecordBatch::try_new(
+            create_test_schema(),
+            vec![
+                Arc::new(UInt32Array::from(vec![Some(1), Some(2), Some(3)])),
+                Arc::new(StringArray::from(vec![
+                    Some("rust"),
+                    Some("datafusion"),
+                    Some("ballista"),
+                ])),
+            ],
+        )
+        .unwrap()
+    }
 
-            let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(id_array)])?;
-
-            let (tx, rx) = tokio::sync::mpsc::channel(2);
-
-            // task simply sends data in order but in a separate
-            // thread (to ensure the batches are not available without the
-            // DelayedStream yielding).
-            let join_handle = tokio::task::spawn(async move {
-                println!("Sending batch via delayed stream");
-                if let Err(e) = tx.send(Ok(batch)).await {
-                    println!("ERROR batch via delayed stream: {}", e);
-                }
-            });
-
-            // returned stream simply reads off the rx stream
-            Ok(RecordBatchReceiverStream::create(&schema, rx, join_handle))
-        }
+    fn create_test_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("number", DataType::UInt32, true),
+            Field::new("str", DataType::Utf8, true),
+        ]))
     }
 }
