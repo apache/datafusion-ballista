@@ -64,13 +64,13 @@ prost-types = "0.11"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 sqlparser = "0.25"
+sys-info = "0.9.0"
 tokio = "1.0"
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = "0.8"
 url = "2.2"
 uuid = { version = "1.0", features = ["v4"] }
 walkdir = "2.3.2"
-sys-info = "0.9.0"
 
 [dev-dependencies]
 tempfile = "3"
