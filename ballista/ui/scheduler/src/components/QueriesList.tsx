@@ -51,7 +51,7 @@ export enum QueryStatus {
 export interface Query {
   job_id: string;
   job_name: string;
-  status: QueryStatus;
+  job_status: string;
   num_stages: number;
   percent_complete: number;
 }
@@ -78,7 +78,7 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
 
   useEffect(() => {
     if (isOpen) {
-      dot_svg("/api/job/" + props.value + "/dot_svg");
+      dot_svg("/api/job/" + props.value.job_id + "/dot_svg");
     }
   }, [ref.current, dot_data, isOpen]);
 
@@ -94,13 +94,24 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
   };
   return (
     <Flex>
-      <FaStop color={"red"} title={"Stop this job"} />
+      <button
+        onClick={() => {
+          fetch("api/job/" + props.value.job_id, {
+            method: "PATCH",
+            headers: {
+              Accept: "application/json",
+            },
+          });
+        }}
+      >
+        <FaStop color={"red"} title={"Stop this job"} />
+      </button>
       <Box mx={2}></Box>
       <button
         onClick={() => {
           handleDownload(
-            "/api/job/" + props.value + "/dot",
-            props.value + ".dot"
+            "/api/job/" + props.value.job_id + "/dot",
+            props.value.job_id + ".dot"
           );
         }}
       >
@@ -114,7 +125,7 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
         <ModalOverlay />
         <ModalContent>
           <ModalHeader textAlign={"center"}>
-            Graph for {props.value} job
+            Graph for {props.value.job_id} job
           </ModalHeader>
           <ModalCloseButton />
           <ModalBody margin="auto">
@@ -189,7 +200,7 @@ export const ProgressCell: (props: any) => React.ReactNode = (props: any) => {
   );
 };
 
-const columns: Column<any>[] = [
+const columns: Column<Query>[] = [
   {
     Header: "Job ID",
     accessor: "job_id",
@@ -214,7 +225,10 @@ const columns: Column<any>[] = [
   },
   {
     Header: "Actions",
-    accessor: "job_id",
+    accessor: (row) => ({
+      job_id: (row as Query).job_id,
+      status: (row as Query).job_status,
+    }),
     id: "action_cell",
     Cell: ActionsCell,
   },
