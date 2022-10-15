@@ -20,13 +20,13 @@
 use chrono::{DateTime, Duration, Utc};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration as Core_Duration;
+use std::time::{Duration as Core_Duration, Instant};
 use std::{env, io};
 
 use anyhow::{Context, Result};
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_executor::{execution_loop, executor_server};
-use log::{error, info};
+use log::{error, info, warn};
 use tempfile::TempDir;
 use tokio::fs::ReadDir;
 use tokio::signal;
@@ -181,9 +181,46 @@ async fn main() -> Result<()> {
         concurrent_tasks,
     ));
 
-    let connection = create_grpc_client_connection(scheduler_url)
-        .await
-        .context("Could not connect to scheduler")?;
+    let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;
+    let connection = if connect_timeout == 0 {
+        create_grpc_client_connection(scheduler_url)
+            .await
+            .context("Could not connect to scheduler")
+    } else {
+        // this feature was added to support docker-compose so that we can have the executor
+        // wait for the scheduler to start, or at least run for 10 seconds before failing so
+        // that docker-compose's restart policy will restart the container.
+        let start_time = Instant::now().elapsed().as_secs();
+        let mut x = None;
+        while x.is_none()
+            && Instant::now().elapsed().as_secs() - start_time < connect_timeout
+        {
+            match create_grpc_client_connection(scheduler_url.clone())
+                .await
+                .context("Could not connect to scheduler")
+            {
+                Ok(conn) => {
+                    info!("Connected to scheduler at {}", scheduler_url);
+                    x = Some(conn);
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to connect to scheduler at {} ({}); retrying ...",
+                        scheduler_url, e
+                    );
+                    std::thread::sleep(time::Duration::from_millis(500));
+                }
+            }
+        }
+        match x {
+            Some(conn) => Ok(conn),
+            _ => Err(BallistaError::General(format!(
+                "Timed out attempting to connect to scheduler at {}",
+                scheduler_url
+            ))
+            .into()),
+        }
+    }?;
 
     let mut scheduler = SchedulerGrpcClient::new(connection);
 

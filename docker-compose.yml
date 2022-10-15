@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-version: '3.8'
+version: '3.3'
 services:
   etcd:
     image: quay.io/coreos/etcd:v3.4.9
@@ -46,16 +46,16 @@ services:
     build:
       dockerfile: dev/docker/ballista-executor.Dockerfile
       context: .
-    command: "--bind-host 0.0.0.0 --scheduler-host ballista-scheduler"
+    command: "--bind-host 0.0.0.0 --scheduler-host ballista-scheduler --scheduler-connect-timeout-seconds 15"
     deploy:
       replicas: 2
+    restart: always
     environment:
       - RUST_LOG=ballista=debug,info
     volumes:
       - ./benchmarks/data:/data
     depends_on:
-      ballista-scheduler:
-        condition: service_healthy
+      - ballista-scheduler
     healthcheck:
       test: ["CMD", "nc", "-z", "ballista-executor", "50051"]
       interval: 5s

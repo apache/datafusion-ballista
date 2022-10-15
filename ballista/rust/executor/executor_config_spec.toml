@@ -61,6 +61,12 @@ default = "50052"
 doc = "bind grpc service port"
 
 [[param]]
+name = "scheduler_connect_timeout_seconds"
+type = "u16"
+default = "0"
+doc = "How long to try connecting to scheduler before failing. Set to zero to fail after first attempt."
+
+[[param]]
 name = "work_dir"
 type = "String"
 doc = "Directory for temporary IPC files"
