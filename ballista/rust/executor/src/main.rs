@@ -200,6 +200,7 @@ async fn main() -> Result<()> {
                 .context("Could not connect to scheduler")
             {
                 Ok(conn) => {
+                    info!("Connected to scheduler at {}", scheduler_url);
                     x = Some(conn);
                 }
                 Err(e) => {
