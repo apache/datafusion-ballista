@@ -94,14 +94,16 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
   };
   return (
     <Flex>
-      <button onClick={() => {
-        fetch("api/job/" + props.value.job_id, {
-          method: "PATCH",
-          headers: {
-            Accept: "application/json",
-          },
-        })
-      }}>
+      <button
+        onClick={() => {
+          fetch("api/job/" + props.value.job_id, {
+            method: "PATCH",
+            headers: {
+              Accept: "application/json",
+            },
+          });
+        }}
+      >
         <FaStop color={"red"} title={"Stop this job"} />
       </button>
       <Box mx={2}></Box>
@@ -223,7 +225,10 @@ const columns: Column<Query>[] = [
   },
   {
     Header: "Actions",
-    accessor: row => ({job_id: (row as Query).job_id, status: (row as Query).job_status}),
+    accessor: (row) => ({
+      job_id: (row as Query).job_id,
+      status: (row as Query).job_status,
+    }),
     id: "action_cell",
     Cell: ActionsCell,
   },
