@@ -94,14 +94,16 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
   };
   return (
     <Flex>
-      <FaStop color={"red"} title={"Stop this job"} onClick={() => {
+      <button onClick={() => {
         fetch("api/job/" + props.value.job_id, {
           method: "PATCH",
           headers: {
             Accept: "application/json",
           },
         })
-      }} />
+      }}>
+        <FaStop color={"red"} title={"Stop this job"} />
+      </button>
       <Box mx={2}></Box>
       <button
         onClick={() => {
