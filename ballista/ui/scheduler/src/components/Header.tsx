@@ -53,15 +53,6 @@ export const Header: React.FunctionComponent<HeaderProps> = ({
         <NavBarContainer>
           <Flex flexDirection={"row"} alignItems={"center"}>
             <img alt={"Ballista Logo"} src={Logo} />
-            <Text
-              background={"aliceblue"}
-              ml={4}
-              fontSize="md"
-              padding={1}
-              borderRadius={4}
-            >
-              Version - {schedulerState?.version}
-            </Text>
           </Flex>
           <Flex>
             <a
