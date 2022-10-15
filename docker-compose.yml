@@ -46,9 +46,10 @@ services:
     build:
       dockerfile: dev/docker/ballista-executor.Dockerfile
       context: .
-    command: "--bind-host 0.0.0.0 --scheduler-host ballista-scheduler"
+    command: "--bind-host 0.0.0.0 --scheduler-host ballista-scheduler --scheduler-connect-timeout-seconds 15"
     deploy:
       replicas: 2
+    restart: always
     environment:
       - RUST_LOG=ballista=debug,info
     volumes:
