@@ -125,7 +125,7 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
         <ModalOverlay />
         <ModalContent>
           <ModalHeader textAlign={"center"}>
-            Graph for {props.value} job
+            Graph for {props.value.job_id} job
           </ModalHeader>
           <ModalCloseButton />
           <ModalBody margin="auto">
