@@ -19,7 +19,9 @@ set -x
 
 # This bash script is meant to be run inside the docker-compose environment. Check the README for instructions
 
-for query in 1 3 5 6 7 10 12 13
+#TODO: add queries 15, 16, 19, 20, and 22 once we support them
+
+for query in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 17 18 21
 do
   /root/tpch benchmark ballista --host ballista-scheduler --port 50050 --query $query --path /data --format tbl --iterations 1 --debug
 done
