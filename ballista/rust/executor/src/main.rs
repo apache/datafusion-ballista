@@ -70,9 +70,9 @@ mod config {
     include!(concat!(env!("OUT_DIR"), "/executor_configure_me_config.rs"));
 }
 
-#[cfg(feature = "snmalloc")]
+#[cfg(feature = "mimalloc")]
 #[global_allocator]
-static ALLOC: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
