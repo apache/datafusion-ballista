@@ -25,7 +25,7 @@ Those files fully define Ballista's configuration. If there is a discrepancy bet
 
 To get a list of command line arguments, run the binary with `--help`
 
-There is an example config file at `ballista/rust/ballista/examples/example_executor_config.toml`
+There is an example config file at `ballista/ballista/examples/example_executor_config.toml`
 
 The order of precedence for arguments is: default config file < environment variables < specified config file < command line arguments.
 

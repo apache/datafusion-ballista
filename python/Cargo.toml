@@ -35,7 +35,7 @@ default = ["mimalloc"]
 
 [dependencies]
 async-trait = "0.1"
-ballista = { path = "../ballista/rust/client", version = "0.8.0" }
+ballista = { path = "../ballista/client", version = "0.8.0" }
 datafusion = { version = "13.0.0", features = ["pyarrow"] }
 futures = "0.3"
 mimalloc = { version = "*", optional = true, default-features = false }

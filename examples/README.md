@@ -59,7 +59,7 @@ async fn main() -> Result<()> {
 # Distributed Examples
 
 For background information on the Ballista architecture, refer to
-the [Ballista README](../ballista/rust/client/README.md).
+the [Ballista README](../ballista/client/README.md).
 
 ## Start a standalone cluster
 

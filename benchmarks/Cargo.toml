@@ -32,7 +32,7 @@ simd = ["datafusion/simd"]
 snmalloc = ["snmalloc-rs"]
 
 [dependencies]
-ballista = { path = "../ballista/rust/client", version = "0.8.0" }
+ballista = { path = "../ballista/client", version = "0.8.0" }
 datafusion = "13.0.0"
 datafusion-proto = "13.0.0"
 env_logger = "0.9"
@@ -47,4 +47,4 @@ structopt = { version = "0.3", default-features = false }
 tokio = { version = "^1.0", features = ["macros", "rt", "rt-multi-thread", "parking_lot"] }
 
 [dev-dependencies]
-ballista-core = { path = "../ballista/rust/core", version = "0.8.0" }
+ballista-core = { path = "../ballista/core", version = "0.8.0" }
