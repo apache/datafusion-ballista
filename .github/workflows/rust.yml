@@ -178,7 +178,7 @@ jobs:
           export PATH=$PATH:$HOME/d/protoc/bin
           export ARROW_TEST_DATA=$(pwd)/testing/data
           export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
-          cd ballista/rust
+          cd ballista
           # snmalloc requires cmake so build without default features
           cargo test --no-default-features --features sled
           # Ensure also compiles in standalone mode

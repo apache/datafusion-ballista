@@ -51,7 +51,7 @@ processes.
 ## Scheduler Process
 
 The scheduler process implements a gRPC interface (defined in
-[ballista.proto](../rust/core/proto/ballista.proto)). The interface provides the following methods:
+[ballista.proto](../core/proto/ballista.proto)). The interface provides the following methods:
 
 | Method               | Description                                                          |
 | -------------------- | -------------------------------------------------------------------- |

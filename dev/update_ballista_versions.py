@@ -79,10 +79,10 @@ def main():
         os.path.join(repo_root, rel_path, "Cargo.toml")
         for rel_path in [
             'ballista-cli',
-            'ballista/rust/core',
-            'ballista/rust/scheduler',
-            'ballista/rust/executor',
-            'ballista/rust/client',
+            'ballista/core',
+            'ballista/scheduler',
+            'ballista/executor',
+            'ballista/client',
             'benchmarks',
             'examples',
             'python',

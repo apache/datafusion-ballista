@@ -22,6 +22,10 @@ pushd benchmarks
 ./tpch-gen.sh
 
 docker-compose up -d
+
+# give the scheduler a chance to start up
+sleep 10
+
 docker-compose run ballista-client /root/run.sh
 docker-compose down
 

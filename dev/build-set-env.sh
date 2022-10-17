@@ -17,6 +17,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-cd ballista/rust/core/
+cd ballista/core/
 export BALLISTA_VERSION=$(cargo pkgid | cut '-d@' -f2)
 cd -

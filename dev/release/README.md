@@ -281,10 +281,10 @@ dot -Tsvg dev/release/crate-deps.dot > dev/release/crate-deps.svg
 ```
 
 ```shell
-(cd ballista/rust/core && cargo publish)
-(cd ballista/rust/executor && cargo publish)
-(cd ballista/rust/scheduler && cargo publish)
-(cd ballista/rust/client && cargo publish)
+(cd ballista/core && cargo publish)
+(cd ballista/executor && cargo publish)
+(cd ballista/scheduler && cargo publish)
+(cd ballista/client && cargo publish)
 (cd ballista-cli && cargo publish)
 ```
 

@@ -42,10 +42,10 @@ crates = {
 
 ballista_crates = {
     'ballista-cli': 'ballista-cli/Cargo.toml',
-    'core': 'ballista/rust/core/Cargo.toml',
-    'client': 'ballista/rust/client/Cargo.toml',
-    'executor': 'ballista/rust/executor/Cargo.toml',
-    'scheduler': 'ballista/rust/scheduler/Cargo.toml',
+    'core': 'ballista/core/Cargo.toml',
+    'client': 'ballista/client/Cargo.toml',
+    'executor': 'ballista/executor/Cargo.toml',
+    'scheduler': 'ballista/scheduler/Cargo.toml',
 }
 
 def update_datafusion_version(cargo_toml: str, new_version: str):
