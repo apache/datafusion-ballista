@@ -22,6 +22,7 @@ use ballista_core::serde::protobuf::{
     TaskDefinition, TaskStatus,
 };
 
+use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
 use crate::{as_task_status, TaskExecutionTimes};
 use ballista_core::error::BallistaError;
@@ -62,6 +63,9 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         std::sync::mpsc::channel::<TaskStatus>();
     info!("Starting poll work loop with scheduler");
 
+    let dedicated_executor =
+        DedicatedExecutor::new("task_runner", executor_specification.task_slots as usize);
+
     loop {
         // Keeps track of whether we received task in last iteration
         // to avoid going in sleep mode between polling
@@ -100,6 +104,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         task_status_sender,
                         task,
                         &codec,
+                        &dedicated_executor,
                     )
                     .await
                     {
@@ -145,6 +150,7 @@ async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecution
     task_status_sender: Sender<TaskStatus>,
     task: TaskDefinition,
     codec: &BallistaCodec<T, U>,
+    dedicated_executor: &DedicatedExecutor,
 ) -> Result<(), BallistaError> {
     let task_id = task.task_id;
     let task_attempt_num = task.task_attempt_num;
@@ -206,7 +212,7 @@ async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecution
 
     let shuffle_writer_plan =
         executor.new_shuffle_writer(job_id.clone(), stage_id as usize, plan)?;
-    tokio::spawn(async move {
+    dedicated_executor.spawn(async move {
         use std::panic::AssertUnwindSafe;
         let part = PartitionId {
             job_id: job_id.clone(),
