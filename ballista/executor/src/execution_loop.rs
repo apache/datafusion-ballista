@@ -63,6 +63,10 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     info!("Starting poll work loop with scheduler");
 
     loop {
+        // Keeps track of whether we received task in last iteration
+        // to avoid going in sleep mode between polling
+        let mut active_job = false;
+
         let can_accept_task = available_tasks_slots.load(Ordering::SeqCst) > 0;
 
         // Don't poll for work if we can not accept any tasks
@@ -99,11 +103,16 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     )
                     .await
                     {
-                        Ok(_) => {}
+                        Ok(_) => {
+                            active_job = true;
+                        }
                         Err(e) => {
                             warn!("Failed to run task: {:?}", e);
+                            active_job = false;
                         }
                     }
+                } else {
+                    active_job = false
                 }
             }
             Err(error) => {
@@ -111,9 +120,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             }
         }
 
-        if available_tasks_slots.load(Ordering::SeqCst)
-            == executor_specification.task_slots as usize
-        {
+        if !active_job {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
