@@ -63,12 +63,16 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     info!("Starting poll work loop with scheduler");
 
     loop {
+        let can_accept_task = available_tasks_slots.load(Ordering::SeqCst) > 0;
+
+        // Don't poll for work if we can not accept any tasks
+        if !can_accept_task {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            continue;
+        }
+
         let task_status: Vec<TaskStatus> =
             sample_tasks_status(&mut task_status_receiver).await;
-
-        // Keeps track of whether we received task in last iteration
-        // to avoid going in sleep mode between polling
-        let mut active_job = false;
 
         let poll_work_result: anyhow::Result<
             tonic::Response<PollWorkResult>,
@@ -76,7 +80,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         > = scheduler
             .poll_work(PollWorkParams {
                 metadata: Some(executor.metadata.clone()),
-                can_accept_task: available_tasks_slots.load(Ordering::SeqCst) > 0,
+                can_accept_task,
                 task_status,
             })
             .await;
@@ -95,23 +99,21 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     )
                     .await
                     {
-                        Ok(_) => {
-                            active_job = true;
-                        }
+                        Ok(_) => {}
                         Err(e) => {
                             warn!("Failed to run task: {:?}", e);
-                            active_job = false;
                         }
                     }
-                } else {
-                    active_job = false;
                 }
             }
             Err(error) => {
                 warn!("Executor poll work loop failed. If this continues to happen the Scheduler might be marked as dead. Error: {}", error);
             }
         }
-        if !active_job {
+
+        if available_tasks_slots.load(Ordering::SeqCst)
+            == executor_specification.task_slots as usize
+        {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
