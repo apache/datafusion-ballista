@@ -138,7 +138,7 @@ test_source_distribution() {
 
   # Note can't verify other ballista crates as they depend
   # on ballista-core which isn't published yet
-  pushd ballista/rust/core
+  pushd ballista/core
     cargo publish --dry-run
   popd
 }

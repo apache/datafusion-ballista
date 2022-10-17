@@ -113,10 +113,10 @@ pub fn plugin_dir() -> String {
     };
 
     // If current_exe_dir contain `deps` the root dir is the parent dir
-    // eg: /Users/xxx/workspace/rust/rust_plugin_sty/target/debug/deps/plugins_app-067452b3ff2af70e
-    // the plugin dir is /Users/xxx/workspace/rust/rust_plugin_sty/target/debug/deps
-    // else eg: /Users/xxx/workspace/rust/rust_plugin_sty/target/debug/plugins_app
-    // the plugin dir is /Users/xxx/workspace/rust/rust_plugin_sty/target/debug/
+    // eg: /Users/xxx/workspace/rust_plugin_sty/target/debug/deps/plugins_app-067452b3ff2af70e
+    // the plugin dir is /Users/xxx/workspace/rust_plugin_sty/target/debug/deps
+    // else eg: /Users/xxx/workspace/rust_plugin_sty/target/debug/plugins_app
+    // the plugin dir is /Users/xxx/workspace/rust_plugin_sty/target/debug/
     if current_exe_dir.contains("/deps/") {
         let i = current_exe_dir.find("/deps/").unwrap();
         String::from(&current_exe_dir.as_str()[..i + 6])

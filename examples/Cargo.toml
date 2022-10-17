@@ -34,7 +34,7 @@ path = "examples/standalone-sql.rs"
 required-features = ["ballista/standalone"]
 
 [dependencies]
-ballista = { path = "../ballista/rust/client", version = "0.8.0" }
+ballista = { path = "../ballista/client", version = "0.8.0" }
 datafusion = "13.0.0"
 futures = "0.3"
 num_cpus = "1.13.0"

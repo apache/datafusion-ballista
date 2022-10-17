@@ -29,7 +29,7 @@ rust-version = "1.59"
 readme = "README.md"
 
 [dependencies]
-ballista = { path = "../ballista/rust/client", version = "0.8.0", features = [
+ballista = { path = "../ballista/client", version = "0.8.0", features = [
     "standalone",
 ] }
 clap = { version = "3", features = ["derive", "cargo"] }

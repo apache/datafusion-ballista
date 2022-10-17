@@ -111,7 +111,7 @@ requirements.txt
 .gitattributes
 rust-toolchain
 benchmarks/queries/q*.sql
-ballista/rust/scheduler/testdata/*
+ballista/scheduler/testdata/*
 **/yarn.lock
 python/rust-toolchain
 python/requirements*.txt

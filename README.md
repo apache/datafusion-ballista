@@ -53,7 +53,7 @@ Ballista implements a similar design to Apache Spark (particularly Spark SQL), b
 # Getting Started
 
 The easiest way to get started is to run one of the standalone or distributed [examples](./examples/README.md). After
-that, refer to the [Getting Started Guide](ballista/rust/client/README.md).
+that, refer to the [Getting Started Guide](ballista/client/README.md).
 
 ## Project Status
 
