@@ -63,8 +63,6 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     info!("Starting poll work loop with scheduler");
 
     loop {
-        let task_status: Vec<TaskStatus> =
-            sample_tasks_status(&mut task_status_receiver).await;
 
         // Keeps track of whether we received task in last iteration
         // to avoid going in sleep mode between polling
@@ -78,13 +76,16 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             continue;
         }
 
+        let task_status: Vec<TaskStatus> =
+            sample_tasks_status(&mut task_status_receiver).await;
+
         let poll_work_result: anyhow::Result<
             tonic::Response<PollWorkResult>,
             tonic::Status,
         > = scheduler
             .poll_work(PollWorkParams {
                 metadata: Some(executor.metadata.clone()),
-                can_accept_task: can_accept_task,
+                can_accept_task,
                 task_status,
             })
             .await;
@@ -119,6 +120,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 warn!("Executor poll work loop failed. If this continues to happen the Scheduler might be marked as dead. Error: {}", error);
             }
         }
+
         if !active_job {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
