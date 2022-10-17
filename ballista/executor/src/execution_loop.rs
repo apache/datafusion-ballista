@@ -63,7 +63,6 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     info!("Starting poll work loop with scheduler");
 
     loop {
-
         // Keeps track of whether we received task in last iteration
         // to avoid going in sleep mode between polling
         let mut active_job = false;
