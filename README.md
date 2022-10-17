@@ -19,11 +19,11 @@
 
 # Ballista: Distributed SQL Query Engine, built on Apache Arrow
 
-Ballista is a distributed SQL query engine powered by the Rust implementation of [Apache Arrow](arrow) and
-[DataFusion](datafusion).
+Ballista is a distributed SQL query engine powered by the Rust implementation of [Apache Arrow][arrow] and
+[DataFusion][datafusion].
 
 If you are looking for documentation for a released version of Ballista, please refer to the
-[Ballista User Guide](user-guide).
+[Ballista User Guide][user-guide].
 
 ## Overview
 
@@ -38,14 +38,14 @@ Ballista implements a similar design to Apache Spark (particularly Spark SQL), b
   Apache Spark in some cases, which means that more processing can fit on a single node, reducing the overhead of
   distributed compute.
 - The use of Apache Arrow as the memory model and network protocol means that data can be exchanged efficiently between
-  executors using the [Flight Protocol](flight), and between clients and schedulers/executors using the
-  [Flight SQL Protocol](flight-sql)
+  executors using the [Flight Protocol][flight], and between clients and schedulers/executors using the
+  [Flight SQL Protocol][flight-sql]
 
 ## Features
 
 - Supports HDFS as well as cloud object stores. S3 is supported today and GCS and Azure support is planned.
 - DataFrame and SQL APIs available from Python and Rust.
-- Clients can connect to a Ballista cluster using [Flight SQL](flight-sql).
+- Clients can connect to a Ballista cluster using [Flight SQL][flight-sql].
 - JDBC support via Arrow Flight SQL JDBC Driver
 - Scheduler web interface and REST UI for monitoring query progress and viewing query plans and metrics.
 - Support for Docker, Docker Compose, and Kubernetes deployment, as well as manual deployment on bare metal.
@@ -97,7 +97,7 @@ The current focus is on the following items:
 ## Architecture Overview
 
 There are currently no up-to-date architecture documents available. You can get a general overview of the architecture
-by watching the [Ballista: Distributed Compute with Rust and Apache Arrow](ballista-talk) talk from the New York Open
+by watching the [Ballista: Distributed Compute with Rust and Apache Arrow][ballista-talk] talk from the New York Open
 Statistical Programming Meetup (Feb 2021).
 
 ## Contribution Guide
