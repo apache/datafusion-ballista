@@ -70,13 +70,21 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         // to avoid going in sleep mode between polling
         let mut active_job = false;
 
+        let can_accept_task = available_tasks_slots.load(Ordering::SeqCst) > 0;
+
+        // Don't poll for work if we can not accept any tasks
+        if !can_accept_task {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            continue;
+        }
+
         let poll_work_result: anyhow::Result<
             tonic::Response<PollWorkResult>,
             tonic::Status,
         > = scheduler
             .poll_work(PollWorkParams {
                 metadata: Some(executor.metadata.clone()),
-                can_accept_task: available_tasks_slots.load(Ordering::SeqCst) > 0,
+                can_accept_task: can_accept_task,
                 task_status,
             })
             .await;
