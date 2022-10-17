@@ -108,6 +108,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         }
                         Err(e) => {
                             warn!("Failed to run task: {:?}", e);
+                            active_job = false;
                         }
                     }
                 } else {
