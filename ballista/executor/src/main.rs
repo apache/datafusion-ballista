@@ -93,9 +93,10 @@ async fn main() -> Result<()> {
     let grpc_port = opt.bind_grpc_port;
     let log_dir = opt.log_dir;
     let print_thread_info = opt.print_thread_info;
-
     let scheduler_name = format!("executor_{}_{}", bind_host, port);
 
+    let rust_log = env::var(EnvFilter::DEFAULT_ENV);
+    let log_filter = EnvFilter::new(rust_log.unwrap_or(special_mod_log_level));
     // File layer
     if let Some(log_dir) = log_dir {
         let log_file = tracing_appender::rolling::daily(log_dir, &scheduler_name);
@@ -104,18 +105,16 @@ async fn main() -> Result<()> {
             .with_thread_names(print_thread_info)
             .with_thread_ids(print_thread_info)
             .with_writer(log_file)
-            .with_env_filter(special_mod_log_level)
+            .with_env_filter(log_filter)
             .init();
     } else {
-        //Console layer
-        let rust_log = env::var(EnvFilter::DEFAULT_ENV);
-        let std_filter = EnvFilter::new(rust_log.unwrap_or_else(|_| "INFO".to_string()));
+        // Console layer
         tracing_subscriber::fmt()
             .with_ansi(true)
             .with_thread_names(print_thread_info)
             .with_thread_ids(print_thread_info)
             .with_writer(io::stdout)
-            .with_env_filter(std_filter)
+            .with_env_filter(log_filter)
             .init();
     }
 
