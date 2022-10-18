@@ -133,6 +133,7 @@ message PhysicalScalarUdfNode {
 message PhysicalAggregateExprNode {
   datafusion.AggregateFunction aggr_function = 1;
   repeated PhysicalExprNode expr = 2;
+  bool distinct = 3;
 }
 
 message PhysicalWindowExprNode {

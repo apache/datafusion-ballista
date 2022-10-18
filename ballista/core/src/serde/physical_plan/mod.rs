@@ -424,7 +424,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
 
                                 Ok(create_aggregate_expr(
                                     &aggr_function.into(),
-                                    false,
+                                    agg_node.distinct,
                                     input_phy_expr.as_slice(),
                                     &physical_schema,
                                     name.to_string(),
