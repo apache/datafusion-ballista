@@ -38,7 +38,7 @@ use datafusion::physical_plan::{
 use datafusion::datasource::listing::{FileRange, PartitionedFile};
 use datafusion::physical_plan::file_format::FileScanConfig;
 
-use datafusion::physical_plan::expressions::{Count, Literal};
+use datafusion::physical_plan::expressions::{Count, DistinctCount, Literal};
 
 use datafusion::physical_plan::expressions::{Avg, BinaryExpr, Column, Max, Min, Sum};
 use datafusion::physical_plan::{AggregateExpr, PhysicalExpr};
@@ -55,11 +55,16 @@ impl TryInto<protobuf::PhysicalExprNode> for Arc<dyn AggregateExpr> {
     fn try_into(self) -> Result<protobuf::PhysicalExprNode, Self::Error> {
         use datafusion::physical_plan::expressions;
         use datafusion_proto::protobuf::AggregateFunction;
+
+        let mut distinct = false;
         let aggr_function = if self.as_any().downcast_ref::<Avg>().is_some() {
             Ok(AggregateFunction::Avg.into())
         } else if self.as_any().downcast_ref::<Sum>().is_some() {
             Ok(AggregateFunction::Sum.into())
         } else if self.as_any().downcast_ref::<Count>().is_some() {
+            Ok(AggregateFunction::Count.into())
+        } else if self.as_any().downcast_ref::<DistinctCount>().is_some() {
+            distinct = true;
             Ok(AggregateFunction::Count.into())
         } else if self.as_any().downcast_ref::<Min>().is_some() {
             Ok(AggregateFunction::Min.into())
@@ -153,6 +158,7 @@ impl TryInto<protobuf::PhysicalExprNode> for Arc<dyn AggregateExpr> {
                 protobuf::PhysicalAggregateExprNode {
                     aggr_function,
                     expr: expressions,
+                    distinct,
                 },
             )),
         })

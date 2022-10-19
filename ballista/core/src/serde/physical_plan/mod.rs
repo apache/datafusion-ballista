@@ -424,7 +424,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
 
                                 Ok(create_aggregate_expr(
                                     &aggr_function.into(),
-                                    false,
+                                    agg_node.distinct,
                                     input_phy_expr.as_slice(),
                                     &physical_schema,
                                     name.to_string(),
@@ -1310,7 +1310,7 @@ mod roundtrip_tests {
             aggregates::{AggregateExec, AggregateMode},
             empty::EmptyExec,
             expressions::{binary, col, lit, InListExpr, NotExpr},
-            expressions::{Avg, Column, PhysicalSortExpr},
+            expressions::{Avg, Column, DistinctCount, PhysicalSortExpr},
             file_format::{FileScanConfig, ParquetExec},
             filter::FilterExec,
             hash_join::{HashJoinExec, PartitionMode},
@@ -1661,5 +1661,30 @@ mod roundtrip_tests {
         ctx.register_udf(udf);
 
         roundtrip_test_with_context(Arc::new(project), ctx)
+    }
+
+    #[test]
+    fn roundtrip_distinct_count() -> Result<()> {
+        let field_a = Field::new("a", DataType::Int64, false);
+        let field_b = Field::new("b", DataType::Int64, false);
+        let schema = Arc::new(Schema::new(vec![field_a, field_b]));
+
+        let aggregates: Vec<Arc<dyn AggregateExpr>> = vec![Arc::new(DistinctCount::new(
+            vec![DataType::Int64],
+            vec![col("b", &schema)?],
+            "COUNT(DISTINCT b)".to_string(),
+            DataType::Int64,
+        ))];
+
+        let groups: Vec<(Arc<dyn PhysicalExpr>, String)> =
+            vec![(col("a", &schema)?, "unused".to_string())];
+
+        roundtrip_test(Arc::new(AggregateExec::try_new(
+            AggregateMode::Final,
+            PhysicalGroupBy::new_single(groups),
+            aggregates.clone(),
+            Arc::new(EmptyExec::new(false, schema.clone())),
+            schema,
+        )?))
     }
 }
