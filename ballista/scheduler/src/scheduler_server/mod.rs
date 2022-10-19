@@ -454,10 +454,9 @@ mod test {
                 let graph = scheduler
                     .state
                     .task_manager
-                    .get_active_execution_graph(job_id)
-                    .await
+                    .get_job_execution_graph(job_id)
+                    .await?
                     .unwrap();
-                let graph = graph.read().await;
                 if graph.is_successful() {
                     break;
                 }
