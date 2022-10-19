@@ -28,7 +28,7 @@ services:
       context: .
     command: "--config-backend etcd --etcd-urls etcd:2379 --bind-host 0.0.0.0"
     ports:
-      - "80:80"
+      - "55000:80"
       - "50050:50050"
     environment:
       - RUST_LOG=info
@@ -46,7 +46,7 @@ services:
     build:
       dockerfile: dev/docker/ballista-executor.Dockerfile
       context: .
-    command: "--bind-host 0.0.0.0 --scheduler-host ballista-scheduler --scheduler-connect-timeout-seconds 15"
+    command: "--bind-host 0.0.0.0 --scheduler-host ballista-scheduler"
     deploy:
       replicas: 2
     restart: always

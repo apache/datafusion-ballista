@@ -24,10 +24,20 @@ ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y nginx netcat
+RUN apt-get update &&\
+    apt-get install -y nginx netcat nodejs npm
+    
+COPY ballista/ui /root/ballista/ui
+
+RUN cd /root/ballista/ui/scheduler &&\
+    npm install -g yarn &&\
+    yarn add node-releases &&\
+    yarn install &&\
+    CI=false yarn build
 
 COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
 
+COPY ballista/ui/scheduler/build /var/www/html
 COPY dev/docker/nginx.conf /etc/nginx/sites-enabled/default
 
 # Expose Ballista Scheduler web UI port
@@ -38,3 +48,4 @@ EXPOSE 50050
 
 COPY dev/docker/scheduler-entrypoint.sh /root/scheduler-entrypoint.sh
 ENTRYPOINT ["/root/scheduler-entrypoint.sh"]
+
