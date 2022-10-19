@@ -68,6 +68,10 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         DedicatedExecutor::new("task_runner", executor_specification.task_slots as usize);
 
     loop {
+        // Wait for task slots to be available before asking for new work
+        let semaphore = available_task_slots.clone().acquire_owned().await.unwrap();
+        drop(semaphore);
+
         // Keeps track of whether we received task in last iteration
         // to avoid going in sleep mode between polling
         let mut active_job = false;
@@ -118,9 +122,6 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             }
         }
 
-        // wait for task slots to be available
-        let semaphore = available_task_slots.clone().acquire_owned().await.unwrap();
-        drop(semaphore);
         if !active_job {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
