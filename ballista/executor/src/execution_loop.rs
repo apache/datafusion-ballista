@@ -21,7 +21,7 @@ use ballista_core::serde::protobuf::{
     scheduler_grpc_client::SchedulerGrpcClient, PollWorkParams, PollWorkResult,
     TaskDefinition, TaskStatus,
 };
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, SemaphorePermit};
 
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
@@ -69,7 +69,8 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
     loop {
         // Wait for task slots to be available before asking for new work
-        let semaphore = available_task_slots.clone().acquire_owned().await.unwrap();
+        let semaphore = available_task_slots.acquire().await.unwrap();
+        // Make the slot available again
         drop(semaphore);
 
         // Keeps track of whether we received task in last iteration
@@ -95,9 +96,13 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         match poll_work_result {
             Ok(result) => {
                 if let Some(task) = result.into_inner().task {
-                    match run_received_tasks(
+                    // Acquire a semaphore for the task
+                    let semaphore =
+                        available_task_slots.clone().acquire_owned().await.unwrap();
+
+                    match run_received_task(
                         executor.clone(),
-                        available_task_slots.clone(),
+                        semaphore,
                         task_status_sender,
                         task,
                         &codec,
@@ -141,9 +146,9 @@ pub(crate) fn any_to_string(any: &Box<dyn Any + Send>) -> String {
     }
 }
 
-async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
+async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     executor: Arc<Executor>,
-    available_task_slots: Arc<Semaphore>,
+    permit: OwnedSemaphorePermit,
     task_status_sender: Sender<TaskStatus>,
     task: TaskDefinition,
     codec: &BallistaCodec<T, U>,
@@ -165,7 +170,6 @@ async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecution
         task_id, job_id, stage_id, stage_attempt_num, partition_id, task_attempt_num
     );
     info!("Received task {}", task_identity);
-    let permit = available_task_slots.clone().acquire_owned().await.unwrap();
 
     let mut task_props = HashMap::new();
     for kv_pair in task.props {
@@ -234,7 +238,6 @@ async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecution
                 Err(BallistaError::Internal(format!("{:#?}", any_to_string(&r))))
             }
         };
-
 
         info!("Done with task {}", task_identity);
         debug!("Statistics: {:?}", execution_result);
