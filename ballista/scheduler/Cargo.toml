@@ -49,7 +49,7 @@ dashmap = "5.4.0"
 datafusion = "13.0.0"
 datafusion-proto = "13.0.0"
 etcd-client = { version = "0.9", optional = true }
-flatbuffers = { version = "2.1.2" }
+flatbuffers = { version = "22.9.29" }
 futures = "0.3"
 graphviz-rust = "0.3.0"
 http = "0.2"
