@@ -479,11 +479,15 @@ mod test {
 
         assert_eq!(reservations.len(), 1);
 
+        assert_eq!(state.task_manager.get_pending_task_queue_size(), 1);
+
         // Offer the reservation. It should be filled with one of the 4 pending tasks. The other 3 should
         // be reserved for the other 3 tasks, emitting another offer event
         let reservations = state.offer_reservation(reservations).await?;
 
         assert_eq!(reservations.len(), 3);
+
+        assert_eq!(state.task_manager.get_pending_task_queue_size(), 0);
 
         // Remaining 3 task slots should be reserved for pending tasks
         let reservations = state.executor_manager.reserve_slots(4).await?;
