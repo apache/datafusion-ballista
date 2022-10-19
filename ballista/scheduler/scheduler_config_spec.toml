@@ -75,7 +75,7 @@ default = "ballista_core::config::TaskSchedulingPolicy::PullStaged"
 [[param]]
 name = "executor_slots_policy"
 type = "ballista_scheduler::config::SlotsPolicy"
-doc = "The executor slots policy for the scheduler, possible values: bias, round-robin. Default: bias"
+doc = "The executor slots policy for the scheduler, possible values: bias, round-robin, round-robin-local. Default: bias"
 default = "ballista_scheduler::config::SlotsPolicy::Bias"
 
 [[param]]
