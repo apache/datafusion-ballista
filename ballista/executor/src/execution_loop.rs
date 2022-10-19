@@ -121,7 +121,6 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         // wait for task slots to be available
         let semaphore = available_task_slots.clone().acquire_owned().await.unwrap();
         drop(semaphore);
-
         if !active_job {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -143,7 +142,7 @@ pub(crate) fn any_to_string(any: &Box<dyn Any + Send>) -> String {
 
 async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     executor: Arc<Executor>,
-    available_tasks_slots: Arc<Semaphore>,
+    available_task_slots: Arc<Semaphore>,
     task_status_sender: Sender<TaskStatus>,
     task: TaskDefinition,
     codec: &BallistaCodec<T, U>,
@@ -165,6 +164,7 @@ async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecution
         task_id, job_id, stage_id, stage_attempt_num, partition_id, task_attempt_num
     );
     info!("Received task {}", task_identity);
+    let permit = available_task_slots.clone().acquire_owned().await.unwrap();
 
     let mut task_props = HashMap::new();
     for kv_pair in task.props {
@@ -209,7 +209,6 @@ async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecution
     let shuffle_writer_plan =
         executor.new_shuffle_writer(job_id.clone(), stage_id as usize, plan)?;
     dedicated_executor.spawn(async move {
-        let permit = available_tasks_slots.acquire().await.unwrap();
         use std::panic::AssertUnwindSafe;
         let part = PartitionId {
             job_id: job_id.clone(),
