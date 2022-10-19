@@ -74,6 +74,7 @@ async fn start_server(
     addr: SocketAddr,
     scheduling_policy: TaskSchedulingPolicy,
     slots_policy: SlotsPolicy,
+    event_loop_buffer_size: usize,
 ) -> Result<()> {
     info!(
         "Ballista v{} Scheduler listening on {:?}",
@@ -93,11 +94,13 @@ async fn start_server(
                 slots_policy,
                 BallistaCodec::default(),
                 default_session_builder,
+                event_loop_buffer_size,
             ),
             _ => SchedulerServer::new(
                 scheduler_name,
                 config_backend.clone(),
                 BallistaCodec::default(),
+                event_loop_buffer_size,
             ),
         };
 
@@ -244,12 +247,14 @@ async fn main() -> Result<()> {
 
     let scheduling_policy: TaskSchedulingPolicy = opt.scheduler_policy;
     let slots_policy: SlotsPolicy = opt.executor_slots_policy;
+    let event_loop_buffer_size = opt.event_loop_buffer_size as usize;
     start_server(
         scheduler_name,
         client,
         addr,
         scheduling_policy,
         slots_policy,
+        event_loop_buffer_size,
     )
     .await?;
     Ok(())

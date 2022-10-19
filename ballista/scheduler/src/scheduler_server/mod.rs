@@ -68,6 +68,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         scheduler_name: String,
         config: Arc<dyn StateBackendClient>,
         codec: BallistaCodec<T, U>,
+        event_loop_buffer_size: usize,
     ) -> Self {
         SchedulerServer::new_with_policy(
             scheduler_name,
@@ -76,6 +77,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             SlotsPolicy::Bias,
             codec,
             default_session_builder,
+            event_loop_buffer_size,
         )
     }
 
@@ -84,6 +86,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         config: Arc<dyn StateBackendClient>,
         codec: BallistaCodec<T, U>,
         session_builder: SessionBuilder,
+        event_loop_buffer_size: usize,
     ) -> Self {
         SchedulerServer::new_with_policy(
             scheduler_name,
@@ -92,6 +95,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             SlotsPolicy::Bias,
             codec,
             session_builder,
+            event_loop_buffer_size,
         )
     }
 
@@ -102,6 +106,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         slots_policy: SlotsPolicy,
         codec: BallistaCodec<T, U>,
         session_builder: SessionBuilder,
+        event_loop_buffer_size: usize,
     ) -> Self {
         let state = Arc::new(SchedulerState::new(
             config,
@@ -111,18 +116,27 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             slots_policy,
         ));
 
-        SchedulerServer::new_with_state(scheduler_name, scheduling_policy, state)
+        SchedulerServer::new_with_state(
+            scheduler_name,
+            scheduling_policy,
+            state,
+            event_loop_buffer_size,
+        )
     }
 
     pub(crate) fn new_with_state(
         scheduler_name: String,
         policy: TaskSchedulingPolicy,
         state: Arc<SchedulerState<T, U>>,
+        event_loop_buffer_size: usize,
     ) -> Self {
         let query_stage_scheduler =
             Arc::new(QueryStageScheduler::new(state.clone(), policy));
-        let query_stage_event_loop =
-            EventLoop::new("query_stage".to_owned(), 10000, query_stage_scheduler);
+        let query_stage_event_loop = EventLoop::new(
+            "query_stage".to_owned(),
+            event_loop_buffer_size,
+            query_stage_scheduler,
+        );
         Self {
             scheduler_name,
             state,
@@ -770,6 +784,7 @@ mod test {
                 SlotsPolicy::Bias,
                 BallistaCodec::default(),
                 default_session_builder,
+                10000,
             );
         scheduler.init().await?;
 
@@ -789,6 +804,7 @@ mod test {
                 "localhost:50050".to_owned(),
                 TaskSchedulingPolicy::PushStaged,
                 state,
+                10000,
             );
         scheduler.init().await?;
 
