@@ -28,7 +28,6 @@ RUN apt-get update && apt-get install -y nginx netcat
 
 COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
 
-COPY ballista/ui/scheduler/build /var/www/html
 COPY dev/docker/nginx.conf /etc/nginx/sites-enabled/default
 
 # Expose Ballista Scheduler web UI port
