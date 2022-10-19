@@ -235,7 +235,6 @@ async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecution
             }
         };
 
-        drop(permit);
 
         info!("Done with task {}", task_identity);
         debug!("Statistics: {:?}", execution_result);
@@ -267,6 +266,7 @@ async fn run_received_tasks<T: 'static + AsLogicalPlan, U: 'static + AsExecution
             operator_metrics,
             task_execution_times,
         ));
+        drop(permit);
     });
 
     Ok(())
