@@ -21,7 +21,7 @@ use ballista_core::serde::protobuf::{
     scheduler_grpc_client::SchedulerGrpcClient, PollWorkParams, PollWorkResult,
     TaskDefinition, TaskStatus,
 };
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, SemaphorePermit};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
@@ -69,9 +69,9 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
     loop {
         // Wait for task slots to be available before asking for new work
-        let semaphore = available_task_slots.acquire().await.unwrap();
+        let permit = available_task_slots.acquire().await.unwrap();
         // Make the slot available again
-        drop(semaphore);
+        drop(permit);
 
         // Keeps track of whether we received task in last iteration
         // to avoid going in sleep mode between polling
@@ -96,13 +96,13 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         match poll_work_result {
             Ok(result) => {
                 if let Some(task) = result.into_inner().task {
-                    // Acquire a semaphore for the task
-                    let semaphore =
+                    // Acquire a permit/slot for the task
+                    let permit =
                         available_task_slots.clone().acquire_owned().await.unwrap();
 
                     match run_received_task(
                         executor.clone(),
-                        semaphore,
+                        permit,
                         task_status_sender,
                         task,
                         &codec,
@@ -269,6 +269,8 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             operator_metrics,
             task_execution_times,
         ));
+
+        // Release the permit after the work is done
         drop(permit);
     });
 
