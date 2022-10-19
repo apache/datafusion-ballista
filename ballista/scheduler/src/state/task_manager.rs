@@ -643,14 +643,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .map(|value| value.1.execution_graph)
     }
 
-    /// Remove the `ExecutionGraph` for the given job ID from cache
-    pub(crate) async fn remove_active_execution_graph(
-        &self,
-        job_id: &str,
-    ) -> Option<Arc<RwLock<ExecutionGraph>>> {
-        self.active_job_cache.remove(job_id).map(|value| value.1)
-    }
-
     /// Get the `ExecutionGraph` for the given job ID. This will search fist in the `ActiveJobs`
     /// keyspace and then, if it doesn't find anything, search the `CompletedJobs` keyspace.
     pub(crate) async fn get_execution_graph(
