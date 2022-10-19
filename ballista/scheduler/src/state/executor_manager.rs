@@ -484,7 +484,7 @@ impl ExecutorManager {
     }
 
     /// Send rpc to Executors to clean up the job data
-    pub async fn clean_up_executors_data(&self, job_id: String) {
+    pub async fn clean_up_job_data(&self, job_id: String) {
         let alive_executors = self.get_alive_executors_within_one_minute();
         for executor in alive_executors {
             let job_id_clone = job_id.to_owned();

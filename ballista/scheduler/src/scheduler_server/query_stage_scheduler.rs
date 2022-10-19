@@ -155,7 +155,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         CLEANUP_FINISHED_JOB_DELAY_SECS,
                     ))
                     .await;
-                    executor_manager.clean_up_executors_data(job_id).await;
+                    executor_manager.clean_up_job_data(job_id).await;
                 });
             }
             QueryStageSchedulerEvent::JobRunningFailed(job_id, failure_reason) => {
@@ -176,7 +176,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         CLEANUP_FINISHED_JOB_DELAY_SECS,
                     ))
                     .await;
-                    executor_manager.clean_up_executors_data(job_id).await;
+                    executor_manager.clean_up_job_data(job_id).await;
                 });
             }
             QueryStageSchedulerEvent::JobUpdated(job_id) => {
@@ -194,7 +194,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         CLEANUP_FINISHED_JOB_DELAY_SECS,
                     ))
                     .await;
-                    executor_manager.clean_up_executors_data(job_id).await;
+                    executor_manager.clean_up_job_data(job_id).await;
                 });
             }
             QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status) => {
