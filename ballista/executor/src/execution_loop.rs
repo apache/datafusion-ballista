@@ -121,6 +121,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         // wait for task slots to be available
         let semaphore = available_task_slots.clone().acquire_owned().await.unwrap();
         drop(semaphore);
+
         if !active_job {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
