@@ -30,6 +30,7 @@ use datafusion::logical_plan::LogicalPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 
+use crate::config::SlotsPolicy;
 use log::{error, warn};
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
@@ -72,6 +73,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             scheduler_name,
             config,
             TaskSchedulingPolicy::PullStaged,
+            SlotsPolicy::Bias,
             codec,
             default_session_builder,
         )
@@ -87,6 +89,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             scheduler_name,
             config,
             TaskSchedulingPolicy::PullStaged,
+            SlotsPolicy::Bias,
             codec,
             session_builder,
         )
@@ -95,7 +98,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     pub fn new_with_policy(
         scheduler_name: String,
         config: Arc<dyn StateBackendClient>,
-        policy: TaskSchedulingPolicy,
+        scheduling_policy: TaskSchedulingPolicy,
+        slots_policy: SlotsPolicy,
         codec: BallistaCodec<T, U>,
         session_builder: SessionBuilder,
     ) -> Self {
@@ -104,9 +108,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             session_builder,
             codec,
             scheduler_name.clone(),
+            slots_policy,
         ));
 
-        SchedulerServer::new_with_state(scheduler_name, policy, state)
+        SchedulerServer::new_with_state(scheduler_name, scheduling_policy, state)
     }
 
     pub(crate) fn new_with_state(
@@ -294,6 +299,7 @@ mod test {
     };
     use ballista_core::error::Result;
 
+    use crate::config::SlotsPolicy;
     use ballista_core::serde::protobuf::{
         failed_task, job_status, task_status, ExecutionError, FailedTask, JobStatus,
         PhysicalPlanNode, ShuffleWritePartition, SuccessfulTask, TaskStatus,
@@ -753,14 +759,15 @@ mod test {
     }
 
     async fn test_scheduler(
-        policy: TaskSchedulingPolicy,
+        scheduling_policy: TaskSchedulingPolicy,
     ) -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new_with_policy(
                 "localhost:50050".to_owned(),
                 state_storage.clone(),
-                policy,
+                scheduling_policy,
+                SlotsPolicy::Bias,
                 BallistaCodec::default(),
                 default_session_builder,
             );
