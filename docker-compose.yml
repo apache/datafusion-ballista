@@ -28,7 +28,7 @@ services:
       context: .
     command: "--config-backend etcd --etcd-urls etcd:2379 --bind-host 0.0.0.0"
     ports:
-      - "55000:80"
+      - "80:80"
       - "50050:50050"
     environment:
       - RUST_LOG=info
