@@ -300,7 +300,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
         with_lock(lock, self.state.delete(Keyspace::ActiveJobs, job_id)).await?;
 
-        if let Some(graph) = self.get_active_execution_graph(job_id).await {
+        if let Some(graph) = self.remove_active_execution_graph(job_id).await {
             let graph = graph.read().await.clone();
             if graph.is_successful() {
                 let value = self.encode_execution_graph(graph)?;
@@ -423,7 +423,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             ]
         };
 
-        let _res = if let Some(graph) = self.get_active_execution_graph(job_id).await {
+        let _res = if let Some(graph) = self.remove_active_execution_graph(job_id).await {
             let mut graph = graph.write().await;
             let previous_status = graph.status();
             graph.fail_job(failure_reason);
@@ -590,6 +590,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         job_id: &str,
     ) -> Option<Arc<RwLock<ExecutionGraph>>> {
         self.active_job_cache.get(job_id).map(|value| value.clone())
+    }
+
+    /// Remove the `ExecutionGraph` for the given job ID from cache
+    pub(crate) async fn remove_active_execution_graph(
+        &self,
+        job_id: &str,
+    ) -> Option<Arc<RwLock<ExecutionGraph>>> {
+        self.active_job_cache.remove(job_id).map(|value| value.1)
     }
 
     /// Get the `ExecutionGraph` for the given job ID. This will search fist in the `ActiveJobs`
