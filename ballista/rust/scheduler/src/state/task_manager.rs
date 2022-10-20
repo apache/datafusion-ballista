@@ -59,7 +59,7 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     scheduler_id: String,
     // Cache for active execution graphs curated by this scheduler
     active_job_cache: ExecutionGraphCache,
-    pending_task_queue_size: AtomicUsize,
+    pending_task_queue_size: Arc<AtomicUsize>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> Clone
