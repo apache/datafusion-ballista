@@ -73,9 +73,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> Clone
             codec: self.codec.clone(),
             scheduler_id: self.scheduler_id.clone(),
             active_job_cache: self.active_job_cache.clone(),
-            pending_task_queue_size: AtomicUsize::new(
-                self.pending_task_queue_size.load(Ordering::SeqCst),
-            ),
+            pending_task_queue_size: AtomicUsize::new(self.get_pending_task_queue_size()),
         }
     }
 }
@@ -601,8 +599,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     pub fn increase_pending_queue_size(&self, num: usize) -> Result<()> {
         match self.pending_task_queue_size.fetch_update(
-            Ordering::SeqCst,
-            Ordering::SeqCst,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
             |s| Some(s + num),
         ) {
             Ok(_) => Ok(()),
@@ -614,8 +612,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     pub fn decrease_pending_queue_size(&self, num: usize) -> Result<()> {
         match self.pending_task_queue_size.fetch_update(
-            Ordering::SeqCst,
-            Ordering::SeqCst,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
             |s| Some(s - num),
         ) {
             Ok(_) => Ok(()),
