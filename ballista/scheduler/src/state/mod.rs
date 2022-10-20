@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::datasource::listing::{ListingTable, ListingTableUrl};
+use datafusion::datasource::source_as_provider;
+use datafusion::logical_expr::PlanVisitor;
 use std::any::type_name;
 use std::future::Future;
 use std::sync::Arc;
@@ -31,6 +34,7 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use datafusion::logical_plan::LogicalPlan;
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::{debug, error, info};
@@ -256,11 +260,61 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         plan: &LogicalPlan,
     ) -> Result<()> {
         let start = Instant::now();
-        let optimized_plan = session_ctx.optimize(plan)?;
 
-        debug!("Calculated optimized plan: {:?}", optimized_plan);
+        // optimizing the plan here is redundant because the physical planner will do this again
+        // but it is helpful to see what the optimized plan will be
+        let optimized_plan = session_ctx.optimize(plan)?;
+        debug!("Optimized plan: {}", optimized_plan.display_indent());
+
+        struct VerifyPathsExist {}
+        impl PlanVisitor for VerifyPathsExist {
+            type Error = BallistaError;
+
+            fn pre_visit(
+                &mut self,
+                plan: &LogicalPlan,
+            ) -> std::result::Result<bool, Self::Error> {
+                match plan {
+                    LogicalPlan::TableScan(scan) => {
+                        let provider = source_as_provider(&scan.source)?;
+                        if let Some(table) =
+                            provider.as_any().downcast_ref::<ListingTable>()
+                        {
+                            debug!(
+                                "ListingTable with {} urls",
+                                table.table_paths().len()
+                            );
+                            for url in table.table_paths() {
+                                // remove file:// prefix and verify that the file is accessible
+                                let url = url.as_str();
+                                let url = if url.starts_with("file://") {
+                                    &url[7..]
+                                } else {
+                                    url
+                                };
+                                ListingTableUrl::parse(url)
+                                    .map_err(|e| BallistaError::General(
+                                        format!("logical plan refers to path that is not accessible in scheduler file system: {}: {:?}", url, e)))?;
+                            }
+                            Ok(true)
+                        } else {
+                            debug!("TableProvider is not a ListingTable");
+                            Ok(true)
+                        }
+                    }
+                    _ => Ok(true),
+                }
+            }
+        }
+
+        let mut verify_paths_exist = VerifyPathsExist {};
+        optimized_plan.accept(&mut verify_paths_exist)?;
 
         let plan = session_ctx.create_physical_plan(&optimized_plan).await?;
+        debug!(
+            "Physical plan: {}",
+            DisplayableExecutionPlan::new(plan.as_ref()).indent()
+        );
 
         self.task_manager
             .submit_job(job_id, job_name, &session_ctx.session_id(), plan)
