@@ -216,9 +216,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .collect();
 
         let mut assignments: Vec<(String, Task)> = vec![];
+        let mut pending_tasks = 0usize;
         let mut assign_tasks = 0usize;
-        let mut pending_tasts = 0usize;
-
         let job_cache = self.active_job_cache.read().await;
 
         for (_job_id, graph) in job_cache.iter() {
@@ -227,8 +226,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 if let Some(task) = graph.pop_next_task(&reservation.executor_id)? {
                     assignments.push((reservation.executor_id.clone(), task));
                     assign_tasks += 1;
-
-                    // descrease global counter
                     self.decrease_pending_queue_size(1)?;
                 } else {
                     break;
@@ -236,7 +233,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             }
 
             if assign_tasks >= free_reservations.len() {
-                pending_tasts = graph.available_tasks();
+                pending_tasks = graph.available_tasks();
                 break;
             }
         }
@@ -245,7 +242,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         for reservation in free_reservations.iter().skip(assign_tasks) {
             unassigned.push(reservation.clone());
         }
-        Ok((assignments, unassigned, pending_tasts))
+        Ok((assignments, unassigned, pending_tasks))
     }
 
     /// Mark a job as completed. This will create a key under the CompletedJobs keyspace
