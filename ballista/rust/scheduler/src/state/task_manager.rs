@@ -50,6 +50,7 @@ use tonic::transport::Channel;
 type ExecutorClients = Arc<RwLock<HashMap<String, ExecutorGrpcClient<Channel>>>>;
 type ExecutionGraphCache = Arc<RwLock<HashMap<String, Arc<RwLock<ExecutionGraph>>>>>;
 
+#[derive(Clone)]
 pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
     state: Arc<dyn StateBackendClient>,
     #[allow(dead_code)]
@@ -60,22 +61,6 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     // Cache for active execution graphs curated by this scheduler
     active_job_cache: ExecutionGraphCache,
     pending_task_queue_size: Arc<AtomicUsize>,
-}
-
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> Clone
-    for TaskManager<T, U>
-{
-    fn clone(&self) -> Self {
-        Self {
-            state: self.state.clone(),
-            clients: self.clients.clone(),
-            session_builder: self.session_builder,
-            codec: self.codec.clone(),
-            scheduler_id: self.scheduler_id.clone(),
-            active_job_cache: self.active_job_cache.clone(),
-            pending_task_queue_size: AtomicUsize::new(self.get_pending_task_queue_size()),
-        }
-    }
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U> {
@@ -92,7 +77,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             codec,
             scheduler_id,
             active_job_cache: Arc::new(RwLock::new(HashMap::new())),
-            pending_task_queue_size: AtomicUsize::new(0),
+            pending_task_queue_size: Arc::new(AtomicUsize::new(0)),
         }
     }
 
