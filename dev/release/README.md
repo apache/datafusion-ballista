@@ -317,6 +317,14 @@ The vote has passed with <NUMBER> +1 votes. Thank you to all who helped
 with the release verification.
 ```
 
+### Add the release to Apache Reporter
+
+Add the release to https://reporter.apache.org/addrelease.html?arrow with a version name prefixed with `RS-BALLISTA-`,
+for example `RS-BALLISTA-0.9.0`.
+
+The release information is used to generate a template for a board report (see example
+[here](https://github.com/apache/arrow/pull/14357)).
+
 ### Delete old RCs and Releases
 
 See the ASF documentation on [when to archive](https://www.apache.org/legal/release-policy.html#when-to-archive)
