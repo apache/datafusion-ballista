@@ -29,7 +29,8 @@ use ballista_core::error::Result;
 
 use crate::state::session_manager::create_datafusion_context;
 use ballista_core::serde::protobuf::{
-    self, job_status, FailedJob, JobStatus, TaskDefinition, TaskStatus,
+    self, job_status, FailedJob, JobStatus, MultiTaskDefinition, TaskDefinition, TaskId,
+    TaskStatus,
 };
 use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
 use ballista_core::serde::scheduler::ExecutorMetadata;
@@ -518,6 +519,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         .await
     }
 
+    #[allow(dead_code)]
     #[cfg(not(test))]
     /// Launch the given task on the specified executor
     pub(crate) async fn launch_task(
@@ -544,8 +546,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(())
     }
 
-    /// In unit tests, we do not have actual executors running, so it simplifies things to just noop.
+    #[allow(dead_code)]
     #[cfg(test)]
+    /// In unit tests, we do not have actual executors running, so it simplifies things to just noop.
     pub(crate) async fn launch_task(
         &self,
         _executor: &ExecutorMetadata,
@@ -620,6 +623,114 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 "Cannot prepare task definition for job {} which is not in active cache",
                 job_id
             )))
+        }
+    }
+
+    #[cfg(not(test))]
+    /// Launch the given tasks on the specified executor
+    pub(crate) async fn launch_multi_task(
+        &self,
+        executor: &ExecutorMetadata,
+        tasks: Vec<Vec<TaskDescription>>,
+        executor_manager: &ExecutorManager,
+    ) -> Result<()> {
+        info!("Launching multi task on executor {:?}", executor.id);
+        let multi_tasks: Result<Vec<MultiTaskDefinition>> = tasks
+            .into_iter()
+            .map(|stage_tasks| self.prepare_multi_task_definition(stage_tasks))
+            .collect();
+        let multi_tasks = multi_tasks?;
+        let mut client = executor_manager.get_client(&executor.id).await?;
+        client
+            .launch_multi_task(protobuf::LaunchMultiTaskParams {
+                multi_tasks,
+                scheduler_id: self.scheduler_id.clone(),
+            })
+            .await
+            .map_err(|e| {
+                BallistaError::Internal(format!(
+                    "Failed to connect to executor {}: {:?}",
+                    executor.id, e
+                ))
+            })?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    /// Launch the given tasks on the specified executor
+    pub(crate) async fn launch_multi_task(
+        &self,
+        _executor: &ExecutorMetadata,
+        _tasks: Vec<Vec<TaskDescription>>,
+        _executor_manager: &ExecutorManager,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn prepare_multi_task_definition(
+        &self,
+        tasks: Vec<TaskDescription>,
+    ) -> Result<MultiTaskDefinition> {
+        debug!("Preparing multi task definition for {:?}", tasks);
+        if let Some(task) = tasks.get(0) {
+            let session_id = task.session_id.clone();
+            let job_id = task.partition.job_id.clone();
+            let stage_id = task.partition.stage_id;
+            let stage_attempt_num = task.stage_attempt_num;
+
+            if let Some(mut job_info) = self.active_job_cache.get_mut(&job_id) {
+                let plan = if let Some(plan) = job_info.encoded_stage_plans.get(&stage_id)
+                {
+                    plan.clone()
+                } else {
+                    let mut plan_buf: Vec<u8> = vec![];
+                    let plan_proto = U::try_from_physical_plan(
+                        task.plan.clone(),
+                        self.codec.physical_extension_codec(),
+                    )?;
+                    plan_proto.try_encode(&mut plan_buf)?;
+
+                    job_info
+                        .encoded_stage_plans
+                        .insert(stage_id, plan_buf.clone());
+
+                    plan_buf
+                };
+                let output_partitioning =
+                    hash_partitioning_to_proto(task.output_partitioning.as_ref())?;
+
+                let task_ids = tasks
+                    .iter()
+                    .map(|task| TaskId {
+                        task_id: task.task_id as u32,
+                        task_attempt_num: task.task_attempt as u32,
+                        partition_id: task.partition.partition_id as u32,
+                    })
+                    .collect();
+
+                let multi_task_definition = MultiTaskDefinition {
+                    task_ids,
+                    job_id,
+                    stage_id: stage_id as u32,
+                    stage_attempt_num: stage_attempt_num as u32,
+                    plan,
+                    output_partitioning,
+                    session_id,
+                    launch_time: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64,
+                    props: vec![],
+                };
+                Ok(multi_task_definition)
+            } else {
+                Err(BallistaError::General(format!("Cannot prepare multi task definition for job {} which is not in active cache", job_id)))
+            }
+        } else {
+            Err(BallistaError::General(
+                "Cannot prepare multi task definition for an empty vec".to_string(),
+            ))
         }
     }
 

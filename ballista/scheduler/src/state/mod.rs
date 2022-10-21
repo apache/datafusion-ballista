@@ -16,6 +16,7 @@
 // under the License.
 
 use std::any::type_name;
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
@@ -27,6 +28,7 @@ use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::TaskManager;
 
+use crate::state::execution_graph::TaskDescription;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
@@ -196,7 +198,39 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             .await
         {
             Ok((assignments, mut unassigned_reservations, pending_tasks)) => {
+                // Put tasks to the same executor together
+                // And put tasks belonging to the same stage together for creating MultiTaskDefinition
+                let mut executor_stage_assignments: HashMap<
+                    String,
+                    HashMap<(String, usize), Vec<TaskDescription>>,
+                > = HashMap::new();
                 for (executor_id, task) in assignments.into_iter() {
+                    let stage_key =
+                        (task.partition.job_id.clone(), task.partition.stage_id);
+                    if let Some(tasks) = executor_stage_assignments.get_mut(&executor_id)
+                    {
+                        if let Some(executor_stage_tasks) = tasks.get_mut(&stage_key) {
+                            executor_stage_tasks.push(task);
+                        } else {
+                            tasks.insert(stage_key, vec![task]);
+                        }
+                    } else {
+                        let mut executor_stage_tasks: HashMap<
+                            (String, usize),
+                            Vec<TaskDescription>,
+                        > = HashMap::new();
+                        executor_stage_tasks.insert(stage_key, vec![task]);
+                        executor_stage_assignments
+                            .insert(executor_id, executor_stage_tasks);
+                    }
+                }
+
+                for (executor_id, tasks) in executor_stage_assignments.into_iter() {
+                    let tasks: Vec<Vec<TaskDescription>> = tasks.into_values().collect();
+                    // Total number of tasks to be launched for one executor
+                    let n_tasks: usize =
+                        tasks.iter().map(|stage_tasks| stage_tasks.len()).sum();
+
                     match self
                         .executor_manager
                         .get_executor_metadata(&executor_id)
@@ -205,19 +239,30 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                         Ok(executor) => {
                             if let Err(e) = self
                                 .task_manager
-                                .launch_task(&executor, task, &self.executor_manager)
+                                .launch_multi_task(
+                                    &executor,
+                                    tasks,
+                                    &self.executor_manager,
+                                )
                                 .await
                             {
                                 error!("Failed to launch new task: {:?}", e);
-                                unassigned_reservations.push(
-                                    ExecutorReservation::new_free(executor_id.clone()),
-                                );
+                                for _i in 0..n_tasks {
+                                    unassigned_reservations.push(
+                                        ExecutorReservation::new_free(
+                                            executor_id.clone(),
+                                        ),
+                                    );
+                                }
                             }
                         }
                         Err(e) => {
                             error!("Failed to launch new task, could not get executor metadata: {:?}", e);
-                            unassigned_reservations
-                                .push(ExecutorReservation::new_free(executor_id.clone()));
+                            for _i in 0..n_tasks {
+                                unassigned_reservations.push(
+                                    ExecutorReservation::new_free(executor_id.clone()),
+                                );
+                            }
                         }
                     }
                 }
