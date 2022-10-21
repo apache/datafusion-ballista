@@ -38,3 +38,4 @@ jobs:
         run: |
           cd ballista/ui/scheduler
           yarn install
+          yarn build
