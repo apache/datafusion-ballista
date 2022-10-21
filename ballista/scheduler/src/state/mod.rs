@@ -279,7 +279,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                     if let Some(table) = provider.as_any().downcast_ref::<ListingTable>()
                     {
                         for url in table.table_paths() {
-                            // remove file:// prefix and verify that the file is accessible
+                            // remove file:/// prefix and verify that the file is accessible
                             let url = url.as_str();
                             let url = url.strip_prefix("file:///").unwrap_or(url);
                             ListingTableUrl::parse(url)
