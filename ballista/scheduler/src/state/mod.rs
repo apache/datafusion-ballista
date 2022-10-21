@@ -292,14 +292,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                             // mounted in the container). There could be thousands of files so we
                             // just check the first one.
                             let url = &local_paths[0].as_str();
-                            let test_url = url.strip_prefix("file://").unwrap();
-                            ListingTableUrl::parse(test_url).map_err(|e| {
-                                BallistaError::General(format!(
+                            // the unwraps are safe here because we checked that the url starts with file:///
+                            // we need to check both versions here to support Linux & Windows
+                            ListingTableUrl::parse(url.strip_prefix("file://").unwrap())
+                                .or_else(|_| {
+                                    ListingTableUrl::parse(
+                                        url.strip_prefix("file:///").unwrap(),
+                                    )
+                                })
+                                .map_err(|e| {
+                                    BallistaError::General(format!(
                                     "logical plan refers to path on local file system \
                                     that is not accessible in the scheduler: {}: {:?}",
                                     url, e
                                 ))
-                            })?;
+                                })?;
                         }
                     }
                 }
@@ -310,7 +317,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         let mut verify_paths_exist = VerifyPathsExist {};
         plan.accept(&mut verify_paths_exist)?;
 
-        let plan = session_ctx.create_physical_plan(&plan).await?;
+        let plan = session_ctx.create_physical_plan(plan).await?;
         debug!(
             "Physical plan: {}",
             DisplayableExecutionPlan::new(plan.as_ref()).indent()
