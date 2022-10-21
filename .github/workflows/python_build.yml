@@ -37,7 +37,7 @@ jobs:
           override: true
       - name: Generate license file
         run: python ../dev/create_license.py
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v3
         with:
           name: python-wheel-license
           path: python/LICENSE.txt
@@ -82,7 +82,7 @@ jobs:
         run: find target/wheels/
 
       - name: Archive wheels
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: dist
           path: python/target/wheels/*
@@ -119,7 +119,7 @@ jobs:
             konstin2/maturin:v0.11.2 \
             build --release --manylinux 2010
       - name: Archive wheels
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: dist
           path: python/target/wheels/*
