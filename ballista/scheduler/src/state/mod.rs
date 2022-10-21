@@ -261,10 +261,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     ) -> Result<()> {
         let start = Instant::now();
 
-        // optimizing the plan here is redundant because the physical planner will do this again
-        // but it is helpful to see what the optimized plan will be
-        let optimized_plan = session_ctx.optimize(plan)?;
-        debug!("Optimized plan: {}", optimized_plan.display_indent());
+        if log::max_level() >= log::Level::Debug {
+            // optimizing the plan here is redundant because the physical planner will do this again
+            // but it is helpful to see what the optimized plan will be
+            let optimized_plan = session_ctx.optimize(plan)?;
+            debug!("Optimized plan: {}", optimized_plan.display_indent());
+        }
 
         struct VerifyPathsExist {}
         impl PlanVisitor for VerifyPathsExist {
@@ -278,13 +280,26 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                     let provider = source_as_provider(&scan.source)?;
                     if let Some(table) = provider.as_any().downcast_ref::<ListingTable>()
                     {
-                        for url in table.table_paths() {
-                            // remove file:/// prefix and verify that the file is accessible
-                            let url = url.as_str();
-                            let url = url.strip_prefix("file:///").unwrap_or(url);
-                            ListingTableUrl::parse(url)
-                                .map_err(|e| BallistaError::General(
-                                    format!("logical plan refers to path that is not accessible in scheduler file system: {}: {:?}", url, e)))?;
+                        let local_paths: Vec<&ListingTableUrl> = table
+                            .table_paths()
+                            .iter()
+                            .filter(|url| url.as_str().starts_with("file:///"))
+                            .collect();
+                        if !local_paths.is_empty() {
+                            // These are local files rather than remote object stores, so we
+                            // need to check that they are accessible on the scheduler (the client
+                            // may not be on the same host, or the data path may not be correctly
+                            // mounted in the container). There could be thousands of files so we
+                            // just check the first one.
+                            let url = &local_paths[0].as_str();
+                            let test_url = url.strip_prefix("file://").unwrap();
+                            ListingTableUrl::parse(test_url).map_err(|e| {
+                                BallistaError::General(format!(
+                                    "logical plan refers to path on local file system \
+                                    that is not accessible in the scheduler: {}: {:?}",
+                                    url, e
+                                ))
+                            })?;
                         }
                     }
                 }
@@ -293,9 +308,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         }
 
         let mut verify_paths_exist = VerifyPathsExist {};
-        optimized_plan.accept(&mut verify_paths_exist)?;
+        plan.accept(&mut verify_paths_exist)?;
 
-        let plan = session_ctx.create_physical_plan(&optimized_plan).await?;
+        let plan = session_ctx.create_physical_plan(&plan).await?;
         debug!(
             "Physical plan: {}",
             DisplayableExecutionPlan::new(plan.as_ref()).indent()
