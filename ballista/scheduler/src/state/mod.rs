@@ -28,6 +28,7 @@ use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::TaskManager;
 
+use crate::config::SlotsPolicy;
 use crate::state::execution_graph::TaskDescription;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::TaskStatus;
@@ -101,6 +102,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             session_builder,
             codec,
             "localhost:50050".to_owned(),
+            SlotsPolicy::Bias,
         )
     }
 
@@ -109,9 +111,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
+        slots_policy: SlotsPolicy,
     ) -> Self {
         Self {
-            executor_manager: ExecutorManager::new(config_client.clone()),
+            executor_manager: ExecutorManager::new(config_client.clone(), slots_policy),
             task_manager: TaskManager::new(
                 config_client.clone(),
                 session_builder,

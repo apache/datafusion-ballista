@@ -62,6 +62,7 @@ mod config {
 }
 
 use ballista_core::utils::create_grpc_server;
+use ballista_scheduler::config::SlotsPolicy;
 #[cfg(feature = "flight-sql")]
 use ballista_scheduler::flight_sql::FlightSqlServiceImpl;
 use config::prelude::*;
@@ -71,7 +72,8 @@ async fn start_server(
     scheduler_name: String,
     config_backend: Arc<dyn StateBackendClient>,
     addr: SocketAddr,
-    policy: TaskSchedulingPolicy,
+    scheduling_policy: TaskSchedulingPolicy,
+    slots_policy: SlotsPolicy,
 ) -> Result<()> {
     info!(
         "Ballista v{} Scheduler listening on {:?}",
@@ -80,14 +82,15 @@ async fn start_server(
     // Should only call SchedulerServer::new() once in the process
     info!(
         "Starting Scheduler grpc server with task scheduling policy of {:?}",
-        policy
+        scheduling_policy
     );
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-        match policy {
+        match scheduling_policy {
             TaskSchedulingPolicy::PushStaged => SchedulerServer::new_with_policy(
                 scheduler_name,
                 config_backend.clone(),
-                policy,
+                scheduling_policy,
+                slots_policy,
                 BallistaCodec::default(),
                 default_session_builder,
             ),
@@ -239,7 +242,15 @@ async fn main() -> Result<()> {
         }
     };
 
-    let policy: TaskSchedulingPolicy = opt.scheduler_policy;
-    start_server(scheduler_name, client, addr, policy).await?;
+    let scheduling_policy: TaskSchedulingPolicy = opt.scheduler_policy;
+    let slots_policy: SlotsPolicy = opt.executor_slots_policy;
+    start_server(
+        scheduler_name,
+        client,
+        addr,
+        scheduling_policy,
+        slots_policy,
+    )
+    .await?;
     Ok(())
 }

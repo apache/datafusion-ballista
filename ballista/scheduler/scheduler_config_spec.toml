@@ -73,6 +73,12 @@ doc = "The scheduing policy for the scheduler, possible values: pull-staged, pus
 default = "ballista_core::config::TaskSchedulingPolicy::PullStaged"
 
 [[param]]
+name = "executor_slots_policy"
+type = "ballista_scheduler::config::SlotsPolicy"
+doc = "The executor slots policy for the scheduler, possible values: bias, round-robin. Default: bias"
+default = "ballista_scheduler::config::SlotsPolicy::Bias"
+
+[[param]]
 name = "plugin_dir"
 type = "String"
 doc = "plugin dir"
