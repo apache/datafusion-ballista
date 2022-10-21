@@ -80,7 +80,7 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
     if (isOpen) {
       dot_svg("/api/job/" + props.value.job_id + "/dot_svg");
     }
-  }, [ref.current, dot_data, isOpen, props.value.job_id]);
+  }, [dot_data, isOpen, props.value.job_id]);
 
   const handleDownload = (url: string, filename: string) => {
     fetch(url, {
