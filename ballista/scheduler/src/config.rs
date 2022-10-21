@@ -27,6 +27,13 @@ use std::fmt;
 pub enum SlotsPolicy {
     Bias,
     RoundRobin,
+    RoundRobinLocal,
+}
+
+impl SlotsPolicy {
+    pub fn is_local(&self) -> bool {
+        matches!(self, SlotsPolicy::RoundRobinLocal)
+    }
 }
 
 impl std::str::FromStr for SlotsPolicy {
