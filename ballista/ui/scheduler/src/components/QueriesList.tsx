@@ -80,7 +80,7 @@ export const ActionsCell: (props: any) => React.ReactNode = (props: any) => {
     if (isOpen) {
       dot_svg("/api/job/" + props.value.job_id + "/dot_svg");
     }
-  }, [ref.current, dot_data, isOpen]);
+  }, [dot_data, isOpen, props.value.job_id]);
 
   const handleDownload = (url: string, filename: string) => {
     fetch(url, {
@@ -164,7 +164,7 @@ export const JobLinkCell: (props: any) => React.ReactNode = (props: any) => {
       getStages("/api/job/" + props.value + "/stages");
       setLoaded(true);
     }
-  }, [stages, isOpen]);
+  }, [stages, isOpen, loaded, props.value]);
 
   return (
     <Flex>

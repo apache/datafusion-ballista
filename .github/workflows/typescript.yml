@@ -38,4 +38,4 @@ jobs:
         run: |
           cd ballista/ui/scheduler
           yarn install
-          CI=false yarn build # TODO: fix warnings then remove CI=false
+          yarn build

@@ -16,7 +16,7 @@
 // under the License.
 
 import React from "react";
-import { Box, Flex, Text, Button } from "@chakra-ui/react";
+import { Box, Flex, Button } from "@chakra-ui/react";
 import Logo from "./logo.svg";
 import { AiFillGithub, HiDocumentText } from "react-icons/all";
 import { SchedulerState } from "./Summary";
