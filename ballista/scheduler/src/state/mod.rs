@@ -274,32 +274,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 &mut self,
                 plan: &LogicalPlan,
             ) -> std::result::Result<bool, Self::Error> {
-                match plan {
-                    LogicalPlan::TableScan(scan) => {
-                        let provider = source_as_provider(&scan.source)?;
-                        if let Some(table) =
-                            provider.as_any().downcast_ref::<ListingTable>()
-                        {
-                            debug!(
-                                "ListingTable with {} urls",
-                                table.table_paths().len()
-                            );
-                            for url in table.table_paths() {
-                                // remove file:// prefix and verify that the file is accessible
-                                let url = url.as_str();
-                                let url = url.strip_prefix("file://").unwrap_or(url);
-                                ListingTableUrl::parse(url)
-                                    .map_err(|e| BallistaError::General(
-                                        format!("logical plan refers to path that is not accessible in scheduler file system: {}: {:?}", url, e)))?;
-                            }
-                            Ok(true)
-                        } else {
-                            debug!("TableProvider is not a ListingTable");
-                            Ok(true)
+                if let LogicalPlan::TableScan(scan) = plan {
+                    let provider = source_as_provider(&scan.source)?;
+                    if let Some(table) = provider.as_any().downcast_ref::<ListingTable>()
+                    {
+                        for url in table.table_paths() {
+                            // remove file:// prefix and verify that the file is accessible
+                            let url = url.as_str();
+                            let url = url.strip_prefix("file://").unwrap_or(url);
+                            ListingTableUrl::parse(url)
+                                .map_err(|e| BallistaError::General(
+                                    format!("logical plan refers to path that is not accessible in scheduler file system: {}: {:?}", url, e)))?;
                         }
                     }
-                    _ => Ok(true),
                 }
+                Ok(true)
             }
         }
 
