@@ -38,6 +38,7 @@ pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
             "localhost:50050".to_owned(),
             Arc::new(client),
             BallistaCodec::default(),
+            10000,
         );
     scheduler_server.init().await?;
     let server = SchedulerGrpcServer::new(scheduler_server.clone());

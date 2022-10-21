@@ -582,6 +582,7 @@ mod test {
                 "localhost:50050".to_owned(),
                 state_storage.clone(),
                 BallistaCodec::default(),
+                10000,
             );
         scheduler.init().await?;
         let exec_meta = ExecutorRegistration {
@@ -667,6 +668,7 @@ mod test {
                 "localhost:50050".to_owned(),
                 state_storage.clone(),
                 BallistaCodec::default(),
+                10000,
             );
         scheduler.init().await?;
 
@@ -746,6 +748,7 @@ mod test {
                 "localhost:50050".to_owned(),
                 state_storage.clone(),
                 BallistaCodec::default(),
+                10000,
             );
         scheduler.init().await?;
 

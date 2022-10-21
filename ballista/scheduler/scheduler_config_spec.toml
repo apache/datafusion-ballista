@@ -73,6 +73,12 @@ doc = "The scheduing policy for the scheduler, possible values: pull-staged, pus
 default = "ballista_core::config::TaskSchedulingPolicy::PullStaged"
 
 [[param]]
+name = "event_loop_buffer_size"
+type = "u32"
+default = "10000"
+doc = "Event loop buffer size. Default: 10000"
+
+[[param]]
 name = "executor_slots_policy"
 type = "ballista_scheduler::config::SlotsPolicy"
 doc = "The executor slots policy for the scheduler, possible values: bias, round-robin, round-robin-local. Default: bias"
