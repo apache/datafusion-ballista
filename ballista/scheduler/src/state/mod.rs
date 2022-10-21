@@ -287,11 +287,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                             for url in table.table_paths() {
                                 // remove file:// prefix and verify that the file is accessible
                                 let url = url.as_str();
-                                let url = if url.starts_with("file://") {
-                                    &url[7..]
-                                } else {
-                                    url
-                                };
+                                let url = url.strip_prefix("file://").unwrap_or(url);
                                 ListingTableUrl::parse(url)
                                     .map_err(|e| BallistaError::General(
                                         format!("logical plan refers to path that is not accessible in scheduler file system: {}: {:?}", url, e)))?;
