@@ -142,21 +142,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
             // Find `num_free_slots` next tasks when available
             let mut next_tasks = vec![];
-            for _ in 0..num_free_slots {
-                let reservations =
-                    vec![ExecutorReservation::new_free(metadata.id.clone())];
-                if let Ok((mut assignments, _, _)) = self
-                    .state
-                    .task_manager
-                    .fill_reservations(&reservations)
-                    .await
-                {
-                    if let Some((_, task)) = assignments.pop() {
-                        match self.state.task_manager.prepare_task_definition(task) {
-                            Ok(task_definition) => next_tasks.push(task_definition),
-                            Err(e) => {
-                                error!("Error preparing task definition: {:?}", e);
-                            }
+            let reservations = vec![
+                ExecutorReservation::new_free(metadata.id.clone());
+                num_free_slots as usize
+            ];
+            if let Ok((mut assignments, _, _)) = self
+                .state
+                .task_manager
+                .fill_reservations(&reservations)
+                .await
+            {
+                while let Some((_, task)) = assignments.pop() {
+                    match self.state.task_manager.prepare_task_definition(task) {
+                        Ok(task_definition) => next_tasks.push(task_definition),
+                        Err(e) => {
+                            error!("Error preparing task definition: {:?}", e);
                         }
                     }
                 }
