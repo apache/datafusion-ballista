@@ -23,7 +23,7 @@
 
 ### Major Release
 
-Ballista typically has major releases from the `master` branch every 1-3 months, including breaking API changes.
+Ballista typically has major releases from the `master` branch every 4 weeks.
 
 ## Prerequisite
 
@@ -361,3 +361,25 @@ Delete a release:
 ```bash
 svn delete -m "delete old Ballista release" https://dist.apache.org/repos/dist/release/arrow/arrow-ballista-0.8.0
 ```
+
+### Optional: Write a blog post announcing the release
+
+We typically crowdsource release announcements by collaborating on a Google document, usually starting
+with a copy of the previous release announcement.
+
+Run the following commands to get the number of commits and number of unique contributors for inclusion in the blog post.
+
+```bash
+git log --pretty=oneline 0.9.0..0.8.0 ballista ballista-cli examples | wc -l
+git shortlog -sn 0.9.0..0.8.0 ballista ballista-cli examples | wc -l
+```
+
+Once there is consensus on the contents of the post, create a PR to add a blog post to the
+[arrow-site](https://github.com/apache/arrow-site) repository. Note that there is no need for a formal
+PMC vote on the blog post contents since this isn't considered to be a "release".
+
+Here is an example blog post PR:
+
+- https://github.com/apache/arrow-site/pull/217
+
+Once the PR is merged, a GitHub action will publish the new blog post to https://arrow.apache.org/blog/.
