@@ -23,5 +23,5 @@ set -x
 
 for query in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 17 18 21
 do
-  python3 tpch.py --host ballista-scheduler --port 50050 --query $query --path /data --ext tbl 
+  python3 tpch.py --host ballista-scheduler --query $query --path /data --ext tbl 
 done

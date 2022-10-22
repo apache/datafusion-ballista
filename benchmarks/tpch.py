@@ -18,6 +18,7 @@
 import sys
 import time
 import argparse
+import pyarrow as pa
 
 parser = argparse.ArgumentParser(description='Run SQL benchmarks.')
 parser.add_argument('--host', help='Ballista host')
