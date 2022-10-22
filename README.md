@@ -129,3 +129,4 @@ Please see [Contribution Guide](CONTRIBUTING.md) for information about contribut
 [flight]: https://arrow.apache.org/blog/2019/10/13/introducing-arrow-flight/
 [flight-sql]: https://arrow.apache.org/blog/2022/02/16/introducing-arrow-flight-sql/
 [ballista-talk]: https://www.youtube.com/watch?v=ZZHQaOap9pQ
+[user-guide]: https://arrow.apache.org/ballista/
