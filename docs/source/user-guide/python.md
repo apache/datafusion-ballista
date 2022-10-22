@@ -135,4 +135,4 @@ assert result.column(1) == pyarrow.array([-3, -3, -3])
 ## User Defined Functions
 
 The underlying DataFusion query engine supports Python UDFs but this functionality has not yet been implemented in
-Ballista, but is planned for a future release. The tracking issue is [#173](https://github.com/apache/arrow-ballista/issues/173).
+Ballista. It is planned for a future release. The tracking issue is [#173](https://github.com/apache/arrow-ballista/issues/173).
