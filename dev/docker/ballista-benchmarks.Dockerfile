@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM rust:1.63.0-bullseye
+FROM ubuntu:22.04
 
 ARG RELEASE_FLAG=release
 
@@ -24,7 +24,7 @@ ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get -y install python3-pip
+RUN apt-get update && apt-get -y install python3 python3-pip
 
 COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
 COPY target/$RELEASE_FLAG/ballista-executor /root/ballista-executor
