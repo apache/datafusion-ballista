@@ -122,7 +122,7 @@ Statistical Programming Meetup (Feb 2021).
 
 ## Contribution Guide
 
-Please see [Contribution Guide](CONTRIBUTING.md) for information about contributing to DataFusion.
+Please see the [Contribution Guide](CONTRIBUTING.md) for information about contributing to Ballista.
 
 [arrow]: https://arrow.apache.org/
 [datafusion]: https://github.com/apache/arrow-datafusion
