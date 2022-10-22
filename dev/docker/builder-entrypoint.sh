@@ -23,6 +23,6 @@ printenv
 RELEASE_FLAG=${RELEASE_FLA:=release}
 cargo build --features flight-sql "--$RELEASE_FLAG" "$@"
 
-cd ballista/ui/scheduler
+cd ballista/scheduler/ui
 yarn install
 yarn build

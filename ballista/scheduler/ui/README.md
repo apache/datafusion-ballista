@@ -45,7 +45,7 @@ $ RUST_LOG=info cargo run --release
 ### Run Client project
 
 ```shell
-$ cd ui/scheduler
+$ cd scheduler/ui
 $ yarn
 Resolving packages...
 $ yarn start
