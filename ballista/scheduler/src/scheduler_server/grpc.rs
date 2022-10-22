@@ -140,7 +140,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     Status::internal(msg)
                 })?;
 
-            // If executor can accept another task, try and find one.
+            // Find `num_free_slots` next tasks when available
             let mut next_tasks = vec![];
             for _ in 0..num_free_slots {
                 let reservations =
