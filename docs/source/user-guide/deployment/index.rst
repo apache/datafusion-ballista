@@ -21,7 +21,7 @@ Start a Ballista Cluster
 .. toctree::
    :maxdepth: 2
 
-   Cargo <cargo-install>
+   Cargo Install <cargo-install>
    Docker <docker>
    Docker Compose <docker-compose>
    Kubernetes <kubernetes>

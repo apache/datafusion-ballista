@@ -131,3 +131,8 @@ result = df.collect()[0]
 assert result.column(0) == pyarrow.array([5, 7, 9])
 assert result.column(1) == pyarrow.array([-3, -3, -3])
 ```
+
+## User Defined Functions
+
+The underlying DataFusion query engine supports Python UDFs but this functionality has not yet been implemented in
+Ballista. It is planned for a future release. The tracking issue is [#173](https://github.com/apache/arrow-ballista/issues/173).

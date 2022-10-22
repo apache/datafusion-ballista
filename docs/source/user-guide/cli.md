@@ -56,7 +56,17 @@ Create a CSV file to query.
 $ echo "1,2" > data.csv
 ```
 
+## Run Ballista CLI in Distributed Mode
+
+The CLI can connect to a Ballista scheduler for query execution.
+
+```bash
+datafusion-cli --host localhost --port 50050
+```
+
 ## Run Ballista CLI in Standalone Mode
+
+It is also possible to run the CLI in standalone mode, where it will create a scheduler and executor in-process.
 
 ```bash
 $ ballista-cli
@@ -73,14 +83,6 @@ Ballista CLI v8.0.0
 | 1 | 2 |
 +---+---+
 1 row in set. Query took 0.017 seconds.
-```
-
-## Run Ballista CLI in Distributed Mode
-
-The CLI can also connect to a Ballista scheduler for query execution.
-
-```bash
-datafusion-cli --host localhost --port 50050
 ```
 
 ## Cli commands
