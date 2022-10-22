@@ -23,7 +23,7 @@
 
 ### Major Release
 
-Ballista typically has major releases from the `master` branch every 1-3 months, including breaking API changes.
+Ballista typically has major releases from the `master` branch every 4 weeks.
 
 ## Prerequisite
 
