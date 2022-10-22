@@ -781,7 +781,7 @@ message TaskStatus {
 
 message PollWorkParams {
   ExecutorRegistration metadata = 1;
-  bool can_accept_task = 2;
+  uint32 num_free_slots = 2;
   // All tasks must be reported until they reach the failed or completed state
   repeated TaskStatus task_status = 3;
 }
@@ -825,7 +825,7 @@ message JobSessionConfig {
 }
 
 message PollWorkResult {
-  TaskDefinition task = 1;
+  repeated TaskDefinition tasks = 1;
 }
 
 message RegisterExecutorParams {
