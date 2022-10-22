@@ -67,7 +67,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let remote_addr = request.remote_addr();
         if let PollWorkParams {
             metadata: Some(metadata),
-            can_accept_task,
+            num_free_slots,
             task_status,
         } = request.into_inner()
         {
@@ -140,35 +140,29 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     Status::internal(msg)
                 })?;
 
-            // If executor can accept another task, try and find one.
-            let next_task = if can_accept_task {
-                let reservations =
-                    vec![ExecutorReservation::new_free(metadata.id.clone())];
-                if let Ok((mut assignments, _, _)) = self
-                    .state
-                    .task_manager
-                    .fill_reservations(&reservations)
-                    .await
-                {
-                    if let Some((_, task)) = assignments.pop() {
-                        match self.state.task_manager.prepare_task_definition(task) {
-                            Ok(task_definition) => Some(task_definition),
-                            Err(e) => {
-                                error!("Error preparing task definition: {:?}", e);
-                                None
-                            }
+            // Find `num_free_slots` next tasks when available
+            let mut next_tasks = vec![];
+            let reservations = vec![
+                ExecutorReservation::new_free(metadata.id.clone());
+                num_free_slots as usize
+            ];
+            if let Ok((mut assignments, _, _)) = self
+                .state
+                .task_manager
+                .fill_reservations(&reservations)
+                .await
+            {
+                while let Some((_, task)) = assignments.pop() {
+                    match self.state.task_manager.prepare_task_definition(task) {
+                        Ok(task_definition) => next_tasks.push(task_definition),
+                        Err(e) => {
+                            error!("Error preparing task definition: {:?}", e);
                         }
-                    } else {
-                        None
                     }
-                } else {
-                    None
                 }
-            } else {
-                None
-            };
+            }
 
-            Ok(Response::new(PollWorkResult { task: next_task }))
+            Ok(Response::new(PollWorkResult { tasks: next_tasks }))
         } else {
             warn!("Received invalid executor poll_work request");
             Err(Status::invalid_argument("Missing metadata in request"))
@@ -594,7 +588,7 @@ mod test {
         };
         let request: Request<PollWorkParams> = Request::new(PollWorkParams {
             metadata: Some(exec_meta.clone()),
-            can_accept_task: false,
+            num_free_slots: 0,
             task_status: vec![],
         });
         let response = scheduler
@@ -603,7 +597,7 @@ mod test {
             .expect("Received error response")
             .into_inner();
         // no response task since we told the scheduler we didn't want to accept one
-        assert!(response.task.is_none());
+        assert!(response.tasks.is_empty());
         let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerState::new_with_default_scheduler_name(
                 state_storage.clone(),
@@ -626,7 +620,7 @@ mod test {
 
         let request: Request<PollWorkParams> = Request::new(PollWorkParams {
             metadata: Some(exec_meta.clone()),
-            can_accept_task: true,
+            num_free_slots: 1,
             task_status: vec![],
         });
         let response = scheduler
@@ -636,7 +630,7 @@ mod test {
             .into_inner();
 
         // still no response task since there are no tasks in the scheduler
-        assert!(response.task.is_none());
+        assert!(response.tasks.is_empty());
         let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerState::new_with_default_scheduler_name(
                 state_storage.clone(),

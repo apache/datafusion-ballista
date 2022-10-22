@@ -86,16 +86,19 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         > = scheduler
             .poll_work(PollWorkParams {
                 metadata: Some(executor.metadata.clone()),
-                can_accept_task: true,
+                num_free_slots: available_task_slots.available_permits() as u32,
                 task_status,
             })
             .await;
 
-        let task_status_sender = task_status_sender.clone();
-
         match poll_work_result {
             Ok(result) => {
-                if let Some(task) = result.into_inner().task {
+                let tasks = result.into_inner().tasks;
+                active_job = !tasks.is_empty();
+
+                for task in tasks {
+                    let task_status_sender = task_status_sender.clone();
+
                     // Acquire a permit/slot for the task
                     let permit =
                         available_task_slots.clone().acquire_owned().await.unwrap();
@@ -110,16 +113,11 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     )
                     .await
                     {
-                        Ok(_) => {
-                            active_job = true;
-                        }
+                        Ok(_) => {}
                         Err(e) => {
                             warn!("Failed to run task: {:?}", e);
-                            active_job = false;
                         }
                     }
-                } else {
-                    active_job = false
                 }
             }
             Err(error) => {
