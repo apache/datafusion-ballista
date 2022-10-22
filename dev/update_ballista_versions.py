@@ -96,8 +96,7 @@ def main():
         update_cargo_toml(cargo_toml, new_version)
 
     for path in (
-            "benchmarks/docker-compose.yaml",
-            "docs/source/user-guide/deployment/docker-compose.md",
+            "docker-compose.yml",
     ):
         path = os.path.join(repo_root, path)
         update_docker_compose(path, new_version)
