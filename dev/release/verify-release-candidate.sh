@@ -135,6 +135,8 @@ test_source_distribution() {
     exit 1
   fi
 
+  # run integration tests that will run end-to-end tests in docker-compose
+  ./dev/integration-tests.sh
 
   # Note can't verify other ballista crates as they depend
   # on ballista-core which isn't published yet
