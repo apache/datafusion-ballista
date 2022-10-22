@@ -30,7 +30,7 @@ The Ballista deployment consists of:
 - k8s persistent volume and persistent volume claims to make local data accessible to Ballista
 - _(optional)_ a [keda](http://keda.sh) instance for autoscaling the number of executors
 
-## Testing locally
+## Testing Locally
 
 [Microk8s](https://microk8s.io/) is recommended for installing a local k8s cluster. Once Microk8s is installed, DNS
 must be enabled using the following command.
@@ -39,41 +39,32 @@ must be enabled using the following command.
 microk8s enable dns
 ```
 
-## Limitations
+## Build Docker Images
 
-Ballista is at an early stage of development and therefore has some significant limitations:
-
-- There is no support for shared object stores such as S3. All data must exist locally on each node in the
-  cluster, including where any client process runs.
-- Only a single scheduler instance is currently supported unless the scheduler is configured to use `etcd` as a
-  backing store.
-
-## Build Docker image
-
-There is no officially published Docker image so it is currently necessary to build the image from source instead.
+There are no officially published Docker images, so it is currently necessary to build the images from source.
 
 Run the following commands to clone the source repository and build the Docker image.
 
 ```bash
-git clone git@github.com:apache/arrow-ballista.git
+git clone git@github.com:apache/arrow-ballista.git -b 0.9.0
 cd arrow-ballista
 ./dev/build-ballista-docker.sh
 ```
 
 This will create the following images:
 
-- `apache/arrow-ballista-scheduler:0.8.0`
-- `apache/arrow-ballista-executor:0.8.0`
+- `apache/arrow-ballista-scheduler:0.9.0`
+- `apache/arrow-ballista-executor:0.9.0`
 
-## Publishing your images
+## Publishing Docker Images
 
-Once the images have been built, you can retag them and can push them to your favourite docker registry.
+Once the images have been built, you can retag them and can push them to your favourite Docker registry.
 
 ```bash
-docker tag apache/arrow-ballista-scheduler:0.8.0 <your-repo>/arrow-ballista-scheduler:0.8.0
-docker tag apache/arrow-ballista-executor:0.8.0 <your-repo>/arrow-ballista-executor:0.8.0
-docker push <your-repo>/arrow-ballista-scheduler:0.8.0
-docker push <your-repo>/arrow-ballista-executor:0.8.0
+docker tag apache/arrow-ballista-scheduler:0.9.0 <your-repo>/arrow-ballista-scheduler:0.9.0
+docker tag apache/arrow-ballista-executor:0.9.0 <your-repo>/arrow-ballista-executor:0.9.0
+docker push <your-repo>/arrow-ballista-scheduler:0.9.0
+docker push <your-repo>/arrow-ballista-executor:0.9.0
 ```
 
 ## Create Persistent Volume and Persistent Volume Claim
@@ -124,7 +115,7 @@ persistentvolume/data-pv created
 persistentvolumeclaim/data-pv-claim created
 ```
 
-## Deploying Ballista Scheduler and Executors
+## Deploying a Ballista Cluster
 
 Copy the following yaml to a `cluster.yaml` file and change `<your-image>` with the name of your Ballista Docker image.
 
@@ -161,7 +152,7 @@ spec:
     spec:
       containers:
         - name: ballista-scheduler
-          image: <your-repo>/arrow-ballista-scheduler:0.8.0
+          image: <your-repo>/arrow-ballista-scheduler:0.9.0
           args: ["--bind-port=50050"]
           ports:
             - containerPort: 50050
@@ -193,7 +184,7 @@ spec:
     spec:
       containers:
         - name: ballista-executor
-          image: <your-repo>/arrow-ballista-executor:0.8.0
+          image: <your-repo>/arrow-ballista-executor:0.9.0
           args:
             - "--bind-port=50051"
             - "--scheduler-host=ballista-scheduler"
@@ -261,7 +252,7 @@ Use the following command to set up port-forwarding.
 kubectl port-forward service/ballista-scheduler 50050:50050
 ```
 
-## Deleting the Ballista cluster
+## Deleting the Ballista Cluster
 
 Run the following kubectl command to delete the cluster.
 
@@ -269,7 +260,7 @@ Run the following kubectl command to delete the cluster.
 kubectl delete -f cluster.yaml
 ```
 
-## Adding autoscaling for executors
+## Autoscaling Executors
 
 Ballista supports autoscaling for executors through [Keda](http://keda.sh). Keda allows scaling a deployment
 through custom metrics which are exposed through the Ballista scheduler, and it can even scale the number of

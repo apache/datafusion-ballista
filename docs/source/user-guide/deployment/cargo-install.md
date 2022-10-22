@@ -35,16 +35,15 @@ RUST_LOG=info ballista-scheduler
 
 The scheduler will bind to port 50050 by default.
 
-Next, start an executor processes in a new terminal session with the specified concurrency
-level.
+Next, start an executor processes in a new terminal session.
 
 ```bash
-RUST_LOG=info ballista-executor -c 4
+RUST_LOG=info ballista-executor
 ```
 
 The executor will bind to port 50051 by default. Additional executors can be started by
 manually specifying a bind port. For example:
 
 ```bash
-RUST_LOG=info ballista-executor --bind-port 50052 -c 4
+RUST_LOG=info ballista-executor --bind-port 50052
 ```
