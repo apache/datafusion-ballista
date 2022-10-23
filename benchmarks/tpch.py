@@ -140,9 +140,10 @@ import time
 start = time.time()
 
 df = ctx.sql(sql)
-df.show()
+results = df.collect()
+row_count = sum([record.num_rows for record in results])
 
 end = time.time()
-print("Query", query, "took", end - start, "second(s)")
+print("Query", query, "took", end - start, "second(s) and returned", row_count,"rows")
 
 
