@@ -38,7 +38,7 @@ use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::file_format::FileFormat;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use futures::TryStreamExt;
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 
 use std::ops::Deref;
 use std::sync::Arc;
@@ -71,7 +71,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             task_status,
         } = request.into_inner()
         {
-            debug!("Received poll_work request for {:?}", metadata);
+            trace!("Received poll_work request for {:?}", metadata);
             // We might receive buggy poll work requests from dead executors.
             if self
                 .state

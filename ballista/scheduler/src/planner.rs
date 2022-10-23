@@ -229,6 +229,7 @@ pub fn remove_unresolved_shuffles(
                     .iter()
                     .map(|c| c
                         .iter()
+                        .filter(|l| !l.path.is_empty())
                         .map(|l| l.path.clone())
                         .collect::<Vec<_>>()
                         .join(", "))

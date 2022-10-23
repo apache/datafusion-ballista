@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::datasource::listing::{ListingTable, ListingTableUrl};
+use datafusion::datasource::source_as_provider;
+use datafusion::logical_expr::PlanVisitor;
 use std::any::type_name;
 use std::collections::HashMap;
 use std::future::Future;
@@ -34,6 +37,7 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use datafusion::logical_plan::LogicalPlan;
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::{debug, error, info};
@@ -304,11 +308,68 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         plan: &LogicalPlan,
     ) -> Result<()> {
         let start = Instant::now();
-        let optimized_plan = session_ctx.optimize(plan)?;
 
-        debug!("Calculated optimized plan: {:?}", optimized_plan);
+        if log::max_level() >= log::Level::Debug {
+            // optimizing the plan here is redundant because the physical planner will do this again
+            // but it is helpful to see what the optimized plan will be
+            let optimized_plan = session_ctx.optimize(plan)?;
+            debug!("Optimized plan: {}", optimized_plan.display_indent());
+        }
 
-        let plan = session_ctx.create_physical_plan(&optimized_plan).await?;
+        struct VerifyPathsExist {}
+        impl PlanVisitor for VerifyPathsExist {
+            type Error = BallistaError;
+
+            fn pre_visit(
+                &mut self,
+                plan: &LogicalPlan,
+            ) -> std::result::Result<bool, Self::Error> {
+                if let LogicalPlan::TableScan(scan) = plan {
+                    let provider = source_as_provider(&scan.source)?;
+                    if let Some(table) = provider.as_any().downcast_ref::<ListingTable>()
+                    {
+                        let local_paths: Vec<&ListingTableUrl> = table
+                            .table_paths()
+                            .iter()
+                            .filter(|url| url.as_str().starts_with("file:///"))
+                            .collect();
+                        if !local_paths.is_empty() {
+                            // These are local files rather than remote object stores, so we
+                            // need to check that they are accessible on the scheduler (the client
+                            // may not be on the same host, or the data path may not be correctly
+                            // mounted in the container). There could be thousands of files so we
+                            // just check the first one.
+                            let url = &local_paths[0].as_str();
+                            // the unwraps are safe here because we checked that the url starts with file:///
+                            // we need to check both versions here to support Linux & Windows
+                            ListingTableUrl::parse(url.strip_prefix("file://").unwrap())
+                                .or_else(|_| {
+                                    ListingTableUrl::parse(
+                                        url.strip_prefix("file:///").unwrap(),
+                                    )
+                                })
+                                .map_err(|e| {
+                                    BallistaError::General(format!(
+                                    "logical plan refers to path on local file system \
+                                    that is not accessible in the scheduler: {}: {:?}",
+                                    url, e
+                                ))
+                                })?;
+                        }
+                    }
+                }
+                Ok(true)
+            }
+        }
+
+        let mut verify_paths_exist = VerifyPathsExist {};
+        plan.accept(&mut verify_paths_exist)?;
+
+        let plan = session_ctx.create_physical_plan(plan).await?;
+        debug!(
+            "Physical plan: {}",
+            DisplayableExecutionPlan::new(plan.as_ref()).indent()
+        );
 
         self.task_manager
             .submit_job(job_id, job_name, &session_ctx.session_id(), plan)

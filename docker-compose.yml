@@ -31,7 +31,7 @@ services:
       - "80:80"
       - "50050:50050"
     environment:
-      - RUST_LOG=info
+      - RUST_LOG=ballista=debug,info
     volumes:
       - ./benchmarks/data:/data
     depends_on:
