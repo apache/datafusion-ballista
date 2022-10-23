@@ -50,6 +50,16 @@ Ballista implements a similar design to Apache Spark (particularly Spark SQL), b
 - Scheduler web interface and REST UI for monitoring query progress and viewing query plans and metrics.
 - Support for Docker, Docker Compose, and Kubernetes deployment, as well as manual deployment on bare metal.
 
+## Performance
+
+We run some simple benchmarks comparing Ballista with Apache Spark to track progress with performance optimizations.
+These are benchmarks derived from TPC-H and not official TPC-H benchmarks. These results are from running individual
+queries at scale factor 10 (10 GB) on a single node with a single executor and 24 concurrent tasks.
+
+The tracking issue for improving these results is [#339](https://github.com/apache/arrow-ballista/issues/339).
+
+![benchmarks](./docs/developer/images/ballista-benchmarks.png)
+
 # Getting Started
 
 The easiest way to get started is to run one of the standalone or distributed [examples](./examples/README.md). After
@@ -74,25 +84,35 @@ The current focus is on the following items:
 
 - Make production ready
   - Shuffle file cleanup
-    - Periodically
+    - Periodically ([#185](https://github.com/apache/arrow-ballista/issues/185))
     - Add gRPC & REST interfaces for clients/UI to actively call the cleanup for a job or the whole system
   - Fill functional gaps between DataFusion and Ballista
   - Improve task scheduling and data exchange efficiency
   - Better error handling
-    - Schedule restart
+    - Scheduler restart
   - Improve monitoring, logging, and metrics
   - Auto scaling support
   - Better configuration management
-- All-at-once job task scheduling
+  - Support for multi-scheduler deployments. Initially for resiliency and fault tolerance but ultimately to support
+    sharding for scalability and more efficient caching.
 - Shuffle improvement
-  - Shuffle memory control
+  - Shuffle memory control ([#320](https://github.com/apache/arrow-ballista/issues/320))
   - Improve shuffle IO to avoid producing too many files
   - Support sort-based shuffle
   - Support range partition
-  - Support broadcast shuffle
-- Support for multi-scheduler deployments. Initially for resiliency and fault tolerance but ultimately to support
-  sharding for scalability and more efficient caching.
-- Executor deployment grouping based on resource allocation
+  - Support broadcast shuffle ([#342](https://github.com/apache/arrow-ballista/issues/342))
+- Scheduler Improvements
+  - All-at-once job task scheduling
+  - Executor deployment grouping based on resource allocation
+- Cloud Support
+  - Support Azure Blob Storage ([#294](https://github.com/apache/arrow-ballista/issues/294))
+  - Support Google Cloud Storage ([#293](https://github.com/apache/arrow-ballista/issues/293))
+- Performance and scalability
+  - Implement Adaptive Query Execution ([#387](https://github.com/apache/arrow-ballista/issues/387))
+  - Implement bubble execution ([#408](https://github.com/apache/arrow-ballista/issues/408))
+  - Improve benchmark results ([#339](https://github.com/apache/arrow-ballista/issues/339))
+- Python Support
+  - Support Python UDFs ([#173](https://github.com/apache/arrow-ballista/issues/173))
 
 ## Architecture Overview
 
@@ -102,10 +122,11 @@ Statistical Programming Meetup (Feb 2021).
 
 ## Contribution Guide
 
-Please see [Contribution Guide](CONTRIBUTING.md) for information about contributing to DataFusion.
+Please see the [Contribution Guide](CONTRIBUTING.md) for information about contributing to Ballista.
 
 [arrow]: https://arrow.apache.org/
 [datafusion]: https://github.com/apache/arrow-datafusion
 [flight]: https://arrow.apache.org/blog/2019/10/13/introducing-arrow-flight/
 [flight-sql]: https://arrow.apache.org/blog/2022/02/16/introducing-arrow-flight-sql/
 [ballista-talk]: https://www.youtube.com/watch?v=ZZHQaOap9pQ
+[user-guide]: https://arrow.apache.org/ballista/
