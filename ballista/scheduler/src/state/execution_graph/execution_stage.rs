@@ -22,10 +22,12 @@ use std::iter::FromIterator;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use datafusion::physical_optimizer::hash_build_probe_order::HashBuildProbeOrder;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use datafusion::physical_plan::{ExecutionPlan, Metric, Partitioning};
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::{debug, warn};
 
@@ -359,6 +361,11 @@ impl UnresolvedStage {
             self.plan.clone(),
             &input_locations,
         )?;
+
+        // Optimize join order based on new resolved statistics
+        let optimize_join = HashBuildProbeOrder::new();
+        let plan = optimize_join.optimize(plan, &SessionConfig::new())?;
+
         Ok(ResolvedStage::new(
             self.stage_id,
             self.stage_attempt_num,

@@ -244,6 +244,7 @@ pub fn remove_unresolved_shuffles(
             new_children.push(remove_unresolved_shuffles(child, partition_locations)?);
         }
     }
+
     Ok(with_new_children_if_necessary(stage, new_children)?)
 }
 
