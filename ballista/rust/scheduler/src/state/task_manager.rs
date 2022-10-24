@@ -588,7 +588,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             Ordering::Relaxed,
             |s| Some(s + num),
         ) {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                info!("Pending queue size was incremented by: {}", num);
+                Ok(())
+            }
             Err(_) => Err(BallistaError::Internal(
                 "Unable to update pending task counter".to_owned(),
             )),
@@ -601,7 +604,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             Ordering::Relaxed,
             |s| Some(s - num),
         ) {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                info!("Pending queue size was decremented by: {}", num);
+                Ok(())
+            }
             Err(_) => Err(BallistaError::Internal(
                 "Unable to update pending task counter".to_owned(),
             )),
