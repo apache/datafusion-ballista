@@ -579,12 +579,20 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     input.schema().as_ref(),
                 )?;
 
-                Ok(Arc::new(ShuffleWriterExec::try_new(
+                let limit = shuffle_writer.optional_limit.as_ref();
+
+                Ok(Arc::new(ShuffleWriterExec::try_new_with_limit(
                     shuffle_writer.job_id.clone(),
                     shuffle_writer.stage_id as usize,
                     input,
                     "".to_string(), // this is intentional but hacky - the executor will fill this in
                     output_partitioning,
+                    limit.map(|limit| {
+                        let protobuf::shuffle_writer_exec_node::OptionalLimit::Limit(
+                            limit,
+                        ) = limit;
+                        *limit as usize
+                    }),
                 )?))
             }
             PhysicalPlanType::ShuffleReader(shuffle_reader) => {
@@ -1153,6 +1161,11 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         stage_id: exec.stage_id() as u32,
                         input: Some(Box::new(input)),
                         output_partitioning,
+                        optional_limit: exec.limit().map(|limit| {
+                            protobuf::shuffle_writer_exec_node::OptionalLimit::Limit(
+                                limit as u64,
+                            )
+                        }),
                     },
                 ))),
             })
