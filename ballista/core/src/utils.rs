@@ -43,7 +43,7 @@ use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{metrics, ExecutionPlan, RecordBatchStream};
-#[cfg(feature = "hdfs")]
+#[cfg(any(feature = "hdfs", feature = "hdfs3"))]
 use datafusion_objectstore_hdfs::object_store::hdfs::HadoopFileSystem;
 use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
@@ -89,7 +89,7 @@ impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
     /// Return the key and object store
     #[allow(unused_variables)]
     fn get_by_url(&self, url: &Url) -> datafusion::error::Result<Arc<dyn ObjectStore>> {
-        #[cfg(feature = "hdfs")]
+        #[cfg(any(feature = "hdfs", feature = "hdfs3"))]
         {
             let store = HadoopFileSystem::new(url.as_str());
             if let Some(store) = store {
