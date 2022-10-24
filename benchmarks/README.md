@@ -44,7 +44,7 @@ to the `.gitignore` file.
 Build the Python bindings and then run:
 
 ```bash
-$ python tpch.py --query q1 --path /mnt/bigdata/tpch/sf1-parquet/ 
+$ python tpch.py --query q1 --path /mnt/bigdata/tpch/sf1-parquet/
 Registering table part at path /mnt/bigdata/tpch/sf1-parquet//part
 Registering table supplier at path /mnt/bigdata/tpch/sf1-parquet//supplier
 Registering table partsupp at path /mnt/bigdata/tpch/sf1-parquet//partsupp
@@ -56,7 +56,7 @@ Registering table region at path /mnt/bigdata/tpch/sf1-parquet//region
 Query q1 took 9.668351173400879 second(s)
 ```
 
-Note that this Python script currently only supports running against file formats than contain a schema 
+Note that this Python script currently only supports running against file formats than contain a schema
 definition (such as Parquet).
 
 ## Running the DataFusion Benchmarks in Rust
@@ -178,6 +178,67 @@ Query 1 iteration 0 took 1956.1 ms
 Query 1 avg time: 1956.11 ms
 ```
 
+## Comparing Performance with Apache Spark
+
+We run benchmarks to compare performance with Spark to identify future areas of optimization. We publish the latest
+results in the top-level README.
+
+### Ballista
+
+Build with the `release-lto` profile.
+
+```bash
+cargo build --profile release-lto
+```
+
+Run the cluster.
+
+```bash
+./target/release-lto/ballista-scheduler
+./target/release-lto/ballista-executor -c 24
+```
+
+Running the benchmark.
+
+```bash
+./target/release-lto/tpch benchmark ballista \
+    --host localhost \
+    --port 50050 \
+    --path /mnt/bigdata/tpch/sf10-parquet-float/ \
+    --format parquet \
+    --iterations 1 \
+    --partitions 24 \
+    --query 1
+```
+
+### Spark
+
+Start the cluster.
+
+```bash
+./sbin/start-master.sh
+./sbin/start-worker.sh spark://ripper:7077
+```
+
+Run the benchmark.
+
+```bash
+$SPARK_HOME/bin/spark-submit \
+    --master spark://ripper:7077 \
+    --class org.apache.arrow.ballista.SparkTpch \
+    --conf spark.driver.memory=8G \
+    --num-executors=1 \
+    --conf spark.executor.memory=32G \
+    --conf spark.executor.cores=24 \
+    --conf spark.cores.max=24 \
+    target/spark-tpch-0.5.0-SNAPSHOT-jar-with-dependencies.jar \
+    tpch \
+    --input-path /mnt/bigdata/tpch/sf10-parquet-float/ \
+    --input-format parquet \
+    --query-path /home/andy/git/apache/arrow-ballista/benchmarks/queries \
+    --query 1
+```
+
 ## NYC Taxi Benchmark
 
 These benchmarks are based on the [New York Taxi and Limousine Commission][2] data set.
@@ -199,14 +260,14 @@ Query 'fare_amt_by_passenger' iteration 2 took 7969 ms
 ## Running the Ballista Loadtest
 
 ```bash
- cargo run --bin tpch -- loadtest  ballista-load 
-  --query-list 1,3,5,6,7,10,12,13 
-  --requests 200 
-  --concurrency 10  
-  --data-path /**** 
-  --format parquet 
-  --host localhost 
-  --port 50050 
+ cargo run --bin tpch -- loadtest  ballista-load
+  --query-list 1,3,5,6,7,10,12,13
+  --requests 200
+  --concurrency 10
+  --data-path /****
+  --format parquet
+  --host localhost
+  --port 50050
   --sql-path /***
   --debug
 ```
