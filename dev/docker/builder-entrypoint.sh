@@ -17,10 +17,11 @@
 # specific language governing permissions and limitations
 # under the License.
 
+set -e
 set -x
 
 printenv
-RELEASE_FLAG=${RELEASE_FLA:=release}
+RELEASE_FLAG=${RELEASE_FLAG:=release}
 cargo build --features flight-sql "--$RELEASE_FLAG" "$@"
 
 cd ballista/scheduler/ui
