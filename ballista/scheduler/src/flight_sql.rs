@@ -31,11 +31,10 @@ use arrow_flight::{
     HandshakeResponse, Location, Ticket,
 };
 use log::{debug, error, warn};
-use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::pin::Pin;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tonic::{Request, Response, Status, Streaming};
 
@@ -51,6 +50,7 @@ use ballista_core::serde::protobuf::JobStatus;
 use ballista_core::serde::protobuf::PhysicalPlanNode;
 use ballista_core::serde::protobuf::SuccessfulJob;
 use ballista_core::utils::create_grpc_client_connection;
+use dashmap::DashMap;
 use datafusion::arrow;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::ipc::writer::{IpcDataGenerator, IpcWriteOptions};
@@ -66,16 +66,16 @@ use uuid::Uuid;
 
 pub struct FlightSqlServiceImpl {
     server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
-    statements: Arc<Mutex<HashMap<Uuid, LogicalPlan>>>,
-    contexts: Arc<Mutex<HashMap<Uuid, Arc<SessionContext>>>>,
+    statements: Arc<DashMap<Uuid, LogicalPlan>>,
+    contexts: Arc<DashMap<Uuid, Arc<SessionContext>>>,
 }
 
 impl FlightSqlServiceImpl {
     pub fn new(server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>) -> Self {
         Self {
             server,
-            statements: Arc::new(Mutex::new(HashMap::new())),
-            contexts: Arc::new(Mutex::new(HashMap::new())),
+            statements: Default::default(),
+            contexts: Default::default(),
         }
     }
 
@@ -94,11 +94,7 @@ impl FlightSqlServiceImpl {
                 Status::internal(format!("Failed to create SessionContext: {:?}", e))
             })?;
         let handle = Uuid::new_v4();
-        let mut contexts = self
-            .contexts
-            .try_lock()
-            .map_err(|e| Status::internal(format!("Error locking contexts: {}", e)))?;
-        contexts.insert(handle.clone(), ctx);
+        self.contexts.insert(handle.clone(), ctx);
         Ok(handle)
     }
 
@@ -119,19 +115,14 @@ impl FlightSqlServiceImpl {
 
         let handle = Uuid::from_str(auth.as_str())
             .map_err(|e| Status::internal(format!("Error locking contexts: {}", e)))?;
-        let contexts = self
-            .contexts
-            .try_lock()
-            .map_err(|e| Status::internal(format!("Error locking contexts: {}", e)))?;
-        let context = if let Some(context) = contexts.get(&handle) {
-            context
+        if let Some(context) = self.contexts.get(&handle) {
+            Ok(context.clone())
         } else {
             Err(Status::internal(format!(
                 "Context handle not found: {}",
                 handle
             )))?
-        };
-        Ok(context.clone())
+        }
     }
 
     async fn prepare_statement(
@@ -244,36 +235,23 @@ impl FlightSqlServiceImpl {
 
     fn cache_plan(&self, plan: LogicalPlan) -> Result<Uuid, Status> {
         let handle = Uuid::new_v4();
-        let mut statements = self
-            .statements
-            .try_lock()
-            .map_err(|e| Status::internal(format!("Error locking statements: {}", e)))?;
-        statements.insert(handle, plan);
+        self.statements.insert(handle, plan);
         Ok(handle)
     }
 
     fn get_plan(&self, handle: &Uuid) -> Result<LogicalPlan, Status> {
-        let statements = self
-            .statements
-            .try_lock()
-            .map_err(|e| Status::internal(format!("Error locking statements: {}", e)))?;
-        let plan = if let Some(plan) = statements.get(handle) {
-            plan
+        if let Some(plan) = self.statements.get(handle) {
+            Ok(plan.clone())
         } else {
             Err(Status::internal(format!(
                 "Statement handle not found: {}",
                 handle
             )))?
-        };
-        Ok(plan.clone())
+        }
     }
 
     fn remove_plan(&self, handle: Uuid) -> Result<(), Status> {
-        let mut statements = self
-            .statements
-            .try_lock()
-            .map_err(|e| Status::internal(format!("Error locking statements: {}", e)))?;
-        statements.remove(&handle);
+        self.statements.remove(&handle);
         Ok(())
     }
 
