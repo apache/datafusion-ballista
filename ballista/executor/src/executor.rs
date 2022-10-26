@@ -17,6 +17,7 @@
 
 //! Ballista executor logic
 
+use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -35,9 +36,8 @@ use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use futures::future::AbortHandle;
 
 use ballista_core::serde::scheduler::PartitionId;
-use tokio::sync::Mutex;
 
-type AbortHandles = Arc<Mutex<HashMap<(usize, PartitionId), AbortHandle>>>;
+type AbortHandles = Arc<DashMap<(usize, PartitionId), AbortHandle>>;
 
 /// Ballista executor
 #[derive(Clone)]
@@ -106,17 +106,12 @@ impl Executor {
             shuffle_writer.execute_shuffle_write(partition.partition_id, task_ctx),
         );
 
-        {
-            let mut abort_handles = self.abort_handles.lock().await;
-            abort_handles.insert((task_id, partition.clone()), abort_handle);
-        }
+        self.abort_handles
+            .insert((task_id, partition.clone()), abort_handle);
 
         let partitions = task.await??;
 
-        self.abort_handles
-            .lock()
-            .await
-            .remove(&(task_id, partition.clone()));
+        self.abort_handles.remove(&(task_id, partition.clone()));
 
         self.metrics_collector.record_stage(
             &partition.job_id,
@@ -162,7 +157,7 @@ impl Executor {
         stage_id: usize,
         partition_id: usize,
     ) -> Result<bool, BallistaError> {
-        if let Some(handle) = self.abort_handles.lock().await.remove(&(
+        if let Some((_, handle)) = self.abort_handles.remove(&(
             task_id,
             PartitionId {
                 job_id,
