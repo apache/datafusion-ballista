@@ -23,6 +23,8 @@ use prost::Message;
 
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::config::ConfigOptions;
+use datafusion::datasource::file_format::file_type::FileCompressionType;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -32,6 +34,7 @@ use datafusion::physical_plan::aggregates::{create_aggregate_expr, AggregateMode
 use datafusion::physical_plan::aggregates::{AggregateExec, PhysicalGroupBy};
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::cross_join::CrossJoinExec;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::explain::ExplainExec;
 use datafusion::physical_plan::expressions::{Column, PhysicalSortExpr};
@@ -39,9 +42,8 @@ use datafusion::physical_plan::file_format::{
     AvroExec, CsvExec, FileScanConfig, ParquetExec,
 };
 use datafusion::physical_plan::filter::FilterExec;
-use datafusion::physical_plan::joins::utils::{ColumnIndex, JoinFilter};
-use datafusion::physical_plan::joins::CrossJoinExec;
-use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
+use datafusion::physical_plan::hash_join::{HashJoinExec, PartitionMode};
+use datafusion::physical_plan::join_utils::{ColumnIndex, JoinFilter};
 use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
@@ -53,6 +55,7 @@ use datafusion::physical_plan::{
     AggregateExpr, ExecutionPlan, Partitioning, PhysicalExpr, WindowExpr,
 };
 use datafusion_proto::from_proto::parse_expr;
+use parking_lot::RwLock;
 
 use crate::error::BallistaError;
 use crate::execution_plans::{
@@ -159,6 +162,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 decode_scan_config(scan.base_conf.as_ref().unwrap())?,
                 scan.has_header,
                 str_to_byte(&scan.delimiter)?,
+                FileCompressionType::UNCOMPRESSED,
             ))),
             PhysicalPlanType::ParquetScan(scan) => {
                 let predicate = scan
@@ -1259,6 +1263,7 @@ fn decode_scan_config(
     };
 
     Ok(FileScanConfig {
+        config_options: Arc::new(RwLock::new(ConfigOptions::new())), // TODO add serde
         object_store_url,
         file_schema: schema,
         file_groups,
@@ -1289,6 +1294,7 @@ mod roundtrip_tests {
 
     use datafusion::arrow::array::ArrayRef;
     use datafusion::arrow::datatypes::IntervalUnit;
+    use datafusion::config::ConfigOptions;
     use datafusion::datasource::object_store::ObjectStoreUrl;
     use datafusion::execution::context::ExecutionProps;
     use datafusion::logical_expr::create_udf;
@@ -1313,7 +1319,7 @@ mod roundtrip_tests {
             expressions::{Avg, Column, DistinctCount, PhysicalSortExpr},
             file_format::{FileScanConfig, ParquetExec},
             filter::FilterExec,
-            joins::{HashJoinExec, PartitionMode},
+            hash_join::{HashJoinExec, PartitionMode},
             limit::{GlobalLimitExec, LocalLimitExec},
             sorts::sort::SortExec,
             AggregateExpr, ExecutionPlan, Partitioning, PhysicalExpr, Statistics,
@@ -1326,6 +1332,7 @@ mod roundtrip_tests {
     use crate::serde::protobuf::PhysicalPlanNode;
     use crate::serde::{AsExecutionPlan, BallistaCodec};
     use datafusion_proto::protobuf::LogicalPlanNode;
+    use parking_lot::RwLock;
 
     use super::super::super::error::Result;
     use super::super::protobuf;
@@ -1569,6 +1576,7 @@ mod roundtrip_tests {
     #[test]
     fn roundtrip_parquet_exec_with_pruning_predicate() -> Result<()> {
         let scan_config = FileScanConfig {
+            config_options: Arc::new(RwLock::new(ConfigOptions::new())), // TODO add serde
             object_store_url: ObjectStoreUrl::local_filesystem(),
             file_schema: Arc::new(Schema::new(vec![Field::new(
                 "col",

@@ -153,7 +153,7 @@ impl<'a, 'b> ExecutionPlanVisitor for IndentVisitor<'a, 'b> {
 impl<'a> ToStringifiedPlan for DisplayableBallistaExecutionPlan<'a> {
     fn to_stringified(
         &self,
-        plan_type: datafusion::logical_plan::PlanType,
+        plan_type: datafusion::logical_expr::PlanType,
     ) -> StringifiedPlan {
         StringifiedPlan::new(plan_type, self.indent().to_string())
     }

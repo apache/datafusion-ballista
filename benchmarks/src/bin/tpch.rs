@@ -980,8 +980,7 @@ mod tests {
     use super::*;
     use datafusion::arrow::array::*;
     use datafusion::arrow::util::display::array_value_to_string;
-    use datafusion::logical_expr::Expr;
-    use datafusion::logical_expr::Expr::Cast;
+    use datafusion::logical_expr::{expr::Cast, Expr};
     use std::env;
     use std::sync::Arc;
 
@@ -1469,10 +1468,10 @@ mod tests {
                     .iter()
                     .map(|field| {
                         Expr::Alias(
-                            Box::new(Cast {
+                            Box::new(Expr::Cast(Cast {
                                 expr: Box::new(trim(col(Field::name(field)))),
                                 data_type: Field::data_type(field).to_owned(),
-                            }),
+                            })),
                             Field::name(field).to_string(),
                         )
                     })
