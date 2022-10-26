@@ -26,7 +26,7 @@ use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use ballista_core::utils::default_session_builder;
 
 use datafusion::execution::context::SessionState;
-use datafusion::logical_plan::LogicalPlan;
+use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 
@@ -303,7 +303,7 @@ mod test {
     use std::time::Duration;
 
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::logical_plan::{col, sum, LogicalPlan};
+    use datafusion::logical_expr::{col, sum, LogicalPlan};
 
     use datafusion::test_util::scan_empty;
     use datafusion_proto::protobuf::LogicalPlanNode;

@@ -35,7 +35,7 @@ use datafusion::catalog::TableReference;
 use datafusion::dataframe::DataFrame;
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result};
-use datafusion::logical_plan::{
+use datafusion::logical_expr::{
     source_as_provider, CreateExternalTable, LogicalPlan, TableScan,
 };
 use datafusion::prelude::{

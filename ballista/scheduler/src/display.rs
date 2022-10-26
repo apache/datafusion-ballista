@@ -20,7 +20,7 @@
 //! format
 
 use ballista_core::utils::collect_plan_metrics;
-use datafusion::logical_plan::{StringifiedPlan, ToStringifiedPlan};
+use datafusion::logical_expr::{StringifiedPlan, ToStringifiedPlan};
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{
     accept, DisplayFormatType, ExecutionPlan, ExecutionPlanVisitor,

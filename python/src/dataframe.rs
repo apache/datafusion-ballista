@@ -21,7 +21,7 @@ use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::pyarrow::{PyArrowConvert, PyArrowException, PyArrowType};
 use datafusion::arrow::util::pretty;
 use datafusion::dataframe::DataFrame;
-use datafusion::logical_plan::JoinType;
+use datafusion::logical_expr::JoinType;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;

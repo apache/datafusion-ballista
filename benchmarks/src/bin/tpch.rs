@@ -28,7 +28,7 @@ use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::SessionState;
-use datafusion::logical_plan::LogicalPlan;
+use datafusion::logical_expr::LogicalPlan;
 use datafusion::parquet::basic::Compression;
 use datafusion::parquet::file::properties::WriterProperties;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
@@ -980,8 +980,8 @@ mod tests {
     use super::*;
     use datafusion::arrow::array::*;
     use datafusion::arrow::util::display::array_value_to_string;
-    use datafusion::logical_plan::Expr;
-    use datafusion::logical_plan::Expr::Cast;
+    use datafusion::logical_expr::Expr;
+    use datafusion::logical_expr::Expr::Cast;
     use std::env;
     use std::sync::Arc;
 

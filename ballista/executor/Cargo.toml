@@ -42,8 +42,8 @@ ballista-core = { path = "../core", version = "0.9.0" }
 chrono = { version = "0.4", default-features = false }
 configure_me = "0.4.0"
 dashmap = "5.4.0"
-datafusion = "13.0.0"
-datafusion-proto = "13.0.0"
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev="3940e36957c8a78c75da159f4836580f82b0360f" }
+datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev="3940e36957c8a78c75da159f4836580f82b0360f" }
 futures = "0.3"
 hyper = "0.14.4"
 log = "0.4"

@@ -20,7 +20,7 @@ use std::convert::{From, Into};
 
 use datafusion::arrow::datatypes::DataType;
 use datafusion::arrow::pyarrow::PyArrowType;
-use datafusion::logical_plan::{col, lit, Expr};
+use datafusion::logical_expr::{col, lit, Expr};
 use datafusion::scalar::ScalarValue;
 
 /// An PyExpr that can be used on a DataFrame

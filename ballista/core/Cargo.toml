@@ -46,9 +46,9 @@ arrow-flight = { version = "24.0.0", features = ["flight-sql-experimental"] }
 async-trait = "0.1.41"
 chrono = { version = "0.4", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = "13.0.0"
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev="3940e36957c8a78c75da159f4836580f82b0360f" }
 datafusion-objectstore-hdfs = { version = "0.1.1", default-features = false, optional = true }
-datafusion-proto = "13.0.0"
+datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev="3940e36957c8a78c75da159f4836580f82b0360f" }
 futures = "0.3"
 hashbrown = "0.12"
 
