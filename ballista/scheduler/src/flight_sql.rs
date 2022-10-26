@@ -31,11 +31,10 @@ use arrow_flight::{
     HandshakeResponse, Location, Ticket,
 };
 use log::{debug, error, warn};
-use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::pin::Pin;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tonic::{Request, Response, Status, Streaming};
 
@@ -248,7 +247,7 @@ impl FlightSqlServiceImpl {
                 "Statement handle not found: {}",
                 handle
             )))?
-        };
+        }
     }
 
     fn remove_plan(&self, handle: Uuid) -> Result<(), Status> {
