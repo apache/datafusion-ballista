@@ -479,7 +479,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         request: Request<GetJobStatusParams>,
     ) -> Result<Response<GetJobStatusResult>, Status> {
         let job_id = request.into_inner().job_id;
-        debug!("Received get_job_status request for job {}", job_id);
+        trace!("Received get_job_status request for job {}", job_id);
         match self.state.task_manager.get_job_status(&job_id).await {
             Ok(status) => Ok(Response::new(GetJobStatusResult { status })),
             Err(e) => {

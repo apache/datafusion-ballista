@@ -350,6 +350,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             partition_id: partition_id as usize,
         };
 
+        info!("Start to execute shuffle write for task {}", task_identity);
+
         let execution_result = self
             .executor
             .execute_shuffle_write(
