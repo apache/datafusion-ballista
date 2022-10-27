@@ -150,7 +150,7 @@ impl TryFrom<&Expr> for PyArrowFilterExpression {
                         v
                     ))),
                 },
-                Expr::BinaryExpr { left, op, right } => {
+                Expr::BinaryExpr(BinaryExpr { left, op, right }) => {
                     let operator = operator_to_py(op, op_module)?;
                     let left = PyArrowFilterExpression::try_from(left.as_ref())?.0;
                     let right = PyArrowFilterExpression::try_from(right.as_ref())?.0;
@@ -173,12 +173,12 @@ impl TryFrom<&Expr> for PyArrowFilterExpression {
                         .into_ref(py);
                     Ok(expr.call_method1("is_null", (expr,))?)
                 }
-                Expr::Between {
+                Expr::Between(Between {
                     expr,
                     negated,
                     low,
                     high,
-                } => {
+                }) => {
                     let expr = PyArrowFilterExpression::try_from(expr.as_ref())?.0;
                     let low = PyArrowFilterExpression::try_from(low.as_ref())?.0;
                     let high = PyArrowFilterExpression::try_from(high.as_ref())?.0;
