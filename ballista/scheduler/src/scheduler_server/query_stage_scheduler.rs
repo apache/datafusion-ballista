@@ -16,7 +16,6 @@
 // under the License.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use log::{debug, error, info};
@@ -136,66 +135,68 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 error!("Job {} failed: {}", job_id, failure_reason);
                 self.state
                     .task_manager
-                    .fail_unscheduled_job(
-                        &job_id,
-                        failure_reason,
-                        CLEANUP_FINISHED_JOB_DELAY_SECS,
-                    )
+                    .fail_unscheduled_job(&job_id, failure_reason)
                     .await?;
             }
             QueryStageSchedulerEvent::JobFinished(job_id) => {
                 info!("Job {} success", job_id);
-                self.state
-                    .task_manager
-                    .succeed_job(&job_id, CLEANUP_FINISHED_JOB_DELAY_SECS)
-                    .await?;
-                let executor_manager = self.state.executor_manager.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(
+                self.state.task_manager.succeed_job(&job_id).await?;
+
+                // spawn a delayed future to clean up job data on both Scheduler and Executors
+                {
+                    self.state.task_manager.delete_successful_job_delayed(
+                        job_id.clone(),
                         CLEANUP_FINISHED_JOB_DELAY_SECS,
-                    ))
-                    .await;
-                    executor_manager.clean_up_job_data(job_id).await;
-                });
+                    );
+                    self.state.executor_manager.clean_up_job_data_delayed(
+                        job_id,
+                        CLEANUP_FINISHED_JOB_DELAY_SECS,
+                    );
+                }
             }
             QueryStageSchedulerEvent::JobRunningFailed(job_id, failure_reason) => {
                 error!("Job {} running failed", job_id);
                 let tasks = self
                     .state
                     .task_manager
-                    .abort_job(&job_id, failure_reason, CLEANUP_FINISHED_JOB_DELAY_SECS)
+                    .abort_job(&job_id, failure_reason)
                     .await?;
                 if !tasks.is_empty() {
                     tx_event
                         .post_event(QueryStageSchedulerEvent::CancelTasks(tasks))
                         .await?;
                 }
-                let executor_manager = self.state.executor_manager.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(
+
+                // spawn a delayed future to clean up job data on both Scheduler and Executors
+                {
+                    self.state.task_manager.delete_failed_job_delayed(
+                        job_id.clone(),
                         CLEANUP_FINISHED_JOB_DELAY_SECS,
-                    ))
-                    .await;
-                    executor_manager.clean_up_job_data(job_id).await;
-                });
+                    );
+                    self.state.executor_manager.clean_up_job_data_delayed(
+                        job_id,
+                        CLEANUP_FINISHED_JOB_DELAY_SECS,
+                    );
+                }
             }
             QueryStageSchedulerEvent::JobUpdated(job_id) => {
                 info!("Job {} Updated", job_id);
                 self.state.task_manager.update_job(&job_id).await?;
             }
             QueryStageSchedulerEvent::JobCancel(job_id) => {
-                self.state
-                    .task_manager
-                    .cancel_job(&job_id, CLEANUP_FINISHED_JOB_DELAY_SECS)
-                    .await?;
-                let executor_manager = self.state.executor_manager.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(
+                self.state.task_manager.cancel_job(&job_id).await?;
+
+                // spawn a delayed future to clean up job data on both Scheduler and Executors
+                {
+                    self.state.task_manager.delete_failed_job_delayed(
+                        job_id.clone(),
                         CLEANUP_FINISHED_JOB_DELAY_SECS,
-                    ))
-                    .await;
-                    executor_manager.clean_up_job_data(job_id).await;
-                });
+                    );
+                    self.state.executor_manager.clean_up_job_data_delayed(
+                        job_id,
+                        CLEANUP_FINISHED_JOB_DELAY_SECS,
+                    );
+                }
             }
             QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status) => {
                 let num_status = tasks_status.len();

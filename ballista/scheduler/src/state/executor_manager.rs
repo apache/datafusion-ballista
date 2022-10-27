@@ -483,6 +483,19 @@ impl ExecutorManager {
         Ok(())
     }
 
+    /// Send rpc to Executors to clean up the job data by delayed clean_up_interval seconds
+    pub(crate) fn clean_up_job_data_delayed(
+        &self,
+        job_id: String,
+        clean_up_interval: u64,
+    ) {
+        let executor_manager = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(clean_up_interval)).await;
+            executor_manager.clean_up_job_data(job_id).await;
+        });
+    }
+
     /// Send rpc to Executors to clean up the job data
     pub async fn clean_up_job_data(&self, job_id: String) {
         let alive_executors = self.get_alive_executors_within_one_minute();
