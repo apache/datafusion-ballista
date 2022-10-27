@@ -35,7 +35,6 @@ use datafusion::physical_plan::aggregates::{create_aggregate_expr, AggregateMode
 use datafusion::physical_plan::aggregates::{AggregateExec, PhysicalGroupBy};
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::joins::CrossJoinExec;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::explain::ExplainExec;
 use datafusion::physical_plan::expressions::{Column, PhysicalSortExpr};
@@ -43,6 +42,7 @@ use datafusion::physical_plan::file_format::{
     AvroExec, CsvExec, FileScanConfig, ParquetExec,
 };
 use datafusion::physical_plan::filter::FilterExec;
+use datafusion::physical_plan::joins::CrossJoinExec;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
 use datafusion::physical_plan::projection::ProjectionExec;
