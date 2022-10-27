@@ -326,7 +326,7 @@ mod test {
     use ballista_core::serde::{protobuf, AsExecutionPlan, BallistaCodec};
     use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
     use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
-    use datafusion::physical_plan::hash_join::HashJoinExec;
+    use datafusion::physical_plan::joins::HashJoinExec;
     use datafusion::physical_plan::sorts::sort::SortExec;
     use datafusion::physical_plan::{
         coalesce_partitions::CoalescePartitionsExec, projection::ProjectionExec,

@@ -22,8 +22,8 @@ use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 use arrow_flight::sql::ProstMessageExt;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::execution::FunctionRegistry;
-use datafusion::physical_plan::join_utils::JoinSide;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::joins::utils::JoinSide;
 use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
@@ -550,6 +550,24 @@ mod tests {
             } else {
                 Err(DataFusionError::Plan("unsupported plan type".to_string()))
             }
+        }
+
+        fn try_decode_table_provider(
+            &self,
+            buf: &[u8],
+            schema: SchemaRef,
+            ctx: &SessionContext,
+        ) -> Result<Arc<dyn datafusion::datasource::TableProvider>, DataFusionError>
+        {
+            todo!()
+        }
+
+        fn try_encode_table_provider(
+            &self,
+            node: Arc<dyn datafusion::datasource::TableProvider>,
+            buf: &mut Vec<u8>,
+        ) -> Result<(), DataFusionError> {
+            todo!()
         }
     }
 
