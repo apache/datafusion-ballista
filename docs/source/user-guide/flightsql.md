@@ -93,7 +93,7 @@ The important pieces of information:
 | URL              | jdbc:arrow-flight://127.0.0.1:50050                |
 
 **Note**: The `useEnryption` flag will not be required if [this PR](https://github.com/spaceandtimelabs/arrow-ballista/pull/15) is merged,
-and users crate a valid certificate.
+and users create a valid certificate.
 
 ## <a name="hello"/>Run a "Hello, World!" Query
 
