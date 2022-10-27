@@ -73,21 +73,10 @@ cargo build --release --all --features flight-sql
 docker-compose up --build
 ```
 
-## <a name="jdbc"/>Build the FlightSQL JDBC Driver
+## <a name="jdbc"/>Download the FlightSQL JDBC Driver
 
-**Note:** this will no longer be necessary when Arrow v10 is released approximately 2022-10-31
-
-**Note:** A full explaination of the Arrow Java build is out-of-scope for this document. Please refer to that project for more detailed instructions.
-
-```shell
-git clone https://github.com/apache/arrow.git
-cd java
-mvn install -DskipTests -Dcheckstyle.skip -Drat.skip=true -pl :flight-sql-jdbc-driver -am
-find . -name "*.jar"
-...
-./flight/flight-sql-jdbc-driver/target/flight-sql-jdbc-driver-10.0.0-SNAPSHOT.jar
-...
-```
+Download the [FlightSQL JDBC Driver](https://repo1.maven.org/maven2/org/apache/arrow/flight-sql-jdbc-driver/10.0.0/flight-sql-jdbc-driver-10.0.0.jar)
+from Maven Central.
 
 ## <a name="tool"/>Use the Driver in your Favorite Data Tool
 
@@ -102,6 +91,9 @@ The important pieces of information:
 | Password         | password                                           |
 | Advanced Options | useEncryption=false                                |
 | URL              | jdbc:arrow-flight://127.0.0.1:50050                |
+
+**Note**: The `useEnryption` flag will not be required if [this PR](https://github.com/spaceandtimelabs/arrow-ballista/pull/15) is merged,
+and users crate a valid certificate.
 
 ## <a name="hello"/>Run a "Hello, World!" Query
 
