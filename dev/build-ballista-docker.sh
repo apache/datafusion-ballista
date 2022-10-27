@@ -19,7 +19,9 @@
 
 set -e
 
-docker build -t ballista-builder --build-arg EXT_UID="$(id -u)" -f dev/docker/ballista-builder.Dockerfile .
+RELEASE_FLAG=${RELEASE_FLAG:=release}
+
+docker build -t ballista-builder --build-arg EXT_UID="$(id -u)" RELEASE_FLAG="${RELEASE_FLAG}" -f dev/docker/ballista-builder.Dockerfile .
 
 docker run -v $(pwd):/home/builder/workspace ballista-builder
 
