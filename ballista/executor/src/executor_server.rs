@@ -720,13 +720,45 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         request: Request<RemoveJobDataParams>,
     ) -> Result<Response<RemoveJobDataResult>, Status> {
         let job_id = request.into_inner().job_id;
+        info!("Remove data for job {:?}", job_id);
+
+        // Verify whether it's a legal job id
+        {
+            if job_id.is_empty() {
+                return Err(Status::internal(
+                    "Job id should not be empty!!!".to_string(),
+                ));
+            }
+            if job_id.contains('.') {
+                return Err(Status::internal(format!(
+                    "Job id {} should not contain char '.'!!!",
+                    job_id
+                )));
+            }
+        }
+
         let work_dir = self.executor.work_dir.clone();
         let mut path = PathBuf::from(work_dir);
-        path.push(job_id.clone());
-        if path.is_dir() {
-            info!("Remove data for job {:?}", job_id);
-            std::fs::remove_dir_all(&path)?;
+        path.push(job_id);
+
+        // Verify whether the path is for an existing directory
+        {
+            if !path.exists() {
+                return Err(Status::internal(format!(
+                    "Path {:?} does not exist!!!",
+                    path
+                )));
+            }
+            if !path.is_dir() {
+                return Err(Status::internal(format!(
+                    "Path {:?} is not for a directory!!!",
+                    path
+                )));
+            }
         }
+
+        std::fs::remove_dir_all(&path)?;
+
         Ok(Response::new(RemoveJobDataResult {}))
     }
 }
