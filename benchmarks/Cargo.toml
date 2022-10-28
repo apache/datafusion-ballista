@@ -34,8 +34,8 @@ snmalloc = ["snmalloc-rs"]
 
 [dependencies]
 ballista = { path = "../ballista/client", version = "0.9.0" }
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "fa5cd7f30d785c5b3355e425e082a9d5a91bf567" }
-datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "fa5cd7f30d785c5b3355e425e082a9d5a91bf567" }
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "925a96225e2142d8adc53a3323ddf612fffe2007" }
+datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "925a96225e2142d8adc53a3323ddf612fffe2007" }
 env_logger = "0.9"
 futures = "0.3"
 mimalloc = { version = "0.1", optional = true, default-features = false }
