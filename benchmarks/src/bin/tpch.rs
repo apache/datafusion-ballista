@@ -22,6 +22,8 @@ use ballista::prelude::{
     BallistaConfig, BALLISTA_DEFAULT_BATCH_SIZE, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
     BALLISTA_JOB_NAME,
 };
+use datafusion::arrow::array::*;
+use datafusion::arrow::util::display::array_value_to_string;
 use datafusion::datasource::file_format::csv::DEFAULT_CSV_EXTENSION;
 use datafusion::datasource::file_format::parquet::DEFAULT_PARQUET_EXTENSION;
 use datafusion::datasource::listing::ListingTableUrl;
@@ -29,6 +31,7 @@ use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::LogicalPlan;
+use datafusion::logical_expr::{expr::Cast, Expr};
 use datafusion::parquet::basic::Compression;
 use datafusion::parquet::file::properties::WriterProperties;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
@@ -77,6 +80,10 @@ struct BallistaBenchmarkOpt {
     /// Activate debug mode to see query results
     #[structopt(short, long)]
     debug: bool,
+
+    /// Path to expected results
+    #[structopt(short = "e", long = "expected")]
+    expected_results: Option<String>,
 
     /// Number of iterations of each test run
     #[structopt(short = "i", long = "iterations", default_value = "3")]
@@ -408,6 +415,11 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
         if opt.debug {
             pretty::print_batches(&batches)?;
         }
+
+        if let Some(expected_results_path) = opt.expected_results.as_ref() {
+            let expected = get_expected_results(opt.query, expected_results_path).await?;
+            assert_expected_results(&expected, &batches)
+        }
     }
 
     let avg = millis.iter().sum::<f64>() / millis.len() as f64;
@@ -524,7 +536,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
                     "Client {} Round {} Query {} took {:.1} ms ",
                     &client_id, &i, query_id, elapsed
                 );
-                if opt.debug {
+                if opt.debug && !batches.is_empty() {
                     pretty::print_batches(&batches).unwrap();
                 }
             }
@@ -697,7 +709,9 @@ async fn execute_query(
             "=== Physical plan with metrics ===\n{}\n",
             DisplayableExecutionPlan::with_metrics(physical_plan.as_ref()).indent()
         );
-        pretty::print_batches(&result)?;
+        if !result.is_empty() {
+            pretty::print_batches(&result)?;
+        }
     }
     Ok(result)
 }
@@ -846,7 +860,7 @@ fn get_schema(table: &str) -> Schema {
             Field::new("p_type", DataType::Utf8, false),
             Field::new("p_size", DataType::Int32, false),
             Field::new("p_container", DataType::Utf8, false),
-            Field::new("p_retailprice", DataType::Float64, false),
+            Field::new("p_retailprice", DataType::Decimal128(15, 2), false),
             Field::new("p_comment", DataType::Utf8, false),
         ]),
 
@@ -856,7 +870,7 @@ fn get_schema(table: &str) -> Schema {
             Field::new("s_address", DataType::Utf8, false),
             Field::new("s_nationkey", DataType::Int64, false),
             Field::new("s_phone", DataType::Utf8, false),
-            Field::new("s_acctbal", DataType::Float64, false),
+            Field::new("s_acctbal", DataType::Decimal128(15, 2), false),
             Field::new("s_comment", DataType::Utf8, false),
         ]),
 
@@ -864,7 +878,7 @@ fn get_schema(table: &str) -> Schema {
             Field::new("ps_partkey", DataType::Int64, false),
             Field::new("ps_suppkey", DataType::Int64, false),
             Field::new("ps_availqty", DataType::Int32, false),
-            Field::new("ps_supplycost", DataType::Float64, false),
+            Field::new("ps_supplycost", DataType::Decimal128(15, 2), false),
             Field::new("ps_comment", DataType::Utf8, false),
         ]),
 
@@ -874,7 +888,7 @@ fn get_schema(table: &str) -> Schema {
             Field::new("c_address", DataType::Utf8, false),
             Field::new("c_nationkey", DataType::Int64, false),
             Field::new("c_phone", DataType::Utf8, false),
-            Field::new("c_acctbal", DataType::Float64, false),
+            Field::new("c_acctbal", DataType::Decimal128(15, 2), false),
             Field::new("c_mktsegment", DataType::Utf8, false),
             Field::new("c_comment", DataType::Utf8, false),
         ]),
@@ -883,7 +897,7 @@ fn get_schema(table: &str) -> Schema {
             Field::new("o_orderkey", DataType::Int64, false),
             Field::new("o_custkey", DataType::Int64, false),
             Field::new("o_orderstatus", DataType::Utf8, false),
-            Field::new("o_totalprice", DataType::Float64, false),
+            Field::new("o_totalprice", DataType::Decimal128(15, 2), false),
             Field::new("o_orderdate", DataType::Date32, false),
             Field::new("o_orderpriority", DataType::Utf8, false),
             Field::new("o_clerk", DataType::Utf8, false),
@@ -896,10 +910,10 @@ fn get_schema(table: &str) -> Schema {
             Field::new("l_partkey", DataType::Int64, false),
             Field::new("l_suppkey", DataType::Int64, false),
             Field::new("l_linenumber", DataType::Int32, false),
-            Field::new("l_quantity", DataType::Float64, false),
-            Field::new("l_extendedprice", DataType::Float64, false),
-            Field::new("l_discount", DataType::Float64, false),
-            Field::new("l_tax", DataType::Float64, false),
+            Field::new("l_quantity", DataType::Decimal128(15, 2), false),
+            Field::new("l_extendedprice", DataType::Decimal128(15, 2), false),
+            Field::new("l_discount", DataType::Decimal128(15, 2), false),
+            Field::new("l_tax", DataType::Decimal128(15, 2), false),
             Field::new("l_returnflag", DataType::Utf8, false),
             Field::new("l_linestatus", DataType::Utf8, false),
             Field::new("l_shipdate", DataType::Date32, false),
@@ -969,6 +983,273 @@ impl BenchmarkRun {
     }
 }
 
+/// Compare actual results against expected results at scale factor 1
+fn assert_expected_results(expected: &[RecordBatch], actual: &[RecordBatch]) {
+    // assert schema equality without comparing nullable values
+    assert_eq!(
+        nullable_schema(expected[0].schema()),
+        nullable_schema(actual[0].schema())
+    );
+
+    // convert both datasets to Vec<Vec<String>> for simple comparison
+    let expected_vec = result_vec(expected);
+    let actual_vec = result_vec(actual);
+
+    // basic result comparison
+    assert_eq!(expected_vec.len(), actual_vec.len());
+
+    // compare each row. this works as all TPC-H queries have deterministically ordered results
+    for i in 0..actual_vec.len() {
+        assert_eq!(expected_vec[i], actual_vec[i]);
+    }
+}
+
+/// Get the expected answer for a specific query at scale factor 1
+async fn get_expected_results(n: usize, path: &str) -> Result<Vec<RecordBatch>> {
+    let ctx = SessionContext::new();
+    let schema = string_schema(get_answer_schema(n));
+    let options = CsvReadOptions::new()
+        .schema(&schema)
+        .delimiter(b'|')
+        .file_extension(".out");
+    let answer_path = format!("{}/answers/q{}.out", path, n);
+    println!("Looking for expected results at {}", answer_path);
+    let df = ctx.read_csv(&answer_path, options).await?;
+    let df = df.select(
+        get_answer_schema(n)
+            .fields()
+            .iter()
+            .map(|field| {
+                Expr::Alias(
+                    Box::new(Expr::Cast(Cast {
+                        expr: Box::new(trim(col(Field::name(field)))),
+                        data_type: Field::data_type(field).to_owned(),
+                    })),
+                    Field::name(field).to_string(),
+                )
+            })
+            .collect::<Vec<Expr>>(),
+    )?;
+    df.collect().await
+}
+
+// convert the schema to the same but with all columns set to nullable=true.
+// this allows direct schema comparison ignoring nullable.
+fn nullable_schema(schema: Arc<Schema>) -> Schema {
+    Schema::new(
+        schema
+            .fields()
+            .iter()
+            .map(|field| {
+                Field::new(Field::name(field), Field::data_type(field).to_owned(), true)
+            })
+            .collect::<Vec<Field>>(),
+    )
+}
+
+/// Converts the results into a 2d array of strings, `result[row][column]`
+/// Special cases nulls to NULL for testing
+fn result_vec(results: &[RecordBatch]) -> Vec<Vec<String>> {
+    let mut result = vec![];
+    for batch in results {
+        for row_index in 0..batch.num_rows() {
+            let row_vec = batch
+                .columns()
+                .iter()
+                .map(|column| col_str(column, row_index))
+                .collect();
+            result.push(row_vec);
+        }
+    }
+    result
+}
+
+fn get_answer_schema(n: usize) -> Schema {
+    match n {
+        1 => Schema::new(vec![
+            Field::new("l_returnflag", DataType::Utf8, true),
+            Field::new("l_linestatus", DataType::Utf8, true),
+            Field::new("sum_qty", DataType::Float64, true),
+            Field::new("sum_base_price", DataType::Float64, true),
+            Field::new("sum_disc_price", DataType::Float64, true),
+            Field::new("sum_charge", DataType::Float64, true),
+            Field::new("avg_qty", DataType::Float64, true),
+            Field::new("avg_price", DataType::Decimal128(19, 6), false), //TODO should be precision 2
+            Field::new("avg_disc", DataType::Float64, true),
+            Field::new("count_order", DataType::Int64, true),
+        ]),
+
+        2 => Schema::new(vec![
+            Field::new("s_acctbal", DataType::Decimal128(15, 2), true),
+            Field::new("s_name", DataType::Utf8, true),
+            Field::new("n_name", DataType::Utf8, true),
+            Field::new("p_partkey", DataType::Int32, true),
+            Field::new("p_mfgr", DataType::Utf8, true),
+            Field::new("s_address", DataType::Utf8, true),
+            Field::new("s_phone", DataType::Utf8, true),
+            Field::new("s_comment", DataType::Utf8, true),
+        ]),
+
+        3 => Schema::new(vec![
+            Field::new("l_orderkey", DataType::Int32, true),
+            Field::new("revenue", DataType::Decimal128(19, 6), true), //TODO should be precision 2
+            Field::new("o_orderdate", DataType::Date32, true),
+            Field::new("o_shippriority", DataType::Int32, true),
+        ]),
+
+        4 => Schema::new(vec![
+            Field::new("o_orderpriority", DataType::Utf8, true),
+            Field::new("order_count", DataType::Int64, true),
+        ]),
+
+        5 => Schema::new(vec![
+            Field::new("n_name", DataType::Utf8, true),
+            Field::new("revenue", DataType::Decimal128(38, 4), true), //TODO should be precision 2
+        ]),
+
+        6 => Schema::new(vec![Field::new(
+            "revenue",
+            DataType::Decimal128(25, 2),
+            true,
+        )]),
+
+        7 => Schema::new(vec![
+            Field::new("supp_nation", DataType::Utf8, true),
+            Field::new("cust_nation", DataType::Utf8, true),
+            Field::new("l_year", DataType::Int32, true),
+            Field::new("revenue", DataType::Decimal128(38, 4), true), //TODO should be precision 2
+        ]),
+
+        8 => Schema::new(vec![
+            Field::new("o_year", DataType::Int32, true),
+            Field::new("mkt_share", DataType::Decimal128(38, 4), true), //TODO should be precision 2
+        ]),
+
+        9 => Schema::new(vec![
+            Field::new("nation", DataType::Utf8, true),
+            Field::new("o_year", DataType::Int32, true),
+            Field::new("sum_profit", DataType::Decimal128(38, 4), true), //TODO should be precision 2
+        ]),
+
+        10 => Schema::new(vec![
+            Field::new("c_custkey", DataType::Int32, true),
+            Field::new("c_name", DataType::Utf8, true),
+            Field::new("revenue", DataType::Decimal128(38, 4), true), //TODO should be precision 2
+            Field::new("c_acctbal", DataType::Decimal128(15, 2), true),
+            Field::new("n_name", DataType::Utf8, true),
+            Field::new("c_address", DataType::Utf8, true),
+            Field::new("c_phone", DataType::Utf8, true),
+            Field::new("c_comment", DataType::Utf8, true),
+        ]),
+
+        11 => Schema::new(vec![
+            Field::new("ps_partkey", DataType::Int32, true),
+            Field::new("value", DataType::Decimal128(36, 2), true),
+        ]),
+
+        12 => Schema::new(vec![
+            Field::new("l_shipmode", DataType::Utf8, true),
+            Field::new("high_line_count", DataType::Int64, true),
+            Field::new("low_line_count", DataType::Int64, true),
+        ]),
+
+        13 => Schema::new(vec![
+            Field::new("c_count", DataType::Int64, true),
+            Field::new("custdist", DataType::Int64, true),
+        ]),
+
+        14 => Schema::new(vec![
+            Field::new("promo_revenue", DataType::Decimal128(38, 38), true), //TODO should be precision 2
+        ]),
+
+        15 => Schema::new(vec![Field::new("promo_revenue", DataType::Float64, true)]),
+
+        16 => Schema::new(vec![
+            Field::new("p_brand", DataType::Utf8, true),
+            Field::new("p_type", DataType::Utf8, true),
+            Field::new("c_phone", DataType::Int32, true),
+            Field::new("c_comment", DataType::Int32, true),
+        ]),
+
+        17 => Schema::new(vec![
+            Field::new("avg_yearly", DataType::Decimal128(38, 3), true), //TODO should be precision 2
+        ]),
+
+        18 => Schema::new(vec![
+            Field::new("c_name", DataType::Utf8, true),
+            Field::new("c_custkey", DataType::Int64, true),
+            Field::new("o_orderkey", DataType::Int64, true),
+            Field::new("o_orderdate", DataType::Date32, true),
+            Field::new("o_totalprice", DataType::Decimal128(15, 2), true),
+            Field::new("sum_l_quantity", DataType::Decimal128(25, 2), true),
+        ]),
+
+        19 => Schema::new(vec![
+            Field::new("revenue", DataType::Decimal128(38, 4), true), //TODO should be precision 2
+        ]),
+
+        20 => Schema::new(vec![
+            Field::new("s_name", DataType::Utf8, true),
+            Field::new("s_address", DataType::Utf8, true),
+        ]),
+
+        21 => Schema::new(vec![
+            Field::new("s_name", DataType::Utf8, true),
+            Field::new("numwait", DataType::Int64, true),
+        ]),
+
+        22 => Schema::new(vec![
+            Field::new("cntrycode", DataType::Utf8, true),
+            Field::new("numcust", DataType::Int64, true),
+            Field::new("totacctbal", DataType::Decimal128(25, 2), true),
+        ]),
+
+        _ => unimplemented!(),
+    }
+}
+
+/// convert expected schema to all utf8 so columns can be read as strings to be parsed separately
+/// this is due to the fact that the csv parser cannot handle leading/trailing spaces
+fn string_schema(schema: Schema) -> Schema {
+    Schema::new(
+        schema
+            .fields()
+            .iter()
+            .map(|field| {
+                Field::new(
+                    Field::name(field),
+                    DataType::Utf8,
+                    Field::is_nullable(field),
+                )
+            })
+            .collect::<Vec<Field>>(),
+    )
+}
+
+/// Specialised String representation
+fn col_str(column: &ArrayRef, row_index: usize) -> String {
+    if column.is_null(row_index) {
+        return "NULL".to_string();
+    }
+
+    // Special case ListArray as there is no pretty print support for it yet
+    if let DataType::FixedSizeList(_, n) = column.data_type() {
+        let array = column
+            .as_any()
+            .downcast_ref::<FixedSizeListArray>()
+            .unwrap()
+            .value(row_index);
+
+        let mut r = Vec::with_capacity(*n as usize);
+        for i in 0..*n {
+            r.push(col_str(&array, i as usize));
+        }
+        return format!("[{}]", r.join(","));
+    }
+
+    array_value_to_string(column, row_index).unwrap()
+}
+
 #[derive(Debug, Serialize)]
 struct QueryResult {
     elapsed: f64,
@@ -978,9 +1259,6 @@ struct QueryResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::array::*;
-    use datafusion::arrow::util::display::array_value_to_string;
-    use datafusion::logical_expr::{expr::Cast, Expr};
     use std::env;
     use std::sync::Arc;
 
@@ -1212,217 +1490,6 @@ mod tests {
         run_query(22).await
     }
 
-    /// Specialised String representation
-    fn col_str(column: &ArrayRef, row_index: usize) -> String {
-        if column.is_null(row_index) {
-            return "NULL".to_string();
-        }
-
-        // Special case ListArray as there is no pretty print support for it yet
-        if let DataType::FixedSizeList(_, n) = column.data_type() {
-            let array = column
-                .as_any()
-                .downcast_ref::<FixedSizeListArray>()
-                .unwrap()
-                .value(row_index);
-
-            let mut r = Vec::with_capacity(*n as usize);
-            for i in 0..*n {
-                r.push(col_str(&array, i as usize));
-            }
-            return format!("[{}]", r.join(","));
-        }
-
-        array_value_to_string(column, row_index).unwrap()
-    }
-
-    /// Converts the results into a 2d array of strings, `result[row][column]`
-    /// Special cases nulls to NULL for testing
-    fn result_vec(results: &[RecordBatch]) -> Vec<Vec<String>> {
-        let mut result = vec![];
-        for batch in results {
-            for row_index in 0..batch.num_rows() {
-                let row_vec = batch
-                    .columns()
-                    .iter()
-                    .map(|column| col_str(column, row_index))
-                    .collect();
-                result.push(row_vec);
-            }
-        }
-        result
-    }
-
-    fn get_answer_schema(n: usize) -> Schema {
-        match n {
-            1 => Schema::new(vec![
-                Field::new("l_returnflag", DataType::Utf8, true),
-                Field::new("l_linestatus", DataType::Utf8, true),
-                Field::new("sum_qty", DataType::Float64, true),
-                Field::new("sum_base_price", DataType::Float64, true),
-                Field::new("sum_disc_price", DataType::Float64, true),
-                Field::new("sum_charge", DataType::Float64, true),
-                Field::new("avg_qty", DataType::Float64, true),
-                Field::new("avg_price", DataType::Float64, true),
-                Field::new("avg_disc", DataType::Float64, true),
-                Field::new("count_order", DataType::UInt64, true),
-            ]),
-
-            2 => Schema::new(vec![
-                Field::new("s_acctbal", DataType::Float64, true),
-                Field::new("s_name", DataType::Utf8, true),
-                Field::new("n_name", DataType::Utf8, true),
-                Field::new("p_partkey", DataType::Int32, true),
-                Field::new("p_mfgr", DataType::Utf8, true),
-                Field::new("s_address", DataType::Utf8, true),
-                Field::new("s_phone", DataType::Utf8, true),
-                Field::new("s_comment", DataType::Utf8, true),
-            ]),
-
-            3 => Schema::new(vec![
-                Field::new("l_orderkey", DataType::Int32, true),
-                Field::new("revenue", DataType::Float64, true),
-                Field::new("o_orderdate", DataType::Date32, true),
-                Field::new("o_shippriority", DataType::Int32, true),
-            ]),
-
-            4 => Schema::new(vec![
-                Field::new("o_orderpriority", DataType::Utf8, true),
-                Field::new("order_count", DataType::Int32, true),
-            ]),
-
-            5 => Schema::new(vec![
-                Field::new("n_name", DataType::Utf8, true),
-                Field::new("revenue", DataType::Float64, true),
-            ]),
-
-            6 => Schema::new(vec![Field::new("revenue", DataType::Float64, true)]),
-
-            7 => Schema::new(vec![
-                Field::new("supp_nation", DataType::Utf8, true),
-                Field::new("cust_nation", DataType::Utf8, true),
-                Field::new("l_year", DataType::Int32, true),
-                Field::new("revenue", DataType::Float64, true),
-            ]),
-
-            8 => Schema::new(vec![
-                Field::new("o_year", DataType::Int32, true),
-                Field::new("mkt_share", DataType::Float64, true),
-            ]),
-
-            9 => Schema::new(vec![
-                Field::new("nation", DataType::Utf8, true),
-                Field::new("o_year", DataType::Int32, true),
-                Field::new("sum_profit", DataType::Float64, true),
-            ]),
-
-            10 => Schema::new(vec![
-                Field::new("c_custkey", DataType::Int32, true),
-                Field::new("c_name", DataType::Utf8, true),
-                Field::new("revenue", DataType::Float64, true),
-                Field::new("c_acctbal", DataType::Float64, true),
-                Field::new("n_name", DataType::Utf8, true),
-                Field::new("c_address", DataType::Utf8, true),
-                Field::new("c_phone", DataType::Utf8, true),
-                Field::new("c_comment", DataType::Utf8, true),
-            ]),
-
-            11 => Schema::new(vec![
-                Field::new("ps_partkey", DataType::Int32, true),
-                Field::new("value", DataType::Float64, true),
-            ]),
-
-            12 => Schema::new(vec![
-                Field::new("l_shipmode", DataType::Utf8, true),
-                Field::new("high_line_count", DataType::Int64, true),
-                Field::new("low_line_count", DataType::Int64, true),
-            ]),
-
-            13 => Schema::new(vec![
-                Field::new("c_count", DataType::Int64, true),
-                Field::new("custdist", DataType::Int64, true),
-            ]),
-
-            14 => Schema::new(vec![Field::new("promo_revenue", DataType::Float64, true)]),
-
-            15 => Schema::new(vec![Field::new("promo_revenue", DataType::Float64, true)]),
-
-            16 => Schema::new(vec![
-                Field::new("p_brand", DataType::Utf8, true),
-                Field::new("p_type", DataType::Utf8, true),
-                Field::new("c_phone", DataType::Int32, true),
-                Field::new("c_comment", DataType::Int32, true),
-            ]),
-
-            17 => Schema::new(vec![Field::new("avg_yearly", DataType::Float64, true)]),
-
-            18 => Schema::new(vec![
-                Field::new("c_name", DataType::Utf8, true),
-                Field::new("c_custkey", DataType::Int32, true),
-                Field::new("o_orderkey", DataType::Int32, true),
-                Field::new("o_orderdate", DataType::Date32, true),
-                Field::new("o_totalprice", DataType::Float64, true),
-                Field::new("sum_l_quantity", DataType::Float64, true),
-            ]),
-
-            19 => Schema::new(vec![Field::new("revenue", DataType::Float64, true)]),
-
-            20 => Schema::new(vec![
-                Field::new("s_name", DataType::Utf8, true),
-                Field::new("s_address", DataType::Utf8, true),
-            ]),
-
-            21 => Schema::new(vec![
-                Field::new("s_name", DataType::Utf8, true),
-                Field::new("numwait", DataType::Int32, true),
-            ]),
-
-            22 => Schema::new(vec![
-                Field::new("cntrycode", DataType::Int32, true),
-                Field::new("numcust", DataType::Int32, true),
-                Field::new("totacctbal", DataType::Float64, true),
-            ]),
-
-            _ => unimplemented!(),
-        }
-    }
-
-    // convert expected schema to all utf8 so columns can be read as strings to be parsed separately
-    // this is due to the fact that the csv parser cannot handle leading/trailing spaces
-    fn string_schema(schema: Schema) -> Schema {
-        Schema::new(
-            schema
-                .fields()
-                .iter()
-                .map(|field| {
-                    Field::new(
-                        Field::name(field),
-                        DataType::Utf8,
-                        Field::is_nullable(field),
-                    )
-                })
-                .collect::<Vec<Field>>(),
-        )
-    }
-
-    // convert the schema to the same but with all columns set to nullable=true.
-    // this allows direct schema comparison ignoring nullable.
-    fn nullable_schema(schema: Arc<Schema>) -> Schema {
-        Schema::new(
-            schema
-                .fields()
-                .iter()
-                .map(|field| {
-                    Field::new(
-                        Field::name(field),
-                        Field::data_type(field).to_owned(),
-                        true,
-                    )
-                })
-                .collect::<Vec<Field>>(),
-        )
-    }
-
     async fn run_query(n: usize) -> Result<()> {
         // Tests running query with empty tables, to see whether they run successfully.
 
@@ -1453,31 +1520,7 @@ mod tests {
             // load expected answers from tpch-dbgen
             // read csv as all strings, trim and cast to expected type as the csv string
             // to value parser does not handle data with leading/trailing spaces
-            let ctx = SessionContext::new();
-            let schema = string_schema(get_answer_schema(n));
-            let options = CsvReadOptions::new()
-                .schema(&schema)
-                .delimiter(b'|')
-                .file_extension(".out");
-            let df = ctx
-                .read_csv(&format!("{}/answers/q{}.out", path, n), options)
-                .await?;
-            let df = df.select(
-                get_answer_schema(n)
-                    .fields()
-                    .iter()
-                    .map(|field| {
-                        Expr::Alias(
-                            Box::new(Expr::Cast(Cast {
-                                expr: Box::new(trim(col(Field::name(field)))),
-                                data_type: Field::data_type(field).to_owned(),
-                            })),
-                            Field::name(field).to_string(),
-                        )
-                    })
-                    .collect::<Vec<Expr>>(),
-            )?;
-            let expected = df.collect().await?;
+            let expected = get_expected_results(n, &path).await?;
 
             // run the query to compute actual results of the query
             let opt = DataFusionBenchmarkOpt {
@@ -1493,23 +1536,7 @@ mod tests {
             };
             let actual = benchmark_datafusion(opt).await?;
 
-            // assert schema equality without comparing nullable values
-            assert_eq!(
-                nullable_schema(expected[0].schema()),
-                nullable_schema(actual[0].schema())
-            );
-
-            // convert both datasets to Vec<Vec<String>> for simple comparison
-            let expected_vec = result_vec(&expected);
-            let actual_vec = result_vec(&actual);
-
-            // basic result comparison
-            assert_eq!(expected_vec.len(), actual_vec.len());
-
-            // compare each row. this works as all TPC-H queries have determinisically ordered results
-            for i in 0..actual_vec.len() {
-                assert_eq!(expected_vec[i], actual_vec[i]);
-            }
+            assert_expected_results(&expected, &actual)
         } else {
             println!("TPCH_DATA environment variable not set, skipping test");
         }
