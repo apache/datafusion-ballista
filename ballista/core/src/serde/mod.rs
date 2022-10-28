@@ -21,8 +21,8 @@
 use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 use arrow_flight::sql::ProstMessageExt;
 use datafusion::execution::runtime_env::RuntimeEnv;
-use datafusion::logical_plan::FunctionRegistry;
-use datafusion::physical_plan::join_utils::JoinSide;
+use datafusion::execution::FunctionRegistry;
+use datafusion::physical_plan::joins::utils::JoinSide;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
@@ -245,12 +245,15 @@ fn str_to_byte(s: &str) -> Result<u8, BallistaError> {
 mod tests {
     use async_trait::async_trait;
     use datafusion::arrow::datatypes::SchemaRef;
+    use datafusion::common::DFSchemaRef;
     use datafusion::error::DataFusionError;
-    use datafusion::execution::context::{QueryPlanner, SessionState, TaskContext};
-    use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
-    use datafusion::logical_plan::plan::Extension;
-    use datafusion::logical_plan::{
-        col, DFSchemaRef, Expr, FunctionRegistry, LogicalPlan, UserDefinedLogicalNode,
+    use datafusion::execution::{
+        context::{QueryPlanner, SessionState, TaskContext},
+        runtime_env::{RuntimeConfig, RuntimeEnv},
+        FunctionRegistry,
+    };
+    use datafusion::logical_expr::{
+        col, Expr, Extension, LogicalPlan, UserDefinedLogicalNode,
     };
     use datafusion::physical_plan::expressions::PhysicalSortExpr;
     use datafusion::physical_plan::planner::{DefaultPhysicalPlanner, ExtensionPlanner};
@@ -547,6 +550,24 @@ mod tests {
             } else {
                 Err(DataFusionError::Plan("unsupported plan type".to_string()))
             }
+        }
+
+        fn try_decode_table_provider(
+            &self,
+            _buf: &[u8],
+            _schema: SchemaRef,
+            _ctx: &SessionContext,
+        ) -> Result<Arc<dyn datafusion::datasource::TableProvider>, DataFusionError>
+        {
+            unimplemented!()
+        }
+
+        fn try_encode_table_provider(
+            &self,
+            _node: Arc<dyn datafusion::datasource::TableProvider>,
+            _buf: &mut Vec<u8>,
+        ) -> Result<(), DataFusionError> {
+            unimplemented!()
         }
     }
 

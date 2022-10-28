@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::prelude::lit;
 use pyo3::{prelude::*, wrap_pyfunction};
 
 use datafusion::logical_expr::{self, BuiltinScalarFunction, WindowFunction};
@@ -80,7 +81,7 @@ fn concat(args: Vec<PyExpr>) -> PyResult<PyExpr> {
 #[pyfunction(sep, args = "*")]
 fn concat_ws(sep: String, args: Vec<PyExpr>) -> PyResult<PyExpr> {
     let args = args.into_iter().map(|e| e.expr).collect::<Vec<_>>();
-    Ok(logical_expr::concat_ws(sep, &args).into())
+    Ok(logical_expr::concat_ws(lit(sep), args).into())
 }
 
 /// Creates a new Sort expression

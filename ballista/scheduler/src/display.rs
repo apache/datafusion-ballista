@@ -20,7 +20,7 @@
 //! format
 
 use ballista_core::utils::collect_plan_metrics;
-use datafusion::logical_plan::{StringifiedPlan, ToStringifiedPlan};
+use datafusion::logical_expr::{StringifiedPlan, ToStringifiedPlan};
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{
     accept, DisplayFormatType, ExecutionPlan, ExecutionPlanVisitor,
@@ -153,7 +153,7 @@ impl<'a, 'b> ExecutionPlanVisitor for IndentVisitor<'a, 'b> {
 impl<'a> ToStringifiedPlan for DisplayableBallistaExecutionPlan<'a> {
     fn to_stringified(
         &self,
-        plan_type: datafusion::logical_plan::PlanType,
+        plan_type: datafusion::logical_expr::PlanType,
     ) -> StringifiedPlan {
         StringifiedPlan::new(plan_type, self.indent().to_string())
     }

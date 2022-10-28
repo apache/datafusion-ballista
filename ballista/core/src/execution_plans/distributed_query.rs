@@ -29,7 +29,7 @@ use datafusion::arrow::error::{ArrowError, Result as ArrowResult};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
-use datafusion::logical_plan::LogicalPlan;
+use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{

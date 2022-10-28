@@ -17,7 +17,7 @@
 
 use crate::state::executor_manager::ExecutorReservation;
 
-use datafusion::logical_plan::LogicalPlan;
+use datafusion::logical_expr::LogicalPlan;
 
 use crate::state::execution_graph::RunningTaskInfo;
 use ballista_core::serde::protobuf::TaskStatus;
