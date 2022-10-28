@@ -23,7 +23,7 @@ use crate::state::execution_graph::{
 };
 use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::{decode_protobuf, encode_protobuf, with_lock, with_locks};
-use ballista_core::config::BallistaConfig;
+use ballista_core::config::query::BallistaConfig;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 

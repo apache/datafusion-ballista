@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::client::BallistaClient;
-use crate::config::BallistaConfig;
+use crate::config::query::BallistaConfig;
 use crate::serde::protobuf::execute_query_params::OptionalSessionId;
 use crate::serde::protobuf::{
     execute_query_params::Query, job_status, scheduler_grpc_client::SchedulerGrpcClient,

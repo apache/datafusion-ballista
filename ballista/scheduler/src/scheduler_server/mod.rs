@@ -308,9 +308,10 @@ mod test {
     use datafusion::test_util::scan_empty;
     use datafusion_proto::protobuf::LogicalPlanNode;
 
-    use ballista_core::config::{
-        BallistaConfig, TaskSchedulingPolicy, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
+    use ballista_core::config::query::{
+        BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
     };
+    use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
 
     use crate::config::SlotsPolicy;

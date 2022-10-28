@@ -18,7 +18,7 @@
 use crate::scheduler_server::SessionBuilder;
 use crate::state::backend::{Keyspace, StateBackendClient};
 use crate::state::{decode_protobuf, encode_protobuf};
-use ballista_core::config::BallistaConfig;
+use ballista_core::config::query::BallistaConfig;
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf::{self, KeyValuePair};
 use datafusion::prelude::{SessionConfig, SessionContext};

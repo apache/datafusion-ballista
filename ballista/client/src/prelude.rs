@@ -18,7 +18,7 @@
 //! Ballista Prelude (common imports)
 
 pub use ballista_core::{
-    config::{
+    config::query::{
         BallistaConfig, BALLISTA_DEFAULT_BATCH_SIZE, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
         BALLISTA_JOB_NAME, BALLISTA_PARQUET_PRUNING, BALLISTA_PLUGIN_DIR,
         BALLISTA_REPARTITION_AGGREGATIONS, BALLISTA_REPARTITION_JOINS,

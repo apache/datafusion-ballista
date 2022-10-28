@@ -427,7 +427,9 @@ pub async fn with_locks<Out, F: Future<Output = Out>>(
 mod test {
     use crate::state::backend::standalone::StandaloneClient;
     use crate::state::SchedulerState;
-    use ballista_core::config::{BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS};
+    use ballista_core::config::query::{
+        BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
+    };
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::{
         task_status, PhysicalPlanNode, ShuffleWritePartition, SuccessfulTask, TaskStatus,
