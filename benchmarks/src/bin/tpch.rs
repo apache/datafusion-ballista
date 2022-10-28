@@ -30,8 +30,8 @@ use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::SessionState;
-use datafusion::logical_expr::LogicalPlan;
-use datafusion::logical_expr::{expr::Cast, Expr};
+use datafusion::logical_expr::Expr;
+use datafusion::logical_expr::{ExprSchemable, LogicalPlan};
 use datafusion::parquet::basic::Compression;
 use datafusion::parquet::file::properties::WriterProperties;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
@@ -1019,16 +1019,8 @@ async fn get_expected_results(n: usize, path: &str) -> Result<Vec<RecordBatch>> 
         get_answer_schema(n)
             .fields()
             .iter()
-            .map(|field| {
-                Expr::Alias(
-                    Box::new(Expr::Cast(Cast {
-                        expr: Box::new(trim(col(Field::name(field)))),
-                        data_type: Field::data_type(field).to_owned(),
-                    })),
-                    Field::name(field).to_string(),
-                )
-            })
-            .collect::<Vec<Expr>>(),
+            .map(|field| col(field.name()).cast_to(field.data_type(), df.schema()))
+            .collect::<Result<Vec<Expr>>>()?,
     )?;
     df.collect().await
 }
