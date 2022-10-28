@@ -143,6 +143,7 @@ impl PyDataFrame {
             "full" => JoinType::Full,
             "semi" => JoinType::LeftSemi,
             "anti" => JoinType::LeftAnti,
+            "right_semi" => JoinType::RightSemi,
             how => {
                 return Err(DataFusionError::Common(format!(
                     "The join type {} does not exist or is not implemented",

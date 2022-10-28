@@ -1465,6 +1465,7 @@ mod roundtrip_tests {
             JoinType::Full,
             JoinType::LeftAnti,
             JoinType::LeftSemi,
+            JoinType::RightSemi,
         ] {
             for partition_mode in
                 &[PartitionMode::Partitioned, PartitionMode::CollectLeft]
