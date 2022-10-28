@@ -92,9 +92,6 @@ The important pieces of information:
 | Advanced Options | useEncryption=false                                |
 | URL              | jdbc:arrow-flight://127.0.0.1:50050                |
 
-**Note**: The `useEncryption` flag will not be required if [this PR](https://github.com/spaceandtimelabs/arrow-ballista/pull/15) is merged,
-and users create a valid certificate.
-
 ## <a name="hello"/>Run a "Hello, World!" Query
 
 ```sql
