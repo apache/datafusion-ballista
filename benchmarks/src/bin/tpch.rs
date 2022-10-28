@@ -984,7 +984,7 @@ impl BenchmarkRun {
 }
 
 /// Compare actual results against expected results at scale factor 1
-fn assert_expected_results(expected: &Vec<RecordBatch>, actual: &Vec<RecordBatch>) {
+fn assert_expected_results(expected: &[RecordBatch], actual: &[RecordBatch]) {
     // assert schema equality without comparing nullable values
     assert_eq!(
         nullable_schema(expected[0].schema()),
@@ -992,8 +992,8 @@ fn assert_expected_results(expected: &Vec<RecordBatch>, actual: &Vec<RecordBatch
     );
 
     // convert both datasets to Vec<Vec<String>> for simple comparison
-    let expected_vec = result_vec(&expected);
-    let actual_vec = result_vec(&actual);
+    let expected_vec = result_vec(expected);
+    let actual_vec = result_vec(actual);
 
     // basic result comparison
     assert_eq!(expected_vec.len(), actual_vec.len());
