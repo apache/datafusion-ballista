@@ -37,15 +37,13 @@ use std::str::FromStr;
 use std::string::ToString;
 use std::sync::Arc;
 use std::time::Duration;
-use arrow_array::{ArrayRef, RecordBatch, StringArray};
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::scheduler_server::SchedulerServer;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::sql::ProstMessageExt;
-use arrow_flight::SchemaAsIpc;
 use arrow_flight::utils::flight_data_from_arrow_batch;
-use arrow_schema::{ArrowError, DataType, Field, SchemaRef};
+use arrow_flight::SchemaAsIpc;
 use ballista_core::config::BallistaConfig;
 use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::action::ActionType::FetchPartition;
@@ -56,8 +54,11 @@ use ballista_core::serde::protobuf::SuccessfulJob;
 use ballista_core::utils::create_grpc_client_connection;
 use dashmap::DashMap;
 use datafusion::arrow;
-use datafusion::arrow::datatypes::Schema;
+use datafusion::arrow::array::{ArrayRef, StringArray};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::writer::{IpcDataGenerator, IpcWriteOptions};
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DFSchemaRef;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::common::batch_byte_size;
@@ -78,10 +79,7 @@ pub struct FlightSqlServiceImpl {
     contexts: Arc<DashMap<Uuid, Arc<SessionContext>>>,
 }
 
-const TABLE_TYPES: [&str; 2] = [
-    "TABLE",
-    "VIEW",
-];
+const TABLE_TYPES: [&str; 2] = ["TABLE", "VIEW"];
 
 impl FlightSqlServiceImpl {
     pub fn new(server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>) -> Self {
@@ -110,14 +108,16 @@ impl FlightSqlServiceImpl {
                 .into_iter()
                 .map(|i| Arc::new(StringArray::from(i.clone())) as ArrayRef)
                 .collect::<Vec<_>>(),
-            )?;
+        )?;
         Ok(rb)
     }
 
     fn table_types() -> Result<RecordBatch, ArrowError> {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("table_type", DataType::Utf8, false),
-        ]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "table_type",
+            DataType::Utf8,
+            false,
+        )]));
         RecordBatch::try_new(
             schema,
             [TABLE_TYPES]
@@ -417,25 +417,38 @@ impl FlightSqlServiceImpl {
         Ok(resp)
     }
 
-    async fn record_batch_to_resp(rb: &RecordBatch) -> Result<Response<Pin<Box<dyn Stream<Item=Result<FlightData, Status>> + Send>>>, Status> {
-        let (tx, rx): (Sender<Result<FlightData, Status>>, Receiver<Result<FlightData, Status>>) = channel(2);
+    async fn record_batch_to_resp(
+        rb: &RecordBatch,
+    ) -> Result<
+        Response<Pin<Box<dyn Stream<Item = Result<FlightData, Status>> + Send>>>,
+        Status,
+    > {
+        let (tx, rx): (
+            Sender<Result<FlightData, Status>>,
+            Receiver<Result<FlightData, Status>>,
+        ) = channel(2);
         let options = IpcWriteOptions::default();
         let schema = SchemaAsIpc::new(rb.schema().as_ref(), &options).into();
-        tx.send(Ok(schema)).await
+        tx.send(Ok(schema))
+            .await
             .map_err(|e| Status::internal("Error sending schema".to_string()))?;
         let (dict, flight) = flight_data_from_arrow_batch(&rb, &options);
         let flights = dict.into_iter().chain(std::iter::once(flight));
         for flight in flights.into_iter() {
-            tx.send(Ok(flight)).await
+            tx.send(Ok(flight))
+                .await
                 .map_err(|e| Status::internal("Error sending flight".to_string()))?;
         }
-        let resp = Response::new(
-            Box::pin(ReceiverStream::new(rx)) as Pin<Box<dyn Stream<Item=Result<FlightData, Status>> + Send + 'static>>
-        );
+        let resp = Response::new(Box::pin(ReceiverStream::new(rx))
+            as Pin<Box<dyn Stream<Item = Result<FlightData, Status>> + Send + 'static>>);
         Ok(resp)
     }
 
-    fn batch_to_schema_resp(&self, data: &RecordBatch, name: &str) -> Result<Response<FlightInfo>, Status> {
+    fn batch_to_schema_resp(
+        &self,
+        data: &RecordBatch,
+        name: &str,
+    ) -> Result<Response<FlightInfo>, Status> {
         let num_bytes = batch_byte_size(&data) as i64;
         let schema = data.schema();
         let num_rows = data.num_rows() as i64;
@@ -537,18 +550,20 @@ impl FlightSqlService for FlightSqlServiceImpl {
         match fp.job_id.as_str() {
             "get_flight_info_table_types" => {
                 debug!("Responding with table types");
-                let rb = FlightSqlServiceImpl::table_types()
-                    .map_err(|e| Status::internal("Error getting table types".to_string()))?;
+                let rb = FlightSqlServiceImpl::table_types().map_err(|e| {
+                    Status::internal("Error getting table types".to_string())
+                })?;
                 let resp = Self::record_batch_to_resp(&rb).await?;
                 return Ok(resp);
-            },
+            }
             "get_flight_info_tables" => {
                 debug!("Responding with tables");
-                let rb = self.tables(ctx)
+                let rb = self
+                    .tables(ctx)
                     .map_err(|e| Status::internal("Error getting tables".to_string()))?;
                 let resp = Self::record_batch_to_resp(&rb).await?;
                 return Ok(resp);
-            },
+            }
             _ => {}
         }
 
@@ -623,7 +638,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         debug!("get_flight_info_schemas");
         Err(Status::unimplemented("Implement get_flight_info_schemas"))
     }
-    
+
     async fn get_flight_info_tables(
         &self,
         _query: CommandGetTables,
@@ -631,7 +646,8 @@ impl FlightSqlService for FlightSqlServiceImpl {
     ) -> Result<Response<FlightInfo>, Status> {
         debug!("get_flight_info_tables");
         let ctx = self.get_ctx(&request)?;
-        let data = self.tables(ctx)
+        let data = self
+            .tables(ctx)
             .map_err(|e| Status::internal(format!("Error getting tables: {}", e)))?;
         let resp = self.batch_to_schema_resp(&data, "get_flight_info_tables")?;
         Ok(resp)
