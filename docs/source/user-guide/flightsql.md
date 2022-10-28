@@ -70,7 +70,8 @@ cargo build --release --all --features flight-sql
 ## <a name="docker"/> Run Docker Containers
 
 ```shell
-docker-compose up --build
+source dev/build-ballista-docker.sh
+docker-compose up
 ```
 
 ## <a name="jdbc"/>Download the FlightSQL JDBC Driver
