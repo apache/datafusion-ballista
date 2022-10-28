@@ -45,9 +45,19 @@ pub type ParseResult<T> = result::Result<T, String>;
 pub struct ConfigEntry {
     name: String,
     _description: String,
-    _data_type: DataType,
+    data_type: DataType,
     default_value: Option<String>,
 }
+
+impl PartialEq<Self> for ConfigEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.name.eq(&other.name)
+            && self.data_type.eq(&other.data_type)
+            && self.default_value.eq(&other.default_value)
+    }
+}
+
+impl Eq for ConfigEntry {}
 
 impl ConfigEntry {
     fn new(
@@ -59,68 +69,51 @@ impl ConfigEntry {
         Self {
             name,
             _description,
-            _data_type,
+            data_type: _data_type,
             default_value,
         }
     }
 }
 
-/// Ballista configuration builder
-pub struct BallistaConfigBuilder {
-    settings: HashMap<String, String>,
-}
-
-impl Default for BallistaConfigBuilder {
-    /// Create a new config builder
-    fn default() -> Self {
-        Self {
-            settings: HashMap::new(),
-        }
-    }
-}
-
-impl BallistaConfigBuilder {
-    /// Create a new config with an additional setting
-    pub fn set(&self, k: &str, v: &str) -> Self {
-        let mut settings = self.settings.clone();
-        settings.insert(k.to_owned(), v.to_owned());
-        Self { settings }
-    }
-
-    pub fn build(&self) -> Result<BallistaConfig> {
-        BallistaConfig::with_settings(self.settings.clone())
-    }
-}
-
-/// Ballista configuration
+/// Configuration with values in a valid String format
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BallistaConfig {
-    /// Settings stored in map for easy serde
+pub struct ValidConfiguration {
     settings: HashMap<String, String>,
+    valid_entries: HashMap<String, ConfigEntry>,
 }
 
-impl BallistaConfig {
-    /// Create a default configuration
-    pub fn new() -> Result<Self> {
-        Self::with_settings(HashMap::new())
-    }
+impl ValidConfiguration {
+    // When constructing a ValidConfiguration, necessary validation check will be done
+    fn new(
+        settings: HashMap<String, String>,
+        valid_entries: Vec<ConfigEntry>,
+    ) -> Result<Self> {
+        let valid_entries = valid_entries
+            .into_iter()
+            .map(|e| (e.name.clone(), e))
+            .collect::<HashMap<_, _>>();
 
-    /// Create a configuration builder
-    pub fn builder() -> BallistaConfigBuilder {
-        BallistaConfigBuilder::default()
-    }
+        // Firstly, check whether the entries in settings are valid or not
+        for (name, _) in settings.iter() {
+            if valid_entries.get(name).is_none() {
+                return Err(BallistaError::General(format!(
+                    "The configuration setting '{}' is not valid",
+                    name
+                )));
+            }
+        }
 
-    /// Create a new configuration based on key-value pairs
-    pub fn with_settings(settings: HashMap<String, String>) -> Result<Self> {
-        let supported_entries = BallistaConfig::valid_entries();
-        for (name, entry) in &supported_entries {
-            if let Some(v) = settings.get(name) {
+        // Secondly, check each entry in the valid_entries:
+        // if its value is specified in settings, then check whether it's valid to be parsed to the related data type
+        // else check its default value:
+        //    if its default value exists, then check whether it's valid to be parsed to the related data type
+        //    else it's a mandatory entry which should be set in settings and should return Error;
+        for (name, entry) in valid_entries.iter() {
+            if let Some(v) = settings.get(&entry.name) {
                 // validate that we can parse the user-supplied value
-                Self::parse_value(v.as_str(), entry._data_type.clone()).map_err(|e| BallistaError::General(format!("Failed to parse user-supplied value '{}' for configuration setting '{}': {}", name, v, e)))?;
+                Self::parse_value(v.as_str(), entry.data_type.clone()).map_err(|e| BallistaError::General(format!("Failed to parse user-supplied value '{}' for configuration setting '{}': {}", name, v, e)))?;
             } else if let Some(v) = entry.default_value.clone() {
-                Self::parse_value(v.as_str(), entry._data_type.clone()).map_err(|e| BallistaError::General(format!("Failed to parse default value '{}' for configuration setting '{}': {}", name, v, e)))?;
-            } else if entry.default_value.is_none() {
-                // optional config
+                Self::parse_value(v.as_str(), entry.data_type.clone()).map_err(|e| BallistaError::General(format!("Failed to parse default value '{}' for configuration setting '{}': {}", name, v, e)))?;
             } else {
                 return Err(BallistaError::General(format!(
                     "No value specified for mandatory configuration setting '{}'",
@@ -129,10 +122,65 @@ impl BallistaConfig {
             }
         }
 
-        Ok(Self { settings })
+        Ok(Self {
+            settings,
+            valid_entries,
+        })
     }
 
-    pub fn parse_value(val: &str, data_type: DataType) -> ParseResult<()> {
+    pub fn get_usize_setting(&self, key: &str) -> usize {
+        if let Some(v) = self.settings.get(key) {
+            // infallible because we validate all configs in the constructor
+            v.parse().unwrap()
+        } else {
+            // infallible because we validate all configs in the constructor
+            let v = self
+                .valid_entries
+                .get(key)
+                .unwrap()
+                .default_value
+                .as_ref()
+                .unwrap();
+            v.parse().unwrap()
+        }
+    }
+
+    pub fn get_bool_setting(&self, key: &str) -> bool {
+        if let Some(v) = self.settings.get(key) {
+            // infallible because we validate all configs in the constructor
+            v.parse::<bool>().unwrap()
+        } else {
+            // infallible because we validate all configs in the constructor
+            let v = self
+                .valid_entries
+                .get(key)
+                .unwrap()
+                .default_value
+                .as_ref()
+                .unwrap();
+            v.parse::<bool>().unwrap()
+        }
+    }
+
+    pub fn get_string_setting(&self, key: &str) -> String {
+        if let Some(v) = self.settings.get(key) {
+            // infallible because we validate all configs in the constructor
+            v.to_string()
+        } else {
+            // infallible because we validate all configs in the constructor
+            let v = self
+                .valid_entries
+                .get(key)
+                .unwrap()
+                .default_value
+                .as_ref()
+                .unwrap();
+            v.to_string()
+        }
+    }
+
+    /// Error when the value is not able to parsed to the data type
+    fn parse_value(val: &str, data_type: DataType) -> ParseResult<()> {
         match data_type {
             DataType::UInt16 => {
                 val.to_string()
@@ -154,13 +202,59 @@ impl BallistaConfig {
 
         Ok(())
     }
+}
+
+#[derive(Default)]
+pub struct ValidConfigurationBuilder {
+    settings: HashMap<String, String>,
+}
+
+impl ValidConfigurationBuilder {
+    /// Create a new config with an additional setting
+    pub fn set(&self, k: &str, v: &str) -> Self {
+        let mut settings = self.settings.clone();
+        settings.insert(k.to_owned(), v.to_owned());
+        Self { settings }
+    }
+
+    pub fn build(&self, valid_entries: Vec<ConfigEntry>) -> Result<ValidConfiguration> {
+        ValidConfiguration::new(self.settings.clone(), valid_entries)
+    }
+}
+
+/// Ballista configuration builder
+#[derive(Default)]
+pub struct BallistaConfigBuilder {
+    valid_config_builder: ValidConfigurationBuilder,
+}
+
+impl BallistaConfigBuilder {
+    /// Create a new configuration based on key-value pairs
+    pub fn with_settings(settings: HashMap<String, String>) -> Result<Self> {
+        Ok(Self {
+            valid_config_builder: ValidConfigurationBuilder { settings },
+        })
+    }
+
+    /// Create a new config with an additional setting
+    pub fn set(&self, k: &str, v: &str) -> Self {
+        Self {
+            valid_config_builder: self.valid_config_builder.set(k, v),
+        }
+    }
+
+    pub fn build(&self) -> Result<BallistaConfig> {
+        self.valid_config_builder
+            .build(Self::valid_entries())
+            .map(|valid_config| BallistaConfig { valid_config })
+    }
 
     /// All available configuration options
-    pub fn valid_entries() -> HashMap<String, ConfigEntry> {
-        let entries = vec![
+    pub fn valid_entries() -> Vec<ConfigEntry> {
+        vec![
             ConfigEntry::new(BALLISTA_JOB_NAME.to_string(),
                              "Sets the job name that will appear in the web user interface for any submitted jobs".to_string(),
-                             DataType::Utf8, None),
+                             DataType::Utf8, Some("BallistaJob".to_string())),
             ConfigEntry::new(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS.to_string(),
                              "Sets the default number of partitions to create when repartitioning query stages".to_string(),
                              DataType::UInt16, Some("16".to_string())),
@@ -185,82 +279,73 @@ impl BallistaConfig {
             ConfigEntry::new(BALLISTA_PLUGIN_DIR.to_string(),
                              "Sets the plugin dir".to_string(),
                              DataType::Utf8, Some("".to_string())),
-        ];
-        entries
-            .iter()
-            .map(|e| (e.name.clone(), e.clone()))
-            .collect::<HashMap<_, _>>()
+        ]
+    }
+}
+
+/// Ballista configuration
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BallistaConfig {
+    /// Settings stored in map for easy serde
+    valid_config: ValidConfiguration,
+}
+
+impl BallistaConfig {
+    /// Create a configuration builder
+    pub fn builder() -> BallistaConfigBuilder {
+        BallistaConfigBuilder::default()
+    }
+
+    /// Create a default configuration
+    pub fn new() -> Result<Self> {
+        Self::with_settings(HashMap::new())
+    }
+
+    /// Create a new configuration based on key-value pairs
+    pub fn with_settings(settings: HashMap<String, String>) -> Result<Self> {
+        BallistaConfigBuilder::with_settings(settings).and_then(|builder| builder.build())
     }
 
     pub fn settings(&self) -> &HashMap<String, String> {
-        &self.settings
+        &self.valid_config.settings
     }
 
     pub fn default_shuffle_partitions(&self) -> usize {
-        self.get_usize_setting(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS)
+        self.valid_config
+            .get_usize_setting(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS)
     }
 
     pub fn default_plugin_dir(&self) -> String {
-        self.get_string_setting(BALLISTA_PLUGIN_DIR)
+        self.valid_config.get_string_setting(BALLISTA_PLUGIN_DIR)
     }
 
     pub fn default_batch_size(&self) -> usize {
-        self.get_usize_setting(BALLISTA_DEFAULT_BATCH_SIZE)
+        self.valid_config
+            .get_usize_setting(BALLISTA_DEFAULT_BATCH_SIZE)
     }
 
     pub fn repartition_joins(&self) -> bool {
-        self.get_bool_setting(BALLISTA_REPARTITION_JOINS)
+        self.valid_config
+            .get_bool_setting(BALLISTA_REPARTITION_JOINS)
     }
 
     pub fn repartition_aggregations(&self) -> bool {
-        self.get_bool_setting(BALLISTA_REPARTITION_AGGREGATIONS)
+        self.valid_config
+            .get_bool_setting(BALLISTA_REPARTITION_AGGREGATIONS)
     }
 
     pub fn repartition_windows(&self) -> bool {
-        self.get_bool_setting(BALLISTA_REPARTITION_WINDOWS)
+        self.valid_config
+            .get_bool_setting(BALLISTA_REPARTITION_WINDOWS)
     }
 
     pub fn parquet_pruning(&self) -> bool {
-        self.get_bool_setting(BALLISTA_PARQUET_PRUNING)
+        self.valid_config.get_bool_setting(BALLISTA_PARQUET_PRUNING)
     }
 
     pub fn default_with_information_schema(&self) -> bool {
-        self.get_bool_setting(BALLISTA_WITH_INFORMATION_SCHEMA)
-    }
-
-    fn get_usize_setting(&self, key: &str) -> usize {
-        if let Some(v) = self.settings.get(key) {
-            // infallible because we validate all configs in the constructor
-            v.parse().unwrap()
-        } else {
-            let entries = Self::valid_entries();
-            // infallible because we validate all configs in the constructor
-            let v = entries.get(key).unwrap().default_value.as_ref().unwrap();
-            v.parse().unwrap()
-        }
-    }
-
-    fn get_bool_setting(&self, key: &str) -> bool {
-        if let Some(v) = self.settings.get(key) {
-            // infallible because we validate all configs in the constructor
-            v.parse::<bool>().unwrap()
-        } else {
-            let entries = Self::valid_entries();
-            // infallible because we validate all configs in the constructor
-            let v = entries.get(key).unwrap().default_value.as_ref().unwrap();
-            v.parse::<bool>().unwrap()
-        }
-    }
-    fn get_string_setting(&self, key: &str) -> String {
-        if let Some(v) = self.settings.get(key) {
-            // infallible because we validate all configs in the constructor
-            v.to_string()
-        } else {
-            let entries = Self::valid_entries();
-            // infallible because we validate all configs in the constructor
-            let v = entries.get(key).unwrap().default_value.as_ref().unwrap();
-            v.to_string()
-        }
+        self.valid_config
+            .get_bool_setting(BALLISTA_WITH_INFORMATION_SCHEMA)
     }
 }
 
