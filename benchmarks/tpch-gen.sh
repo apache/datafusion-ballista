@@ -29,5 +29,6 @@ if test -f "$FILE"; then
 else
   mkdir data 2>/dev/null
   docker run -v `pwd`/data:/data -it --rm ghcr.io/databloom-ai/tpch-docker:main -vf -s 1
+  docker run -v `pwd`/data:/data -it --entrypoint /bin/bash --rm ghcr.io/databloom-ai/tpch-docker:main -c "cp /opt/tpch/2.18.0_rc2/dbgen/answers/* /data"
   ls -l data
 fi

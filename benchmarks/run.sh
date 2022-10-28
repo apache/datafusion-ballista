@@ -23,5 +23,5 @@ set -x
 
 for query in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 17 18 19 21
 do
-  /root/tpch benchmark ballista --host ballista-scheduler --port 50050 --query $query --path /data --format tbl --iterations 1 --debug --verify
+  /root/tpch benchmark ballista --host ballista-scheduler --port 50050 --query $query --path /data --format tbl --iterations 1 --debug --expected-results /data
 done
