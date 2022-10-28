@@ -127,11 +127,11 @@ test_source_distribution() {
   export ARROW_TEST_DATA=$PWD/arrow-testing-data/data
   export PARQUET_TEST_DATA=$PWD/parquet-testing-data/data
 
-  # generate benchmark data
-  pushd benchmarks
-  ./tpch-gen.sh
-  popd
-  export TPCH_DATA=`pwd`/benchmarks/data
+  # TODO: enable this eventually so that cargo test will check benchmark query results
+#  pushd benchmarks
+#  ./tpch-gen.sh
+#  popd
+#  export TPCH_DATA=`pwd`/benchmarks/data
 
   cargo build
   cargo test --all
