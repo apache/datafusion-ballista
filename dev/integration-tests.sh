@@ -36,6 +36,8 @@ sleep 10
 echo "Running benchmarks ..."
 docker-compose run ballista-client /root/run.sh
 
+#TODO need to call docker-compose down even if benchmarks fail
+
 echo "Stopping docker-compose ..."
 docker-compose down
 
