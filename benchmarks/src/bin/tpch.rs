@@ -1005,15 +1005,17 @@ fn assert_expected_results(expected: &Vec<RecordBatch>, actual: &Vec<RecordBatch
 }
 
 /// Get the expected answer for a specific query at scale factor 1
-async fn get_expected_results(n: usize, path: &String) -> Result<Vec<RecordBatch>> {
+async fn get_expected_results(n: usize, path: &str) -> Result<Vec<RecordBatch>> {
     let ctx = SessionContext::new();
     let schema = string_schema(get_answer_schema(n));
     let options = CsvReadOptions::new()
         .schema(&schema)
         .delimiter(b'|')
         .file_extension(".out");
+    let answer_path = format!("{}/answers/q{}.out", path, n);
+    println!("Looking for expected results at {}", answer_path);
     let df = ctx
-        .read_csv(&format!("{}/answers/q{}.out", path, n), options)
+        .read_csv(&answer_path, options)
         .await?;
     let df = df.select(
         get_answer_schema(n)

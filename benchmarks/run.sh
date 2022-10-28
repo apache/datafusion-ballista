@@ -15,6 +15,8 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+
+set -e
 set -x
 
 # This bash script is meant to be run inside the docker-compose environment. Check the README for instructions
@@ -23,5 +25,5 @@ set -x
 
 for query in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 17 18 19 21
 do
-  /root/tpch benchmark ballista --host ballista-scheduler --port 50050 --query $query --path /data --format tbl --iterations 1 --debug --expected-results /data
+  /root/tpch benchmark ballista --host ballista-scheduler --port 50050 --query $query --path /data --format tbl --iterations 1 --debug --expected /data
 done
