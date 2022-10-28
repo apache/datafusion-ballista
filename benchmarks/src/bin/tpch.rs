@@ -1078,7 +1078,7 @@ fn get_answer_schema(n: usize) -> Schema {
             Field::new("avg_qty", DataType::Float64, true),
             Field::new("avg_price", DataType::Float64, true),
             Field::new("avg_disc", DataType::Float64, true),
-            Field::new("count_order", DataType::UInt64, true),
+            Field::new("count_order", DataType::Int64, true),
         ]),
 
         2 => Schema::new(vec![
