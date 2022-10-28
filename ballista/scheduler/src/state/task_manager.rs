@@ -785,17 +785,29 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Clean up a failed job in FailedJobs Keyspace by delayed clean_up_interval seconds
-    pub(crate) fn delete_failed_job_delayed(&self, key: String, clean_up_interval: u64) {
-        self.delete_from_state_backend_delayed(FailedJobs, key, clean_up_interval)
+    pub(crate) fn clean_up_failed_job_delayed(
+        &self,
+        job_id: String,
+        clean_up_interval: u64,
+    ) {
+        if clean_up_interval == 0 {
+            info!("The interval is 0 and the clean up for the failed job state {} will not triggered", job_id);
+            return;
+        }
+        self.delete_from_state_backend_delayed(FailedJobs, job_id, clean_up_interval)
     }
 
     /// Clean up a successful job in CompletedJobs Keyspace by delayed clean_up_interval seconds
     pub(crate) fn delete_successful_job_delayed(
         &self,
-        key: String,
+        job_id: String,
         clean_up_interval: u64,
     ) {
-        self.delete_from_state_backend_delayed(CompletedJobs, key, clean_up_interval)
+        if clean_up_interval == 0 {
+            info!("The interval is 0 and the clean up for the successful job state {} will not triggered", job_id);
+            return;
+        }
+        self.delete_from_state_backend_delayed(CompletedJobs, job_id, clean_up_interval)
     }
 
     /// Clean up entries in some keyspace by delayed clean_up_interval seconds

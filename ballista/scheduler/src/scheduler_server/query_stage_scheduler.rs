@@ -33,10 +33,6 @@ use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::executor_manager::ExecutorReservation;
 use crate::state::SchedulerState;
 
-// TODO move to configuration file
-/// Clean up job data interval
-pub const CLEANUP_FINISHED_JOB_DELAY_SECS: u64 = 300;
-
 pub(crate) struct QueryStageScheduler<
     T: 'static + AsLogicalPlan,
     U: 'static + AsExecutionPlan,
@@ -141,18 +137,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             QueryStageSchedulerEvent::JobFinished(job_id) => {
                 info!("Job {} success", job_id);
                 self.state.task_manager.succeed_job(&job_id).await?;
-
-                // spawn a delayed future to clean up job data on both Scheduler and Executors
-                {
-                    self.state.task_manager.delete_successful_job_delayed(
-                        job_id.clone(),
-                        CLEANUP_FINISHED_JOB_DELAY_SECS,
-                    );
-                    self.state.executor_manager.clean_up_job_data_delayed(
-                        job_id,
-                        CLEANUP_FINISHED_JOB_DELAY_SECS,
-                    );
-                }
+                self.state.clean_up_successful_job(job_id);
             }
             QueryStageSchedulerEvent::JobRunningFailed(job_id, failure_reason) => {
                 error!("Job {} running failed", job_id);
@@ -166,18 +151,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .post_event(QueryStageSchedulerEvent::CancelTasks(tasks))
                         .await?;
                 }
-
-                // spawn a delayed future to clean up job data on both Scheduler and Executors
-                {
-                    self.state.task_manager.delete_failed_job_delayed(
-                        job_id.clone(),
-                        CLEANUP_FINISHED_JOB_DELAY_SECS,
-                    );
-                    self.state.executor_manager.clean_up_job_data_delayed(
-                        job_id,
-                        CLEANUP_FINISHED_JOB_DELAY_SECS,
-                    );
-                }
+                self.state.clean_up_failed_job(job_id);
             }
             QueryStageSchedulerEvent::JobUpdated(job_id) => {
                 info!("Job {} Updated", job_id);
@@ -185,18 +159,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             }
             QueryStageSchedulerEvent::JobCancel(job_id) => {
                 self.state.task_manager.cancel_job(&job_id).await?;
-
-                // spawn a delayed future to clean up job data on both Scheduler and Executors
-                {
-                    self.state.task_manager.delete_failed_job_delayed(
-                        job_id.clone(),
-                        CLEANUP_FINISHED_JOB_DELAY_SECS,
-                    );
-                    self.state.executor_manager.clean_up_job_data_delayed(
-                        job_id,
-                        CLEANUP_FINISHED_JOB_DELAY_SECS,
-                    );
-                }
+                self.state.clean_up_failed_job(job_id);
             }
             QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status) => {
                 let num_status = tasks_status.len();

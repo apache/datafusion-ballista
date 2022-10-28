@@ -62,7 +62,12 @@ mod config {
 }
 
 use ballista_core::utils::create_grpc_server;
-use ballista_scheduler::config::SlotsPolicy;
+use ballista_scheduler::config::{
+    SchedulerConfig, SchedulerConfigBuilder, SlotsPolicy,
+    BALLISTA_FINISHED_JOB_DATA_CLEANUP_DELAY_SECS,
+    BALLISTA_FINISHED_JOB_STATE_CLEANUP_DELAY_SECS,
+    BALLISTA_SCHEDULER_EVENT_LOOP_BUFFER_SIZE,
+};
 #[cfg(feature = "flight-sql")]
 use ballista_scheduler::flight_sql::FlightSqlServiceImpl;
 use config::prelude::*;
@@ -74,7 +79,7 @@ async fn start_server(
     addr: SocketAddr,
     scheduling_policy: TaskSchedulingPolicy,
     slots_policy: SlotsPolicy,
-    event_loop_buffer_size: usize,
+    config: SchedulerConfig,
 ) -> Result<()> {
     info!(
         "Ballista v{} Scheduler listening on {:?}",
@@ -94,13 +99,13 @@ async fn start_server(
                 slots_policy,
                 BallistaCodec::default(),
                 default_session_builder,
-                event_loop_buffer_size,
+                config,
             ),
             _ => SchedulerServer::new(
                 scheduler_name,
                 config_backend.clone(),
                 BallistaCodec::default(),
-                event_loop_buffer_size,
+                config,
             ),
         };
 
@@ -204,7 +209,7 @@ async fn main() -> Result<()> {
     let addr = format!("{}:{}", bind_host, port);
     let addr = addr.parse()?;
 
-    let client: Arc<dyn StateBackendClient> = match opt.config_backend {
+    let config_backend: Arc<dyn StateBackendClient> = match opt.config_backend {
         #[cfg(not(any(feature = "sled", feature = "etcd")))]
         _ => std::compile_error!(
             "To build the scheduler enable at least one config backend feature (`etcd` or `sled`)"
@@ -247,14 +252,27 @@ async fn main() -> Result<()> {
 
     let scheduling_policy: TaskSchedulingPolicy = opt.scheduler_policy;
     let slots_policy: SlotsPolicy = opt.executor_slots_policy;
-    let event_loop_buffer_size = opt.event_loop_buffer_size as usize;
+    let config = SchedulerConfigBuilder::default()
+        .set(
+            BALLISTA_SCHEDULER_EVENT_LOOP_BUFFER_SIZE,
+            &opt.event_loop_buffer_size.to_string(),
+        )
+        .set(
+            BALLISTA_FINISHED_JOB_DATA_CLEANUP_DELAY_SECS,
+            &opt.finished_job_data_clean_up_interval_seconds.to_string(),
+        )
+        .set(
+            BALLISTA_FINISHED_JOB_STATE_CLEANUP_DELAY_SECS,
+            &opt.finished_job_state_clean_up_interval_seconds.to_string(),
+        )
+        .build()?;
     start_server(
         scheduler_name,
-        client,
+        config_backend,
         addr,
         scheduling_policy,
         slots_policy,
-        event_loop_buffer_size,
+        config,
     )
     .await?;
     Ok(())

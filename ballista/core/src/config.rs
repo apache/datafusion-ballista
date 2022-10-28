@@ -49,7 +49,7 @@ impl PartialEq<Self> for ConfigEntry {
 impl Eq for ConfigEntry {}
 
 impl ConfigEntry {
-    fn new(
+    pub fn new(
         name: String,
         _description: String,
         _data_type: DataType,
@@ -171,7 +171,7 @@ impl ValidConfiguration {
     /// Error when the value is not able to parsed to the data type
     fn parse_value(val: &str, data_type: DataType) -> ParseResult<()> {
         match data_type {
-            DataType::UInt16 => {
+            DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => {
                 val.to_string()
                     .parse::<usize>()
                     .map_err(|e| format!("{:?}", e))?;

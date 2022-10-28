@@ -31,7 +31,7 @@ use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::TaskManager;
 
-use crate::config::SlotsPolicy;
+use crate::config::{SchedulerConfig, SlotsPolicy};
 use crate::state::execution_graph::TaskDescription;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::TaskStatus;
@@ -92,6 +92,7 @@ pub(super) struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExec
     pub task_manager: TaskManager<T, U>,
     pub session_manager: SessionManager,
     pub codec: BallistaCodec<T, U>,
+    pub config: SchedulerConfig,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T, U> {
@@ -107,6 +108,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             codec,
             "localhost:50050".to_owned(),
             SlotsPolicy::Bias,
+            SchedulerConfig::default(),
         )
     }
 
@@ -116,6 +118,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
         slots_policy: SlotsPolicy,
+        config: SchedulerConfig,
     ) -> Self {
         Self {
             executor_manager: ExecutorManager::new(config_client.clone(), slots_policy),
@@ -127,6 +130,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             ),
             session_manager: SessionManager::new(config_client, session_builder),
             codec,
+            config,
         }
     }
 
@@ -400,6 +404,30 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 Ok(false)
             }
         }
+    }
+
+    /// Spawn a delayed future to clean up job data on both Scheduler and Executors
+    pub(crate) fn clean_up_successful_job(&self, job_id: String) {
+        self.executor_manager.clean_up_job_data_delayed(
+            job_id.clone(),
+            self.config.clean_up_interval_for_finished_job_data(),
+        );
+        self.task_manager.delete_successful_job_delayed(
+            job_id,
+            self.config.clean_up_interval_for_finished_job_state(),
+        );
+    }
+
+    /// Spawn a delayed future to clean up job data on both Scheduler and Executors
+    pub(crate) fn clean_up_failed_job(&self, job_id: String) {
+        self.executor_manager.clean_up_job_data_delayed(
+            job_id.clone(),
+            self.config.clean_up_interval_for_finished_job_data(),
+        );
+        self.task_manager.clean_up_failed_job_delayed(
+            job_id,
+            self.config.clean_up_interval_for_finished_job_state(),
+        );
     }
 }
 

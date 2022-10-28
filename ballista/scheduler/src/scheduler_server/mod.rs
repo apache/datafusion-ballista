@@ -30,7 +30,7 @@ use datafusion::logical_plan::LogicalPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 
-use crate::config::SlotsPolicy;
+use crate::config::{SchedulerConfig, SlotsPolicy};
 use log::{error, warn};
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
@@ -66,54 +66,57 @@ pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
     pub fn new(
         scheduler_name: String,
-        config: Arc<dyn StateBackendClient>,
+        config_backend: Arc<dyn StateBackendClient>,
         codec: BallistaCodec<T, U>,
-        event_loop_buffer_size: usize,
+        config: SchedulerConfig,
     ) -> Self {
         SchedulerServer::new_with_policy(
             scheduler_name,
-            config,
+            config_backend,
             TaskSchedulingPolicy::PullStaged,
             SlotsPolicy::Bias,
             codec,
             default_session_builder,
-            event_loop_buffer_size,
+            config,
         )
     }
 
     pub fn new_with_builder(
         scheduler_name: String,
-        config: Arc<dyn StateBackendClient>,
+        config_backend: Arc<dyn StateBackendClient>,
         codec: BallistaCodec<T, U>,
         session_builder: SessionBuilder,
-        event_loop_buffer_size: usize,
+        config: SchedulerConfig,
     ) -> Self {
         SchedulerServer::new_with_policy(
             scheduler_name,
-            config,
+            config_backend,
             TaskSchedulingPolicy::PullStaged,
             SlotsPolicy::Bias,
             codec,
             session_builder,
-            event_loop_buffer_size,
+            config,
         )
     }
 
     pub fn new_with_policy(
         scheduler_name: String,
-        config: Arc<dyn StateBackendClient>,
+        config_backend: Arc<dyn StateBackendClient>,
         scheduling_policy: TaskSchedulingPolicy,
         slots_policy: SlotsPolicy,
         codec: BallistaCodec<T, U>,
         session_builder: SessionBuilder,
-        event_loop_buffer_size: usize,
+        config: SchedulerConfig,
     ) -> Self {
+        let event_loop_buffer_size = config.scheduler_event_loop_buffer_size();
+
         let state = Arc::new(SchedulerState::new(
-            config,
+            config_backend,
             session_builder,
             codec,
             scheduler_name.clone(),
             slots_policy,
+            config,
         ));
 
         SchedulerServer::new_with_state(
@@ -314,7 +317,7 @@ mod test {
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
 
-    use crate::config::SlotsPolicy;
+    use crate::config::{SchedulerConfig, SlotsPolicy};
     use ballista_core::serde::protobuf::{
         failed_task, job_status, task_status, ExecutionError, FailedTask, JobStatus,
         PhysicalPlanNode, ShuffleWritePartition, SuccessfulTask, TaskStatus,
@@ -785,7 +788,7 @@ mod test {
                 SlotsPolicy::Bias,
                 BallistaCodec::default(),
                 default_session_builder,
-                10000,
+                SchedulerConfig::default(),
             );
         scheduler.init().await?;
 

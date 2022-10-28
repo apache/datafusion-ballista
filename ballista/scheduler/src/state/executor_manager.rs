@@ -489,6 +489,14 @@ impl ExecutorManager {
         job_id: String,
         clean_up_interval: u64,
     ) {
+        if clean_up_interval == 0 {
+            info!(
+                "The interval is 0 and the clean up for job data {} will not triggered",
+                job_id
+            );
+            return;
+        }
+
         let executor_manager = self.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(clean_up_interval)).await;

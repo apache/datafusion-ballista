@@ -555,6 +555,7 @@ mod test {
     use datafusion_proto::protobuf::LogicalPlanNode;
     use tonic::Request;
 
+    use crate::config::SchedulerConfig;
     use ballista_core::error::BallistaError;
     use ballista_core::serde::protobuf::{
         executor_registration::OptionalHost, executor_status, ExecutorRegistration,
@@ -578,7 +579,7 @@ mod test {
                 "localhost:50050".to_owned(),
                 state_storage.clone(),
                 BallistaCodec::default(),
-                10000,
+                SchedulerConfig::default(),
             );
         scheduler.init().await?;
         let exec_meta = ExecutorRegistration {
@@ -664,7 +665,7 @@ mod test {
                 "localhost:50050".to_owned(),
                 state_storage.clone(),
                 BallistaCodec::default(),
-                10000,
+                SchedulerConfig::default(),
             );
         scheduler.init().await?;
 
@@ -744,7 +745,7 @@ mod test {
                 "localhost:50050".to_owned(),
                 state_storage.clone(),
                 BallistaCodec::default(),
-                10000,
+                SchedulerConfig::default(),
             );
         scheduler.init().await?;
 
