@@ -1464,6 +1464,7 @@ mod roundtrip_tests {
             JoinType::Right,
             JoinType::Full,
             JoinType::LeftAnti,
+            JoinType::RightAnti,
             JoinType::LeftSemi,
             JoinType::RightSemi,
         ] {
