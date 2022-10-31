@@ -22,12 +22,12 @@ use std::convert::TryInto;
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
-    executor_status, CancelJobParams, CancelJobResult, ExecuteQueryParams,
-    ExecuteQueryResult, ExecutorHeartbeat, ExecutorStatus, ExecutorStoppedParams,
-    ExecutorStoppedResult, GetFileMetadataParams, GetFileMetadataResult,
-    GetJobStatusParams, GetJobStatusResult, HeartBeatParams, HeartBeatResult,
-    PollWorkParams, PollWorkResult, RegisterExecutorParams, RegisterExecutorResult,
-    UpdateTaskStatusParams, UpdateTaskStatusResult,
+    executor_status, CancelJobParams, CancelJobResult, CleanJobDataParams,
+    CleanJobDataResult, ExecuteQueryParams, ExecuteQueryResult, ExecutorHeartbeat,
+    ExecutorStatus, ExecutorStoppedParams, ExecutorStoppedResult, GetFileMetadataParams,
+    GetFileMetadataResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
+    HeartBeatResult, PollWorkParams, PollWorkResult, RegisterExecutorParams,
+    RegisterExecutorResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::serde::AsExecutionPlan;
@@ -542,6 +542,30 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 Status::internal(msg)
             })?;
         Ok(Response::new(CancelJobResult { cancelled: true }))
+    }
+
+    async fn clean_job_data(
+        &self,
+        request: Request<CleanJobDataParams>,
+    ) -> Result<Response<CleanJobDataResult>, Status> {
+        let job_id = request.into_inner().job_id;
+        info!("Received clean data request for job {}", job_id);
+
+        self.query_stage_event_loop
+            .get_sender()
+            .map_err(|e| {
+                let msg = format!("Get query stage event loop error due to {:?}", e);
+                error!("{}", msg);
+                Status::internal(msg)
+            })?
+            .post_event(QueryStageSchedulerEvent::JobDataClean(job_id))
+            .await
+            .map_err(|e| {
+                let msg = format!("Post to query stage event loop error due to {:?}", e);
+                error!("{}", msg);
+                Status::internal(msg)
+            })?;
+        Ok(Response::new(CleanJobDataResult {}))
     }
 }
 

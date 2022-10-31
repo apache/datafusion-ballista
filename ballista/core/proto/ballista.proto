@@ -948,6 +948,13 @@ message CancelJobResult {
   bool cancelled = 1;
 }
 
+message CleanJobDataParams {
+  string job_id = 1;
+}
+
+message CleanJobDataResult {
+}
+
 message LaunchTaskParams {
   // Allow to launch a task set to an executor at once
   repeated TaskDefinition tasks = 1;
@@ -1014,6 +1021,8 @@ service SchedulerGrpc {
   rpc ExecutorStopped (ExecutorStoppedParams) returns (ExecutorStoppedResult) {}
 
   rpc CancelJob (CancelJobParams) returns (CancelJobResult) {}
+
+  rpc CleanJobData (CleanJobDataParams) returns (CleanJobDataResult) {}
 }
 
 service ExecutorGrpc {
