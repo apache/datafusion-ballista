@@ -19,7 +19,7 @@ use ballista_core::BALLISTA_VERSION;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::ops::Deref;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -722,43 +722,90 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         let job_id = request.into_inner().job_id;
         info!("Remove data for job {:?}", job_id);
 
-        // Verify whether it's a legal job id
-        {
-            if job_id.is_empty() {
-                return Err(Status::internal(
-                    "Job id should not be empty!!!".to_string(),
-                ));
-            }
-            if job_id.contains('.') {
-                return Err(Status::internal(format!(
-                    "Job id {} should not contain char '.'!!!",
-                    job_id
-                )));
-            }
-        }
+        let work_dir = PathBuf::from(&self.executor.work_dir);
+        let mut path = work_dir.clone();
+        path.push(&job_id);
 
-        let work_dir = self.executor.work_dir.clone();
-        let mut path = PathBuf::from(work_dir);
-        path.push(job_id);
-
-        // Verify whether the path is for an existing directory
-        {
-            if !path.exists() {
-                return Err(Status::internal(format!(
+        // Verify it's an existing directory
+        if !path.is_dir() {
+            return if !path.exists() {
+                Err(Status::invalid_argument(format!(
                     "Path {:?} does not exist!!!",
                     path
-                )));
-            }
-            if !path.is_dir() {
-                return Err(Status::internal(format!(
+                )))
+            } else {
+                Err(Status::invalid_argument(format!(
                     "Path {:?} is not for a directory!!!",
                     path
-                )));
-            }
+                )))
+            };
+        }
+
+        if !is_subdirectory(path.as_path(), work_dir.as_path()) {
+            return Err(Status::invalid_argument(format!(
+                "Path {:?} is not a subdirectory of {:?}!!!",
+                path, work_dir
+            )));
         }
 
         std::fs::remove_dir_all(&path)?;
 
         Ok(Response::new(RemoveJobDataResult {}))
+    }
+}
+
+// Check whether the path is the subdirectory of the base directory
+fn is_subdirectory(path: &Path, base_path: &Path) -> bool {
+    if let (Ok(path), Ok(base_path)) = (path.canonicalize(), base_path.canonicalize()) {
+        if let Some(parent_path) = path.parent() {
+            parent_path.starts_with(base_path)
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::executor_server::is_subdirectory;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_is_subdirectory() {
+        let base_dir = TempDir::new().unwrap().into_path();
+
+        // Normal correct one
+        {
+            let job_path = prepare_testing_job_directory(&base_dir, "job_a");
+            assert!(is_subdirectory(&job_path, base_dir.as_path()));
+        }
+
+        // Empty job id
+        {
+            let job_path = prepare_testing_job_directory(&base_dir, "");
+            assert!(!is_subdirectory(&job_path, base_dir.as_path()));
+
+            let job_path = prepare_testing_job_directory(&base_dir, ".");
+            assert!(!is_subdirectory(&job_path, base_dir.as_path()));
+        }
+
+        // Malicious job id
+        {
+            let job_path = prepare_testing_job_directory(&base_dir, "..");
+            assert!(!is_subdirectory(&job_path, base_dir.as_path()));
+        }
+    }
+
+    fn prepare_testing_job_directory(base_dir: &Path, job_id: &str) -> PathBuf {
+        let mut path = base_dir.to_path_buf();
+        path.push(job_id);
+        if !path.exists() {
+            fs::create_dir(&path).unwrap();
+        }
+        path
     }
 }
