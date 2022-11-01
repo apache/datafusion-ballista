@@ -500,29 +500,35 @@ impl ExecutorManager {
         let executor_manager = self.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(clean_up_interval)).await;
-            executor_manager.clean_up_job_data(job_id).await;
+            executor_manager.clean_up_job_data_inner(job_id).await;
+        });
+    }
+
+    /// Send rpc to Executors to clean up the job data in a spawn thread
+    pub fn clean_up_job_data(&self, job_id: String) {
+        let executor_manager = self.clone();
+        tokio::spawn(async move {
+            executor_manager.clean_up_job_data_inner(job_id).await;
         });
     }
 
     /// Send rpc to Executors to clean up the job data
-    pub async fn clean_up_job_data(&self, job_id: String) {
+    async fn clean_up_job_data_inner(&self, job_id: String) {
         let alive_executors = self.get_alive_executors_within_one_minute();
         for executor in alive_executors {
             let job_id_clone = job_id.to_owned();
             if let Ok(mut client) = self.get_client(&executor).await {
                 tokio::spawn(async move {
+                    if let Err(err) = client
+                        .remove_job_data(RemoveJobDataParams {
+                            job_id: job_id_clone,
+                        })
+                        .await
                     {
-                        if let Err(err) = client
-                            .remove_job_data(RemoveJobDataParams {
-                                job_id: job_id_clone,
-                            })
-                            .await
-                        {
-                            warn!(
+                        warn!(
                             "Failed to call remove_job_data on Executor {} due to {:?}",
                             executor, err
                         )
-                        }
                     }
                 });
             } else {
