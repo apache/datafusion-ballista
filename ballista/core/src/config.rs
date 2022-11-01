@@ -24,6 +24,7 @@ use crate::error::{BallistaError, Result};
 use clap::ArgEnum;
 use core::fmt;
 use datafusion::arrow::datatypes::DataType;
+use log::warn;
 use std::collections::HashMap;
 use std::result;
 
@@ -85,10 +86,7 @@ impl ValidConfiguration {
         // Firstly, check whether the entries in settings are valid or not
         for (name, _) in settings.iter() {
             if valid_entries.get(name).is_none() {
-                return Err(BallistaError::General(format!(
-                    "The configuration setting '{}' is not valid",
-                    name
-                )));
+                warn!("The configuration setting '{}' is not valid", name);
             }
         }
 
