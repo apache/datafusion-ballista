@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::optimizer::utils::conjunction;
 /// Implements a Datafusion physical ExecutionPlan that delegates to a PyArrow Dataset
 /// This actually performs the projection, filtering and scanning of a Dataset
 use pyo3::prelude::*;
@@ -32,7 +33,7 @@ use datafusion::arrow::pyarrow::PyArrowType;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError as InnerDataFusionError, Result as DFResult};
 use datafusion::execution::context::TaskContext;
-use datafusion::logical_plan::{combine_filters, Expr};
+use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::PhysicalSortExpr;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -93,9 +94,9 @@ impl DatasetExec {
                 .collect()
         });
         let columns: Option<Vec<String>> = columns.transpose()?;
-        let filter_expr: Option<PyObject> = combine_filters(filters)
-            .map(|filters| {
-                PyArrowFilterExpression::try_from(&filters)
+        let filter_expr: Option<PyObject> = conjunction(filters.iter().cloned())
+            .map(|filter| {
+                PyArrowFilterExpression::try_from(&filter)
                     .map(|filter_expr| filter_expr.inner().clone_ref(py))
             })
             .transpose()?;

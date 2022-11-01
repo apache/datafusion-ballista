@@ -17,16 +17,28 @@
 # specific language governing permissions and limitations
 # under the License.
 set -e
-./dev/build-ballista-docker.sh
+
+echo "Generating benchmark data ..."
 pushd benchmarks
 ./tpch-gen.sh
+popd
 
+echo "Building Docker images ..."
+./dev/build-ballista-docker.sh
+
+echo "Starting docker-compose in background ..."
 docker-compose up -d
 
 # give the scheduler a chance to start up
+echo "Sleeping (wait for scheduler to start)..."
 sleep 10
 
+echo "Running benchmarks ..."
 docker-compose run ballista-client /root/run.sh
+
+#TODO need to call docker-compose down even if benchmarks fail
+
+echo "Stopping docker-compose ..."
 docker-compose down
 
 popd

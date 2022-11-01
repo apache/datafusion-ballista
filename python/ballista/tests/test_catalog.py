@@ -65,8 +65,8 @@ def test_basic(ctx, database):
     assert table.kind == "physical"
     assert table.schema == pa.schema(
         [
-            pa.field("int", pa.int64(), nullable=False),
-            pa.field("str", pa.string(), nullable=False),
-            pa.field("float", pa.float64(), nullable=False),
+            pa.field("int", pa.int64(), nullable=True),
+            pa.field("str", pa.string(), nullable=True),
+            pa.field("float", pa.float64(), nullable=True),
         ]
     )

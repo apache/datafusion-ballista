@@ -580,6 +580,7 @@ mod test {
                 state_storage.clone(),
                 BallistaCodec::default(),
                 SchedulerConfig::default(),
+                None,
             );
         scheduler.init().await?;
         let exec_meta = ExecutorRegistration {
@@ -666,6 +667,7 @@ mod test {
                 state_storage.clone(),
                 BallistaCodec::default(),
                 SchedulerConfig::default(),
+                None,
             );
         scheduler.init().await?;
 
@@ -746,6 +748,7 @@ mod test {
                 state_storage.clone(),
                 BallistaCodec::default(),
                 SchedulerConfig::default(),
+                None,
             );
         scheduler.init().await?;
 

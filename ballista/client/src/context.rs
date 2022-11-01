@@ -33,11 +33,9 @@ use datafusion_proto::protobuf::LogicalPlanNode;
 
 use datafusion::catalog::TableReference;
 use datafusion::dataframe::DataFrame;
-use datafusion::datasource::TableProvider;
+use datafusion::datasource::{source_as_provider, TableProvider};
 use datafusion::error::{DataFusionError, Result};
-use datafusion::logical_plan::{
-    source_as_provider, CreateExternalTable, LogicalPlan, TableScan,
-};
+use datafusion::logical_expr::{CreateExternalTable, LogicalPlan, TableScan};
 use datafusion::prelude::{
     AvroReadOptions, CsvReadOptions, ParquetReadOptions, SessionConfig, SessionContext,
 };

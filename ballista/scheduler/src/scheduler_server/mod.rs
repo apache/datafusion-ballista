@@ -26,7 +26,7 @@ use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use ballista_core::utils::default_session_builder;
 
 use datafusion::execution::context::SessionState;
-use datafusion::logical_plan::LogicalPlan;
+use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 
@@ -57,6 +57,7 @@ pub(crate) type SessionBuilder = fn(SessionConfig) -> SessionState;
 #[derive(Clone)]
 pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
     pub scheduler_name: String,
+    pub advertise_endpoint: Option<String>,
     pub(crate) state: Arc<SchedulerState<T, U>>,
     pub start_time: u128,
     policy: TaskSchedulingPolicy,
@@ -69,15 +70,24 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         config_backend: Arc<dyn StateBackendClient>,
         codec: BallistaCodec<T, U>,
         config: SchedulerConfig,
+        advertise_endpoint: Option<String>,
     ) -> Self {
-        SchedulerServer::new_with_policy(
-            scheduler_name,
+        let event_loop_buffer_size = config.scheduler_event_loop_buffer_size();
+        let state = Arc::new(SchedulerState::new(
             config_backend,
-            TaskSchedulingPolicy::PullStaged,
-            SlotsPolicy::Bias,
-            codec,
             default_session_builder,
+            codec,
+            scheduler_name.clone(),
+            SlotsPolicy::Bias,
             config,
+        ));
+
+        SchedulerServer::new_with_state(
+            scheduler_name,
+            TaskSchedulingPolicy::PullStaged,
+            state,
+            event_loop_buffer_size,
+            advertise_endpoint,
         )
     }
 
@@ -87,15 +97,24 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         codec: BallistaCodec<T, U>,
         session_builder: SessionBuilder,
         config: SchedulerConfig,
+        advertise_endpoint: Option<String>,
     ) -> Self {
-        SchedulerServer::new_with_policy(
-            scheduler_name,
+        let event_loop_buffer_size = config.scheduler_event_loop_buffer_size();
+        let state = Arc::new(SchedulerState::new(
             config_backend,
-            TaskSchedulingPolicy::PullStaged,
-            SlotsPolicy::Bias,
-            codec,
             session_builder,
+            codec,
+            scheduler_name.clone(),
+            SlotsPolicy::Bias,
             config,
+        ));
+
+        SchedulerServer::new_with_state(
+            scheduler_name,
+            TaskSchedulingPolicy::PullStaged,
+            state,
+            event_loop_buffer_size,
+            advertise_endpoint,
         )
     }
 
@@ -107,9 +126,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         codec: BallistaCodec<T, U>,
         session_builder: SessionBuilder,
         config: SchedulerConfig,
+        advertise_endpoint: Option<String>,
     ) -> Self {
         let event_loop_buffer_size = config.scheduler_event_loop_buffer_size();
-
         let state = Arc::new(SchedulerState::new(
             config_backend,
             session_builder,
@@ -124,6 +143,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             scheduling_policy,
             state,
             event_loop_buffer_size,
+            advertise_endpoint,
         )
     }
 
@@ -132,6 +152,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         policy: TaskSchedulingPolicy,
         state: Arc<SchedulerState<T, U>>,
         event_loop_buffer_size: usize,
+        advertise_endpoint: Option<String>,
     ) -> Self {
         let query_stage_scheduler =
             Arc::new(QueryStageScheduler::new(state.clone(), policy));
@@ -149,6 +170,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                 .as_millis(),
             policy,
             query_stage_event_loop,
+            advertise_endpoint,
         }
     }
 
@@ -306,7 +328,7 @@ mod test {
     use std::time::Duration;
 
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::logical_plan::{col, sum, LogicalPlan};
+    use datafusion::logical_expr::{col, sum, LogicalPlan};
 
     use datafusion::test_util::scan_empty;
     use datafusion_proto::protobuf::LogicalPlanNode;
@@ -789,6 +811,7 @@ mod test {
                 BallistaCodec::default(),
                 default_session_builder,
                 SchedulerConfig::default(),
+                None,
             );
         scheduler.init().await?;
 
@@ -809,6 +832,7 @@ mod test {
                 TaskSchedulingPolicy::PushStaged,
                 state,
                 10000,
+                None,
             );
         scheduler.init().await?;
 

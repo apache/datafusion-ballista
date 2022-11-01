@@ -23,11 +23,12 @@ use std::sync::Arc;
 
 use chrono::{TimeZone, Utc};
 use datafusion::arrow::datatypes::Schema;
+use datafusion::config::ConfigOptions;
 use datafusion::datasource::listing::{FileRange, PartitionedFile};
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::execution::context::ExecutionProps;
+use datafusion::execution::FunctionRegistry;
 use datafusion::logical_expr::window_function::WindowFunction;
-use datafusion::logical_plan::FunctionRegistry;
 use datafusion::physical_expr::expressions::DateTimeIntervalExpr;
 use datafusion::physical_expr::ScalarFunctionExpr;
 use datafusion::physical_plan::file_format::FileScanConfig;
@@ -42,6 +43,7 @@ use datafusion::physical_plan::{ColumnStatistics, PhysicalExpr, Statistics};
 use datafusion_proto::from_proto::from_proto_binary_op;
 use object_store::path::Path;
 use object_store::ObjectMeta;
+use parking_lot::RwLock;
 
 use crate::serde::protobuf::physical_expr_node::ExprType;
 
@@ -397,6 +399,7 @@ impl TryInto<FileScanConfig> for &protobuf::FileScanExecConf {
         let statistics = convert_required!(self.statistics)?;
 
         Ok(FileScanConfig {
+            config_options: Arc::new(RwLock::new(ConfigOptions::new())), // TODO add serde
             object_store_url: ObjectStoreUrl::parse(&self.object_store_url)?,
             file_schema: schema,
             file_groups: self

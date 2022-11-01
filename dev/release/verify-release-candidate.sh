@@ -127,6 +127,12 @@ test_source_distribution() {
   export ARROW_TEST_DATA=$PWD/arrow-testing-data/data
   export PARQUET_TEST_DATA=$PWD/parquet-testing-data/data
 
+  # TODO: enable this eventually so that cargo test will check benchmark query results
+#  pushd benchmarks
+#  ./tpch-gen.sh
+#  popd
+#  export TPCH_DATA=`pwd`/benchmarks/data
+
   cargo build
   cargo test --all
 
@@ -134,9 +140,6 @@ test_source_distribution() {
     echo "Cargo.toml version should not contain SNAPSHOT for releases"
     exit 1
   fi
-
-  # run integration tests that will run end-to-end tests in docker-compose
-  ./dev/integration-tests.sh
 
   # Note can't verify other ballista crates as they depend
   # on ballista-core which isn't published yet

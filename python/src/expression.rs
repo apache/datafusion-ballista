@@ -15,12 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::logical_expr::expr::Cast;
 use pyo3::{basic::CompareOp, prelude::*};
 use std::convert::{From, Into};
 
 use datafusion::arrow::datatypes::DataType;
 use datafusion::arrow::pyarrow::PyArrowType;
-use datafusion::logical_plan::{col, lit, Expr};
+use datafusion::logical_expr::{col, lit, Expr, GetIndexedField};
 use datafusion::scalar::ScalarValue;
 
 /// An PyExpr that can be used on a DataFrame
@@ -93,10 +94,10 @@ impl PyExpr {
     }
 
     fn __getitem__(&self, key: &str) -> PyResult<PyExpr> {
-        Ok(Expr::GetIndexedField {
+        Ok(Expr::GetIndexedField(GetIndexedField {
             expr: Box::new(self.expr.clone()),
             key: ScalarValue::Utf8(Some(key.to_string())),
-        }
+        })
         .into())
     }
 
@@ -128,10 +129,10 @@ impl PyExpr {
     pub fn cast(&self, to: PyArrowType<DataType>) -> PyExpr {
         // self.expr.cast_to() requires DFSchema to validate that the cast
         // is supported, omit that for now
-        let expr = Expr::Cast {
+        let expr = Expr::Cast(Cast {
             expr: Box::new(self.expr.clone()),
             data_type: to.0,
-        };
+        });
         expr.into()
     }
 }

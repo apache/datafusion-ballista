@@ -296,11 +296,8 @@ We do not yet publish Docker images to the official Apache DockerHub account but
 To build Docker images:
 
 ```shell
-BALLISTA_VERSION=0.8.0 ./dev/build-ballista-docker.sh
+RELEASE_FLAG=release-lto ./dev/build-ballista-docker.sh
 ```
-
-Note that it is not currently possible to build the Docker images on Apple silicon. Tracking issue is
-[#17](https://github.com/apache/arrow-ballista/issues/17).
 
 The Docker image is tagged as `apache/arrow-ballista:0.8.0`.
 
