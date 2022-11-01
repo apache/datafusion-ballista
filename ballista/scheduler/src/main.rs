@@ -64,6 +64,7 @@ mod config {
 use ballista_core::utils::{create_grpc_server, default_session_builder};
 use ballista_scheduler::config::{
     SchedulerConfig, SchedulerConfigBuilder, SlotsPolicy,
+    BALLISTA_ADVERTISE_FLIGHT_RESULT_ROUTE_ENDPOINT,
     BALLISTA_FINISHED_JOB_DATA_CLEANUP_DELAY_SECS,
     BALLISTA_FINISHED_JOB_STATE_CLEANUP_DELAY_SECS,
     BALLISTA_SCHEDULER_EVENT_LOOP_BUFFER_SIZE,
@@ -80,7 +81,6 @@ async fn start_server(
     scheduling_policy: TaskSchedulingPolicy,
     slots_policy: SlotsPolicy,
     config: SchedulerConfig,
-    advertise_endpoint: Option<String>,
 ) -> Result<()> {
     info!(
         "Ballista v{} Scheduler listening on {:?}",
@@ -102,14 +102,12 @@ async fn start_server(
                 BallistaCodec::default(),
                 default_session_builder,
                 config,
-                advertise_endpoint,
             ),
             _ => SchedulerServer::new(
                 scheduler_name,
                 config_backend.clone(),
                 BallistaCodec::default(),
                 config,
-                advertise_endpoint,
             ),
         };
 
@@ -256,7 +254,7 @@ async fn main() -> Result<()> {
 
     let scheduling_policy: TaskSchedulingPolicy = opt.scheduler_policy;
     let slots_policy: SlotsPolicy = opt.executor_slots_policy;
-    let config = SchedulerConfigBuilder::default()
+    let mut config_builder = SchedulerConfigBuilder::default()
         .set(
             BALLISTA_SCHEDULER_EVENT_LOOP_BUFFER_SIZE,
             &opt.event_loop_buffer_size.to_string(),
@@ -268,8 +266,15 @@ async fn main() -> Result<()> {
         .set(
             BALLISTA_FINISHED_JOB_STATE_CLEANUP_DELAY_SECS,
             &opt.finished_job_state_clean_up_interval_seconds.to_string(),
-        )
-        .build()?;
+        );
+    if let Some(advertise_result_endpoint) = &opt.advertise_flight_result_route_endpoint {
+        config_builder = config_builder.set(
+            BALLISTA_ADVERTISE_FLIGHT_RESULT_ROUTE_ENDPOINT,
+            advertise_result_endpoint,
+        );
+    }
+
+    let config = config_builder.build()?;
     start_server(
         scheduler_name,
         config_backend,
@@ -277,7 +282,6 @@ async fn main() -> Result<()> {
         scheduling_policy,
         slots_policy,
         config,
-        opt.advertise_endpoint,
     )
     .await?;
     Ok(())

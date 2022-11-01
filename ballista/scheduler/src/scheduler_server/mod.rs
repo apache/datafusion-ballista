@@ -57,7 +57,7 @@ pub(crate) type SessionBuilder = fn(SessionConfig) -> SessionState;
 #[derive(Clone)]
 pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
     pub scheduler_name: String,
-    pub advertise_endpoint: Option<String>,
+    pub advertise_result_endpoint: Option<String>,
     pub(crate) state: Arc<SchedulerState<T, U>>,
     pub start_time: u128,
     policy: TaskSchedulingPolicy,
@@ -70,9 +70,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         config_backend: Arc<dyn StateBackendClient>,
         codec: BallistaCodec<T, U>,
         config: SchedulerConfig,
-        advertise_endpoint: Option<String>,
     ) -> Self {
         let event_loop_buffer_size = config.scheduler_event_loop_buffer_size();
+        let advertise_result_endpoint = config.advertise_flight_result_route_endpoint();
         let state = Arc::new(SchedulerState::new(
             config_backend,
             default_session_builder,
@@ -87,7 +87,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             TaskSchedulingPolicy::PullStaged,
             state,
             event_loop_buffer_size,
-            advertise_endpoint,
+            advertise_result_endpoint,
         )
     }
 
@@ -97,9 +97,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         codec: BallistaCodec<T, U>,
         session_builder: SessionBuilder,
         config: SchedulerConfig,
-        advertise_endpoint: Option<String>,
     ) -> Self {
         let event_loop_buffer_size = config.scheduler_event_loop_buffer_size();
+        let advertise_result_endpoint = config.advertise_flight_result_route_endpoint();
         let state = Arc::new(SchedulerState::new(
             config_backend,
             session_builder,
@@ -114,7 +114,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             TaskSchedulingPolicy::PullStaged,
             state,
             event_loop_buffer_size,
-            advertise_endpoint,
+            advertise_result_endpoint,
         )
     }
 
@@ -126,9 +126,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         codec: BallistaCodec<T, U>,
         session_builder: SessionBuilder,
         config: SchedulerConfig,
-        advertise_endpoint: Option<String>,
     ) -> Self {
         let event_loop_buffer_size = config.scheduler_event_loop_buffer_size();
+        let advertise_result_endpoint = config.advertise_flight_result_route_endpoint();
         let state = Arc::new(SchedulerState::new(
             config_backend,
             session_builder,
@@ -143,7 +143,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             scheduling_policy,
             state,
             event_loop_buffer_size,
-            advertise_endpoint,
+            advertise_result_endpoint,
         )
     }
 
@@ -152,7 +152,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         policy: TaskSchedulingPolicy,
         state: Arc<SchedulerState<T, U>>,
         event_loop_buffer_size: usize,
-        advertise_endpoint: Option<String>,
+        advertise_result_endpoint: Option<String>,
     ) -> Self {
         let query_stage_scheduler =
             Arc::new(QueryStageScheduler::new(state.clone(), policy));
@@ -170,7 +170,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                 .as_millis(),
             policy,
             query_stage_event_loop,
-            advertise_endpoint,
+            advertise_result_endpoint,
         }
     }
 
@@ -811,7 +811,6 @@ mod test {
                 BallistaCodec::default(),
                 default_session_builder,
                 SchedulerConfig::default(),
-                None,
             );
         scheduler.init().await?;
 

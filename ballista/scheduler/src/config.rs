@@ -31,6 +31,8 @@ pub const BALLISTA_FINISHED_JOB_STATE_CLEANUP_DELAY_SECS: &str =
     "ballista.finished.job.state.cleanup.delay.seconds";
 pub const BALLISTA_SCHEDULER_EVENT_LOOP_BUFFER_SIZE: &str =
     "ballista.scheduler.event.loop.buffer.size";
+pub const BALLISTA_ADVERTISE_FLIGHT_RESULT_ROUTE_ENDPOINT: &str =
+    "ballista.advertise.flight.result.route.endpoint";
 
 /// Ballista configuration, mainly for the scheduling jobs and tasks
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +76,17 @@ impl SchedulerConfig {
         self.valid_config
             .get_usize_setting(BALLISTA_SCHEDULER_EVENT_LOOP_BUFFER_SIZE)
     }
+
+    pub fn advertise_flight_result_route_endpoint(&self) -> Option<String> {
+        let advertise_result_endpoint = self
+            .valid_config
+            .get_string_setting(BALLISTA_ADVERTISE_FLIGHT_RESULT_ROUTE_ENDPOINT);
+        if advertise_result_endpoint.is_empty() {
+            None
+        } else {
+            Some(advertise_result_endpoint)
+        }
+    }
 }
 
 /// Ballista configuration builder
@@ -115,6 +128,9 @@ impl SchedulerConfigBuilder {
             ConfigEntry::new(BALLISTA_SCHEDULER_EVENT_LOOP_BUFFER_SIZE.to_string(),
                              "Set the buffer size for the scheduler event loop".to_string(),
                              DataType::UInt32, Some("10000".to_string())),
+            ConfigEntry::new(BALLISTA_ADVERTISE_FLIGHT_RESULT_ROUTE_ENDPOINT.to_string(),
+                             "Set the advertise route endpoint for the flight result".to_string(),
+                             DataType::Utf8, Some("".to_string())),
         ]
     }
 }

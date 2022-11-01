@@ -243,7 +243,7 @@ impl FlightSqlServiceImpl {
                 ))?
             };
 
-            let (host, port) = match &self.server.advertise_endpoint {
+            let (host, port) = match &self.server.advertise_result_endpoint {
                 Some(endpoint) => {
                     let advertise_endpoint_vec: Vec<&str> = endpoint.split(":").collect();
                     match advertise_endpoint_vec.as_slice() {
