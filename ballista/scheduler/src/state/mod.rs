@@ -31,7 +31,7 @@ use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::TaskManager;
 
-use crate::config::{SchedulerConfig, SlotsPolicy};
+use crate::config::SchedulerConfig;
 use crate::state::execution_graph::TaskDescription;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::TaskStatus;
@@ -107,7 +107,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             session_builder,
             codec,
             "localhost:50050".to_owned(),
-            SlotsPolicy::Bias,
             SchedulerConfig::default(),
         )
     }
@@ -117,11 +116,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
-        slots_policy: SlotsPolicy,
         config: SchedulerConfig,
     ) -> Self {
         Self {
-            executor_manager: ExecutorManager::new(config_client.clone(), slots_policy),
+            executor_manager: ExecutorManager::new(
+                config_client.clone(),
+                config.executor_slots_policy,
+            ),
             task_manager: TaskManager::new(
                 config_client.clone(),
                 session_builder,
@@ -410,11 +411,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     pub(crate) fn clean_up_successful_job(&self, job_id: String) {
         self.executor_manager.clean_up_job_data_delayed(
             job_id.clone(),
-            self.config.clean_up_interval_for_finished_job_data(),
+            self.config.finished_job_data_clean_up_interval_seconds,
         );
         self.task_manager.delete_successful_job_delayed(
             job_id,
-            self.config.clean_up_interval_for_finished_job_state(),
+            self.config.finished_job_state_clean_up_interval_seconds,
         );
     }
 
@@ -423,7 +424,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         self.executor_manager.clean_up_job_data(job_id.clone());
         self.task_manager.clean_up_failed_job_delayed(
             job_id,
-            self.config.clean_up_interval_for_finished_job_state(),
+            self.config.finished_job_state_clean_up_interval_seconds,
         );
     }
 }
@@ -452,9 +453,7 @@ pub async fn with_locks<Out, F: Future<Output = Out>>(
 mod test {
     use crate::state::backend::standalone::StandaloneClient;
     use crate::state::SchedulerState;
-    use ballista_core::config::query::{
-        BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
-    };
+    use ballista_core::config::{BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS};
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::{
         task_status, PhysicalPlanNode, ShuffleWritePartition, SuccessfulTask, TaskStatus,

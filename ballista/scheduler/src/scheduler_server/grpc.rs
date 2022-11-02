@@ -15,9 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista_core::config::{
-    query::BallistaConfig, query::BALLISTA_JOB_NAME, TaskSchedulingPolicy,
-};
+use ballista_core::config::{BallistaConfig, BALLISTA_JOB_NAME};
 use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
 use std::convert::TryInto;
 
@@ -60,7 +58,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         &self,
         request: Request<PollWorkParams>,
     ) -> Result<Response<PollWorkResult>, Status> {
-        if let TaskSchedulingPolicy::PushStaged = self.policy {
+        if self.state.config.is_push_staged_scheduling() {
             error!("Poll work interface is not supported for push-based task scheduling");
             return Err(tonic::Status::failed_precondition(
                 "Bad request because poll work is not supported for push-based task scheduling",
@@ -209,7 +207,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
                 // If we are using push-based scheduling then reserve this executors slots and send
                 // them for scheduling tasks.
-                if matches!(self.policy, TaskSchedulingPolicy::PushStaged) {
+                if self.state.config.is_push_staged_scheduling() {
                     self.offer_reservation(reservations).await?;
                 }
 

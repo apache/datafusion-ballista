@@ -43,7 +43,6 @@ use datafusion_proto::protobuf::LogicalPlanNode;
 use ballista_scheduler::scheduler_server::SchedulerServer;
 use ballista_scheduler::state::backend::{StateBackend, StateBackendClient};
 
-use ballista_core::config::TaskSchedulingPolicy;
 use ballista_core::serde::BallistaCodec;
 
 use log::info;
@@ -61,14 +60,9 @@ mod config {
     ));
 }
 
-use ballista_core::utils::{create_grpc_server, default_session_builder};
-use ballista_scheduler::config::{
-    SchedulerConfig, SchedulerConfigBuilder, SlotsPolicy,
-    BALLISTA_ADVERTISE_FLIGHT_RESULT_ROUTE_ENDPOINT,
-    BALLISTA_FINISHED_JOB_DATA_CLEANUP_DELAY_SECS,
-    BALLISTA_FINISHED_JOB_STATE_CLEANUP_DELAY_SECS,
-    BALLISTA_SCHEDULER_EVENT_LOOP_BUFFER_SIZE,
-};
+use ballista_core::utils::create_grpc_server;
+
+use ballista_scheduler::config::SchedulerConfig;
 #[cfg(feature = "flight-sql")]
 use ballista_scheduler::flight_sql::FlightSqlServiceImpl;
 use config::prelude::*;
@@ -78,8 +72,6 @@ async fn start_server(
     scheduler_name: String,
     config_backend: Arc<dyn StateBackendClient>,
     addr: SocketAddr,
-    scheduling_policy: TaskSchedulingPolicy,
-    slots_policy: SlotsPolicy,
     config: SchedulerConfig,
 ) -> Result<()> {
     info!(
@@ -89,27 +81,16 @@ async fn start_server(
     // Should only call SchedulerServer::new() once in the process
     info!(
         "Starting Scheduler grpc server with task scheduling policy of {:?}",
-        scheduling_policy
+        config.scheduling_policy
     );
 
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-        match scheduling_policy {
-            TaskSchedulingPolicy::PushStaged => SchedulerServer::new_with_policy(
-                scheduler_name,
-                config_backend.clone(),
-                scheduling_policy,
-                slots_policy,
-                BallistaCodec::default(),
-                default_session_builder,
-                config,
-            ),
-            _ => SchedulerServer::new(
-                scheduler_name,
-                config_backend.clone(),
-                BallistaCodec::default(),
-                config,
-            ),
-        };
+        SchedulerServer::new(
+            scheduler_name,
+            config_backend.clone(),
+            BallistaCodec::default(),
+            config,
+        );
 
     scheduler_server.init().await?;
 
@@ -252,37 +233,17 @@ async fn main() -> Result<()> {
         }
     };
 
-    let scheduling_policy: TaskSchedulingPolicy = opt.scheduler_policy;
-    let slots_policy: SlotsPolicy = opt.executor_slots_policy;
-    let mut config_builder = SchedulerConfigBuilder::default()
-        .set(
-            BALLISTA_SCHEDULER_EVENT_LOOP_BUFFER_SIZE,
-            &opt.event_loop_buffer_size.to_string(),
-        )
-        .set(
-            BALLISTA_FINISHED_JOB_DATA_CLEANUP_DELAY_SECS,
-            &opt.finished_job_data_clean_up_interval_seconds.to_string(),
-        )
-        .set(
-            BALLISTA_FINISHED_JOB_STATE_CLEANUP_DELAY_SECS,
-            &opt.finished_job_state_clean_up_interval_seconds.to_string(),
-        );
-    if let Some(advertise_result_endpoint) = &opt.advertise_flight_result_route_endpoint {
-        config_builder = config_builder.set(
-            BALLISTA_ADVERTISE_FLIGHT_RESULT_ROUTE_ENDPOINT,
-            advertise_result_endpoint,
-        );
-    }
-
-    let config = config_builder.build()?;
-    start_server(
-        scheduler_name,
-        config_backend,
-        addr,
-        scheduling_policy,
-        slots_policy,
-        config,
-    )
-    .await?;
+    let config = SchedulerConfig {
+        scheduling_policy: opt.scheduler_policy,
+        event_loop_buffer_size: opt.event_loop_buffer_size,
+        executor_slots_policy: opt.executor_slots_policy,
+        finished_job_data_clean_up_interval_seconds: opt
+            .finished_job_data_clean_up_interval_seconds,
+        finished_job_state_clean_up_interval_seconds: opt
+            .finished_job_state_clean_up_interval_seconds,
+        advertise_flight_result_route_endpoint: opt
+            .advertise_flight_result_route_endpoint,
+    };
+    start_server(scheduler_name, config_backend, addr, config).await?;
     Ok(())
 }

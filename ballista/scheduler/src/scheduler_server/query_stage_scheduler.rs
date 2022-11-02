@@ -23,7 +23,6 @@ use log::{debug, error, info};
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::{EventAction, EventSender};
 
-use ballista_core::config::TaskSchedulingPolicy;
 use ballista_core::serde::AsExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use tokio::sync::mpsc;
@@ -38,15 +37,11 @@ pub(crate) struct QueryStageScheduler<
     U: 'static + AsExecutionPlan,
 > {
     state: Arc<SchedulerState<T, U>>,
-    policy: TaskSchedulingPolicy,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageScheduler<T, U> {
-    pub(crate) fn new(
-        state: Arc<SchedulerState<T, U>>,
-        policy: TaskSchedulingPolicy,
-    ) -> Self {
-        Self { state, policy }
+    pub(crate) fn new(state: Arc<SchedulerState<T, U>>) -> Self {
+        Self { state }
     }
 }
 
@@ -98,7 +93,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             }
             QueryStageSchedulerEvent::JobSubmitted(job_id) => {
                 info!("Job {} submitted", job_id);
-                if matches!(self.policy, TaskSchedulingPolicy::PushStaged) {
+                if self.state.config.is_push_staged_scheduling() {
                     let available_tasks = self
                         .state
                         .task_manager
@@ -169,7 +164,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .await
                 {
                     Ok((stage_events, offers)) => {
-                        if matches!(self.policy, TaskSchedulingPolicy::PushStaged) {
+                        if self.state.config.is_push_staged_scheduling() {
                             tx_event
                                 .post_event(
                                     QueryStageSchedulerEvent::ReservationOffering(offers),

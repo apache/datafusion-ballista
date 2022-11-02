@@ -23,7 +23,7 @@ use sqlparser::ast::Statement;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ballista_core::config::query::BallistaConfig;
+use ballista_core::config::BallistaConfig;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_core::serde::protobuf::{ExecuteQueryParams, KeyValuePair};
 use ballista_core::utils::{
@@ -492,7 +492,7 @@ mod tests {
     #[cfg(feature = "standalone")]
     async fn test_show_tables_not_with_information_schema() {
         use super::*;
-        use ballista_core::config::query::{
+        use ballista_core::config::{
             BallistaConfigBuilder, BALLISTA_WITH_INFORMATION_SCHEMA,
         };
         use std::fs::File;
@@ -547,7 +547,7 @@ mod tests {
             ListingOptions, ListingTable, ListingTableConfig,
         };
 
-        use ballista_core::config::query::{
+        use ballista_core::config::{
             BallistaConfigBuilder, BALLISTA_WITH_INFORMATION_SCHEMA,
         };
         let config = BallistaConfigBuilder::default()
@@ -615,7 +615,7 @@ mod tests {
     #[cfg(feature = "standalone")]
     async fn test_empty_exec_with_one_row() {
         use crate::context::BallistaContext;
-        use ballista_core::config::query::{
+        use ballista_core::config::{
             BallistaConfigBuilder, BALLISTA_WITH_INFORMATION_SCHEMA,
         };
 
@@ -635,7 +635,7 @@ mod tests {
     #[cfg(feature = "standalone")]
     async fn test_union_and_union_all() {
         use super::*;
-        use ballista_core::config::query::{
+        use ballista_core::config::{
             BallistaConfigBuilder, BALLISTA_WITH_INFORMATION_SCHEMA,
         };
         use datafusion::arrow::util::pretty::pretty_format_batches;
@@ -694,7 +694,7 @@ mod tests {
     #[cfg(feature = "standalone")]
     async fn test_aggregate_func() {
         use crate::context::BallistaContext;
-        use ballista_core::config::query::{
+        use ballista_core::config::{
             BallistaConfigBuilder, BALLISTA_WITH_INFORMATION_SCHEMA,
         };
         use datafusion::arrow;

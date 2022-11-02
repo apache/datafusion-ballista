@@ -18,7 +18,6 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ballista_core::config::TaskSchedulingPolicy;
 use ballista_core::error::Result;
 use ballista_core::event_loop::{EventLoop, EventSender};
 use ballista_core::serde::protobuf::{StopExecutorParams, TaskStatus};
@@ -30,7 +29,7 @@ use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 
-use crate::config::{SchedulerConfig, SlotsPolicy};
+use crate::config::SchedulerConfig;
 use log::{error, warn};
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
@@ -57,10 +56,8 @@ pub(crate) type SessionBuilder = fn(SessionConfig) -> SessionState;
 #[derive(Clone)]
 pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
     pub scheduler_name: String,
-    pub advertise_result_endpoint: Option<String>,
-    pub(crate) state: Arc<SchedulerState<T, U>>,
     pub start_time: u128,
-    policy: TaskSchedulingPolicy,
+    pub(crate) state: Arc<SchedulerState<T, U>>,
     pub(crate) query_stage_event_loop: EventLoop<QueryStageSchedulerEvent>,
 }
 
@@ -71,106 +68,28 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         codec: BallistaCodec<T, U>,
         config: SchedulerConfig,
     ) -> Self {
-        let event_loop_buffer_size = config.scheduler_event_loop_buffer_size();
-        let advertise_result_endpoint = config.advertise_flight_result_route_endpoint();
         let state = Arc::new(SchedulerState::new(
             config_backend,
             default_session_builder,
             codec,
             scheduler_name.clone(),
-            SlotsPolicy::Bias,
-            config,
+            config.clone(),
         ));
-
-        SchedulerServer::new_with_state(
-            scheduler_name,
-            TaskSchedulingPolicy::PullStaged,
-            state,
-            event_loop_buffer_size,
-            advertise_result_endpoint,
-        )
-    }
-
-    pub fn new_with_builder(
-        scheduler_name: String,
-        config_backend: Arc<dyn StateBackendClient>,
-        codec: BallistaCodec<T, U>,
-        session_builder: SessionBuilder,
-        config: SchedulerConfig,
-    ) -> Self {
-        let event_loop_buffer_size = config.scheduler_event_loop_buffer_size();
-        let advertise_result_endpoint = config.advertise_flight_result_route_endpoint();
-        let state = Arc::new(SchedulerState::new(
-            config_backend,
-            session_builder,
-            codec,
-            scheduler_name.clone(),
-            SlotsPolicy::Bias,
-            config,
-        ));
-
-        SchedulerServer::new_with_state(
-            scheduler_name,
-            TaskSchedulingPolicy::PullStaged,
-            state,
-            event_loop_buffer_size,
-            advertise_result_endpoint,
-        )
-    }
-
-    pub fn new_with_policy(
-        scheduler_name: String,
-        config_backend: Arc<dyn StateBackendClient>,
-        scheduling_policy: TaskSchedulingPolicy,
-        slots_policy: SlotsPolicy,
-        codec: BallistaCodec<T, U>,
-        session_builder: SessionBuilder,
-        config: SchedulerConfig,
-    ) -> Self {
-        let event_loop_buffer_size = config.scheduler_event_loop_buffer_size();
-        let advertise_result_endpoint = config.advertise_flight_result_route_endpoint();
-        let state = Arc::new(SchedulerState::new(
-            config_backend,
-            session_builder,
-            codec,
-            scheduler_name.clone(),
-            slots_policy,
-            config,
-        ));
-
-        SchedulerServer::new_with_state(
-            scheduler_name,
-            scheduling_policy,
-            state,
-            event_loop_buffer_size,
-            advertise_result_endpoint,
-        )
-    }
-
-    pub(crate) fn new_with_state(
-        scheduler_name: String,
-        policy: TaskSchedulingPolicy,
-        state: Arc<SchedulerState<T, U>>,
-        event_loop_buffer_size: usize,
-        advertise_result_endpoint: Option<String>,
-    ) -> Self {
-        let query_stage_scheduler =
-            Arc::new(QueryStageScheduler::new(state.clone(), policy));
+        let query_stage_scheduler = Arc::new(QueryStageScheduler::new(state.clone()));
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
-            event_loop_buffer_size,
+            config.event_loop_buffer_size as usize,
             query_stage_scheduler,
         );
+
         Self {
             scheduler_name,
-            state,
             start_time: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_millis(),
-            policy,
+            state,
             query_stage_event_loop,
-            advertise_result_endpoint,
         }
     }
 
@@ -333,13 +252,12 @@ mod test {
     use datafusion::test_util::scan_empty;
     use datafusion_proto::protobuf::LogicalPlanNode;
 
-    use ballista_core::config::query::{
-        BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
+    use ballista_core::config::{
+        BallistaConfig, TaskSchedulingPolicy, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
     };
-    use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
 
-    use crate::config::{SchedulerConfig, SlotsPolicy};
+    use crate::config::SchedulerConfig;
     use ballista_core::serde::protobuf::{
         failed_task, job_status, task_status, ExecutionError, FailedTask, JobStatus,
         PhysicalPlanNode, ShuffleWritePartition, SuccessfulTask, TaskStatus,
@@ -348,13 +266,11 @@ mod test {
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
     };
     use ballista_core::serde::BallistaCodec;
-    use ballista_core::utils::default_session_builder;
 
     use crate::scheduler_server::SchedulerServer;
     use crate::state::backend::standalone::StandaloneClient;
 
     use crate::state::executor_manager::ExecutorReservation;
-    use crate::state::SchedulerState;
     use crate::test_utils::{await_condition, ExplodingTableProvider};
 
     #[tokio::test]
@@ -803,14 +719,11 @@ mod test {
     ) -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new_with_policy(
+            SchedulerServer::new(
                 "localhost:50050".to_owned(),
                 state_storage.clone(),
-                scheduling_policy,
-                SlotsPolicy::Bias,
                 BallistaCodec::default(),
-                default_session_builder,
-                SchedulerConfig::default(),
+                SchedulerConfig::default().with_scheduler_policy(scheduling_policy),
             );
         scheduler.init().await?;
 
@@ -820,18 +733,14 @@ mod test {
     async fn test_push_staged_scheduler(
     ) -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
-        let state = Arc::new(SchedulerState::new_with_default_scheduler_name(
-            state_storage,
-            default_session_builder,
-            BallistaCodec::default(),
-        ));
+        let config = SchedulerConfig::default()
+            .with_scheduler_policy(TaskSchedulingPolicy::PushStaged);
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new_with_state(
+            SchedulerServer::new(
                 "localhost:50050".to_owned(),
-                TaskSchedulingPolicy::PushStaged,
-                state,
-                10000,
-                None,
+                state_storage,
+                BallistaCodec::default(),
+                config,
             );
         scheduler.init().await?;
 
