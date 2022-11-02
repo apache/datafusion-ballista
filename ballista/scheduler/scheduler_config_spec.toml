@@ -25,7 +25,7 @@ name = "version"
 doc = "Print version of this executable"
 
 [[param]]
-name = "advertise_endpoint"
+name = "advertise_flight_sql_endpoint"
 type = "String"
 doc = "Route for proxying flight results via scheduler. Should be of the form 'IP:PORT'"
 
@@ -82,6 +82,18 @@ name = "event_loop_buffer_size"
 type = "u32"
 default = "10000"
 doc = "Event loop buffer size. Default: 10000"
+
+[[param]]
+name = "finished_job_data_clean_up_interval_seconds"
+type = "u64"
+default = "300"
+doc = "Delayed interval for cleaning up finished job data. Default: 300"
+
+[[param]]
+name = "finished_job_state_clean_up_interval_seconds"
+type = "u64"
+default = "3600"
+doc = "Delayed interval for cleaning up finished job state. Default: 3600"
 
 [[param]]
 name = "executor_slots_policy"

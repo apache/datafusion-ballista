@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::config::SchedulerConfig;
 use crate::{
     scheduler_server::SchedulerServer, state::backend::standalone::StandaloneClient,
 };
@@ -38,8 +39,7 @@ pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
             "localhost:50050".to_owned(),
             Arc::new(client),
             BallistaCodec::default(),
-            10000,
-            None,
+            SchedulerConfig::default(),
         );
     scheduler_server.init().await?;
     let server = SchedulerGrpcServer::new(scheduler_server.clone());

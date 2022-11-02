@@ -64,7 +64,6 @@ use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::common::batch_byte_size;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::protobuf::LogicalPlanNode;
-use itertools::Itertools;
 use prost::Message;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::time::sleep;
@@ -243,7 +242,12 @@ impl FlightSqlServiceImpl {
                 ))?
             };
 
-            let (host, port) = match &self.server.advertise_endpoint {
+            let (host, port) = match &self
+                .server
+                .state
+                .config
+                .advertise_flight_sql_endpoint
+            {
                 Some(endpoint) => {
                     let advertise_endpoint_vec: Vec<&str> = endpoint.split(":").collect();
                     match advertise_endpoint_vec.as_slice() {

@@ -27,6 +27,7 @@ use ballista_core::config::BallistaConfig;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 
+use crate::state::backend::Keyspace::{CompletedJobs, FailedJobs};
 use crate::state::session_manager::create_datafusion_context;
 use ballista_core::serde::protobuf::{
     self, job_status, FailedJob, JobStatus, MultiTaskDefinition, TaskDefinition, TaskId,
@@ -310,11 +311,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     /// Mark a job to success. This will create a key under the CompletedJobs keyspace
     /// and remove the job from ActiveJobs
-    pub(crate) async fn succeed_job(
-        &self,
-        job_id: &str,
-        clean_up_interval: u64,
-    ) -> Result<()> {
+    pub(crate) async fn succeed_job(&self, job_id: &str) -> Result<()> {
         debug!("Moving job {} from Active to Success", job_id);
         let lock = self.state.lock(Keyspace::ActiveJobs, "").await?;
         with_lock(lock, self.state.delete(Keyspace::ActiveJobs, job_id)).await?;
@@ -334,26 +331,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             warn!("Fail to find job {} in the cache", job_id);
         }
 
-        // spawn a delayed future to clean up job data on both Scheduler and Executors
-        let state = self.state.clone();
-        let job_id_str = job_id.to_owned();
-        let active_job_cache = self.active_job_cache.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(clean_up_interval)).await;
-            Self::clean_up_job_data(state, active_job_cache, false, job_id_str).await
-        });
-
         Ok(())
     }
 
     /// Cancel the job and return a Vec of running tasks need to cancel
-    pub(crate) async fn cancel_job(
-        &self,
-        job_id: &str,
-        clean_up_interval_in_secs: u64,
-    ) -> Result<Vec<RunningTaskInfo>> {
-        self.abort_job(job_id, "Cancelled".to_owned(), clean_up_interval_in_secs)
-            .await
+    pub(crate) async fn cancel_job(&self, job_id: &str) -> Result<Vec<RunningTaskInfo>> {
+        self.abort_job(job_id, "Cancelled".to_owned()).await
     }
 
     /// Abort the job and return a Vec of running tasks need to cancel
@@ -361,7 +344,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         &self,
         job_id: &str,
         failure_reason: String,
-        clean_up_interval_in_secs: u64,
     ) -> Result<Vec<RunningTaskInfo>> {
         let locks = self
             .state
@@ -388,15 +370,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             vec![]
         };
 
-        // spawn a delayed future to clean up job data on both Scheduler and Executors
-        let state = self.state.clone();
-        let job_id_str = job_id.to_owned();
-        let active_job_cache = self.active_job_cache.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(clean_up_interval_in_secs)).await;
-            Self::clean_up_job_data(state, active_job_cache, true, job_id_str).await
-        });
-
         Ok(tasks_to_cancel)
     }
 
@@ -406,7 +379,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         &self,
         job_id: &str,
         failure_reason: String,
-        clean_up_interval_in_secs: u64,
     ) -> Result<()> {
         debug!("Moving job {} from Active or Queue to Failed", job_id);
         let locks = self
@@ -417,15 +389,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             ])
             .await?;
         with_locks(locks, self.fail_job_state(job_id, failure_reason)).await?;
-
-        // spawn a delayed future to clean up job data on Scheduler
-        let state = self.state.clone();
-        let job_id_str = job_id.to_owned();
-        let active_job_cache = self.active_job_cache.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(clean_up_interval_in_secs)).await;
-            Self::clean_up_job_data(state, active_job_cache, true, job_id_str).await
-        });
 
         Ok(())
     }
@@ -821,21 +784,53 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .collect()
     }
 
-    async fn clean_up_job_data(
-        state: Arc<dyn StateBackendClient>,
-        active_job_cache: ActiveJobCache,
-        failed: bool,
+    /// Clean up a failed job in FailedJobs Keyspace by delayed clean_up_interval seconds
+    pub(crate) fn clean_up_failed_job_delayed(
+        &self,
         job_id: String,
-    ) -> Result<()> {
-        active_job_cache.remove(&job_id);
-        let keyspace = if failed {
-            Keyspace::FailedJobs
-        } else {
-            Keyspace::CompletedJobs
-        };
+        clean_up_interval: u64,
+    ) {
+        if clean_up_interval == 0 {
+            info!("The interval is 0 and the clean up for the failed job state {} will not triggered", job_id);
+            return;
+        }
+        self.delete_from_state_backend_delayed(FailedJobs, job_id, clean_up_interval)
+    }
 
+    /// Clean up a successful job in CompletedJobs Keyspace by delayed clean_up_interval seconds
+    pub(crate) fn delete_successful_job_delayed(
+        &self,
+        job_id: String,
+        clean_up_interval: u64,
+    ) {
+        if clean_up_interval == 0 {
+            info!("The interval is 0 and the clean up for the successful job state {} will not triggered", job_id);
+            return;
+        }
+        self.delete_from_state_backend_delayed(CompletedJobs, job_id, clean_up_interval)
+    }
+
+    /// Clean up entries in some keyspace by delayed clean_up_interval seconds
+    fn delete_from_state_backend_delayed(
+        &self,
+        keyspace: Keyspace,
+        key: String,
+        clean_up_interval: u64,
+    ) {
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(clean_up_interval)).await;
+            Self::delete_from_state_backend(state, keyspace, &key).await
+        });
+    }
+
+    async fn delete_from_state_backend(
+        state: Arc<dyn StateBackendClient>,
+        keyspace: Keyspace,
+        key: &str,
+    ) -> Result<()> {
         let lock = state.lock(keyspace.clone(), "").await?;
-        with_lock(lock, state.delete(keyspace, &job_id)).await?;
+        with_lock(lock, state.delete(keyspace, key)).await?;
 
         Ok(())
     }
