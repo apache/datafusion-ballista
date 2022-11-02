@@ -246,7 +246,7 @@ impl FlightSqlServiceImpl {
                 .server
                 .state
                 .config
-                .advertise_flight_result_route_endpoint
+                .advertise_flight_sql_endpoint
             {
                 Some(endpoint) => {
                     let advertise_endpoint_vec: Vec<&str> = endpoint.split(":").collect();

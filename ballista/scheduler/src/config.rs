@@ -35,8 +35,8 @@ pub struct SchedulerConfig {
     pub finished_job_data_clean_up_interval_seconds: u64,
     /// The delayed interval for cleaning up finished job state stored in the backend, 0 means the cleaning up is disabled.
     pub finished_job_state_clean_up_interval_seconds: u64,
-    /// The route endpoint for proxying flight results via scheduler
-    pub advertise_flight_result_route_endpoint: Option<String>,
+    /// The route endpoint for proxying flight sql results via scheduler
+    pub advertise_flight_sql_endpoint: Option<String>,
 }
 
 impl Default for SchedulerConfig {
@@ -47,7 +47,7 @@ impl Default for SchedulerConfig {
             executor_slots_policy: SlotsPolicy::Bias,
             finished_job_data_clean_up_interval_seconds: 300,
             finished_job_state_clean_up_interval_seconds: 3600,
-            advertise_flight_result_route_endpoint: None,
+            advertise_flight_sql_endpoint: None,
         }
     }
 }
@@ -83,11 +83,11 @@ impl SchedulerConfig {
         self
     }
 
-    pub fn with_advertise_flight_result_route_endpoint(
+    pub fn with_advertise_flight_sql_endpoint(
         mut self,
         endpoint: Option<String>,
     ) -> Self {
-        self.advertise_flight_result_route_endpoint = endpoint;
+        self.advertise_flight_sql_endpoint = endpoint;
         self
     }
 }

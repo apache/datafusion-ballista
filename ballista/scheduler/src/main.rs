@@ -241,8 +241,7 @@ async fn main() -> Result<()> {
             .finished_job_data_clean_up_interval_seconds,
         finished_job_state_clean_up_interval_seconds: opt
             .finished_job_state_clean_up_interval_seconds,
-        advertise_flight_result_route_endpoint: opt
-            .advertise_flight_result_route_endpoint,
+        advertise_flight_sql_endpoint: opt.advertise_flight_sql_endpoint,
     };
     start_server(scheduler_name, config_backend, addr, config).await?;
     Ok(())
