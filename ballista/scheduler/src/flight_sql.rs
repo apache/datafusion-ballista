@@ -44,7 +44,7 @@ use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::sql::ProstMessageExt;
 use arrow_flight::utils::flight_data_from_arrow_batch;
 use arrow_flight::SchemaAsIpc;
-use ballista_core::config::query::BallistaConfig;
+use ballista_core::config::BallistaConfig;
 use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::action::ActionType::FetchPartition;
 use ballista_core::serde::protobuf::job_status;
@@ -64,7 +64,6 @@ use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::common::batch_byte_size;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::protobuf::LogicalPlanNode;
-use itertools::Itertools;
 use prost::Message;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::time::sleep;
@@ -243,7 +242,12 @@ impl FlightSqlServiceImpl {
                 ))?
             };
 
-            let (host, port) = match &self.server.advertise_result_endpoint {
+            let (host, port) = match &self
+                .server
+                .state
+                .config
+                .advertise_flight_result_route_endpoint
+            {
                 Some(endpoint) => {
                     let advertise_endpoint_vec: Vec<&str> = endpoint.split(":").collect();
                     match advertise_endpoint_vec.as_slice() {
