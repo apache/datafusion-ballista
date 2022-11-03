@@ -98,6 +98,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
         })
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn try_into_physical_plan(
         &self,
         registry: &dyn FunctionRegistry,
