@@ -62,6 +62,7 @@ mod config {
 
 use ballista_core::utils::create_grpc_server;
 
+use ballista_core::config::LogRotationPolicy;
 use ballista_scheduler::config::SchedulerConfig;
 #[cfg(feature = "flight-sql")]
 use ballista_scheduler::flight_sql::FlightSqlServiceImpl;
@@ -170,7 +171,20 @@ async fn main() -> Result<()> {
     let log_filter = EnvFilter::new(rust_log.unwrap_or(special_mod_log_level));
     // File layer
     if let Some(log_dir) = log_dir {
-        let log_file = tracing_appender::rolling::daily(log_dir, &log_file_name_prefix);
+        let log_file = match opt.log_rotation_policy {
+            LogRotationPolicy::Minutely => {
+                tracing_appender::rolling::minutely(log_dir, &log_file_name_prefix)
+            }
+            LogRotationPolicy::Hourly => {
+                tracing_appender::rolling::hourly(log_dir, &log_file_name_prefix)
+            }
+            LogRotationPolicy::Daily => {
+                tracing_appender::rolling::daily(log_dir, &log_file_name_prefix)
+            }
+            LogRotationPolicy::Never => {
+                tracing_appender::rolling::never(log_dir, &log_file_name_prefix)
+            }
+        };
         tracing_subscriber::fmt()
             .with_ansi(true)
             .with_thread_names(print_thread_info)
