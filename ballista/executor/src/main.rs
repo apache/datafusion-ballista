@@ -33,7 +33,7 @@ use tokio::signal;
 use tokio::{fs, time};
 use uuid::Uuid;
 
-use ballista_core::config::TaskSchedulingPolicy;
+use ballista_core::config::{LogRotationPolicy, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf::{
     executor_registration, scheduler_grpc_client::SchedulerGrpcClient,
@@ -93,13 +93,32 @@ async fn main() -> Result<()> {
     let grpc_port = opt.bind_grpc_port;
     let log_dir = opt.log_dir;
     let print_thread_info = opt.print_thread_info;
-    let scheduler_name = format!("executor_{}_{}", bind_host, port);
+    let log_file_name_prefix = format!(
+        "executor_{}_{}",
+        external_host
+            .clone()
+            .unwrap_or_else(|| "localhost".to_string()),
+        port
+    );
 
     let rust_log = env::var(EnvFilter::DEFAULT_ENV);
     let log_filter = EnvFilter::new(rust_log.unwrap_or(special_mod_log_level));
     // File layer
     if let Some(log_dir) = log_dir {
-        let log_file = tracing_appender::rolling::daily(log_dir, &scheduler_name);
+        let log_file = match opt.log_rotation_policy {
+            LogRotationPolicy::Minutely => {
+                tracing_appender::rolling::minutely(log_dir, &log_file_name_prefix)
+            }
+            LogRotationPolicy::Hourly => {
+                tracing_appender::rolling::hourly(log_dir, &log_file_name_prefix)
+            }
+            LogRotationPolicy::Daily => {
+                tracing_appender::rolling::daily(log_dir, &log_file_name_prefix)
+            }
+            LogRotationPolicy::Never => {
+                tracing_appender::rolling::never(log_dir, &log_file_name_prefix)
+            }
+        };
         tracing_subscriber::fmt()
             .with_ansi(true)
             .with_thread_names(print_thread_info)
