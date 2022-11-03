@@ -17,10 +17,9 @@
 
 //! Ballista Rust executor binary.
 
-use chrono::{DateTime, Duration, Utc};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration as Core_Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{env, io};
 
 use anyhow::{Context, Result};
@@ -28,7 +27,7 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_executor::{execution_loop, executor_server};
 use log::{error, info, warn};
 use tempfile::TempDir;
-use tokio::fs::ReadDir;
+use tokio::fs::DirEntry;
 use tokio::signal;
 use tokio::{fs, time};
 use uuid::Uuid;
@@ -246,14 +245,14 @@ async fn main() -> Result<()> {
         BallistaCodec::default();
 
     let scheduler_policy = opt.task_scheduling_policy;
-    let cleanup_ttl = opt.executor_cleanup_ttl;
+    let job_data_ttl_seconds = opt.job_data_ttl_seconds;
 
     // Graceful shutdown notification
     let shutdown_noti = ShutdownNotifier::new();
 
-    if opt.executor_cleanup_enable {
+    if opt.job_data_clean_up_interval_seconds > 0 {
         let mut interval_time =
-            time::interval(Core_Duration::from_secs(opt.executor_cleanup_interval));
+            time::interval(Duration::from_secs(opt.job_data_clean_up_interval_seconds));
         let mut shuffle_cleaner_shutdown = shutdown_noti.subscribe_for_shutdown();
         let shuffle_cleaner_complete = shutdown_noti.shutdown_complete_tx.clone();
         tokio::spawn(async move {
@@ -261,7 +260,7 @@ async fn main() -> Result<()> {
             while !shuffle_cleaner_shutdown.is_shutdown() {
                 tokio::select! {
                     _ = interval_time.tick() => {
-                            if let Err(e) = clean_shuffle_data_loop(&work_dir, cleanup_ttl as i64).await
+                            if let Err(e) = clean_shuffle_data_loop(&work_dir, job_data_ttl_seconds).await
                         {
                             error!("Ballista executor fail to clean_shuffle_data {:?}", e)
                         }
@@ -419,40 +418,41 @@ async fn check_services(
     }
 }
 
-/// This function will scheduled periodically for cleanup executor.
-/// Will only clean the dir under work_dir not include file
-async fn clean_shuffle_data_loop(work_dir: &str, seconds: i64) -> Result<()> {
+/// This function will be scheduled periodically for cleanup the job shuffle data left on the executor.
+/// Only directories will be checked cleaned.
+async fn clean_shuffle_data_loop(work_dir: &str, seconds: u64) -> Result<()> {
     let mut dir = fs::read_dir(work_dir).await?;
     let mut to_deleted = Vec::new();
-    let mut need_delete_dir;
     while let Some(child) = dir.next_entry().await? {
         if let Ok(metadata) = child.metadata().await {
+            let child_path = child.path().into_os_string();
             // only delete the job dir
             if metadata.is_dir() {
-                let dir = fs::read_dir(child.path()).await?;
-                match check_modified_time_in_dirs(vec![dir], seconds).await {
-                    Ok(x) => match x {
-                        true => {
-                            need_delete_dir = child.path().into_os_string();
-                            to_deleted.push(need_delete_dir)
-                        }
-                        false => {}
-                    },
+                match satisfy_dir_ttl(child, seconds).await {
                     Err(e) => {
-                        error!("Fail in clean_shuffle_data_loop {:?}", e)
+                        error!(
+                            "Fail to check ttl for the directory {:?} due to {:?}",
+                            child_path, e
+                        )
                     }
+                    Ok(false) => to_deleted.push(child_path),
+                    Ok(_) => {}
                 }
+            } else {
+                warn!("{:?} under the working directory is a not a directory and will be ignored when doing cleanup", child_path)
             }
         } else {
-            error!("Can not get metadata from file: {:?}", child)
+            error!("Fail to get metadata for file {:?}", child.path())
         }
     }
     info!(
-        "The work_dir {:?} that have not been modified for {:?} seconds will be deleted",
-        &to_deleted, seconds
+        "The directories {:?} that have not been modified for {:?} seconds so that they will be deleted",
+        to_deleted, seconds
     );
     for del in to_deleted {
-        fs::remove_dir_all(del).await?;
+        if let Err(e) = fs::remove_dir_all(&del).await {
+            error!("Fail to remove the directory {:?} due to {}", del, e);
+        }
     }
     Ok(())
 }
@@ -474,37 +474,53 @@ async fn clean_all_shuffle_data(work_dir: &str) -> Result<()> {
 
     info!("The work_dir {:?} will be deleted", &to_deleted);
     for del in to_deleted {
-        fs::remove_dir_all(del).await?;
+        if let Err(e) = fs::remove_dir_all(&del).await {
+            error!("Fail to remove the directory {:?} due to {}", del, e);
+        }
     }
     Ok(())
 }
 
-/// Determines if a directory all files are older than cutoff seconds.
-async fn check_modified_time_in_dirs(
-    mut vec: Vec<ReadDir>,
-    ttl_seconds: i64,
-) -> Result<bool> {
-    let cutoff = Utc::now() - Duration::seconds(ttl_seconds);
+/// Determines if a directory contains files newer than the cutoff time.
+/// If return true, it means the directory contains files newer than the cutoff time. It satisfy the ttl and should not be deleted.
+pub async fn satisfy_dir_ttl(dir: DirEntry, ttl_seconds: u64) -> Result<bool> {
+    let cutoff = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .checked_sub(Duration::from_secs(ttl_seconds))
+        .expect("The cut off time went backwards");
 
-    while !vec.is_empty() {
-        let mut dir = vec.pop().unwrap();
-        while let Some(child) = dir.next_entry().await? {
-            let meta = child.metadata().await?;
-            if meta.is_dir() {
-                let dir = fs::read_dir(child.path()).await?;
-                // check in next loop
-                vec.push(dir);
-            } else {
-                let modified_time: DateTime<Utc> =
-                    meta.modified().map(chrono::DateTime::from)?;
-                if modified_time > cutoff {
-                    // if one file has been modified in ttl we won't delete the whole dir
-                    return Ok(false);
-                }
-            }
+    let mut to_check = vec![dir];
+    while let Some(dir) = to_check.pop() {
+        // Check the ttl for the current directory first
+        if dir
+            .metadata()
+            .await?
+            .modified()?
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            > cutoff
+        {
+            return Ok(true);
+        }
+        // Check its children
+        let mut children = fs::read_dir(dir.path()).await?;
+        while let Some(child) = children.next_entry().await? {
+            let metadata = child.metadata().await?;
+            if metadata.is_dir() {
+                to_check.push(child);
+            } else if metadata
+                .modified()?
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards")
+                > cutoff
+            {
+                return Ok(true);
+            };
         }
     }
-    Ok(true)
+
+    Ok(false)
 }
 
 #[cfg(test)]
