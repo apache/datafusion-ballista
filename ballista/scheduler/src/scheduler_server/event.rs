@@ -40,6 +40,7 @@ pub enum QueryStageSchedulerEvent {
     JobRunningFailed(String, String),
     JobUpdated(String),
     JobCancel(String),
+    JobDataClean(String),
     TaskUpdating(String, Vec<TaskStatus>),
     ReservationOffering(Vec<ExecutorReservation>),
     ExecutorLost(String, Option<String>),
