@@ -90,8 +90,8 @@ impl FlightService for BallistaFlightService {
 
         match &action {
             BallistaAction::FetchPartition { path, .. } => {
-                debug!("FetchPartition reading {}", &path);
-                let file = File::open(&path)
+                debug!("FetchPartition reading {}", path);
+                let file = File::open(path)
                     .map_err(|e| {
                         BallistaError::General(format!(
                             "Failed to open partition file at {}: {:?}",

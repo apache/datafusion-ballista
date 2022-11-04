@@ -406,7 +406,7 @@ async fn fetch_partition_local(
 fn fetch_partition_local_inner(
     path: &str,
 ) -> result::Result<FileReader<File>, BallistaError> {
-    let file = File::open(&path).map_err(|e| {
+    let file = File::open(path).map_err(|e| {
         BallistaError::General(format!(
             "Failed to open partition file at {}: {:?}",
             path, e
