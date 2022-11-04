@@ -659,7 +659,7 @@ mod tests {
         ];
         assert_eq!(
             expected1,
-            pretty_format_batches(&*res1)
+            pretty_format_batches(&res1)
                 .unwrap()
                 .to_string()
                 .trim()
@@ -681,7 +681,7 @@ mod tests {
         let res2 = df.collect().await.unwrap();
         assert_eq!(
             expected2,
-            pretty_format_batches(&*res2)
+            pretty_format_batches(&res2)
                 .unwrap()
                 .to_string()
                 .trim()
@@ -725,7 +725,7 @@ mod tests {
             "| 0            |",
             "+--------------+",
         ];
-        assert_result_eq(expected, &*res);
+        assert_result_eq(expected, &res);
 
         let df = context.sql("select max(\"id\") from test").await.unwrap();
         let res = df.collect().await.unwrap();
@@ -736,7 +736,7 @@ mod tests {
             "| 7            |",
             "+--------------+",
         ];
-        assert_result_eq(expected, &*res);
+        assert_result_eq(expected, &res);
 
         let df = context.sql("select SUM(\"id\") from test").await.unwrap();
         let res = df.collect().await.unwrap();
@@ -747,7 +747,7 @@ mod tests {
             "| 28           |",
             "+--------------+",
         ];
-        assert_result_eq(expected, &*res);
+        assert_result_eq(expected, &res);
 
         let df = context.sql("select AVG(\"id\") from test").await.unwrap();
         let res = df.collect().await.unwrap();
@@ -758,7 +758,7 @@ mod tests {
             "| 3.5          |",
             "+--------------+",
         ];
-        assert_result_eq(expected, &*res);
+        assert_result_eq(expected, &res);
 
         let df = context.sql("select COUNT(\"id\") from test").await.unwrap();
         let res = df.collect().await.unwrap();
@@ -769,7 +769,7 @@ mod tests {
             "| 8              |",
             "+----------------+",
         ];
-        assert_result_eq(expected, &*res);
+        assert_result_eq(expected, &res);
 
         let df = context
             .sql("select approx_distinct(\"id\") from test")
@@ -783,7 +783,7 @@ mod tests {
             "| 8                       |",
             "+-------------------------+",
         ];
-        assert_result_eq(expected, &*res);
+        assert_result_eq(expected, &res);
 
         let df = context
             .sql("select ARRAY_AGG(\"id\") from test")
@@ -797,7 +797,7 @@ mod tests {
             "| [4, 5, 6, 7, 2, 3, 0, 1] |",
             "+--------------------------+",
         ];
-        assert_result_eq(expected, &*res);
+        assert_result_eq(expected, &res);
 
         let df = context.sql("select VAR(\"id\") from test").await.unwrap();
         let res = df.collect().await.unwrap();
@@ -808,7 +808,7 @@ mod tests {
             "| 6.000000000000001 |",
             "+-------------------+",
         ];
-        assert_result_eq(expected, &*res);
+        assert_result_eq(expected, &res);
 
         let df = context
             .sql("select VAR_POP(\"id\") from test")
@@ -822,7 +822,7 @@ mod tests {
             "| 5.250000000000001    |",
             "+----------------------+",
         ];
-        assert_result_eq(expected, &*res);
+        assert_result_eq(expected, &res);
 
         let df = context
             .sql("select VAR_SAMP(\"id\") from test")
@@ -836,7 +836,7 @@ mod tests {
             "| 6.000000000000001 |",
             "+-------------------+",
         ];
-        assert_result_eq(expected, &*res);
+        assert_result_eq(expected, &res);
 
         let df = context
             .sql("select STDDEV(\"id\") from test")
@@ -850,7 +850,7 @@ mod tests {
             "| 2.4494897427831783 |",
             "+--------------------+",
         ];
-        assert_result_eq(expected, &*res);
+        assert_result_eq(expected, &res);
 
         let df = context
             .sql("select STDDEV_SAMP(\"id\") from test")
@@ -864,7 +864,7 @@ mod tests {
             "| 2.4494897427831783 |",
             "+--------------------+",
         ];
-        assert_result_eq(expected, &*res);
+        assert_result_eq(expected, &res);
 
         let df = context
             .sql("select COVAR(id, tinyint_col) from test")
@@ -878,7 +878,7 @@ mod tests {
             "| 0.28571428571428586                  |",
             "+--------------------------------------+",
         ];
-        assert_result_eq(expected, &*res);
+        assert_result_eq(expected, &res);
 
         let df = context
             .sql("select CORR(id, tinyint_col) from test")
@@ -892,7 +892,7 @@ mod tests {
             "| 0.21821789023599245                   |",
             "+---------------------------------------+",
         ];
-        assert_result_eq(expected, &*res);
+        assert_result_eq(expected, &res);
 
         let df = context
             .sql("select approx_percentile_cont_with_weight(\"id\", 2, 0.5) from test")
@@ -906,7 +906,7 @@ mod tests {
             "| 1                                                             |",
             "+---------------------------------------------------------------+",
         ];
-        assert_result_eq(expected, &*res);
+        assert_result_eq(expected, &res);
 
         let df = context
             .sql("select approx_percentile_cont(\"double_col\", 0.5) from test")
@@ -921,7 +921,7 @@ mod tests {
             "+----------------------------------------------------+",
         ];
 
-        assert_result_eq(expected, &*res);
+        assert_result_eq(expected, &res);
 
         fn assert_result_eq(
             expected: Vec<&str>,
