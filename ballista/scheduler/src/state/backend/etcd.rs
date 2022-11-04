@@ -139,7 +139,7 @@ impl StateBackendClient for EtcdClient {
             .await
             .map_err(|e| {
                 warn!("etcd put failed: {}", e);
-                ballista_error(&*format!("etcd put failed: {}", e))
+                ballista_error(&format!("etcd put failed: {}", e))
             })
             .map(|_| ())
     }
@@ -163,7 +163,7 @@ impl StateBackendClient for EtcdClient {
             .await
             .map_err(|e| {
                 error!("etcd operation failed: {}", e);
-                ballista_error(&*format!("etcd operation failed: {}", e))
+                ballista_error(&format!("etcd operation failed: {}", e))
             })
             .map(|_| ())
     }
