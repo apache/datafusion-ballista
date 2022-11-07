@@ -347,3 +347,17 @@ pub(crate) async fn get_job_svg_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
         _ => Ok("Not Found".to_string()),
     }
 }
+
+#[cfg(feature = "prometheus")]
+pub(crate) async fn get_scheduler_metrics<T: AsLogicalPlan, U: AsExecutionPlan>(
+    _data_server: SchedulerServer<T, U>,
+) -> Result<impl warp::Reply, Rejection> {
+    crate::metrics::prometheus::get_metrics().map_err(|_| warp::reject())
+}
+
+#[cfg(not(feature = "prometheus"))]
+pub(crate) async fn get_scheduler_metrics<T: AsLogicalPlan, U: AsExecutionPlan>(
+    _data_server: SchedulerServer<T, U>,
+) -> Result<impl warp::Reply, Rejection> {
+    Err(warp::reject())
+}

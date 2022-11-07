@@ -30,6 +30,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 
 use crate::config::SchedulerConfig;
+use crate::metrics::SchedulerMetricsCollector;
 use log::{error, warn};
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
@@ -67,6 +68,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         config_backend: Arc<dyn StateBackendClient>,
         codec: BallistaCodec<T, U>,
         config: SchedulerConfig,
+        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     ) -> Self {
         let state = Arc::new(SchedulerState::new(
             config_backend,
@@ -75,7 +77,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             scheduler_name.clone(),
             config.clone(),
         ));
-        let query_stage_scheduler = Arc::new(QueryStageScheduler::new(state.clone()));
+        let query_stage_scheduler =
+            Arc::new(QueryStageScheduler::new(state.clone(), metrics_collector));
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
             config.event_loop_buffer_size as usize,
@@ -84,10 +87,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
 
         Self {
             scheduler_name,
-            start_time: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis(),
+            start_time: timestamp_millis() as u128,
             state,
             query_stage_event_loop,
         }
@@ -115,6 +115,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                 job_name: job_name.to_owned(),
                 session_ctx: ctx,
                 plan: Box::new(plan.clone()),
+                queued_at: timestamp_millis(),
             })
             .await
     }
@@ -241,6 +242,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     }
 }
 
+pub fn timestamp_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_secs()
+}
+
+pub fn timestamp_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_millis() as u64
+}
+
 #[cfg(all(test, feature = "sled"))]
 mod test {
     use std::sync::Arc;
@@ -251,6 +266,8 @@ mod test {
 
     use datafusion::test_util::scan_empty;
     use datafusion_proto::protobuf::LogicalPlanNode;
+    use itertools::Itertools;
+    use parking_lot::Mutex;
 
     use ballista_core::config::{
         BallistaConfig, TaskSchedulingPolicy, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
@@ -258,6 +275,7 @@ mod test {
     use ballista_core::error::Result;
 
     use crate::config::SchedulerConfig;
+    use crate::metrics::SchedulerMetricsCollector;
     use ballista_core::serde::protobuf::{
         failed_task, job_status, task_status, ExecutionError, FailedTask, JobStatus,
         PhysicalPlanNode, ShuffleWritePartition, SuccessfulTask, TaskStatus,
@@ -302,7 +320,7 @@ mod test {
         // Submit job
         scheduler
             .state
-            .submit_job(job_id, "", ctx, &plan)
+            .submit_job(job_id, "", ctx, &plan, 0)
             .await
             .expect("submitting plan");
 
@@ -386,7 +404,8 @@ mod test {
         let plan = test_plan();
         let task_slots = 4;
 
-        let scheduler = test_push_staged_scheduler().await?;
+        let metrics_collector = TestMetricsCollector::default();
+        let scheduler = test_push_staged_scheduler(metrics_collector).await?;
 
         let executors = test_executors(task_slots);
         for (executor_metadata, executor_data) in executors {
@@ -407,7 +426,10 @@ mod test {
 
         let job_id = "job";
 
-        scheduler.state.submit_job(job_id, "", ctx, &plan).await?;
+        scheduler
+            .state
+            .submit_job(job_id, "", ctx, &plan, 0)
+            .await?;
 
         // Complete tasks that are offered through scheduler events
         loop {
@@ -534,7 +556,8 @@ mod test {
         let plan = test_plan();
         let task_slots = 4;
 
-        let scheduler = test_push_staged_scheduler().await?;
+        let metrics_collector = TestMetricsCollector::default();
+        let scheduler = test_push_staged_scheduler(metrics_collector).await?;
 
         let executors = test_executors(task_slots);
         for (executor_metadata, executor_data) in executors {
@@ -555,7 +578,10 @@ mod test {
 
         let job_id = "job";
 
-        scheduler.state.submit_job(job_id, "", ctx, &plan).await?;
+        scheduler
+            .state
+            .submit_job(job_id, "", ctx, &plan, 0)
+            .await?;
 
         let available_tasks = scheduler
             .state
@@ -674,7 +700,8 @@ mod test {
     async fn test_planning_failure() -> Result<()> {
         let task_slots = 4;
 
-        let scheduler = test_push_staged_scheduler().await?;
+        let metrics_collector = TestMetricsCollector::default();
+        let scheduler = test_push_staged_scheduler(metrics_collector.clone()).await?;
 
         let config = test_session(task_slots);
 
@@ -710,6 +737,7 @@ mod test {
         let job_failed = await_condition(Duration::from_millis(100), 10, check).await?;
 
         assert!(job_failed, "Job status not failed after 1 second");
+        assert_failed_event(job_id, &metrics_collector);
 
         Ok(())
     }
@@ -724,6 +752,7 @@ mod test {
                 state_storage.clone(),
                 BallistaCodec::default(),
                 SchedulerConfig::default().with_scheduler_policy(scheduling_policy),
+                Arc::new(TestMetricsCollector::default()),
             );
         scheduler.init().await?;
 
@@ -731,6 +760,7 @@ mod test {
     }
 
     async fn test_push_staged_scheduler(
+        metrics_collector: TestMetricsCollector,
     ) -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
         let config = SchedulerConfig::default()
@@ -741,6 +771,7 @@ mod test {
                 state_storage,
                 BallistaCodec::default(),
                 config,
+                Arc::new(metrics_collector),
             );
         scheduler.init().await?;
 
@@ -806,5 +837,114 @@ mod test {
             )
             .build()
             .expect("creating BallistaConfig")
+    }
+
+    fn assert_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
+        let found = collector
+            .job_events(job_id)
+            .iter()
+            .any(|ev| matches!(ev, MetricEvent::Submitted(_, _, _)));
+
+        assert!(found, "Expected submitted event for job {}", job_id);
+    }
+
+    fn assert_completed_event(job_id: &str, collector: &TestMetricsCollector) {
+        let found = collector
+            .job_events(job_id)
+            .iter()
+            .any(|ev| matches!(ev, MetricEvent::Completed(_, _, _)));
+
+        assert!(found, "Expected completed event for job {}", job_id);
+    }
+
+    fn assert_cancelled_event(job_id: &str, collector: &TestMetricsCollector) {
+        let found = collector
+            .job_events(job_id)
+            .iter()
+            .any(|ev| matches!(ev, MetricEvent::Cancelled(_)));
+
+        assert!(found, "Expected cancelled event for job {}", job_id);
+    }
+
+    fn assert_failed_event(job_id: &str, collector: &TestMetricsCollector) {
+        let found = collector
+            .job_events(job_id)
+            .iter()
+            .any(|ev| matches!(ev, MetricEvent::Failed(_, _, _)));
+
+        assert!(found, "Expected failed event for job {}", job_id);
+    }
+
+    #[derive(Clone)]
+    enum MetricEvent {
+        Submitted(String, u64, u64),
+        Completed(String, u64, u64),
+        Cancelled(String),
+        Failed(String, u64, u64),
+    }
+
+    impl MetricEvent {
+        pub fn job_id(&self) -> &str {
+            match self {
+                MetricEvent::Submitted(job, _, _) => job.as_str(),
+                MetricEvent::Completed(job, _, _) => job.as_str(),
+                MetricEvent::Cancelled(job) => job.as_str(),
+                MetricEvent::Failed(job, _, _) => job.as_str(),
+            }
+        }
+    }
+
+    #[derive(Default, Clone)]
+    struct TestMetricsCollector {
+        pub events: Arc<Mutex<Vec<MetricEvent>>>,
+    }
+
+    impl TestMetricsCollector {
+        pub fn job_events(&self, job_id: &str) -> Vec<MetricEvent> {
+            let guard = self.events.lock();
+
+            guard
+                .iter()
+                .filter_map(|event| {
+                    if event.job_id() == job_id {
+                        Some(event.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+    }
+
+    impl SchedulerMetricsCollector for TestMetricsCollector {
+        fn record_submitted(&self, job_id: &str, queued_at: u64, submitted_at: u64) {
+            let mut guard = self.events.lock();
+            guard.push(MetricEvent::Submitted(
+                job_id.to_owned(),
+                queued_at,
+                submitted_at,
+            ));
+        }
+
+        fn record_completed(&self, job_id: &str, queued_at: u64, completed_at: u64) {
+            let mut guard = self.events.lock();
+            guard.push(MetricEvent::Completed(
+                job_id.to_owned(),
+                queued_at,
+                completed_at,
+            ));
+        }
+
+        fn record_failed(&self, job_id: &str, queued_at: u64, failed_at: u64) {
+            let mut guard = self.events.lock();
+            guard.push(MetricEvent::Failed(job_id.to_owned(), queued_at, failed_at));
+        }
+
+        fn record_cancelled(&self, job_id: &str) {
+            let mut guard = self.events.lock();
+            guard.push(MetricEvent::Cancelled(job_id.to_owned()));
+        }
+
+        fn set_pending_tasks_queue_size(&self, value: u64) {}
     }
 }

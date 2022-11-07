@@ -119,9 +119,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         job_name: &str,
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
+        queued_at: u64,
     ) -> Result<()> {
-        let mut graph =
-            ExecutionGraph::new(&self.scheduler_id, job_id, job_name, session_id, plan)?;
+        let mut graph = ExecutionGraph::new(
+            &self.scheduler_id,
+            job_id,
+            job_name,
+            session_id,
+            plan,
+            queued_at,
+        )?;
         info!("Submitting execution graph: {:?}", graph);
         self.state
             .put(

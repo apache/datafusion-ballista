@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::config::SchedulerConfig;
+use crate::metrics::default_metrics_collector;
 use crate::{
     scheduler_server::SchedulerServer, state::backend::standalone::StandaloneClient,
 };
@@ -34,12 +35,15 @@ use tokio::net::TcpListener;
 pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
     let client = StandaloneClient::try_new_temporary()?;
 
+    let metrics_collector = default_metrics_collector()?;
+
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
         SchedulerServer::new(
             "localhost:50050".to_owned(),
             Arc::new(client),
             BallistaCodec::default(),
             SchedulerConfig::default(),
+            metrics_collector,
         );
     scheduler_server.init().await?;
     let server = SchedulerGrpcServer::new(scheduler_server.clone());

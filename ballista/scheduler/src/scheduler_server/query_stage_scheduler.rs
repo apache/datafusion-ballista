@@ -16,6 +16,7 @@
 // under the License.
 
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use log::{debug, error, info};
@@ -23,6 +24,8 @@ use log::{debug, error, info};
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::{EventAction, EventSender};
 
+use crate::metrics::SchedulerMetricsCollector;
+use crate::scheduler_server::{timestamp_millis, timestamp_secs};
 use ballista_core::serde::AsExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use tokio::sync::mpsc;
@@ -37,11 +40,18 @@ pub(crate) struct QueryStageScheduler<
     U: 'static + AsExecutionPlan,
 > {
     state: Arc<SchedulerState<T, U>>,
+    metrics_collector: Arc<dyn SchedulerMetricsCollector>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageScheduler<T, U> {
-    pub(crate) fn new(state: Arc<SchedulerState<T, U>>) -> Self {
-        Self { state }
+    pub(crate) fn new(
+        state: Arc<SchedulerState<T, U>>,
+        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
+    ) -> Self {
+        Self {
+            state,
+            metrics_collector,
+        }
     }
 }
 
@@ -70,19 +80,31 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 job_name,
                 session_ctx,
                 plan,
+                queued_at,
             } => {
                 info!("Job {} queued with name {:?}", job_id, job_name);
+
                 let state = self.state.clone();
                 tokio::spawn(async move {
                     let event = if let Err(e) = state
-                        .submit_job(&job_id, &job_name, session_ctx, &plan)
+                        .submit_job(&job_id, &job_name, session_ctx, &plan, queued_at)
                         .await
                     {
-                        let msg = format!("Error planning job {}: {:?}", job_id, e);
-                        error!("{}", &msg);
-                        QueryStageSchedulerEvent::JobPlanningFailed(job_id, msg)
+                        let fail_message =
+                            format!("Error planning job {}: {:?}", job_id, e);
+                        error!("{}", &fail_message);
+                        QueryStageSchedulerEvent::JobPlanningFailed {
+                            job_id,
+                            fail_message,
+                            queued_at,
+                            failed_at: timestamp_millis(),
+                        }
                     } else {
-                        QueryStageSchedulerEvent::JobSubmitted(job_id)
+                        QueryStageSchedulerEvent::JobSubmitted {
+                            job_id,
+                            queued_at,
+                            submitted_at: timestamp_millis(),
+                        }
                     };
                     tx_event
                         .post_event(event)
@@ -91,7 +113,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .unwrap();
                 });
             }
-            QueryStageSchedulerEvent::JobSubmitted(job_id) => {
+            QueryStageSchedulerEvent::JobSubmitted {
+                job_id,
+                queued_at,
+                submitted_at,
+            } => {
+                self.metrics_collector
+                    .record_submitted(&job_id, queued_at, submitted_at);
+
                 info!("Job {} submitted", job_id);
                 if self.state.config.is_push_staged_scheduling() {
                     let available_tasks = self
@@ -122,24 +151,47 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .await?;
                 }
             }
-            QueryStageSchedulerEvent::JobPlanningFailed(job_id, failure_reason) => {
-                error!("Job {} failed: {}", job_id, failure_reason);
+            QueryStageSchedulerEvent::JobPlanningFailed {
+                job_id,
+                fail_message,
+                queued_at,
+                failed_at,
+            } => {
+                self.metrics_collector
+                    .record_failed(&job_id, queued_at, failed_at);
+
+                error!("Job {} failed: {}", job_id, fail_message);
                 self.state
                     .task_manager
-                    .fail_unscheduled_job(&job_id, failure_reason)
+                    .fail_unscheduled_job(&job_id, fail_message)
                     .await?;
             }
-            QueryStageSchedulerEvent::JobFinished(job_id) => {
+            QueryStageSchedulerEvent::JobFinished {
+                job_id,
+                queued_at,
+                completed_at,
+            } => {
+                self.metrics_collector
+                    .record_completed(&job_id, queued_at, completed_at);
+
                 info!("Job {} success", job_id);
                 self.state.task_manager.succeed_job(&job_id).await?;
                 self.state.clean_up_successful_job(job_id);
             }
-            QueryStageSchedulerEvent::JobRunningFailed(job_id, failure_reason) => {
+            QueryStageSchedulerEvent::JobRunningFailed {
+                job_id,
+                fail_message,
+                queued_at,
+                failed_at,
+            } => {
+                self.metrics_collector
+                    .record_failed(&job_id, queued_at, failed_at);
+
                 error!("Job {} running failed", job_id);
                 let tasks = self
                     .state
                     .task_manager
-                    .abort_job(&job_id, failure_reason)
+                    .abort_job(&job_id, fail_message)
                     .await?;
                 if !tasks.is_empty() {
                     tx_event
@@ -153,6 +205,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.state.task_manager.update_job(&job_id).await?;
             }
             QueryStageSchedulerEvent::JobCancel(job_id) => {
+                self.metrics_collector.record_cancelled(&job_id);
+
+                info!("Job {} Cancelled", job_id);
                 self.state.task_manager.cancel_job(&job_id).await?;
                 self.state.clean_up_failed_job(job_id);
             }

@@ -542,6 +542,6 @@ filter_expr="]
             .await?;
         let plan = df.to_logical_plan()?;
         let plan = ctx.create_physical_plan(&plan).await?;
-        ExecutionGraph::new("scheduler_id", "job_id", "job_name", "session_id", plan)
+        ExecutionGraph::new("scheduler_id", "job_id", "job_name", "session_id", plan, 0)
     }
 }
