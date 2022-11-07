@@ -162,7 +162,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     #[allow(dead_code)]
     pub(crate) fn with_launcher(
         state: Arc<dyn StateBackendClient>,
-        session_builder: SessionBuilder,
+        session_builder: Arc<dyn SessionBuilder>,
         codec: BallistaCodec<T, U>,
         scheduler_id: String,
         launcher: Arc<dyn TaskLauncher>,

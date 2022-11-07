@@ -138,7 +138,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     #[allow(dead_code)]
     pub(crate) fn with_task_launcher(
         config_client: Arc<dyn StateBackendClient>,
-        session_builder: SessionBuilder,
+        session_builder: Arc<dyn SessionBuilder>,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
         config: SchedulerConfig,
@@ -151,7 +151,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             ),
             task_manager: TaskManager::with_launcher(
                 config_client.clone(),
-                session_builder,
+                session_builder.clone(),
                 codec.clone(),
                 scheduler_name,
                 dispatcher,

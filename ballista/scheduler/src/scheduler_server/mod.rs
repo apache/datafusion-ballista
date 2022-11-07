@@ -100,13 +100,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         scheduler_name: String,
         config_backend: Arc<dyn StateBackendClient>,
         codec: BallistaCodec<T, U>,
+        session_builder: Arc<dyn SessionBuilder>,
         config: SchedulerConfig,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
         task_launcher: Arc<dyn TaskLauncher>,
     ) -> Self {
         let state = Arc::new(SchedulerState::with_task_launcher(
             config_backend,
-            default_session_builder,
+            session_builder,
             codec,
             scheduler_name.clone(),
             config.clone(),
