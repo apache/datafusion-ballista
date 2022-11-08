@@ -18,13 +18,17 @@
 use crate::metrics::SchedulerMetricsCollector;
 use ballista_core::error::{BallistaError, Result};
 use hyper::header::CONTENT_TYPE;
+use once_cell::sync::OnceCell;
 use prometheus::{
     register_counter_with_registry, register_gauge_with_registry,
     register_histogram_with_registry, Counter, Gauge, Histogram, Registry,
 };
 use prometheus::{Encoder, TextEncoder};
+use std::sync::Arc;
 
 use warp::Reply;
+
+static COLLECTOR: OnceCell<Arc<dyn SchedulerMetricsCollector>> = OnceCell::new();
 
 pub struct PrometheusMetricsCollector {
     execution_time: Histogram,
@@ -112,6 +116,16 @@ impl PrometheusMetricsCollector {
             submitted,
             pending_queue_size,
         })
+    }
+
+    pub fn current() -> Result<Arc<dyn SchedulerMetricsCollector>> {
+        COLLECTOR
+            .get_or_try_init(|| {
+                let collector = Self::new(::prometheus::default_registry())?;
+
+                Ok(Arc::new(collector) as Arc<dyn SchedulerMetricsCollector>)
+            })
+            .map(|arc| arc.clone())
     }
 }
 

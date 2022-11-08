@@ -43,9 +43,7 @@ impl SchedulerMetricsCollector for NoopMetricsCollector {
 
 #[cfg(feature = "prometheus")]
 pub fn default_metrics_collector() -> Result<Arc<dyn SchedulerMetricsCollector>> {
-    Ok(Arc::new(PrometheusMetricsCollector::new(
-        ::prometheus::default_registry(),
-    )?))
+    PrometheusMetricsCollector::current()
 }
 
 #[cfg(not(feature = "prometheus"))]
