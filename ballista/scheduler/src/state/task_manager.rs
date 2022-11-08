@@ -29,7 +29,7 @@ use ballista_core::error::Result;
 
 use crate::state::backend::Keyspace::{CompletedJobs, FailedJobs};
 use crate::state::session_manager::create_datafusion_context;
-use async_trait::async_trait;
+
 use ballista_core::serde::protobuf::{
     self, job_status, FailedJob, JobStatus, MultiTaskDefinition, TaskDefinition, TaskId,
     TaskStatus,
@@ -159,6 +159,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn with_launcher(
         state: Arc<dyn StateBackendClient>,
         session_builder: SessionBuilder,
@@ -556,45 +557,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         })
         .await
     }
-
-    // #[allow(dead_code)]
-    // #[cfg(not(test))]
-    // /// Launch the given task on the specified executor
-    // pub(crate) async fn launch_task(
-    //     &self,
-    //     executor: &ExecutorMetadata,
-    //     task: TaskDescription,
-    //     executor_manager: &ExecutorManager,
-    // ) -> Result<()> {
-    //     info!("Launching task {:?} on executor {:?}", task, executor.id);
-    //     let task_definition = self.prepare_task_definition(task)?;
-    //     let mut client = executor_manager.get_client(&executor.id).await?;
-    //     client
-    //         .launch_task(protobuf::LaunchTaskParams {
-    //             tasks: vec![task_definition],
-    //             scheduler_id: self.scheduler_id.clone(),
-    //         })
-    //         .await
-    //         .map_err(|e| {
-    //             BallistaError::Internal(format!(
-    //                 "Failed to connect to executor {}: {:?}",
-    //                 executor.id, e
-    //             ))
-    //         })?;
-    //     Ok(())
-    // }
-    //
-    // #[allow(dead_code)]
-    // #[cfg(test)]
-    // /// In unit tests, we do not have actual executors running, so it simplifies things to just noop.
-    // pub(crate) async fn launch_task(
-    //     &self,
-    //     _executor: &ExecutorMetadata,
-    //     _task: TaskDescription,
-    //     _executor_manager: &ExecutorManager,
-    // ) -> Result<()> {
-    //     Ok(())
-    // }
 
     /// Retrieve the number of available tasks for the given job. The value returned
     /// is strictly a point-in-time snapshot

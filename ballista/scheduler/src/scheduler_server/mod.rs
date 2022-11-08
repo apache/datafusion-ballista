@@ -39,6 +39,7 @@ use crate::state::backend::StateBackendClient;
 use crate::state::executor_manager::{
     ExecutorManager, ExecutorReservation, DEFAULT_EXECUTOR_TIMEOUT_SECONDS,
 };
+
 use crate::state::task_manager::TaskLauncher;
 use crate::state::SchedulerState;
 
@@ -94,7 +95,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         }
     }
 
-    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn with_task_launcher(
         scheduler_name: String,
         config_backend: Arc<dyn StateBackendClient>,
@@ -293,7 +294,6 @@ pub fn timestamp_millis() -> u64 {
 #[cfg(all(test, feature = "sled"))]
 mod test {
     use std::sync::Arc;
-    use std::time::Duration;
 
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::logical_expr::{col, sum, LogicalPlan};
@@ -301,15 +301,13 @@ mod test {
     use datafusion::test_util::scan_empty;
     use datafusion_proto::protobuf::LogicalPlanNode;
 
-    use parking_lot::Mutex;
-
     use ballista_core::config::{
         BallistaConfig, TaskSchedulingPolicy, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
     };
     use ballista_core::error::Result;
 
     use crate::config::SchedulerConfig;
-    use crate::metrics::SchedulerMetricsCollector;
+
     use ballista_core::serde::protobuf::{
         failed_task, job_status, task_status, ExecutionError, FailedTask, JobStatus,
         MultiTaskDefinition, PhysicalPlanNode, ShuffleWritePartition, SuccessfulJob,
@@ -323,9 +321,10 @@ mod test {
     use crate::scheduler_server::{timestamp_millis, SchedulerServer};
     use crate::state::backend::standalone::StandaloneClient;
 
-    use crate::state::executor_manager::ExecutorReservation;
     use crate::test_utils::{
-        await_condition, ExplodingTableProvider, SchedulerTest, TaskRunnerFn,
+        assert_completed_event, assert_failed_event, assert_no_submitted_event,
+        assert_submitted_event, ExplodingTableProvider, SchedulerTest, TaskRunnerFn,
+        TestMetricsCollector,
     };
 
     #[tokio::test]
@@ -661,123 +660,5 @@ mod test {
             )
             .build()
             .expect("creating BallistaConfig")
-    }
-
-    fn assert_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
-        let found = collector
-            .job_events(job_id)
-            .iter()
-            .any(|ev| matches!(ev, MetricEvent::Submitted(_, _, _)));
-
-        assert!(found, "Expected submitted event for job {}", job_id);
-    }
-
-    fn assert_no_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
-        let found = collector
-            .job_events(job_id)
-            .iter()
-            .any(|ev| matches!(ev, MetricEvent::Submitted(_, _, _)));
-
-        assert!(!found, "Expected no submitted event for job {}", job_id);
-    }
-
-    fn assert_completed_event(job_id: &str, collector: &TestMetricsCollector) {
-        let found = collector
-            .job_events(job_id)
-            .iter()
-            .any(|ev| matches!(ev, MetricEvent::Completed(_, _, _)));
-
-        assert!(found, "Expected completed event for job {}", job_id);
-    }
-
-    fn assert_cancelled_event(job_id: &str, collector: &TestMetricsCollector) {
-        let found = collector
-            .job_events(job_id)
-            .iter()
-            .any(|ev| matches!(ev, MetricEvent::Cancelled(_)));
-
-        assert!(found, "Expected cancelled event for job {}", job_id);
-    }
-
-    fn assert_failed_event(job_id: &str, collector: &TestMetricsCollector) {
-        let found = collector
-            .job_events(job_id)
-            .iter()
-            .any(|ev| matches!(ev, MetricEvent::Failed(_, _, _)));
-
-        assert!(found, "Expected failed event for job {}", job_id);
-    }
-
-    #[derive(Clone)]
-    enum MetricEvent {
-        Submitted(String, u64, u64),
-        Completed(String, u64, u64),
-        Cancelled(String),
-        Failed(String, u64, u64),
-    }
-
-    impl MetricEvent {
-        pub fn job_id(&self) -> &str {
-            match self {
-                MetricEvent::Submitted(job, _, _) => job.as_str(),
-                MetricEvent::Completed(job, _, _) => job.as_str(),
-                MetricEvent::Cancelled(job) => job.as_str(),
-                MetricEvent::Failed(job, _, _) => job.as_str(),
-            }
-        }
-    }
-
-    #[derive(Default, Clone)]
-    struct TestMetricsCollector {
-        pub events: Arc<Mutex<Vec<MetricEvent>>>,
-    }
-
-    impl TestMetricsCollector {
-        pub fn job_events(&self, job_id: &str) -> Vec<MetricEvent> {
-            let guard = self.events.lock();
-
-            guard
-                .iter()
-                .filter_map(|event| {
-                    if event.job_id() == job_id {
-                        Some(event.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        }
-    }
-
-    impl SchedulerMetricsCollector for TestMetricsCollector {
-        fn record_submitted(&self, job_id: &str, queued_at: u64, submitted_at: u64) {
-            let mut guard = self.events.lock();
-            guard.push(MetricEvent::Submitted(
-                job_id.to_owned(),
-                queued_at,
-                submitted_at,
-            ));
-        }
-
-        fn record_completed(&self, job_id: &str, queued_at: u64, completed_at: u64) {
-            let mut guard = self.events.lock();
-            guard.push(MetricEvent::Completed(
-                job_id.to_owned(),
-                queued_at,
-                completed_at,
-            ));
-        }
-
-        fn record_failed(&self, job_id: &str, queued_at: u64, failed_at: u64) {
-            let mut guard = self.events.lock();
-            guard.push(MetricEvent::Failed(job_id.to_owned(), queued_at, failed_at));
-        }
-
-        fn record_cancelled(&self, job_id: &str) {
-            let mut guard = self.events.lock();
-            guard.push(MetricEvent::Cancelled(job_id.to_owned()));
-        }
-
-        fn set_pending_tasks_queue_size(&self, _value: u64) {}
     }
 }
