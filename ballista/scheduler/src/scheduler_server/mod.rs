@@ -39,6 +39,7 @@ use crate::state::backend::StateBackendClient;
 use crate::state::executor_manager::{
     ExecutorManager, ExecutorReservation, DEFAULT_EXECUTOR_TIMEOUT_SECONDS,
 };
+use crate::state::task_manager::TaskLauncher;
 use crate::state::SchedulerState;
 
 // include the generated protobuf source as a submodule
@@ -76,6 +77,39 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             codec,
             scheduler_name.clone(),
             config.clone(),
+        ));
+        let query_stage_scheduler =
+            Arc::new(QueryStageScheduler::new(state.clone(), metrics_collector));
+        let query_stage_event_loop = EventLoop::new(
+            "query_stage".to_owned(),
+            config.event_loop_buffer_size as usize,
+            query_stage_scheduler,
+        );
+
+        Self {
+            scheduler_name,
+            start_time: timestamp_millis() as u128,
+            state,
+            query_stage_event_loop,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_task_launcher(
+        scheduler_name: String,
+        config_backend: Arc<dyn StateBackendClient>,
+        codec: BallistaCodec<T, U>,
+        config: SchedulerConfig,
+        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
+        task_launcher: Arc<dyn TaskLauncher>,
+    ) -> Self {
+        let state = Arc::new(SchedulerState::with_task_launcher(
+            config_backend,
+            default_session_builder,
+            codec,
+            scheduler_name.clone(),
+            config.clone(),
+            task_launcher,
         ));
         let query_stage_scheduler =
             Arc::new(QueryStageScheduler::new(state.clone(), metrics_collector));
@@ -266,7 +300,7 @@ mod test {
 
     use datafusion::test_util::scan_empty;
     use datafusion_proto::protobuf::LogicalPlanNode;
-    use itertools::Itertools;
+
     use parking_lot::Mutex;
 
     use ballista_core::config::{
@@ -278,18 +312,21 @@ mod test {
     use crate::metrics::SchedulerMetricsCollector;
     use ballista_core::serde::protobuf::{
         failed_task, job_status, task_status, ExecutionError, FailedTask, JobStatus,
-        PhysicalPlanNode, ShuffleWritePartition, SuccessfulTask, TaskStatus,
+        MultiTaskDefinition, PhysicalPlanNode, ShuffleWritePartition, SuccessfulJob,
+        SuccessfulTask, TaskId, TaskStatus,
     };
     use ballista_core::serde::scheduler::{
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
     };
     use ballista_core::serde::BallistaCodec;
 
-    use crate::scheduler_server::SchedulerServer;
+    use crate::scheduler_server::{timestamp_millis, SchedulerServer};
     use crate::state::backend::standalone::StandaloneClient;
 
     use crate::state::executor_manager::ExecutorReservation;
-    use crate::test_utils::{await_condition, ExplodingTableProvider};
+    use crate::test_utils::{
+        await_condition, ExplodingTableProvider, SchedulerTest, TaskRunnerFn,
+    };
 
     #[tokio::test]
     async fn test_pull_scheduling() -> Result<()> {
@@ -398,154 +435,37 @@ mod test {
         Ok(())
     }
 
-    /// This test will exercise the push-based scheduling.
     #[tokio::test]
     async fn test_push_scheduling() -> Result<()> {
         let plan = test_plan();
-        let task_slots = 4;
 
-        let metrics_collector = TestMetricsCollector::default();
-        let scheduler = test_push_staged_scheduler(metrics_collector).await?;
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
 
-        let executors = test_executors(task_slots);
-        for (executor_metadata, executor_data) in executors {
-            scheduler
-                .state
-                .executor_manager
-                .register_executor(executor_metadata, executor_data, false)
-                .await?;
-        }
+        let test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector.clone(),
+            4,
+            1,
+            None,
+        )
+        .await?;
 
-        let config = test_session(task_slots);
+        let status = test.run("job", "", &plan).await.expect("running plan");
 
-        let ctx = scheduler
-            .state
-            .session_manager
-            .create_session(&config)
-            .await?;
-
-        let job_id = "job";
-
-        scheduler
-            .state
-            .submit_job(job_id, "", ctx, &plan, 0)
-            .await?;
-
-        // Complete tasks that are offered through scheduler events
-        loop {
-            // Check condition
-            let available_tasks = {
-                let graph = scheduler
-                    .state
-                    .task_manager
-                    .get_job_execution_graph(job_id)
-                    .await?
-                    .unwrap();
-                if graph.is_successful() {
-                    break;
-                }
-                graph.available_tasks()
-            };
-
-            if available_tasks == 0 {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-                continue;
+        match status.status {
+            Some(job_status::Status::Successful(SuccessfulJob {
+                partition_location,
+            })) => {
+                assert_eq!(partition_location.len(), 4);
             }
-
-            let reservations: Vec<ExecutorReservation> = scheduler
-                .state
-                .executor_manager
-                .reserve_slots(available_tasks as u32)
-                .await?
-                .into_iter()
-                .map(|res| res.assign(job_id.to_owned()))
-                .collect();
-
-            let free_list = match scheduler
-                .state
-                .task_manager
-                .fill_reservations(&reservations)
-                .await
-            {
-                Ok((assignments, mut unassigned_reservations, _)) => {
-                    for (executor_id, task) in assignments.into_iter() {
-                        match scheduler
-                            .state
-                            .executor_manager
-                            .get_executor_metadata(&executor_id)
-                            .await
-                        {
-                            Ok(executor) => {
-                                let mut partitions: Vec<ShuffleWritePartition> = vec![];
-
-                                let num_partitions = task
-                                    .output_partitioning
-                                    .map(|p| p.partition_count())
-                                    .unwrap_or(1);
-
-                                for partition_id in 0..num_partitions {
-                                    partitions.push(ShuffleWritePartition {
-                                        partition_id: partition_id as u64,
-                                        path: "some/path".to_string(),
-                                        num_batches: 1,
-                                        num_rows: 1,
-                                        num_bytes: 1,
-                                    })
-                                }
-
-                                // Complete the task
-                                let task_status = TaskStatus {
-                                    task_id: task.task_id as u32,
-                                    job_id: task.partition.job_id.clone(),
-                                    stage_id: task.partition.stage_id as u32,
-                                    stage_attempt_num: task.stage_attempt_num as u32,
-                                    partition_id: task.partition.partition_id as u32,
-                                    launch_time: 0,
-                                    start_exec_time: 0,
-                                    end_exec_time: 0,
-                                    metrics: vec![],
-                                    status: Some(task_status::Status::Successful(
-                                        SuccessfulTask {
-                                            executor_id: executor.id.clone(),
-                                            partitions,
-                                        },
-                                    )),
-                                };
-
-                                scheduler
-                                    .update_task_status(&executor.id, vec![task_status])
-                                    .await?;
-                            }
-                            Err(_e) => {
-                                unassigned_reservations.push(
-                                    ExecutorReservation::new_free(executor_id.clone()),
-                                );
-                            }
-                        }
-                    }
-                    unassigned_reservations
-                }
-                Err(_e) => reservations,
-            };
-
-            // If any reserved slots remain, return them to the pool
-            if !free_list.is_empty() {
-                scheduler
-                    .state
-                    .executor_manager
-                    .cancel_reservations(free_list)
-                    .await?;
+            other => {
+                panic!("Expected success status but found {:?}", other);
             }
         }
 
-        let final_graph = scheduler
-            .state
-            .task_manager
-            .get_execution_graph(job_id)
-            .await?;
-
-        assert!(final_graph.is_successful());
-        assert_eq!(final_graph.output_locations().len(), 4);
+        assert_submitted_event("job", &metrics_collector);
+        assert_completed_event("job", &metrics_collector);
 
         Ok(())
     }
@@ -554,142 +474,72 @@ mod test {
     #[tokio::test]
     async fn test_job_failure() -> Result<()> {
         let plan = test_plan();
-        let task_slots = 4;
 
-        let metrics_collector = TestMetricsCollector::default();
-        let scheduler = test_push_staged_scheduler(metrics_collector).await?;
+        let runner = Arc::new(TaskRunnerFn::new(
+            |_executor_id: String, task: MultiTaskDefinition| {
+                let mut statuses = vec![];
 
-        let executors = test_executors(task_slots);
-        for (executor_metadata, executor_data) in executors {
-            scheduler
-                .state
-                .executor_manager
-                .register_executor(executor_metadata, executor_data, false)
-                .await?;
-        }
-
-        let config = test_session(task_slots);
-
-        let ctx = scheduler
-            .state
-            .session_manager
-            .create_session(&config)
-            .await?;
-
-        let job_id = "job";
-
-        scheduler
-            .state
-            .submit_job(job_id, "", ctx, &plan, 0)
-            .await?;
-
-        let available_tasks = scheduler
-            .state
-            .task_manager
-            .get_available_task_count(job_id)
-            .await?;
-
-        let reservations: Vec<ExecutorReservation> = scheduler
-            .state
-            .executor_manager
-            .reserve_slots(available_tasks as u32)
-            .await?
-            .into_iter()
-            .map(|res| res.assign(job_id.to_owned()))
-            .collect();
-
-        // Complete tasks that are offered through scheduler events
-        let free_list = match scheduler
-            .state
-            .task_manager
-            .fill_reservations(&reservations)
-            .await
-        {
-            Ok((assignments, mut unassigned_reservations, _)) => {
-                for (executor_id, task) in assignments.into_iter() {
-                    match scheduler
-                        .state
-                        .executor_manager
-                        .get_executor_metadata(&executor_id)
-                        .await
-                    {
-                        Ok(executor) => {
-                            let mut partitions: Vec<ShuffleWritePartition> = vec![];
-
-                            let num_partitions = task
-                                .output_partitioning
-                                .map(|p| p.partition_count())
-                                .unwrap_or(1);
-
-                            for partition_id in 0..num_partitions {
-                                partitions.push(ShuffleWritePartition {
-                                    partition_id: partition_id as u64,
-                                    path: "some/path".to_string(),
-                                    num_batches: 1,
-                                    num_rows: 1,
-                                    num_bytes: 1,
-                                })
-                            }
-
-                            // Complete the task
-                            let task_status = TaskStatus {
-                                task_id: task.task_id as u32,
-                                job_id: task.partition.job_id.clone(),
-                                stage_id: task.partition.stage_id as u32,
-                                stage_attempt_num: task.stage_attempt_num as u32,
-                                partition_id: task.partition.partition_id as u32,
-                                launch_time: 0,
-                                start_exec_time: 0,
-                                end_exec_time: 0,
-                                metrics: vec![],
-                                status: Some(task_status::Status::Failed(FailedTask {
-                                    error: "".to_string(),
-                                    retryable: false,
-                                    count_to_failures: false,
-                                    failed_reason: Some(
-                                        failed_task::FailedReason::ExecutionError(
-                                            ExecutionError {},
-                                        ),
-                                    ),
-                                })),
-                            };
-
-                            scheduler
-                                .state
-                                .update_task_statuses(&executor.id, vec![task_status])
-                                .await?;
-                        }
-                        Err(_e) => {
-                            unassigned_reservations
-                                .push(ExecutorReservation::new_free(executor_id.clone()));
-                        }
-                    }
+                for TaskId {
+                    task_id,
+                    partition_id,
+                    ..
+                } in task.task_ids
+                {
+                    let timestamp = timestamp_millis();
+                    statuses.push(TaskStatus {
+                        task_id,
+                        job_id: task.job_id.clone(),
+                        stage_id: task.stage_id,
+                        stage_attempt_num: task.stage_attempt_num,
+                        partition_id,
+                        launch_time: timestamp,
+                        start_exec_time: timestamp,
+                        end_exec_time: timestamp,
+                        metrics: vec![],
+                        status: Some(task_status::Status::Failed(FailedTask {
+                            error: "ERROR".to_string(),
+                            retryable: false,
+                            count_to_failures: false,
+                            failed_reason: Some(
+                                failed_task::FailedReason::ExecutionError(
+                                    ExecutionError {},
+                                ),
+                            ),
+                        })),
+                    });
                 }
-                unassigned_reservations
-            }
-            Err(_e) => reservations,
-        };
 
-        // If any reserved slots remain, return them to the pool
-        if !free_list.is_empty() {
-            scheduler
-                .state
-                .executor_manager
-                .cancel_reservations(free_list)
-                .await?;
-        }
+                statuses
+            },
+        ));
 
-        let status = scheduler.state.task_manager.get_job_status(job_id).await?;
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+
+        let test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector.clone(),
+            4,
+            1,
+            Some(runner),
+        )
+        .await?;
+
+        let status = test.run("job", "", &plan).await.expect("running plan");
 
         assert!(
             matches!(
                 status,
-                Some(JobStatus {
+                JobStatus {
                     status: Some(job_status::Status::Failed(_))
-                })
+                }
             ),
-            "Expected job status to be failed"
+            "Expected job status to be failed but it was {:?}",
+            status
         );
+
+        assert_submitted_event("job", &metrics_collector);
+        assert_failed_event("job", &metrics_collector);
 
         Ok(())
     }
@@ -698,46 +548,39 @@ mod test {
     // Here we simulate a planning failure using ExplodingTableProvider to test this.
     #[tokio::test]
     async fn test_planning_failure() -> Result<()> {
-        let task_slots = 4;
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+        let test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector.clone(),
+            4,
+            1,
+            None,
+        )
+        .await?;
 
-        let metrics_collector = TestMetricsCollector::default();
-        let scheduler = test_push_staged_scheduler(metrics_collector.clone()).await?;
-
-        let config = test_session(task_slots);
-
-        let ctx = scheduler
-            .state
-            .session_manager
-            .create_session(&config)
-            .await?;
+        let ctx = test.ctx().await?;
 
         ctx.register_table("explode", Arc::new(ExplodingTableProvider))?;
 
         let plan = ctx.sql("SELECT * FROM explode").await?.to_logical_plan()?;
 
-        let job_id = "job";
-
         // This should fail when we try and create the physical plan
-        scheduler.submit_job(job_id, "", ctx, &plan).await?;
+        let status = test.run("job", "", &plan).await?;
 
-        let scheduler = scheduler.clone();
-
-        let check = || async {
-            let status = scheduler.state.task_manager.get_job_status(job_id).await?;
-
-            Ok(matches!(
+        assert!(
+            matches!(
                 status,
-                Some(JobStatus {
+                JobStatus {
                     status: Some(job_status::Status::Failed(_))
-                })
-            ))
-        };
+                }
+            ),
+            "Expected job status to be failed but it was {:?}",
+            status
+        );
 
-        // Sine this happens in an event loop, we need to check a few times.
-        let job_failed = await_condition(Duration::from_millis(100), 10, check).await?;
-
-        assert!(job_failed, "Job status not failed after 1 second");
-        assert_failed_event(job_id, &metrics_collector);
+        assert_no_submitted_event("job", &metrics_collector);
+        assert_failed_event("job", &metrics_collector);
 
         Ok(())
     }
@@ -753,25 +596,6 @@ mod test {
                 BallistaCodec::default(),
                 SchedulerConfig::default().with_scheduler_policy(scheduling_policy),
                 Arc::new(TestMetricsCollector::default()),
-            );
-        scheduler.init().await?;
-
-        Ok(scheduler)
-    }
-
-    async fn test_push_staged_scheduler(
-        metrics_collector: TestMetricsCollector,
-    ) -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
-        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
-        let config = SchedulerConfig::default()
-            .with_scheduler_policy(TaskSchedulingPolicy::PushStaged);
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                state_storage,
-                BallistaCodec::default(),
-                config,
-                Arc::new(metrics_collector),
             );
         scheduler.init().await?;
 
@@ -846,6 +670,15 @@ mod test {
             .any(|ev| matches!(ev, MetricEvent::Submitted(_, _, _)));
 
         assert!(found, "Expected submitted event for job {}", job_id);
+    }
+
+    fn assert_no_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
+        let found = collector
+            .job_events(job_id)
+            .iter()
+            .any(|ev| matches!(ev, MetricEvent::Submitted(_, _, _)));
+
+        assert!(!found, "Expected no submitted event for job {}", job_id);
     }
 
     fn assert_completed_event(job_id: &str, collector: &TestMetricsCollector) {
@@ -945,6 +778,6 @@ mod test {
             guard.push(MetricEvent::Cancelled(job_id.to_owned()));
         }
 
-        fn set_pending_tasks_queue_size(&self, value: u64) {}
+        fn set_pending_tasks_queue_size(&self, _value: u64) {}
     }
 }

@@ -16,7 +16,6 @@
 // under the License.
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use log::{debug, error, info};
@@ -25,7 +24,7 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::{EventAction, EventSender};
 
 use crate::metrics::SchedulerMetricsCollector;
-use crate::scheduler_server::{timestamp_millis, timestamp_secs};
+use crate::scheduler_server::timestamp_millis;
 use ballista_core::serde::AsExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use tokio::sync::mpsc;

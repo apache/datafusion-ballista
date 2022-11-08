@@ -29,7 +29,7 @@ use crate::scheduler_server::SessionBuilder;
 use crate::state::backend::{Lock, StateBackendClient};
 use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::session_manager::SessionManager;
-use crate::state::task_manager::TaskManager;
+use crate::state::task_manager::{TaskLauncher, TaskManager};
 
 use crate::config::SchedulerConfig;
 use crate::state::execution_graph::TaskDescription;
@@ -49,7 +49,7 @@ pub mod execution_graph_dot;
 pub mod executor_manager;
 pub mod session_manager;
 pub mod session_registry;
-mod task_manager;
+pub(crate) mod task_manager;
 
 pub fn decode_protobuf<T: Message + Default>(bytes: &[u8]) -> Result<T> {
     T::decode(bytes).map_err(|e| {
@@ -135,11 +135,37 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_task_launcher(
+        config_client: Arc<dyn StateBackendClient>,
+        session_builder: SessionBuilder,
+        codec: BallistaCodec<T, U>,
+        scheduler_name: String,
+        config: SchedulerConfig,
+        dispatcher: Arc<dyn TaskLauncher>,
+    ) -> Self {
+        Self {
+            executor_manager: ExecutorManager::new(
+                config_client.clone(),
+                config.executor_slots_policy,
+            ),
+            task_manager: TaskManager::with_launcher(
+                config_client.clone(),
+                session_builder,
+                codec.clone(),
+                scheduler_name,
+                dispatcher,
+            ),
+            session_manager: SessionManager::new(config_client, session_builder),
+            codec,
+            config,
+        }
+    }
+
     pub async fn init(&self) -> Result<()> {
         self.executor_manager.init().await
     }
 
-    #[cfg(not(test))]
     pub(crate) async fn update_task_statuses(
         &self,
         executor_id: &str,
@@ -162,33 +188,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             .await?;
 
         Ok((events, reservations))
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn update_task_statuses(
-        &self,
-        executor_id: &str,
-        tasks_status: Vec<TaskStatus>,
-    ) -> Result<(Vec<QueryStageSchedulerEvent>, Vec<ExecutorReservation>)> {
-        let executor = self
-            .executor_manager
-            .get_executor_metadata(executor_id)
-            .await?;
-
-        let total_num_tasks = tasks_status.len();
-        let free_list = (0..total_num_tasks)
-            .into_iter()
-            .map(|_| ExecutorReservation::new_free(executor_id.to_owned()))
-            .collect();
-
-        let events = self
-            .task_manager
-            .update_task_statuses(&executor, tasks_status)
-            .await?;
-
-        self.executor_manager.cancel_reservations(free_list).await?;
-
-        Ok((events, vec![]))
     }
 
     /// Process reservations which are offered. The basic process is
@@ -465,6 +464,8 @@ mod test {
     use ballista_core::serde::BallistaCodec;
     use ballista_core::utils::default_session_builder;
 
+    use crate::config::SchedulerConfig;
+    use crate::test_utils::BlackholeTaskLauncher;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::logical_expr::{col, sum};
     use datafusion::physical_plan::ExecutionPlan;
@@ -513,10 +514,13 @@ mod test {
             .build()?;
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
-            Arc::new(SchedulerState::new_with_default_scheduler_name(
+            Arc::new(SchedulerState::with_task_launcher(
                 state_storage,
                 default_session_builder,
                 BallistaCodec::default(),
+                String::default(),
+                SchedulerConfig::default(),
+                Arc::new(BlackholeTaskLauncher::default()),
             ));
 
         let session_ctx = state.session_manager.create_session(&config).await?;
@@ -594,10 +598,13 @@ mod test {
             .build()?;
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
-            Arc::new(SchedulerState::new_with_default_scheduler_name(
+            Arc::new(SchedulerState::with_task_launcher(
                 state_storage,
                 default_session_builder,
                 BallistaCodec::default(),
+                String::default(),
+                SchedulerConfig::default(),
+                Arc::new(BlackholeTaskLauncher::default()),
             ));
 
         let session_ctx = state.session_manager.create_session(&config).await?;

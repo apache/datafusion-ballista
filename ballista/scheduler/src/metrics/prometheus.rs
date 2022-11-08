@@ -2,11 +2,11 @@ use crate::metrics::SchedulerMetricsCollector;
 use ballista_core::error::{BallistaError, Result};
 use hyper::header::CONTENT_TYPE;
 use prometheus::{
-    default_registry, register_counter_with_registry, register_gauge_with_registry,
+    register_counter_with_registry, register_gauge_with_registry,
     register_histogram_with_registry, Counter, Gauge, Histogram, Registry,
 };
 use prometheus::{Encoder, TextEncoder};
-use warp::reply::WithHeader;
+
 use warp::Reply;
 
 pub struct PrometheusMetricsCollector {

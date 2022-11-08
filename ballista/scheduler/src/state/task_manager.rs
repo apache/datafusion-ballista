@@ -29,6 +29,7 @@ use ballista_core::error::Result;
 
 use crate::state::backend::Keyspace::{CompletedJobs, FailedJobs};
 use crate::state::session_manager::create_datafusion_context;
+use async_trait::async_trait;
 use ballista_core::serde::protobuf::{
     self, job_status, FailedJob, JobStatus, MultiTaskDefinition, TaskDefinition, TaskId,
     TaskStatus,
@@ -58,6 +59,52 @@ pub const TASK_MAX_FAILURES: usize = 4;
 /// Default max failure attempts for stage level retry
 pub const STAGE_MAX_FAILURES: usize = 4;
 
+#[async_trait::async_trait]
+pub(crate) trait TaskLauncher: Send + Sync + 'static {
+    async fn launch_tasks(
+        &self,
+        executor: &ExecutorMetadata,
+        tasks: Vec<MultiTaskDefinition>,
+        executor_manager: &ExecutorManager,
+    ) -> Result<()>;
+}
+
+struct DefaultTaskLauncher {
+    scheduler_id: String,
+}
+
+impl DefaultTaskLauncher {
+    pub fn new(scheduler_id: String) -> Self {
+        Self { scheduler_id }
+    }
+}
+
+#[async_trait::async_trait]
+impl TaskLauncher for DefaultTaskLauncher {
+    async fn launch_tasks(
+        &self,
+        executor: &ExecutorMetadata,
+        tasks: Vec<MultiTaskDefinition>,
+        executor_manager: &ExecutorManager,
+    ) -> Result<()> {
+        info!("Launching multi task on executor {:?}", executor.id);
+        let mut client = executor_manager.get_client(&executor.id).await?;
+        client
+            .launch_multi_task(protobuf::LaunchMultiTaskParams {
+                multi_tasks: tasks,
+                scheduler_id: self.scheduler_id.clone(),
+            })
+            .await
+            .map_err(|e| {
+                BallistaError::Internal(format!(
+                    "Failed to connect to executor {}: {:?}",
+                    executor.id, e
+                ))
+            })?;
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
     state: Arc<dyn StateBackendClient>,
@@ -66,6 +113,7 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     scheduler_id: String,
     // Cache for active jobs curated by this scheduler
     active_job_cache: ActiveJobCache,
+    launcher: Arc<dyn TaskLauncher>,
 }
 
 #[derive(Clone)]
@@ -105,8 +153,26 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             state,
             session_builder,
             codec,
+            scheduler_id: scheduler_id.clone(),
+            active_job_cache: Arc::new(DashMap::new()),
+            launcher: Arc::new(DefaultTaskLauncher::new(scheduler_id)),
+        }
+    }
+
+    pub(crate) fn with_launcher(
+        state: Arc<dyn StateBackendClient>,
+        session_builder: SessionBuilder,
+        codec: BallistaCodec<T, U>,
+        scheduler_id: String,
+        launcher: Arc<dyn TaskLauncher>,
+    ) -> Self {
+        Self {
+            state,
+            session_builder,
+            codec,
             scheduler_id,
             active_job_cache: Arc::new(DashMap::new()),
+            launcher,
         }
     }
 
@@ -412,11 +478,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             ]
         };
 
-        let _res = if let Some(graph) = self.remove_active_execution_graph(job_id).await {
+        if let Some(graph) = self.remove_active_execution_graph(job_id).await {
             let mut graph = graph.write().await;
             let previous_status = graph.status();
             graph.fail_job(failure_reason);
-            let value = self.encode_execution_graph(graph.clone())?;
+
+            let value = encode_protobuf(&graph.status())?;
             let txn_ops = txn_operations(value);
             let result = self.state.apply_txn(txn_ops).await;
             if result.is_err() {
@@ -424,7 +491,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 graph.update_status(previous_status);
                 warn!("Rollback Execution Graph state change since it did not persisted due to a possible connection error.")
             };
-            result
         } else {
             info!("Fail to find job {} in the cache", job_id);
             let status = JobStatus {
@@ -434,7 +500,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             };
             let value = encode_protobuf(&status)?;
             let txn_ops = txn_operations(value);
-            self.state.apply_txn(txn_ops).await
+            self.state.apply_txn(txn_ops).await?;
         };
 
         Ok(())
@@ -491,44 +557,44 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         .await
     }
 
-    #[allow(dead_code)]
-    #[cfg(not(test))]
-    /// Launch the given task on the specified executor
-    pub(crate) async fn launch_task(
-        &self,
-        executor: &ExecutorMetadata,
-        task: TaskDescription,
-        executor_manager: &ExecutorManager,
-    ) -> Result<()> {
-        info!("Launching task {:?} on executor {:?}", task, executor.id);
-        let task_definition = self.prepare_task_definition(task)?;
-        let mut client = executor_manager.get_client(&executor.id).await?;
-        client
-            .launch_task(protobuf::LaunchTaskParams {
-                tasks: vec![task_definition],
-                scheduler_id: self.scheduler_id.clone(),
-            })
-            .await
-            .map_err(|e| {
-                BallistaError::Internal(format!(
-                    "Failed to connect to executor {}: {:?}",
-                    executor.id, e
-                ))
-            })?;
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    #[cfg(test)]
-    /// In unit tests, we do not have actual executors running, so it simplifies things to just noop.
-    pub(crate) async fn launch_task(
-        &self,
-        _executor: &ExecutorMetadata,
-        _task: TaskDescription,
-        _executor_manager: &ExecutorManager,
-    ) -> Result<()> {
-        Ok(())
-    }
+    // #[allow(dead_code)]
+    // #[cfg(not(test))]
+    // /// Launch the given task on the specified executor
+    // pub(crate) async fn launch_task(
+    //     &self,
+    //     executor: &ExecutorMetadata,
+    //     task: TaskDescription,
+    //     executor_manager: &ExecutorManager,
+    // ) -> Result<()> {
+    //     info!("Launching task {:?} on executor {:?}", task, executor.id);
+    //     let task_definition = self.prepare_task_definition(task)?;
+    //     let mut client = executor_manager.get_client(&executor.id).await?;
+    //     client
+    //         .launch_task(protobuf::LaunchTaskParams {
+    //             tasks: vec![task_definition],
+    //             scheduler_id: self.scheduler_id.clone(),
+    //         })
+    //         .await
+    //         .map_err(|e| {
+    //             BallistaError::Internal(format!(
+    //                 "Failed to connect to executor {}: {:?}",
+    //                 executor.id, e
+    //             ))
+    //         })?;
+    //     Ok(())
+    // }
+    //
+    // #[allow(dead_code)]
+    // #[cfg(test)]
+    // /// In unit tests, we do not have actual executors running, so it simplifies things to just noop.
+    // pub(crate) async fn launch_task(
+    //     &self,
+    //     _executor: &ExecutorMetadata,
+    //     _task: TaskDescription,
+    //     _executor_manager: &ExecutorManager,
+    // ) -> Result<()> {
+    //     Ok(())
+    // }
 
     /// Retrieve the number of available tasks for the given job. The value returned
     /// is strictly a point-in-time snapshot
@@ -598,7 +664,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         }
     }
 
-    #[cfg(not(test))]
     /// Launch the given tasks on the specified executor
     pub(crate) async fn launch_multi_task(
         &self,
@@ -606,37 +671,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         tasks: Vec<Vec<TaskDescription>>,
         executor_manager: &ExecutorManager,
     ) -> Result<()> {
-        info!("Launching multi task on executor {:?}", executor.id);
         let multi_tasks: Result<Vec<MultiTaskDefinition>> = tasks
             .into_iter()
             .map(|stage_tasks| self.prepare_multi_task_definition(stage_tasks))
             .collect();
-        let multi_tasks = multi_tasks?;
-        let mut client = executor_manager.get_client(&executor.id).await?;
-        client
-            .launch_multi_task(protobuf::LaunchMultiTaskParams {
-                multi_tasks,
-                scheduler_id: self.scheduler_id.clone(),
-            })
-            .await
-            .map_err(|e| {
-                BallistaError::Internal(format!(
-                    "Failed to connect to executor {}: {:?}",
-                    executor.id, e
-                ))
-            })?;
-        Ok(())
-    }
 
-    #[cfg(test)]
-    /// Launch the given tasks on the specified executor
-    pub(crate) async fn launch_multi_task(
-        &self,
-        _executor: &ExecutorMetadata,
-        _tasks: Vec<Vec<TaskDescription>>,
-        _executor_manager: &ExecutorManager,
-    ) -> Result<()> {
-        Ok(())
+        self.launcher
+            .launch_tasks(executor, multi_tasks?, executor_manager)
+            .await
     }
 
     #[allow(dead_code)]

@@ -47,7 +47,7 @@ use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use crate::display::print_stage_metrics;
 use crate::planner::DistributedPlanner;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use crate::scheduler_server::{timestamp_millis, timestamp_secs};
+use crate::scheduler_server::timestamp_millis;
 pub(crate) use crate::state::execution_graph::execution_stage::{
     ExecutionStage, FailedStage, ResolvedStage, StageOutput, SuccessfulStage, TaskInfo,
     UnresolvedStage,
