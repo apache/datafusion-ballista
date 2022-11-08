@@ -127,14 +127,14 @@ async fn start_server(
                     parts.extensions.insert(connect_info.clone());
                     let req = http::Request::from_parts(parts, body);
 
-                    let header = req.headers().get(hyper::header::ACCEPT);
-                    if header.is_some() && header.unwrap().eq("application/json") {
+                    if req.uri().path().starts_with("/api") {
                         return Either::Left(
                             warp.call(req)
                                 .map_ok(|res| res.map(EitherBody::Left))
                                 .map_err(Error::from),
                         );
                     }
+
                     Either::Right(
                         tonic
                             .call(req)
