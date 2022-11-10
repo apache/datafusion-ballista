@@ -1377,7 +1377,6 @@ mod tests {
         run_query(1).await
     }
 
-    #[ignore] // https://github.com/apache/arrow-datafusion/issues/159
     #[tokio::test]
     async fn run_2() -> Result<()> {
         run_query(2).await
@@ -1388,7 +1387,6 @@ mod tests {
         run_query(3).await
     }
 
-    #[ignore] // https://github.com/apache/arrow-datafusion/issues/160
     #[tokio::test]
     async fn run_q4() -> Result<()> {
         run_query(4).await
@@ -1424,7 +1422,6 @@ mod tests {
         run_query(10).await
     }
 
-    #[ignore] // https://github.com/apache/arrow-datafusion/issues/163
     #[tokio::test]
     async fn run_q11() -> Result<()> {
         run_query(11).await
@@ -1456,7 +1453,6 @@ mod tests {
         run_query(16).await
     }
 
-    #[ignore] // https://github.com/apache/arrow-datafusion/issues/168
     #[tokio::test]
     async fn run_q17() -> Result<()> {
         run_query(17).await
@@ -1472,19 +1468,16 @@ mod tests {
         run_query(19).await
     }
 
-    #[ignore] // https://github.com/apache/arrow-datafusion/issues/171
     #[tokio::test]
     async fn run_q20() -> Result<()> {
         run_query(20).await
     }
 
-    #[ignore] // https://github.com/apache/arrow-datafusion/issues/172
     #[tokio::test]
     async fn run_q21() -> Result<()> {
         run_query(21).await
     }
 
-    #[ignore] // https://github.com/apache/arrow-datafusion/issues/175
     #[tokio::test]
     async fn run_q22() -> Result<()> {
         run_query(22).await
