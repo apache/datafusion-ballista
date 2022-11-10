@@ -61,6 +61,8 @@ jobs:
         run: |
           pwd
           cargo build
+          ls -l /__w/arrow-ballista/arrow-ballista || true
+          ls -l /__w/arrow-ballista/arrow-ballista/target || true
         env:
           DOCKER_USER: ${{ github.actor }}
           CARGO_HOME: "/github/home/.cargo"
