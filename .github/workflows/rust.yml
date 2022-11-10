@@ -321,19 +321,19 @@ jobs:
       - name: Restore TPC-H data
         uses: actions/cache@v2
         with:
-          path: /home/runner/work/data
+          path: /home/runner/work/arrow-ballista/arrow-ballista/data
           key: tpch-data
       - name: Restore Rust dependencies
         uses: actions/cache@v2
         with:
-          path: /home/runner/work/target
+          path: /home/runner/work/arrow-ballista/arrow-ballista/target
           key: Linux-amd64-target-cache-stable
       - name: Build and push Docker image
         run: |
           echo "github user is $DOCKER_USER"
           pwd
           ls -l
-          export $DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo 'latest')"
+          export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo 'latest')"
           if [[ $DOCKER_TAG =~ ^[0-9\.]+$ ]]
           then
             echo "publishing docker tag $DOCKER_TAG"

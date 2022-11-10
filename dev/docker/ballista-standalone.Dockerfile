@@ -29,6 +29,11 @@ RUN apt-get update && apt-get install -y nginx netcat
 COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
 COPY target/$RELEASE_FLAG/ballista-executor /root/ballista-executor
 
+# populate some sample data for ListingSchemaProvider
+COPY data /data
+ENV DATAFUSION_CATALOG_LOCATION=/data
+ENV DATAFUSION_CATALOG_TYPE=csv
+
 COPY ballista/scheduler/ui/build /var/www/html
 COPY dev/docker/nginx.conf /etc/nginx/sites-enabled/default
 
