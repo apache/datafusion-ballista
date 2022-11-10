@@ -274,7 +274,7 @@ jobs:
         uses: actions/cache@v2
         with:
           path: /data
-          key: tpch-data
+          key: tpch-data-
       - name: Generate data
         run: |
           apt-get -qq install csvtool
@@ -303,11 +303,6 @@ jobs:
           rm *.tmp
           ls -l
           head customer.csv
-      - name: Cache TPC-H data
-        uses: actions/cache@v2
-        with:
-          path: /data
-          key: tpch
 
   docker:
     name: Docker
@@ -322,7 +317,7 @@ jobs:
         uses: actions/cache@v2
         with:
           path: /home/runner/work/arrow-ballista/arrow-ballista/data
-          key: tpch
+          key: tpch-data-
       - name: Restore Rust dependencies
         uses: actions/cache@v2
         with:
