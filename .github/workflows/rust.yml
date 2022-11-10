@@ -59,8 +59,10 @@ jobs:
           rust-version: ${{ matrix.rust }}
       - name: Build workspace in debug mode
         run: |
+          echo "ghcr account is: $DOCKER_USER"
           cargo build
         env:
+          DOCKER_USER: ${{ github.actor }}
           CARGO_HOME: "/github/home/.cargo"
           CARGO_TARGET_DIR: "/github/home/target/debug"
       - name: Build workspace in release mode
@@ -277,6 +279,7 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}
       - name: Build and push Docker image
         run: |
+          echo "$DOCKER_USER"
           pwd
           ls -l
           which docker
