@@ -257,6 +257,40 @@ jobs:
           CARGO_HOME: "/github/home/.cargo"
           CARGO_TARGET_DIR: "/github/home/target"
 
+  docker:
+    name: Docker
+    needs: [linux-build-lib]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to the Container registry
+        uses: docker/login-action@f054a8b539a109f9f41c372932f1ae047eff08c9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v3
+        with:
+          submodules: true
+      - name: Restore Cargo Cache
+        uses: actions/cache@v2
+        with:
+          path: /github/home/.cargo
+          key: cargo-cache-
+      - name: Restore Rust dependencies
+        uses: actions/cache@v2
+        with:
+          path: /github/home/target
+          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}
+      - name: Build and push Docker image
+        uses: docker/build-push-action@ad44023a93711e3deb337508980b4b5e9bcdc5dc
+        with:
+          context: .
+          file: dev/docker/ballista/standalone.Dockerfile
+          push: true
+          tags: ${{ github.head_ref }} # TODO: use tag from git
   clippy:
     name: Clippy
     needs: [linux-build-lib]
