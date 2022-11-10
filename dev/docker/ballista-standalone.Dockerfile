@@ -28,7 +28,6 @@ RUN apt-get update && apt-get install -y nginx netcat
 
 COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
 COPY target/$RELEASE_FLAG/ballista-executor /root/ballista-executor
-COPY file:///home/bgardner/workspace/ballista/arrow-datafusion/datafusion/core/tests/tpch-csv
 
 COPY ballista/scheduler/ui/build /var/www/html
 COPY dev/docker/nginx.conf /etc/nginx/sites-enabled/default

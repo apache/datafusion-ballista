@@ -59,8 +59,6 @@ jobs:
           rust-version: ${{ matrix.rust }}
       - name: Build workspace in debug mode
         run: |
-          set -x
-          echo "ghcr account is: $DOCKER_USER"
           cargo build
         env:
           DOCKER_USER: ${{ github.actor }}
@@ -259,28 +257,6 @@ jobs:
 #        env:
 #          CARGO_HOME: "/github/home/.cargo"
 #          CARGO_TARGET_DIR: "/github/home/target"
-
-  test-docker:
-    name: Docker Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Will docker work?
-        run: |
-          echo "$DOCKER_USER"
-          pwd
-          ls -l
-          which docker
-          docker --version
-          ls -l dev/
-          ls -l dev/docker/
-          docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
-          docker build -t ghcr.io/$DOCKER_USER/ballista-standalone:$DOCKER_TAG -f dev/docker/ballista-standalone.Dockerfile .
-          docker push ghcr.io/$DOCKER_USER/ballista-standalone:$DOCKER_TAG
-        env:
-          DOCKER_TAG: ${{ github.head_ref }} # TODO: use tag from git
-          DOCKER_USER: ${{ github.actor }}
-          DOCKER_PASS: ${{ secrets.GITHUB_TOKEN }}
 
   docker:
     name: Docker
