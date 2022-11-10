@@ -317,6 +317,12 @@ jobs:
       contents: read
       packages: write
     steps:
+      - uses: actions/checkout@v3
+      - name: Restore TPC-H data
+        uses: actions/cache@v2
+        with:
+          path: /home/runner/work/data
+          key: tpch-data
       - name: Restore Rust dependencies
         uses: actions/cache@v2
         with:
@@ -327,12 +333,15 @@ jobs:
           echo "github user is $DOCKER_USER"
           pwd
           ls -l
-          docker --version
+          export $DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo 'latest')"
+          if [[ $DOCKER_TAG =~ ^[0-9\.]+$ ]]
+          then
+            echo "publishing docker tag $DOCKER_TAG"
+          fi
           docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
           docker build -t ghcr.io/$DOCKER_USER/ballista-standalone:$DOCKER_TAG -f dev/docker/ballista-standalone.Dockerfile .
           docker push ghcr.io/$DOCKER_USER/ballista-standalone:$DOCKER_TAG
         env:
-          DOCKER_TAG: ${{ github.head_ref }} # TODO: use tag from git
           DOCKER_USER: ${{ github.actor }}
           DOCKER_PASS: ${{ secrets.GITHUB_TOKEN }}
 
