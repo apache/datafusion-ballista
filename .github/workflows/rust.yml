@@ -270,21 +270,43 @@ jobs:
     container:
       image: ghcr.io/databloom-ai/tpch-docker:main
     steps:
+      - name: Cache TPC-H data
+        uses: actions/cache@v2
+        with:
+          path: /data
+          key: tpch-data
       - name: Generate data
         run: |
           apt-get install csvtool
+          cd /opt/tpch/2.18.0_rc2/dbgen
           ./dbgen -v -s 0.01
           cd /data
-          echo -e "c_custkey|c_name|c_address|c_nationkey|c_phone|c_acctbal|c_mktsegment|c_comment|junk\n$(cat customer.tbl)" > customer.csv
-          echo -e "l_orderkey|l_partkey|l_suppkey|l_linenumber|l_quantity|l_extendedprice|l_discount|l_tax|l_returnflag|l_linestatus|l_shipdate|l_commitdate|l_receiptdate|l_shipinstruct|l_shipmode|l_comment|junk\n$(cat lineitem.tbl)" > lineitem.csv
-          echo -e "n_nationkey|n_name|n_regionkey|n_comment|junk\n$(cat nation.tbl)" > nation.csv
-          echo -e "o_orderkey|o_custkey|o_orderstatus|o_totalprice|o_orderdate|o_orderpriority|o_clerk|o_shippriority|o_comment|junk\n$(cat orders.tbl)" > orders.csv
-          echo -e "p_partkey|p_name|p_mfgr|p_brand|p_type|p_size|p_container|p_retailprice|p_comment|junk\n$(cat part.tbl)" > part.csv
-          echo -e "ps_partkey|ps_suppkey|ps_availqty|ps_supplycost|ps_comment|junk\n$(cat partsupp.tbl)" > partsupp.csv
-          echo -e "r_regionkey|r_name|r_comment|junk\n$(cat region.tbl)" > region.csv
-          echo -e "s_suppkey|s_name|s_address|s_nationkey|s_phone|s_acctbal|s_comment|junk\n$(cat supplier.tbl)" > supplier.csv
-          find . -maxdepth 1 -type f -exec csvtool -t '|' -u ',' cat {} -o {}.csv \;
+          echo -e "c_custkey|c_name|c_address|c_nationkey|c_phone|c_acctbal|c_mktsegment|c_comment|junk\n$(cat customer.tbl)" > customer.tmp
+          echo -e "l_orderkey|l_partkey|l_suppkey|l_linenumber|l_quantity|l_extendedprice|l_discount|l_tax|l_returnflag|l_linestatus|l_shipdate|l_commitdate|l_receiptdate|l_shipinstruct|l_shipmode|l_comment|junk\n$(cat lineitem.tbl)" > lineitem.tmp
+          echo -e "n_nationkey|n_name|n_regionkey|n_comment|junk\n$(cat nation.tbl)" > nation.tmp
+          echo -e "o_orderkey|o_custkey|o_orderstatus|o_totalprice|o_orderdate|o_orderpriority|o_clerk|o_shippriority|o_comment|junk\n$(cat orders.tbl)" > orders.tmp
+          echo -e "p_partkey|p_name|p_mfgr|p_brand|p_type|p_size|p_container|p_retailprice|p_comment|junk\n$(cat part.tbl)" > part.tmp
+          echo -e "ps_partkey|ps_suppkey|ps_availqty|ps_supplycost|ps_comment|junk\n$(cat partsupp.tbl)" > partsupp.tmp
+          echo -e "r_regionkey|r_name|r_comment|junk\n$(cat region.tbl)" > region.tmp
+          echo -e "s_suppkey|s_name|s_address|s_nationkey|s_phone|s_acctbal|s_comment|junk\n$(cat supplier.tbl)" > supplier.tmp
+          rm *.tbl
+          find . -maxdepth 1 -type f -exec csvtool -t '|' -u ',' cat {}.tmp -o {} \;
+          csvtool setcolumns 8 customer > customer.csv
+          csvtool setcolumns 16 lineitem > lineitem.csv
+          csvtool setcolumns 4 nation > nation.csv
+          csvtool setcolumns 9 orders > orders.csv
+          csvtool setcolumns 9 part > part.csv
+          csvtool setcolumns 5 partsupp > partsupp.csv
+          csvtool setcolumns 3 region > region.csv
+          csvtool setcolumns 7 supplier > supplier.csv
+          find . -type f  ! -name "*.*"  -delete
           ls -l
+          head customer.csv
+      - name: Cache TPC-H data
+        uses: actions/cache@v2
+        with:
+          path: /data
+          key: tpch
 
   docker:
     name: Docker
@@ -294,26 +316,17 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v3
-      - name: Restore Cargo Cache
-        uses: actions/cache@v2
-        with:
-          path: /github/home/.cargo
-          key: cargo-cache-
       - name: Restore Rust dependencies
         uses: actions/cache@v2
         with:
-          path: /github/home/target
-          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}
+          path: /home/runner/work/target
+          key: Linux-amd64-target-cache-stable
       - name: Build and push Docker image
         run: |
-          echo "$DOCKER_USER"
+          echo "github user is $DOCKER_USER"
           pwd
           ls -l
-          which docker
           docker --version
-          ls -l dev/
-          ls -l dev/docker/
           docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
           docker build -t ghcr.io/$DOCKER_USER/ballista-standalone:$DOCKER_TAG -f dev/docker/ballista-standalone.Dockerfile .
           docker push ghcr.io/$DOCKER_USER/ballista-standalone:$DOCKER_TAG
