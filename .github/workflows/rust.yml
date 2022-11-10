@@ -68,6 +68,9 @@ jobs:
       - name: Build workspace in release mode
         run: |
           cargo check --release
+          ls -l target
+          cargo build --release
+          ls -l target
         env:
           CARGO_HOME: "/github/home/.cargo"
           CARGO_TARGET_DIR: "/github/home/target/release"
