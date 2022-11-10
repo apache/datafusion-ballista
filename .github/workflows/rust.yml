@@ -322,12 +322,12 @@ jobs:
         uses: actions/cache@v2
         with:
           path: /home/runner/work/arrow-ballista/arrow-ballista/data
-          key: tpch-data
+          key: tpch
       - name: Restore Rust dependencies
         uses: actions/cache@v2
         with:
           path: /home/runner/work/arrow-ballista/arrow-ballista/target
-          key: Linux-amd64-target-cache-stable
+          key: Linux-amd64-target-cache-stable-
       - name: Build and push Docker image
         run: |
           echo "github user is $DOCKER_USER"
