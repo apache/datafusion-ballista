@@ -59,6 +59,7 @@ jobs:
           rust-version: ${{ matrix.rust }}
       - name: Build workspace in debug mode
         run: |
+          pwd
           cargo build
         env:
           DOCKER_USER: ${{ github.actor }}
@@ -128,7 +129,7 @@ jobs:
 #          export PATH=$PATH:$HOME/d/protoc/bin
 #          export ARROW_TEST_DATA=$(pwd)/testing/data
 #          export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
-#          cargo test --features flight-sql
+#          cargo test
 #          cd examples
 #          cargo run --example standalone_sql --features=ballista/standalone
 #        env:
@@ -324,7 +325,7 @@ jobs:
           name: tpch-data
           path: /home/runner/work/arrow-ballista/arrow-ballista/data
       - name: Restore binaries
-        uses: actions/cache@v2
+        uses: actions/download-artifact@v2
         with:
           path: /home/runner/work/arrow-ballista/arrow-ballista/target
           key: release-binaries
