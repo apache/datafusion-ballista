@@ -277,7 +277,8 @@ jobs:
           key: tpch-data
       - name: Generate data
         run: |
-          apt-get install csvtool
+          set -x
+          apt-get -qq install csvtool
           cd /opt/tpch/2.18.0_rc2/dbgen
           ./dbgen -s 0.01
           cd /data
@@ -299,7 +300,8 @@ jobs:
           csvtool setcolumns 5 partsupp.tmp.tmp > partsupp.csv
           csvtool setcolumns 3 region.tmp.tmp > region.csv
           csvtool setcolumns 7 supplier.tmp.tmp > supplier.csv
-          find . -type f  ! -name "*.*"  -delete
+          rm *.tmp.tmp
+          rm *.tmp
           ls -l
           head customer.csv
       - name: Cache TPC-H data
