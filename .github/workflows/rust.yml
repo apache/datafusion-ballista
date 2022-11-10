@@ -274,7 +274,7 @@ jobs:
         uses: actions/cache@v2
         with:
           path: /data
-          key: tpch-data-${{ github.sha }}
+          key: tpch-data-v2
       - name: Generate data
         run: |
           apt-get -qq install csvtool
@@ -317,7 +317,7 @@ jobs:
         uses: actions/cache@v2
         with:
           path: /home/runner/work/arrow-ballista/arrow-ballista/data
-          key: tpch-data-${{ github.sha }}
+          key: tpch-data-v2
       - name: Restore Rust dependencies
         uses: actions/cache@v2
         with:
