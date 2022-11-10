@@ -327,8 +327,8 @@ jobs:
       - name: Restore binaries
         uses: actions/download-artifact@v2
         with:
+          name: release-binaries
           path: /home/runner/work/arrow-ballista/arrow-ballista/target
-          key: release-binaries
       - name: Build and push Docker image
         run: |
           echo "github user is $DOCKER_USER"
