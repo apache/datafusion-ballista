@@ -52,7 +52,7 @@ jobs:
           # these represent compiled steps of both dependencies and arrow
           # and thus are specific for a particular OS, arch and rust version.
           path: /github/home/target
-          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}-
+          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}-${{ github.sha }}
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
@@ -71,7 +71,7 @@ jobs:
         env:
           CARGO_HOME: "/github/home/.cargo"
           CARGO_TARGET_DIR: "/github/home/target/release"
-          OUT_KEY: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}
+          OUT_KEY: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}-${{ github.sha }}
 
   # test the crate
 #  linux-test:
@@ -113,7 +113,7 @@ jobs:
 #        with:
 #          path: /github/home/target
 #          # this key equals the ones on `linux-build-lib` for re-use
-#          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}
+#          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}-${{ github.sha }}
 #      - name: Setup Rust toolchain
 #        uses: ./.github/actions/setup-builder
 #        with:
@@ -170,7 +170,7 @@ jobs:
 #        with:
 #          path: /github/home/target
 #          # this key equals the ones on `linux-build-lib` for re-use
-#          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}
+#          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}-${{ github.sha }}
 #      - name: Setup Rust toolchain
 #        uses: ./.github/actions/setup-builder
 #        with:
@@ -274,7 +274,7 @@ jobs:
         uses: actions/cache@v2
         with:
           path: /data
-          key: tpch-data-
+          key: tpch-data
       - name: Generate data
         run: |
           apt-get -qq install csvtool
@@ -317,12 +317,12 @@ jobs:
         uses: actions/cache@v2
         with:
           path: /home/runner/work/arrow-ballista/arrow-ballista/data
-          key: tpch-data-
+          key: tpch-data
       - name: Restore Rust dependencies
         uses: actions/cache@v2
         with:
           path: /home/runner/work/arrow-ballista/arrow-ballista/target
-          key: Linux-amd64-target-cache-stable-
+          key: Linux-amd64-target-cache-stable-${{ github.sha }}
       - name: Build and push Docker image
         run: |
           echo "github user is $DOCKER_USER"
@@ -369,7 +369,7 @@ jobs:
 #        with:
 #          path: /github/home/target
 #          # this key equals the ones on `linux-build-lib` for re-use
-#          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}
+#          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}-${{ github.sha }}
 #      - name: Setup Rust toolchain
 #        uses: ./.github/actions/setup-builder
 #        with:
@@ -412,7 +412,7 @@ jobs:
 #        with:
 #          path: /github/home/target
 #          # this key equals the ones on `linux-build-lib` for re-use
-#          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}
+#          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}-${{ github.sha }}
 #      - name: Setup Rust toolchain
 #        uses: ./.github/actions/setup-builder
 #        with:
