@@ -59,8 +59,8 @@ jobs:
           rust-version: ${{ matrix.rust }}
       - name: Build workspace in debug mode
         run: |
-          pwd
           cargo build
+          ls -l /github/home/target/debug
         env:
           DOCKER_USER: ${{ github.actor }}
           CARGO_HOME: "/github/home/.cargo"
@@ -76,8 +76,8 @@ jobs:
         with:
           name: release-binaries
           path: |
-            /github/home/target/release/ballista-scheduler
-            /github/home/target/release/ballista-executor
+            /github/home/target/release/release/ballista-scheduler
+            /github/home/target/release/release/ballista-executor
             
   # test the crate
 #  linux-test:
