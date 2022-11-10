@@ -265,15 +265,6 @@ jobs:
       contents: read
       packages: write
     steps:
-      - name: Log in to the Container registry
-        uses: docker/login-action@f054a8b539a109f9f41c372932f1ae047eff08c9
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/checkout@v3
-        with:
-          submodules: true
       - name: Restore Cargo Cache
         uses: actions/cache@v2
         with:
@@ -285,12 +276,20 @@ jobs:
           path: /github/home/target
           key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}
       - name: Build and push Docker image
-        uses: docker/build-push-action@ad44023a93711e3deb337508980b4b5e9bcdc5dc
-        with:
-          context: .
-          file: dev/docker/ballista/standalone.Dockerfile
-          push: true
-          tags: ${{ github.head_ref }} # TODO: use tag from git
+        run: |
+          pwd
+          ls -l
+          which docker
+          docker --version
+          ls -l dev/
+          ls -l dev/docker/
+          docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
+          docker build -t ghcr.io/apache/ballista-standalone:DOCKER_TAG -f dev/docker/ballista-standalone.Dockerfile .
+          docker push ghcr.io/apache/ballista-standalone:DOCKER_TAG
+        env:
+          DOCKER_TAG: ${{ github.head_ref }} # TODO: use tag from git
+          DOCKER_USER: ${{ github.actor }}
+          DOCKER_PASS: ${{ secrets.GITHUB_TOKEN }}
 
 #  clippy:
 #    name: Clippy
