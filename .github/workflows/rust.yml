@@ -61,8 +61,6 @@ jobs:
         run: |
           pwd
           cargo build
-          ls -l /__w/arrow-ballista/arrow-ballista || true
-          ls -l /__w/arrow-ballista/arrow-ballista/target || true
         env:
           DOCKER_USER: ${{ github.actor }}
           CARGO_HOME: "/github/home/.cargo"
@@ -70,9 +68,6 @@ jobs:
       - name: Build workspace in release mode
         run: |
           cargo check --release
-          ls -l target || true
-          cargo build --release
-          ls -l target || true
         env:
           CARGO_HOME: "/github/home/.cargo"
           CARGO_TARGET_DIR: "/github/home/target/release"
@@ -81,8 +76,8 @@ jobs:
         with:
           name: release-binaries
           path: |
-            target/release/ballista-scheduler
-            target/release/ballista-executor
+            /github/home/target/release/ballista-scheduler
+            /github/home/target/release/ballista-executor
             
   # test the crate
 #  linux-test:
