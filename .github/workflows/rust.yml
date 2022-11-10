@@ -45,7 +45,7 @@ jobs:
           # these represent dependencies downloaded by cargo
           # and thus do not depend on the OS, arch nor rust version.
           path: /github/home/.cargo
-          key: cargo-cache-
+          key: cargo-cache-${{ hashFiles('**/Cargo.toml') }}
       - name: Cache Rust dependencies
         uses: actions/cache@v2
         with:
@@ -57,13 +57,6 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{ matrix.rust }}
-      - name: Build workspace in debug mode
-        run: |
-          cargo build
-        env:
-          DOCKER_USER: ${{ github.actor }}
-          CARGO_HOME: "/github/home/.cargo"
-          CARGO_TARGET_DIR: "/github/home/target"
       - name: Build workspace in release mode
         run: |
           cargo build --release
@@ -113,7 +106,7 @@ jobs:
 #        with:
 #          path: /github/home/.cargo
 #          # this key equals the ones on `linux-build-lib` for re-use
-#          key: cargo-cache-
+#          key: cargo-cache-${{ hashFiles('**/Cargo.toml') }}
 #      - name: Cache Rust dependencies
 #        uses: actions/cache@v2
 #        with:
@@ -170,7 +163,7 @@ jobs:
 #        with:
 #          path: /github/home/.cargo
 #          # this key equals the ones on `linux-build-lib` for re-use
-#          key: cargo-cache-
+#          key: cargo-cache-${{ hashFiles('**/Cargo.toml') }}
 #      - name: Cache Rust dependencies
 #        uses: actions/cache@v2
 #        with:
@@ -328,7 +321,7 @@ jobs:
         uses: actions/download-artifact@v2
         with:
           name: release-binaries
-          path: /home/runner/work/arrow-ballista/arrow-ballista/target
+          path: /home/runner/work/arrow-ballista/arrow-ballista/target/release
       - name: Build and push Docker image
         run: |
           echo "github user is $DOCKER_USER"
@@ -371,7 +364,7 @@ jobs:
 #        with:
 #          path: /github/home/.cargo
 #          # this key equals the ones on `linux-build-lib` for re-use
-#          key: cargo-cache-
+#          key: cargo-cache-${{ hashFiles('**/Cargo.toml') }}
 #      - name: Cache Rust dependencies
 #        uses: actions/cache@v2
 #        with:
@@ -414,7 +407,7 @@ jobs:
 #        with:
 #          path: /github/home/.cargo
 #          # this key equals the ones on `linux-build-lib` for re-use
-#          key: cargo-cache-
+#          key: cargo-cache-${{ hashFiles('**/Cargo.toml') }}
 #      - name: Cache Rust dependencies
 #        uses: actions/cache@v2
 #        with:
