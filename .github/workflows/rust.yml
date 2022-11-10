@@ -264,6 +264,7 @@ jobs:
     name: Docker Test
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v3
       - name: Will docker work?
         run: |
           echo "$DOCKER_USER"
@@ -289,6 +290,7 @@ jobs:
       contents: read
       packages: write
     steps:
+      - uses: actions/checkout@v3
       - name: Restore Cargo Cache
         uses: actions/cache@v2
         with:
