@@ -277,7 +277,6 @@ jobs:
           key: tpch-data
       - name: Generate data
         run: |
-          set -x
           apt-get -qq install csvtool
           cd /opt/tpch/2.18.0_rc2/dbgen
           ./dbgen -s 0.01
