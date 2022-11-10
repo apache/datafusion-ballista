@@ -409,7 +409,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Cancel the job and return a Vec of running tasks need to cancel
-    pub(crate) async fn cancel_job(&self, job_id: &str) -> Result<Vec<RunningTaskInfo>> {
+    pub(crate) async fn cancel_job(
+        &self,
+        job_id: &str,
+    ) -> Result<(Vec<RunningTaskInfo>, usize)> {
         self.abort_job(job_id, "Cancelled".to_owned()).await
     }
 
@@ -418,7 +421,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         &self,
         job_id: &str,
         failure_reason: String,
-    ) -> Result<Vec<RunningTaskInfo>> {
+    ) -> Result<(Vec<RunningTaskInfo>, usize)> {
         let locks = self
             .state
             .acquire_locks(vec![
@@ -426,25 +429,32 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 (Keyspace::FailedJobs, job_id),
             ])
             .await?;
-        let tasks_to_cancel = if let Some(graph) =
+        let (tasks_to_cancel, pending_tasks) = if let Some(graph) =
             self.get_active_execution_graph(job_id).await
         {
-            let running_tasks = graph.read().await.running_tasks();
+            let (pending_tasks, running_tasks) = {
+                let guard = graph.read().await;
+                (guard.available_tasks(), guard.running_tasks())
+            };
+
             info!(
                 "Cancelling {} running tasks for job {}",
                 running_tasks.len(),
                 job_id
             );
-            with_locks(locks, self.fail_job_state(job_id, failure_reason)).await?;
-            running_tasks
+            with_locks(locks, self.fail_job_state(job_id, failure_reason))
+                .await
+                .unwrap();
+
+            (running_tasks, pending_tasks)
         } else {
             // TODO listen the job state update event and fix task cancelling
             warn!("Fail to find job {} in the cache, unable to cancel tasks for job, fail the job state only.", job_id);
             with_locks(locks, self.fail_job_state(job_id, failure_reason)).await?;
-            vec![]
+            (vec![], 0)
         };
 
-        Ok(tasks_to_cancel)
+        Ok((tasks_to_cancel, pending_tasks))
     }
 
     /// Mark a unscheduled job as failed. This will create a key under the FailedJobs keyspace
@@ -507,21 +517,29 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(())
     }
 
-    pub async fn update_job(&self, job_id: &str) -> Result<()> {
+    pub async fn update_job(&self, job_id: &str) -> Result<usize> {
         debug!("Update job {} in Active", job_id);
         if let Some(graph) = self.get_active_execution_graph(job_id).await {
             let mut graph = graph.write().await;
+
+            let curr_available_tasks = graph.available_tasks();
+
             graph.revive();
             let graph = graph.clone();
+
+            let new_tasks = graph.available_tasks() - curr_available_tasks;
+
             let value = self.encode_execution_graph(graph)?;
             self.state
                 .put(Keyspace::ActiveJobs, job_id.to_owned(), value)
                 .await?;
+
+            Ok(new_tasks)
         } else {
             warn!("Fail to find job {} in the cache", job_id);
-        }
 
-        Ok(())
+            Ok(0)
+        }
     }
 
     /// return a Vec of running tasks need to cancel

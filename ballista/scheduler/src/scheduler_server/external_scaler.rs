@@ -57,7 +57,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExternalScaler
         Ok(Response::new(GetMetricsResponse {
             metric_values: vec![MetricValue {
                 metric_name: INFLIGHT_TASKS_METRIC_NAME.to_string(),
-                metric_value: 10000000, // A very high number to saturate the HPA
+                metric_value: self.pending_tasks() as i64,
             }],
         }))
     }

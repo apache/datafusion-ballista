@@ -10,6 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::SchedulerServer;
 use crate::state::execution_graph::ExecutionStage;
 use crate::state::execution_graph_dot::ExecutionGraphDot;
@@ -176,13 +177,15 @@ pub(crate) async fn cancel_job<T: AsLogicalPlan, U: AsExecutionPlan>(
         .map_err(|_| warp::reject())?
         .ok_or_else(warp::reject)?;
 
-    let cancelled = data_server
-        .state
-        .cancel_job(&job_id)
+    data_server
+        .query_stage_event_loop
+        .get_sender()
+        .map_err(|_| warp::reject())?
+        .post_event(QueryStageSchedulerEvent::JobCancel(job_id))
         .await
         .map_err(|_| warp::reject())?;
 
-    Ok(warp::reply::json(&CancelJobResponse { cancelled }))
+    Ok(warp::reply::json(&CancelJobResponse { cancelled: true }))
 }
 
 #[derive(Debug, serde::Serialize)]

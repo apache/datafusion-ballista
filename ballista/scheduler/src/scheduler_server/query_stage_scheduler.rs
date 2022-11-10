@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -40,6 +41,7 @@ pub(crate) struct QueryStageScheduler<
 > {
     state: Arc<SchedulerState<T, U>>,
     metrics_collector: Arc<dyn SchedulerMetricsCollector>,
+    pending_tasks: AtomicUsize,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageScheduler<T, U> {
@@ -50,7 +52,24 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
         Self {
             state,
             metrics_collector,
+            pending_tasks: AtomicUsize::default(),
         }
+    }
+
+    fn inc_pending_tasks(&self, tasks: usize) {
+        let prev = self.pending_tasks.fetch_add(tasks, Ordering::SeqCst);
+        self.metrics_collector
+            .set_pending_tasks_queue_size((prev + tasks) as u64);
+    }
+
+    fn dec_pending_tasks(&self, tasks: usize) {
+        let prev = self.pending_tasks.fetch_sub(tasks, Ordering::SeqCst);
+        self.metrics_collector
+            .set_pending_tasks_queue_size(prev.wrapping_sub(tasks) as u64);
+    }
+
+    pub(crate) fn pending_tasks(&self) -> usize {
+        self.pending_tasks.load(Ordering::SeqCst)
     }
 }
 
@@ -120,14 +139,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.metrics_collector
                     .record_submitted(&job_id, queued_at, submitted_at);
 
+                let available_tasks = self
+                    .state
+                    .task_manager
+                    .get_available_task_count(&job_id)
+                    .await?;
+
                 info!("Job {} submitted", job_id);
                 if self.state.config.is_push_staged_scheduling() {
-                    let available_tasks = self
-                        .state
-                        .task_manager
-                        .get_available_task_count(&job_id)
-                        .await?;
-
                     let reservations: Vec<ExecutorReservation> = self
                         .state
                         .executor_manager
@@ -136,6 +155,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .into_iter()
                         .map(|res| res.assign(job_id.clone()))
                         .collect();
+
+                    let pending = available_tasks - reservations.len();
+
+                    if pending > 0 {
+                        self.inc_pending_tasks(pending);
+                    }
 
                     debug!(
                         "Reserved {} task slots for submitted job {}",
@@ -148,6 +173,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             reservations,
                         ))
                         .await?;
+                } else {
+                    self.inc_pending_tasks(available_tasks);
                 }
             }
             QueryStageSchedulerEvent::JobPlanningFailed {
@@ -187,28 +214,45 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .record_failed(&job_id, queued_at, failed_at);
 
                 error!("Job {} running failed", job_id);
-                let tasks = self
+                let (running_tasks, pending_tasks) = self
                     .state
                     .task_manager
                     .abort_job(&job_id, fail_message)
                     .await?;
-                if !tasks.is_empty() {
+
+                if pending_tasks > 0 {
+                    self.dec_pending_tasks(pending_tasks);
+                }
+
+                if !running_tasks.is_empty() {
                     tx_event
-                        .post_event(QueryStageSchedulerEvent::CancelTasks(tasks))
+                        .post_event(QueryStageSchedulerEvent::CancelTasks(running_tasks))
                         .await?;
                 }
                 self.state.clean_up_failed_job(job_id);
             }
             QueryStageSchedulerEvent::JobUpdated(job_id) => {
                 info!("Job {} Updated", job_id);
-                self.state.task_manager.update_job(&job_id).await?;
+                let new_tasks = self.state.task_manager.update_job(&job_id).await?;
+
+                self.inc_pending_tasks(new_tasks);
             }
             QueryStageSchedulerEvent::JobCancel(job_id) => {
+                println!("Cancelling job {}", job_id);
                 self.metrics_collector.record_cancelled(&job_id);
 
                 info!("Job {} Cancelled", job_id);
-                self.state.task_manager.cancel_job(&job_id).await?;
+                let (running_tasks, pending_tasks) =
+                    self.state.task_manager.cancel_job(&job_id).await?;
                 self.state.clean_up_failed_job(job_id);
+
+                if pending_tasks > 0 {
+                    self.dec_pending_tasks(pending_tasks);
+                }
+
+                tx_event
+                    .post_event(QueryStageSchedulerEvent::CancelTasks(running_tasks))
+                    .await?;
             }
             QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status) => {
                 let num_status = tasks_status.len();
@@ -218,6 +262,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .await
                 {
                     Ok((stage_events, offers)) => {
+                        let num_offers = offers.len();
+
                         if self.state.config.is_push_staged_scheduling() {
                             tx_event
                                 .post_event(
@@ -228,6 +274,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
                         for stage_event in stage_events {
                             tx_event.post_event(stage_event).await?;
+                        }
+
+                        if num_offers > 0 {
+                            self.dec_pending_tasks(num_offers);
                         }
                     }
                     Err(e) => {
@@ -271,7 +321,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.state
                     .executor_manager
                     .cancel_running_tasks(tasks)
-                    .await?
+                    .await?;
             }
             QueryStageSchedulerEvent::JobDataClean(job_id) => {
                 self.state.executor_manager.clean_up_job_data(job_id);
@@ -283,5 +333,126 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
     fn on_error(&self, error: BallistaError) {
         error!("Error received by QueryStageScheduler: {:?}", error);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::SchedulerConfig;
+    use crate::test_utils::{await_condition, SchedulerTest, TestMetricsCollector};
+    use ballista_core::config::TaskSchedulingPolicy;
+    use ballista_core::error::Result;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::logical_expr::{col, sum, LogicalPlan};
+    use datafusion::test_util::scan_empty_with_partitions;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn test_pending_task_metric() -> Result<()> {
+        let plan = test_plan(10);
+
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector.clone(),
+            1,
+            1,
+            None,
+        )
+        .await?;
+
+        test.submit("job-1", "", &plan).await?;
+
+        // First stage has 10 tasks, one of which should be scheduled immediately
+        expect_pending_tasks(&test, 9).await;
+
+        test.tick().await?;
+
+        // First task completes and another should be scheduler, so we should have 8
+        expect_pending_tasks(&test, 8).await;
+
+        // Complete the 8 remaining tasks in the first stage
+        for _ in 0..8 {
+            test.tick().await?;
+        }
+
+        // The second stage should be resolved so we should have a new pending task
+        expect_pending_tasks(&test, 1).await;
+
+        // complete the final task
+        test.tick().await?;
+
+        expect_pending_tasks(&test, 0).await;
+
+        // complete the final task
+        test.tick().await?;
+
+        // Job should be finished now
+        let _ = test.await_completion("job-1").await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_pending_task_metric_on_cancellation() -> Result<()> {
+        let plan = test_plan(10);
+
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector.clone(),
+            1,
+            1,
+            None,
+        )
+        .await?;
+
+        test.submit("job-1", "", &plan).await?;
+
+        // First stage has 10 tasks, one of which should be scheduled immediately
+        expect_pending_tasks(&test, 9).await;
+
+        test.tick().await?;
+
+        // First task completes and another should be scheduler, so we should have 8
+        expect_pending_tasks(&test, 8).await;
+
+        test.cancel("job-1").await?;
+
+        // First task completes and another should be scheduler, so we should have 8
+        expect_pending_tasks(&test, 0).await;
+
+        Ok(())
+    }
+
+    async fn expect_pending_tasks(test: &SchedulerTest, expected: usize) {
+        let success = await_condition(Duration::from_millis(500), 20, || {
+            let pending_tasks = test.pending_tasks();
+
+            futures::future::ready(Ok(pending_tasks == expected))
+        })
+        .await
+        .unwrap();
+
+        assert!(success, "Expected {} pending tasks", expected);
+    }
+
+    fn test_plan(partitions: usize) -> LogicalPlan {
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("gmv", DataType::UInt64, false),
+        ]);
+
+        scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), partitions)
+            .unwrap()
+            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
+            .unwrap()
+            .build()
+            .unwrap()
     }
 }

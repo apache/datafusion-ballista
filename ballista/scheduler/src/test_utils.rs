@@ -50,9 +50,10 @@ use datafusion::logical_expr::{Expr, LogicalPlan};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::CsvReadOptions;
 
+use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use datafusion_proto::protobuf::LogicalPlanNode;
 use parking_lot::Mutex;
-use tokio::sync::mpsc::{channel, Sender};
+use tokio::sync::mpsc::{channel, Receiver, Sender};
 
 pub const TPCH_TABLES: &[&str] = &[
     "part", "supplier", "partsupp", "customer", "orders", "lineitem", "nation", "region",
@@ -368,6 +369,7 @@ impl TaskLauncher for VirtualTaskLauncher {
 pub struct SchedulerTest {
     scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
     ballista_config: BallistaConfig,
+    status_receiver: Option<Receiver<(String, Vec<TaskStatus>)>>,
 }
 
 impl SchedulerTest {
@@ -403,10 +405,10 @@ impl SchedulerTest {
             })
             .collect();
 
-        let (sender, mut receiver) = channel(1000);
+        let (status_sender, status_receiver) = channel(1000);
 
         let launcher = VirtualTaskLauncher {
-            sender,
+            sender: status_sender,
             executors: executors.clone(),
         };
 
@@ -445,21 +447,15 @@ impl SchedulerTest {
                 .await?;
         }
 
-        let scheduler_clone = scheduler.clone();
-
-        tokio::spawn(async move {
-            while let Some((executor_id, status)) = receiver.recv().await {
-                scheduler_clone
-                    .update_task_status(&executor_id, status)
-                    .await
-                    .unwrap();
-            }
-        });
-
         Ok(Self {
             scheduler,
             ballista_config,
+            status_receiver: Some(status_receiver),
         })
+    }
+
+    pub fn pending_tasks(&self) -> usize {
+        self.scheduler.pending_tasks()
     }
 
     pub async fn ctx(&self) -> Result<Arc<SessionContext>> {
@@ -470,8 +466,81 @@ impl SchedulerTest {
             .await
     }
 
+    pub async fn submit(
+        &mut self,
+        job_id: &str,
+        job_name: &str,
+        plan: &LogicalPlan,
+    ) -> Result<()> {
+        let ctx = self
+            .scheduler
+            .state
+            .session_manager
+            .create_session(&self.ballista_config)
+            .await?;
+
+        self.scheduler
+            .submit_job(job_id, job_name, ctx, plan)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn tick(&mut self) -> Result<()> {
+        if let Some(receiver) = self.status_receiver.as_mut() {
+            if let Some((executor_id, status)) = receiver.recv().await {
+                self.scheduler
+                    .update_task_status(&executor_id, status)
+                    .await?;
+            } else {
+                return Err(BallistaError::Internal("Task sender dropped".to_owned()));
+            }
+        } else {
+            return Err(BallistaError::Internal(
+                "Status receiver was None".to_owned(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub async fn cancel(&self, job_id: &str) -> Result<()> {
+        self.scheduler
+            .query_stage_event_loop
+            .get_sender()?
+            .post_event(QueryStageSchedulerEvent::JobCancel(job_id.to_owned()))
+            .await
+    }
+
+    pub async fn await_completion(&self, job_id: &str) -> Result<JobStatus> {
+        let final_status: Result<JobStatus> = loop {
+            let status = self
+                .scheduler
+                .state
+                .task_manager
+                .get_job_status(job_id)
+                .await?;
+
+            if let Some(JobStatus {
+                status: Some(inner),
+            }) = status.as_ref()
+            {
+                match inner {
+                    Status::Failed(_) | Status::Successful(_) => {
+                        break Ok(status.unwrap())
+                    }
+                    _ => continue,
+                }
+            }
+
+            tokio::time::sleep(Duration::from_millis(100)).await
+        };
+
+        final_status
+    }
+
     pub async fn run(
-        &self,
+        &mut self,
         job_id: &str,
         job_name: &str,
         plan: &LogicalPlan,
@@ -486,6 +555,18 @@ impl SchedulerTest {
         self.scheduler
             .submit_job(job_id, job_name, ctx, plan)
             .await?;
+
+        let mut receiver = self.status_receiver.take().unwrap();
+
+        let scheduler_clone = self.scheduler.clone();
+        tokio::spawn(async move {
+            while let Some((executor_id, status)) = receiver.recv().await {
+                scheduler_clone
+                    .update_task_status(&executor_id, status)
+                    .await
+                    .unwrap();
+            }
+        });
 
         let final_status: Result<JobStatus> = loop {
             let status = self

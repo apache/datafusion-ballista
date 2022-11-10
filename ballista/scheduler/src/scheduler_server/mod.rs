@@ -62,6 +62,7 @@ pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     pub start_time: u128,
     pub(crate) state: Arc<SchedulerState<T, U>>,
     pub(crate) query_stage_event_loop: EventLoop<QueryStageSchedulerEvent>,
+    query_stage_scheduler: Arc<QueryStageScheduler<T, U>>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
@@ -84,7 +85,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
             config.event_loop_buffer_size as usize,
-            query_stage_scheduler,
+            query_stage_scheduler.clone(),
         );
 
         Self {
@@ -92,6 +93,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             start_time: timestamp_millis() as u128,
             state,
             query_stage_event_loop,
+            query_stage_scheduler,
         }
     }
 
@@ -117,7 +119,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
             config.event_loop_buffer_size as usize,
-            query_stage_scheduler,
+            query_stage_scheduler.clone(),
         );
 
         Self {
@@ -125,6 +127,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             start_time: timestamp_millis() as u128,
             state,
             query_stage_event_loop,
+            query_stage_scheduler,
         }
     }
 
@@ -134,6 +137,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         self.expire_dead_executors()?;
 
         Ok(())
+    }
+
+    pub(crate) fn pending_tasks(&self) -> usize {
+        self.query_stage_scheduler.pending_tasks()
     }
 
     pub(crate) async fn submit_job(
@@ -440,7 +447,7 @@ mod test {
 
         let metrics_collector = Arc::new(TestMetricsCollector::default());
 
-        let test = SchedulerTest::new(
+        let mut test = SchedulerTest::new(
             SchedulerConfig::default()
                 .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
             metrics_collector.clone(),
@@ -514,7 +521,7 @@ mod test {
 
         let metrics_collector = Arc::new(TestMetricsCollector::default());
 
-        let test = SchedulerTest::new(
+        let mut test = SchedulerTest::new(
             SchedulerConfig::default()
                 .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
             metrics_collector.clone(),
@@ -548,7 +555,7 @@ mod test {
     #[tokio::test]
     async fn test_planning_failure() -> Result<()> {
         let metrics_collector = Arc::new(TestMetricsCollector::default());
-        let test = SchedulerTest::new(
+        let mut test = SchedulerTest::new(
             SchedulerConfig::default()
                 .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
             metrics_collector.clone(),
