@@ -260,7 +260,7 @@ jobs:
 #          CARGO_HOME: "/github/home/.cargo"
 #          CARGO_TARGET_DIR: "/github/home/target"
 
-  generate-date:
+  generate-data:
     name: Generate TPC-H data
     runs-on: ubuntu-latest
     strategy:
@@ -306,7 +306,7 @@ jobs:
 
   docker:
     name: Docker
-    needs: [linux-build-lib]
+    needs: [linux-build-lib, generate-data]
     runs-on: ubuntu-latest
     permissions:
       contents: read
