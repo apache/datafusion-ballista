@@ -279,7 +279,7 @@ jobs:
         run: |
           apt-get install csvtool
           cd /opt/tpch/2.18.0_rc2/dbgen
-          ./dbgen -v -s 0.01
+          ./dbgen -s 0.01
           cd /data
           echo -e "c_custkey|c_name|c_address|c_nationkey|c_phone|c_acctbal|c_mktsegment|c_comment|junk\n$(cat customer.tbl)" > customer.tmp
           echo -e "l_orderkey|l_partkey|l_suppkey|l_linenumber|l_quantity|l_extendedprice|l_discount|l_tax|l_returnflag|l_linestatus|l_shipdate|l_commitdate|l_receiptdate|l_shipinstruct|l_shipmode|l_comment|junk\n$(cat lineitem.tbl)" > lineitem.tmp
@@ -290,15 +290,15 @@ jobs:
           echo -e "r_regionkey|r_name|r_comment|junk\n$(cat region.tbl)" > region.tmp
           echo -e "s_suppkey|s_name|s_address|s_nationkey|s_phone|s_acctbal|s_comment|junk\n$(cat supplier.tbl)" > supplier.tmp
           rm *.tbl
-          find . -maxdepth 1 -type f -exec csvtool -t '|' -u ',' cat {}.tmp -o {} \;
-          csvtool setcolumns 8 customer > customer.csv
-          csvtool setcolumns 16 lineitem > lineitem.csv
-          csvtool setcolumns 4 nation > nation.csv
-          csvtool setcolumns 9 orders > orders.csv
-          csvtool setcolumns 9 part > part.csv
-          csvtool setcolumns 5 partsupp > partsupp.csv
-          csvtool setcolumns 3 region > region.csv
-          csvtool setcolumns 7 supplier > supplier.csv
+          find . -maxdepth 1 -type f -exec csvtool -t '|' -u ',' cat {} -o {}.tmp \;
+          csvtool setcolumns 8 customer.tmp.tmp > customer.csv
+          csvtool setcolumns 16 lineitem.tmp.tmp > lineitem.csv
+          csvtool setcolumns 4 nation.tmp.tmp > nation.csv
+          csvtool setcolumns 9 orders.tmp.tmp > orders.csv
+          csvtool setcolumns 9 part.tmp.tmp > part.csv
+          csvtool setcolumns 5 partsupp.tmp.tmp > partsupp.csv
+          csvtool setcolumns 3 region.tmp.tmp > region.csv
+          csvtool setcolumns 7 supplier.tmp.tmp > supplier.csv
           find . -type f  ! -name "*.*"  -delete
           ls -l
           head customer.csv
