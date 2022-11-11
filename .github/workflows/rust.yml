@@ -353,7 +353,6 @@ jobs:
           echo "github user is $DOCKER_USER"
           pwd
           ls -l
-          ls -l tpch/
           ls -l target/
           export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo 'latest')"
           if [[ $DOCKER_TAG =~ ^[0-9\.]+$ ]]
