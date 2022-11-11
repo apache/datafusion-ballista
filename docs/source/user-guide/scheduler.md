@@ -29,9 +29,10 @@ The scheduler provides a web user interface that allows queries to be monitored.
 
 The scheduler also provides a REST API that allows jobs to be monitored.
 
-| API                   | Method | Description                                                 |
-| --------------------- | ------ | ----------------------------------------------------------- |
-| /api/jobs             | GET    | Get a list of jobs that have been submitted to the cluster. |
-| /api/job/{job_id}     | GET    | Get a summary of a submitted job.                           |
-| /api/job/{job_id}/dot | GET    | Produce a query plan in DOT (graphviz) format.              |
-| /api/job/{job_id}     | PATCH  | Cancel a currently running job                              |
+| API                    | Method | Description                                                  |
+|------------------------|--------|--------------------------------------------------------------|
+| /api/jobs              | GET    | Get a list of jobs that have been submitted to the cluster.  |
+| /api/job/{job_id}      | GET    | Get a summary of a submitted job.                            |
+| /api/job/{job_id}/dot  | GET    | Produce a query plan in DOT (graphviz) format.               |
+| /api/job/{job_id}      | PATCH  | Cancel a currently running job                               |
+ | /api/metrics           | GET    | Return current scheduler metric set                          | 
