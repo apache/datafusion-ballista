@@ -280,64 +280,15 @@ jobs:
 #          CARGO_HOME: "/github/home/.cargo"
 #          CARGO_TARGET_DIR: "/github/home/target"
 
-  generate-data:
-    name: Generate TPC-H data
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [amd64]
-        rust: [stable]
-    container:
-      image: ghcr.io/databloom-ai/tpch-docker:main
-    steps:
-      - name: Generate data
-        run: |
-          apt-get -qq install csvtool
-          cd /opt/tpch/2.18.0_rc2/dbgen
-          ./dbgen -s 0.01
-          cd /data
-          echo -e "c_custkey|c_name|c_address|c_nationkey|c_phone|c_acctbal|c_mktsegment|c_comment|junk\n$(cat customer.tbl)" > customer.tmp
-          echo -e "l_orderkey|l_partkey|l_suppkey|l_linenumber|l_quantity|l_extendedprice|l_discount|l_tax|l_returnflag|l_linestatus|l_shipdate|l_commitdate|l_receiptdate|l_shipinstruct|l_shipmode|l_comment|junk\n$(cat lineitem.tbl)" > lineitem.tmp
-          echo -e "n_nationkey|n_name|n_regionkey|n_comment|junk\n$(cat nation.tbl)" > nation.tmp
-          echo -e "o_orderkey|o_custkey|o_orderstatus|o_totalprice|o_orderdate|o_orderpriority|o_clerk|o_shippriority|o_comment|junk\n$(cat orders.tbl)" > orders.tmp
-          echo -e "p_partkey|p_name|p_mfgr|p_brand|p_type|p_size|p_container|p_retailprice|p_comment|junk\n$(cat part.tbl)" > part.tmp
-          echo -e "ps_partkey|ps_suppkey|ps_availqty|ps_supplycost|ps_comment|junk\n$(cat partsupp.tbl)" > partsupp.tmp
-          echo -e "r_regionkey|r_name|r_comment|junk\n$(cat region.tbl)" > region.tmp
-          echo -e "s_suppkey|s_name|s_address|s_nationkey|s_phone|s_acctbal|s_comment|junk\n$(cat supplier.tbl)" > supplier.tmp
-          rm *.tbl
-          find . -maxdepth 1 -type f -exec csvtool -t '|' -u ',' cat {} -o {}.tmp \;
-          csvtool setcolumns 8 customer.tmp.tmp > customer.csv
-          csvtool setcolumns 16 lineitem.tmp.tmp > lineitem.csv
-          csvtool setcolumns 4 nation.tmp.tmp > nation.csv
-          csvtool setcolumns 9 orders.tmp.tmp > orders.csv
-          csvtool setcolumns 9 part.tmp.tmp > part.csv
-          csvtool setcolumns 5 partsupp.tmp.tmp > partsupp.csv
-          csvtool setcolumns 3 region.tmp.tmp > region.csv
-          csvtool setcolumns 7 supplier.tmp.tmp > supplier.csv
-          rm *.tmp.tmp
-          rm *.tmp
-          ls -l
-          head customer.csv
-      - name: Save data
-        uses: actions/upload-artifact@v2
-        with:
-          name: tpch-data
-          path: /data
-
   docker:
     name: Docker
-    needs: [linux-build-lib, react-build, generate-data]
+    needs: [linux-build-lib, react-build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v3
-      - name: Restore TPC-H data
-        uses: actions/download-artifact@v2
-        with:
-          name: tpch-data
-          path: /home/runner/work/arrow-ballista/arrow-ballista/tpch
       - name: Restore rust artifacts
         uses: actions/download-artifact@v2
         with:
@@ -352,16 +303,16 @@ jobs:
         run: |
           echo "github user is $DOCKER_USER"
           pwd
-          ls -l
-          ls -l target/
-          export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo 'latest')"
+          mkdir -p trip-data
+          wget https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2022-01.parquet -P trip-data 
+          export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '')"
           if [[ $DOCKER_TAG =~ ^[0-9\.]+$ ]]
           then
             echo "publishing docker tag $DOCKER_TAG"
           fi
           docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
-          docker build -t ghcr.io/spaceandtimelabs/ballista-standalone:$DOCKER_TAG -f dev/docker/ballista-standalone.Dockerfile .
-          docker push ghcr.io/spaceandtimelabs/ballista-standalone:$DOCKER_TAG
+          docker build -t ghcr.io/apache/ballista-standalone:$DOCKER_TAG -f dev/docker/ballista-standalone.Dockerfile .
+          docker push ghcr.io/apache/ballista-standalone:$DOCKER_TAG
         env:
           DOCKER_USER: ${{ github.actor }}
           DOCKER_PASS: ${{ secrets.GITHUB_TOKEN }}
