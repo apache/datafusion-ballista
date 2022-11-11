@@ -30,7 +30,7 @@ COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
 COPY target/$RELEASE_FLAG/ballista-executor /root/ballista-executor
 
 # populate some sample data for ListingSchemaProvider
-COPY data /data
+COPY tpch /data
 ENV DATAFUSION_CATALOG_LOCATION=/data
 ENV DATAFUSION_CATALOG_TYPE=csv
 

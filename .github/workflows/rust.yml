@@ -52,7 +52,7 @@ jobs:
           # these represent compiled steps of both dependencies and arrow
           # and thus are specific for a particular OS, arch and rust version.
           path: /github/home/target
-          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}
+          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}-${{ hashFiles('**/Cargo.toml') }}-${{ hashFiles('**/Cargo.toml') }}
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
@@ -112,7 +112,7 @@ jobs:
 #        with:
 #          path: /github/home/target
 #          # this key equals the ones on `linux-build-lib` for re-use
-#          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}
+#          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}-${{ hashFiles('**/Cargo.toml') }}
 #      - name: Setup Rust toolchain
 #        uses: ./.github/actions/setup-builder
 #        with:
@@ -169,7 +169,7 @@ jobs:
 #        with:
 #          path: /github/home/target
 #          # this key equals the ones on `linux-build-lib` for re-use
-#          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}
+#          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}-${{ hashFiles('**/Cargo.toml') }}
 #      - name: Setup Rust toolchain
 #        uses: ./.github/actions/setup-builder
 #        with:
@@ -316,7 +316,7 @@ jobs:
         uses: actions/download-artifact@v2
         with:
           name: tpch-data
-          path: /home/runner/work/arrow-ballista/arrow-ballista/data
+          path: /home/runner/work/arrow-ballista/arrow-ballista/tpch
       - name: Restore binaries
         uses: actions/download-artifact@v2
         with:
@@ -327,7 +327,7 @@ jobs:
           echo "github user is $DOCKER_USER"
           pwd
           ls -l
-          ls -l data/
+          ls -l tpch/
           ls -l target/
           export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo 'latest')"
           if [[ $DOCKER_TAG =~ ^[0-9\.]+$ ]]
@@ -370,7 +370,7 @@ jobs:
 #        with:
 #          path: /github/home/target
 #          # this key equals the ones on `linux-build-lib` for re-use
-#          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}
+#          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}-${{ hashFiles('**/Cargo.toml') }}
 #      - name: Setup Rust toolchain
 #        uses: ./.github/actions/setup-builder
 #        with:
@@ -413,7 +413,7 @@ jobs:
 #        with:
 #          path: /github/home/target
 #          # this key equals the ones on `linux-build-lib` for re-use
-#          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}
+#          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}-${{ hashFiles('**/Cargo.toml') }}
 #      - name: Setup Rust toolchain
 #        uses: ./.github/actions/setup-builder
 #        with:
