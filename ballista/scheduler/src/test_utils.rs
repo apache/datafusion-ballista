@@ -666,6 +666,10 @@ impl SchedulerMetricsCollector for TestMetricsCollector {
     }
 
     fn set_pending_tasks_queue_size(&self, _value: u64) {}
+
+    fn gather_metrics(&self) -> Result<Option<(Vec<u8>, String)>> {
+        Ok(None)
+    }
 }
 
 pub fn assert_submitted_event(job_id: &str, collector: &TestMetricsCollector) {

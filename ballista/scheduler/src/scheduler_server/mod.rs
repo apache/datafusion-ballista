@@ -143,6 +143,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         self.query_stage_scheduler.pending_tasks()
     }
 
+    pub(crate) fn metrics_collector(&self) -> &dyn SchedulerMetricsCollector {
+        self.query_stage_scheduler.metrics_collector()
+    }
+
     pub(crate) async fn submit_job(
         &self,
         job_id: &str,

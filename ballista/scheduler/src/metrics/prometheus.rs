@@ -17,7 +17,7 @@
 
 use crate::metrics::SchedulerMetricsCollector;
 use ballista_core::error::{BallistaError, Result};
-use hyper::header::CONTENT_TYPE;
+
 use once_cell::sync::OnceCell;
 use prometheus::{
     register_counter_with_registry, register_gauge_with_registry,
@@ -26,10 +26,18 @@ use prometheus::{
 use prometheus::{Encoder, TextEncoder};
 use std::sync::Arc;
 
-use warp::Reply;
-
 static COLLECTOR: OnceCell<Arc<dyn SchedulerMetricsCollector>> = OnceCell::new();
 
+/// SchedulerMetricsCollector implementation based on Prometheus. By default this will track
+/// 7 metrics:
+/// *job_exec_time_seconds* - Histogram of successful job execution time in seconds
+/// *planning_time_ms* - Histogram of job planning time in milliseconds
+/// *failed* - Counter of failed jobs
+/// *job_failed_total* - Counter of failed jobs
+/// *job_cancelled_total* - Counter of cancelled jobs
+/// *job_completed_total* - Counter of completed jobs
+/// *job_submitted_total* - Counter of submitted jobs
+/// *pending_task_queue_size* - Number of pending tasks
 pub struct PrometheusMetricsCollector {
     execution_time: Histogram,
     planning_time: Histogram,
@@ -43,8 +51,8 @@ pub struct PrometheusMetricsCollector {
 impl PrometheusMetricsCollector {
     pub fn new(registry: &Registry) -> Result<Self> {
         let execution_time = register_histogram_with_registry!(
-            "query_time_seconds",
-            "Histogram of query execution time in seconds",
+            "job_exec_time_seconds",
+            "Histogram of successful job execution time in seconds",
             vec![0.5_f64, 1_f64, 5_f64, 30_f64, 60_f64],
             registry
         )
@@ -54,7 +62,7 @@ impl PrometheusMetricsCollector {
 
         let planning_time = register_histogram_with_registry!(
             "planning_time_ms",
-            "Histogram of query planning time in milliseconds",
+            "Histogram of job planning time in milliseconds",
             vec![1.0_f64, 5.0_f64, 25.0_f64, 100.0_f64, 500.0_f64],
             registry
         )
@@ -63,8 +71,8 @@ impl PrometheusMetricsCollector {
         })?;
 
         let failed = register_counter_with_registry!(
-            "query_failed_total",
-            "Counter of failed queries",
+            "job_failed_total",
+            "Counter of failed jobs",
             registry
         )
         .map_err(|e| {
@@ -72,8 +80,8 @@ impl PrometheusMetricsCollector {
         })?;
 
         let cancelled = register_counter_with_registry!(
-            "query_cancelled_total",
-            "Counter of cancelled queries",
+            "job_cancelled_total",
+            "Counter of cancelled jobs",
             registry
         )
         .map_err(|e| {
@@ -81,8 +89,8 @@ impl PrometheusMetricsCollector {
         })?;
 
         let completed = register_counter_with_registry!(
-            "query_completed_total",
-            "Counter of completed queries",
+            "job_completed_total",
+            "Counter of completed jobs",
             registry
         )
         .map_err(|e| {
@@ -90,8 +98,8 @@ impl PrometheusMetricsCollector {
         })?;
 
         let submitted = register_counter_with_registry!(
-            "query_submitted_total",
-            "Counter of submitted queries",
+            "job_submitted_total",
+            "Counter of submitted jobs",
             registry
         )
         .map_err(|e| {
@@ -99,7 +107,7 @@ impl PrometheusMetricsCollector {
         })?;
 
         let pending_queue_size = register_gauge_with_registry!(
-            "pending_queue_size",
+            "pending_task_queue_size",
             "Number of pending tasks",
             registry
         )
@@ -133,13 +141,13 @@ impl SchedulerMetricsCollector for PrometheusMetricsCollector {
     fn record_submitted(&self, _job_id: &str, queued_at: u64, submitted_at: u64) {
         self.submitted.inc();
         self.planning_time
-            .observe((submitted_at - queued_at) as f64 / 1000_f64);
+            .observe((submitted_at - queued_at) as f64);
     }
 
     fn record_completed(&self, _job_id: &str, queued_at: u64, completed_at: u64) {
         self.completed.inc();
         self.execution_time
-            .observe((completed_at - queued_at) as f64)
+            .observe((completed_at - queued_at) as f64 / 1000_f64)
     }
 
     fn record_failed(&self, _job_id: &str, _queued_at: u64, _failed_at: u64) {
@@ -153,20 +161,16 @@ impl SchedulerMetricsCollector for PrometheusMetricsCollector {
     fn set_pending_tasks_queue_size(&self, value: u64) {
         self.pending_queue_size.set(value as f64);
     }
-}
 
-pub fn get_metrics() -> Result<impl Reply> {
-    let encoder = TextEncoder::new();
+    fn gather_metrics(&self) -> Result<Option<(Vec<u8>, String)>> {
+        let encoder = TextEncoder::new();
 
-    let metric_families = prometheus::gather();
-    let mut buffer = vec![];
-    encoder.encode(&metric_families, &mut buffer).map_err(|e| {
-        BallistaError::Internal(format!("Error encoding prometheus metrics: {:?}", e))
-    })?;
+        let metric_families = prometheus::gather();
+        let mut buffer = vec![];
+        encoder.encode(&metric_families, &mut buffer).map_err(|e| {
+            BallistaError::Internal(format!("Error encoding prometheus metrics: {:?}", e))
+        })?;
 
-    Ok(warp::reply::with_header(
-        buffer,
-        CONTENT_TYPE,
-        encoder.format_type(),
-    ))
+        Ok(Some((buffer, encoder.format_type().to_owned())))
+    }
 }

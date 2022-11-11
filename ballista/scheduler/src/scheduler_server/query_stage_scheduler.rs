@@ -71,6 +71,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
     pub(crate) fn pending_tasks(&self) -> usize {
         self.pending_tasks.load(Ordering::SeqCst)
     }
+
+    pub(crate) fn metrics_collector(&self) -> &dyn SchedulerMetricsCollector {
+        self.metrics_collector.as_ref()
+    }
 }
 
 #[async_trait]
