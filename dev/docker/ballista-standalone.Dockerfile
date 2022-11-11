@@ -30,7 +30,8 @@ COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
 COPY target/$RELEASE_FLAG/ballista-executor /root/ballista-executor
 
 # populate some sample data for ListingSchemaProvider
-COPY trip-data /data
+RUN mkdir -p /data && \
+    wget -q https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2022-01.parquet -P /data/
 ENV DATAFUSION_CATALOG_LOCATION=/data
 ENV DATAFUSION_CATALOG_TYPE=csv
 

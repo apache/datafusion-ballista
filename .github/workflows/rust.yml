@@ -304,9 +304,6 @@ jobs:
       - name: Build and push Docker image
         run: |
           echo "github user is $DOCKER_USER"
-          pwd
-          mkdir -p trip-data
-          wget https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2022-01.parquet -P trip-data 
           export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '0.10.0-test')"
           if [[ $DOCKER_TAG =~ ^[0-9\.]+$ ]]
           then
