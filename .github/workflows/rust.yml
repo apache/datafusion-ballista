@@ -67,15 +67,37 @@ jobs:
       - name: Save artifacts
         uses: actions/upload-artifact@v2
         with:
-          name: release-binaries
+          name: rust-artifacts
           path: |
             /github/home/target/release/ballista-scheduler
             /github/home/target/release/ballista-executor
             
-  # test the crate
+  react-build:
+    name: React build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install dependencies
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get -qq install -y nodejs npm
+          npm install -g yarn
+      - name: Run yarn build
+        run: |
+          cd ballista/scheduler/ui
+          pwd
+          yarn install
+          yarn build
+      - name: Save artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: react-artifacts
+          path: |
+            ballista/scheduler/ui/build
+
+# test the crate
 #  linux-test:
 #    name: Test Workspace on AMD64 Rust ${{ matrix.rust }}
-#    needs: [linux-build-lib]
 #    runs-on: ubuntu-latest
 #    strategy:
 #      matrix:
@@ -132,7 +154,6 @@ jobs:
   # run ballista tests
 #  ballista-test:
 #    name: Test Ballista on AMD64 Rust ${{ matrix.rust }}
-#    needs: [linux-build-lib]
 #    runs-on: ubuntu-latest
 #    strategy:
 #      matrix:
@@ -305,7 +326,7 @@ jobs:
 
   docker:
     name: Docker
-    needs: [linux-build-lib, generate-data]
+    needs: [linux-build-lib, react-build, generate-data]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -317,11 +338,16 @@ jobs:
         with:
           name: tpch-data
           path: /home/runner/work/arrow-ballista/arrow-ballista/tpch
-      - name: Restore binaries
+      - name: Restore rust artifacts
         uses: actions/download-artifact@v2
         with:
-          name: release-binaries
+          name: rust-artifacts
           path: /home/runner/work/arrow-ballista/arrow-ballista/target/release
+      - name: Restore react artifacts
+        uses: actions/download-artifact@v2
+        with:
+          name: react-artifacts
+          path: /home/runner/work/arrow-ballista/arrow-ballista/ballista/scheduler/ui/build
       - name: Build and push Docker image
         run: |
           echo "github user is $DOCKER_USER"
@@ -343,7 +369,6 @@ jobs:
 
 #  clippy:
 #    name: Clippy
-#    needs: [linux-build-lib]
 #    runs-on: ubuntu-latest
 #    strategy:
 #      matrix:
@@ -386,7 +411,6 @@ jobs:
 
 #  cargo-toml-formatting-checks:
 #    name: Check Cargo.toml formatting
-#    needs: [linux-build-lib]
 #    runs-on: ubuntu-latest
 #    strategy:
 #      matrix:
