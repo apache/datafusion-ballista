@@ -19,22 +19,23 @@
 
 # Ballista Scheduler Metrics
 
-## Prometheus 
+## Prometheus
 
 Built with default features, the ballista scheduler will automatically collect and expose a standard set of prometheus metrics.
 The metrics currently collected automatically include:
-- *job_exec_time_seconds* - Histogram of successful job execution time in seconds
-- *planning_time_ms* - Histogram of job planning time in milliseconds
-- *failed* - Counter of failed jobs
-- *job_failed_total* - Counter of failed jobs
-- *job_cancelled_total* - Counter of cancelled jobs 
-- *job_completed_total* - Counter of completed jobs
-- *job_submitted_total* - Counter of submitted jobs 
-- *pending_task_queue_size* - Number of pending tasks
 
-**NOTE** Currently the histogram buckets for the above metrics are set to reasonable defaults. If the defaults are not 
+- _job_exec_time_seconds_ - Histogram of successful job execution time in seconds
+- _planning_time_ms_ - Histogram of job planning time in milliseconds
+- _failed_ - Counter of failed jobs
+- _job_failed_total_ - Counter of failed jobs
+- _job_cancelled_total_ - Counter of cancelled jobs
+- _job_completed_total_ - Counter of completed jobs
+- _job_submitted_total_ - Counter of submitted jobs
+- _pending_task_queue_size_ - Number of pending tasks
+
+**NOTE** Currently the histogram buckets for the above metrics are set to reasonable defaults. If the defaults are not
 appropriate for a given use case, the only workaround is to implement a customer `SchedulerMetricsCollector`. In the future
-the buckets should be made configurable. 
+the buckets should be made configurable.
 
 The metrics are then exported through the scheduler REST API at `GET /api/metrics`. It should be sufficient to ingest metrics
-into an existing metrics system by point your chosen prometheus exporter at that endpoint. 
+into an existing metrics system by point your chosen prometheus exporter at that endpoint.
