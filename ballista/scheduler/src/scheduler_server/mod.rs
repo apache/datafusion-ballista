@@ -498,6 +498,7 @@ mod test {
         match status.status {
             Some(job_status::Status::Successful(SuccessfulJob {
                 partition_location,
+                ..
             })) => {
                 assert_eq!(partition_location.len(), 4);
             }

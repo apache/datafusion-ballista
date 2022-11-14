@@ -904,6 +904,8 @@ message GetJobStatusParams {
 
 message SuccessfulJob {
   repeated PartitionLocation partition_location = 1;
+  uint64 queued_at = 2;
+  uint64 completed_at = 3;
 }
 
 message QueuedJob {}
