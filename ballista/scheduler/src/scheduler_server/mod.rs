@@ -97,6 +97,38 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         }
     }
 
+    pub fn with_session_builder(
+        scheduler_name: String,
+        config_backend: Arc<dyn StateBackendClient>,
+        codec: BallistaCodec<T, U>,
+        config: SchedulerConfig,
+        session_builder: SessionBuilder,
+        metrics_collector: Arc<dyn SchedulerMetricsCollector>,
+    ) -> Self {
+        let state = Arc::new(SchedulerState::new(
+            config_backend,
+            session_builder,
+            codec,
+            scheduler_name.clone(),
+            config.clone(),
+        ));
+        let query_stage_scheduler =
+            Arc::new(QueryStageScheduler::new(state.clone(), metrics_collector));
+        let query_stage_event_loop = EventLoop::new(
+            "query_stage".to_owned(),
+            config.event_loop_buffer_size as usize,
+            query_stage_scheduler.clone(),
+        );
+
+        Self {
+            scheduler_name,
+            start_time: timestamp_millis() as u128,
+            state,
+            query_stage_event_loop,
+            query_stage_scheduler,
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) fn with_task_launcher(
         scheduler_name: String,
