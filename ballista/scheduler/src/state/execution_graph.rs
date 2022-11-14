@@ -1233,6 +1233,8 @@ impl ExecutionGraph {
         self.status = JobStatus {
             status: Some(job_status::Status::Successful(SuccessfulJob {
                 partition_location,
+                queued_at: self.queued_at,
+                completed_at: timestamp_millis(),
             })),
         };
         self.end_time = SystemTime::now()
