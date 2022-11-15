@@ -236,7 +236,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.inc_pending_tasks(new_tasks);
             }
             QueryStageSchedulerEvent::JobCancel(job_id) => {
-                println!("Cancelling job {}", job_id);
                 self.metrics_collector.record_cancelled(&job_id);
 
                 info!("Job {} Cancelled", job_id);
@@ -285,7 +284,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 let (reservations, assigned) =
                     self.state.offer_reservation(reservations).await?;
 
-                println!("Dec {} tasks", assigned);
                 self.dec_pending_tasks(assigned);
 
                 if !reservations.is_empty() {

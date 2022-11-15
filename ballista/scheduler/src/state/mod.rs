@@ -203,7 +203,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         &self,
         reservations: Vec<ExecutorReservation>,
     ) -> Result<(Vec<ExecutorReservation>, usize)> {
-        let num_reservations = reservations.len();
+        let mut assigned = 0;
 
         let (free_list, pending_tasks) = match self
             .task_manager
@@ -267,6 +267,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                                         ),
                                     );
                                 }
+                            } else {
+                                assigned += n_tasks;
                             }
                         }
                         Err(e) => {
@@ -286,8 +288,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 (reservations, 0)
             }
         };
-
-        let assigned = num_reservations - free_list.len();
 
         let mut new_reservations = vec![];
         if !free_list.is_empty() {
