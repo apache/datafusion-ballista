@@ -202,7 +202,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     pub(crate) async fn offer_reservation(
         &self,
         reservations: Vec<ExecutorReservation>,
-    ) -> Result<Vec<ExecutorReservation>> {
+    ) -> Result<(Vec<ExecutorReservation>, usize)> {
+        let num_reservations = reservations.len();
+
         let (free_list, pending_tasks) = match self
             .task_manager
             .fill_reservations(&reservations)
@@ -285,8 +287,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             }
         };
 
-        dbg!(free_list.clone());
-        dbg!(pending_tasks);
+        let assigned = num_reservations - free_list.len();
 
         let mut new_reservations = vec![];
         if !free_list.is_empty() {
@@ -301,7 +302,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             new_reservations.extend(pending_reservations);
         }
 
-        Ok(new_reservations)
+        Ok((new_reservations, assigned))
     }
 
     pub(crate) async fn submit_job(
@@ -474,8 +475,9 @@ mod test {
             .register_executor(executor_metadata, executor_data, true)
             .await?;
 
-        let result = state.offer_reservation(reservations).await?;
+        let (result, assigned) = state.offer_reservation(reservations).await?;
 
+        assert_eq!(assigned, 0);
         assert!(result.is_empty());
 
         // All reservations should have been cancelled so we should be able to reserve them now
@@ -558,8 +560,11 @@ mod test {
             .register_executor(executor_metadata, executor_data, true)
             .await?;
 
-        let result = state.offer_reservation(reservations).await?;
+        let reserved = reservations.len();
 
+        let (result, assigned) = state.offer_reservation(reservations).await?;
+
+        assert_eq!(assigned, reserved);
         assert!(result.is_empty());
 
         // All task slots should be assigned so we should not be able to reserve more tasks
@@ -663,8 +668,9 @@ mod test {
 
         // Offer the reservation. It should be filled with one of the 4 pending tasks. The other 3 should
         // be reserved for the other 3 tasks, emitting another offer event
-        let reservations = state.offer_reservation(reservations).await?;
+        let (reservations, assigned) = state.offer_reservation(reservations).await?;
 
+        assert_eq!(assigned, 1);
         assert_eq!(reservations.len(), 3);
 
         // Remaining 3 task slots should be reserved for pending tasks
