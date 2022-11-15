@@ -371,7 +371,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 }
             }
             if assign_tasks >= free_reservations.len() {
-                pending_tasks = graph.available_tasks();
+                pending_tasks += graph.available_tasks();
                 break;
             }
         }

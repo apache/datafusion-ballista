@@ -56,16 +56,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
         }
     }
 
-    fn inc_pending_tasks(&self, tasks: usize) {
-        let prev = self.pending_tasks.fetch_add(tasks, Ordering::SeqCst);
+    pub(crate) fn set_pending_tasks(&self, tasks: usize) {
+        self.pending_tasks.store(tasks, Ordering::SeqCst);
         self.metrics_collector
-            .set_pending_tasks_queue_size((prev + tasks) as u64);
-    }
-
-    fn dec_pending_tasks(&self, tasks: usize) {
-        let prev = self.pending_tasks.fetch_sub(tasks, Ordering::SeqCst);
-        self.metrics_collector
-            .set_pending_tasks_queue_size(prev.saturating_sub(tasks) as u64);
+            .set_pending_tasks_queue_size(tasks as u64);
     }
 
     pub(crate) fn pending_tasks(&self) -> usize {
@@ -143,16 +137,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.metrics_collector
                     .record_submitted(&job_id, queued_at, submitted_at);
 
-                let available_tasks = self
-                    .state
-                    .task_manager
-                    .get_available_task_count(&job_id)
-                    .await?;
-
-                self.inc_pending_tasks(available_tasks);
-
                 info!("Job {} submitted", job_id);
                 if self.state.config.is_push_staged_scheduling() {
+                    let available_tasks = self
+                        .state
+                        .task_manager
+                        .get_available_task_count(&job_id)
+                        .await?;
+
                     let reservations: Vec<ExecutorReservation> = self
                         .state
                         .executor_manager
@@ -212,15 +204,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .record_failed(&job_id, queued_at, failed_at);
 
                 error!("Job {} running failed", job_id);
-                let (running_tasks, pending_tasks) = self
+                let (running_tasks, _pending_tasks) = self
                     .state
                     .task_manager
                     .abort_job(&job_id, fail_message)
                     .await?;
-
-                if pending_tasks > 0 {
-                    self.dec_pending_tasks(pending_tasks);
-                }
 
                 if !running_tasks.is_empty() {
                     tx_event
@@ -231,21 +219,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             }
             QueryStageSchedulerEvent::JobUpdated(job_id) => {
                 info!("Job {} Updated", job_id);
-                let new_tasks = self.state.task_manager.update_job(&job_id).await?;
-
-                self.inc_pending_tasks(new_tasks);
+                self.state.task_manager.update_job(&job_id).await?;
             }
             QueryStageSchedulerEvent::JobCancel(job_id) => {
                 self.metrics_collector.record_cancelled(&job_id);
 
                 info!("Job {} Cancelled", job_id);
-                let (running_tasks, pending_tasks) =
+                let (running_tasks, _pending_tasks) =
                     self.state.task_manager.cancel_job(&job_id).await?;
                 self.state.clean_up_failed_job(job_id);
-
-                if pending_tasks > 0 {
-                    self.dec_pending_tasks(pending_tasks);
-                }
 
                 tx_event
                     .post_event(QueryStageSchedulerEvent::CancelTasks(running_tasks))
@@ -281,10 +263,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 }
             }
             QueryStageSchedulerEvent::ReservationOffering(reservations) => {
-                let (reservations, assigned) =
+                let (reservations, pending) =
                     self.state.offer_reservation(reservations).await?;
 
-                self.dec_pending_tasks(assigned);
+                self.set_pending_tasks(pending);
 
                 if !reservations.is_empty() {
                     tx_event

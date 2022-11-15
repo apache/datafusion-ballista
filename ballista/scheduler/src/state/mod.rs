@@ -203,8 +203,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         &self,
         reservations: Vec<ExecutorReservation>,
     ) -> Result<(Vec<ExecutorReservation>, usize)> {
-        let mut assigned = 0;
-
         let (free_list, pending_tasks) = match self
             .task_manager
             .fill_reservations(&reservations)
@@ -267,8 +265,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                                         ),
                                     );
                                 }
-                            } else {
-                                assigned += n_tasks;
                             }
                         }
                         Err(e) => {
@@ -302,7 +298,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             new_reservations.extend(pending_reservations);
         }
 
-        Ok((new_reservations, assigned))
+        Ok((new_reservations, pending_tasks))
     }
 
     pub(crate) async fn submit_job(
@@ -560,11 +556,9 @@ mod test {
             .register_executor(executor_metadata, executor_data, true)
             .await?;
 
-        let reserved = reservations.len();
+        let (result, pending) = state.offer_reservation(reservations).await?;
 
-        let (result, assigned) = state.offer_reservation(reservations).await?;
-
-        assert_eq!(assigned, reserved);
+        assert_eq!(pending, 0);
         assert!(result.is_empty());
 
         // All task slots should be assigned so we should not be able to reserve more tasks
@@ -668,9 +662,9 @@ mod test {
 
         // Offer the reservation. It should be filled with one of the 4 pending tasks. The other 3 should
         // be reserved for the other 3 tasks, emitting another offer event
-        let (reservations, assigned) = state.offer_reservation(reservations).await?;
+        let (reservations, pending) = state.offer_reservation(reservations).await?;
 
-        assert_eq!(assigned, 1);
+        assert_eq!(pending, 3);
         assert_eq!(reservations.len(), 3);
 
         // Remaining 3 task slots should be reserved for pending tasks
