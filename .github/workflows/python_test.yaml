@@ -37,12 +37,12 @@ jobs:
         run: |
           rustup component add rustfmt
       - name: Cache Cargo
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         with:
           path: /home/runner/.cargo
           key: cargo-maturin-cache-
       - name: Cache Rust dependencies
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         with:
           path: /home/runner/target
           key: target-maturin-cache-
