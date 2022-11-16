@@ -10,6 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::SchedulerServer;
 use crate::state::execution_graph::ExecutionStage;
 use crate::state::execution_graph_dot::ExecutionGraphDot;
@@ -21,6 +22,8 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use graphviz_rust::cmd::{CommandArg, Format};
 use graphviz_rust::exec;
 use graphviz_rust::printer::PrinterContext;
+use http::header::CONTENT_TYPE;
+
 use std::time::Duration;
 use warp::Rejection;
 
@@ -176,13 +179,15 @@ pub(crate) async fn cancel_job<T: AsLogicalPlan, U: AsExecutionPlan>(
         .map_err(|_| warp::reject())?
         .ok_or_else(warp::reject)?;
 
-    let cancelled = data_server
-        .state
-        .cancel_job(&job_id)
+    data_server
+        .query_stage_event_loop
+        .get_sender()
+        .map_err(|_| warp::reject())?
+        .post_event(QueryStageSchedulerEvent::JobCancel(job_id))
         .await
         .map_err(|_| warp::reject())?;
 
-    Ok(warp::reply::json(&CancelJobResponse { cancelled }))
+    Ok(warp::reply::json(&CancelJobResponse { cancelled: true }))
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -346,4 +351,17 @@ pub(crate) async fn get_job_svg_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
         }
         _ => Ok("Not Found".to_string()),
     }
+}
+
+pub(crate) async fn get_scheduler_metrics<T: AsLogicalPlan, U: AsExecutionPlan>(
+    data_server: SchedulerServer<T, U>,
+) -> Result<impl warp::Reply, Rejection> {
+    Ok(data_server
+        .metrics_collector()
+        .gather_metrics()
+        .map_err(|_| warp::reject())?
+        .map(|(data, content_type)| {
+            warp::reply::with_header(data, CONTENT_TYPE, content_type)
+        })
+        .unwrap_or_else(|| warp::reply::with_header(vec![], CONTENT_TYPE, "text/html")))
 }

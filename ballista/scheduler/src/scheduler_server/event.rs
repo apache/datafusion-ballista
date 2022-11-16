@@ -31,13 +31,32 @@ pub enum QueryStageSchedulerEvent {
         job_name: String,
         session_ctx: Arc<SessionContext>,
         plan: Box<LogicalPlan>,
+        queued_at: u64,
     },
-    JobSubmitted(String),
+    JobSubmitted {
+        job_id: String,
+        queued_at: u64,
+        submitted_at: u64,
+    },
     // For a job which failed during planning
-    JobPlanningFailed(String, String),
-    JobFinished(String),
+    JobPlanningFailed {
+        job_id: String,
+        fail_message: String,
+        queued_at: u64,
+        failed_at: u64,
+    },
+    JobFinished {
+        job_id: String,
+        queued_at: u64,
+        completed_at: u64,
+    },
     // For a job fails with its execution graph setting failed
-    JobRunningFailed(String, String),
+    JobRunningFailed {
+        job_id: String,
+        fail_message: String,
+        queued_at: u64,
+        failed_at: u64,
+    },
     JobUpdated(String),
     JobCancel(String),
     JobDataClean(String),

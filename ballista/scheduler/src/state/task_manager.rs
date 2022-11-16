@@ -29,6 +29,7 @@ use ballista_core::error::Result;
 
 use crate::state::backend::Keyspace::{CompletedJobs, FailedJobs};
 use crate::state::session_manager::create_datafusion_context;
+
 use ballista_core::serde::protobuf::{
     self, job_status, FailedJob, JobStatus, MultiTaskDefinition, TaskDefinition, TaskId,
     TaskStatus,
@@ -58,6 +59,52 @@ pub const TASK_MAX_FAILURES: usize = 4;
 /// Default max failure attempts for stage level retry
 pub const STAGE_MAX_FAILURES: usize = 4;
 
+#[async_trait::async_trait]
+pub(crate) trait TaskLauncher: Send + Sync + 'static {
+    async fn launch_tasks(
+        &self,
+        executor: &ExecutorMetadata,
+        tasks: Vec<MultiTaskDefinition>,
+        executor_manager: &ExecutorManager,
+    ) -> Result<()>;
+}
+
+struct DefaultTaskLauncher {
+    scheduler_id: String,
+}
+
+impl DefaultTaskLauncher {
+    pub fn new(scheduler_id: String) -> Self {
+        Self { scheduler_id }
+    }
+}
+
+#[async_trait::async_trait]
+impl TaskLauncher for DefaultTaskLauncher {
+    async fn launch_tasks(
+        &self,
+        executor: &ExecutorMetadata,
+        tasks: Vec<MultiTaskDefinition>,
+        executor_manager: &ExecutorManager,
+    ) -> Result<()> {
+        info!("Launching multi task on executor {:?}", executor.id);
+        let mut client = executor_manager.get_client(&executor.id).await?;
+        client
+            .launch_multi_task(protobuf::LaunchMultiTaskParams {
+                multi_tasks: tasks,
+                scheduler_id: self.scheduler_id.clone(),
+            })
+            .await
+            .map_err(|e| {
+                BallistaError::Internal(format!(
+                    "Failed to connect to executor {}: {:?}",
+                    executor.id, e
+                ))
+            })?;
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
     state: Arc<dyn StateBackendClient>,
@@ -66,6 +113,7 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     scheduler_id: String,
     // Cache for active jobs curated by this scheduler
     active_job_cache: ActiveJobCache,
+    launcher: Arc<dyn TaskLauncher>,
 }
 
 #[derive(Clone)]
@@ -105,8 +153,27 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             state,
             session_builder,
             codec,
+            scheduler_id: scheduler_id.clone(),
+            active_job_cache: Arc::new(DashMap::new()),
+            launcher: Arc::new(DefaultTaskLauncher::new(scheduler_id)),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn with_launcher(
+        state: Arc<dyn StateBackendClient>,
+        session_builder: SessionBuilder,
+        codec: BallistaCodec<T, U>,
+        scheduler_id: String,
+        launcher: Arc<dyn TaskLauncher>,
+    ) -> Self {
+        Self {
+            state,
+            session_builder,
+            codec,
             scheduler_id,
             active_job_cache: Arc::new(DashMap::new()),
+            launcher,
         }
     }
 
@@ -119,9 +186,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         job_name: &str,
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
+        queued_at: u64,
     ) -> Result<()> {
-        let mut graph =
-            ExecutionGraph::new(&self.scheduler_id, job_id, job_name, session_id, plan)?;
+        let mut graph = ExecutionGraph::new(
+            &self.scheduler_id,
+            job_id,
+            job_name,
+            session_id,
+            plan,
+            queued_at,
+        )?;
         info!("Submitting execution graph: {:?}", graph);
         self.state
             .put(
@@ -297,7 +371,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 }
             }
             if assign_tasks >= free_reservations.len() {
-                pending_tasks = graph.available_tasks();
+                pending_tasks += graph.available_tasks();
                 break;
             }
         }
@@ -335,7 +409,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Cancel the job and return a Vec of running tasks need to cancel
-    pub(crate) async fn cancel_job(&self, job_id: &str) -> Result<Vec<RunningTaskInfo>> {
+    pub(crate) async fn cancel_job(
+        &self,
+        job_id: &str,
+    ) -> Result<(Vec<RunningTaskInfo>, usize)> {
         self.abort_job(job_id, "Cancelled".to_owned()).await
     }
 
@@ -344,7 +421,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         &self,
         job_id: &str,
         failure_reason: String,
-    ) -> Result<Vec<RunningTaskInfo>> {
+    ) -> Result<(Vec<RunningTaskInfo>, usize)> {
         let locks = self
             .state
             .acquire_locks(vec![
@@ -352,25 +429,32 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 (Keyspace::FailedJobs, job_id),
             ])
             .await?;
-        let tasks_to_cancel = if let Some(graph) =
+        let (tasks_to_cancel, pending_tasks) = if let Some(graph) =
             self.get_active_execution_graph(job_id).await
         {
-            let running_tasks = graph.read().await.running_tasks();
+            let (pending_tasks, running_tasks) = {
+                let guard = graph.read().await;
+                (guard.available_tasks(), guard.running_tasks())
+            };
+
             info!(
                 "Cancelling {} running tasks for job {}",
                 running_tasks.len(),
                 job_id
             );
-            with_locks(locks, self.fail_job_state(job_id, failure_reason)).await?;
-            running_tasks
+            with_locks(locks, self.fail_job_state(job_id, failure_reason))
+                .await
+                .unwrap();
+
+            (running_tasks, pending_tasks)
         } else {
             // TODO listen the job state update event and fix task cancelling
             warn!("Fail to find job {} in the cache, unable to cancel tasks for job, fail the job state only.", job_id);
             with_locks(locks, self.fail_job_state(job_id, failure_reason)).await?;
-            vec![]
+            (vec![], 0)
         };
 
-        Ok(tasks_to_cancel)
+        Ok((tasks_to_cancel, pending_tasks))
     }
 
     /// Mark a unscheduled job as failed. This will create a key under the FailedJobs keyspace
@@ -405,11 +489,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             ]
         };
 
-        let _res = if let Some(graph) = self.remove_active_execution_graph(job_id).await {
+        if let Some(graph) = self.remove_active_execution_graph(job_id).await {
             let mut graph = graph.write().await;
             let previous_status = graph.status();
             graph.fail_job(failure_reason);
-            let value = self.encode_execution_graph(graph.clone())?;
+
+            let value = encode_protobuf(&graph.status())?;
             let txn_ops = txn_operations(value);
             let result = self.state.apply_txn(txn_ops).await;
             if result.is_err() {
@@ -417,7 +502,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 graph.update_status(previous_status);
                 warn!("Rollback Execution Graph state change since it did not persisted due to a possible connection error.")
             };
-            result
         } else {
             info!("Fail to find job {} in the cache", job_id);
             let status = JobStatus {
@@ -427,27 +511,35 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             };
             let value = encode_protobuf(&status)?;
             let txn_ops = txn_operations(value);
-            self.state.apply_txn(txn_ops).await
+            self.state.apply_txn(txn_ops).await?;
         };
 
         Ok(())
     }
 
-    pub async fn update_job(&self, job_id: &str) -> Result<()> {
+    pub async fn update_job(&self, job_id: &str) -> Result<usize> {
         debug!("Update job {} in Active", job_id);
         if let Some(graph) = self.get_active_execution_graph(job_id).await {
             let mut graph = graph.write().await;
+
+            let curr_available_tasks = graph.available_tasks();
+
             graph.revive();
             let graph = graph.clone();
+
+            let new_tasks = graph.available_tasks() - curr_available_tasks;
+
             let value = self.encode_execution_graph(graph)?;
             self.state
                 .put(Keyspace::ActiveJobs, job_id.to_owned(), value)
                 .await?;
+
+            Ok(new_tasks)
         } else {
             warn!("Fail to find job {} in the cache", job_id);
-        }
 
-        Ok(())
+            Ok(0)
+        }
     }
 
     /// return a Vec of running tasks need to cancel
@@ -482,45 +574,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             Ok(running_tasks_to_cancel)
         })
         .await
-    }
-
-    #[allow(dead_code)]
-    #[cfg(not(test))]
-    /// Launch the given task on the specified executor
-    pub(crate) async fn launch_task(
-        &self,
-        executor: &ExecutorMetadata,
-        task: TaskDescription,
-        executor_manager: &ExecutorManager,
-    ) -> Result<()> {
-        info!("Launching task {:?} on executor {:?}", task, executor.id);
-        let task_definition = self.prepare_task_definition(task)?;
-        let mut client = executor_manager.get_client(&executor.id).await?;
-        client
-            .launch_task(protobuf::LaunchTaskParams {
-                tasks: vec![task_definition],
-                scheduler_id: self.scheduler_id.clone(),
-            })
-            .await
-            .map_err(|e| {
-                BallistaError::Internal(format!(
-                    "Failed to connect to executor {}: {:?}",
-                    executor.id, e
-                ))
-            })?;
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    #[cfg(test)]
-    /// In unit tests, we do not have actual executors running, so it simplifies things to just noop.
-    pub(crate) async fn launch_task(
-        &self,
-        _executor: &ExecutorMetadata,
-        _task: TaskDescription,
-        _executor_manager: &ExecutorManager,
-    ) -> Result<()> {
-        Ok(())
     }
 
     /// Retrieve the number of available tasks for the given job. The value returned
@@ -591,7 +644,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         }
     }
 
-    #[cfg(not(test))]
     /// Launch the given tasks on the specified executor
     pub(crate) async fn launch_multi_task(
         &self,
@@ -599,37 +651,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         tasks: Vec<Vec<TaskDescription>>,
         executor_manager: &ExecutorManager,
     ) -> Result<()> {
-        info!("Launching multi task on executor {:?}", executor.id);
         let multi_tasks: Result<Vec<MultiTaskDefinition>> = tasks
             .into_iter()
             .map(|stage_tasks| self.prepare_multi_task_definition(stage_tasks))
             .collect();
-        let multi_tasks = multi_tasks?;
-        let mut client = executor_manager.get_client(&executor.id).await?;
-        client
-            .launch_multi_task(protobuf::LaunchMultiTaskParams {
-                multi_tasks,
-                scheduler_id: self.scheduler_id.clone(),
-            })
-            .await
-            .map_err(|e| {
-                BallistaError::Internal(format!(
-                    "Failed to connect to executor {}: {:?}",
-                    executor.id, e
-                ))
-            })?;
-        Ok(())
-    }
 
-    #[cfg(test)]
-    /// Launch the given tasks on the specified executor
-    pub(crate) async fn launch_multi_task(
-        &self,
-        _executor: &ExecutorMetadata,
-        _tasks: Vec<Vec<TaskDescription>>,
-        _executor_manager: &ExecutorManager,
-    ) -> Result<()> {
-        Ok(())
+        self.launcher
+            .launch_tasks(executor, multi_tasks?, executor_manager)
+            .await
     }
 
     #[allow(dead_code)]

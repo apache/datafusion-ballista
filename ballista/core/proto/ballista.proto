@@ -440,6 +440,7 @@ message ExecutionGraph {
   string job_name = 10;
   uint64 start_time = 11;
   uint64 end_time = 12;
+  uint64 queued_at = 13;
 }
 
 message StageAttempts {

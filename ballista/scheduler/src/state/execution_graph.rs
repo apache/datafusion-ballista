@@ -47,6 +47,7 @@ use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
 use crate::display::print_stage_metrics;
 use crate::planner::DistributedPlanner;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use crate::scheduler_server::timestamp_millis;
 pub(crate) use crate::state::execution_graph::execution_stage::{
     ExecutionStage, FailedStage, ResolvedStage, StageOutput, SuccessfulStage, TaskInfo,
     UnresolvedStage,
@@ -110,6 +111,8 @@ pub struct ExecutionGraph {
     session_id: String,
     /// Status of this job
     status: JobStatus,
+    /// Timestamp of when this job was submitted
+    queued_at: u64,
     /// Job start time
     start_time: u64,
     /// Job end time
@@ -143,6 +146,7 @@ impl ExecutionGraph {
         job_name: &str,
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
+        queued_at: u64,
     ) -> Result<Self> {
         let mut planner = DistributedPlanner::new();
 
@@ -161,10 +165,8 @@ impl ExecutionGraph {
             status: JobStatus {
                 status: Some(job_status::Status::Queued(QueuedJob {})),
             },
-            start_time: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
+            queued_at,
+            start_time: timestamp_millis(),
             end_time: 0,
             stages,
             output_partitions,
@@ -700,15 +702,21 @@ impl ExecutionGraph {
         if !updated_stages.failed_stages.is_empty() {
             info!("Job {} is failed", job_id);
             self.fail_job(job_err_msg.clone());
-            events.push(QueryStageSchedulerEvent::JobRunningFailed(
+            events.push(QueryStageSchedulerEvent::JobRunningFailed {
                 job_id,
-                job_err_msg,
-            ));
+                fail_message: job_err_msg,
+                queued_at: self.queued_at,
+                failed_at: timestamp_millis(),
+            });
         } else if self.is_successful() {
             // If this ExecutionGraph is successful, finish it
             info!("Job {} is success, finalizing output partitions", job_id);
             self.succeed_job()?;
-            events.push(QueryStageSchedulerEvent::JobFinished(job_id));
+            events.push(QueryStageSchedulerEvent::JobFinished {
+                job_id,
+                queued_at: self.queued_at,
+                completed_at: timestamp_millis(),
+            });
         } else if has_resolved {
             events.push(QueryStageSchedulerEvent::JobUpdated(job_id))
         }
@@ -1312,6 +1320,7 @@ impl ExecutionGraph {
                     "Invalid Execution Graph: missing job status".to_owned(),
                 )
             })?,
+            queued_at: proto.queued_at,
             start_time: proto.start_time,
             end_time: proto.end_time,
             stages,
@@ -1386,6 +1395,7 @@ impl ExecutionGraph {
             job_name: graph.job_name,
             session_id: graph.session_id,
             status: Some(graph.status),
+            queued_at: graph.queued_at,
             start_time: graph.start_time,
             end_time: graph.end_time,
             stages,
@@ -2229,7 +2239,7 @@ mod test {
                     assert_eq!(stage_events.len(), 1);
                     assert!(matches!(
                         stage_events[0],
-                        QueryStageSchedulerEvent::JobRunningFailed(_, _)
+                        QueryStageSchedulerEvent::JobRunningFailed { .. }
                     ));
                     // Stage 2 is still running
                     let running_stage = agg_graph.running_stages();
@@ -2719,7 +2729,7 @@ mod test {
         assert_eq!(stage_events.len(), 1);
         assert!(matches!(
             stage_events[0],
-            QueryStageSchedulerEvent::JobRunningFailed(_, _)
+            QueryStageSchedulerEvent::JobRunningFailed { .. }
         ));
 
         drain_tasks(&mut agg_graph)?;
@@ -2769,7 +2779,7 @@ mod test {
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
-        ExecutionGraph::new("localhost:50050", "job", "", "session", plan).unwrap()
+        ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap()
     }
 
     async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
@@ -2797,7 +2807,7 @@ mod test {
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
-        ExecutionGraph::new("localhost:50050", "job", "", "session", plan).unwrap()
+        ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap()
     }
 
     async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
@@ -2820,7 +2830,7 @@ mod test {
 
         let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
 
-        ExecutionGraph::new("localhost:50050", "job", "", "session", plan).unwrap()
+        ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap()
     }
 
     async fn test_join_plan(partition: usize) -> ExecutionGraph {
@@ -2861,8 +2871,8 @@ mod test {
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
-        let graph =
-            ExecutionGraph::new("localhost:50050", "job", "", "session", plan).unwrap();
+        let graph = ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0)
+            .unwrap();
 
         println!("{:?}", graph);
 
@@ -2886,8 +2896,8 @@ mod test {
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
-        let graph =
-            ExecutionGraph::new("localhost:50050", "job", "", "session", plan).unwrap();
+        let graph = ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0)
+            .unwrap();
 
         println!("{:?}", graph);
 
@@ -2911,8 +2921,8 @@ mod test {
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
-        let graph =
-            ExecutionGraph::new("localhost:50050", "job", "", "session", plan).unwrap();
+        let graph = ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0)
+            .unwrap();
 
         println!("{:?}", graph);
 

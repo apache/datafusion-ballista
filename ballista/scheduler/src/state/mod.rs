@@ -29,7 +29,7 @@ use crate::scheduler_server::SessionBuilder;
 use crate::state::backend::{Lock, StateBackendClient};
 use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::session_manager::SessionManager;
-use crate::state::task_manager::TaskManager;
+use crate::state::task_manager::{TaskLauncher, TaskManager};
 
 use crate::config::SchedulerConfig;
 use crate::state::execution_graph::TaskDescription;
@@ -49,7 +49,7 @@ pub mod execution_graph_dot;
 pub mod executor_manager;
 pub mod session_manager;
 pub mod session_registry;
-mod task_manager;
+pub(crate) mod task_manager;
 
 pub fn decode_protobuf<T: Message + Default>(bytes: &[u8]) -> Result<T> {
     T::decode(bytes).map_err(|e| {
@@ -135,11 +135,37 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         }
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn with_task_launcher(
+        config_client: Arc<dyn StateBackendClient>,
+        session_builder: SessionBuilder,
+        codec: BallistaCodec<T, U>,
+        scheduler_name: String,
+        config: SchedulerConfig,
+        dispatcher: Arc<dyn TaskLauncher>,
+    ) -> Self {
+        Self {
+            executor_manager: ExecutorManager::new(
+                config_client.clone(),
+                config.executor_slots_policy,
+            ),
+            task_manager: TaskManager::with_launcher(
+                config_client.clone(),
+                session_builder,
+                codec.clone(),
+                scheduler_name,
+                dispatcher,
+            ),
+            session_manager: SessionManager::new(config_client, session_builder),
+            codec,
+            config,
+        }
+    }
+
     pub async fn init(&self) -> Result<()> {
         self.executor_manager.init().await
     }
 
-    #[cfg(not(test))]
     pub(crate) async fn update_task_statuses(
         &self,
         executor_id: &str,
@@ -164,33 +190,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         Ok((events, reservations))
     }
 
-    #[cfg(test)]
-    pub(crate) async fn update_task_statuses(
-        &self,
-        executor_id: &str,
-        tasks_status: Vec<TaskStatus>,
-    ) -> Result<(Vec<QueryStageSchedulerEvent>, Vec<ExecutorReservation>)> {
-        let executor = self
-            .executor_manager
-            .get_executor_metadata(executor_id)
-            .await?;
-
-        let total_num_tasks = tasks_status.len();
-        let free_list = (0..total_num_tasks)
-            .into_iter()
-            .map(|_| ExecutorReservation::new_free(executor_id.to_owned()))
-            .collect();
-
-        let events = self
-            .task_manager
-            .update_task_statuses(&executor, tasks_status)
-            .await?;
-
-        self.executor_manager.cancel_reservations(free_list).await?;
-
-        Ok((events, vec![]))
-    }
-
     /// Process reservations which are offered. The basic process is
     /// 1. Attempt to fill the offered reservations with available tasks
     /// 2. For any reservation that filled, launch the assigned task on the executor.
@@ -203,7 +202,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     pub(crate) async fn offer_reservation(
         &self,
         reservations: Vec<ExecutorReservation>,
-    ) -> Result<Vec<ExecutorReservation>> {
+    ) -> Result<(Vec<ExecutorReservation>, usize)> {
         let (free_list, pending_tasks) = match self
             .task_manager
             .fill_reservations(&reservations)
@@ -286,9 +285,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             }
         };
 
-        dbg!(free_list.clone());
-        dbg!(pending_tasks);
-
         let mut new_reservations = vec![];
         if !free_list.is_empty() {
             // If any reserved slots remain, return them to the pool
@@ -302,7 +298,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             new_reservations.extend(pending_reservations);
         }
 
-        Ok(new_reservations)
+        Ok((new_reservations, pending_tasks))
     }
 
     pub(crate) async fn submit_job(
@@ -311,6 +307,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         job_name: &str,
         session_ctx: Arc<SessionContext>,
         plan: &LogicalPlan,
+        queued_at: u64,
     ) -> Result<()> {
         let start = Instant::now();
 
@@ -377,7 +374,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         );
 
         self.task_manager
-            .submit_job(job_id, job_name, &session_ctx.session_id(), plan)
+            .submit_job(job_id, job_name, &session_ctx.session_id(), plan, queued_at)
             .await?;
 
         let elapsed = start.elapsed();
@@ -385,26 +382,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         info!("Planned job {} in {:?}", job_id, elapsed);
 
         Ok(())
-    }
-
-    pub(crate) async fn cancel_job(&self, job_id: &str) -> Result<bool> {
-        info!("Received cancellation request for job {}", job_id);
-
-        match self.task_manager.cancel_job(job_id).await {
-            Ok(tasks) => {
-                self.executor_manager.cancel_running_tasks(tasks).await.map_err(|e| {
-                        let msg = format!("Error to cancel running tasks when cancelling job {} due to {:?}", job_id, e);
-                        error!("{}", msg);
-                        BallistaError::Internal(msg)
-                })?;
-                Ok(true)
-            }
-            Err(e) => {
-                let msg = format!("Error cancelling job {}: {:?}", job_id, e);
-                error!("{}", msg);
-                Ok(false)
-            }
-        }
     }
 
     /// Spawn a delayed future to clean up job data on both Scheduler and Executors
@@ -464,6 +441,8 @@ mod test {
     use ballista_core::serde::BallistaCodec;
     use ballista_core::utils::default_session_builder;
 
+    use crate::config::SchedulerConfig;
+    use crate::test_utils::BlackholeTaskLauncher;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::logical_expr::{col, sum};
     use datafusion::physical_plan::ExecutionPlan;
@@ -492,8 +471,9 @@ mod test {
             .register_executor(executor_metadata, executor_data, true)
             .await?;
 
-        let result = state.offer_reservation(reservations).await?;
+        let (result, assigned) = state.offer_reservation(reservations).await?;
 
+        assert_eq!(assigned, 0);
         assert!(result.is_empty());
 
         // All reservations should have been cancelled so we should be able to reserve them now
@@ -512,10 +492,13 @@ mod test {
             .build()?;
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
-            Arc::new(SchedulerState::new_with_default_scheduler_name(
+            Arc::new(SchedulerState::with_task_launcher(
                 state_storage,
                 default_session_builder,
                 BallistaCodec::default(),
+                String::default(),
+                SchedulerConfig::default(),
+                Arc::new(BlackholeTaskLauncher::default()),
             ));
 
         let session_ctx = state.session_manager.create_session(&config).await?;
@@ -525,19 +508,43 @@ mod test {
         // Create 4 jobs so we have four pending tasks
         state
             .task_manager
-            .submit_job("job-1", "", session_ctx.session_id().as_str(), plan.clone())
+            .submit_job(
+                "job-1",
+                "",
+                session_ctx.session_id().as_str(),
+                plan.clone(),
+                0,
+            )
             .await?;
         state
             .task_manager
-            .submit_job("job-2", "", session_ctx.session_id().as_str(), plan.clone())
+            .submit_job(
+                "job-2",
+                "",
+                session_ctx.session_id().as_str(),
+                plan.clone(),
+                0,
+            )
             .await?;
         state
             .task_manager
-            .submit_job("job-3", "", session_ctx.session_id().as_str(), plan.clone())
+            .submit_job(
+                "job-3",
+                "",
+                session_ctx.session_id().as_str(),
+                plan.clone(),
+                0,
+            )
             .await?;
         state
             .task_manager
-            .submit_job("job-4", "", session_ctx.session_id().as_str(), plan.clone())
+            .submit_job(
+                "job-4",
+                "",
+                session_ctx.session_id().as_str(),
+                plan.clone(),
+                0,
+            )
             .await?;
 
         let executors = test_executors(1, 4);
@@ -549,8 +556,9 @@ mod test {
             .register_executor(executor_metadata, executor_data, true)
             .await?;
 
-        let result = state.offer_reservation(reservations).await?;
+        let (result, pending) = state.offer_reservation(reservations).await?;
 
+        assert_eq!(pending, 0);
         assert!(result.is_empty());
 
         // All task slots should be assigned so we should not be able to reserve more tasks
@@ -569,10 +577,13 @@ mod test {
             .build()?;
         let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
-            Arc::new(SchedulerState::new_with_default_scheduler_name(
+            Arc::new(SchedulerState::with_task_launcher(
                 state_storage,
                 default_session_builder,
                 BallistaCodec::default(),
+                String::default(),
+                SchedulerConfig::default(),
+                Arc::new(BlackholeTaskLauncher::default()),
             ));
 
         let session_ctx = state.session_manager.create_session(&config).await?;
@@ -582,7 +593,13 @@ mod test {
         // Create a job
         state
             .task_manager
-            .submit_job("job-1", "", session_ctx.session_id().as_str(), plan.clone())
+            .submit_job(
+                "job-1",
+                "",
+                session_ctx.session_id().as_str(),
+                plan.clone(),
+                0,
+            )
             .await?;
 
         let executors = test_executors(1, 4);
@@ -645,8 +662,9 @@ mod test {
 
         // Offer the reservation. It should be filled with one of the 4 pending tasks. The other 3 should
         // be reserved for the other 3 tasks, emitting another offer event
-        let reservations = state.offer_reservation(reservations).await?;
+        let (reservations, pending) = state.offer_reservation(reservations).await?;
 
+        assert_eq!(pending, 3);
         assert_eq!(reservations.len(), 3);
 
         // Remaining 3 task slots should be reserved for pending tasks

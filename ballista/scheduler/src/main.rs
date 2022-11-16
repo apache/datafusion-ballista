@@ -66,6 +66,7 @@ use ballista_core::config::LogRotationPolicy;
 use ballista_scheduler::config::SchedulerConfig;
 #[cfg(feature = "flight-sql")]
 use ballista_scheduler::flight_sql::FlightSqlServiceImpl;
+use ballista_scheduler::metrics::default_metrics_collector;
 use config::prelude::*;
 use tracing_subscriber::EnvFilter;
 
@@ -85,12 +86,15 @@ async fn start_server(
         config.scheduling_policy
     );
 
+    let metrics_collector = default_metrics_collector()?;
+
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
         SchedulerServer::new(
             scheduler_name,
             config_backend.clone(),
             BallistaCodec::default(),
             config,
+            metrics_collector,
         );
 
     scheduler_server.init().await?;
@@ -123,14 +127,14 @@ async fn start_server(
                     parts.extensions.insert(connect_info.clone());
                     let req = http::Request::from_parts(parts, body);
 
-                    let header = req.headers().get(hyper::header::ACCEPT);
-                    if header.is_some() && header.unwrap().eq("application/json") {
+                    if req.uri().path().starts_with("/api") {
                         return Either::Left(
                             warp.call(req)
                                 .map_ok(|res| res.map(EitherBody::Left))
                                 .map_err(Error::from),
                         );
                     }
+
                     Either::Right(
                         tonic
                             .call(req)

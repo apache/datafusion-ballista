@@ -47,7 +47,7 @@ use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
-use crate::scheduler_server::SchedulerServer;
+use crate::scheduler_server::{timestamp_secs, SchedulerServer};
 use crate::state::executor_manager::ExecutorReservation;
 
 #[tonic::async_trait]
@@ -99,10 +99,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             };
             let executor_heartbeat = ExecutorHeartbeat {
                 executor_id: metadata.id.clone(),
-                timestamp: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    .as_secs(),
+                timestamp: timestamp_secs(),
                 metrics: vec![],
                 status: Some(ExecutorStatus {
                     status: Some(executor_status::Status::Active("".to_string())),
@@ -578,6 +575,7 @@ mod test {
     use tonic::Request;
 
     use crate::config::SchedulerConfig;
+    use crate::metrics::default_metrics_collector;
     use ballista_core::error::BallistaError;
     use ballista_core::serde::protobuf::{
         executor_registration::OptionalHost, executor_status, ExecutorRegistration,
@@ -602,6 +600,7 @@ mod test {
                 state_storage.clone(),
                 BallistaCodec::default(),
                 SchedulerConfig::default(),
+                default_metrics_collector().unwrap(),
             );
         scheduler.init().await?;
         let exec_meta = ExecutorRegistration {
@@ -688,6 +687,7 @@ mod test {
                 state_storage.clone(),
                 BallistaCodec::default(),
                 SchedulerConfig::default(),
+                default_metrics_collector().unwrap(),
             );
         scheduler.init().await?;
 
@@ -768,6 +768,7 @@ mod test {
                 state_storage.clone(),
                 BallistaCodec::default(),
                 SchedulerConfig::default(),
+                default_metrics_collector().unwrap(),
             );
         scheduler.init().await?;
 
