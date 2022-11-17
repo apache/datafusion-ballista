@@ -28,8 +28,8 @@ use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 
 use crate::config::SchedulerConfig;
-use ballista_core::utils::SessionBuilder;
 use crate::metrics::SchedulerMetricsCollector;
+use ballista_core::utils::SessionBuilder;
 use log::{error, warn};
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
