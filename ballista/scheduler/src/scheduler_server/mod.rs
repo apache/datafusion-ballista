@@ -614,25 +614,6 @@ mod test {
         Ok(scheduler)
     }
 
-    async fn test_push_staged_scheduler(
-    ) -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
-        let session_builder = Arc::new(DefaultSessionBuilder {});
-        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
-        let config = SchedulerConfig::default()
-            .with_scheduler_policy(TaskSchedulingPolicy::PushStaged);
-        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::new(
-                "localhost:50050".to_owned(),
-                state_storage,
-                BallistaCodec::default(),
-                session_builder,
-                config,
-            );
-        scheduler.init().await?;
-
-        Ok(scheduler)
-    }
-
     fn test_executors(num_partitions: usize) -> Vec<(ExecutorMetadata, ExecutorData)> {
         let task_slots = (num_partitions as u32 + 1) / 2;
 
