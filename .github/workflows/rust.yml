@@ -310,8 +310,8 @@ jobs:
             echo "publishing docker tag $DOCKER_TAG"
           fi
           docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
-          docker build -t ghcr.io/apache/arrow-ballista/arrow-ballista-standalone:$DOCKER_TAG -f dev/docker/ballista-standalone.Dockerfile .
-          docker push ghcr.io/apache/arrow-ballista/arrow-ballista-standalone:$DOCKER_TAG
+          docker build -t ghcr.io/apache/arrow-ballista-standalone:$DOCKER_TAG -f dev/docker/ballista-standalone.Dockerfile .
+          docker push ghcr.io/apache/arrow-ballista-standalone:$DOCKER_TAG
         env:
           DOCKER_USER: ${{ github.actor }}
           DOCKER_PASS: ${{ secrets.GITHUB_TOKEN }}
