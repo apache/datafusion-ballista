@@ -17,6 +17,8 @@
 
 FROM ubuntu:22.04
 
+LABEL org.opencontainers.image.source https://github.com/apache/arrow-ballista
+
 ARG RELEASE_FLAG=release
 
 ENV RELEASE_FLAG=${RELEASE_FLAG}
