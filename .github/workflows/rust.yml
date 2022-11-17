@@ -57,18 +57,43 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{ matrix.rust }}
-      - name: Build workspace in debug mode
-        run: |
-          cargo build
-        env:
-          CARGO_HOME: "/github/home/.cargo"
-          CARGO_TARGET_DIR: "/github/home/target/debug"
       - name: Build workspace in release mode
         run: |
-          cargo check --release
+          cargo build --release
+          ls -l /github/home/target/release
         env:
           CARGO_HOME: "/github/home/.cargo"
-          CARGO_TARGET_DIR: "/github/home/target/release"
+          CARGO_TARGET_DIR: "/github/home/target"
+      - name: Save artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: rust-artifacts
+          path: |
+            /github/home/target/release/ballista-scheduler
+            /github/home/target/release/ballista-executor
+
+  react-build:
+    name: React build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install dependencies
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get -qq install -y nodejs npm
+          npm install -g yarn
+      - name: Run yarn build
+        run: |
+          cd ballista/scheduler/ui
+          pwd
+          yarn install
+          yarn build
+      - name: Save artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: react-artifacts
+          path: |
+            ballista/scheduler/ui/build
 
   # test the crate
   linux-test:
@@ -256,6 +281,40 @@ jobs:
         env:
           CARGO_HOME: "/github/home/.cargo"
           CARGO_TARGET_DIR: "/github/home/target"
+
+  docker:
+    name: Docker
+    needs: [linux-build-lib, react-build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v3
+      - name: Restore rust artifacts
+        uses: actions/download-artifact@v2
+        with:
+          name: rust-artifacts
+          path: /home/runner/work/arrow-ballista/arrow-ballista/target/release
+      - name: Restore react artifacts
+        uses: actions/download-artifact@v2
+        with:
+          name: react-artifacts
+          path: /home/runner/work/arrow-ballista/arrow-ballista/ballista/scheduler/ui/build
+      - name: Build and push Docker image
+        run: |
+          echo "github user is $DOCKER_USER"
+          export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '0.10.0-test')"
+          if [[ $DOCKER_TAG =~ ^[0-9\.]+$ ]]
+          then
+            echo "publishing docker tag $DOCKER_TAG"
+          fi
+          docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
+          docker build -t ghcr.io/apache/arrow-ballista-standalone:$DOCKER_TAG -f dev/docker/ballista-standalone.Dockerfile .
+          docker push ghcr.io/apache/arrow-ballista-standalone:$DOCKER_TAG
+        env:
+          DOCKER_USER: ${{ github.actor }}
+          DOCKER_PASS: ${{ secrets.GITHUB_TOKEN }}
 
   clippy:
     name: Clippy
