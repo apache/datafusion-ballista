@@ -910,7 +910,7 @@ impl ExecutorHeartbeatListener {
 #[cfg(test)]
 mod test {
     use crate::config::SlotsPolicy;
-    use crate::state::backend::standalone::StandaloneClient;
+    use crate::state::backend::sled::SledClient;
     use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
     use ballista_core::error::Result;
     use ballista_core::serde::scheduler::{
@@ -928,7 +928,7 @@ mod test {
     }
 
     async fn test_reserve_and_cancel_inner(slots_policy: SlotsPolicy) -> Result<()> {
-        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+        let state_storage = Arc::new(SledClient::try_new_temporary()?);
 
         let executor_manager = ExecutorManager::new(state_storage, slots_policy);
 
@@ -966,7 +966,7 @@ mod test {
     }
 
     async fn test_reserve_partial_inner(slots_policy: SlotsPolicy) -> Result<()> {
-        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+        let state_storage = Arc::new(SledClient::try_new_temporary()?);
 
         let executor_manager = ExecutorManager::new(state_storage, slots_policy);
 
@@ -1021,7 +1021,7 @@ mod test {
 
         let executors = test_executors(10, 4);
 
-        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+        let state_storage = Arc::new(SledClient::try_new_temporary()?);
 
         let executor_manager = ExecutorManager::new(state_storage, slots_policy);
 
@@ -1066,7 +1066,7 @@ mod test {
     }
 
     async fn test_register_reserve_inner(slots_policy: SlotsPolicy) -> Result<()> {
-        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+        let state_storage = Arc::new(SledClient::try_new_temporary()?);
 
         let executor_manager = ExecutorManager::new(state_storage, slots_policy);
 

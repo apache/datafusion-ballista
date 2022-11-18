@@ -37,7 +37,7 @@ use ballista_scheduler::api::{get_routes, EitherBody, Error};
 #[cfg(feature = "etcd")]
 use ballista_scheduler::state::backend::etcd::EtcdClient;
 #[cfg(feature = "sled")]
-use ballista_scheduler::state::backend::standalone::StandaloneClient;
+use ballista_scheduler::state::backend::sled::SledClient;
 use datafusion_proto::protobuf::LogicalPlanNode;
 
 use ballista_scheduler::scheduler_server::SchedulerServer;
@@ -229,24 +229,24 @@ async fn main() -> Result<()> {
             )
         }
         #[cfg(feature = "sled")]
-        StateBackend::Standalone => {
+        StateBackend::Sled => {
             if opt.sled_dir.is_empty() {
                 Arc::new(
-                    StandaloneClient::try_new_temporary()
-                        .context("Could not create standalone config backend")?,
+                    SledClient::try_new_temporary()
+                        .context("Could not create sled config backend")?,
                 )
             } else {
                 println!("{}", opt.sled_dir);
                 Arc::new(
-                    StandaloneClient::try_new(opt.sled_dir)
-                        .context("Could not create standalone config backend")?,
+                    SledClient::try_new(opt.sled_dir)
+                        .context("Could not create sled config backend")?,
                 )
             }
         }
         #[cfg(not(feature = "sled"))]
-        StateBackend::Standalone => {
+        StateBackend::Sled => {
             unimplemented!(
-                "build the scheduler with the `sled` feature to use the standalone config backend"
+                "build the scheduler with the `sled` feature to use the sled config backend"
             )
         }
     };

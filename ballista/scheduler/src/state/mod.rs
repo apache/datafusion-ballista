@@ -428,7 +428,7 @@ pub async fn with_locks<Out, F: Future<Output = Out>>(
 
 #[cfg(test)]
 mod test {
-    use crate::state::backend::standalone::StandaloneClient;
+    use crate::state::backend::sled::SledClient;
     use crate::state::SchedulerState;
     use ballista_core::config::{BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS};
     use ballista_core::error::Result;
@@ -454,7 +454,7 @@ mod test {
     // We should free any reservations which are not assigned
     #[tokio::test]
     async fn test_offer_free_reservations() -> Result<()> {
-        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+        let state_storage = Arc::new(SledClient::try_new_temporary()?);
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::new_with_default_scheduler_name(
                 state_storage,
@@ -490,7 +490,7 @@ mod test {
         let config = BallistaConfig::builder()
             .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4")
             .build()?;
-        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+        let state_storage = Arc::new(SledClient::try_new_temporary()?);
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::with_task_launcher(
                 state_storage,
@@ -575,7 +575,7 @@ mod test {
         let config = BallistaConfig::builder()
             .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4")
             .build()?;
-        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+        let state_storage = Arc::new(SledClient::try_new_temporary()?);
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::with_task_launcher(
                 state_storage,

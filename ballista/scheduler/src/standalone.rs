@@ -17,9 +17,7 @@
 
 use crate::config::SchedulerConfig;
 use crate::metrics::default_metrics_collector;
-use crate::{
-    scheduler_server::SchedulerServer, state::backend::standalone::StandaloneClient,
-};
+use crate::{scheduler_server::SchedulerServer, state::backend::sled::SledClient};
 use ballista_core::serde::protobuf::PhysicalPlanNode;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::create_grpc_server;
@@ -33,7 +31,7 @@ use std::{net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
 
 pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
-    let client = StandaloneClient::try_new_temporary()?;
+    let client = SledClient::try_new_temporary()?;
 
     let metrics_collector = default_metrics_collector()?;
 

@@ -330,7 +330,7 @@ mod test {
     use ballista_core::serde::BallistaCodec;
 
     use crate::scheduler_server::{timestamp_millis, SchedulerServer};
-    use crate::state::backend::standalone::StandaloneClient;
+    use crate::state::backend::sled::SledClient;
 
     use crate::test_utils::{
         assert_completed_event, assert_failed_event, assert_no_submitted_event,
@@ -598,7 +598,7 @@ mod test {
     async fn test_scheduler(
         scheduling_policy: TaskSchedulingPolicy,
     ) -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
-        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+        let state_storage = Arc::new(SledClient::try_new_temporary()?);
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
