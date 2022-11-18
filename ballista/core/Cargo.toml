@@ -27,6 +27,9 @@ authors = ["Apache Arrow <dev@arrow.apache.org>"]
 edition = "2018"
 build = "build.rs"
 
+# Exclude proto files so crates.io consumers don't need protoc
+exclude = ["*.proto"]
+
 [package.metadata.docs.rs]
 rustc-args = ["--cfg", "docsrs"]
 
