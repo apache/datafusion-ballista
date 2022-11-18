@@ -24,12 +24,11 @@ One of the easiest ways to start with Ballista is to plug it into your existing 
 Getting started involves these main steps:
 
 1. [Installing prerequisites](#prereq)
-2. Build the [Ballista rust code](#rust)
-3. Build and run the [Ballista docker containers](#docker)
-4. Build the [Arrow Flight SQL JDBC Driver](#jdbc)
-5. [Install the driver](#tool) into your favorite JDBC tool
-6. Run a ["hello, world!"](#hello) query
-7. Register a table and run more complicated queries
+2. Run the [Ballista docker container](#docker)
+3. Download the [Arrow Flight SQL JDBC Driver](#jdbc)
+4. [Install the driver](#tool) into your favorite JDBC tool
+5. Run a ["hello, world!"](#hello) query
+6. Register a table and run more complicated queries
 
 ## <a name="prereq"/>Prerequisites
 
@@ -37,41 +36,25 @@ Getting started involves these main steps:
 
 ```shell
 sudo apt-get update
-sudo apt-get install -y docker.io docker-compose
+sudo apt-get install -y docker.io
 ```
 
 ### MacOS
 
 ```shell
-brew install docker docker-compose
+brew install docker
 ```
 
 ### Windows
 
 ```shell
-choco install docker-desktop docker-compose
+choco install docker-desktop
 ```
 
-## <a name="rust"/>Building Ballista
-
-To build in docker (non-linux systems):
+## <a name="docker"/> Run Docker Container
 
 ```shell
-git clone https://github.com/apache/arrow-ballista.git
-dev/build-ballista-rust.sh
-```
-
-Or in linux-based systems with the correct dependencies installed, one can simply:
-
-```shell
-cargo build --release --all --features flight-sql
-```
-
-## <a name="docker"/> Run Docker Containers
-
-```shell
-source dev/build-ballista-docker.sh
-docker-compose up
+docker run -p 50050:50050 --rm ghcr.io/apache/arrow-ballista-standalone:0.10.0
 ```
 
 ## <a name="jdbc"/>Download the FlightSQL JDBC Driver
@@ -103,17 +86,16 @@ select 'Hello from Arrow Ballista!' as greeting;
 
 In order to run queries against data, tables need to be "registered" with the current session (and re-registered upon each new connection).
 
-To register a table, find a `.csv`, `.json`, or `.parquet` file for testing, and use the syntax below:
+To register the built-in demo table, use the syntax below:
 
 ```sql
-create external table customer stored as CSV with header row
-    location '/path/to/customer.csv';
+create external table taxi stored as parquet location '/data/yellow_tripdata_2022-01.parquet';
 ```
 
 Once the table has been registered, all the normal SQL queries can be performed:
 
 ```sql
-select * from customer;
+select * from taxi limit 10;
 ```
 
 🎉 Happy querying! 🎉
