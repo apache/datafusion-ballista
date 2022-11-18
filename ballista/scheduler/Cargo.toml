@@ -19,7 +19,7 @@
 name = "ballista-scheduler"
 description = "Ballista Distributed Compute - Scheduler"
 license = "Apache-2.0"
-version = "0.9.0"
+version = "0.10.0"
 homepage = "https://github.com/apache/arrow-ballista"
 repository = "https://github.com/apache/arrow-ballista"
 readme = "README.md"
@@ -42,7 +42,7 @@ anyhow = "1"
 arrow-flight = { version = "26.0.0", features = ["flight-sql-experimental"] }
 async-recursion = "1.0.0"
 async-trait = "0.1.41"
-ballista-core = { path = "../core", version = "0.9.0" }
+ballista-core = { path = "../core", version = "0.10.0" }
 base64 = { version = "0.13", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
 configure_me = "0.4.0"
@@ -79,7 +79,7 @@ uuid = { version = "1.0", features = ["v4"] }
 warp = "0.3"
 
 [dev-dependencies]
-ballista-core = { path = "../core", version = "0.9.0" }
+ballista-core = { path = "../core", version = "0.10.0" }
 
 [build-dependencies]
 configure_me_codegen = "=0.4.0"
