@@ -114,7 +114,8 @@ jobs:
         run: |
           export PATH=$PATH:$HOME/d/protoc/bin
           export RUSTFLAGS='-C target-cpu=skylake'
-          docker run --rm -v $(pwd)/python/:/io \
+          docker run --rm -v $(pwd):/io \
+            --workdir /io/python \
             konstin2/maturin:v0.12.10 \
             build --release --manylinux 2010
       - name: Archive wheels
