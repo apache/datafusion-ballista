@@ -53,3 +53,4 @@ Cargo.lock
 .history
 parquet-testing/*
 *rat.txt
+ballista/core/src/serde/generated/ballista.rs
