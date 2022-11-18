@@ -107,7 +107,7 @@ jobs:
           docker run --rm -v $(pwd)/..:/io \
             --workdir /io/python \
             ghcr.io/pyo3/maturin:v0.13.7 \
-            build --release --manylinux 2010 --locked
+            build --release --manylinux 2010
       - name: Archive wheels
         uses: actions/upload-artifact@v3
         with:
