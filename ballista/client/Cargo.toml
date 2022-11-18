@@ -25,7 +25,7 @@ repository = "https://github.com/apache/arrow-ballista"
 readme = "README.md"
 authors = ["Apache Arrow <dev@arrow.apache.org>"]
 edition = "2021"
-rust-version = "1.59"
+rust-version = "1.63"
 
 [dependencies]
 ballista-core = { path = "../core", version = "0.10.0" }
