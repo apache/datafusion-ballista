@@ -30,7 +30,7 @@ edition = "2018"
 scheduler = "scheduler_config_spec.toml"
 
 [features]
-default = ["etcd", "sled", "prometheus-metrics"]
+default = ["etcd", "sled", "prometheus-metrics", "flight-sql"]
 etcd = ["etcd-client"]
 flight-sql = []
 prometheus-metrics = ["prometheus", "once_cell"]
