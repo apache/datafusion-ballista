@@ -103,6 +103,7 @@ jobs:
       - name: Build wheels
         run: |
           export RUSTFLAGS='-C target-cpu=skylake'
+          rm ../ballista/core/proto/*
           docker run --rm -v $(pwd)/..:/io \
             --workdir /io/python \
             ghcr.io/pyo3/maturin:v0.13.7 \
