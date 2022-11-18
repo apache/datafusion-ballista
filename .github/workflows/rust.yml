@@ -145,7 +145,7 @@ jobs:
           export PATH=$PATH:$HOME/d/protoc/bin
           export ARROW_TEST_DATA=$(pwd)/testing/data
           export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
-          cargo test --features flight-sql
+          cargo test
           cd examples
           cargo run --example standalone_sql --features=ballista/standalone
         env:
@@ -304,14 +304,15 @@ jobs:
       - name: Build and push Docker image
         run: |
           echo "github user is $DOCKER_USER"
-          export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '0.10.0-test')"
-          if [[ $DOCKER_TAG =~ ^[0-9\.]+$ ]]
+          docker build -t arrow-ballista-standalone:latest -f dev/docker/ballista-standalone.Dockerfile .
+          export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '')"
+          if [[ $DOCKER_TAG =~ ^[0-9\.]+(?:-rc[0-9]+)?$ ]]
           then
             echo "publishing docker tag $DOCKER_TAG"
+            docker tag arrow-ballista-standalone:latest ghcr.io/apache/arrow-ballista-standalone:$DOCKER_TAG 
+            docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
+            docker push ghcr.io/apache/arrow-ballista-standalone:$DOCKER_TAG
           fi
-          docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
-          docker build -t ghcr.io/apache/arrow-ballista-standalone:$DOCKER_TAG -f dev/docker/ballista-standalone.Dockerfile .
-          docker push ghcr.io/apache/arrow-ballista-standalone:$DOCKER_TAG
         env:
           DOCKER_USER: ${{ github.actor }}
           DOCKER_PASS: ${{ secrets.GITHUB_TOKEN }}

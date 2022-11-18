@@ -89,6 +89,7 @@ impl FlightSqlServiceImpl {
         }
     }
 
+    #[allow(deprecated)]
     fn tables(&self, ctx: Arc<SessionContext>) -> Result<RecordBatch, ArrowError> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("catalog_name", DataType::Utf8, true),
@@ -96,7 +97,7 @@ impl FlightSqlServiceImpl {
             Field::new("table_name", DataType::Utf8, false),
             Field::new("table_type", DataType::Utf8, false),
         ]));
-        let tables = ctx.tables()?;
+        let tables = ctx.tables()?; // resolved in #501
         let names: Vec<_> = tables.iter().map(|it| Some(it.as_str())).collect();
         let types: Vec<_> = names.iter().map(|_| Some("TABLE")).collect();
         let cats: Vec<_> = names.iter().map(|_| None).collect();
@@ -104,7 +105,7 @@ impl FlightSqlServiceImpl {
         let rb = RecordBatch::try_new(
             schema,
             [cats, schemas, names, types]
-                .into_iter()
+                .iter()
                 .map(|i| Arc::new(StringArray::from(i.clone())) as ArrayRef)
                 .collect::<Vec<_>>(),
         )?;
@@ -120,7 +121,7 @@ impl FlightSqlServiceImpl {
         RecordBatch::try_new(
             schema,
             [TABLE_TYPES]
-                .into_iter()
+                .iter()
                 .map(|i| Arc::new(StringArray::from(i.to_vec())) as ArrayRef)
                 .collect::<Vec<_>>(),
         )
@@ -141,7 +142,7 @@ impl FlightSqlServiceImpl {
                 Status::internal(format!("Failed to create SessionContext: {:?}", e))
             })?;
         let handle = Uuid::new_v4();
-        self.contexts.insert(handle.clone(), ctx);
+        self.contexts.insert(handle, ctx);
         Ok(handle)
     }
 
@@ -149,14 +150,14 @@ impl FlightSqlServiceImpl {
         let auth = req
             .metadata()
             .get("authorization")
-            .ok_or(Status::internal("No authorization header!"))?;
+            .ok_or_else(|| Status::internal("No authorization header!"))?;
         let str = auth
             .to_str()
             .map_err(|e| Status::internal(format!("Error parsing header: {}", e)))?;
         let authorization = str.to_string();
         let bearer = "Bearer ";
         if !authorization.starts_with(bearer) {
-            Err(Status::internal(format!("Invalid auth header!")))?;
+            Err(Status::internal("Invalid auth header!"))?;
         }
         let auth = authorization[bearer.len()..].to_string();
 
@@ -249,17 +250,17 @@ impl FlightSqlServiceImpl {
                 .advertise_flight_sql_endpoint
             {
                 Some(endpoint) => {
-                    let advertise_endpoint_vec: Vec<&str> = endpoint.split(":").collect();
+                    let advertise_endpoint_vec: Vec<&str> = endpoint.split(':').collect();
                     match advertise_endpoint_vec.as_slice() {
                         [host_ip, port] => {
-                            (String::from(*host_ip), FromStr::from_str(*port).expect("Failed to parse port from advertise-endpoint."))
+                            (String::from(*host_ip), FromStr::from_str(port).expect("Failed to parse port from advertise-endpoint."))
                         }
                         _ => {
                             Err(Status::internal("advertise-endpoint flag has incorrect format. Expected IP:Port".to_string()))?
                         }
                     }
                 }
-                None => (exec_host.clone(), exec_port.clone()),
+                None => (exec_host.clone(), exec_port),
             };
 
             let fetch = if let Some(ref id) = loc.partition_id {
@@ -442,21 +443,19 @@ impl FlightSqlServiceImpl {
         Response<Pin<Box<dyn Stream<Item = Result<FlightData, Status>> + Send>>>,
         Status,
     > {
-        let (tx, rx): (
-            Sender<Result<FlightData, Status>>,
-            Receiver<Result<FlightData, Status>>,
-        ) = channel(2);
+        type FlightResult = Result<FlightData, Status>;
+        let (tx, rx): (Sender<FlightResult>, Receiver<FlightResult>) = channel(2);
         let options = IpcWriteOptions::default();
         let schema = SchemaAsIpc::new(rb.schema().as_ref(), &options).into();
         tx.send(Ok(schema))
             .await
-            .map_err(|e| Status::internal("Error sending schema".to_string()))?;
-        let (dict, flight) = flight_data_from_arrow_batch(&rb, &options);
+            .map_err(|_| Status::internal("Error sending schema".to_string()))?;
+        let (dict, flight) = flight_data_from_arrow_batch(rb, &options);
         let flights = dict.into_iter().chain(std::iter::once(flight));
-        for flight in flights.into_iter() {
+        for flight in flights {
             tx.send(Ok(flight))
                 .await
-                .map_err(|e| Status::internal("Error sending flight".to_string()))?;
+                .map_err(|_| Status::internal("Error sending flight".to_string()))?;
         }
         let resp = Response::new(Box::pin(ReceiverStream::new(rx))
             as Pin<Box<dyn Stream<Item = Result<FlightData, Status>> + Send + 'static>>);
@@ -468,7 +467,7 @@ impl FlightSqlServiceImpl {
         data: &RecordBatch,
         name: &str,
     ) -> Result<Response<FlightInfo>, Status> {
-        let num_bytes = batch_byte_size(&data) as i64;
+        let num_bytes = batch_byte_size(data) as i64;
         let schema = data.schema();
         let num_rows = data.num_rows() as i64;
 
@@ -499,7 +498,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let authorization = request
             .metadata()
             .get("authorization")
-            .ok_or(Status::invalid_argument("authorization field not present"))?
+            .ok_or_else(|| Status::invalid_argument("authorization field not present"))?
             .to_str()
             .map_err(|_| Status::invalid_argument("authorization not parsable"))?;
         if !authorization.starts_with(basic) {
@@ -513,11 +512,9 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .map_err(|_| Status::invalid_argument("authorization not parsable"))?;
         let str = String::from_utf8(bytes)
             .map_err(|_| Status::invalid_argument("authorization not parsable"))?;
-        let parts: Vec<_> = str.split(":").collect();
+        let parts: Vec<_> = str.split(':').collect();
         if parts.len() != 2 {
-            Err(Status::invalid_argument(format!(
-                "Invalid authorization header"
-            )))?;
+            Err(Status::invalid_argument("Invalid authorization header"))?;
         }
         let user = parts[0];
         let pass = parts[1];
@@ -533,7 +530,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         };
         let result = Ok(result);
         let output = futures::stream::iter(vec![result]);
-        let str = format!("Bearer {}", token.to_string());
+        let str = format!("Bearer {}", token);
         let mut resp: Response<Pin<Box<dyn Stream<Item = Result<_, _>> + Send>>> =
             Response::new(Box::pin(output));
         let md = MetadataValue::try_from(str)
@@ -559,7 +556,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let action: protobuf::Action = message
             .unpack()
             .map_err(|e| Status::internal(format!("{:?}", e)))?
-            .ok_or(Status::internal("Expected an Action but got None!"))?;
+            .ok_or_else(|| Status::internal("Expected an Action but got None!"))?;
         let fp = match &action.action_type {
             Some(FetchPartition(fp)) => fp.clone(),
             None => Err(Status::internal("Expected an ActionType but got None!"))?,
@@ -569,7 +566,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         match fp.job_id.as_str() {
             "get_flight_info_table_types" => {
                 debug!("Responding with table types");
-                let rb = FlightSqlServiceImpl::table_types().map_err(|e| {
+                let rb = FlightSqlServiceImpl::table_types().map_err(|_| {
                     Status::internal("Error getting table types".to_string())
                 })?;
                 let resp = Self::record_batch_to_resp(&rb).await?;
@@ -579,7 +576,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
                 debug!("Responding with tables");
                 let rb = self
                     .tables(ctx)
-                    .map_err(|e| Status::internal("Error getting tables".to_string()))?;
+                    .map_err(|_| Status::internal("Error getting tables".to_string()))?;
                 let resp = Self::record_batch_to_resp(&rb).await?;
                 return Ok(resp);
             }
@@ -675,7 +672,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     async fn get_flight_info_table_types(
         &self,
         _query: CommandGetTableTypes,
-        request: Request<FlightDescriptor>,
+        _request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
         debug!("get_flight_info_table_types");
         let data = FlightSqlServiceImpl::table_types()

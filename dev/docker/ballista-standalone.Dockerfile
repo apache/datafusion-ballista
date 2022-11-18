@@ -33,6 +33,9 @@ RUN apt-get -qq update && apt-get install -qq -y nginx netcat wget
 COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
 COPY target/$RELEASE_FLAG/ballista-executor /root/ballista-executor
 
+RUN chmod a+x /root/ballista-scheduler && \
+    chmod a+x /root/ballista-executor
+
 # populate some sample data for ListingSchemaProvider
 RUN mkdir -p /data && \
     wget -q https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2022-01.parquet -P /data/
