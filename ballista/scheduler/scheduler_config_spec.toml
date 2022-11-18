@@ -33,7 +33,7 @@ doc = "Route for proxying flight results via scheduler. Should be of the form 'I
 abbr = "b"
 name = "config_backend"
 type = "ballista_scheduler::state::backend::StateBackend"
-doc = "The configuration backend for the scheduler, possible values: etcd, sled. Default: sled"
+doc = "The configuration backend for the scheduler, possible values: etcd, memory, sled. Default: sled"
 default = "ballista_scheduler::state::backend::StateBackend::Sled"
 
 [[param]]

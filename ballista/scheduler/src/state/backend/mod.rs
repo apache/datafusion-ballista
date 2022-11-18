@@ -24,6 +24,7 @@ use tokio::sync::OwnedMutexGuard;
 
 #[cfg(feature = "etcd")]
 pub mod etcd;
+pub mod memory;
 #[cfg(feature = "sled")]
 pub mod sled;
 mod utils;
@@ -33,6 +34,7 @@ mod utils;
 #[derive(Debug, Clone, ArgEnum, serde::Deserialize)]
 pub enum StateBackend {
     Etcd,
+    Memory,
     Sled,
 }
 

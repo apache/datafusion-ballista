@@ -21,6 +21,7 @@ use anyhow::{Context, Result};
 #[cfg(feature = "flight-sql")]
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_scheduler::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
+use ballista_scheduler::state::backend::memory::MemoryBackendClient;
 use futures::future::{self, Either, TryFutureExt};
 use hyper::{server::conn::AddrStream, service::make_service_fn, Server};
 use std::convert::Infallible;
@@ -211,10 +212,6 @@ async fn main() -> Result<()> {
     let addr = addr.parse()?;
 
     let config_backend: Arc<dyn StateBackendClient> = match opt.config_backend {
-        #[cfg(not(any(feature = "sled", feature = "etcd")))]
-        _ => std::compile_error!(
-            "To build the scheduler enable at least one config backend feature (`etcd` or `sled`)"
-        ),
         #[cfg(feature = "etcd")]
         StateBackend::Etcd => {
             let etcd = etcd_client::Client::connect(&[opt.etcd_urls], None)
@@ -249,6 +246,7 @@ async fn main() -> Result<()> {
                 "build the scheduler with the `sled` feature to use the sled config backend"
             )
         }
+        StateBackend::Memory => Arc::new(MemoryBackendClient::new()),
     };
 
     let config = SchedulerConfig {
