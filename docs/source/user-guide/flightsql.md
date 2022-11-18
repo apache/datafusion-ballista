@@ -86,7 +86,7 @@ select 'Hello from Arrow Ballista!' as greeting;
 
 In order to run queries against data, tables need to be "registered" with the current session (and re-registered upon each new connection).
 
-To register the built-in demo table, and use the syntax below:
+To register the built-in demo table, use the syntax below:
 
 ```sql
 create external table taxi stored as parquet location '/data/yellow_tripdata_2022-01.parquet';
