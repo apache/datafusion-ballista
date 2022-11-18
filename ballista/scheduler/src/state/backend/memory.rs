@@ -149,12 +149,9 @@ impl StateBackendClient for MemoryBackendClient {
         Ok(())
     }
 
+    /// Currently the locks should be acquired before invoking this method.
+    /// Later need to be refined by acquiring all of the related locks inside this method
     async fn apply_txn(&self, ops: Vec<(Operation, Keyspace, String)>) -> Result<()> {
-        let mut locks = vec![];
-        for (_, keyspace, key) in ops.iter() {
-            locks.push(self.lock(keyspace.clone(), key).await?);
-        }
-
         for (op, keyspace, key) in ops.into_iter() {
             match op {
                 Operation::Delete => {
@@ -169,6 +166,7 @@ impl StateBackendClient for MemoryBackendClient {
         Ok(())
     }
 
+    /// Currently it's not used. Later will refine the caller side by leveraging this method
     async fn mv(
         &self,
         from_keyspace: Keyspace,
@@ -177,20 +175,19 @@ impl StateBackendClient for MemoryBackendClient {
     ) -> Result<()> {
         let from_space_key = Self::get_space_key(&from_keyspace);
 
-        if let Some(from_space_state) = self.states.get(&from_space_key) {
+        let ops = if let Some(from_space_state) = self.states.get(&from_space_key) {
             if let Some(state) = from_space_state.value().get(key) {
-                let ops = vec![
+                Some(vec![
                     (Operation::Delete, from_keyspace, key.to_owned()),
                     (Operation::Put(state.clone()), to_keyspace, key.to_owned()),
-                ];
-                self.apply_txn(ops).await
+                ])
             } else {
                 // TODO should this return an error?
                 warn!(
                     "Cannot move value at {}/{}, does not exist",
                     from_space_key, key
                 );
-                Ok(())
+                None
             }
         } else {
             // TODO should this return an error?
@@ -198,8 +195,14 @@ impl StateBackendClient for MemoryBackendClient {
                 "Cannot move value at {}/{}, does not exist",
                 from_space_key, key
             );
-            Ok(())
+            None
+        };
+
+        if let Some(ops) = ops {
+            self.apply_txn(ops).await?;
         }
+
+        Ok(())
     }
 
     async fn lock(&self, keyspace: Keyspace, key: &str) -> Result<Box<dyn Lock>> {
@@ -283,6 +286,21 @@ mod tests {
             .put(Keyspace::Slots, key.to_owned(), value.to_vec())
             .await?;
         assert_eq!(client.get(Keyspace::Slots, key).await?, value);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn put_move() -> Result<(), Box<dyn std::error::Error>> {
+        let client = MemoryBackendClient::new();
+        let key = "key";
+        let value = "value".as_bytes();
+        client
+            .put(Keyspace::ActiveJobs, key.to_owned(), value.to_vec())
+            .await?;
+        client
+            .mv(Keyspace::ActiveJobs, Keyspace::FailedJobs, key)
+            .await?;
+        assert_eq!(client.get(Keyspace::FailedJobs, key).await?, value);
         Ok(())
     }
 
