@@ -94,16 +94,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - run: rm LICENSE.txt
-      - name: Install protobuf compiler
-        shell: bash
-        run: |
-          mkdir -p $HOME/d/protoc
-          cd $HOME/d/protoc
-          export PROTO_ZIP="protoc-21.4-linux-x86_64.zip"
-          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.4/$PROTO_ZIP
-          unzip $PROTO_ZIP
-          export PATH=$PATH:$HOME/d/protoc/bin
-          protoc --version
       - name: Download LICENSE.txt
         uses: actions/download-artifact@v3
         with:
@@ -112,12 +102,12 @@ jobs:
       - run: cat LICENSE.txt
       - name: Build wheels
         run: |
-          export PATH=$PATH:$HOME/d/protoc/bin
           export RUSTFLAGS='-C target-cpu=skylake'
+          rm ../ballista/core/proto/*
           docker run --rm -v $(pwd)/..:/io \
             --workdir /io/python \
-            konstin2/maturin:v0.11.2 \
-            build --release --manylinux 2010
+            ghcr.io/pyo3/maturin:v0.13.7 \
+            build --release --manylinux 2010 --locked
       - name: Archive wheels
         uses: actions/upload-artifact@v3
         with:
