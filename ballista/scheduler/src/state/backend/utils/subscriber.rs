@@ -17,7 +17,7 @@
 
 //! It's mainly a modified version of sled::subscriber
 
-use crate::state::backend::utils::sled_oneshot::{OneShot, OneShotFiller};
+use crate::state::backend::utils::oneshot::{OneShot, OneShotFiller};
 use crate::state::backend::WatchEvent;
 
 use parking_lot::RwLock;

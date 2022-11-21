@@ -16,6 +16,6 @@
 // under the License.
 
 #[allow(dead_code)]
-mod sled_oneshot;
+mod oneshot;
 #[allow(dead_code)]
-pub(crate) mod sled_subscriber;
+pub(crate) mod subscriber;

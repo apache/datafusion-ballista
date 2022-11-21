@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::state::backend::utils::sled_subscriber::{Subscriber, Subscribers};
+use crate::state::backend::utils::subscriber::{Subscriber, Subscribers};
 use crate::state::backend::{
     Keyspace, Lock, Operation, StateBackendClient, Watch, WatchEvent,
 };
@@ -207,13 +207,11 @@ impl StateBackendClient for MemoryBackendClient {
 
     async fn lock(&self, keyspace: Keyspace, key: &str) -> Result<Box<dyn Lock>> {
         let flat_key = Self::get_flat_key(&keyspace, key);
-        if let Some(lock) = self.locks.get_mut(&flat_key) {
-            Ok(Box::new(lock.value().clone().lock_owned().await))
-        } else {
-            let new_lock = Arc::new(Mutex::new(()));
-            self.locks.insert(flat_key, new_lock.clone());
-            Ok(Box::new(new_lock.lock_owned().await))
-        }
+        let lock = self
+            .locks
+            .entry(flat_key)
+            .or_insert_with(|| Arc::new(Mutex::new(())));
+        Ok(Box::new(lock.value().clone().lock_owned().await))
     }
 
     async fn watch(&self, keyspace: Keyspace, prefix: String) -> Result<Box<dyn Watch>> {
