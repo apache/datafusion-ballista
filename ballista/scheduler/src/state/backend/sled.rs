@@ -29,15 +29,15 @@ use crate::state::backend::{
     Keyspace, Lock, Operation, StateBackendClient, Watch, WatchEvent,
 };
 
-/// A [`StateBackendClient`] implementation that uses file-based storage to save cluster configuration.
+/// A [`StateBackendClient`] implementation that uses file-based storage to save cluster state.
 #[derive(Clone)]
-pub struct StandaloneClient {
+pub struct SledClient {
     db: sled::Db,
     locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
-impl StandaloneClient {
-    /// Creates a StandaloneClient that saves data to the specified file.
+impl SledClient {
+    /// Creates a SledClient that saves data to the specified file.
     pub fn try_new<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
         Ok(Self {
             db: sled::open(path).map_err(sled_to_ballista_error)?,
@@ -45,7 +45,7 @@ impl StandaloneClient {
         })
     }
 
-    /// Creates a StandaloneClient that saves data to a temp file.
+    /// Creates a SledClient that saves data to a temp file.
     pub fn try_new_temporary() -> Result<Self> {
         Ok(Self {
             db: sled::Config::new()
@@ -65,7 +65,7 @@ fn sled_to_ballista_error(e: sled::Error) -> BallistaError {
 }
 
 #[tonic::async_trait]
-impl StateBackendClient for StandaloneClient {
+impl StateBackendClient for SledClient {
     async fn get(&self, keyspace: Keyspace, key: &str) -> Result<Vec<u8>> {
         let key = format!("/{:?}/{}", keyspace, key);
         Ok(self
@@ -282,15 +282,15 @@ impl Stream for SledWatch {
 
 #[cfg(test)]
 mod tests {
-    use super::{StandaloneClient, StateBackendClient, Watch, WatchEvent};
+    use super::{SledClient, StateBackendClient, Watch, WatchEvent};
 
     use crate::state::backend::{Keyspace, Operation};
     use crate::state::with_locks;
     use futures::StreamExt;
     use std::result::Result;
 
-    fn create_instance() -> Result<StandaloneClient, Box<dyn std::error::Error>> {
-        Ok(StandaloneClient::try_new_temporary()?)
+    fn create_instance() -> Result<SledClient, Box<dyn std::error::Error>> {
+        Ok(SledClient::try_new_temporary()?)
     }
 
     #[tokio::test]

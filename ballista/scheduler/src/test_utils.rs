@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
 use crate::scheduler_server::{timestamp_millis, SchedulerServer};
-use crate::state::backend::standalone::StandaloneClient;
+use crate::state::backend::sled::SledClient;
 
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::task_manager::TaskLauncher;
@@ -380,7 +380,7 @@ impl SchedulerTest {
         task_slots_per_executor: usize,
         runner: Option<Arc<dyn TaskRunner>>,
     ) -> Result<Self> {
-        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+        let state_storage = Arc::new(SledClient::try_new_temporary()?);
 
         let ballista_config = BallistaConfig::builder()
             .set(

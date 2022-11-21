@@ -34,7 +34,7 @@ use crate::state::backend::{
     Keyspace, Lock, Operation, StateBackendClient, Watch, WatchEvent,
 };
 
-/// A [`StateBackendClient`] implementation that uses etcd to save cluster configuration.
+/// A [`StateBackendClient`] implementation that uses etcd to save cluster state.
 #[derive(Clone)]
 pub struct EtcdClient {
     namespace: String,
