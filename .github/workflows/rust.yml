@@ -306,7 +306,7 @@ jobs:
           echo "github user is $DOCKER_USER"
           docker build -t arrow-ballista-standalone:latest -f dev/docker/ballista-standalone.Dockerfile .
           export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '')"
-          if [[ $DOCKER_TAG =~ ^[0-9\.]+(-rc[0-9]+)?$ ]]
+          if [[ $DOCKER_TAG =~ ^[0-9\.]+-rc[0-9]+$ ]]
           then
             echo "publishing docker tag $DOCKER_TAG"
             docker tag arrow-ballista-standalone:latest ghcr.io/apache/arrow-ballista-standalone:$DOCKER_TAG 

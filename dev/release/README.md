@@ -290,16 +290,13 @@ dot -Tsvg dev/release/crate-deps.dot > dev/release/crate-deps.svg
 
 ### Publish Docker Images
 
-We do not yet publish Docker images to the official Apache DockerHub account but there is an issue open for this
-([#236](https://github.com/apache/arrow-ballista/issues/236)).
+We release the Docker image that was voted on rather than build a new image. We do this by re-tagging the image.
 
-To build Docker images:
-
-```shell
-RELEASE_FLAG=release-lto ./dev/build-ballista-docker.sh
+```bash
+$ docker pull ghcr.io/apache/arrow-ballista-standalone:0.10.0-rc3
+$ docker tag ghcr.io/apache/arrow-ballista-standalone:0.10.0-rc3 ghcr.io/apache/arrow-ballista-standalone:0.10.0
+$ docker push ghcr.io/apache/arrow-ballista-standalone:0.10.0
 ```
-
-The Docker image is tagged as `apache/arrow-ballista:0.8.0`.
 
 ### Call the vote
 
