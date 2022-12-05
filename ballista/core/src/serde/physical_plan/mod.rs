@@ -528,6 +528,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 let partition_mode = match partition_mode {
                     protobuf::PartitionMode::CollectLeft => PartitionMode::CollectLeft,
                     protobuf::PartitionMode::Partitioned => PartitionMode::Partitioned,
+                    protobuf::PartitionMode::Auto => PartitionMode::Auto,
                 };
                 Ok(Arc::new(HashJoinExec::try_new(
                     left,
@@ -867,6 +868,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
             let partition_mode = match exec.partition_mode() {
                 PartitionMode::CollectLeft => protobuf::PartitionMode::CollectLeft,
                 PartitionMode::Partitioned => protobuf::PartitionMode::Partitioned,
+                PartitionMode::Auto => protobuf::PartitionMode::Auto,
             };
 
             Ok(protobuf::PhysicalPlanNode {

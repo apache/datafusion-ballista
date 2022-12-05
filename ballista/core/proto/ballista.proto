@@ -247,6 +247,14 @@ message FileScanExecConf {
   Statistics statistics = 6;
   repeated string table_partition_cols = 7;
   string object_store_url = 8;
+
+  oneof optional_output_ordering {
+    FileScanOutputOrdering output_ordering = 9;
+  }
+}
+
+message FileScanOutputOrdering{
+  repeated datafusion.LogicalExprNode output_ordering = 9;
 }
 
 message ParquetScanExecNode {
@@ -267,6 +275,7 @@ message AvroScanExecNode {
 enum PartitionMode {
   COLLECT_LEFT = 0;
   PARTITIONED = 1;
+  AUTO = 2;
 }
 
 message HashJoinExecNode {

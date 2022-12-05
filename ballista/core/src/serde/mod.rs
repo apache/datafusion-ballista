@@ -258,7 +258,7 @@ mod tests {
     use datafusion::physical_plan::expressions::PhysicalSortExpr;
     use datafusion::physical_plan::planner::{DefaultPhysicalPlanner, ExtensionPlanner};
     use datafusion::physical_plan::{
-        DisplayFormatType, Distribution, ExecutionPlan, Partitioning, PhysicalPlanner,
+        DisplayFormatType, ExecutionPlan, Partitioning, PhysicalPlanner,
         SendableRecordBatchStream, Statistics,
     };
     use datafusion::prelude::{CsvReadOptions, SessionConfig, SessionContext};
@@ -390,10 +390,6 @@ mod tests {
 
         fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
             None
-        }
-
-        fn required_child_distribution(&self) -> Distribution {
-            Distribution::SinglePartition
         }
 
         fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
