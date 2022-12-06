@@ -33,7 +33,7 @@ ballista = { path = "../ballista/client", version = "0.10.0", features = [
     "standalone",
 ] }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = "14.0.0"
+datafusion = "15.0.0"
 datafusion-cli = "14.0.0"
 dirs = "4.0.0"
 env_logger = "0.9"
