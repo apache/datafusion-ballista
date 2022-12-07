@@ -22,7 +22,7 @@ use std::iter::FromIterator;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use datafusion::physical_optimizer::hash_build_probe_order::HashBuildProbeOrder;
+use datafusion::physical_optimizer::join_selection::JoinSelection;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
@@ -363,7 +363,7 @@ impl UnresolvedStage {
         )?;
 
         // Optimize join order based on new resolved statistics
-        let optimize_join = HashBuildProbeOrder::new();
+        let optimize_join = JoinSelection::new();
         let plan = optimize_join.optimize(plan, &SessionConfig::new())?;
 
         Ok(ResolvedStage::new(
@@ -829,7 +829,7 @@ impl RunningStage {
             let new_metric = Arc::new(Metric::new(metric_value, Some(partition)));
             first.push(new_metric);
         }
-        first.aggregate_by_partition()
+        first.aggregate_by_name()
     }
 
     pub(super) fn task_failure_number(&self, partition_id: usize) -> usize {

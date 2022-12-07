@@ -331,6 +331,8 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     physical_window_expr,
                     input,
                     Arc::new((&input_schema).try_into()?),
+                    vec![],
+                    None,
                 )?))
             }
             PhysicalPlanType::Aggregate(hash_agg) => {
@@ -528,6 +530,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                 let partition_mode = match partition_mode {
                     protobuf::PartitionMode::CollectLeft => PartitionMode::CollectLeft,
                     protobuf::PartitionMode::Partitioned => PartitionMode::Partitioned,
+                    protobuf::PartitionMode::Auto => PartitionMode::Auto,
                 };
                 Ok(Arc::new(HashJoinExec::try_new(
                     left,
@@ -792,7 +795,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                         input: Some(Box::new(input)),
                         skip: limit.skip() as u32,
                         fetch: match limit.fetch() {
-                            Some(n) => *n as i64,
+                            Some(n) => n as i64,
                             _ => -1, // no limit
                         },
                     },
@@ -867,6 +870,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
             let partition_mode = match exec.partition_mode() {
                 PartitionMode::CollectLeft => protobuf::PartitionMode::CollectLeft,
                 PartitionMode::Partitioned => protobuf::PartitionMode::Partitioned,
+                PartitionMode::Auto => protobuf::PartitionMode::Auto,
             };
 
             Ok(protobuf::PhysicalPlanNode {
@@ -1272,6 +1276,7 @@ fn decode_scan_config(
         projection,
         limit: proto.limit.as_ref().map(|sl| sl.limit as usize),
         table_partition_cols: vec![],
+        output_ordering: None,
     })
 }
 
@@ -1599,6 +1604,7 @@ mod roundtrip_tests {
             projection: None,
             limit: None,
             table_partition_cols: vec![],
+            output_ordering: None,
         };
 
         let predicate = datafusion::prelude::col("col").eq(datafusion::prelude::lit("1"));
