@@ -23,6 +23,8 @@ use uuid::Uuid;
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 
+use arrow::datatypes::DataType;
+
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::pyarrow::PyArrowType;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -159,7 +161,7 @@ impl PySessionContext {
         &mut self,
         name: &str,
         path: &str,
-        table_partition_cols: Vec<String>,
+        table_partition_cols: Vec<(String, DataType)>,
         parquet_pruning: bool,
         file_extension: &str,
         py: Python,
