@@ -50,7 +50,7 @@ spec:
         - name: {{ .Chart.Name }}-executor
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          image: "{{ .Values.image.repository }}{{ .Values.image.executor }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.image.repository }}/{{ .Values.image.executor }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/root/ballista-executor", "--scheduler-host=ballista-scheduler"]
           env:
