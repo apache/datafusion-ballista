@@ -1691,13 +1691,15 @@ mod test {
         let executor2 = mock_executor("executor-id2".to_string());
         let mut join_graph = test_join_plan(4).await;
 
-        assert_eq!(join_graph.stage_count(), 5);
+        // With the improvement of https://github.com/apache/arrow-datafusion/pull/4122,
+        // unnecessary RepartitionExec can be removed
+        assert_eq!(join_graph.stage_count(), 4);
         assert_eq!(join_graph.available_tasks(), 0);
 
         // Call revive to move the two leaf Resolved stages to Running
         join_graph.revive();
 
-        assert_eq!(join_graph.stage_count(), 5);
+        assert_eq!(join_graph.stage_count(), 4);
         assert_eq!(join_graph.available_tasks(), 2);
 
         // Complete the first stage
@@ -1742,13 +1744,13 @@ mod test {
         let executor2 = mock_executor("executor-id2".to_string());
         let mut join_graph = test_join_plan(4).await;
 
-        assert_eq!(join_graph.stage_count(), 5);
+        assert_eq!(join_graph.stage_count(), 4);
         assert_eq!(join_graph.available_tasks(), 0);
 
         // Call revive to move the two leaf Resolved stages to Running
         join_graph.revive();
 
-        assert_eq!(join_graph.stage_count(), 5);
+        assert_eq!(join_graph.stage_count(), 4);
         assert_eq!(join_graph.available_tasks(), 2);
 
         // Complete the first stage
