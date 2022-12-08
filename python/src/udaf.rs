@@ -97,8 +97,7 @@ impl Accumulator for RustAccumulator {
     }
 
     fn size(&self) -> usize {
-        Python::with_gil(|py| self.accum.as_ref(py).call_method0("size")?.extract())
-            .map_err(|e| DataFusionError::Execution(format!("{}", e)))
+        std::mem::size_of_val(self)
     }
 }
 

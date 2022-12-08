@@ -111,7 +111,7 @@ impl TableProvider for Dataset {
                 DatasetExec::new(
                     py,
                     self.dataset.as_ref(py),
-                    projection.clone(),
+                    projection.cloned(),
                     filters,
                 )
                 .map_err(|err| DataFusionError::External(Box::new(err)))?,
