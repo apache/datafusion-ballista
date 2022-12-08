@@ -34,6 +34,7 @@ use datafusion::prelude::{CsvReadOptions, ParquetReadOptions};
 use crate::catalog::{PyCatalog, PyTable};
 use crate::dataframe::PyDataFrame;
 use crate::dataset::Dataset;
+use crate::datatype::PyDataType;
 use crate::errors::DataFusionError;
 use crate::udf::PyScalarUDF;
 use crate::utils::wait_for_future;

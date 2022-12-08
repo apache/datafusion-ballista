@@ -29,6 +29,8 @@ mod context;
 mod dataframe;
 mod dataset;
 mod dataset_exec;
+#[allow(clippy::borrow_deref_ref)]
+mod datatype;
 pub mod errors;
 #[allow(clippy::borrow_deref_ref)]
 mod expression;
