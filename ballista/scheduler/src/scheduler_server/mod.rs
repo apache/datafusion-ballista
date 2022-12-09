@@ -37,7 +37,6 @@ use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
 use crate::state::backend::cluster::ClusterState;
 use crate::state::backend::StateBackendClient;
-use crate::state::execution_graph::ExecutionGraph;
 use crate::state::executor_manager::{
     ExecutorManager, ExecutorReservation, DEFAULT_EXECUTOR_TIMEOUT_SECONDS,
 };
@@ -204,16 +203,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
 
     pub async fn get_active_job_status(&self, job_id: &str) -> Result<Option<JobStatus>> {
         self.state.task_manager.get_job_status(job_id).await
-    }
-
-    pub async fn get_execution_graph(
-        &self,
-        job_id: &str,
-    ) -> Result<Option<Arc<ExecutionGraph>>> {
-        self.state
-            .task_manager
-            .get_job_execution_graph(job_id)
-            .await
     }
 
     pub(crate) fn metrics_collector(&self) -> &dyn SchedulerMetricsCollector {
