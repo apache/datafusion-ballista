@@ -23,7 +23,7 @@ use uuid::Uuid;
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 
-use datafusion::arrow::datatypes::Schema;
+use datafusion::arrow::datatypes::{DataType, Schema};
 use datafusion::arrow::pyarrow::PyArrowType;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::datasource::TableProvider;
@@ -34,6 +34,7 @@ use datafusion::prelude::{CsvReadOptions, ParquetReadOptions};
 use crate::catalog::{PyCatalog, PyTable};
 use crate::dataframe::PyDataFrame;
 use crate::dataset::Dataset;
+use crate::datatype::PyDataType;
 use crate::errors::DataFusionError;
 use crate::udf::PyScalarUDF;
 use crate::utils::wait_for_future;
@@ -159,13 +160,13 @@ impl PySessionContext {
         &mut self,
         name: &str,
         path: &str,
-        table_partition_cols: Vec<String>,
+        table_partition_cols: Vec<(String, PyDataType)>,
         parquet_pruning: bool,
         file_extension: &str,
         py: Python,
     ) -> PyResult<()> {
         let mut options = ParquetReadOptions::default()
-            .table_partition_cols(table_partition_cols)
+            .table_partition_cols(convert_table_partition_cols(table_partition_cols))
             .parquet_pruning(parquet_pruning);
         options.file_extension = file_extension;
         let result = self.ctx.register_parquet(name, path, options);
@@ -254,4 +255,13 @@ impl PySessionContext {
     fn empty_table(&self) -> PyResult<PyDataFrame> {
         Ok(PyDataFrame::new(self.ctx.read_empty()?))
     }
+}
+
+fn convert_table_partition_cols(
+    table_partition_cols: Vec<(String, PyDataType)>,
+) -> Vec<(String, DataType)> {
+    table_partition_cols
+        .iter()
+        .map(|(name, t)| (name.clone(), t.data_type.clone()))
+        .collect()
 }

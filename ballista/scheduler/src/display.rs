@@ -131,7 +131,7 @@ impl<'a, 'b> ExecutionPlanVisitor for IndentVisitor<'a, 'b> {
         plan.fmt_as(self.t, self.f)?;
         if let Some(metrics) = self.metrics.get(self.metric_index) {
             let metrics = metrics
-                .aggregate_by_partition()
+                .aggregate_by_name()
                 .sorted_for_display()
                 .timestamps_removed();
             write!(self.f, ", metrics=[{}]", metrics)?;
