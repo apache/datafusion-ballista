@@ -489,16 +489,6 @@ pub struct ShuffleWriterExecNode {
     pub input: ::core::option::Option<::prost::alloc::boxed::Box<PhysicalPlanNode>>,
     #[prost(message, optional, tag = "4")]
     pub output_partitioning: ::core::option::Option<PhysicalHashRepartition>,
-    #[prost(oneof = "shuffle_writer_exec_node::OptionalLimit", tags = "6")]
-    pub optional_limit: ::core::option::Option<shuffle_writer_exec_node::OptionalLimit>,
-}
-/// Nested message and enum types in `ShuffleWriterExecNode`.
-pub mod shuffle_writer_exec_node {
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum OptionalLimit {
-        #[prost(uint64, tag = "6")]
-        Limit(u64),
-    }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleReaderExecNode {
@@ -1377,10 +1367,6 @@ pub struct GetJobStatusParams {
 pub struct SuccessfulJob {
     #[prost(message, repeated, tag = "1")]
     pub partition_location: ::prost::alloc::vec::Vec<PartitionLocation>,
-    #[prost(uint64, tag = "2")]
-    pub queued_at: u64,
-    #[prost(uint64, tag = "3")]
-    pub completed_at: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct QueuedJob {}

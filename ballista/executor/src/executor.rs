@@ -88,27 +88,6 @@ impl Executor {
             abort_handles: Default::default(),
         }
     }
-
-    pub fn with_functions(
-        metadata: ExecutorRegistration,
-        work_dir: &str,
-        runtime: Arc<RuntimeEnv>,
-        metrics_collector: Arc<dyn ExecutorMetricsCollector>,
-        concurrent_tasks: usize,
-        scalar_functions: HashMap<String, Arc<ScalarUDF>>,
-        aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
-    ) -> Self {
-        Self {
-            metadata,
-            work_dir: work_dir.to_owned(),
-            scalar_functions,
-            aggregate_functions,
-            runtime,
-            metrics_collector,
-            concurrent_tasks,
-            abort_handles: Default::default(),
-        }
-    }
 }
 
 impl Executor {
