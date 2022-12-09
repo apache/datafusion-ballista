@@ -26,7 +26,7 @@ use std::time::Instant;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::SessionBuilder;
-use crate::state::backend::{Lock, StateBackendClient};
+use crate::state::backend::{ClusterState, Lock, StateBackendClient};
 use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::{TaskLauncher, TaskManager};
@@ -99,11 +99,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     #[cfg(test)]
     pub fn new_with_default_scheduler_name(
         config_client: Arc<dyn StateBackendClient>,
+        cluster_client: Arc<dyn ClusterState>,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
     ) -> Self {
         SchedulerState::new(
             config_client,
+            cluster_client,
             session_builder,
             codec,
             "localhost:50050".to_owned(),
@@ -113,6 +115,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
     pub fn new(
         config_client: Arc<dyn StateBackendClient>,
+        cluster_client: Arc<dyn ClusterState>,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
@@ -120,7 +123,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     ) -> Self {
         Self {
             executor_manager: ExecutorManager::new(
-                config_client.clone(),
+                cluster_client,
                 config.executor_slots_policy,
             ),
             task_manager: TaskManager::new(
@@ -138,6 +141,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     #[allow(dead_code)]
     pub(crate) fn with_task_launcher(
         config_client: Arc<dyn StateBackendClient>,
+        cluster_client: Arc<dyn ClusterState>,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
@@ -146,7 +150,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     ) -> Self {
         Self {
             executor_manager: ExecutorManager::new(
-                config_client.clone(),
+                cluster_client,
                 config.executor_slots_policy,
             ),
             task_manager: TaskManager::with_launcher(
@@ -476,6 +480,7 @@ mod test {
         let state_storage = Arc::new(SledClient::try_new_temporary()?);
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::new_with_default_scheduler_name(
+                state_storage.clone(),
                 state_storage,
                 default_session_builder,
                 BallistaCodec::default(),
@@ -512,6 +517,7 @@ mod test {
         let state_storage = Arc::new(SledClient::try_new_temporary()?);
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::with_task_launcher(
+                state_storage.clone(),
                 state_storage,
                 default_session_builder,
                 BallistaCodec::default(),
@@ -597,6 +603,7 @@ mod test {
         let state_storage = Arc::new(SledClient::try_new_temporary()?);
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::with_task_launcher(
+                state_storage.clone(),
                 state_storage,
                 default_session_builder,
                 BallistaCodec::default(),

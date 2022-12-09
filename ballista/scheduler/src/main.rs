@@ -42,7 +42,9 @@ use ballista_scheduler::state::backend::sled::SledClient;
 use datafusion_proto::protobuf::LogicalPlanNode;
 
 use ballista_scheduler::scheduler_server::SchedulerServer;
-use ballista_scheduler::state::backend::{StateBackend, StateBackendClient};
+use ballista_scheduler::state::backend::{
+    ClusterState, StateBackend, StateBackendClient,
+};
 
 use ballista_core::serde::BallistaCodec;
 
@@ -74,6 +76,7 @@ use tracing_subscriber::EnvFilter;
 async fn start_server(
     scheduler_name: String,
     config_backend: Arc<dyn StateBackendClient>,
+    cluster_backend: Arc<dyn ClusterState>,
     addr: SocketAddr,
     config: SchedulerConfig,
 ) -> Result<()> {
@@ -93,6 +96,7 @@ async fn start_server(
         SchedulerServer::new(
             scheduler_name,
             config_backend.clone(),
+            cluster_backend,
             BallistaCodec::default(),
             config,
             metrics_collector,
@@ -149,6 +153,58 @@ async fn start_server(
         .context("Could not start grpc server")
 }
 
+async fn init_state_backend(
+    opt: &Config,
+) -> Result<(Arc<dyn StateBackendClient>, Arc<dyn ClusterState>)> {
+    let config_backend: (Arc<dyn StateBackendClient>, Arc<dyn ClusterState>) = match opt
+        .config_backend
+    {
+        #[cfg(feature = "etcd")]
+        StateBackend::Etcd => {
+            let etcd = etcd_client::Client::connect(&[opt.etcd_urls.clone()], None)
+                .await
+                .context("Could not connect to etcd")?;
+            let backend = Arc::new(EtcdClient::new(opt.namespace.clone(), etcd));
+
+            (backend.clone(), backend)
+        }
+        #[cfg(not(feature = "etcd"))]
+        StateBackend::Etcd => {
+            unimplemented!(
+                "build the scheduler with the `etcd` feature to use the etcd config backend"
+            )
+        }
+        #[cfg(feature = "sled")]
+        StateBackend::Sled => {
+            let backend = if opt.sled_dir.is_empty() {
+                Arc::new(
+                    SledClient::try_new_temporary()
+                        .context("Could not create standalone config backend")?,
+                )
+            } else {
+                println!("{}", opt.sled_dir);
+                Arc::new(
+                    SledClient::try_new(opt.sled_dir.clone())
+                        .context("Could not create standalone config backend")?,
+                )
+            };
+            (backend.clone(), backend)
+        }
+        #[cfg(not(feature = "sled"))]
+        StateBackend::Standalone => {
+            unimplemented!(
+                "build the scheduler with the `sled` feature to use the standalone config backend"
+            )
+        }
+        StateBackend::Memory => {
+            let backend = Arc::new(MemoryBackendClient::new());
+            (backend.clone(), backend)
+        }
+    };
+
+    Ok(config_backend)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // parse options
@@ -160,6 +216,8 @@ async fn main() -> Result<()> {
         print_version();
         std::process::exit(0);
     }
+
+    let (config_backend, cluster_backend) = init_state_backend(&opt).await?;
 
     let special_mod_log_level = opt.log_level_setting;
     let namespace = opt.namespace;
@@ -259,6 +317,15 @@ async fn main() -> Result<()> {
             .finished_job_state_clean_up_interval_seconds,
         advertise_flight_sql_endpoint: opt.advertise_flight_sql_endpoint,
     };
-    start_server(scheduler_name, config_backend, addr, config).await?;
+
+    start_server(
+        scheduler_name,
+        config_backend,
+        cluster_backend,
+        addr,
+        config,
+    )
+    .await?;
+
     Ok(())
 }
