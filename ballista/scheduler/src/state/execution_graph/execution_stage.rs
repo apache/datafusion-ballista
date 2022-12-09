@@ -97,21 +97,6 @@ impl ExecutionStage {
             ExecutionStage::Failed(stage) => stage.plan.as_ref(),
         }
     }
-
-    pub(crate) fn stage_metrics(&self) -> Option<&Vec<MetricsSet>> {
-        match self {
-            ExecutionStage::UnResolved(_) | ExecutionStage::Resolved(_) => None,
-            ExecutionStage::Running(RunningStage { stage_metrics, .. }) => {
-                stage_metrics.as_ref()
-            }
-            ExecutionStage::Successful(SuccessfulStage { stage_metrics, .. }) => {
-                Some(stage_metrics)
-            }
-            ExecutionStage::Failed(FailedStage { stage_metrics, .. }) => {
-                stage_metrics.as_ref()
-            }
-        }
-    }
 }
 
 /// For a stage whose input stages are not all completed, we say it's a unresolved stage
