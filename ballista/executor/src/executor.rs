@@ -88,6 +88,27 @@ impl Executor {
             abort_handles: Default::default(),
         }
     }
+
+    pub fn with_functions(
+        metadata: ExecutorRegistration,
+        work_dir: &str,
+        runtime: Arc<RuntimeEnv>,
+        metrics_collector: Arc<dyn ExecutorMetricsCollector>,
+        concurrent_tasks: usize,
+        scalar_functions: HashMap<String, Arc<ScalarUDF>>,
+        aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
+    ) -> Self {
+        Self {
+            metadata,
+            work_dir: work_dir.to_owned(),
+            scalar_functions,
+            aggregate_functions,
+            runtime,
+            metrics_collector,
+            concurrent_tasks,
+            abort_handles: Default::default(),
+        }
+    }
 }
 
 impl Executor {
@@ -134,12 +155,13 @@ impl Executor {
             plan.as_any().downcast_ref::<ShuffleWriterExec>()
         {
             // recreate the shuffle writer with the correct working directory
-            ShuffleWriterExec::try_new(
+            ShuffleWriterExec::try_new_with_limit(
                 job_id,
                 stage_id,
                 plan.children()[0].clone(),
                 self.work_dir.clone(),
                 shuffle_writer.shuffle_output_partitioning().cloned(),
+                shuffle_writer.limit(),
             )
         } else {
             Err(DataFusionError::Internal(

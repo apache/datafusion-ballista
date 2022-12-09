@@ -90,6 +90,11 @@ impl SchedulerConfig {
         self.advertise_flight_sql_endpoint = endpoint;
         self
     }
+
+    pub fn with_executor_slots_policy(mut self, policy: SlotsPolicy) -> Self {
+        self.executor_slots_policy = policy;
+        self
+    }
 }
 
 // an enum used to configure the executor slots policy

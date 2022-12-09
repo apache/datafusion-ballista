@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
+use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{
     accept, ExecutionPlan, ExecutionPlanVisitor, Partitioning,
 };
@@ -208,6 +209,16 @@ impl ExecutionGraph {
         let new_tid = self.task_id_gen;
         self.task_id_gen += 1;
         new_tid
+    }
+
+    pub fn stage_metrics(
+        &self,
+    ) -> HashMap<usize, (&dyn ExecutionPlan, Option<&Vec<MetricsSet>>)> {
+        let mut result = HashMap::with_capacity(self.stages.len());
+        for (stage_id, stage) in self.stages.iter() {
+            result.insert(*stage_id, (stage.plan(), stage.stage_metrics()));
+        }
+        result
     }
 
     pub(crate) fn stages(&self) -> &HashMap<usize, ExecutionStage> {
@@ -1235,6 +1246,8 @@ impl ExecutionGraph {
         self.status = JobStatus {
             status: Some(job_status::Status::Successful(SuccessfulJob {
                 partition_location,
+                queued_at: self.queued_at,
+                completed_at: timestamp_millis(),
             })),
         };
         self.end_time = SystemTime::now()

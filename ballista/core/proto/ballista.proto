@@ -349,6 +349,9 @@ message ShuffleWriterExecNode {
   uint32 stage_id = 2;
   PhysicalPlanNode input = 3;
   PhysicalHashRepartition output_partitioning = 4;
+  oneof optional_limit {
+    uint64 limit = 6;
+  }
 }
 
 message ShuffleReaderExecNode {
@@ -905,6 +908,8 @@ message GetJobStatusParams {
 
 message SuccessfulJob {
   repeated PartitionLocation partition_location = 1;
+  uint64 queued_at = 2;
+  uint64 completed_at = 3;
 }
 
 message QueuedJob {}
