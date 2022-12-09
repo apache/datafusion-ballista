@@ -50,7 +50,6 @@ use datafusion_proto::logical_plan::{
 };
 use futures::StreamExt;
 use log::error;
-use log::info;
 #[cfg(feature = "s3")]
 use object_store::aws::AmazonS3Builder;
 use object_store::ObjectStore;
@@ -122,7 +121,6 @@ pub async fn write_stream_to_disk(
     stream: &mut Pin<Box<dyn RecordBatchStream + Send>>,
     path: &str,
     disk_write_metric: &metrics::Time,
-    limit: Option<(usize, Arc<AtomicUsize>)>,
 ) -> Result<PartitionStats> {
     let file = File::create(path).map_err(|e| {
         error!("Failed to create partition file at {}: {:?}", path, e);
@@ -134,18 +132,7 @@ pub async fn write_stream_to_disk(
     let mut num_bytes = 0;
     let mut writer = FileWriter::try_new(file, stream.schema().as_ref())?;
 
-    while let Some(result) = {
-        let poll_more = limit.as_ref().map_or(true, |(limit, accum)| {
-            let total_rows = accum.load(Ordering::SeqCst);
-            total_rows < *limit
-        });
-
-        if poll_more {
-            stream.next().await
-        } else {
-            None
-        }
-    } {
+    while let Some(result) = stream.next().await {
         let batch = result?;
 
         let batch_size_bytes: usize = batch_byte_size(&batch);
@@ -156,14 +143,6 @@ pub async fn write_stream_to_disk(
         let timer = disk_write_metric.timer();
         writer.write(&batch)?;
         timer.done();
-
-        if let Some((limit, accum)) = limit.as_ref() {
-            let total_rows = accum.fetch_add(batch.num_rows(), Ordering::SeqCst);
-            if total_rows >= *limit {
-                info!("stopping shuffle write early (path: {})", path);
-                break;
-            }
-        }
     }
     let timer = disk_write_metric.timer();
     writer.finish()?;

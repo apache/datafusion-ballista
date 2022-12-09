@@ -55,30 +55,7 @@ use datafusion::arrow::error::ArrowError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::repartition::BatchPartitioner;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use lazy_static::lazy_static;
 use log::{debug, info};
-use lru::LruCache;
-use parking_lot::Mutex;
-use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-lazy_static! {
-    static ref LIMIT_ACCUMULATORS: Mutex<LruCache<(String, usize), Arc<AtomicUsize>>> =
-        Mutex::new(LruCache::new(NonZeroUsize::new(40).unwrap()));
-}
-
-fn get_limit_accumulator(job_id: &str, stage: usize) -> Arc<AtomicUsize> {
-    let mut guard = LIMIT_ACCUMULATORS.lock();
-
-    if let Some(accumulator) = guard.get(&(job_id.to_owned(), stage)) {
-        accumulator.clone()
-    } else {
-        let accumulator = Arc::new(AtomicUsize::new(0));
-        guard.push((job_id.to_owned(), stage), accumulator.clone());
-
-        accumulator
-    }
-}
 
 /// ShuffleWriterExec represents a section of a query plan that has consistent partitioning and
 /// can be executed as one unit with each partition being executed in parallel. The output of each
@@ -98,8 +75,6 @@ pub struct ShuffleWriterExec {
     shuffle_output_partitioning: Option<Partitioning>,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
-    /// Maximum number of rows to return
-    limit: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -146,26 +121,6 @@ impl ShuffleWriterExec {
             work_dir,
             shuffle_output_partitioning,
             metrics: ExecutionPlanMetricsSet::new(),
-            limit: None,
-        })
-    }
-
-    pub fn try_new_with_limit(
-        job_id: String,
-        stage_id: usize,
-        plan: Arc<dyn ExecutionPlan>,
-        work_dir: String,
-        shuffle_output_partitioning: Option<Partitioning>,
-        limit: Option<usize>,
-    ) -> Result<Self> {
-        Ok(Self {
-            job_id,
-            stage_id,
-            plan,
-            work_dir,
-            shuffle_output_partitioning,
-            metrics: ExecutionPlanMetricsSet::new(),
-            limit,
         })
     }
 
@@ -184,10 +139,6 @@ impl ShuffleWriterExec {
         self.shuffle_output_partitioning.as_ref()
     }
 
-    pub fn limit(&self) -> Option<usize> {
-        self.limit
-    }
-
     pub fn execute_shuffle_write(
         &self,
         input_partition: usize,
@@ -200,10 +151,6 @@ impl ShuffleWriterExec {
         let write_metrics = ShuffleWriteMetrics::new(input_partition, &self.metrics);
         let output_partitioning = self.shuffle_output_partitioning.clone();
         let plan = self.plan.clone();
-
-        let limit_and_accumulator = self
-            .limit
-            .map(|l| (l, get_limit_accumulator(&self.job_id, self.stage_id)));
 
         async move {
             let now = Instant::now();
@@ -223,7 +170,6 @@ impl ShuffleWriterExec {
                         &mut stream,
                         path,
                         &write_metrics.write_time,
-                        limit_and_accumulator,
                     )
                     .await
                     .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
@@ -265,26 +211,10 @@ impl ShuffleWriterExec {
                         write_metrics.repart_time.clone(),
                     )?;
 
-                    while let Some(result) = {
-                        let poll_more = limit_and_accumulator.as_ref().map_or(
-                            true,
-                            |(limit, accum)| {
-                                let total_rows = accum.load(Ordering::SeqCst);
-                                total_rows < *limit
-                            },
-                        );
-
-                        if poll_more {
-                            stream.next().await
-                        } else {
-                            None
-                        }
-                    } {
+                    while let Some(result) = stream.next().await {
                         let input_batch = result?;
 
-                        let num_rows = input_batch.num_rows();
-
-                        write_metrics.input_rows.add(num_rows);
+                        write_metrics.input_rows.add(input_batch.num_rows());
 
                         partitioner.partition(
                             input_batch,
@@ -323,13 +253,6 @@ impl ShuffleWriterExec {
                                 Ok(())
                             },
                         )?;
-
-                        if let Some((limit, accum)) = limit_and_accumulator.as_ref() {
-                            let total_rows = accum.fetch_add(num_rows, Ordering::SeqCst);
-                            if total_rows > *limit {
-                                break;
-                            }
-                        }
                     }
 
                     let mut part_locs = vec![];
@@ -402,13 +325,12 @@ impl ExecutionPlan for ShuffleWriterExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(ShuffleWriterExec::try_new_with_limit(
+        Ok(Arc::new(ShuffleWriterExec::try_new(
             self.job_id.clone(),
             self.stage_id,
             children[0].clone(),
             self.work_dir.clone(),
             self.shuffle_output_partitioning.clone(),
-            self.limit,
         )?))
     }
 

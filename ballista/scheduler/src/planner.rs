@@ -35,7 +35,6 @@ use datafusion::physical_plan::{
     with_new_children_if_necessary, ExecutionPlan, Partitioning,
 };
 
-use datafusion::physical_plan::limit::LocalLimitExec;
 use log::{debug, info};
 
 type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<ShuffleWriterExec>>);
@@ -309,26 +308,13 @@ fn create_shuffle_writer(
     plan: Arc<dyn ExecutionPlan>,
     partitioning: Option<Partitioning>,
 ) -> Result<Arc<ShuffleWriterExec>> {
-    if let Some(local_limit_exec) = plan.as_any().downcast_ref::<LocalLimitExec>() {
-        // This doesn't really capture all cases where we would want to do this but should work for the
-        // most basic case we care about.
-        Ok(Arc::new(ShuffleWriterExec::try_new_with_limit(
-            job_id.to_owned(),
-            stage_id,
-            plan.clone(),
-            "".to_owned(), // executor will decide on the work_dir path
-            partitioning,
-            Some(local_limit_exec.fetch()),
-        )?))
-    } else {
-        Ok(Arc::new(ShuffleWriterExec::try_new(
-            job_id.to_owned(),
-            stage_id,
-            plan,
-            "".to_owned(), // executor will decide on the work_dir path
-            partitioning,
-        )?))
-    }
+    Ok(Arc::new(ShuffleWriterExec::try_new(
+        job_id.to_owned(),
+        stage_id,
+        plan,
+        "".to_owned(), // executor will decide on the work_dir path
+        partitioning,
+    )?))
 }
 
 #[cfg(test)]
