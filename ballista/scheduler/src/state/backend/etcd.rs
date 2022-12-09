@@ -18,7 +18,6 @@
 //! Etcd config backend.
 
 use std::collections::HashSet;
-use std::sync::Arc;
 
 use std::task::Poll;
 
@@ -32,7 +31,7 @@ use futures::{Stream, StreamExt};
 use log::{debug, error, warn};
 
 use crate::state::backend::{
-    ClusterState, Keyspace, Lock, Operation, StateBackendClient, Watch, WatchEvent,
+    Keyspace, Lock, Operation, StateBackendClient, Watch, WatchEvent,
 };
 
 /// A [`StateBackendClient`] implementation that uses etcd to save cluster state.
@@ -45,10 +44,6 @@ pub struct EtcdClient {
 impl EtcdClient {
     pub fn new(namespace: String, etcd: etcd_client::Client) -> Self {
         Self { namespace, etcd }
-    }
-
-    pub fn into_cluster_state(self: Arc<Self>) -> Arc<dyn ClusterState> {
-        self
     }
 }
 
