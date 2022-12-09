@@ -26,7 +26,7 @@ use sled_package as sled;
 use tokio::sync::Mutex;
 
 use crate::state::backend::{
-    Keyspace, Lock, Operation, StateBackendClient, Watch, WatchEvent,
+    ClusterState, Keyspace, Lock, Operation, StateBackendClient, Watch, WatchEvent,
 };
 
 /// A [`StateBackendClient`] implementation that uses file-based storage to save cluster configuration.
@@ -54,6 +54,10 @@ impl StandaloneClient {
                 .map_err(sled_to_ballista_error)?,
             locks: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    pub fn into_cluster_state(self: Arc<Self>) -> Arc<dyn ClusterState> {
+        self
     }
 }
 

@@ -598,6 +598,7 @@ mod test {
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
                 state_storage.clone(),
+                state_storage.clone(),
                 BallistaCodec::default(),
                 SchedulerConfig::default(),
                 default_metrics_collector().unwrap(),
@@ -624,6 +625,7 @@ mod test {
         assert!(response.tasks.is_empty());
         let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerState::new_with_default_scheduler_name(
+                state_storage.clone(),
                 state_storage.clone(),
                 default_session_builder,
                 BallistaCodec::default(),
@@ -658,6 +660,7 @@ mod test {
         let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerState::new_with_default_scheduler_name(
                 state_storage.clone(),
+                state_storage.clone(),
                 default_session_builder,
                 BallistaCodec::default(),
             );
@@ -685,6 +688,7 @@ mod test {
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
                 state_storage.clone(),
+                state_storage,
                 BallistaCodec::default(),
                 SchedulerConfig::default(),
                 default_metrics_collector().unwrap(),
@@ -766,6 +770,7 @@ mod test {
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
                 state_storage.clone(),
+                state_storage,
                 BallistaCodec::default(),
                 SchedulerConfig::default(),
                 default_metrics_collector().unwrap(),

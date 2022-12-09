@@ -416,6 +416,7 @@ impl SchedulerTest {
             SchedulerServer::with_task_launcher(
                 "localhost:50050".to_owned(),
                 state_storage.clone(),
+                state_storage,
                 BallistaCodec::default(),
                 config,
                 metrics_collector,
