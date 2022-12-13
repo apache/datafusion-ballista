@@ -281,9 +281,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                     });
                     join_handles.push(join_handle);
                 }
-                for join_handle in join_handles {
-                    unassigned_reservations.append(&mut join_handle.await?);
-                }
+
+                let unassigned_executor_reservations =
+                    futures::future::join_all(join_handles)
+                        .await
+                        .into_iter()
+                        .collect::<std::result::Result<
+                        Vec<Vec<ExecutorReservation>>,
+                        tokio::task::JoinError,
+                    >>()?;
+                unassigned_reservations.append(
+                    &mut unassigned_executor_reservations
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<ExecutorReservation>>(),
+                );
                 (unassigned_reservations, pending_tasks)
             }
             Err(e) => {
