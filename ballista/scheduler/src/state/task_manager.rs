@@ -177,6 +177,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         }
     }
 
+    /// Return the count of current active jobs on this scheduler instance.
+    pub fn get_active_job_count(&self) -> usize {
+        self.active_job_cache.len()
+    }
+
     /// Generate an ExecutionGraph for the job and save it to the persistent state.
     /// By default, this job will be curated by the scheduler which receives it.
     /// Then we will also save it to the active execution graph
