@@ -182,6 +182,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         self.query_stage_scheduler.pending_tasks()
     }
 
+    pub fn active_job_count(&self) -> usize {
+        self.state.task_manager.get_active_job_count()
+    }
+
     pub async fn submit_job(
         &self,
         job_id: &str,
