@@ -99,9 +99,20 @@ impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
 
         #[cfg(feature = "s3")]
         {
-            if url.to_string().starts_with("s3://") {
+            if url.as_str().starts_with("s3://") {
                 if let Some(bucket_name) = url.host_str() {
                     let store = AmazonS3Builder::from_env()
+                        .with_bucket_name(bucket_name)
+                        .build()?;
+                    return Ok(Arc::new(store));
+                }
+            // Support Alibaba Cloud OSS
+            // Use S3 compatibility mode to access Alibaba Cloud OSS
+            // The `AWS_ENDPOINT` should have bucket name included
+            } else if url.as_str().starts_with("oss://") {
+                if let Some(bucket_name) = url.host_str() {
+                    let store = AmazonS3Builder::from_env()
+                        .with_virtual_hosted_style_request(true)
                         .with_bucket_name(bucket_name)
                         .build()?;
                     return Ok(Arc::new(store));
