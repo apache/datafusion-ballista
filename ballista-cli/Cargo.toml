@@ -32,7 +32,7 @@ readme = "README.md"
 ballista = { path = "../ballista/client", version = "0.10.0", features = [
     "standalone",
 ] }
-clap = { version = "3", features = ["derive", "cargo"] }
+clap = { version = "4", features = ["derive", "cargo"] }
 datafusion = "15.0.0"
 datafusion-cli = "15.0.0"
 dirs = "4.0.0"
