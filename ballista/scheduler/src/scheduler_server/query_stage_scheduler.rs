@@ -154,17 +154,29 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .map(|res| res.assign(job_id.clone()))
                         .collect();
 
-                    debug!(
-                        "Reserved {} task slots for submitted job {}",
-                        reservations.len(),
-                        job_id
-                    );
+                    if reservations.is_empty() {
+                        info!("No task slots reserved for job {}, resubmitting", job_id);
 
-                    tx_event
-                        .post_event(QueryStageSchedulerEvent::ReservationOffering(
-                            reservations,
-                        ))
-                        .await?;
+                        tx_event
+                            .post_event(QueryStageSchedulerEvent::JobSubmitted {
+                                job_id,
+                                queued_at,
+                                submitted_at,
+                            })
+                            .await?;
+                    } else {
+                        debug!(
+                            "Reserved {} task slots for submitted job {}",
+                            reservations.len(),
+                            job_id
+                        );
+
+                        tx_event
+                            .post_event(QueryStageSchedulerEvent::ReservationOffering(
+                                reservations,
+                            ))
+                            .await?;
+                    }
                 }
             }
             QueryStageSchedulerEvent::JobPlanningFailed {
