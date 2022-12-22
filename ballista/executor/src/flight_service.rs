@@ -230,9 +230,10 @@ where
     T: Read + Seek,
 {
     let options = arrow::ipc::writer::IpcWriteOptions::default()
-        .try_with_compression(Some(CompressionType::LZ4_FRAME)).map_err(
-            |err| Status::internal(format!("Couldn't create writer: {}", err.to_string()))
-    )?;
+        .try_with_compression(Some(CompressionType::LZ4_FRAME))
+        .map_err(|err| {
+            Status::internal(format!("Couldn't create writer: {}", err.to_string()))
+        })?;
     let schema_flight_data = SchemaAsIpc::new(reader.schema().as_ref(), &options).into();
     send_response(&tx, Ok(schema_flight_data)).await?;
 
