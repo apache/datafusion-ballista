@@ -57,7 +57,7 @@ impl From<&protobuf::PhysicalColumn> for Column {
     }
 }
 
-pub(crate) fn parse_physical_expr(
+pub fn parse_physical_expr(
     proto: &protobuf::PhysicalExprNode,
     registry: &dyn FunctionRegistry,
     input_schema: &Schema,
