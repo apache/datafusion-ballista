@@ -137,7 +137,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.metrics_collector
                     .record_submitted(&job_id, queued_at, submitted_at);
 
-                info!("Job {} submitted", job_id);
+                debug!("Job {} submitted", job_id);
                 if self.state.config.is_push_staged_scheduling() {
                     let available_tasks = self
                         .state
@@ -155,7 +155,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .collect();
 
                     if reservations.is_empty() {
-                        info!("No task slots reserved for job {}, resubmitting", job_id);
+                        debug!("No task slots reserved for job {}, resubmitting", job_id);
 
                         tx_event
                             .post_event(QueryStageSchedulerEvent::JobSubmitted {
