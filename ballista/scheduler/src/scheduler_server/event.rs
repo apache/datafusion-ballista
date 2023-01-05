@@ -37,6 +37,7 @@ pub enum QueryStageSchedulerEvent {
         job_id: String,
         queued_at: u64,
         submitted_at: u64,
+        resubmit: bool,
     },
     // For a job which failed during planning
     JobPlanningFailed {
