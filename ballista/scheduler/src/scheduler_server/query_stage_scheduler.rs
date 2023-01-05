@@ -17,6 +17,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use log::{debug, error, info};
@@ -120,6 +121,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             job_id,
                             queued_at,
                             submitted_at: timestamp_millis(),
+                            resubmit: false,
                         }
                     };
                     tx_event
@@ -133,11 +135,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 job_id,
                 queued_at,
                 submitted_at,
+                resubmit,
             } => {
-                self.metrics_collector
-                    .record_submitted(&job_id, queued_at, submitted_at);
+                if !resubmit {
+                    self.metrics_collector.record_submitted(
+                        &job_id,
+                        queued_at,
+                        submitted_at,
+                    );
 
-                debug!("Job {} submitted", job_id);
+                    info!("Job {} submitted", job_id);
+                } else {
+                    debug!("Job {} resubmitted", job_id);
+                }
+
                 if self.state.config.is_push_staged_scheduling() {
                     let available_tasks = self
                         .state
@@ -155,15 +166,25 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .collect();
 
                     if reservations.is_empty() {
-                        debug!("No task slots reserved for job {}, resubmitting", job_id);
+                        debug!(
+                            "No task slots reserved for job {}, resubmitting after 200ms",
+                            job_id
+                        );
 
-                        tx_event
-                            .post_event(QueryStageSchedulerEvent::JobSubmitted {
-                                job_id,
-                                queued_at,
-                                submitted_at,
-                            })
-                            .await?;
+                        tokio::task::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            if let Err(e) = tx_event
+                                .post_event(QueryStageSchedulerEvent::JobSubmitted {
+                                    job_id,
+                                    queued_at,
+                                    submitted_at,
+                                    resubmit: true,
+                                })
+                                .await
+                            {
+                                error!("error resubmitting job: {}", e);
+                            }
+                        });
                     } else {
                         debug!(
                             "Reserved {} task slots for submitted job {}",
