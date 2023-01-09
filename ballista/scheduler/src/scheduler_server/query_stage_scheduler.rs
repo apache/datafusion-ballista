@@ -101,6 +101,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             } => {
                 info!("Job {} queued with name {:?}", job_id, job_name);
 
+                self.metrics_collector
+                    .record_queued(&job_id, timestamp_millis());
+
                 let state = self.state.clone();
                 tokio::spawn(async move {
                     let event = if let Err(e) = state
