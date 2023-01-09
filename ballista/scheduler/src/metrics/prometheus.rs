@@ -46,6 +46,7 @@ pub struct PrometheusMetricsCollector {
     completed: Counter,
     submitted: Counter,
     pending_queue_size: Gauge,
+    active_jobs: Gauge,
 }
 
 impl PrometheusMetricsCollector {
@@ -53,7 +54,9 @@ impl PrometheusMetricsCollector {
         let execution_time = register_histogram_with_registry!(
             "job_exec_time_seconds",
             "Histogram of successful job execution time in seconds",
-            vec![0.5_f64, 1_f64, 5_f64, 30_f64, 60_f64],
+            vec![
+                0.5_f64, 1_f64, 5_f64, 30_f64, 60_f64, 120_f64, 180_f64, 240_f64, 300_f64
+            ],
             registry
         )
         .map_err(|e| {
@@ -63,7 +66,10 @@ impl PrometheusMetricsCollector {
         let planning_time = register_histogram_with_registry!(
             "planning_time_ms",
             "Histogram of job planning time in milliseconds",
-            vec![1.0_f64, 5.0_f64, 25.0_f64, 100.0_f64, 500.0_f64],
+            vec![
+                1.0_f64, 5.0_f64, 25.0_f64, 100.0_f64, 200.0_f64, 300_f64, 400_f64,
+                500_f64, 1_000_f64, 2_000_f64, 3_000_f64
+            ],
             registry
         )
         .map_err(|e| {
@@ -115,6 +121,15 @@ impl PrometheusMetricsCollector {
             BallistaError::Internal(format!("Error registering metric: {:?}", e))
         })?;
 
+        let active_jobs = register_gauge_with_registry!(
+            "active_job_count",
+            "Number of active jobs on the scheduler",
+            registry
+        )
+        .map_err(|e| {
+            BallistaError::Internal(format!("Error registering metric: {:?}", e))
+        })?;
+
         Ok(Self {
             execution_time,
             planning_time,
@@ -123,6 +138,7 @@ impl PrometheusMetricsCollector {
             completed,
             submitted,
             pending_queue_size,
+            active_jobs,
         })
     }
 
@@ -138,6 +154,10 @@ impl PrometheusMetricsCollector {
 }
 
 impl SchedulerMetricsCollector for PrometheusMetricsCollector {
+    fn record_queued(&self, _job_id: &str, _queued_at: u64) {
+        self.active_jobs.inc()
+    }
+
     fn record_submitted(&self, _job_id: &str, queued_at: u64, submitted_at: u64) {
         self.submitted.inc();
         self.planning_time
@@ -146,15 +166,18 @@ impl SchedulerMetricsCollector for PrometheusMetricsCollector {
 
     fn record_completed(&self, _job_id: &str, queued_at: u64, completed_at: u64) {
         self.completed.inc();
+        self.active_jobs.dec();
         self.execution_time
             .observe((completed_at - queued_at) as f64 / 1000_f64)
     }
 
     fn record_failed(&self, _job_id: &str, _queued_at: u64, _failed_at: u64) {
+        self.active_jobs.dec();
         self.failed.inc()
     }
 
     fn record_cancelled(&self, _job_id: &str) {
+        self.active_jobs.dec();
         self.cancelled.inc();
     }
 

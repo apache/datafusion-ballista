@@ -598,6 +598,7 @@ impl SchedulerTest {
 
 #[derive(Clone)]
 pub enum MetricEvent {
+    Queued(String, u64),
     Submitted(String, u64, u64),
     Completed(String, u64, u64),
     Cancelled(String),
@@ -607,6 +608,7 @@ pub enum MetricEvent {
 impl MetricEvent {
     pub fn job_id(&self) -> &str {
         match self {
+            MetricEvent::Queued(job, _) => job.as_str(),
             MetricEvent::Submitted(job, _, _) => job.as_str(),
             MetricEvent::Completed(job, _, _) => job.as_str(),
             MetricEvent::Cancelled(job) => job.as_str(),
@@ -638,6 +640,11 @@ impl TestMetricsCollector {
 }
 
 impl SchedulerMetricsCollector for TestMetricsCollector {
+    fn record_queued(&self, job_id: &str, queued_at: u64) {
+        let mut guard = self.events.lock();
+        guard.push(MetricEvent::Queued(job_id.to_owned(), queued_at));
+    }
+
     fn record_submitted(&self, job_id: &str, queued_at: u64, submitted_at: u64) {
         let mut guard = self.events.lock();
         guard.push(MetricEvent::Submitted(
@@ -674,12 +681,18 @@ impl SchedulerMetricsCollector for TestMetricsCollector {
 }
 
 pub fn assert_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
-    let found = collector
+    let queued = collector
+        .job_events(job_id)
+        .iter()
+        .any(|ev| matches!(ev, MetricEvent::Queued(_, _)));
+
+    let submitted = collector
         .job_events(job_id)
         .iter()
         .any(|ev| matches!(ev, MetricEvent::Submitted(_, _, _)));
 
-    assert!(found, "Expected submitted event for job {}", job_id);
+    assert!(queued, "Expected queued event for job {}", job_id);
+    assert!(submitted, "Expected submitted event for job {}", job_id);
 }
 
 pub fn assert_no_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
