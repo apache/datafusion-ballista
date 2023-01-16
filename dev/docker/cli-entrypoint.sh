@@ -1,5 +1,5 @@
 #!/bin/bash
-
+#
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -19,17 +19,4 @@
 
 set -e
 
-RELEASE_FLAG=${RELEASE_FLAG:=release}
-
-./dev/build-ballista-executables.sh
-
-docker-compose build
-
-. ./dev/build-set-env.sh
-docker build -t "apache/arrow-ballista-standalone:$BALLISTA_VERSION" -f dev/docker/ballista-standalone.Dockerfile .
-
-docker tag ballista-executor "apache/arrow-ballista-executor:$BALLISTA_VERSION"
-docker tag ballista-scheduler "apache/arrow-ballista-scheduler:$BALLISTA_VERSION"
-docker tag ballista-benchmarks "apache/arrow-ballista-benchmarks:$BALLISTA_VERSION"
-
-docker build -t "apache/arrow-ballista-cli:$BALLISTA_VERSION" -f dev/docker/ballista-cli.Dockerfile .
+/root/ballista-cli "$@"

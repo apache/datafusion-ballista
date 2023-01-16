@@ -1,5 +1,3 @@
-#!/bin/bash
-
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -17,19 +15,15 @@
 # specific language governing permissions and limitations
 # under the License.
 
-set -e
+FROM ubuntu:22.04
 
-RELEASE_FLAG=${RELEASE_FLAG:=release}
+ARG RELEASE_FLAG=release
 
-./dev/build-ballista-executables.sh
+ENV RELEASE_FLAG=${RELEASE_FLAG}
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=full
 
-docker-compose build
+COPY target/$RELEASE_FLAG/ballista-cli /root/ballista-cli
 
-. ./dev/build-set-env.sh
-docker build -t "apache/arrow-ballista-standalone:$BALLISTA_VERSION" -f dev/docker/ballista-standalone.Dockerfile .
-
-docker tag ballista-executor "apache/arrow-ballista-executor:$BALLISTA_VERSION"
-docker tag ballista-scheduler "apache/arrow-ballista-scheduler:$BALLISTA_VERSION"
-docker tag ballista-benchmarks "apache/arrow-ballista-benchmarks:$BALLISTA_VERSION"
-
-docker build -t "apache/arrow-ballista-cli:$BALLISTA_VERSION" -f dev/docker/ballista-cli.Dockerfile .
+COPY dev/docker/cli-entrypoint.sh /root/cli-entrypoint.sh
+ENTRYPOINT ["/root/cli-entrypoint.sh"]
