@@ -256,12 +256,9 @@ impl BallistaContext {
         path: &str,
         options: CsvReadOptions<'_>,
     ) -> Result<()> {
-        let df = self
-            .read_csv(path, options)
-            .await
-            .map_err(|e| {
-                DataFusionError::Context(format!("Can't read CSV: {}", path), Box::new(e))
-            })?;
+        let df = self.read_csv(path, options).await.map_err(|e| {
+            DataFusionError::Context(format!("Can't read CSV: {}", path), Box::new(e))
+        })?;
         match df.logical_plan() {
             LogicalPlan::TableScan(TableScan { source, .. }) => {
                 self.register_table(name, source_as_provider(&source)?)
@@ -399,7 +396,8 @@ impl BallistaContext {
                             if !schema.fields().is_empty() {
                                 options = options.schema(&schema);
                             }
-                            self.register_csv(&name.to_string(), location, options).await?;
+                            self.register_csv(&name.to_string(), location, options)
+                                .await?;
                             Ok(Arc::new(DataFrame::new(ctx.state(), plan)))
                         }
                         "parquet" => {
@@ -427,9 +425,7 @@ impl BallistaContext {
                             file_type
                         ))),
                     },
-                    (true, true) => {
-                        Ok(Arc::new(DataFrame::new(ctx.state(), plan)))
-                    }
+                    (true, true) => Ok(Arc::new(DataFrame::new(ctx.state(), plan))),
                     (false, true) => Err(DataFusionError::Execution(format!(
                         "Table '{:?}' already exists",
                         name
@@ -595,7 +591,7 @@ mod tests {
                         collect_stat: x.collect_stat,
                         target_partitions: x.target_partitions,
                         file_sort_order: None,
-                        infinite_source: false
+                        infinite_source: false,
                     };
 
                     let table_paths = listing_table

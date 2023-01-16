@@ -119,8 +119,8 @@ async fn datafusion_sql_benchmarks(
 }
 
 async fn execute_sql(ctx: &SessionContext, sql: &str, debug: bool) -> Result<()> {
-    let plan = ctx.create_logical_plan(sql)?;
-    let plan = ctx.optimize(&plan)?;
+    let df = ctx.sql(sql).await?;
+    let plan = df.logical_plan();
     if debug {
         println!("Optimized logical plan:\n{:?}", plan);
     }

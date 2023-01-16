@@ -318,11 +318,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 tonic::Status::internal(msg)
             })?;
 
-        let session = self.state.session_manager.get_session("todo need session id here").await.map_err(|e| {
-            let msg = format!("Error listing files: {}", e);
-            error!("{}", msg);
-            tonic::Status::internal(msg)
-        })?;
+        let session = self
+            .state
+            .session_manager
+            .get_session("todo need session id here")
+            .await
+            .map_err(|e| {
+                let msg = format!("Error listing files: {}", e);
+                error!("{}", msg);
+                tonic::Status::internal(msg)
+            })?;
         let schema = file_format
             .infer_schema(&session.state(), &obj_store, &file_metas)
             .await

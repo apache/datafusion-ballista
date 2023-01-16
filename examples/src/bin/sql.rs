@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
         .await?;
 
     // print the results
-    df.show().await?;
+    df.as_ref().clone().show().await?;
 
     Ok(())
 }

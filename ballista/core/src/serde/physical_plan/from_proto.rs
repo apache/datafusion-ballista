@@ -413,7 +413,7 @@ impl TryInto<FileScanConfig> for &protobuf::FileScanExecConf {
             table_partition_cols: vec![],
             // TODO add ordering info to the ballista proto file
             output_ordering: None,
-            infinite_source: false
+            infinite_source: false,
         })
     }
 }

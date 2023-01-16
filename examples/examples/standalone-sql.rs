@@ -35,6 +35,7 @@ async fn main() -> Result<()> {
     .await?;
 
     let df = ctx.sql("select count(1) from test").await?;
+    let df = df.as_ref().clone();
 
     df.show().await?;
     Ok(())

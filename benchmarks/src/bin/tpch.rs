@@ -293,7 +293,7 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
     // register tables
     for table in TABLES {
         let table_provider = {
-            let mut session_state = ctx.state.write();
+            let mut session_state = ctx.state();
             get_table(
                 &mut session_state,
                 opt.path.to_str().unwrap(),
@@ -325,7 +325,7 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
     let mut result: Vec<RecordBatch> = Vec::with_capacity(1);
     for i in 0..opt.iterations {
         let start = Instant::now();
-        let plans = create_logical_plans(&ctx, opt.query)?;
+        let plans = create_logical_plans(&ctx, opt.query).await?;
         for plan in plans {
             result = execute_query(&ctx, &plan, opt.debug).await?;
         }
@@ -394,7 +394,8 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
                 .await
                 .map_err(|e| DataFusionError::Plan(format!("{:?}", e)))
                 .unwrap();
-            let plan = df.to_logical_plan()?;
+            let df = df.as_ref().clone();
+            let plan = df.logical_plan();
             if opt.debug {
                 println!("=== Optimized logical plan ===\n{:?}\n", plan);
             }
@@ -526,6 +527,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
                     .await
                     .map_err(|e| DataFusionError::Plan(format!("{:?}", e)))
                     .unwrap();
+                let df = df.as_ref().clone();
                 let batches = df
                     .collect()
                     .await
@@ -676,11 +678,17 @@ fn get_query_sql(query: usize) -> Result<Vec<String>> {
 }
 
 /// Create a logical plan for each query in the specified query file
-fn create_logical_plans(ctx: &SessionContext, query: usize) -> Result<Vec<LogicalPlan>> {
+async fn create_logical_plans(
+    ctx: &SessionContext,
+    query: usize,
+) -> Result<Vec<LogicalPlan>> {
     let sql = get_query_sql(query)?;
-    sql.iter()
-        .map(|sql| ctx.create_logical_plan(sql.as_str()))
-        .collect::<Result<Vec<_>>>()
+    let mut plans = vec![];
+    for sql in &sql {
+        let df = ctx.sql(sql.as_str()).await?;
+        plans.push(df.clone().logical_plan().clone());
+    }
+    Ok(plans)
 }
 
 async fn execute_query(
@@ -816,8 +824,7 @@ async fn get_table(
             }
             "parquet" => {
                 let path = format!("{}/{}", path, table);
-                let format = ParquetFormat::new(ctx.config_options())
-                    .with_enable_pruning(Some(true));
+                let format = ParquetFormat::new().with_enable_pruning(Some(true));
 
                 (Arc::new(format), path, DEFAULT_PARQUET_EXTENSION)
             }
@@ -834,6 +841,7 @@ async fn get_table(
         collect_stat: true,
         table_partition_cols: vec![],
         file_sort_order: None,
+        infinite_source: false,
     };
 
     let url = ListingTableUrl::parse(path)?;
@@ -1502,7 +1510,7 @@ mod tests {
             ctx.register_table(table, Arc::new(provider))?;
         }
 
-        let plans = create_logical_plans(&ctx, n)?;
+        let plans = create_logical_plans(&ctx, n).await?;
         for plan in plans {
             execute_query(&ctx, &plan, false).await?;
         }
@@ -1579,7 +1587,7 @@ mod tests {
             }
 
             // test logical plan round trip
-            let plans = create_logical_plans(&ctx, n)?;
+            let plans = create_logical_plans(&ctx, n).await?;
             for plan in plans {
                 // test optimized logical plan round trip
                 let plan = ctx.optimize(&plan)?;
