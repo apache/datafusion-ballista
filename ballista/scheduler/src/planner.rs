@@ -21,6 +21,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::{
@@ -34,8 +35,10 @@ use datafusion::physical_plan::windows::WindowAggExec;
 use datafusion::physical_plan::{
     with_new_children_if_necessary, ExecutionPlan, Partitioning,
 };
+use datafusion::prelude::SessionConfig;
 
 use log::{debug, info};
+use crate::physical_optimizer::avoid_repartition::AvoidRepartition;
 
 type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<ShuffleWriterExec>>);
 
@@ -64,6 +67,12 @@ impl DistributedPlanner {
         job_id: &'a str,
         execution_plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Vec<Arc<ShuffleWriterExec>>> {
+
+        // apply Ballista-specific physical optimizer rules
+        let rule = AvoidRepartition::default();
+        let config = SessionConfig::default();
+        let execution_plan = rule.optimize(execution_plan, &config)?;
+
         info!("planning query stages for job {}", job_id);
         let (new_plan, mut stages) =
             self.plan_query_stages_internal(job_id, execution_plan)?;

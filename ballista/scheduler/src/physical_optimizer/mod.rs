@@ -15,20 +15,4 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#![doc = include_str ! ("../README.md")]
-
-pub mod api;
-pub mod config;
-pub mod display;
-pub mod metrics;
-pub mod planner;
-pub mod scheduler_server;
-#[cfg(feature = "sled")]
-pub mod standalone;
-pub mod state;
-pub(crate) mod physical_optimizer;
-
-#[cfg(feature = "flight-sql")]
-pub mod flight_sql;
-#[cfg(test)]
-pub mod test_utils;
+pub(crate) mod avoid_repartition;
