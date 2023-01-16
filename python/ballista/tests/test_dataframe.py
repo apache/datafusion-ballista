@@ -52,7 +52,7 @@ def test_explain_string(df):
     df = df.select(
         column("a") + column("b"),
         column("a") - column("b"),
-        )
+    )
 
     # execute and collect the first (and only) batch
     df.collect()
