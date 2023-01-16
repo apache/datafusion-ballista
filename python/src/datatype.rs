@@ -16,6 +16,7 @@
 // under the License.
 
 /// Copied from https://github.com/apache/arrow-datafusion-python/pull/103
+
 use datafusion::arrow::datatypes::DataType;
 use pyo3::pyclass;
 
