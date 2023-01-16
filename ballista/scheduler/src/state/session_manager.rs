@@ -134,7 +134,7 @@ pub fn update_datafusion_context(
     ballista_config: &BallistaConfig,
 ) -> Arc<SessionContext> {
     {
-        let mut mut_state = session_ctx.state.write();
+        let mut mut_state = session_ctx.state();
         // TODO Currently we have to start from default session config due to the interface not support update
         let config = SessionConfig::default()
             .with_target_partitions(ballista_config.default_shuffle_partitions())
@@ -144,7 +144,9 @@ pub fn update_datafusion_context(
             .with_repartition_windows(ballista_config.repartition_windows())
             .with_parquet_pruning(ballista_config.parquet_pruning());
         let config = propagate_ballista_configs(config, ballista_config);
-        mut_state.config = config;
+
+        // TODO cannot access private config
+        //mut_state.config = config;
     }
     session_ctx
 }

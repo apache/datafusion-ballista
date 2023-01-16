@@ -214,7 +214,7 @@ impl BallistaContext {
         options: AvroReadOptions<'_>,
     ) -> Result<Arc<DataFrame>> {
         let df = self.context.read_avro(path, options).await?;
-        Ok(df)
+        Ok(Arc::new(df))
     }
 
     /// Create a DataFrame representing a Parquet table scan
@@ -225,7 +225,7 @@ impl BallistaContext {
         options: ParquetReadOptions<'_>,
     ) -> Result<Arc<DataFrame>> {
         let df = self.context.read_parquet(path, options).await?;
-        Ok(df)
+        Ok(Arc::new(df))
     }
 
     /// Create a DataFrame representing a CSV table scan
@@ -236,7 +236,7 @@ impl BallistaContext {
         options: CsvReadOptions<'_>,
     ) -> Result<Arc<DataFrame>> {
         let df = self.context.read_csv(path, options).await?;
-        Ok(df)
+        Ok(Arc::new(df))
     }
 
     /// Register a DataFrame as a table that can be referenced from a SQL query
@@ -256,14 +256,13 @@ impl BallistaContext {
         path: &str,
         options: CsvReadOptions<'_>,
     ) -> Result<()> {
-        let plan = self
+        let df = self
             .read_csv(path, options)
             .await
             .map_err(|e| {
                 DataFusionError::Context(format!("Can't read CSV: {}", path), Box::new(e))
-            })?
-            .to_logical_plan()?;
-        match plan {
+            })?;
+        match df.logical_plan() {
             LogicalPlan::TableScan(TableScan { source, .. }) => {
                 self.register_table(name, source_as_provider(&source)?)
             }
@@ -277,7 +276,8 @@ impl BallistaContext {
         path: &str,
         options: ParquetReadOptions<'_>,
     ) -> Result<()> {
-        match self.read_parquet(path, options).await?.to_logical_plan()? {
+        let df = self.read_parquet(path, options).await?;
+        match df.logical_plan() {
             LogicalPlan::TableScan(TableScan { source, .. }) => {
                 self.register_table(name, source_as_provider(&source)?)
             }
@@ -291,7 +291,8 @@ impl BallistaContext {
         path: &str,
         options: AvroReadOptions<'_>,
     ) -> Result<()> {
-        match self.read_avro(path, options).await?.to_logical_plan()? {
+        let df = self.read_avro(path, options).await?;
+        match df.logical_plan() {
             LogicalPlan::TableScan(TableScan { source, .. }) => {
                 self.register_table(name, source_as_provider(&source)?)
             }
@@ -361,7 +362,8 @@ impl BallistaContext {
             }
         }
 
-        let plan = ctx.create_logical_plan(sql)?;
+        let df = ctx.sql(sql).await?;
+        let plan = df.logical_plan().clone();
 
         match plan {
             LogicalPlan::CreateExternalTable(CreateExternalTable {
@@ -375,7 +377,7 @@ impl BallistaContext {
                 ref if_not_exists,
                 ..
             }) => {
-                let table_exists = ctx.table_exist(name.as_str())?;
+                let table_exists = ctx.table_exist(name.as_table_reference())?;
                 let schema: SchemaRef = Arc::new(schema.as_ref().to_owned().into());
                 let table_partition_cols = table_partition_cols
                     .iter()
@@ -397,28 +399,28 @@ impl BallistaContext {
                             if !schema.fields().is_empty() {
                                 options = options.schema(&schema);
                             }
-                            self.register_csv(name, location, options).await?;
-                            Ok(Arc::new(DataFrame::new(ctx.state.clone(), &plan)))
+                            self.register_csv(&name.to_string(), location, options).await?;
+                            Ok(Arc::new(DataFrame::new(ctx.state(), plan)))
                         }
                         "parquet" => {
                             self.register_parquet(
-                                name,
+                                &name.to_string(),
                                 location,
                                 ParquetReadOptions::default()
                                     .table_partition_cols(table_partition_cols),
                             )
                             .await?;
-                            Ok(Arc::new(DataFrame::new(ctx.state.clone(), &plan)))
+                            Ok(Arc::new(DataFrame::new(ctx.state(), plan)))
                         }
                         "avro" => {
                             self.register_avro(
-                                name,
+                                &name.to_string(),
                                 location,
                                 AvroReadOptions::default()
                                     .table_partition_cols(table_partition_cols),
                             )
                             .await?;
-                            Ok(Arc::new(DataFrame::new(ctx.state.clone(), &plan)))
+                            Ok(Arc::new(DataFrame::new(ctx.state(), plan)))
                         }
                         _ => Err(DataFusionError::NotImplemented(format!(
                             "Unsupported file type {:?}.",
@@ -426,7 +428,7 @@ impl BallistaContext {
                         ))),
                     },
                     (true, true) => {
-                        Ok(Arc::new(DataFrame::new(ctx.state.clone(), &plan)))
+                        Ok(Arc::new(DataFrame::new(ctx.state(), plan)))
                     }
                     (false, true) => Err(DataFusionError::Execution(format!(
                         "Table '{:?}' already exists",
@@ -434,7 +436,7 @@ impl BallistaContext {
                     ))),
                 }
             }
-            _ => ctx.sql(sql).await,
+            _ => Ok(Arc::new(ctx.sql(sql).await?)),
         }
     }
 }
@@ -452,7 +454,7 @@ mod tests {
             .await
             .unwrap();
         let df = context.sql("SELECT 1;").await.unwrap();
-        df.collect().await.unwrap();
+        df.as_ref().clone().collect().await.unwrap();
     }
 
     #[tokio::test]
@@ -593,6 +595,7 @@ mod tests {
                         collect_stat: x.collect_stat,
                         target_partitions: x.target_partitions,
                         file_sort_order: None,
+                        infinite_source: false
                     };
 
                     let table_paths = listing_table
@@ -618,7 +621,7 @@ mod tests {
             .sql("select count(1) from single_nan;")
             .await
             .unwrap();
-        let results = df.collect().await.unwrap();
+        let results = df.as_ref().clone().collect().await.unwrap();
         pretty::print_batches(&results).unwrap();
     }
 
@@ -639,7 +642,7 @@ mod tests {
         let sql = "select EXTRACT(year FROM to_timestamp('2020-09-08T12:13:14+00:00'));";
 
         let df = context.sql(sql).await.unwrap();
-        assert!(!df.collect().await.unwrap().is_empty());
+        assert!(!df.as_ref().clone().collect().await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -660,7 +663,7 @@ mod tests {
             .sql("SELECT 1 as NUMBER union SELECT 1 as NUMBER;")
             .await
             .unwrap();
-        let res1 = df.collect().await.unwrap();
+        let res1 = df.as_ref().clone().collect().await.unwrap();
         let expected1 = vec![
             "+--------+",
             "| number |",
@@ -689,7 +692,7 @@ mod tests {
             .sql("SELECT 1 as NUMBER union all SELECT 1 as NUMBER;")
             .await
             .unwrap();
-        let res2 = df.collect().await.unwrap();
+        let res2 = df.as_ref().clone().collect().await.unwrap();
         assert_eq!(
             expected2,
             pretty_format_batches(&res2)
@@ -728,7 +731,7 @@ mod tests {
             .unwrap();
 
         let df = context.sql("select min(\"id\") from test").await.unwrap();
-        let res = df.collect().await.unwrap();
+        let res = df.as_ref().clone().collect().await.unwrap();
         let expected = vec![
             "+--------------+",
             "| MIN(test.id) |",
@@ -739,7 +742,7 @@ mod tests {
         assert_result_eq(expected, &res);
 
         let df = context.sql("select max(\"id\") from test").await.unwrap();
-        let res = df.collect().await.unwrap();
+        let res = df.as_ref().clone().collect().await.unwrap();
         let expected = vec![
             "+--------------+",
             "| MAX(test.id) |",
@@ -750,7 +753,7 @@ mod tests {
         assert_result_eq(expected, &res);
 
         let df = context.sql("select SUM(\"id\") from test").await.unwrap();
-        let res = df.collect().await.unwrap();
+        let res = df.as_ref().clone().collect().await.unwrap();
         let expected = vec![
             "+--------------+",
             "| SUM(test.id) |",
@@ -761,7 +764,7 @@ mod tests {
         assert_result_eq(expected, &res);
 
         let df = context.sql("select AVG(\"id\") from test").await.unwrap();
-        let res = df.collect().await.unwrap();
+        let res = df.as_ref().clone().collect().await.unwrap();
         let expected = vec![
             "+--------------+",
             "| AVG(test.id) |",
@@ -772,7 +775,7 @@ mod tests {
         assert_result_eq(expected, &res);
 
         let df = context.sql("select COUNT(\"id\") from test").await.unwrap();
-        let res = df.collect().await.unwrap();
+        let res = df.as_ref().clone().collect().await.unwrap();
         let expected = vec![
             "+----------------+",
             "| COUNT(test.id) |",
@@ -786,7 +789,7 @@ mod tests {
             .sql("select approx_distinct(\"id\") from test")
             .await
             .unwrap();
-        let res = df.collect().await.unwrap();
+        let res = df.as_ref().clone().collect().await.unwrap();
         let expected = vec![
             "+-------------------------+",
             "| APPROXDISTINCT(test.id) |",
@@ -800,7 +803,7 @@ mod tests {
             .sql("select ARRAY_AGG(\"id\") from test")
             .await
             .unwrap();
-        let res = df.collect().await.unwrap();
+        let res = df.as_ref().clone().collect().await.unwrap();
         let expected = vec![
             "+--------------------------+",
             "| ARRAYAGG(test.id)        |",
@@ -811,7 +814,7 @@ mod tests {
         assert_result_eq(expected, &res);
 
         let df = context.sql("select VAR(\"id\") from test").await.unwrap();
-        let res = df.collect().await.unwrap();
+        let res = df.as_ref().clone().collect().await.unwrap();
         let expected = vec![
             "+-------------------+",
             "| VARIANCE(test.id) |",
@@ -825,7 +828,7 @@ mod tests {
             .sql("select VAR_POP(\"id\") from test")
             .await
             .unwrap();
-        let res = df.collect().await.unwrap();
+        let res = df.as_ref().clone().collect().await.unwrap();
         let expected = vec![
             "+----------------------+",
             "| VARIANCEPOP(test.id) |",
@@ -839,7 +842,7 @@ mod tests {
             .sql("select VAR_SAMP(\"id\") from test")
             .await
             .unwrap();
-        let res = df.collect().await.unwrap();
+        let res = df.as_ref().clone().collect().await.unwrap();
         let expected = vec![
             "+-------------------+",
             "| VARIANCE(test.id) |",
@@ -853,7 +856,7 @@ mod tests {
             .sql("select STDDEV(\"id\") from test")
             .await
             .unwrap();
-        let res = df.collect().await.unwrap();
+        let res = df.as_ref().clone().collect().await.unwrap();
         let expected = vec![
             "+--------------------+",
             "| STDDEV(test.id)    |",
@@ -867,7 +870,7 @@ mod tests {
             .sql("select STDDEV_SAMP(\"id\") from test")
             .await
             .unwrap();
-        let res = df.collect().await.unwrap();
+        let res = df.as_ref().clone().collect().await.unwrap();
         let expected = vec![
             "+--------------------+",
             "| STDDEV(test.id)    |",
@@ -881,7 +884,7 @@ mod tests {
             .sql("select COVAR(id, tinyint_col) from test")
             .await
             .unwrap();
-        let res = df.collect().await.unwrap();
+        let res = df.as_ref().clone().collect().await.unwrap();
         let expected = vec![
             "+--------------------------------------+",
             "| COVARIANCE(test.id,test.tinyint_col) |",
@@ -895,7 +898,7 @@ mod tests {
             .sql("select CORR(id, tinyint_col) from test")
             .await
             .unwrap();
-        let res = df.collect().await.unwrap();
+        let res = df.as_ref().clone().collect().await.unwrap();
         let expected = vec![
             "+---------------------------------------+",
             "| CORRELATION(test.id,test.tinyint_col) |",
@@ -909,7 +912,7 @@ mod tests {
             .sql("select approx_percentile_cont_with_weight(\"id\", 2, 0.5) from test")
             .await
             .unwrap();
-        let res = df.collect().await.unwrap();
+        let res = df.as_ref().clone().collect().await.unwrap();
         let expected = vec![
             "+---------------------------------------------------------------+",
             "| APPROXPERCENTILECONTWITHWEIGHT(test.id,Int64(2),Float64(0.5)) |",
@@ -923,7 +926,7 @@ mod tests {
             .sql("select approx_percentile_cont(\"double_col\", 0.5) from test")
             .await
             .unwrap();
-        let res = df.collect().await.unwrap();
+        let res = df.as_ref().clone().collect().await.unwrap();
         let expected = vec![
             "+----------------------------------------------------+",
             "| APPROXPERCENTILECONT(test.double_col,Float64(0.5)) |",

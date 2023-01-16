@@ -265,7 +265,7 @@ mod tests {
     use prost::Message;
     use std::any::Any;
 
-    use datafusion_proto::from_proto::parse_expr;
+    use datafusion_proto::logical_plan::from_proto::parse_expr;
     use std::convert::TryInto;
     use std::fmt;
     use std::fmt::{Debug, Formatter};

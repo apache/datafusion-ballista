@@ -61,14 +61,14 @@ impl Command {
                 .map_err(BallistaError::DataFusionError),
             Self::ListTables => {
                 let df = ctx.sql("SHOW TABLES").await?;
-                let batches = df.collect().await?;
+                let batches = df.as_ref().clone().collect().await?;
                 print_options
                     .print_batches(&batches, now)
                     .map_err(BallistaError::DataFusionError)
             }
             Self::DescribeTable(name) => {
                 let df = ctx.sql(&format!("SHOW COLUMNS FROM {}", name)).await?;
-                let batches = df.collect().await?;
+                let batches = df.as_ref().clone().collect().await?;
                 print_options
                     .print_batches(&batches, now)
                     .map_err(BallistaError::DataFusionError)

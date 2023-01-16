@@ -1591,6 +1591,7 @@ mod test {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::logical_expr::JoinType;
     use datafusion::logical_expr::{col, count, sum, Expr};
+    use datafusion::logical_expr::expr::Sort;
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion::test_util::scan_empty;
@@ -2849,14 +2850,14 @@ mod test {
             .build()
             .unwrap();
 
-        let sort_expr = Expr::Sort {
+        let sort_expr = Expr::Sort(Sort {
             expr: Box::new(col("id")),
             asc: false,
             nulls_first: false,
-        };
+        });
 
         let logical_plan = left_plan
-            .join(&right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
+            .join(right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
             .unwrap()
             .aggregate(vec![col("id")], vec![sum(col("gmv"))])
             .unwrap()

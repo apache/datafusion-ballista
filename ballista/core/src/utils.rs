@@ -327,7 +327,10 @@ pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
         ),
     )
     .with_query_planner(planner);
-    session_state.session_id = session_id;
+
+    // TODO this field is now private
+    // session_state.session_id = session_id;
+
     // the SessionContext created here is the client side context, but the session_id is from server side.
     SessionContext::with_state(session_state)
 }
@@ -395,7 +398,7 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
                 logical_plan.clone(),
                 self.extension_codec.clone(),
                 self.plan_repr,
-                session_state.session_id.clone(),
+                // session_state.session_id.clone(),
             ))),
         }
     }

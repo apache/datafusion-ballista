@@ -293,10 +293,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         // TODO shouldn't this take a ListingOption object as input?
 
         let GetFileMetadataParams { path, file_type } = request.into_inner();
-        // Here, we use the default config, since we don't know the session id
-        let config = SessionConfig::default().config_options();
         let file_format: Arc<dyn FileFormat> = match file_type.as_str() {
-            "parquet" => Ok(Arc::new(ParquetFormat::new(config))),
+            "parquet" => Ok(Arc::new(ParquetFormat::new())),
             // TODO implement for CSV
             _ => Err(tonic::Status::unimplemented(
                 "get_file_metadata unsupported file type",
@@ -320,8 +318,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 tonic::Status::internal(msg)
             })?;
 
+        let session = self.state.session_manager.get_session("todo need session id here").await.map_err(|e| {
+            let msg = format!("Error listing files: {}", e);
+            error!("{}", msg);
+            tonic::Status::internal(msg)
+        })?;
         let schema = file_format
-            .infer_schema(&obj_store, &file_metas)
+            .infer_schema(&session.state(), &obj_store, &file_metas)
             .await
             .map_err(|e| {
                 let msg = format!("Error inferring schema: {}", e);

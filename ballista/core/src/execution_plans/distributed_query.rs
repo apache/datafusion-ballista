@@ -106,7 +106,7 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
         plan: LogicalPlan,
         extension_codec: Arc<dyn LogicalExtensionCodec>,
         plan_repr: PhantomData<T>,
-        session_id: String,
+        // session_id: String,
     ) -> Self {
         Self {
             scheduler_url,
@@ -114,7 +114,7 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
             plan,
             extension_codec,
             plan_repr,
-            session_id,
+            session_id: "TBD".to_owned(),
         }
     }
 }
@@ -136,9 +136,9 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         None
     }
 
-    fn relies_on_input_order(&self) -> bool {
-        false
-    }
+    // fn relies_on_input_order(&self) -> bool {
+    //     false
+    // }
 
     fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
         vec![]

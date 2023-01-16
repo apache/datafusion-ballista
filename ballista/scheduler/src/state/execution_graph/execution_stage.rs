@@ -21,6 +21,7 @@ use std::fmt::{Debug, Formatter};
 use std::iter::FromIterator;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use datafusion::config::ConfigOptions;
 
 use datafusion::physical_optimizer::join_selection::JoinSelection;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
@@ -364,7 +365,8 @@ impl UnresolvedStage {
 
         // Optimize join order based on new resolved statistics
         let optimize_join = JoinSelection::new();
-        let plan = optimize_join.optimize(plan, &SessionConfig::new())?;
+        let config_options = ConfigOptions::new();
+        let plan = optimize_join.optimize(plan, &config_options)?;
 
         Ok(ResolvedStage::new(
             self.stage_id,
