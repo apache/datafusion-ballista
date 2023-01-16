@@ -134,8 +134,4 @@ impl PyBallistaContext {
 
         Ok(())
     }
-
-    fn configs(&self) {
-        self.ctx.
-    }
 }
