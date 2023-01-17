@@ -21,13 +21,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ballista_core::error::Result;
 use ballista_core::event_loop::{EventLoop, EventSender};
 use ballista_core::serde::protobuf::{StopExecutorParams, TaskStatus};
-use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::default_session_builder;
 
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
@@ -350,6 +351,7 @@ mod test {
 
     use datafusion::test_util::scan_empty;
     use datafusion_proto::protobuf::LogicalPlanNode;
+    use datafusion_proto::protobuf::PhysicalPlanNode;
 
     use ballista_core::config::{
         BallistaConfig, TaskSchedulingPolicy, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
@@ -360,8 +362,8 @@ mod test {
 
     use ballista_core::serde::protobuf::{
         failed_task, job_status, task_status, ExecutionError, FailedTask, JobStatus,
-        MultiTaskDefinition, PhysicalPlanNode, ShuffleWritePartition, SuccessfulJob,
-        SuccessfulTask, TaskId, TaskStatus,
+        MultiTaskDefinition, ShuffleWritePartition, SuccessfulJob, SuccessfulTask,
+        TaskId, TaskStatus,
     };
     use ballista_core::serde::scheduler::{
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
@@ -613,7 +615,10 @@ mod test {
 
         ctx.register_table("explode", Arc::new(ExplodingTableProvider))?;
 
-        let plan = ctx.sql("SELECT * FROM explode").await?.to_logical_plan()?;
+        let plan = ctx
+            .sql("SELECT * FROM explode")
+            .await?
+            .into_optimized_plan()?;
 
         // This should fail when we try and create the physical plan
         let status = test.run("job", "", &plan).await?;

@@ -35,8 +35,8 @@ use crate::state::task_manager::TaskLauncher;
 use ballista_core::config::{BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS};
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    task_status, JobStatus, MultiTaskDefinition, PhysicalPlanNode, ShuffleWritePartition,
-    SuccessfulTask, TaskId, TaskStatus,
+    task_status, JobStatus, MultiTaskDefinition, ShuffleWritePartition, SuccessfulTask,
+    TaskId, TaskStatus,
 };
 use ballista_core::serde::scheduler::{
     ExecutorData, ExecutorMetadata, ExecutorSpecification,
@@ -52,7 +52,7 @@ use datafusion::prelude::CsvReadOptions;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::backend::cluster::DefaultClusterState;
-use datafusion_proto::protobuf::LogicalPlanNode;
+use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use parking_lot::Mutex;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 

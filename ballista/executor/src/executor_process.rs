@@ -37,13 +37,13 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
-use datafusion_proto::protobuf::LogicalPlanNode;
+use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 
 use ballista_core::config::{LogRotationPolicy, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf::{
     executor_registration, scheduler_grpc_client::SchedulerGrpcClient,
-    ExecutorRegistration, ExecutorStoppedParams, PhysicalPlanNode,
+    ExecutorRegistration, ExecutorStoppedParams,
 };
 use ballista_core::serde::scheduler::ExecutorSpecification;
 use ballista_core::serde::BallistaCodec;

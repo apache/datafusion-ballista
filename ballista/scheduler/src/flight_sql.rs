@@ -49,7 +49,6 @@ use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::action::ActionType::FetchPartition;
 use ballista_core::serde::protobuf::job_status;
 use ballista_core::serde::protobuf::JobStatus;
-use ballista_core::serde::protobuf::PhysicalPlanNode;
 use ballista_core::serde::protobuf::SuccessfulJob;
 use ballista_core::utils::create_grpc_client_connection;
 use dashmap::DashMap;
@@ -63,7 +62,7 @@ use datafusion::common::DFSchemaRef;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::common::batch_byte_size;
 use datafusion::prelude::SessionContext;
-use datafusion_proto::protobuf::LogicalPlanNode;
+use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use prost::Message;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::time::sleep;
@@ -180,7 +179,7 @@ impl FlightSqlServiceImpl {
         let plan = ctx
             .sql(query)
             .await
-            .and_then(|df| df.to_logical_plan())
+            .and_then(|df| df.into_optimized_plan())
             .map_err(|e| Status::internal(format!("Error building plan: {}", e)))?;
         Ok(plan)
     }

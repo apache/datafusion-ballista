@@ -32,7 +32,6 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::{debug, warn};
 
 use ballista_core::error::{BallistaError, Result};
-use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::{
     self, task_info, FailedTask, GraphStageInput, OperatorMetricsSet, ResultLost,
@@ -41,7 +40,9 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::protobuf::{task_status, RunningTask};
 use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
 use ballista_core::serde::scheduler::PartitionLocation;
-use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::serde::BallistaCodec;
+use datafusion_proto::physical_plan::from_proto::parse_protobuf_hash_partitioning;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 
 use crate::display::DisplayableBallistaExecutionPlan;
 
@@ -364,7 +365,8 @@ impl UnresolvedStage {
 
         // Optimize join order based on new resolved statistics
         let optimize_join = JoinSelection::new();
-        let plan = optimize_join.optimize(plan, &SessionConfig::new())?;
+        let plan =
+            optimize_join.optimize(plan, SessionConfig::default().config_options())?;
 
         Ok(ResolvedStage::new(
             self.stage_id,

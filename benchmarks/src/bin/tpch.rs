@@ -62,6 +62,7 @@ use std::{
     time::{Instant, SystemTime},
 };
 use structopt::StructOpt;
+use tokio::task::JoinHandle;
 
 #[cfg(feature = "snmalloc")]
 #[global_allocator]
@@ -293,7 +294,7 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
     // register tables
     for table in TABLES {
         let table_provider = {
-            let mut session_state = ctx.state.write();
+            let mut session_state = ctx.state();
             get_table(
                 &mut session_state,
                 opt.path.to_str().unwrap(),
@@ -325,7 +326,7 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
     let mut result: Vec<RecordBatch> = Vec::with_capacity(1);
     for i in 0..opt.iterations {
         let start = Instant::now();
-        let plans = create_logical_plans(&ctx, opt.query)?;
+        let plans = create_logical_plans(&ctx, opt.query).await?;
         for plan in plans {
             result = execute_query(&ctx, &plan, opt.debug).await?;
         }
@@ -394,7 +395,7 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
                 .await
                 .map_err(|e| DataFusionError::Plan(format!("{:?}", e)))
                 .unwrap();
-            let plan = df.to_logical_plan()?;
+            let plan = df.clone().into_optimized_plan()?;
             if opt.debug {
                 println!("=== Optimized logical plan ===\n{:?}\n", plan);
             }
@@ -676,11 +677,29 @@ fn get_query_sql(query: usize) -> Result<Vec<String>> {
 }
 
 /// Create a logical plan for each query in the specified query file
-fn create_logical_plans(ctx: &SessionContext, query: usize) -> Result<Vec<LogicalPlan>> {
-    let sql = get_query_sql(query)?;
-    sql.iter()
-        .map(|sql| ctx.create_logical_plan(sql.as_str()))
-        .collect::<Result<Vec<_>>>()
+async fn create_logical_plans(
+    ctx: &SessionContext,
+    query: usize,
+) -> Result<Vec<LogicalPlan>> {
+    let session_state = ctx.state();
+    let sqls = get_query_sql(query)?;
+    let join_handles = sqls
+        .into_iter()
+        .map(|sql| {
+            let session_state = session_state.clone();
+            tokio::spawn(
+                async move { session_state.create_logical_plan(sql.as_str()).await },
+            )
+        })
+        .collect::<Vec<JoinHandle<Result<LogicalPlan>>>>();
+    futures::future::join_all(join_handles)
+        .await
+        .into_iter()
+        .collect::<std::result::Result<Vec<Result<LogicalPlan>>, tokio::task::JoinError>>(
+        )
+        .map_err(|e| DataFusionError::Internal(format!("{:?}", e)))?
+        .into_iter()
+        .collect()
 }
 
 async fn execute_query(
@@ -691,11 +710,12 @@ async fn execute_query(
     if debug {
         println!("=== Logical plan ===\n{:?}\n", plan);
     }
-    let plan = ctx.optimize(plan)?;
+    let session_state = ctx.state();
+    let plan = session_state.optimize(plan)?;
     if debug {
         println!("=== Optimized logical plan ===\n{:?}\n", plan);
     }
-    let physical_plan = ctx.create_physical_plan(&plan).await?;
+    let physical_plan = session_state.create_physical_plan(&plan).await?;
     if debug {
         println!(
             "=== Physical plan ===\n{}\n",
@@ -730,6 +750,7 @@ async fn convert_tbl(opt: ConvertOpt) -> Result<()> {
 
         let config = SessionConfig::new().with_batch_size(opt.batch_size);
         let ctx = SessionContext::with_config(config);
+        let session_state = ctx.state();
 
         // build plan to read the TBL file
         let mut csv = ctx.read_csv(&input_path, options).await?;
@@ -740,9 +761,9 @@ async fn convert_tbl(opt: ConvertOpt) -> Result<()> {
         }
 
         // create the physical plan
-        let csv = csv.to_logical_plan()?;
-        let csv = ctx.optimize(&csv)?;
-        let csv = ctx.create_physical_plan(&csv).await?;
+        let csv = csv.into_optimized_plan()?;
+        let csv = session_state.optimize(&csv)?;
+        let csv = session_state.create_physical_plan(&csv).await?;
 
         let output_path = output_root_path.join(table);
         let output_path = output_path.to_str().unwrap().to_owned();
@@ -816,8 +837,7 @@ async fn get_table(
             }
             "parquet" => {
                 let path = format!("{}/{}", path, table);
-                let format = ParquetFormat::new(ctx.config_options())
-                    .with_enable_pruning(Some(true));
+                let format = ParquetFormat::default().with_enable_pruning(Some(true));
 
                 (Arc::new(format), path, DEFAULT_PARQUET_EXTENSION)
             }
@@ -834,6 +854,7 @@ async fn get_table(
         collect_stat: true,
         table_partition_cols: vec![],
         file_sort_order: None,
+        infinite_source: false,
     };
 
     let url = ListingTableUrl::parse(path)?;
@@ -1502,7 +1523,7 @@ mod tests {
             ctx.register_table(table, Arc::new(provider))?;
         }
 
-        let plans = create_logical_plans(&ctx, n)?;
+        let plans = create_logical_plans(&ctx, n).await?;
         for plan in plans {
             execute_query(&ctx, &plan, false).await?;
         }
@@ -1541,10 +1562,11 @@ mod tests {
 
     mod ballista_round_trip {
         use super::*;
-        use ballista_core::serde::{protobuf, AsExecutionPlan, BallistaCodec};
+        use ballista_core::serde::BallistaCodec;
         use datafusion::datasource::listing::ListingTableUrl;
         use datafusion::physical_plan::ExecutionPlan;
         use datafusion_proto::logical_plan::AsLogicalPlan;
+        use datafusion_proto::physical_plan::AsExecutionPlan;
         use std::ops::Deref;
 
         async fn round_trip_query(n: usize) -> Result<()> {
@@ -1552,9 +1574,10 @@ mod tests {
                 .with_target_partitions(1)
                 .with_batch_size(10);
             let ctx = SessionContext::with_config(config);
+            let session_state = ctx.state();
             let codec: BallistaCodec<
                 datafusion_proto::protobuf::LogicalPlanNode,
-                protobuf::PhysicalPlanNode,
+                datafusion_proto::protobuf::PhysicalPlanNode,
             > = BallistaCodec::default();
 
             // set tpch_data_path to dummy value and skip physical plan serde test when TPCH_DATA
@@ -1579,10 +1602,10 @@ mod tests {
             }
 
             // test logical plan round trip
-            let plans = create_logical_plans(&ctx, n)?;
+            let plans = create_logical_plans(&ctx, n).await?;
             for plan in plans {
                 // test optimized logical plan round trip
-                let plan = ctx.optimize(&plan)?;
+                let plan = session_state.optimize(&plan)?;
                 let proto: datafusion_proto::protobuf::LogicalPlanNode =
                     datafusion_proto::protobuf::LogicalPlanNode::try_from_logical_plan(
                         &plan,
@@ -1600,9 +1623,9 @@ mod tests {
 
                 // test physical plan roundtrip
                 if env::var("TPCH_DATA").is_ok() {
-                    let physical_plan = ctx.create_physical_plan(&plan).await?;
-                    let proto: protobuf::PhysicalPlanNode =
-                        protobuf::PhysicalPlanNode::try_from_physical_plan(
+                    let physical_plan = session_state.create_physical_plan(&plan).await?;
+                    let proto: datafusion_proto::protobuf::PhysicalPlanNode =
+                        datafusion_proto::protobuf::PhysicalPlanNode::try_from_physical_plan(
                             physical_plan.clone(),
                             codec.physical_extension_codec(),
                         )

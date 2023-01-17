@@ -633,8 +633,14 @@ filter_expr="]
     }
 
     async fn test_graph() -> Result<ExecutionGraph> {
-        let ctx =
-            SessionContext::with_config(SessionConfig::new().with_target_partitions(48));
+        let mut config = SessionConfig::new()
+            .with_target_partitions(48)
+            .with_batch_size(4096);
+        config
+            .config_options_mut()
+            .optimizer
+            .enable_round_robin_repartition = false;
+        let ctx = SessionContext::with_config(config);
         let schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::UInt32, false),
             Field::new("b", DataType::UInt32, false),
@@ -646,16 +652,22 @@ filter_expr="]
         let df = ctx
             .sql("SELECT * FROM foo JOIN bar ON foo.a = bar.a JOIN baz on bar.b = baz.b")
             .await?;
-        let plan = df.to_logical_plan()?;
-        let plan = ctx.create_physical_plan(&plan).await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
         ExecutionGraph::new("scheduler_id", "job_id", "job_name", "session_id", plan, 0)
     }
 
     // With the improvement of https://github.com/apache/arrow-datafusion/pull/4122,
     // Redundant RepartitionExec can be removed so that the stage number will be reduced
     async fn test_graph_optimized() -> Result<ExecutionGraph> {
-        let ctx =
-            SessionContext::with_config(SessionConfig::new().with_target_partitions(48));
+        let mut config = SessionConfig::new()
+            .with_target_partitions(48)
+            .with_batch_size(4096);
+        config
+            .config_options_mut()
+            .optimizer
+            .enable_round_robin_repartition = false;
+        let ctx = SessionContext::with_config(config);
         let schema =
             Arc::new(Schema::new(vec![Field::new("a", DataType::UInt32, false)]));
         let table = Arc::new(MemTable::try_new(schema.clone(), vec![])?);
@@ -665,8 +677,8 @@ filter_expr="]
         let df = ctx
             .sql("SELECT * FROM foo JOIN bar ON foo.a = bar.a JOIN baz on bar.a = baz.a")
             .await?;
-        let plan = df.to_logical_plan()?;
-        let plan = ctx.create_physical_plan(&plan).await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
         ExecutionGraph::new("scheduler_id", "job_id", "job_name", "session_id", plan, 0)
     }
 }

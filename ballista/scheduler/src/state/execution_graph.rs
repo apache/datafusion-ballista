@@ -42,7 +42,8 @@ use ballista_core::serde::protobuf::{task_status, RunningTask};
 use ballista_core::serde::scheduler::{
     ExecutorMetadata, PartitionId, PartitionLocation, PartitionStats,
 };
-use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::serde::BallistaCodec;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 
 use crate::display::print_stage_metrics;
 use crate::planner::DistributedPlanner;
@@ -1589,8 +1590,8 @@ mod test {
     use std::sync::Arc;
 
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::logical_expr::JoinType;
-    use datafusion::logical_expr::{col, count, sum, Expr};
+    use datafusion::logical_expr::expr::Sort;
+    use datafusion::logical_expr::{col, count, sum, Expr, JoinType};
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion::test_util::scan_empty;
@@ -2760,6 +2761,7 @@ mod test {
     async fn test_aggregation_plan(partition: usize) -> ExecutionGraph {
         let config = SessionConfig::new().with_target_partitions(partition);
         let ctx = Arc::new(SessionContext::with_config(config));
+        let session_state = ctx.state();
 
         let schema = Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
@@ -2773,9 +2775,12 @@ mod test {
             .build()
             .unwrap();
 
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+        let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+        let plan = session_state
+            .create_physical_plan(&optimized_plan)
+            .await
+            .unwrap();
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
@@ -2785,6 +2790,7 @@ mod test {
     async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
         let config = SessionConfig::new().with_target_partitions(partition);
         let ctx = Arc::new(SessionContext::with_config(config));
+        let session_state = ctx.state();
 
         let schema = Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
@@ -2801,9 +2807,12 @@ mod test {
             .build()
             .unwrap();
 
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+        let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+        let plan = session_state
+            .create_physical_plan(&optimized_plan)
+            .await
+            .unwrap();
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
@@ -2813,6 +2822,7 @@ mod test {
     async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
         let config = SessionConfig::new().with_target_partitions(partition);
         let ctx = Arc::new(SessionContext::with_config(config));
+        let session_state = ctx.state();
 
         let schema = Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
@@ -2826,16 +2836,24 @@ mod test {
             .build()
             .unwrap();
 
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+        let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+        let plan = session_state
+            .create_physical_plan(&optimized_plan)
+            .await
+            .unwrap();
 
         ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap()
     }
 
     async fn test_join_plan(partition: usize) -> ExecutionGraph {
-        let config = SessionConfig::new().with_target_partitions(partition);
+        let mut config = SessionConfig::new().with_target_partitions(partition);
+        config
+            .config_options_mut()
+            .optimizer
+            .enable_round_robin_repartition = false;
         let ctx = Arc::new(SessionContext::with_config(config));
+        let session_state = ctx.state();
 
         let schema = Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
@@ -2849,14 +2867,10 @@ mod test {
             .build()
             .unwrap();
 
-        let sort_expr = Expr::Sort {
-            expr: Box::new(col("id")),
-            asc: false,
-            nulls_first: false,
-        };
+        let sort_expr = Expr::Sort(Sort::new(Box::new(col("id")), false, false));
 
         let logical_plan = left_plan
-            .join(&right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
+            .join(right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
             .unwrap()
             .aggregate(vec![col("id")], vec![sum(col("gmv"))])
             .unwrap()
@@ -2865,9 +2879,12 @@ mod test {
             .build()
             .unwrap();
 
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+        let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+        let plan = session_state
+            .create_physical_plan(&optimized_plan)
+            .await
+            .unwrap();
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
@@ -2882,17 +2899,21 @@ mod test {
     async fn test_union_all_plan(partition: usize) -> ExecutionGraph {
         let config = SessionConfig::new().with_target_partitions(partition);
         let ctx = Arc::new(SessionContext::with_config(config));
+        let session_state = ctx.state();
 
         let logical_plan = ctx
             .sql("SELECT 1 as NUMBER union all SELECT 1 as NUMBER;")
             .await
             .unwrap()
-            .to_logical_plan()
+            .into_optimized_plan()
             .unwrap();
 
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+        let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+        let plan = session_state
+            .create_physical_plan(&optimized_plan)
+            .await
+            .unwrap();
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
@@ -2907,17 +2928,21 @@ mod test {
     async fn test_union_plan(partition: usize) -> ExecutionGraph {
         let config = SessionConfig::new().with_target_partitions(partition);
         let ctx = Arc::new(SessionContext::with_config(config));
+        let session_state = ctx.state();
 
         let logical_plan = ctx
             .sql("SELECT 1 as NUMBER union SELECT 1 as NUMBER;")
             .await
             .unwrap()
-            .to_logical_plan()
+            .into_optimized_plan()
             .unwrap();
 
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+        let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+        let plan = session_state
+            .create_physical_plan(&optimized_plan)
+            .await
+            .unwrap();
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 

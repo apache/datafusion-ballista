@@ -26,8 +26,8 @@ use ballista_core::event_loop::{EventAction, EventSender};
 
 use crate::metrics::SchedulerMetricsCollector;
 use crate::scheduler_server::timestamp_millis;
-use ballista_core::serde::AsExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 use tokio::sync::mpsc;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;

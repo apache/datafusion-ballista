@@ -29,28 +29,28 @@ use tonic::transport::Channel;
 use tonic::{Request, Response, Status};
 
 use ballista_core::error::BallistaError;
-use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
-use ballista_core::serde::protobuf::executor_grpc_server::{
-    ExecutorGrpc, ExecutorGrpcServer,
-};
-use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_core::serde::protobuf::{
-    executor_metric, executor_status, CancelTasksParams, CancelTasksResult,
-    ExecutorMetric, ExecutorStatus, HeartBeatParams, LaunchMultiTaskParams,
-    LaunchMultiTaskResult, LaunchTaskParams, LaunchTaskResult, RegisterExecutorParams,
-    RemoveJobDataParams, RemoveJobDataResult, StopExecutorParams, StopExecutorResult,
-    TaskStatus, UpdateTaskStatusParams,
+    executor_grpc_server::{ExecutorGrpc, ExecutorGrpcServer},
+    executor_metric, executor_status,
+    scheduler_grpc_client::SchedulerGrpcClient,
+    CancelTasksParams, CancelTasksResult, ExecutorMetric, ExecutorStatus,
+    HeartBeatParams, LaunchMultiTaskParams, LaunchMultiTaskResult, LaunchTaskParams,
+    LaunchTaskResult, RegisterExecutorParams, RemoveJobDataParams, RemoveJobDataResult,
+    StopExecutorParams, StopExecutorResult, TaskStatus, UpdateTaskStatusParams,
 };
 use ballista_core::serde::scheduler::PartitionId;
 use ballista_core::serde::scheduler::TaskDefinition;
-use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{
     collect_plan_metrics, create_grpc_client_connection, create_grpc_server,
 };
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::{
+    logical_plan::AsLogicalPlan,
+    physical_plan::{from_proto::parse_protobuf_hash_partitioning, AsExecutionPlan},
+};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
 

@@ -17,13 +17,13 @@
 
 [workspace]
 members = [
-    "benchmarks",
+    "ballista-cli",
     "ballista/client",
     "ballista/core",
     "ballista/executor",
     "ballista/scheduler",
+    "benchmarks",
     "examples",
-    "ballista-cli",
 ]
 exclude = ["python"]
 
