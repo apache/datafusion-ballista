@@ -35,7 +35,7 @@ required-features = ["ballista/standalone"]
 
 [dependencies]
 ballista = { path = "../ballista/client", version = "0.10.0" }
-datafusion = "15.0.0"
+datafusion = "16.0.0"
 futures = "0.3"
 num_cpus = "1.13.0"
 prost = "0.11"
