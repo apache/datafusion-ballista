@@ -29,6 +29,10 @@ edition = "2018"
 [package.metadata.configure_me.bin]
 scheduler = "scheduler_config_spec.toml"
 
+[[bin]]
+name = "ballista-scheduler"
+path = "src/bin/main.rs"
+
 [features]
 default = ["etcd", "sled", "prometheus-metrics", "flight-sql"]
 etcd = ["etcd-client"]
