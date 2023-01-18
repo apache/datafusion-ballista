@@ -52,6 +52,8 @@ use futures::StreamExt;
 use log::error;
 #[cfg(feature = "s3")]
 use object_store::aws::AmazonS3Builder;
+#[cfg(feature = "azure")]
+use object_store::azure::MicrosoftAzureBuilder;
 use object_store::ObjectStore;
 use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
@@ -114,6 +116,18 @@ impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
                     let store = AmazonS3Builder::from_env()
                         .with_virtual_hosted_style_request(true)
                         .with_bucket_name(bucket_name)
+                        .build()?;
+                    return Ok(Arc::new(store));
+                }
+            }
+        }
+
+        #[cfg(feature = "azure")]
+        {
+            if url.to_string().starts_with("azure://") {
+                if let Some(bucket_name) = url.host_str() {
+                    let store = MicrosoftAzureBuilder::from_env()
+                        .with_container_name(bucket_name)
                         .build()?;
                     return Ok(Arc::new(store));
                 }
