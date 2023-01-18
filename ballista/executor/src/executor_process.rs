@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Ballista Rust executor binary.
+//! Ballista Executor Process
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -24,13 +24,20 @@ use std::{env, io};
 
 use anyhow::{Context, Result};
 use arrow_flight::flight_service_server::FlightServiceServer;
-use ballista_executor::{execution_loop, executor_server};
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use log::{error, info, warn};
 use tempfile::TempDir;
 use tokio::fs::DirEntry;
 use tokio::signal;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio::{fs, time};
+use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
+
+use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
+use datafusion_proto::protobuf::LogicalPlanNode;
 
 use ballista_core::config::{LogRotationPolicy, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
@@ -43,85 +50,59 @@ use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{
     create_grpc_client_connection, create_grpc_server, with_object_store_provider,
 };
-use ballista_core::{print_version, BALLISTA_VERSION};
-use ballista_executor::executor::Executor;
-use ballista_executor::flight_service::BallistaFlightService;
-use ballista_executor::metrics::LoggingMetricsCollector;
-use ballista_executor::shutdown::Shutdown;
-use ballista_executor::shutdown::ShutdownNotifier;
-use ballista_executor::terminate;
-use config::prelude::*;
-use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
-use datafusion_proto::protobuf::LogicalPlanNode;
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
-use tracing_subscriber::EnvFilter;
+use ballista_core::BALLISTA_VERSION;
 
-#[macro_use]
-extern crate configure_me;
+use crate::executor::Executor;
+use crate::flight_service::BallistaFlightService;
+use crate::metrics::LoggingMetricsCollector;
+use crate::shutdown::Shutdown;
+use crate::shutdown::ShutdownNotifier;
+use crate::terminate;
+use crate::{execution_loop, executor_server};
 
-#[allow(clippy::all, warnings)]
-mod config {
-    // Ideally we would use the include_config macro from configure_me, but then we cannot use
-    // #[allow(clippy::all)] to silence clippy warnings from the generated code
-    include!(concat!(env!("OUT_DIR"), "/executor_configure_me_config.rs"));
+pub struct ExecutorProcessConfig {
+    pub bind_host: String,
+    pub external_host: Option<String>,
+    pub port: u16,
+    pub grpc_port: u16,
+    pub scheduler_host: String,
+    pub scheduler_port: u16,
+    pub scheduler_connect_timeout_seconds: u16,
+    pub concurrent_tasks: usize,
+    pub task_scheduling_policy: TaskSchedulingPolicy,
+    pub log_dir: Option<String>,
+    pub work_dir: Option<String>,
+    pub special_mod_log_level: String,
+    pub print_thread_info: bool,
+    pub log_file_name_prefix: String,
+    pub log_rotation_policy: LogRotationPolicy,
+    pub job_data_ttl_seconds: u64,
+    pub job_data_clean_up_interval_seconds: u64,
 }
 
-#[cfg(feature = "mimalloc")]
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    // parse command-line arguments
-    let (opt, _remaining_args) =
-        Config::including_optional_config_files(&["/etc/ballista/executor.toml"])
-            .unwrap_or_exit();
-
-    if opt.version {
-        print_version();
-        std::process::exit(0);
-    }
-
-    let special_mod_log_level = opt.log_level_setting;
-    let external_host = opt.external_host;
-    let bind_host = opt.bind_host;
-    let port = opt.bind_port;
-    let grpc_port = opt.bind_grpc_port;
-    let log_dir = opt.log_dir;
-    let print_thread_info = opt.print_thread_info;
-    let log_file_name_prefix = format!(
-        "executor_{}_{}",
-        external_host
-            .clone()
-            .unwrap_or_else(|| "localhost".to_string()),
-        port
-    );
-
+pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
     let rust_log = env::var(EnvFilter::DEFAULT_ENV);
-    let log_filter = EnvFilter::new(rust_log.unwrap_or(special_mod_log_level));
+    let log_filter = EnvFilter::new(rust_log.unwrap_or(opt.special_mod_log_level));
     // File layer
-    if let Some(log_dir) = log_dir {
+    if let Some(log_dir) = opt.log_dir {
         let log_file = match opt.log_rotation_policy {
             LogRotationPolicy::Minutely => {
-                tracing_appender::rolling::minutely(log_dir, &log_file_name_prefix)
+                tracing_appender::rolling::minutely(log_dir, &opt.log_file_name_prefix)
             }
             LogRotationPolicy::Hourly => {
-                tracing_appender::rolling::hourly(log_dir, &log_file_name_prefix)
+                tracing_appender::rolling::hourly(log_dir, &opt.log_file_name_prefix)
             }
             LogRotationPolicy::Daily => {
-                tracing_appender::rolling::daily(log_dir, &log_file_name_prefix)
+                tracing_appender::rolling::daily(log_dir, &opt.log_file_name_prefix)
             }
             LogRotationPolicy::Never => {
-                tracing_appender::rolling::never(log_dir, &log_file_name_prefix)
+                tracing_appender::rolling::never(log_dir, &opt.log_file_name_prefix)
             }
         };
         tracing_subscriber::fmt()
             .with_ansi(true)
-            .with_thread_names(print_thread_info)
-            .with_thread_ids(print_thread_info)
+            .with_thread_names(opt.print_thread_info)
+            .with_thread_ids(opt.print_thread_info)
             .with_writer(log_file)
             .with_env_filter(log_filter)
             .init();
@@ -129,14 +110,14 @@ async fn main() -> Result<()> {
         // Console layer
         tracing_subscriber::fmt()
             .with_ansi(true)
-            .with_thread_names(print_thread_info)
-            .with_thread_ids(print_thread_info)
+            .with_thread_names(opt.print_thread_info)
+            .with_thread_ids(opt.print_thread_info)
             .with_writer(io::stdout)
             .with_env_filter(log_filter)
             .init();
     }
 
-    let addr = format!("{}:{}", bind_host, port);
+    let addr = format!("{}:{}", opt.bind_host, opt.port);
     let addr = addr
         .parse()
         .with_context(|| format!("Could not parse address: {}", addr))?;
@@ -168,11 +149,12 @@ async fn main() -> Result<()> {
     let executor_id = Uuid::new_v4().to_string();
     let executor_meta = ExecutorRegistration {
         id: executor_id.clone(),
-        optional_host: external_host
+        optional_host: opt
+            .external_host
             .clone()
             .map(executor_registration::OptionalHost::Host),
-        port: port as u32,
-        grpc_port: grpc_port as u32,
+        port: opt.port as u32,
+        grpc_port: opt.grpc_port as u32,
         specification: Some(
             ExecutorSpecification {
                 task_slots: concurrent_tasks as u32,
@@ -292,7 +274,7 @@ async fn main() -> Result<()> {
                 //If there is executor registration error during startup, return the error and stop early.
                 executor_server::startup(
                     scheduler.clone(),
-                    bind_host,
+                    opt.bind_host,
                     executor.clone(),
                     default_codec,
                     stop_send,
@@ -525,7 +507,7 @@ pub async fn satisfy_dir_ttl(dir: DirEntry, ttl_seconds: u64) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use crate::clean_shuffle_data_loop;
+    use super::clean_shuffle_data_loop;
     use std::fs;
     use std::fs::File;
     use std::io::Write;
