@@ -17,36 +17,18 @@
 
 //! Ballista Rust scheduler binary.
 
-use anyhow::{Context, Result};
-#[cfg(feature = "flight-sql")]
-use arrow_flight::flight_service_server::FlightServiceServer;
-use ballista_scheduler::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
-use ballista_scheduler::state::backend::memory::MemoryBackendClient;
-use futures::future::{self, Either, TryFutureExt};
-use hyper::{server::conn::AddrStream, service::make_service_fn, Server};
-use std::convert::Infallible;
-use std::{env, io, net::SocketAddr, sync::Arc};
-use tonic::transport::server::Connected;
-use tower::Service;
+use std::{env, io, sync::Arc};
 
-use ballista_core::BALLISTA_VERSION;
-use ballista_core::{
-    print_version,
-    serde::protobuf::{scheduler_grpc_server::SchedulerGrpcServer, PhysicalPlanNode},
-};
-use ballista_scheduler::api::{get_routes, EitherBody, Error};
+use anyhow::{Context, Result};
+
+use ballista_core::print_version;
+use ballista_scheduler::scheduler_process::start_server;
 #[cfg(feature = "etcd")]
 use ballista_scheduler::state::backend::etcd::EtcdClient;
+use ballista_scheduler::state::backend::memory::MemoryBackendClient;
 #[cfg(feature = "sled")]
 use ballista_scheduler::state::backend::sled::SledClient;
-use datafusion_proto::protobuf::LogicalPlanNode;
-
-use ballista_scheduler::scheduler_server::SchedulerServer;
 use ballista_scheduler::state::backend::{StateBackend, StateBackendClient};
-
-use ballista_core::serde::BallistaCodec;
-
-use log::info;
 
 #[macro_use]
 extern crate configure_me;
@@ -61,93 +43,10 @@ mod config {
     ));
 }
 
-use ballista_core::utils::create_grpc_server;
-
 use ballista_core::config::LogRotationPolicy;
 use ballista_scheduler::config::SchedulerConfig;
-#[cfg(feature = "flight-sql")]
-use ballista_scheduler::flight_sql::FlightSqlServiceImpl;
-use ballista_scheduler::metrics::default_metrics_collector;
 use config::prelude::*;
 use tracing_subscriber::EnvFilter;
-
-async fn start_server(
-    scheduler_name: String,
-    config_backend: Arc<dyn StateBackendClient>,
-    addr: SocketAddr,
-    config: SchedulerConfig,
-) -> Result<()> {
-    info!(
-        "Ballista v{} Scheduler listening on {:?}",
-        BALLISTA_VERSION, addr
-    );
-    // Should only call SchedulerServer::new() once in the process
-    info!(
-        "Starting Scheduler grpc server with task scheduling policy of {:?}",
-        config.scheduling_policy
-    );
-
-    let metrics_collector = default_metrics_collector()?;
-
-    let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-        SchedulerServer::new(
-            scheduler_name,
-            config_backend.clone(),
-            BallistaCodec::default(),
-            config,
-            metrics_collector,
-        );
-
-    scheduler_server.init().await?;
-
-    Server::bind(&addr)
-        .serve(make_service_fn(move |request: &AddrStream| {
-            let scheduler_grpc_server =
-                SchedulerGrpcServer::new(scheduler_server.clone());
-
-            let keda_scaler = ExternalScalerServer::new(scheduler_server.clone());
-
-            let tonic_builder = create_grpc_server()
-                .add_service(scheduler_grpc_server)
-                .add_service(keda_scaler);
-
-            #[cfg(feature = "flight-sql")]
-            let tonic_builder = tonic_builder.add_service(FlightServiceServer::new(
-                FlightSqlServiceImpl::new(scheduler_server.clone()),
-            ));
-
-            let mut tonic = tonic_builder.into_service();
-
-            let mut warp = warp::service(get_routes(scheduler_server.clone()));
-
-            let connect_info = request.connect_info();
-            future::ok::<_, Infallible>(tower::service_fn(
-                move |req: hyper::Request<hyper::Body>| {
-                    // Set the connect info from hyper to tonic
-                    let (mut parts, body) = req.into_parts();
-                    parts.extensions.insert(connect_info.clone());
-                    let req = http::Request::from_parts(parts, body);
-
-                    if req.uri().path().starts_with("/api") {
-                        return Either::Left(
-                            warp.call(req)
-                                .map_ok(|res| res.map(EitherBody::Left))
-                                .map_err(Error::from),
-                        );
-                    }
-
-                    Either::Right(
-                        tonic
-                            .call(req)
-                            .map_ok(|res| res.map(EitherBody::Right))
-                            .map_err(Error::from),
-                    )
-                },
-            ))
-        }))
-        .await
-        .context("Could not start grpc server")
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
