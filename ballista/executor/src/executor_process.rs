@@ -67,7 +67,7 @@ pub struct ExecutorProcessConfig {
     pub grpc_port: u16,
     pub scheduler_host: String,
     pub scheduler_port: u16,
-    pub scheduler_connect_timeout_seconds: usize,
+    pub scheduler_connect_timeout_seconds: u16,
     pub concurrent_tasks: usize,
     pub task_scheduling_policy: TaskSchedulingPolicy,
     pub log_dir: Option<String>,

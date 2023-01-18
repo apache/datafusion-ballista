@@ -19,7 +19,6 @@
 
 use anyhow::Result;
 
-use ballista_core::config::{LogRotationPolicy, TaskSchedulingPolicy};
 use ballista_core::print_version;
 use ballista_executor::executor_process::{
     start_executor_process, ExecutorProcessConfig,
@@ -66,18 +65,18 @@ async fn main() -> Result<()> {
         bind_host: opt.bind_host,
         port: opt.bind_port,
         grpc_port: opt.bind_grpc_port,
-        scheduler_host: "".to_string(),
-        scheduler_port: 0,
-        scheduler_connect_timeout_seconds: 0,
-        concurrent_tasks: 0,
-        task_scheduling_policy: TaskSchedulingPolicy::PullStaged,
-        work_dir: None,
+        scheduler_host: opt.scheduler_host,
+        scheduler_port: opt.scheduler_port,
+        scheduler_connect_timeout_seconds: opt.scheduler_connect_timeout_seconds,
+        concurrent_tasks: opt.concurrent_tasks,
+        task_scheduling_policy: opt.task_scheduling_policy,
+        work_dir: opt.work_dir,
         log_dir: opt.log_dir,
         log_file_name_prefix,
-        log_rotation_policy: LogRotationPolicy::Minutely,
+        log_rotation_policy: opt.log_rotation_policy,
         print_thread_info: opt.print_thread_info,
-        job_data_ttl_seconds: 0,
-        job_data_clean_up_interval_seconds: 0,
+        job_data_ttl_seconds: opt.job_data_ttl_seconds,
+        job_data_clean_up_interval_seconds: opt.job_data_clean_up_interval_seconds,
     };
 
     start_executor_process(config).await
