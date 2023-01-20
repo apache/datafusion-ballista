@@ -15,34 +15,15 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM rust:1-buster
+FROM ubuntu:22.04
 
-ARG EXT_UID
+ARG RELEASE_FLAG=release
 
+ENV RELEASE_FLAG=${RELEASE_FLAG}
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
-ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && \
-    apt-get -y install libssl-dev openssl zlib1g zlib1g-dev libpq-dev cmake protobuf-compiler netcat curl unzip \
-    nodejs npm && \
-    npm install -g yarn
+COPY target/$RELEASE_FLAG/ballista-cli /root/ballista-cli
 
-# create build user with same UID as 
-RUN adduser -q -u $EXT_UID builder --home /home/builder && \
-    mkdir -p /home/builder/workspace
-USER builder
-
-ENV NODE_VER=18.9.0
-ENV HOME=/home/builder
-ENV PATH=$HOME/.cargo/bin:$PATH
-
-# prepare rust
-RUN rustup update && \
-    rustup component add rustfmt && \
-    cargo install cargo-chef --version 0.1.34
-
-WORKDIR /home/builder/workspace
-
-COPY dev/docker/builder-entrypoint.sh /home/builder
-ENTRYPOINT ["/home/builder/builder-entrypoint.sh"]
+COPY dev/docker/cli-entrypoint.sh /root/cli-entrypoint.sh
+ENTRYPOINT ["/root/cli-entrypoint.sh"]

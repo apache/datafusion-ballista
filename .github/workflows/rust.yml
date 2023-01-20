@@ -117,12 +117,7 @@ jobs:
       - name: Install protobuf compiler
         shell: bash
         run: |
-          mkdir -p $HOME/d/protoc
-          cd $HOME/d/protoc
-          export PROTO_ZIP="protoc-21.4-linux-x86_64.zip"
-          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.4/$PROTO_ZIP
-          unzip $PROTO_ZIP
-          export PATH=$PATH:$HOME/d/protoc/bin
+          apt-get -qq update && apt-get -y -qq install protobuf-compiler
           protoc --version
       - name: Cache Cargo
         uses: actions/cache@v3

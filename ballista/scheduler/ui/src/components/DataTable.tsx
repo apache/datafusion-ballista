@@ -62,10 +62,9 @@ interface DataTableProps {
 }
 
 export const ElapsedCell: (props: any) => React.ReactNode = (props: any) => {
-  const time = new Date(new Date().getTime() - props.value);
   return (
     <TimeAgo
-      date={time}
+      date={props.value}
       formatter={(
         value: number,
         unit: TimeAgo.Unit,

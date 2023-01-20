@@ -48,6 +48,20 @@ def struct_df():
     return ctx.create_dataframe([[batch]])
 
 
+def test_explain_string(df):
+    df = df.select(
+        column("a") + column("b"),
+        column("a") - column("b"),
+    )
+
+    # execute and collect the first (and only) batch
+    df.collect()
+
+    explain = df.explain_string()
+    assert "logical_plan" in explain
+    assert "physical_plan" in explain
+
+
 def test_select(df):
     df = df.select(
         column("a") + column("b"),

@@ -69,7 +69,7 @@ The `sql` method creates a `DataFrame`. The query is executed when an action suc
 
 ### Collecting Query Results
 
-The `collect` method executres the query and returns the results in
+The `collect` method executes the query and returns the results in
 [PyArrow](https://arrow.apache.org/docs/python/index.html) record batches.
 
 ```text

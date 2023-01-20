@@ -29,9 +29,12 @@ edition = "2018"
 [package.metadata.configure_me.bin]
 executor = "executor_config_spec.toml"
 
+[[bin]]
+name = "ballista-executor"
+path = "src/bin/main.rs"
+
 [features]
 default = ["mimalloc"]
-
 
 [dependencies]
 anyhow = "1"

@@ -342,12 +342,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let partition_id = task.partition_id;
         let shuffle_writer_plan =
             self.executor
-                .new_shuffle_writer(job_id.clone(), stage_id as usize, plan)?;
+                .new_shuffle_writer(job_id.clone(), stage_id, plan)?;
 
         let part = PartitionId {
             job_id: job_id.clone(),
-            stage_id: stage_id as usize,
-            partition_id: partition_id as usize,
+            stage_id,
+            partition_id,
         };
 
         info!("Start to execute shuffle write for task {}", task_identity);
@@ -355,7 +355,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let execution_result = self
             .executor
             .execute_shuffle_write(
-                task_id as usize,
+                task_id,
                 part.clone(),
                 shuffle_writer_plan.clone(),
                 task_context,

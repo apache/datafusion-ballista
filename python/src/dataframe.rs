@@ -159,12 +159,27 @@ impl PyDataFrame {
         Ok(Self::new(df))
     }
 
-    /// Print the query plan
+    /// Print the explain output to stdout
     #[args(verbose = false, analyze = false)]
     fn explain(&self, py: Python, verbose: bool, analyze: bool) -> PyResult<()> {
         let df = self.df.explain(verbose, analyze)?;
         let batches = wait_for_future(py, df.collect())?;
         pretty::print_batches(&batches)
             .map_err(|err| PyArrowException::new_err(err.to_string()))
+    }
+
+    /// Get the explain output as a string
+    #[args(verbose = false, analyze = false)]
+    fn explain_string(
+        &self,
+        py: Python,
+        verbose: bool,
+        analyze: bool,
+    ) -> PyResult<String> {
+        let df = self.df.explain(verbose, analyze)?;
+        let batches = wait_for_future(py, df.collect())?;
+        let display = pretty::pretty_format_batches(&batches)
+            .map_err(|err| PyArrowException::new_err(err.to_string()))?;
+        Ok(format!("{}", display))
     }
 }
