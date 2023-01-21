@@ -15,15 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::state::backend::{Keyspace, Operation, StateBackendClient, WatchEvent};
+use crate::state::backend::TaskDistribution;
 
-use crate::state::{decode_into, decode_protobuf, encode_protobuf, with_lock};
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf;
 
 use crate::config::SlotsPolicy;
+use crate::state::backend::cluster::ClusterState;
 use crate::state::execution_graph::RunningTaskInfo;
 use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 use ballista_core::serde::protobuf::{
@@ -88,7 +88,8 @@ pub const DEFAULT_EXECUTOR_TIMEOUT_SECONDS: u64 = 180;
 pub(crate) struct ExecutorManager {
     // executor slot policy
     slots_policy: SlotsPolicy,
-    state: Arc<dyn StateBackendClient>,
+    task_distribution: TaskDistribution,
+    cluster_state: Arc<dyn ClusterState>,
     // executor_id -> ExecutorMetadata map
     executor_metadata: Arc<DashMap<String, ExecutorMetadata>>,
     // executor_id -> ExecutorHeartbeat map
@@ -102,12 +103,20 @@ pub(crate) struct ExecutorManager {
 
 impl ExecutorManager {
     pub(crate) fn new(
-        state: Arc<dyn StateBackendClient>,
+        cluster_state: Arc<dyn ClusterState>,
         slots_policy: SlotsPolicy,
     ) -> Self {
+        let task_distribution = match slots_policy {
+            SlotsPolicy::Bias => TaskDistribution::Bias,
+            SlotsPolicy::RoundRobin | SlotsPolicy::RoundRobinLocal => {
+                TaskDistribution::RoundRobin
+            }
+        };
+
         Self {
             slots_policy,
-            state,
+            task_distribution,
+            cluster_state,
             executor_metadata: Arc::new(DashMap::new()),
             executors_heartbeat: Arc::new(DashMap::new()),
             executor_data: Arc::new(Mutex::new(HashMap::new())),
@@ -116,16 +125,33 @@ impl ExecutorManager {
         }
     }
 
-    /// Initialize the `ExecutorManager` state. This will fill the `executor_heartbeats` value
-    /// with existing active heartbeats. Then new updates will be consumed through the `ExecutorHeartbeatListener`
+    /// Initialize a background process that will listen for executor heartbeats and update the in-memory cache
+    /// of executor heartbeats
     pub async fn init(&self) -> Result<()> {
         self.init_active_executor_heartbeats().await?;
-        let heartbeat_listener = ExecutorHeartbeatListener::new(
-            self.state.clone(),
-            self.executors_heartbeat.clone(),
-            self.dead_executors.clone(),
-        );
-        heartbeat_listener.start().await
+
+        let mut heartbeat_stream = self.cluster_state.executor_heartbeat_stream().await?;
+
+        info!("Initializing heartbeat listener");
+
+        let heartbeats = self.executors_heartbeat.clone();
+        let dead_executors = self.dead_executors.clone();
+        tokio::task::spawn(async move {
+            while let Some(heartbeat) = heartbeat_stream.next().await {
+                let executor_id = heartbeat.executor_id.clone();
+                if let Some(ExecutorStatus {
+                    status: Some(executor_status::Status::Dead(_)),
+                }) = heartbeat.status
+                {
+                    heartbeats.remove(&executor_id);
+                    dead_executors.insert(executor_id);
+                } else {
+                    heartbeats.insert(executor_id, heartbeat);
+                }
+            }
+        });
+
+        Ok(())
     }
 
     /// Reserve up to n executor task slots. Once reserved these slots will not be available
@@ -135,7 +161,13 @@ impl ExecutorManager {
         if self.slots_policy.is_local() {
             self.reserve_slots_local(n).await
         } else {
-            self.reserve_slots_global(n).await
+            let alive_executors = self.get_alive_executors_within_one_minute();
+
+            println!("Alive executors: {:?}", alive_executors);
+
+            self.cluster_state
+                .reserve_slots(n, self.task_distribution, Some(alive_executors))
+                .await
         }
     }
 
@@ -210,152 +242,6 @@ impl ExecutorManager {
         Ok(reservations)
     }
 
-    /// Reserve up to n executor task slots with considering the global resource snapshot
-    async fn reserve_slots_global(&self, n: u32) -> Result<Vec<ExecutorReservation>> {
-        let lock = self.state.lock(Keyspace::Slots, "global").await?;
-
-        with_lock(lock, async {
-            debug!("Attempting to reserve {} executor slots", n);
-            let start = Instant::now();
-
-            let alive_executors = self.get_alive_executors_within_one_minute();
-
-            let (reservations, txn_ops) = match self.slots_policy {
-                SlotsPolicy::Bias => {
-                    self.reserve_slots_global_bias(n, alive_executors).await?
-                }
-                SlotsPolicy::RoundRobin => {
-                    self.reserve_slots_global_round_robin(n, alive_executors)
-                        .await?
-                }
-                _ => {
-                    return Err(BallistaError::General(format!(
-                        "Reservation policy {:?} is not supported",
-                        self.slots_policy
-                    )))
-                }
-            };
-
-            self.state.apply_txn(txn_ops).await?;
-
-            let elapsed = start.elapsed();
-            info!(
-                "Reserved {} executor slots in {:?}",
-                reservations.len(),
-                elapsed
-            );
-
-            Ok(reservations)
-        })
-        .await
-    }
-
-    /// It will get ExecutorReservation from one executor as many as possible.
-    /// By this way, it can reduce the chance of decoding and encoding ExecutorData.
-    /// However, it may make the whole cluster unbalanced,
-    /// which means some executors may be very busy while other executors may be idle.
-    async fn reserve_slots_global_bias(
-        &self,
-        mut n: u32,
-        alive_executors: HashSet<String>,
-    ) -> Result<(Vec<ExecutorReservation>, Vec<(Operation, Keyspace, String)>)> {
-        let mut reservations: Vec<ExecutorReservation> = vec![];
-        let mut txn_ops: Vec<(Operation, Keyspace, String)> = vec![];
-
-        for executor_id in alive_executors {
-            if n == 0 {
-                break;
-            }
-
-            let value = self.state.get(Keyspace::Slots, &executor_id).await?;
-            let mut data = decode_into::<protobuf::ExecutorData, ExecutorData>(&value)?;
-            let take = std::cmp::min(data.available_task_slots, n);
-
-            for _ in 0..take {
-                reservations.push(ExecutorReservation::new_free(executor_id.clone()));
-                data.available_task_slots -= 1;
-                n -= 1;
-            }
-
-            let proto: protobuf::ExecutorData = data.into();
-            let new_data = encode_protobuf(&proto)?;
-            txn_ops.push((Operation::Put(new_data), Keyspace::Slots, executor_id));
-        }
-
-        Ok((reservations, txn_ops))
-    }
-
-    /// Create ExecutorReservation in a round robin way to evenly assign tasks to executors
-    async fn reserve_slots_global_round_robin(
-        &self,
-        mut n: u32,
-        alive_executors: HashSet<String>,
-    ) -> Result<(Vec<ExecutorReservation>, Vec<(Operation, Keyspace, String)>)> {
-        let mut reservations: Vec<ExecutorReservation> = vec![];
-        let mut txn_ops: Vec<(Operation, Keyspace, String)> = vec![];
-
-        let all_executor_data = self
-            .state
-            .scan(Keyspace::Slots, None)
-            .await?
-            .into_iter()
-            .map(|(_, data)| decode_into::<protobuf::ExecutorData, ExecutorData>(&data))
-            .collect::<Result<Vec<ExecutorData>>>()?;
-
-        let mut available_executor_data: Vec<ExecutorData> = all_executor_data
-            .into_iter()
-            .filter_map(|data| {
-                (data.available_task_slots > 0
-                    && alive_executors.contains(&data.executor_id))
-                .then_some(data)
-            })
-            .collect();
-        available_executor_data
-            .sort_by(|a, b| Ord::cmp(&b.available_task_slots, &a.available_task_slots));
-
-        // Exclusive
-        let mut last_updated_idx = 0usize;
-        loop {
-            let n_before = n;
-            for (idx, data) in available_executor_data.iter_mut().enumerate() {
-                if n == 0 {
-                    break;
-                }
-
-                // Since the vector is sorted in descending order,
-                // if finding one executor has not enough slots, the following will have not enough, either
-                if data.available_task_slots == 0 {
-                    break;
-                }
-
-                reservations
-                    .push(ExecutorReservation::new_free(data.executor_id.clone()));
-                data.available_task_slots -= 1;
-                n -= 1;
-
-                if idx >= last_updated_idx {
-                    last_updated_idx = idx + 1;
-                }
-            }
-
-            if n_before == n {
-                break;
-            }
-        }
-
-        for (idx, data) in available_executor_data.into_iter().enumerate() {
-            if idx >= last_updated_idx {
-                break;
-            }
-            let executor_id = data.executor_id.clone();
-            let proto: protobuf::ExecutorData = data.into();
-            let new_data = encode_protobuf(&proto)?;
-            txn_ops.push((Operation::Put(new_data), Keyspace::Slots, executor_id));
-        }
-
-        Ok((reservations, txn_ops))
-    }
-
     /// Returned reserved task slots to the pool of available slots. This operation is atomic
     /// so either the entire pool of reserved task slots it returned or none are.
     pub async fn cancel_reservations(
@@ -365,7 +251,7 @@ impl ExecutorManager {
         if self.slots_policy.is_local() {
             self.cancel_reservations_local(reservations).await
         } else {
-            self.cancel_reservations_global(reservations).await
+            self.cluster_state.cancel_reservations(reservations).await
         }
     }
 
@@ -392,54 +278,6 @@ impl ExecutorManager {
         }
 
         Ok(())
-    }
-
-    async fn cancel_reservations_global(
-        &self,
-        reservations: Vec<ExecutorReservation>,
-    ) -> Result<()> {
-        let lock = self.state.lock(Keyspace::Slots, "global").await?;
-
-        with_lock(lock, async {
-            let num_reservations = reservations.len();
-            debug!("Cancelling {} reservations", num_reservations);
-            let start = Instant::now();
-
-            let mut executor_slots: HashMap<String, ExecutorData> = HashMap::new();
-
-            for reservation in reservations {
-                let executor_id = &reservation.executor_id;
-                if let Some(data) = executor_slots.get_mut(executor_id) {
-                    data.available_task_slots += 1;
-                } else {
-                    let value = self.state.get(Keyspace::Slots, executor_id).await?;
-                    let mut data =
-                        decode_into::<protobuf::ExecutorData, ExecutorData>(&value)?;
-                    data.available_task_slots += 1;
-                    executor_slots.insert(executor_id.clone(), data);
-                }
-            }
-
-            let txn_ops: Vec<(Operation, Keyspace, String)> = executor_slots
-                .into_iter()
-                .map(|(executor_id, data)| {
-                    let proto: protobuf::ExecutorData = data.into();
-                    let new_data = encode_protobuf(&proto)?;
-                    Ok((Operation::Put(new_data), Keyspace::Slots, executor_id))
-                })
-                .collect::<Result<Vec<_>>>()?;
-
-            self.state.apply_txn(txn_ops).await?;
-
-            let elapsed = start.elapsed();
-            info!(
-                "Cancelled {} reservations in {:?}",
-                num_reservations, elapsed
-            );
-
-            Ok(())
-        })
-        .await
     }
 
     /// Send rpc to Executors to cancel the running tasks
@@ -595,21 +433,11 @@ impl ExecutorManager {
             }
         }
 
-        let value = self.state.get(Keyspace::Executors, executor_id).await?;
-
-        let decoded =
-            decode_into::<protobuf::ExecutorMetadata, ExecutorMetadata>(&value)?;
-        Ok(decoded)
+        self.cluster_state.get_executor_metadata(executor_id).await
     }
 
     pub async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()> {
-        let executor_id = metadata.id.clone();
-        let proto: protobuf::ExecutorMetadata = metadata.into();
-        let value = encode_protobuf(&proto)?;
-
-        self.state
-            .put(Keyspace::Executors, executor_id, value)
-            .await
+        self.cluster_state.save_executor_metadata(metadata).await
     }
 
     /// Register the executor with the scheduler. This will save the executor metadata and the
@@ -628,8 +456,6 @@ impl ExecutorManager {
     ) -> Result<Vec<ExecutorReservation>> {
         self.test_scheduler_connectivity(&metadata).await?;
 
-        let executor_id = metadata.id.clone();
-
         let current_ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| {
@@ -640,18 +466,14 @@ impl ExecutorManager {
             })?
             .as_secs();
 
-        //TODO this should be in a transaction
-        // Now that we know we can connect, save the metadata and slots
-        self.save_executor_metadata(metadata).await?;
-        self.save_executor_heartbeat(protobuf::ExecutorHeartbeat {
-            executor_id: executor_id.clone(),
+        let initial_heartbeat = ExecutorHeartbeat {
+            executor_id: metadata.id.clone(),
             timestamp: current_ts,
             metrics: vec![],
             status: Some(ExecutorStatus {
-                status: Some(executor_status::Status::Active("".to_string())),
+                status: Some(executor_status::Status::Active(String::default())),
             }),
-        })
-        .await?;
+        };
 
         if !reserve {
             if self.slots_policy.is_local() {
@@ -660,16 +482,20 @@ impl ExecutorManager {
                     .insert(specification.executor_id.clone(), specification.clone());
             }
 
-            let proto: protobuf::ExecutorData = specification.into();
-            let value = encode_protobuf(&proto)?;
-            self.state.put(Keyspace::Slots, executor_id, value).await?;
+            self.cluster_state
+                .register_executor(metadata, specification.clone(), reserve)
+                .await?;
+
+            self.executors_heartbeat
+                .insert(initial_heartbeat.executor_id.clone(), initial_heartbeat);
+
             Ok(vec![])
         } else {
             let mut specification = specification;
             let num_slots = specification.available_task_slots as usize;
             let mut reservations: Vec<ExecutorReservation> = vec![];
             for _ in 0..num_slots {
-                reservations.push(ExecutorReservation::new_free(executor_id.clone()));
+                reservations.push(ExecutorReservation::new_free(metadata.id.clone()));
             }
 
             specification.available_task_slots = 0;
@@ -680,9 +506,13 @@ impl ExecutorManager {
                     .insert(specification.executor_id.clone(), specification.clone());
             }
 
-            let proto: protobuf::ExecutorData = specification.into();
-            let value = encode_protobuf(&proto)?;
-            self.state.put(Keyspace::Slots, executor_id, value).await?;
+            self.cluster_state
+                .register_executor(metadata, specification, reserve)
+                .await?;
+
+            self.executors_heartbeat
+                .insert(initial_heartbeat.executor_id.clone(), initial_heartbeat);
+
             Ok(reservations)
         }
     }
@@ -691,29 +521,22 @@ impl ExecutorManager {
     pub async fn remove_executor(
         &self,
         executor_id: &str,
-        _reason: Option<String>,
+        reason: Option<String>,
     ) -> Result<()> {
-        let current_ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| {
-                BallistaError::Internal(format!(
-                    "Error getting current timestamp: {:?}",
-                    e
-                ))
-            })?
-            .as_secs();
+        info!("Removing executor {}: {:?}", executor_id, reason);
+        self.cluster_state.remove_executor(executor_id).await?;
 
-        self.save_dead_executor_heartbeat(protobuf::ExecutorHeartbeat {
-            executor_id: executor_id.to_owned(),
-            timestamp: current_ts,
-            metrics: vec![],
-            status: Some(ExecutorStatus {
-                status: Some(executor_status::Status::Dead("".to_string())),
-            }),
-        })
-        .await?;
+        let executor_id = executor_id.to_owned();
 
-        // TODO Check the Executor reservation logic for push-based scheduling
+        self.executors_heartbeat.remove(&executor_id);
+
+        // Remove executor data cache for dead executors
+        {
+            let mut executor_data = self.executor_data.lock();
+            executor_data.remove(&executor_id);
+        }
+
+        self.dead_executors.insert(executor_id);
 
         Ok(())
     }
@@ -746,40 +569,15 @@ impl ExecutorManager {
 
     pub(crate) async fn save_executor_heartbeat(
         &self,
-        heartbeat: protobuf::ExecutorHeartbeat,
+        heartbeat: ExecutorHeartbeat,
     ) -> Result<()> {
-        let executor_id = heartbeat.executor_id.clone();
-        let value = encode_protobuf(&heartbeat)?;
-        self.state
-            .put(Keyspace::Heartbeats, executor_id, value)
+        self.cluster_state
+            .save_executor_heartbeat(heartbeat.clone())
             .await?;
 
         self.executors_heartbeat
             .insert(heartbeat.executor_id.clone(), heartbeat);
 
-        Ok(())
-    }
-
-    pub(crate) async fn save_dead_executor_heartbeat(
-        &self,
-        heartbeat: protobuf::ExecutorHeartbeat,
-    ) -> Result<()> {
-        let executor_id = heartbeat.executor_id.clone();
-        let value = encode_protobuf(&heartbeat)?;
-        self.state
-            .put(Keyspace::Heartbeats, executor_id.clone(), value)
-            .await?;
-
-        self.executors_heartbeat
-            .remove(&heartbeat.executor_id.clone());
-
-        // Remove executor data cache for dead executors
-        {
-            let mut executor_data = self.executor_data.lock();
-            executor_data.remove(&executor_id);
-        }
-
-        self.dead_executors.insert(executor_id);
         Ok(())
     }
 
@@ -789,16 +587,15 @@ impl ExecutorManager {
 
     /// Initialize the set of active executor heartbeats from storage
     async fn init_active_executor_heartbeats(&self) -> Result<()> {
-        let heartbeats = self.state.scan(Keyspace::Heartbeats, None).await?;
+        let heartbeats = self.cluster_state.executor_heartbeats().await?;
 
-        for (_, value) in heartbeats {
-            let data: protobuf::ExecutorHeartbeat = decode_protobuf(&value)?;
-            let executor_id = data.executor_id.clone();
+        for (executor_id, heartbeat) in heartbeats {
+            // let data: protobuf::ExecutorHeartbeat = decode_protobuf(&value)?;
             if let Some(ExecutorStatus {
                 status: Some(executor_status::Status::Active(_)),
-            }) = data.status
+            }) = heartbeat.status
             {
-                self.executors_heartbeat.insert(executor_id, data);
+                self.executors_heartbeat.insert(executor_id, heartbeat);
             }
         }
         Ok(())
@@ -851,65 +648,10 @@ impl ExecutorManager {
     }
 }
 
-/// Rather than doing a scan across persistent state to find alive executors every time
-/// we need to find the set of alive executors, we start a watch on the `Heartbeats` keyspace
-/// and maintain an in-memory copy of the executor heartbeats.
-struct ExecutorHeartbeatListener {
-    state: Arc<dyn StateBackendClient>,
-    executors_heartbeat: Arc<DashMap<String, protobuf::ExecutorHeartbeat>>,
-    dead_executors: Arc<DashSet<String>>,
-}
-
-impl ExecutorHeartbeatListener {
-    pub fn new(
-        state: Arc<dyn StateBackendClient>,
-        executors_heartbeat: Arc<DashMap<String, protobuf::ExecutorHeartbeat>>,
-        dead_executors: Arc<DashSet<String>>,
-    ) -> Self {
-        Self {
-            state,
-            executors_heartbeat,
-            dead_executors,
-        }
-    }
-
-    /// Spawn an sync task which will watch the the Heartbeats keyspace and insert
-    /// new heartbeats in the `executors_heartbeat` cache.
-    pub async fn start(&self) -> Result<()> {
-        let mut watch = self
-            .state
-            .watch(Keyspace::Heartbeats, "".to_owned())
-            .await?;
-        let heartbeats = self.executors_heartbeat.clone();
-        let dead_executors = self.dead_executors.clone();
-        tokio::task::spawn(async move {
-            while let Some(event) = watch.next().await {
-                if let WatchEvent::Put(_, value) = event {
-                    if let Ok(data) =
-                        decode_protobuf::<protobuf::ExecutorHeartbeat>(&value)
-                    {
-                        let executor_id = data.executor_id.clone();
-                        // Remove dead executors
-                        if let Some(ExecutorStatus {
-                            status: Some(executor_status::Status::Dead(_)),
-                        }) = data.status
-                        {
-                            heartbeats.remove(&executor_id);
-                            dead_executors.insert(executor_id);
-                        } else {
-                            heartbeats.insert(executor_id, data);
-                        }
-                    }
-                }
-            }
-        });
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod test {
     use crate::config::SlotsPolicy;
+    use crate::state::backend::cluster::DefaultClusterState;
     use crate::state::backend::sled::SledClient;
     use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
     use ballista_core::error::Result;
@@ -928,9 +670,11 @@ mod test {
     }
 
     async fn test_reserve_and_cancel_inner(slots_policy: SlotsPolicy) -> Result<()> {
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
+        let cluster_state = Arc::new(DefaultClusterState::new(Arc::new(
+            SledClient::try_new_temporary()?,
+        )));
 
-        let executor_manager = ExecutorManager::new(state_storage, slots_policy);
+        let executor_manager = ExecutorManager::new(cluster_state, slots_policy);
 
         let executors = test_executors(10, 4);
 
@@ -943,7 +687,12 @@ mod test {
         // Reserve all the slots
         let reservations = executor_manager.reserve_slots(40).await?;
 
-        assert_eq!(reservations.len(), 40);
+        assert_eq!(
+            reservations.len(),
+            40,
+            "Expected 40 reservations for policy {:?}",
+            slots_policy
+        );
 
         // Now cancel them
         executor_manager.cancel_reservations(reservations).await?;
@@ -951,7 +700,12 @@ mod test {
         // Now reserve again
         let reservations = executor_manager.reserve_slots(40).await?;
 
-        assert_eq!(reservations.len(), 40);
+        assert_eq!(
+            reservations.len(),
+            40,
+            "Expected 40 reservations for policy {:?}",
+            slots_policy
+        );
 
         Ok(())
     }
@@ -966,9 +720,11 @@ mod test {
     }
 
     async fn test_reserve_partial_inner(slots_policy: SlotsPolicy) -> Result<()> {
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
+        let cluster_state = Arc::new(DefaultClusterState::new(Arc::new(
+            SledClient::try_new_temporary()?,
+        )));
 
-        let executor_manager = ExecutorManager::new(state_storage, slots_policy);
+        let executor_manager = ExecutorManager::new(cluster_state, slots_policy);
 
         let executors = test_executors(10, 4);
 
@@ -1021,9 +777,11 @@ mod test {
 
         let executors = test_executors(10, 4);
 
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
+        let cluster_state = Arc::new(DefaultClusterState::new(Arc::new(
+            SledClient::try_new_temporary()?,
+        )));
 
-        let executor_manager = ExecutorManager::new(state_storage, slots_policy);
+        let executor_manager = ExecutorManager::new(cluster_state, slots_policy);
 
         for (executor_metadata, executor_data) in executors {
             executor_manager
@@ -1066,9 +824,11 @@ mod test {
     }
 
     async fn test_register_reserve_inner(slots_policy: SlotsPolicy) -> Result<()> {
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
+        let cluster_state = Arc::new(DefaultClusterState::new(Arc::new(
+            SledClient::try_new_temporary()?,
+        )));
 
-        let executor_manager = ExecutorManager::new(state_storage, slots_policy);
+        let executor_manager = ExecutorManager::new(cluster_state, slots_policy);
 
         let executors = test_executors(10, 4);
 

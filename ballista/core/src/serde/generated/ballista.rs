@@ -1985,7 +1985,7 @@ pub mod executor_grpc_client {
 pub mod scheduler_grpc_server {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
     use tonic::codegen::*;
-    /// Generated trait containing gRPC methods that should be implemented for use with SchedulerGrpcServer.
+    ///Generated trait containing gRPC methods that should be implemented for use with SchedulerGrpcServer.
     #[async_trait]
     pub trait SchedulerGrpc: Send + Sync + 'static {
         /// Executors must poll the scheduler for heartbeat and to receive tasks
@@ -2531,7 +2531,7 @@ pub mod scheduler_grpc_server {
 pub mod executor_grpc_server {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
     use tonic::codegen::*;
-    /// Generated trait containing gRPC methods that should be implemented for use with ExecutorGrpcServer.
+    ///Generated trait containing gRPC methods that should be implemented for use with ExecutorGrpcServer.
     #[async_trait]
     pub trait ExecutorGrpc: Send + Sync + 'static {
         async fn launch_task(

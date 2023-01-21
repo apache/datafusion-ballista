@@ -33,6 +33,7 @@ use crate::state::task_manager::{TaskLauncher, TaskManager};
 
 use crate::config::SchedulerConfig;
 use crate::state::execution_graph::TaskDescription;
+use backend::cluster::ClusterState;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
@@ -99,11 +100,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     #[cfg(test)]
     pub fn new_with_default_scheduler_name(
         config_client: Arc<dyn StateBackendClient>,
+        cluster_state: Arc<dyn ClusterState>,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
     ) -> Self {
         SchedulerState::new(
             config_client,
+            cluster_state,
             session_builder,
             codec,
             "localhost:50050".to_owned(),
@@ -113,6 +116,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
     pub fn new(
         config_client: Arc<dyn StateBackendClient>,
+        cluster_state: Arc<dyn ClusterState>,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
@@ -120,7 +124,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     ) -> Self {
         Self {
             executor_manager: ExecutorManager::new(
-                config_client.clone(),
+                cluster_state,
                 config.executor_slots_policy,
             ),
             task_manager: TaskManager::new(
@@ -138,6 +142,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     #[allow(dead_code)]
     pub(crate) fn with_task_launcher(
         config_client: Arc<dyn StateBackendClient>,
+        cluster_state: Arc<dyn ClusterState>,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
@@ -146,7 +151,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     ) -> Self {
         Self {
             executor_manager: ExecutorManager::new(
-                config_client.clone(),
+                cluster_state,
                 config.executor_slots_policy,
             ),
             task_manager: TaskManager::with_launcher(
@@ -461,6 +466,7 @@ mod test {
     use ballista_core::utils::default_session_builder;
 
     use crate::config::SchedulerConfig;
+    use crate::state::backend::cluster::DefaultClusterState;
     use crate::test_utils::BlackholeTaskLauncher;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::logical_expr::{col, sum};
@@ -474,9 +480,11 @@ mod test {
     #[tokio::test]
     async fn test_offer_free_reservations() -> Result<()> {
         let state_storage = Arc::new(SledClient::try_new_temporary()?);
+        let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::new_with_default_scheduler_name(
                 state_storage,
+                cluster_state,
                 default_session_builder,
                 BallistaCodec::default(),
             ));
@@ -510,9 +518,11 @@ mod test {
             .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4")
             .build()?;
         let state_storage = Arc::new(SledClient::try_new_temporary()?);
+        let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::with_task_launcher(
                 state_storage,
+                cluster_state,
                 default_session_builder,
                 BallistaCodec::default(),
                 String::default(),
@@ -595,9 +605,11 @@ mod test {
             .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4")
             .build()?;
         let state_storage = Arc::new(SledClient::try_new_temporary()?);
+        let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::with_task_launcher(
                 state_storage,
+                cluster_state,
                 default_session_builder,
                 BallistaCodec::default(),
                 String::default(),

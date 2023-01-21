@@ -51,6 +51,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::CsvReadOptions;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use crate::state::backend::cluster::DefaultClusterState;
 use datafusion_proto::protobuf::LogicalPlanNode;
 use parking_lot::Mutex;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
@@ -381,6 +382,7 @@ impl SchedulerTest {
         runner: Option<Arc<dyn TaskRunner>>,
     ) -> Result<Self> {
         let state_storage = Arc::new(SledClient::try_new_temporary()?);
+        let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
 
         let ballista_config = BallistaConfig::builder()
             .set(
@@ -415,7 +417,8 @@ impl SchedulerTest {
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::with_task_launcher(
                 "localhost:50050".to_owned(),
-                state_storage.clone(),
+                state_storage,
+                cluster_state,
                 BallistaCodec::default(),
                 config,
                 metrics_collector,

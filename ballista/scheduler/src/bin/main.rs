@@ -45,6 +45,7 @@ mod config {
 
 use ballista_core::config::LogRotationPolicy;
 use ballista_scheduler::config::SchedulerConfig;
+use ballista_scheduler::state::backend::cluster::DefaultClusterState;
 use config::prelude::*;
 use tracing_subscriber::EnvFilter;
 
@@ -59,6 +60,16 @@ async fn main() -> Result<()> {
         print_version();
         std::process::exit(0);
     }
+
+    let config_backend = init_kv_backend(&opt.config_backend, &opt).await?;
+
+    let cluster_state = if opt.cluster_backend == opt.config_backend {
+        Arc::new(DefaultClusterState::new(config_backend.clone()))
+    } else {
+        let cluster_kv_store = init_kv_backend(&opt.cluster_backend, &opt).await?;
+
+        Arc::new(DefaultClusterState::new(cluster_kv_store))
+    };
 
     let special_mod_log_level = opt.log_level_setting;
     let namespace = opt.namespace;
@@ -110,13 +121,31 @@ async fn main() -> Result<()> {
     let addr = format!("{}:{}", bind_host, port);
     let addr = addr.parse()?;
 
-    let config_backend: Arc<dyn StateBackendClient> = match opt.config_backend {
+    let config = SchedulerConfig {
+        scheduling_policy: opt.scheduler_policy,
+        event_loop_buffer_size: opt.event_loop_buffer_size,
+        executor_slots_policy: opt.executor_slots_policy,
+        finished_job_data_clean_up_interval_seconds: opt
+            .finished_job_data_clean_up_interval_seconds,
+        finished_job_state_clean_up_interval_seconds: opt
+            .finished_job_state_clean_up_interval_seconds,
+        advertise_flight_sql_endpoint: opt.advertise_flight_sql_endpoint,
+    };
+    start_server(scheduler_name, config_backend, cluster_state, addr, config).await?;
+    Ok(())
+}
+
+async fn init_kv_backend(
+    backend: &StateBackend,
+    opt: &Config,
+) -> Result<Arc<dyn StateBackendClient>> {
+    let cluster_backend: Arc<dyn StateBackendClient> = match backend {
         #[cfg(feature = "etcd")]
         StateBackend::Etcd => {
-            let etcd = etcd_client::Client::connect(&[opt.etcd_urls], None)
+            let etcd = etcd_client::Client::connect(&[opt.etcd_urls.clone()], None)
                 .await
                 .context("Could not connect to etcd")?;
-            Arc::new(EtcdClient::new(namespace.clone(), etcd))
+            Arc::new(EtcdClient::new(opt.namespace.clone(), etcd))
         }
         #[cfg(not(feature = "etcd"))]
         StateBackend::Etcd => {
@@ -134,7 +163,7 @@ async fn main() -> Result<()> {
             } else {
                 println!("{}", opt.sled_dir);
                 Arc::new(
-                    SledClient::try_new(opt.sled_dir)
+                    SledClient::try_new(opt.sled_dir.clone())
                         .context("Could not create sled config backend")?,
                 )
             }
@@ -148,16 +177,5 @@ async fn main() -> Result<()> {
         StateBackend::Memory => Arc::new(MemoryBackendClient::new()),
     };
 
-    let config = SchedulerConfig {
-        scheduling_policy: opt.scheduler_policy,
-        event_loop_buffer_size: opt.event_loop_buffer_size,
-        executor_slots_policy: opt.executor_slots_policy,
-        finished_job_data_clean_up_interval_seconds: opt
-            .finished_job_data_clean_up_interval_seconds,
-        finished_job_state_clean_up_interval_seconds: opt
-            .finished_job_state_clean_up_interval_seconds,
-        advertise_flight_sql_endpoint: opt.advertise_flight_sql_endpoint,
-    };
-    start_server(scheduler_name, config_backend, addr, config).await?;
-    Ok(())
+    Ok(cluster_backend)
 }

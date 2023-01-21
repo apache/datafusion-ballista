@@ -41,11 +41,13 @@ use crate::flight_sql::FlightSqlServiceImpl;
 use crate::metrics::default_metrics_collector;
 use crate::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
 use crate::scheduler_server::SchedulerServer;
+use crate::state::backend::cluster::ClusterState;
 use crate::state::backend::StateBackendClient;
 
 pub async fn start_server(
     scheduler_name: String,
     config_backend: Arc<dyn StateBackendClient>,
+    cluster_state: Arc<dyn ClusterState>,
     addr: SocketAddr,
     config: SchedulerConfig,
 ) -> Result<()> {
@@ -65,6 +67,7 @@ pub async fn start_server(
         SchedulerServer::new(
             scheduler_name,
             config_backend.clone(),
+            cluster_state,
             BallistaCodec::default(),
             config,
             metrics_collector,
