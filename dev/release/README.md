@@ -23,7 +23,7 @@
 
 ### Major Release
 
-Ballista typically has major releases from the `master` branch every 4 weeks.
+Ballista typically has major releases from the `main` branch every 4 weeks.
 
 ## Prerequisite
 
@@ -68,7 +68,7 @@ We maintain `CHANGELOG.md` for each sub project so our users know what has been
 changed between releases.
 
 The CHANGELOG is managed automatically using
-[update_change_log.sh](https://github.com/apache/arrow-ballista/blob/master/dev/release/update_change_log.sh)
+[update_change_log.sh](https://github.com/apache/arrow-ballista/blob/main/dev/release/update_change_log.sh)
 
 This script creates a changelog using github PRs and issues based on the labels
 associated with them.
@@ -88,7 +88,7 @@ Checkout the master commit to be released
 
 ```
 git fetch apache
-git checkout apache/master
+git checkout apache/main
 ```
 
 Update version in `ballista/Cargo.toml` to `0.8.0`:
@@ -105,7 +105,7 @@ git commit -a -m 'Update version'
 
 ### Update CHANGELOG.md
 
-Define release branch (e.g. `master`), base version tag (e.g. `0.8.0`) and future version tag (e.g. `0.9.0`). Commits
+Define release branch (e.g. `main`), base version tag (e.g. `0.8.0`) and future version tag (e.g. `0.9.0`). Commits
 between the base version tag and the release branch will be used to populate the changelog content.
 
 You will need a GitHub Personal Access Token for the following steps. Follow
@@ -114,7 +114,7 @@ to generate one if you do not already have one.
 
 ```bash
 # create the changelog
-CHANGELOG_GITHUB_TOKEN=<TOKEN> ./dev/release/update_change_log-ballista.sh master 0.8.0 0.7.0
+CHANGELOG_GITHUB_TOKEN=<TOKEN> ./dev/release/update_change_log-ballista.sh main 0.8.0 0.7.0
 # review change log / edit issues and labels if needed, rerun until you are happy with the result
 git commit -a -m 'Create changelog for release'
 ```
@@ -127,8 +127,8 @@ You can add `invalid` or `development-process` label to exclude items from
 release notes. Add `datafusion`, `ballista` and `python` labels to group items
 into each sub-project's change log.
 
-Send a PR to get these changes merged into `master` branch. If new commits that
-could change the change log content landed in the `master` branch before you
+Send a PR to get these changes merged into `main` branch. If new commits that
+could change the change log content landed in the `main` branch before you
 could merge the PR, you need to rerun the changelog update script to regenerate
 the changelog and update the PR accordingly.
 
@@ -152,7 +152,7 @@ Using a string such as `0.8.0` as the `<version>`, create and push the tag by ru
 
 ```shell
 git fetch apache
-git tag <version>-<rc> apache/master
+git tag <version>-<rc> apache/main
 # push tag to Github remote
 git push apache <version>
 ```
@@ -218,7 +218,7 @@ The `dev/release/verify-release-candidate.sh` is a script in this repository tha
 #### If the release is not approved
 
 If the release is not approved, fix whatever the problem is, merge changelog
-changes into master if there is any and try again with the next RC number.
+changes into main if there is any and try again with the next RC number.
 
 ## Finalize the release
 
