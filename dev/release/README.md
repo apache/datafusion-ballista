@@ -84,7 +84,7 @@ between the base version tag and the release branch will be used to populate the
 
 ```bash
 # create the changelog
-CHANGELOG_GITHUB_TOKEN=<TOKEN> ./dev/release/update_change_log-ballista.sh master 0.8.0 0.7.0
+CHANGELOG_GITHUB_TOKEN=<TOKEN> ./dev/release/update_change_log-ballista.sh main 0.8.0 0.7.0
 # review change log / edit issues and labels if needed, rerun until you are happy with the result
 git commit -a -m 'Create changelog for release'
 ```
@@ -186,7 +186,7 @@ The `dev/release/verify-release-candidate.sh` is a script in this repository tha
 #### If the release is not approved
 
 If the release is not approved, fix whatever the problem is, merge changelog
-changes into master if there is any and try again with the next RC number.
+changes into main if there is any and try again with the next RC number.
 
 ## Finalize the release
 
