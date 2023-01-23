@@ -17,6 +17,7 @@
 
 //! Distributed execution context.
 
+use datafusion::arrow::datatypes::SchemaRef;
 use log::info;
 use parking_lot::Mutex;
 use sqlparser::ast::Statement;
@@ -375,6 +376,16 @@ impl BallistaContext {
                 ..
             }) => {
                 let table_exists = ctx.table_exist(name.as_str())?;
+                let schema: SchemaRef = Arc::new(schema.as_ref().to_owned().into());
+                let table_partition_cols = table_partition_cols
+                    .iter()
+                    .map(|col| {
+                        schema
+                            .field_with_name(col)
+                            .map(|f| (f.name().to_owned(), f.data_type().to_owned()))
+                            .map_err(DataFusionError::ArrowError)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
 
                 match (if_not_exists, table_exists) {
                     (_, false) => match file_type.to_lowercase().as_str() {
@@ -383,9 +394,8 @@ impl BallistaContext {
                                 .has_header(*has_header)
                                 .delimiter(*delimiter as u8)
                                 .table_partition_cols(table_partition_cols.to_vec());
-                            let csv_schema = schema.as_ref().to_owned().into();
                             if !schema.fields().is_empty() {
-                                options = options.schema(&csv_schema);
+                                options = options.schema(&schema);
                             }
                             self.register_csv(name, location, options).await?;
                             Ok(Arc::new(DataFrame::new(ctx.state.clone(), &plan)))
@@ -395,7 +405,7 @@ impl BallistaContext {
                                 name,
                                 location,
                                 ParquetReadOptions::default()
-                                    .table_partition_cols(table_partition_cols.to_vec()),
+                                    .table_partition_cols(table_partition_cols),
                             )
                             .await?;
                             Ok(Arc::new(DataFrame::new(ctx.state.clone(), &plan)))
@@ -405,7 +415,7 @@ impl BallistaContext {
                                 name,
                                 location,
                                 AvroReadOptions::default()
-                                    .table_partition_cols(table_partition_cols.to_vec()),
+                                    .table_partition_cols(table_partition_cols),
                             )
                             .await?;
                             Ok(Arc::new(DataFrame::new(ctx.state.clone(), &plan)))
@@ -582,6 +592,7 @@ mod tests {
                         table_partition_cols: x.table_partition_cols.clone(),
                         collect_stat: x.collect_stat,
                         target_partitions: x.target_partitions,
+                        file_sort_order: None,
                     };
 
                     let table_paths = listing_table

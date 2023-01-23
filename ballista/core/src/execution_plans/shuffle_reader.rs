@@ -364,7 +364,7 @@ async fn fetch_partition_remote(
     // TODO for shuffle client connections, we should avoid creating new connections again and again.
     // And we should also avoid to keep alive too many connections for long time.
     let host = metadata.host.as_str();
-    let port = metadata.port as u16;
+    let port = metadata.port;
     let mut ballista_client =
         BallistaClient::try_new(host, port)
             .await

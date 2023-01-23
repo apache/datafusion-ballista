@@ -307,7 +307,6 @@ impl ExecutionGraph {
                     let mut locations = vec![];
                     for task_status in stage_task_statuses.into_iter() {
                         {
-                            let stage_id = stage_id as usize;
                             let task_stage_attempt_num =
                                 task_status.stage_attempt_num as usize;
                             if task_stage_attempt_num < running_stage.stage_attempt_num {
@@ -492,7 +491,6 @@ impl ExecutionGraph {
                     );
                 } else if let ExecutionStage::UnResolved(unsolved_stage) = stage {
                     for task_status in stage_task_statuses.into_iter() {
-                        let stage_id = stage_id as usize;
                         let task_stage_attempt_num =
                             task_status.stage_attempt_num as usize;
                         let partition_id = task_status.clone().partition_id as usize;
@@ -826,8 +824,8 @@ impl ExecutionGraph {
     /// Total number of tasks in this plan that are ready for scheduling
     pub fn available_tasks(&self) -> usize {
         self.stages
-            .iter()
-            .map(|(_, stage)| {
+            .values()
+            .map(|stage| {
                 if let ExecutionStage::Running(stage) = stage {
                     stage.available_tasks()
                 } else {
@@ -1425,8 +1423,8 @@ impl Debug for ExecutionGraph {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let stages = self
             .stages
-            .iter()
-            .map(|(_, stage)| format!("{:?}", stage))
+            .values()
+            .map(|stage| format!("{:?}", stage))
             .collect::<Vec<String>>()
             .join("");
         write!(f, "ExecutionGraph[job_id={}, session_id={}, available_tasks={}, is_successful={}]\n{}",
@@ -1704,13 +1702,15 @@ mod test {
         let executor2 = mock_executor("executor-id2".to_string());
         let mut join_graph = test_join_plan(4).await;
 
-        assert_eq!(join_graph.stage_count(), 5);
+        // With the improvement of https://github.com/apache/arrow-datafusion/pull/4122,
+        // unnecessary RepartitionExec can be removed
+        assert_eq!(join_graph.stage_count(), 4);
         assert_eq!(join_graph.available_tasks(), 0);
 
         // Call revive to move the two leaf Resolved stages to Running
         join_graph.revive();
 
-        assert_eq!(join_graph.stage_count(), 5);
+        assert_eq!(join_graph.stage_count(), 4);
         assert_eq!(join_graph.available_tasks(), 2);
 
         // Complete the first stage
@@ -1755,13 +1755,13 @@ mod test {
         let executor2 = mock_executor("executor-id2".to_string());
         let mut join_graph = test_join_plan(4).await;
 
-        assert_eq!(join_graph.stage_count(), 5);
+        assert_eq!(join_graph.stage_count(), 4);
         assert_eq!(join_graph.available_tasks(), 0);
 
         // Call revive to move the two leaf Resolved stages to Running
         join_graph.revive();
 
-        assert_eq!(join_graph.stage_count(), 5);
+        assert_eq!(join_graph.stage_count(), 4);
         assert_eq!(join_graph.available_tasks(), 2);
 
         // Complete the first stage

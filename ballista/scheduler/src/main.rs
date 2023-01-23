@@ -21,6 +21,7 @@ use anyhow::{Context, Result};
 #[cfg(feature = "flight-sql")]
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_scheduler::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
+use ballista_scheduler::state::backend::memory::MemoryBackendClient;
 use futures::future::{self, Either, TryFutureExt};
 use hyper::{server::conn::AddrStream, service::make_service_fn, Server};
 use std::convert::Infallible;
@@ -37,7 +38,7 @@ use ballista_scheduler::api::{get_routes, EitherBody, Error};
 #[cfg(feature = "etcd")]
 use ballista_scheduler::state::backend::etcd::EtcdClient;
 #[cfg(feature = "sled")]
-use ballista_scheduler::state::backend::standalone::StandaloneClient;
+use ballista_scheduler::state::backend::sled::SledClient;
 use datafusion_proto::protobuf::LogicalPlanNode;
 
 use ballista_scheduler::scheduler_server::SchedulerServer;
@@ -155,11 +156,9 @@ async fn start_server(
 async fn init_state_backend(
     opt: &Config,
 ) -> Result<(Arc<dyn StateBackendClient>, Arc<dyn ClusterState>)> {
-    let config_backend: (Arc<dyn StateBackendClient>, Arc<dyn ClusterState>) =  match opt.config_backend {
-        #[cfg(not(any(feature = "sled", feature = "etcd")))]
-        _ => std::compile_error!(
-            "To build the scheduler enable at least one config backend feature (`etcd` or `sled`)"
-        ),
+    let config_backend: (Arc<dyn StateBackendClient>, Arc<dyn ClusterState>) = match opt
+        .config_backend
+    {
         #[cfg(feature = "etcd")]
         StateBackend::Etcd => {
             let etcd = etcd_client::Client::connect(&[opt.etcd_urls.clone()], None)
@@ -176,26 +175,30 @@ async fn init_state_backend(
             )
         }
         #[cfg(feature = "sled")]
-        StateBackend::Standalone => {
+        StateBackend::Sled => {
             let backend = if opt.sled_dir.is_empty() {
                 Arc::new(
-                    StandaloneClient::try_new_temporary()
+                    SledClient::try_new_temporary()
                         .context("Could not create standalone config backend")?,
                 )
             } else {
                 println!("{}", opt.sled_dir);
                 Arc::new(
-                    StandaloneClient::try_new(opt.sled_dir.clone())
+                    SledClient::try_new(opt.sled_dir.clone())
                         .context("Could not create standalone config backend")?,
                 )
             };
             (backend.clone(), backend)
         }
         #[cfg(not(feature = "sled"))]
-        StateBackend::Standalone => {
+        StateBackend::Sled => {
             unimplemented!(
                 "build the scheduler with the `sled` feature to use the standalone config backend"
             )
+        }
+        StateBackend::Memory => {
+            let backend = Arc::new(MemoryBackendClient::new());
+            (backend.clone(), backend)
         }
     };
 
@@ -214,7 +217,7 @@ async fn main() -> Result<()> {
         std::process::exit(0);
     }
 
-    let (config_backend, cluster_backend) = init_state_backend(&opt).await?;
+    let (_config_backend, cluster_backend) = init_state_backend(&opt).await?;
 
     let special_mod_log_level = opt.log_level_setting;
     let namespace = opt.namespace;
@@ -265,6 +268,44 @@ async fn main() -> Result<()> {
 
     let addr = format!("{}:{}", bind_host, port);
     let addr = addr.parse()?;
+
+    let config_backend: Arc<dyn StateBackendClient> = match opt.config_backend {
+        #[cfg(feature = "etcd")]
+        StateBackend::Etcd => {
+            let etcd = etcd_client::Client::connect(&[opt.etcd_urls], None)
+                .await
+                .context("Could not connect to etcd")?;
+            Arc::new(EtcdClient::new(namespace.clone(), etcd))
+        }
+        #[cfg(not(feature = "etcd"))]
+        StateBackend::Etcd => {
+            unimplemented!(
+                "build the scheduler with the `etcd` feature to use the etcd config backend"
+            )
+        }
+        #[cfg(feature = "sled")]
+        StateBackend::Sled => {
+            if opt.sled_dir.is_empty() {
+                Arc::new(
+                    SledClient::try_new_temporary()
+                        .context("Could not create sled config backend")?,
+                )
+            } else {
+                println!("{}", opt.sled_dir);
+                Arc::new(
+                    SledClient::try_new(opt.sled_dir)
+                        .context("Could not create sled config backend")?,
+                )
+            }
+        }
+        #[cfg(not(feature = "sled"))]
+        StateBackend::Sled => {
+            unimplemented!(
+                "build the scheduler with the `sled` feature to use the sled config backend"
+            )
+        }
+        StateBackend::Memory => Arc::new(MemoryBackendClient::new()),
+    };
 
     let config = SchedulerConfig {
         scheduling_policy: opt.scheduler_policy,

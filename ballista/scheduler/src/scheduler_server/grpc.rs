@@ -44,6 +44,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use datafusion::prelude::SessionConfig;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
@@ -292,9 +293,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         // TODO shouldn't this take a ListingOption object as input?
 
         let GetFileMetadataParams { path, file_type } = request.into_inner();
-
+        // Here, we use the default config, since we don't know the session id
+        let config = SessionConfig::default().config_options();
         let file_format: Arc<dyn FileFormat> = match file_type.as_str() {
-            "parquet" => Ok(Arc::new(ParquetFormat::default())),
+            "parquet" => Ok(Arc::new(ParquetFormat::new(config))),
             // TODO implement for CSV
             _ => Err(tonic::Status::unimplemented(
                 "get_file_metadata unsupported file type",
@@ -587,13 +589,13 @@ mod test {
     use ballista_core::utils::default_session_builder;
 
     use crate::state::executor_manager::DEFAULT_EXECUTOR_TIMEOUT_SECONDS;
-    use crate::state::{backend::standalone::StandaloneClient, SchedulerState};
+    use crate::state::{backend::sled::SledClient, SchedulerState};
 
     use super::{SchedulerGrpc, SchedulerServer};
 
     #[tokio::test]
     async fn test_poll_work() -> Result<(), BallistaError> {
-        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+        let state_storage = Arc::new(SledClient::try_new_temporary()?);
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
@@ -683,7 +685,7 @@ mod test {
 
     #[tokio::test]
     async fn test_stop_executor() -> Result<(), BallistaError> {
-        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+        let state_storage = Arc::new(SledClient::try_new_temporary()?);
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
@@ -765,7 +767,7 @@ mod test {
     #[tokio::test]
     #[ignore]
     async fn test_expired_executor() -> Result<(), BallistaError> {
-        let state_storage = Arc::new(StandaloneClient::try_new_temporary()?);
+        let state_storage = Arc::new(SledClient::try_new_temporary()?);
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),

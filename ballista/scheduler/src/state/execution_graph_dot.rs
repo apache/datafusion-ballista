@@ -473,10 +473,10 @@ filter_expr="]
 	subgraph cluster4 {
 		label = "Stage 5 [Unresolved]";
 		stage_5_0 [shape=box, label="ShuffleWriter [48 partitions]"]
-		stage_5_0_0 [shape=box, label="Projection: a@0, a@1, a@2"]
+		stage_5_0_0 [shape=box, label="Projection: a@0, b@1, a@2, b@3, a@4, b@5"]
 		stage_5_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
 		stage_5_0_0_0_0 [shape=box, label="HashJoin
-join_expr=a@1 = a@0
+join_expr=b@3 = b@1
 filter_expr="]
 		stage_5_0_0_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
 		stage_5_0_0_0_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=3]"]
@@ -528,7 +528,132 @@ filter_expr="]
         Ok(())
     }
 
+    #[tokio::test]
+    async fn dot_optimized() -> Result<()> {
+        let graph = test_graph_optimized().await?;
+        let dot = ExecutionGraphDot::generate(Arc::new(graph))
+            .map_err(|e| BallistaError::Internal(format!("{:?}", e)))?;
+
+        let expected = r#"digraph G {
+	subgraph cluster0 {
+		label = "Stage 1 [Resolved]";
+		stage_1_0 [shape=box, label="ShuffleWriter [0 partitions]"]
+		stage_1_0_0 [shape=box, label="MemoryExec"]
+		stage_1_0_0 -> stage_1_0
+	}
+	subgraph cluster1 {
+		label = "Stage 2 [Resolved]";
+		stage_2_0 [shape=box, label="ShuffleWriter [0 partitions]"]
+		stage_2_0_0 [shape=box, label="MemoryExec"]
+		stage_2_0_0 -> stage_2_0
+	}
+	subgraph cluster2 {
+		label = "Stage 3 [Resolved]";
+		stage_3_0 [shape=box, label="ShuffleWriter [0 partitions]"]
+		stage_3_0_0 [shape=box, label="MemoryExec"]
+		stage_3_0_0 -> stage_3_0
+	}
+	subgraph cluster3 {
+		label = "Stage 4 [Unresolved]";
+		stage_4_0 [shape=box, label="ShuffleWriter [48 partitions]"]
+		stage_4_0_0 [shape=box, label="Projection: a@0, a@1, a@2"]
+		stage_4_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
+		stage_4_0_0_0_0 [shape=box, label="HashJoin
+join_expr=a@1 = a@0
+filter_expr="]
+		stage_4_0_0_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
+		stage_4_0_0_0_0_0_0 [shape=box, label="HashJoin
+join_expr=a@0 = a@0
+filter_expr="]
+		stage_4_0_0_0_0_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
+		stage_4_0_0_0_0_0_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=1]"]
+		stage_4_0_0_0_0_0_0_0_0 -> stage_4_0_0_0_0_0_0_0
+		stage_4_0_0_0_0_0_0_0 -> stage_4_0_0_0_0_0_0
+		stage_4_0_0_0_0_0_0_1 [shape=box, label="CoalesceBatches [batchSize=4096]"]
+		stage_4_0_0_0_0_0_0_1_0 [shape=box, label="UnresolvedShuffleExec [stage_id=2]"]
+		stage_4_0_0_0_0_0_0_1_0 -> stage_4_0_0_0_0_0_0_1
+		stage_4_0_0_0_0_0_0_1 -> stage_4_0_0_0_0_0_0
+		stage_4_0_0_0_0_0_0 -> stage_4_0_0_0_0_0
+		stage_4_0_0_0_0_0 -> stage_4_0_0_0_0
+		stage_4_0_0_0_0_1 [shape=box, label="CoalesceBatches [batchSize=4096]"]
+		stage_4_0_0_0_0_1_0 [shape=box, label="UnresolvedShuffleExec [stage_id=3]"]
+		stage_4_0_0_0_0_1_0 -> stage_4_0_0_0_0_1
+		stage_4_0_0_0_0_1 -> stage_4_0_0_0_0
+		stage_4_0_0_0_0 -> stage_4_0_0_0
+		stage_4_0_0_0 -> stage_4_0_0
+		stage_4_0_0 -> stage_4_0
+	}
+	stage_1_0 -> stage_4_0_0_0_0_0_0_0_0
+	stage_2_0 -> stage_4_0_0_0_0_0_0_1_0
+	stage_3_0 -> stage_4_0_0_0_0_1_0
+}
+"#;
+        assert_eq!(expected, &dot);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn query_stage_optimized() -> Result<()> {
+        let graph = test_graph_optimized().await?;
+        let dot = ExecutionGraphDot::generate_for_query_stage(Arc::new(graph), 4)
+            .map_err(|e| BallistaError::Internal(format!("{:?}", e)))?;
+
+        let expected = r#"digraph G {
+		stage_4_0 [shape=box, label="ShuffleWriter [48 partitions]"]
+		stage_4_0_0 [shape=box, label="Projection: a@0, a@1, a@2"]
+		stage_4_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
+		stage_4_0_0_0_0 [shape=box, label="HashJoin
+join_expr=a@1 = a@0
+filter_expr="]
+		stage_4_0_0_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
+		stage_4_0_0_0_0_0_0 [shape=box, label="HashJoin
+join_expr=a@0 = a@0
+filter_expr="]
+		stage_4_0_0_0_0_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
+		stage_4_0_0_0_0_0_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=1]"]
+		stage_4_0_0_0_0_0_0_0_0 -> stage_4_0_0_0_0_0_0_0
+		stage_4_0_0_0_0_0_0_0 -> stage_4_0_0_0_0_0_0
+		stage_4_0_0_0_0_0_0_1 [shape=box, label="CoalesceBatches [batchSize=4096]"]
+		stage_4_0_0_0_0_0_0_1_0 [shape=box, label="UnresolvedShuffleExec [stage_id=2]"]
+		stage_4_0_0_0_0_0_0_1_0 -> stage_4_0_0_0_0_0_0_1
+		stage_4_0_0_0_0_0_0_1 -> stage_4_0_0_0_0_0_0
+		stage_4_0_0_0_0_0_0 -> stage_4_0_0_0_0_0
+		stage_4_0_0_0_0_0 -> stage_4_0_0_0_0
+		stage_4_0_0_0_0_1 [shape=box, label="CoalesceBatches [batchSize=4096]"]
+		stage_4_0_0_0_0_1_0 [shape=box, label="UnresolvedShuffleExec [stage_id=3]"]
+		stage_4_0_0_0_0_1_0 -> stage_4_0_0_0_0_1
+		stage_4_0_0_0_0_1 -> stage_4_0_0_0_0
+		stage_4_0_0_0_0 -> stage_4_0_0_0
+		stage_4_0_0_0 -> stage_4_0_0
+		stage_4_0_0 -> stage_4_0
+}
+"#;
+        assert_eq!(expected, &dot);
+        Ok(())
+    }
+
     async fn test_graph() -> Result<ExecutionGraph> {
+        let ctx =
+            SessionContext::with_config(SessionConfig::new().with_target_partitions(48));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::UInt32, false),
+            Field::new("b", DataType::UInt32, false),
+        ]));
+        let table = Arc::new(MemTable::try_new(schema.clone(), vec![])?);
+        ctx.register_table("foo", table.clone())?;
+        ctx.register_table("bar", table.clone())?;
+        ctx.register_table("baz", table)?;
+        let df = ctx
+            .sql("SELECT * FROM foo JOIN bar ON foo.a = bar.a JOIN baz on bar.b = baz.b")
+            .await?;
+        let plan = df.to_logical_plan()?;
+        let plan = ctx.create_physical_plan(&plan).await?;
+        ExecutionGraph::new("scheduler_id", "job_id", "job_name", "session_id", plan, 0)
+    }
+
+    // With the improvement of https://github.com/apache/arrow-datafusion/pull/4122,
+    // Redundant RepartitionExec can be removed so that the stage number will be reduced
+    async fn test_graph_optimized() -> Result<ExecutionGraph> {
         let ctx =
             SessionContext::with_config(SessionConfig::new().with_target_partitions(48));
         let schema =

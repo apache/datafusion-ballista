@@ -50,7 +50,7 @@ impl PluginEnum {
     /// new a struct which impl the PluginRegistrar trait
     pub fn init_plugin_manager(&self) -> Box<dyn PluginRegistrar> {
         match self {
-            PluginEnum::UDF => Box::new(UDFPluginManager::default()),
+            PluginEnum::UDF => Box::<UDFPluginManager>::default(),
         }
     }
 }

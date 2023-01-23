@@ -57,7 +57,9 @@ helm install ballista .
 
 Run the following command to redirect localhost port 8080 to port 80 in the scheduler container and then view the scheduler UI at http://localhost:8080. 
 
+```shell
 kubectl port-forward ballista-scheduler-0 8080:80
+```
 
 ## Connect
 

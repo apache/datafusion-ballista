@@ -19,6 +19,84 @@
 
 # Changelog
 
+## [0.10.0](https://github.com/apache/arrow-ballista/tree/0.10.0) (2022-11-18)
+
+[Full Changelog](https://github.com/apache/arrow-ballista/compare/0.9.0...0.10.0)
+
+**Implemented enhancements:**
+
+- Add user guide section on prometheus metrics [\#507](https://github.com/apache/arrow-ballista/issues/507)
+- Don't throw error when job path not exist in remove\_job\_data [\#502](https://github.com/apache/arrow-ballista/issues/502)
+- Fix clippy warning [\#494](https://github.com/apache/arrow-ballista/issues/494)
+- Use job\_data\_clean\_up\_interval\_seconds == 0 to indicate executor\_cleanup\_enable [\#488](https://github.com/apache/arrow-ballista/issues/488)
+- Add a config for tracing log rolling policy for both scheduler and executor [\#486](https://github.com/apache/arrow-ballista/issues/486)
+- Set up repo where we can push benchmark results [\#473](https://github.com/apache/arrow-ballista/issues/473)
+- Make the delayed time interval for cleanup job data in both scheduler and executor configurable [\#469](https://github.com/apache/arrow-ballista/issues/469)
+- Add some validation for the remove\_job\_data grpc service [\#467](https://github.com/apache/arrow-ballista/issues/467)
+- Add ability to build docker images using `release-lto` profile [\#463](https://github.com/apache/arrow-ballista/issues/463)
+- Suggest users download \(rather than build\) the FlightSQL JDBC Driver [\#460](https://github.com/apache/arrow-ballista/issues/460)
+- Clean up legacy job shuffle data [\#459](https://github.com/apache/arrow-ballista/issues/459)
+- Add grpc service for the scheduler to make it able to be triggered by client explicitly [\#458](https://github.com/apache/arrow-ballista/issues/458)
+- Replace Mutex\<HashMap\> by using DashMap [\#448](https://github.com/apache/arrow-ballista/issues/448)
+- Refine log level  [\#446](https://github.com/apache/arrow-ballista/issues/446)
+- Upgrade to DataFusion 14.0.0 [\#445](https://github.com/apache/arrow-ballista/issues/445)
+- Add a feature for hdfs3 [\#419](https://github.com/apache/arrow-ballista/issues/419)
+- Add optional flag which advertises host for Arrow Flight SQL [\#418](https://github.com/apache/arrow-ballista/issues/418)
+- Partitioning reasoning in DataFusion and Ballista [\#284](https://github.com/apache/arrow-ballista/issues/284)
+- Stop wasting time in CI on MIRI runs  [\#283](https://github.com/apache/arrow-ballista/issues/283)
+- Publish Docker images as part of each release [\#236](https://github.com/apache/arrow-ballista/issues/236)
+- Cleanup job/stage status from TaskManager and clean up shuffle data after a period after JobFinished [\#185](https://github.com/apache/arrow-ballista/issues/185)
+
+**Fixed bugs:**
+
+- build broken: configure\_me\_codegen retroactively reserved `bind_host` [\#519](https://github.com/apache/arrow-ballista/issues/519)
+- Return empty results for SQLs with order by [\#451](https://github.com/apache/arrow-ballista/issues/451)
+- ballista scheduler is not taken inline parameters into account [\#443](https://github.com/apache/arrow-ballista/issues/443)
+- \[FlightSQL\] Cannot connect with Tableau Desktop [\#428](https://github.com/apache/arrow-ballista/issues/428)
+- Benchmark q15 fails [\#372](https://github.com/apache/arrow-ballista/issues/372)
+- Incorrect documentation for building Ballista on Linux when using docker-compose [\#362](https://github.com/apache/arrow-ballista/issues/362)
+- Scheduler silently replaces `ParquetExec` with `EmptyExec` if data path is not correctly mounted in container [\#353](https://github.com/apache/arrow-ballista/issues/353)
+- SQL with order by limit returns nothing [\#334](https://github.com/apache/arrow-ballista/issues/334)
+
+**Documentation updates:**
+
+- README updates [\#433](https://github.com/apache/arrow-ballista/pull/433) ([andygrove](https://github.com/andygrove))
+
+**Merged pull requests:**
+
+- configure\_me\_codegen retroactively reserved on our `bind_host` parame… [\#520](https://github.com/apache/arrow-ballista/pull/520) ([avantgardnerio](https://github.com/avantgardnerio))
+- Bump actions/cache from 2 to 3 [\#517](https://github.com/apache/arrow-ballista/pull/517) ([dependabot[bot]](https://github.com/apps/dependabot))
+- Update graphviz-rust requirement from 0.3.0 to 0.4.0 [\#515](https://github.com/apache/arrow-ballista/pull/515) ([dependabot[bot]](https://github.com/apps/dependabot))
+- Add Prometheus metrics endpoint [\#511](https://github.com/apache/arrow-ballista/pull/511) ([thinkharderdev](https://github.com/thinkharderdev))
+- Enable tests that work since upgrading to DataFusion 14 [\#510](https://github.com/apache/arrow-ballista/pull/510) ([andygrove](https://github.com/andygrove))
+- Update hashbrown requirement from 0.12 to 0.13 [\#506](https://github.com/apache/arrow-ballista/pull/506) ([dependabot[bot]](https://github.com/apps/dependabot))
+- Don't throw error when job shuffle data path not exist in executor [\#503](https://github.com/apache/arrow-ballista/pull/503) ([yahoNanJing](https://github.com/yahoNanJing))
+- Upgrade to DataFusion 14.0.0 and Arrow 26.0.0 [\#499](https://github.com/apache/arrow-ballista/pull/499) ([andygrove](https://github.com/andygrove))
+- Fix clippy warning [\#495](https://github.com/apache/arrow-ballista/pull/495) ([yahoNanJing](https://github.com/yahoNanJing))
+- Stop wasting time in CI on MIRI runs [\#491](https://github.com/apache/arrow-ballista/pull/491) ([Ted-Jiang](https://github.com/Ted-Jiang))
+- Remove executor config executor\_cleanup\_enable and make the configuation name for executor cleanup more intuitive [\#489](https://github.com/apache/arrow-ballista/pull/489) ([yahoNanJing](https://github.com/yahoNanJing))
+- Add a config for tracing log rolling policy for both scheduler and executor [\#487](https://github.com/apache/arrow-ballista/pull/487) ([yahoNanJing](https://github.com/yahoNanJing))
+- Add grpc service of cleaning up job shuffle data for the scheduler to make it able to be triggered by client explicitly [\#485](https://github.com/apache/arrow-ballista/pull/485) ([yahoNanJing](https://github.com/yahoNanJing))
+- \[Minor\] Bump DataFusion [\#480](https://github.com/apache/arrow-ballista/pull/480) ([Dandandan](https://github.com/Dandandan))
+- Remove benchmark results from README [\#478](https://github.com/apache/arrow-ballista/pull/478) ([andygrove](https://github.com/andygrove))
+- Update `flightsql.md` to provide correct instruction [\#476](https://github.com/apache/arrow-ballista/pull/476) ([iajoiner](https://github.com/iajoiner))
+- Add support for Tableau [\#475](https://github.com/apache/arrow-ballista/pull/475) ([avantgardnerio](https://github.com/avantgardnerio))
+-  Add SchedulerConfig for the scheduler configurations, like event\_loop\_buffer\_size, finished\_job\_data\_clean\_up\_interval\_seconds, finished\_job\_state\_clean\_up\_interval\_seconds [\#472](https://github.com/apache/arrow-ballista/pull/472) ([yahoNanJing](https://github.com/yahoNanJing))
+- Bump DataFusion [\#471](https://github.com/apache/arrow-ballista/pull/471) ([Dandandan](https://github.com/Dandandan))
+- Add some validation for remove\_job\_data in the executor server [\#468](https://github.com/apache/arrow-ballista/pull/468) ([yahoNanJing](https://github.com/yahoNanJing))
+- Update documentation to reflect the release of the FlightSQL JDBC Driver [\#461](https://github.com/apache/arrow-ballista/pull/461) ([avantgardnerio](https://github.com/avantgardnerio))
+- Bump DataFusion version [\#453](https://github.com/apache/arrow-ballista/pull/453) ([andygrove](https://github.com/andygrove))
+- Add shuffle for SortPreservingMergeExec physical operator [\#452](https://github.com/apache/arrow-ballista/pull/452) ([yahoNanJing](https://github.com/yahoNanJing))
+- Replace Mutex\<HashMap\> by using DashMap [\#449](https://github.com/apache/arrow-ballista/pull/449) ([yahoNanJing](https://github.com/yahoNanJing))
+- Refine log level for trial info and periodically invoked places [\#447](https://github.com/apache/arrow-ballista/pull/447) ([yahoNanJing](https://github.com/yahoNanJing))
+- MINOR: Add `set -e` to scripts, fix a typo [\#444](https://github.com/apache/arrow-ballista/pull/444) ([andygrove](https://github.com/andygrove))
+- Add optional flag which advertises host for Arrow Flight SQL \#418 [\#442](https://github.com/apache/arrow-ballista/pull/442) ([DaltonModlin](https://github.com/DaltonModlin))
+- Reorder joins after resolving stage inputs [\#441](https://github.com/apache/arrow-ballista/pull/441) ([Dandandan](https://github.com/Dandandan))
+- Add a feature for hdfs3 [\#439](https://github.com/apache/arrow-ballista/pull/439) ([yahoNanJing](https://github.com/yahoNanJing))
+- Add Spark benchmarks [\#438](https://github.com/apache/arrow-ballista/pull/438) ([andygrove](https://github.com/andygrove))
+- scheduler now verifies that `file://` ListingTable URLs are accessible [\#414](https://github.com/apache/arrow-ballista/pull/414) ([andygrove](https://github.com/andygrove))
+
+
 ## [0.9.0](https://github.com/apache/arrow-ballista/tree/0.9.0) (2022-10-22)
 
 [Full Changelog](https://github.com/apache/arrow-ballista/compare/0.8.0...0.9.0)

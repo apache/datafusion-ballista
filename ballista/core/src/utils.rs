@@ -53,6 +53,8 @@ use log::error;
 use log::info;
 #[cfg(feature = "s3")]
 use object_store::aws::AmazonS3Builder;
+#[cfg(feature = "azure")]
+use object_store::azure::MicrosoftAzureBuilder;
 use object_store::ObjectStore;
 use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
@@ -100,10 +102,33 @@ impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
 
         #[cfg(feature = "s3")]
         {
-            if url.to_string().starts_with("s3://") {
+            if url.as_str().starts_with("s3://") {
                 if let Some(bucket_name) = url.host_str() {
                     let store = AmazonS3Builder::from_env()
                         .with_bucket_name(bucket_name)
+                        .build()?;
+                    return Ok(Arc::new(store));
+                }
+            // Support Alibaba Cloud OSS
+            // Use S3 compatibility mode to access Alibaba Cloud OSS
+            // The `AWS_ENDPOINT` should have bucket name included
+            } else if url.as_str().starts_with("oss://") {
+                if let Some(bucket_name) = url.host_str() {
+                    let store = AmazonS3Builder::from_env()
+                        .with_virtual_hosted_style_request(true)
+                        .with_bucket_name(bucket_name)
+                        .build()?;
+                    return Ok(Arc::new(store));
+                }
+            }
+        }
+
+        #[cfg(feature = "azure")]
+        {
+            if url.to_string().starts_with("azure://") {
+                if let Some(bucket_name) = url.host_str() {
+                    let store = MicrosoftAzureBuilder::from_env()
+                        .with_container_name(bucket_name)
                         .build()?;
                     return Ok(Arc::new(store));
                 }

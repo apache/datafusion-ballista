@@ -95,6 +95,10 @@ impl Accumulator for RustAccumulator {
             Ok(())
         })
     }
+
+    fn size(&self) -> usize {
+        std::mem::size_of_val(self)
+    }
 }
 
 pub fn to_rust_accumulator(accum: PyObject) -> AccumulatorFunctionImplementation {

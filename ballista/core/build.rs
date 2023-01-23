@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::path::Path;
+
 fn main() -> Result<(), String> {
     use std::io::Write;
 
@@ -23,14 +25,8 @@ fn main() -> Result<(), String> {
     // for use in docker build where file changes can be wonky
     println!("cargo:rerun-if-env-changed=FORCE_REBUILD");
 
-    println!("cargo:rerun-if-changed=proto/ballista.proto");
     let version = rustc_version::version().unwrap();
     println!("cargo:rustc-env=RUSTC_VERSION={}", version);
-    println!("cargo:rerun-if-changed=proto/datafusion.proto");
-    tonic_build::configure()
-        .extern_path(".datafusion", "::datafusion_proto::protobuf")
-        .compile(&["proto/ballista.proto"], &["proto"])
-        .map_err(|e| format!("protobuf compilation failed: {}", e))?;
 
     // TODO: undo when resolved: https://github.com/intellij-rust/intellij-rust/issues/9402
     #[cfg(feature = "docsrs")]
@@ -38,14 +34,25 @@ fn main() -> Result<(), String> {
     #[cfg(not(feature = "docsrs"))]
     let path = "src/serde/generated/ballista.rs";
 
-    let code = std::fs::read_to_string(out.join("ballista.protobuf.rs")).unwrap();
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .create(true)
-        .open(path)
-        .unwrap();
-    file.write_all(code.as_str().as_ref()).unwrap();
+    // We don't include the proto files in releases so that downstreams
+    // do not need to have PROTOC included
+    if Path::new("proto/datafusion.proto").exists() {
+        println!("cargo:rerun-if-changed=proto/datafusion.proto");
+        println!("cargo:rerun-if-changed=proto/ballista.proto");
+        tonic_build::configure()
+            .extern_path(".datafusion", "::datafusion_proto::protobuf")
+            .compile(&["proto/ballista.proto"], &["proto"])
+            .map_err(|e| format!("protobuf compilation failed: {}", e))?;
+        let generated_source_path = out.join("ballista.protobuf.rs");
+        let code = std::fs::read_to_string(generated_source_path).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(path)
+            .unwrap();
+        file.write_all(code.as_str().as_ref()).unwrap();
+    }
 
     Ok(())
 }
