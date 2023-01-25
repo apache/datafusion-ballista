@@ -45,7 +45,7 @@ ballista-core = { path = "../core", version = "0.10.0" }
 chrono = { version = "0.4", default-features = false }
 configure_me = "0.4.0"
 dashmap = "5.4.0"
-datafusion = "15.0.0"
+datafusion = "16.1.0"
 datafusion-proto = "15.0.0"
 futures = "0.3"
 hyper = "0.14.4"

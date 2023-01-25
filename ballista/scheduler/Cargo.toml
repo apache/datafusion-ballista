@@ -51,7 +51,7 @@ base64 = { version = "0.13", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
 configure_me = "0.4.0"
 dashmap = "5.4.0"
-datafusion = "15.0.0"
+datafusion = "16.1.0"
 datafusion-proto = "15.0.0"
 etcd-client = { version = "0.10", optional = true }
 flatbuffers = { version = "22.9.29" }

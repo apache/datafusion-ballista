@@ -50,7 +50,7 @@ arrow-flight = { version = "28.0.0", features = ["flight-sql-experimental"] }
 async-trait = "0.1.41"
 chrono = { version = "0.4", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = "15.0.0"
+datafusion = "16.1.0"
 datafusion-objectstore-hdfs = { version = "0.1.1", default-features = false, optional = true }
 datafusion-proto = "15.0.0"
 futures = "0.3"

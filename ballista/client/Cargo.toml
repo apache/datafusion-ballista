@@ -31,7 +31,7 @@ rust-version = "1.63"
 ballista-core = { path = "../core", version = "0.10.0" }
 ballista-executor = { path = "../executor", version = "0.10.0", optional = true }
 ballista-scheduler = { path = "../scheduler", version = "0.10.0", optional = true }
-datafusion = "15.0.0"
+datafusion = "16.1.0"
 datafusion-proto = "15.0.0"
 futures = "0.3"
 log = "0.4"
