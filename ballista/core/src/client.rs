@@ -58,13 +58,14 @@ impl BallistaClient {
     pub async fn try_new(host: &str, port: u16) -> Result<Self> {
         let addr = format!("http://{host}:{port}");
         debug!("BallistaClient connecting to {}", addr);
-        let connection = create_grpc_client_connection(addr.clone()).await.map_err(
-            |e| {
-                BallistaError::GrpcConnectionError(format!(
+        let connection =
+            create_grpc_client_connection(addr.clone())
+                .await
+                .map_err(|e| {
+                    BallistaError::GrpcConnectionError(format!(
                     "Error connecting to Ballista scheduler or executor at {addr}: {e:?}"
                 ))
-            },
-        )?;
+                })?;
         let flight_client = FlightServiceClient::new(connection);
         debug!("BallistaClient connected OK");
 
