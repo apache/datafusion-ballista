@@ -144,8 +144,7 @@ impl TryInto<protobuf::PhysicalExprNode> for Arc<dyn AggregateExpr> {
             Ok(AggregateFunction::ApproxMedian.into())
         } else {
             Err(BallistaError::NotImplemented(format!(
-                "Aggregate function not supported: {:?}",
-                self
+                "Aggregate function not supported: {self:?}"
             )))
         }?;
         let expressions: Vec<protobuf::PhysicalExprNode> = self
@@ -348,8 +347,7 @@ impl TryFrom<Arc<dyn PhysicalExpr>> for protobuf::PhysicalExprNode {
             })
         } else {
             Err(BallistaError::General(format!(
-                "physical_plan::to_proto() unsupported expression {:?}",
-                value
+                "physical_plan::to_proto() unsupported expression {value:?}"
             )))
         }
     }

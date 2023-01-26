@@ -377,8 +377,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                                 .map_err(|e| {
                                     BallistaError::General(format!(
                                     "logical plan refers to path on local file system \
-                                    that is not accessible in the scheduler: {}: {:?}",
-                                    url, e
+                                    that is not accessible in the scheduler: {url}: {e:?}"
                                 ))
                                 })?;
                         }
@@ -715,8 +714,8 @@ mod test {
         for i in 0..total_executors {
             result.push((
                 ExecutorMetadata {
-                    id: format!("executor-{}", i),
-                    host: format!("host-{}", i),
+                    id: format!("executor-{i}"),
+                    host: format!("host-{i}"),
                     port: 8080,
                     grpc_port: 9090,
                     specification: ExecutorSpecification {
@@ -724,7 +723,7 @@ mod test {
                     },
                 },
                 ExecutorData {
-                    executor_id: format!("executor-{}", i),
+                    executor_id: format!("executor-{i}"),
                     total_task_slots: slots_per_executor,
                     available_task_slots: slots_per_executor,
                 },

@@ -283,7 +283,7 @@ async fn main() -> Result<()> {
 
 #[allow(clippy::await_holding_lock)]
 async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordBatch>> {
-    println!("Running benchmarks with the following options: {:?}", opt);
+    println!("Running benchmarks with the following options: {opt:?}");
     let mut benchmark_run = BenchmarkRun::new(opt.query);
     let config = SessionConfig::new()
         .with_target_partitions(opt.partitions)
@@ -304,7 +304,7 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
             .await?
         };
         if opt.mem_table {
-            println!("Loading table '{}' into memory", table);
+            println!("Loading table '{table}' into memory");
             let start = Instant::now();
             let memtable =
                 MemTable::load(table_provider, Some(opt.partitions), &ctx.state())
@@ -350,7 +350,7 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
 }
 
 async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
-    println!("Running benchmarks with the following options: {:?}", opt);
+    println!("Running benchmarks with the following options: {opt:?}");
     let mut benchmark_run = BenchmarkRun::new(opt.query);
 
     let config = BallistaConfig::builder()
@@ -364,12 +364,12 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
         )
         .set(BALLISTA_DEFAULT_BATCH_SIZE, &format!("{}", opt.batch_size))
         .build()
-        .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
     let ctx =
         BallistaContext::remote(opt.host.unwrap().as_str(), opt.port.unwrap(), &config)
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
     // register tables with Ballista context
     let path = opt.path.to_str().unwrap();
@@ -392,7 +392,7 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
             let df = ctx
                 .sql(sql)
                 .await
-                .map_err(|e| DataFusionError::Plan(format!("{:?}", e)))
+                .map_err(|e| DataFusionError::Plan(format!("{e:?}")))
                 .unwrap();
             if opt.debug {
                 println!("=== Optimized logical plan ===\n{:?}\n", df.logical_plan());
@@ -400,7 +400,7 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
             batches = df
                 .collect()
                 .await
-                .map_err(|e| DataFusionError::Plan(format!("{:?}", e)))
+                .map_err(|e| DataFusionError::Plan(format!("{e:?}")))
                 .unwrap();
         }
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
@@ -449,10 +449,7 @@ fn write_summary_json(benchmark_run: &mut BenchmarkRun, path: &Path) -> Result<(
 }
 
 async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
-    println!(
-        "Running loadtest_ballista with the following options: {:?}",
-        opt
-    );
+    println!("Running loadtest_ballista with the following options: {opt:?}");
 
     let config = BallistaConfig::builder()
         .set(
@@ -461,7 +458,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
         )
         .set(BALLISTA_DEFAULT_BATCH_SIZE, &format!("{}", opt.batch_size))
         .build()
-        .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
     let concurrency = opt.concurrency;
     let request_amount = opt.requests;
@@ -475,7 +472,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
                 &config,
             )
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?,
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?,
         );
     }
 
@@ -523,12 +520,12 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
                 let df = client
                     .sql(&sql)
                     .await
-                    .map_err(|e| DataFusionError::Plan(format!("{:?}", e)))
+                    .map_err(|e| DataFusionError::Plan(format!("{e:?}")))
                     .unwrap();
                 let batches = df
                     .collect()
                     .await
-                    .map_err(|e| DataFusionError::Plan(format!("{:?}", e)))
+                    .map_err(|e| DataFusionError::Plan(format!("{e:?}")))
                     .unwrap();
                 let elapsed = start.elapsed().as_secs_f64() * 1000.0;
                 println!(
@@ -545,7 +542,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
     join_all(futures).await;
     let elapsed = total.elapsed().as_secs_f64() * 1000.0;
     println!("###############################");
-    println!("load test  took {:.1} ms", elapsed);
+    println!("load test  took {elapsed:.1} ms");
     Ok(())
 }
 
@@ -554,7 +551,7 @@ fn get_query_sql_by_path(query: usize, mut sql_path: String) -> Result<String> {
         sql_path.pop();
     }
     if query > 0 && query < 23 {
-        let filename = format!("{}/q{}.sql", sql_path, query);
+        let filename = format!("{sql_path}/q{query}.sql");
         Ok(fs::read_to_string(filename).expect("failed to read query"))
     } else {
         Err(DataFusionError::Plan(
@@ -582,13 +579,12 @@ async fn register_tables(
                     .file_extension(".tbl");
                 if debug {
                     println!(
-                        "Registering table '{}' using TBL files at path {}",
-                        table, path
+                        "Registering table '{table}' using TBL files at path {path}"
                     );
                 }
                 ctx.register_csv(table, &path, options)
                     .await
-                    .map_err(|e| DataFusionError::Plan(format!("{:?}", e)))?;
+                    .map_err(|e| DataFusionError::Plan(format!("{e:?}")))?;
             }
             "csv" => {
                 let path = find_path(path, table, "csv")?;
@@ -596,30 +592,27 @@ async fn register_tables(
                 let options = CsvReadOptions::new().schema(&schema).has_header(true);
                 if debug {
                     println!(
-                        "Registering table '{}' using CSV files at path {}",
-                        table, path
+                        "Registering table '{table}' using CSV files at path {path}"
                     );
                 }
                 ctx.register_csv(table, &path, options)
                     .await
-                    .map_err(|e| DataFusionError::Plan(format!("{:?}", e)))?;
+                    .map_err(|e| DataFusionError::Plan(format!("{e:?}")))?;
             }
             "parquet" => {
                 let path = find_path(path, table, "parquet")?;
                 if debug {
                     println!(
-                        "Registering table '{}' using Parquet files at path {}",
-                        table, path
+                        "Registering table '{table}' using Parquet files at path {path}"
                     );
                 }
                 ctx.register_parquet(table, &path, ParquetReadOptions::default())
                     .await
-                    .map_err(|e| DataFusionError::Plan(format!("{:?}", e)))?;
+                    .map_err(|e| DataFusionError::Plan(format!("{e:?}")))?;
             }
             other => {
                 return Err(DataFusionError::Plan(format!(
-                    "Invalid file format '{}'",
-                    other
+                    "Invalid file format '{other}'"
                 )))
             }
         }
@@ -628,16 +621,15 @@ async fn register_tables(
 }
 
 fn find_path(path: &str, table: &str, ext: &str) -> Result<String> {
-    let path1 = format!("{}/{}.{}", path, table, ext);
-    let path2 = format!("{}/{}", path, table);
+    let path1 = format!("{path}/{table}.{ext}");
+    let path2 = format!("{path}/{table}");
     if Path::new(&path1).exists() {
         Ok(path1)
     } else if Path::new(&path2).exists() {
         Ok(path2)
     } else {
         Err(DataFusionError::Plan(format!(
-            "Could not find {} files at {} or {}",
-            ext, path1, path2
+            "Could not find {ext} files at {path1} or {path2}"
         )))
     }
 }
@@ -646,8 +638,8 @@ fn find_path(path: &str, table: &str, ext: &str) -> Result<String> {
 fn get_query_sql(query: usize) -> Result<Vec<String>> {
     if query > 0 && query < 23 {
         let possibilities = vec![
-            format!("queries/q{}.sql", query),
-            format!("benchmarks/queries/q{}.sql", query),
+            format!("queries/q{query}.sql"),
+            format!("benchmarks/queries/q{query}.sql"),
         ];
         let mut errors = vec![];
         for filename in possibilities {
@@ -660,12 +652,11 @@ fn get_query_sql(query: usize) -> Result<Vec<String>> {
                         .map(|s| s.to_string())
                         .collect())
                 }
-                Err(e) => errors.push(format!("{}: {}", filename, e)),
+                Err(e) => errors.push(format!("{filename}: {e}")),
             };
         }
         Err(DataFusionError::Plan(format!(
-            "invalid query. Could not find query: {:?}",
-            errors
+            "invalid query. Could not find query: {errors:?}"
         )))
     } else {
         Err(DataFusionError::Plan(
@@ -694,11 +685,11 @@ async fn execute_query(
     debug: bool,
 ) -> Result<Vec<RecordBatch>> {
     if debug {
-        println!("=== Logical plan ===\n{:?}\n", plan);
+        println!("=== Logical plan ===\n{plan:?}\n");
     }
     let plan = ctx.state().optimize(plan)?;
     if debug {
-        println!("=== Optimized logical plan ===\n{:?}\n", plan);
+        println!("=== Optimized logical plan ===\n{plan:?}\n");
     }
     let physical_plan = ctx.state().create_physical_plan(&plan).await?;
     if debug {
@@ -769,8 +760,7 @@ async fn convert_tbl(opt: ConvertOpt) -> Result<()> {
                     "zstd" => Compression::ZSTD,
                     other => {
                         return Err(DataFusionError::NotImplemented(format!(
-                            "Invalid compression format: {}",
-                            other
+                            "Invalid compression format: {other}"
                         )))
                     }
                 };
@@ -781,8 +771,7 @@ async fn convert_tbl(opt: ConvertOpt) -> Result<()> {
             }
             other => {
                 return Err(DataFusionError::NotImplemented(format!(
-                    "Invalid output format: {}",
-                    other
+                    "Invalid output format: {other}"
                 )))
             }
         }
@@ -803,7 +792,7 @@ async fn get_table(
         match table_format {
             // dbgen creates .tbl ('|' delimited) files without header
             "tbl" => {
-                let path = format!("{}/{}.tbl", path, table);
+                let path = format!("{path}/{table}.tbl");
 
                 let format = CsvFormat::default()
                     .with_delimiter(b'|')
@@ -812,7 +801,7 @@ async fn get_table(
                 (Arc::new(format), path, ".tbl")
             }
             "csv" => {
-                let path = format!("{}/{}", path, table);
+                let path = format!("{path}/{table}");
                 let format = CsvFormat::default()
                     .with_delimiter(b',')
                     .with_has_header(true);
@@ -820,7 +809,7 @@ async fn get_table(
                 (Arc::new(format), path, DEFAULT_CSV_EXTENSION)
             }
             "parquet" => {
-                let path = format!("{}/{}", path, table);
+                let path = format!("{path}/{table}");
                 let format = ParquetFormat::new().with_enable_pruning(Some(true));
 
                 (Arc::new(format), path, DEFAULT_PARQUET_EXTENSION)
@@ -1019,8 +1008,8 @@ async fn get_expected_results(n: usize, path: &str) -> Result<Vec<RecordBatch>> 
         .schema(&schema)
         .delimiter(b'|')
         .file_extension(".out");
-    let answer_path = format!("{}/answers/q{}.out", path, n);
-    println!("Looking for expected results at {}", answer_path);
+    let answer_path = format!("{path}/answers/q{n}.out");
+    println!("Looking for expected results at {answer_path}");
     let df = ctx.read_csv(&answer_path, options).await?;
     let df = df.select(
         get_answer_schema(n)
@@ -1598,8 +1587,8 @@ mod tests {
                     .try_into_logical_plan(&ctx, codec.logical_extension_codec())
                     .unwrap();
                 assert_eq!(
-                    format!("{:?}", plan),
-                    format!("{:?}", round_trip),
+                    format!("{plan:?}"),
+                    format!("{round_trip:?}"),
                     "optimized logical plan round trip failed"
                 );
 
@@ -1621,8 +1610,8 @@ mod tests {
                         )
                         .unwrap();
                     assert_eq!(
-                        format!("{:?}", physical_plan),
-                        format!("{:?}", round_trip),
+                        format!("{physical_plan:?}"),
+                        format!("{round_trip:?}"),
                         "physical plan round trip failed"
                     );
                 }

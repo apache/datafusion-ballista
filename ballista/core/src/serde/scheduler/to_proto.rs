@@ -111,8 +111,7 @@ pub fn hash_partitioning_to_proto(
         }
         None => Ok(None),
         other => Err(BallistaError::General(format!(
-            "scheduler::to_proto() invalid partitioning for ExecutePartition: {:?}",
-            other
+            "scheduler::to_proto() invalid partitioning for ExecutePartition: {other:?}"
         ))),
     }
 }

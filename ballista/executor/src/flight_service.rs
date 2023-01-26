@@ -94,8 +94,7 @@ impl FlightService for BallistaFlightService {
                 let file = File::open(path)
                     .map_err(|e| {
                         BallistaError::General(format!(
-                            "Failed to open partition file at {}: {:?}",
-                            path, e
+                            "Failed to open partition file at {path}: {e:?}"
                         ))
                     })
                     .map_err(|e| from_ballista_err(&e))?;
@@ -147,7 +146,7 @@ impl FlightService for BallistaFlightService {
         };
         let result = Ok(result);
         let output = futures::stream::iter(vec![result]);
-        let str = format!("Bearer {}", token);
+        let str = format!("Bearer {token}");
         let mut resp: Response<
             Pin<Box<dyn Stream<Item = Result<_, Status>> + Sync + Send>>,
         > = Response::new(Box::pin(output));
@@ -257,13 +256,13 @@ async fn send_response(
 ) -> Result<(), Status> {
     tx.send(data)
         .await
-        .map_err(|e| Status::internal(format!("{:?}", e)))
+        .map_err(|e| Status::internal(format!("{e:?}")))
 }
 
 fn from_arrow_err(e: &ArrowError) -> Status {
-    Status::internal(format!("ArrowError: {:?}", e))
+    Status::internal(format!("ArrowError: {e:?}"))
 }
 
 fn from_ballista_err(e: &ballista_core::error::BallistaError) -> Status {
-    Status::internal(format!("Ballista Error: {:?}", e))
+    Status::internal(format!("Ballista Error: {e:?}"))
 }

@@ -95,7 +95,7 @@ impl BallistaContext {
         );
         let connection = create_grpc_client_connection(scheduler_url.clone())
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
         let mut scheduler = SchedulerGrpcClient::new(connection);
 
         let remote_session_id = scheduler
@@ -112,7 +112,7 @@ impl BallistaContext {
                 optional_session_id: None,
             })
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
             .into_inner()
             .session_id;
 
@@ -171,7 +171,7 @@ impl BallistaContext {
                 optional_session_id: None,
             })
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
             .into_inner()
             .session_id;
 
@@ -258,7 +258,7 @@ impl BallistaContext {
         options: CsvReadOptions<'_>,
     ) -> Result<()> {
         let df = self.read_csv(path, options).await.map_err(|e| {
-            DataFusionError::Context(format!("Can't read CSV: {}", path), Box::new(e))
+            DataFusionError::Context(format!("Can't read CSV: {path}"), Box::new(e))
         })?;
         let plan = df.into_optimized_plan()?;
         match plan {
@@ -427,14 +427,12 @@ impl BallistaContext {
                             Ok(DataFrame::new(ctx.state(), plan))
                         }
                         _ => Err(DataFusionError::NotImplemented(format!(
-                            "Unsupported file type {:?}.",
-                            file_type
+                            "Unsupported file type {file_type:?}."
                         ))),
                     },
                     (true, true) => Ok(DataFrame::new(ctx.state(), plan)),
                     (false, true) => Err(DataFusionError::Execution(format!(
-                        "Table '{:?}' already exists",
-                        name
+                        "Table '{name:?}' already exists"
                     ))),
                 }
             }

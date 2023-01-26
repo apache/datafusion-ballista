@@ -46,11 +46,11 @@ impl MemoryBackendClient {
     }
 
     fn get_space_key(keyspace: &Keyspace) -> String {
-        format!("/{:?}", keyspace)
+        format!("/{keyspace:?}")
     }
 
     fn get_flat_key(keyspace: &Keyspace, key: &str) -> String {
-        format!("/{:?}/{}", keyspace, key)
+        format!("/{keyspace:?}/{key}")
     }
 }
 
@@ -140,7 +140,7 @@ impl StateBackendClient for MemoryBackendClient {
             .insert(key.clone(), value.clone());
 
         // Notify subscribers
-        let full_key = format!("{}/{}", space_key, key);
+        let full_key = format!("{space_key}/{key}");
         if let Some(res) = self.subscribers.reserve(&full_key) {
             let event = WatchEvent::Put(full_key, value);
             res.complete(&event);
@@ -215,7 +215,7 @@ impl StateBackendClient for MemoryBackendClient {
     }
 
     async fn watch(&self, keyspace: Keyspace, prefix: String) -> Result<Box<dyn Watch>> {
-        let prefix = format!("/{:?}/{}", keyspace, prefix);
+        let prefix = format!("/{keyspace:?}/{prefix}");
 
         Ok(Box::new(MemoryWatch {
             subscriber: self.subscribers.register(prefix.as_bytes()),
@@ -227,7 +227,7 @@ impl StateBackendClient for MemoryBackendClient {
         if let Some(mut space_state) = self.states.get_mut(&space_key) {
             if space_state.value_mut().remove(key).is_some() {
                 // Notify subscribers
-                let full_key = format!("{}/{}", space_key, key);
+                let full_key = format!("{space_key}/{key}");
                 if let Some(res) = self.subscribers.reserve(&full_key) {
                     let event = WatchEvent::Delete(full_key);
                     res.complete(&event);
@@ -345,10 +345,10 @@ mod tests {
         let key = "key";
         let value = "value".as_bytes();
         client
-            .put(Keyspace::Slots, format!("{}/1", key), value.to_vec())
+            .put(Keyspace::Slots, format!("{key}/1"), value.to_vec())
             .await?;
         client
-            .put(Keyspace::Slots, format!("{}/2", key), value.to_vec())
+            .put(Keyspace::Slots, format!("{key}/2"), value.to_vec())
             .await?;
         assert_eq!(
             client.get_from_prefix(Keyspace::Slots, key).await?,

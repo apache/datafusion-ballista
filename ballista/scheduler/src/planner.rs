@@ -185,8 +185,7 @@ impl DistributedPlanner {
             execution_plan.as_any().downcast_ref::<WindowAggExec>()
         {
             Err(BallistaError::NotImplemented(format!(
-                "WindowAggExec with window {:?}",
-                window
+                "WindowAggExec with window {window:?}"
             )))
         } else {
             Ok((
@@ -633,8 +632,8 @@ order by
         let partial_hash_serde = downcast_exec!(partial_hash_serde, AggregateExec);
 
         assert_eq!(
-            format!("{:?}", partial_hash),
-            format!("{:?}", partial_hash_serde)
+            format!("{partial_hash:?}"),
+            format!("{partial_hash_serde:?}")
         );
 
         Ok(())

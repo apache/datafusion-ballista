@@ -164,8 +164,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         .unwrap()
         .as_millis() as u64;
     let task_identity = format!(
-        "TID {} {}/{}.{}/{}.{}",
-        task_id, job_id, stage_id, stage_attempt_num, partition_id, task_attempt_num
+        "TID {task_id} {job_id}/{stage_id}.{stage_attempt_num}/{partition_id}.{task_attempt_num}"
     );
     info!("Received task {}", task_identity);
 
