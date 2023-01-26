@@ -597,6 +597,7 @@ mod tests {
                         collect_stat: x.collect_stat,
                         target_partitions: x.target_partitions,
                         file_sort_order: None,
+                        infinite_source: false,
                     };
 
                     let table_paths = listing_table
