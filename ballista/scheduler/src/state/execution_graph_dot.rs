@@ -496,7 +496,8 @@ filter_expr="]
 	stage_3_0 -> stage_5_0_0_0_0_0_0
 	stage_4_0 -> stage_5_0_0_0_0_1_0
 }
-        "#.trim();
+        "#
+        .trim();
         assert_eq!(dot.trim(), expected);
         Ok(())
     }
@@ -525,7 +526,8 @@ filter_expr="]
 		stage_3_0_0_0 -> stage_3_0_0
 		stage_3_0_0 -> stage_3_0
 }
-        "#.trim();
+        "#
+        .trim();
         assert_eq!(dot.trim(), expected);
         Ok(())
     }
@@ -599,7 +601,8 @@ filter_expr="]
 	stage_3_0 -> stage_5_0_0_0_0_0_0
 	stage_4_0 -> stage_5_0_0_0_0_1_0
 }
-"#.trim();
+"#
+        .trim();
         assert_eq!(dot.trim(), expected);
         Ok(())
     }
@@ -616,7 +619,8 @@ digraph G {
 		stage_4_0_0 [shape=box, label="MemoryExec"]
 		stage_4_0_0 -> stage_4_0
 }
-"#.trim();
+"#
+        .trim();
         assert_eq!(dot.trim(), expected);
         Ok(())
     }
