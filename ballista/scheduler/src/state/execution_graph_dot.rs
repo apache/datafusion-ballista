@@ -646,8 +646,8 @@ filter_expr="]
         let df = ctx
             .sql("SELECT * FROM foo JOIN bar ON foo.a = bar.a JOIN baz on bar.b = baz.b")
             .await?;
-        let plan = df.to_logical_plan()?;
-        let plan = ctx.create_physical_plan(&plan).await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
         ExecutionGraph::new("scheduler_id", "job_id", "job_name", "session_id", plan, 0)
     }
 
@@ -665,8 +665,8 @@ filter_expr="]
         let df = ctx
             .sql("SELECT * FROM foo JOIN bar ON foo.a = bar.a JOIN baz on bar.a = baz.a")
             .await?;
-        let plan = df.to_logical_plan()?;
-        let plan = ctx.create_physical_plan(&plan).await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
         ExecutionGraph::new("scheduler_id", "job_id", "job_name", "session_id", plan, 0)
     }
 }

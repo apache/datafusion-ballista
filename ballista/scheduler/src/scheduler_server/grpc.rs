@@ -44,7 +44,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use datafusion::prelude::SessionConfig;
+use datafusion::prelude::SessionContext;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
@@ -294,9 +294,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
         let GetFileMetadataParams { path, file_type } = request.into_inner();
         // Here, we use the default config, since we don't know the session id
-        let config = SessionConfig::default().config_options();
         let file_format: Arc<dyn FileFormat> = match file_type.as_str() {
-            "parquet" => Ok(Arc::new(ParquetFormat::new(config))),
+            "parquet" => Ok(Arc::new(ParquetFormat::new())),
             // TODO implement for CSV
             _ => Err(tonic::Status::unimplemented(
                 "get_file_metadata unsupported file type",
@@ -320,8 +319,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 tonic::Status::internal(msg)
             })?;
 
+        let session = SessionContext::new();
+        let ctx = session.state();
         let schema = file_format
-            .infer_schema(&obj_store, &file_metas)
+            .infer_schema(&ctx, &obj_store, &file_metas)
             .await
             .map_err(|e| {
                 let msg = format!("Error inferring schema: {}", e);
@@ -408,7 +409,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 Query::Sql(sql) => session_ctx
                     .sql(&sql)
                     .await
-                    .and_then(|df| df.to_logical_plan())
+                    .and_then(|df| df.into_optimized_plan())
                     .map_err(|e| {
                         let msg = format!("Error parsing SQL: {}", e);
                         error!("{}", msg);

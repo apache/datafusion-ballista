@@ -338,7 +338,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         if log::max_level() >= log::Level::Debug {
             // optimizing the plan here is redundant because the physical planner will do this again
             // but it is helpful to see what the optimized plan will be
-            let optimized_plan = session_ctx.optimize(plan)?;
+            let optimized_plan = session_ctx.state().optimize(plan)?;
             debug!("Optimized plan: {}", optimized_plan.display_indent());
         }
 
@@ -391,7 +391,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         let mut verify_paths_exist = VerifyPathsExist {};
         plan.accept(&mut verify_paths_exist)?;
 
-        let plan = session_ctx.create_physical_plan(plan).await?;
+        let plan = session_ctx.state().create_physical_plan(plan).await?;
         debug!(
             "Physical plan: {}",
             DisplayableExecutionPlan::new(plan.as_ref()).indent()
@@ -747,6 +747,6 @@ mod test {
             .build()
             .unwrap();
 
-        ctx.create_physical_plan(&plan).await.unwrap()
+        ctx.state().create_physical_plan(&plan).await.unwrap()
     }
 }

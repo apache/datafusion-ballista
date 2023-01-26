@@ -262,10 +262,9 @@ mod tests {
         SendableRecordBatchStream, Statistics,
     };
     use datafusion::prelude::{CsvReadOptions, SessionConfig, SessionContext};
+    use datafusion_proto::logical_plan::from_proto::parse_expr;
     use prost::Message;
     use std::any::Any;
-
-    use datafusion_proto::from_proto::parse_expr;
     use std::convert::TryInto;
     use std::fmt;
     use std::fmt::{Debug, Formatter};
@@ -628,13 +627,13 @@ mod tests {
         let scan = ctx
             .read_csv("tests/customer.csv", CsvReadOptions::default())
             .await?
-            .to_logical_plan()?;
+            .into_optimized_plan()?;
 
         let topk_plan = LogicalPlan::Extension(Extension {
             node: Arc::new(TopKPlanNode::new(3, scan, col("revenue"))),
         });
 
-        let topk_exec = ctx.create_physical_plan(&topk_plan).await?;
+        let topk_exec = ctx.state().create_physical_plan(&topk_plan).await?;
 
         let extension_codec = TopKExtensionCodec {};
 

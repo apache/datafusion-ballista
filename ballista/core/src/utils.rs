@@ -319,15 +319,15 @@ pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
     let session_config = SessionConfig::new()
         .with_target_partitions(config.default_shuffle_partitions())
         .with_information_schema(true);
-    let mut session_state = SessionState::with_config_rt(
+    let session_state = SessionState::with_config_rt(
         session_config,
         Arc::new(
             RuntimeEnv::new(with_object_store_provider(RuntimeConfig::default()))
                 .unwrap(),
         ),
     )
+    .with_session_id(session_id)
     .with_query_planner(planner);
-    session_state.session_id = session_id;
     // the SessionContext created here is the client side context, but the session_id is from server side.
     SessionContext::with_state(session_state)
 }
@@ -395,7 +395,7 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
                 logical_plan.clone(),
                 self.extension_codec.clone(),
                 self.plan_repr,
-                session_state.session_id.clone(),
+                session_state.session_id().to_string(),
             ))),
         }
     }

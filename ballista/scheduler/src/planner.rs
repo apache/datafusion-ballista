@@ -360,9 +360,9 @@ mod test {
             )
             .await?;
 
-        let plan = df.to_logical_plan()?;
-        let plan = ctx.optimize(&plan)?;
-        let plan = ctx.create_physical_plan(&plan).await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = ctx.state().optimize(&plan)?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
 
         let mut planner = DistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
@@ -472,9 +472,9 @@ order by
             )
             .await?;
 
-        let plan = df.to_logical_plan()?;
-        let plan = ctx.optimize(&plan)?;
-        let plan = ctx.create_physical_plan(&plan).await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = ctx.state().optimize(&plan)?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
 
         let mut planner = DistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
@@ -618,9 +618,9 @@ order by
             )
             .await?;
 
-        let plan = df.to_logical_plan()?;
-        let plan = ctx.optimize(&plan)?;
-        let plan = ctx.create_physical_plan(&plan).await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = ctx.state().optimize(&plan)?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
 
         let mut planner = DistributedPlanner::new();
         let job_uuid = Uuid::new_v4();

@@ -24,7 +24,6 @@ use prost::Message;
 
 use datafusion::arrow::compute::SortOptions;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::config::ConfigOptions;
 use datafusion::datasource::file_format::file_type::FileCompressionType;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::object_store::ObjectStoreUrl;
@@ -54,8 +53,7 @@ use datafusion::physical_plan::windows::{create_window_expr, WindowAggExec};
 use datafusion::physical_plan::{
     AggregateExpr, ExecutionPlan, Partitioning, PhysicalExpr, WindowExpr,
 };
-use datafusion_proto::from_proto::parse_expr;
-use parking_lot::RwLock;
+use datafusion_proto::logical_plan::from_proto::parse_expr;
 
 use crate::error::BallistaError;
 use crate::execution_plans::{
@@ -316,7 +314,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                                     &[window_node_expr],
                                     &[],
                                     &[],
-                                    Some(Arc::new(WindowFrame::default())),
+                                    Arc::new(WindowFrame::new(false)),
                                     &physical_schema,
                                 )?)
                             }
@@ -566,7 +564,7 @@ impl AsExecutionPlan for PhysicalPlanNode {
                     runtime,
                     extension_codec
                 )?;
-                Ok(Arc::new(CrossJoinExec::try_new(left, right)?))
+                Ok(Arc::new(CrossJoinExec::new(left, right)))
             }
             PhysicalPlanType::ShuffleWriter(shuffle_writer) => {
                 let input: Arc<dyn ExecutionPlan> = into_physical_plan!(
@@ -1268,7 +1266,6 @@ fn decode_scan_config(
     };
 
     Ok(FileScanConfig {
-        config_options: Arc::new(RwLock::new(ConfigOptions::new())), // TODO add serde
         object_store_url,
         file_schema: schema,
         file_groups,
@@ -1277,6 +1274,7 @@ fn decode_scan_config(
         limit: proto.limit.as_ref().map(|sl| sl.limit as usize),
         table_partition_cols: vec![],
         output_ordering: None,
+        infinite_source: false,
     })
 }
 
@@ -1300,7 +1298,6 @@ mod roundtrip_tests {
 
     use datafusion::arrow::array::ArrayRef;
     use datafusion::arrow::datatypes::IntervalUnit;
-    use datafusion::config::ConfigOptions;
     use datafusion::datasource::object_store::ObjectStoreUrl;
     use datafusion::execution::context::ExecutionProps;
     use datafusion::logical_expr::create_udf;
@@ -1338,7 +1335,6 @@ mod roundtrip_tests {
     use crate::serde::protobuf::PhysicalPlanNode;
     use crate::serde::{AsExecutionPlan, BallistaCodec};
     use datafusion_proto::protobuf::LogicalPlanNode;
-    use parking_lot::RwLock;
 
     use super::super::super::error::Result;
     use super::super::protobuf;
@@ -1584,7 +1580,6 @@ mod roundtrip_tests {
     #[test]
     fn roundtrip_parquet_exec_with_pruning_predicate() -> Result<()> {
         let scan_config = FileScanConfig {
-            config_options: Arc::new(RwLock::new(ConfigOptions::new())), // TODO add serde
             object_store_url: ObjectStoreUrl::local_filesystem(),
             file_schema: Arc::new(Schema::new(vec![Field::new(
                 "col",
@@ -1605,6 +1600,7 @@ mod roundtrip_tests {
             limit: None,
             table_partition_cols: vec![],
             output_ordering: None,
+            infinite_source: false,
         };
 
         let predicate = datafusion::prelude::col("col").eq(datafusion::prelude::lit("1"));
@@ -1673,7 +1669,7 @@ mod roundtrip_tests {
         let project =
             ProjectionExec::try_new(vec![(Arc::new(expr), "a".to_string())], input)?;
 
-        let mut ctx = SessionContext::new();
+        let ctx = SessionContext::new();
 
         ctx.register_udf(udf);
 

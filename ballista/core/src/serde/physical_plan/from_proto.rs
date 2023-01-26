@@ -23,7 +23,6 @@ use std::sync::Arc;
 
 use chrono::{TimeZone, Utc};
 use datafusion::arrow::datatypes::Schema;
-use datafusion::config::ConfigOptions;
 use datafusion::datasource::listing::{FileRange, PartitionedFile};
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::execution::context::ExecutionProps;
@@ -40,10 +39,9 @@ use datafusion::physical_plan::{
     functions, Partitioning,
 };
 use datafusion::physical_plan::{ColumnStatistics, PhysicalExpr, Statistics};
-use datafusion_proto::from_proto::from_proto_binary_op;
+use datafusion_proto::logical_plan::from_proto::from_proto_binary_op;
 use object_store::path::Path;
 use object_store::ObjectMeta;
-use parking_lot::RwLock;
 
 use crate::serde::protobuf::physical_expr_node::ExprType;
 
@@ -399,7 +397,6 @@ impl TryInto<FileScanConfig> for &protobuf::FileScanExecConf {
         let statistics = convert_required!(self.statistics)?;
 
         Ok(FileScanConfig {
-            config_options: Arc::new(RwLock::new(ConfigOptions::new())), // TODO add serde
             object_store_url: ObjectStoreUrl::parse(&self.object_store_url)?,
             file_schema: schema,
             file_groups: self
@@ -413,6 +410,7 @@ impl TryInto<FileScanConfig> for &protobuf::FileScanExecConf {
             table_partition_cols: vec![],
             // TODO add ordering info to the ballista proto file
             output_ordering: None,
+            infinite_source: false,
         })
     }
 }

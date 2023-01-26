@@ -613,7 +613,10 @@ mod test {
 
         ctx.register_table("explode", Arc::new(ExplodingTableProvider))?;
 
-        let plan = ctx.sql("SELECT * FROM explode").await?.to_logical_plan()?;
+        let plan = ctx
+            .sql("SELECT * FROM explode")
+            .await?
+            .into_optimized_plan()?;
 
         // This should fail when we try and create the physical plan
         let status = test.run("job", "", &plan).await?;

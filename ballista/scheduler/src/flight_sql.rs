@@ -180,7 +180,7 @@ impl FlightSqlServiceImpl {
         let plan = ctx
             .sql(query)
             .await
-            .and_then(|df| df.to_logical_plan())
+            .and_then(|df| df.into_optimized_plan())
             .map_err(|e| Status::internal(format!("Error building plan: {}", e)))?;
         Ok(plan)
     }

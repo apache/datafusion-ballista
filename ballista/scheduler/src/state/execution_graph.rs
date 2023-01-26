@@ -1590,10 +1590,11 @@ mod test {
 
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::logical_expr::JoinType;
-    use datafusion::logical_expr::{col, count, sum, Expr};
+    use datafusion::logical_expr::{col, count, sum};
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion::test_util::scan_empty;
+    use datafusion_expr::Expr;
 
     use crate::scheduler_server::event::QueryStageSchedulerEvent;
     use ballista_core::error::Result;
@@ -2773,9 +2774,13 @@ mod test {
             .build()
             .unwrap();
 
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+        let optimized_plan = ctx.state().optimize(&logical_plan).unwrap();
 
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+        let plan = ctx
+            .state()
+            .create_physical_plan(&optimized_plan)
+            .await
+            .unwrap();
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
@@ -2801,9 +2806,13 @@ mod test {
             .build()
             .unwrap();
 
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+        let optimized_plan = ctx.state().optimize(&logical_plan).unwrap();
 
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+        let plan = ctx
+            .state()
+            .create_physical_plan(&optimized_plan)
+            .await
+            .unwrap();
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
@@ -2826,9 +2835,13 @@ mod test {
             .build()
             .unwrap();
 
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+        let optimized_plan = ctx.state().optimize(&logical_plan).unwrap();
 
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+        let plan = ctx
+            .state()
+            .create_physical_plan(&optimized_plan)
+            .await
+            .unwrap();
 
         ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap()
     }
@@ -2849,14 +2862,14 @@ mod test {
             .build()
             .unwrap();
 
-        let sort_expr = Expr::Sort {
+        let sort_expr = Expr::Sort(datafusion_expr::expr::Sort {
             expr: Box::new(col("id")),
             asc: false,
             nulls_first: false,
-        };
+        });
 
         let logical_plan = left_plan
-            .join(&right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
+            .join(right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
             .unwrap()
             .aggregate(vec![col("id")], vec![sum(col("gmv"))])
             .unwrap()
@@ -2865,9 +2878,13 @@ mod test {
             .build()
             .unwrap();
 
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+        let optimized_plan = ctx.state().optimize(&logical_plan).unwrap();
 
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+        let plan = ctx
+            .state()
+            .create_physical_plan(&optimized_plan)
+            .await
+            .unwrap();
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
@@ -2887,12 +2904,16 @@ mod test {
             .sql("SELECT 1 as NUMBER union all SELECT 1 as NUMBER;")
             .await
             .unwrap()
-            .to_logical_plan()
+            .into_optimized_plan()
             .unwrap();
 
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+        let optimized_plan = ctx.state().optimize(&logical_plan).unwrap();
 
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+        let plan = ctx
+            .state()
+            .create_physical_plan(&optimized_plan)
+            .await
+            .unwrap();
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
@@ -2912,12 +2933,16 @@ mod test {
             .sql("SELECT 1 as NUMBER union SELECT 1 as NUMBER;")
             .await
             .unwrap()
-            .to_logical_plan()
+            .into_optimized_plan()
             .unwrap();
 
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+        let optimized_plan = ctx.state().optimize(&logical_plan).unwrap();
 
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+        let plan = ctx
+            .state()
+            .create_physical_plan(&optimized_plan)
+            .await
+            .unwrap();
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
