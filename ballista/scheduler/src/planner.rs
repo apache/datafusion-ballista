@@ -628,7 +628,8 @@ order by
         let partial_hash = stages[0].children()[0].clone();
         let partial_hash_serde = roundtrip_operator(partial_hash.clone())?;
 
-        let partial_hash = downcast_exec!(partial_hash, AggregateExec);
+        let partial_hash = downcast_exec!(
+            , AggregateExec);
         let partial_hash_serde = downcast_exec!(partial_hash_serde, AggregateExec);
 
         assert_eq!(
