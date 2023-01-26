@@ -606,14 +606,26 @@ filter_expr="]
     #[tokio::test]
     async fn query_stage_optimized() -> Result<()> {
         let graph = test_graph_optimized().await?;
-        let dot = ExecutionGraphDot::generate_for_query_stage(Arc::new(graph), 4)
+        let dot = ExecutionGraphDot::generate_for_query_stage(Arc::new(graph), 3)
             .map_err(|e| BallistaError::Internal(format!("{e:?}")))?;
 
         let expected = r#"
 digraph G {
-		stage_4_0 [shape=box, label="ShuffleWriter [0 partitions]"]
-		stage_4_0_0 [shape=box, label="MemoryExec"]
-		stage_4_0_0 -> stage_4_0
+		stage_3_0 [shape=box, label="ShuffleWriter [48 partitions]"]
+		stage_3_0_0 [shape=box, label="CoalesceBatches [batchSize=8192]"]
+		stage_3_0_0_0 [shape=box, label="HashJoin
+join_expr=a@0 = a@0
+filter_expr="]
+		stage_3_0_0_0_0 [shape=box, label="CoalesceBatches [batchSize=8192]"]
+		stage_3_0_0_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=1]"]
+		stage_3_0_0_0_0_0 -> stage_3_0_0_0_0
+		stage_3_0_0_0_0 -> stage_3_0_0_0
+		stage_3_0_0_0_1 [shape=box, label="CoalesceBatches [batchSize=8192]"]
+		stage_3_0_0_0_1_0 [shape=box, label="UnresolvedShuffleExec [stage_id=2]"]
+		stage_3_0_0_0_1_0 -> stage_3_0_0_0_1
+		stage_3_0_0_0_1 -> stage_3_0_0_0
+		stage_3_0_0_0 -> stage_3_0_0
+		stage_3_0_0 -> stage_3_0
 }
 "#
         .trim();
