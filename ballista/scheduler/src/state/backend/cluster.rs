@@ -611,7 +611,7 @@ mod tests {
                 false
             };
 
-            assert!(received, "Did not receive heartbeat for executor {}", i);
+            assert!(received, "Did not receive heartbeat for executor {i}");
         }
 
         Ok(())
@@ -647,14 +647,9 @@ mod tests {
                 assert_eq!(
                     hb.executor_id,
                     i.to_string(),
-                    "Expected heartbeat in map for {}",
-                    i
+                    "Expected heartbeat in map for {i}"
                 );
-                assert_eq!(
-                    hb.timestamp, i,
-                    "Expected timestamp to be correct for {}",
-                    i
-                );
+                assert_eq!(hb.timestamp, i, "Expected timestamp to be correct for {i}");
             } else {
                 panic!("Expected heartbeat for executor {}", i);
             }
@@ -685,14 +680,9 @@ mod tests {
                 assert_eq!(
                     hb.executor_id,
                     i.to_string(),
-                    "Expected heartbeat in map for {}",
-                    i
+                    "Expected heartbeat in map for {i}"
                 );
-                assert_eq!(
-                    hb.timestamp, i,
-                    "Expected timestamp to be correct for {}",
-                    i
-                );
+                assert_eq!(hb.timestamp, i, "Expected timestamp to be correct for {i}");
             } else {
                 panic!("Expected heartbeat for executor {}", i);
             }
