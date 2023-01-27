@@ -681,7 +681,7 @@ pub fn assert_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
         .iter()
         .any(|ev| matches!(ev, MetricEvent::Submitted(_, _, _)));
 
-    assert!(found, "Expected submitted event for job {}", job_id);
+    assert!(found, "Expected submitted event for job {job_id}");
 }
 
 pub fn assert_no_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
@@ -690,7 +690,7 @@ pub fn assert_no_submitted_event(job_id: &str, collector: &TestMetricsCollector)
         .iter()
         .any(|ev| matches!(ev, MetricEvent::Submitted(_, _, _)));
 
-    assert!(!found, "Expected no submitted event for job {}", job_id);
+    assert!(!found, "Expected no submitted event for job {job_id}");
 }
 
 pub fn assert_completed_event(job_id: &str, collector: &TestMetricsCollector) {
@@ -699,7 +699,7 @@ pub fn assert_completed_event(job_id: &str, collector: &TestMetricsCollector) {
         .iter()
         .any(|ev| matches!(ev, MetricEvent::Completed(_, _, _)));
 
-    assert!(found, "Expected completed event for job {}", job_id);
+    assert!(found, "Expected completed event for job {job_id}");
 }
 
 pub fn assert_cancelled_event(job_id: &str, collector: &TestMetricsCollector) {
@@ -708,7 +708,7 @@ pub fn assert_cancelled_event(job_id: &str, collector: &TestMetricsCollector) {
         .iter()
         .any(|ev| matches!(ev, MetricEvent::Cancelled(_)));
 
-    assert!(found, "Expected cancelled event for job {}", job_id);
+    assert!(found, "Expected cancelled event for job {job_id}");
 }
 
 pub fn assert_failed_event(job_id: &str, collector: &TestMetricsCollector) {
@@ -717,5 +717,5 @@ pub fn assert_failed_event(job_id: &str, collector: &TestMetricsCollector) {
         .iter()
         .any(|ev| matches!(ev, MetricEvent::Failed(_, _, _)));
 
-    assert!(found, "Expected failed event for job {}", job_id);
+    assert!(found, "Expected failed event for job {job_id}");
 }
