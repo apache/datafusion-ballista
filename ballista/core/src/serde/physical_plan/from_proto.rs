@@ -363,9 +363,17 @@ impl TryInto<Statistics> for &protobuf::Statistics {
             .iter()
             .map(|s| s.into())
             .collect::<Vec<_>>();
+        let num_rows = match self.num_rows {
+            -1 => None,
+            x => Some(x as usize),
+        };
+        let total_byte_size = match self.total_byte_size {
+            -1 => None,
+            x => Some(x as usize),
+        };
         Ok(Statistics {
-            num_rows: Some(self.num_rows as usize),
-            total_byte_size: Some(self.total_byte_size as usize),
+            num_rows,
+            total_byte_size,
             // No column statistic (None) is encoded with empty array
             column_statistics: if column_statistics.is_empty() {
                 None
