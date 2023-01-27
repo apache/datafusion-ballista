@@ -19,11 +19,11 @@
 
 # Release Process
 
-Development happens on the `main` branch, and most of the time, we depend on DataFusion using GitHub dependencies
-rather than using an official release from crates.io. This allows us to pick up new features and bug fixes frequently
-by creating PRs to move to a later revision of the code. It also means we can incrementally make updates that are
-required due to changes in DataFusion rather than having a large amount of work to do when the next official release
-is available.
+Development happens on the `main` branch, and most of the time, we depend on DataFusion using a git dependency (depending
+on a specific git revision) rather than using an official release from crates.io. This allows us to pick up new
+features and bug fixes frequently by creating PRs to move to a later revision of the code. It also means we can
+incrementally make updates that are required due to changes in DataFusion rather than having a large amount of work
+to do when the next official release is available.
 
 When there is a new official release of DataFusion, we update the `main` branch to point to that, update the version
 number, and create a new release branch, such as `branch-0.11`. Once this branch is created, we switch the `main` branch
@@ -33,6 +33,37 @@ release branch without blocking ongoing development in the `main` branch.
 We can cherry-pick commits from the `main` branch into `branch-0.11` as needed and then create new patch releases
 from that branch.
 
+## Who Can Create Releases?
+
+Although some tasks can only be performed by a PMC member, many tasks can be performed by committers and contributors.
+
+### Release Preparation
+
+| Task                                                             | Role Required |
+| ---------------------------------------------------------------- | ------------- |
+| Create PRs against main branch to update DataFusion dependencies | None          |
+| Create PRs against main branch to update Ballista version        | None          |
+| Create release branch (e.g. branch-0.11)                         | Committer     |
+| Create PRs against release branch with CHANGELOG                 | None          |
+| Create PRs against release branch with cherry-picked commits     | None          |
+| Create release candidate tag                                     | Committer     |
+
+### Release
+
+| Task                                                | Role Required |
+| --------------------------------------------------- | ------------- |
+| Create release candidate tarball and publish to SVN | PMC           |
+| Start vote on mailing list                          | PMC           |
+| Call vote on mailing list                           | PMC           |
+| Publish release tarball to SVN                      | PMC           |
+| Publish binary artifacts to crates.io               | PMC           |
+
+### Post-Release
+
+| Task                                                    | Role Required |
+| ------------------------------------------------------- | ------------- |
+| Create PR against arrow-site with updated documentation | None          |
+
 ## Detailed Guide
 
 ### Prerequisite
@@ -41,27 +72,6 @@ from that branch.
   [these instructions](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token)
   to generate one if you do not already have one.
 - Have upstream git repo `git@github.com:apache/arrow-ballista.git` add as git remote `apache`.
-- Make sure your signing key is added to the following files in SVN:
-  - https://dist.apache.org/repos/dist/dev/arrow/KEYS
-  - https://dist.apache.org/repos/dist/release/arrow/KEYS
-
-See instructions at https://infra.apache.org/release-signing.html#generate for generating keys.
-
-Committers can add signing keys in Subversion client with their ASF account. e.g.:
-
-```bash
-$ svn co https://dist.apache.org/repos/dist/dev/arrow
-$ cd arrow
-$ editor KEYS
-$ svn ci KEYS
-```
-
-Follow the instructions in the header of the KEYS file to append your key. Here is an example:
-
-```bash
-(gpg --list-sigs "John Doe" && gpg --armor --export "John Doe") >> KEYS
-svn commit KEYS -m "Add key for John Doe"
-```
 
 ### Preparing the `main` Branch
 
@@ -126,6 +136,28 @@ git push apache <version>
 ```
 
 ### Create, sign, and upload artifacts
+
+- Make sure your signing key is added to the following files in SVN:
+    - https://dist.apache.org/repos/dist/dev/arrow/KEYS
+    - https://dist.apache.org/repos/dist/release/arrow/KEYS
+
+See instructions at https://infra.apache.org/release-signing.html#generate for generating keys.
+
+Committers can add signing keys in Subversion client with their ASF account. e.g.:
+
+```bash
+$ svn co https://dist.apache.org/repos/dist/dev/arrow
+$ cd arrow
+$ editor KEYS
+$ svn ci KEYS
+```
+
+Follow the instructions in the header of the KEYS file to append your key. Here is an example:
+
+```bash
+(gpg --list-sigs "John Doe" && gpg --armor --export "John Doe") >> KEYS
+svn commit KEYS -m "Add key for John Doe"
+```
 
 Run `create-tarball.sh` with the `<version>` tag and `<rc>` and you found in previous steps:
 
