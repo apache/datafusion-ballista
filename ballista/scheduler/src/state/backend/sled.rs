@@ -60,18 +60,18 @@ impl SledClient {
 fn sled_to_ballista_error(e: sled::Error) -> BallistaError {
     match e {
         sled::Error::Io(io) => BallistaError::IoError(io),
-        _ => BallistaError::General(format!("{}", e)),
+        _ => BallistaError::General(format!("{e}")),
     }
 }
 
 #[tonic::async_trait]
 impl StateBackendClient for SledClient {
     async fn get(&self, keyspace: Keyspace, key: &str) -> Result<Vec<u8>> {
-        let key = format!("/{:?}/{}", keyspace, key);
+        let key = format!("/{keyspace:?}/{key}");
         Ok(self
             .db
             .get(key)
-            .map_err(|e| ballista_error(&format!("sled error {:?}", e)))?
+            .map_err(|e| ballista_error(&format!("sled error {e:?}")))?
             .map(|v| v.to_vec())
             .unwrap_or_default())
     }
@@ -81,7 +81,7 @@ impl StateBackendClient for SledClient {
         keyspace: Keyspace,
         prefix: &str,
     ) -> Result<Vec<(String, Vec<u8>)>> {
-        let prefix = format!("/{:?}/{}", keyspace, prefix);
+        let prefix = format!("/{keyspace:?}/{prefix}");
         Ok(self
             .db
             .scan_prefix(prefix)
@@ -94,7 +94,7 @@ impl StateBackendClient for SledClient {
                 })
             })
             .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| ballista_error(&format!("sled error {:?}", e)))?)
+            .map_err(|e| ballista_error(&format!("sled error {e:?}")))?)
     }
 
     async fn scan(
@@ -102,7 +102,7 @@ impl StateBackendClient for SledClient {
         keyspace: Keyspace,
         limit: Option<usize>,
     ) -> Result<Vec<(String, Vec<u8>)>> {
-        let prefix = format!("/{:?}/", keyspace);
+        let prefix = format!("/{keyspace:?}/");
         if let Some(limit) = limit {
             Ok(self
                 .db
@@ -117,7 +117,7 @@ impl StateBackendClient for SledClient {
                     })
                 })
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| ballista_error(&format!("sled error {:?}", e)))?)
+                .map_err(|e| ballista_error(&format!("sled error {e:?}")))?)
         } else {
             Ok(self
                 .db
@@ -131,12 +131,12 @@ impl StateBackendClient for SledClient {
                     })
                 })
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| ballista_error(&format!("sled error {:?}", e)))?)
+                .map_err(|e| ballista_error(&format!("sled error {e:?}")))?)
         }
     }
 
     async fn scan_keys(&self, keyspace: Keyspace) -> Result<HashSet<String>> {
-        let prefix = format!("/{:?}/", keyspace);
+        let prefix = format!("/{keyspace:?}/");
         Ok(self
             .db
             .scan_prefix(prefix.clone())
@@ -150,11 +150,11 @@ impl StateBackendClient for SledClient {
                 })
             })
             .collect::<std::result::Result<HashSet<_>, _>>()
-            .map_err(|e| ballista_error(&format!("sled error {:?}", e)))?)
+            .map_err(|e| ballista_error(&format!("sled error {e:?}")))?)
     }
 
     async fn put(&self, keyspace: Keyspace, key: String, value: Vec<u8>) -> Result<()> {
-        let key = format!("/{:?}/{}", keyspace, key);
+        let key = format!("/{keyspace:?}/{key}");
         self.db
             .insert(key, value)
             .map_err(|e| {
@@ -187,13 +187,13 @@ impl StateBackendClient for SledClient {
         to_keyspace: Keyspace,
         key: &str,
     ) -> Result<()> {
-        let from_key = format!("/{:?}/{}", from_keyspace, key);
-        let to_key = format!("/{:?}/{}", to_keyspace, key);
+        let from_key = format!("/{from_keyspace:?}/{key}");
+        let to_key = format!("/{to_keyspace:?}/{key}");
 
         let current_value = self
             .db
             .get(from_key.as_str())
-            .map_err(|e| ballista_error(&format!("sled error {:?}", e)))?
+            .map_err(|e| ballista_error(&format!("sled error {e:?}")))?
             .map(|v| v.to_vec());
 
         if let Some(value) = current_value {
@@ -215,7 +215,7 @@ impl StateBackendClient for SledClient {
 
     async fn lock(&self, keyspace: Keyspace, key: &str) -> Result<Box<dyn Lock>> {
         let mut mlock = self.locks.lock().await;
-        let lock_key = format!("/{:?}/{}", keyspace, key);
+        let lock_key = format!("/{keyspace:?}/{key}");
         if let Some(lock) = mlock.get(&lock_key) {
             Ok(Box::new(lock.clone().lock_owned().await))
         } else {
@@ -226,7 +226,7 @@ impl StateBackendClient for SledClient {
     }
 
     async fn watch(&self, keyspace: Keyspace, prefix: String) -> Result<Box<dyn Watch>> {
-        let prefix = format!("/{:?}/{}", keyspace, prefix);
+        let prefix = format!("/{keyspace:?}/{prefix}");
 
         Ok(Box::new(SledWatch {
             subscriber: self.db.watch_prefix(prefix),
@@ -234,7 +234,7 @@ impl StateBackendClient for SledClient {
     }
 
     async fn delete(&self, keyspace: Keyspace, key: &str) -> Result<()> {
-        let key = format!("/{:?}/{}", keyspace, key);
+        let key = format!("/{keyspace:?}/{key}");
         self.db.remove(key).map_err(|e| {
             warn!("sled delete failed: {:?}", e);
             ballista_error("sled delete failed")
@@ -348,10 +348,10 @@ mod tests {
         let key = "key";
         let value = "value".as_bytes();
         client
-            .put(Keyspace::Slots, format!("{}/1", key), value.to_vec())
+            .put(Keyspace::Slots, format!("{key}/1"), value.to_vec())
             .await?;
         client
-            .put(Keyspace::Slots, format!("{}/2", key), value.to_vec())
+            .put(Keyspace::Slots, format!("{key}/2"), value.to_vec())
             .await?;
         assert_eq!(
             client.get_from_prefix(Keyspace::Slots, key).await?,

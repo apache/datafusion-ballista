@@ -56,16 +56,15 @@ impl BallistaClient {
     /// Create a new BallistaClient to connect to the executor listening on the specified
     /// host and port
     pub async fn try_new(host: &str, port: u16) -> Result<Self> {
-        let addr = format!("http://{}:{}", host, port);
+        let addr = format!("http://{host}:{port}");
         debug!("BallistaClient connecting to {}", addr);
         let connection =
             create_grpc_client_connection(addr.clone())
                 .await
                 .map_err(|e| {
                     BallistaError::GrpcConnectionError(format!(
-                        "Error connecting to Ballista scheduler or executor at {}: {:?}",
-                        addr, e
-                    ))
+                    "Error connecting to Ballista scheduler or executor at {addr}: {e:?}"
+                ))
                 })?;
         let flight_client = FlightServiceClient::new(connection);
         debug!("BallistaClient connected OK");
@@ -115,7 +114,7 @@ impl BallistaClient {
 
         serialized_action
             .encode(&mut buf)
-            .map_err(|e| BallistaError::GrpcActionError(format!("{:?}", e)))?;
+            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
 
         let request = tonic::Request::new(Ticket { ticket: buf });
 
@@ -123,14 +122,14 @@ impl BallistaClient {
             .flight_client
             .do_get(request)
             .await
-            .map_err(|e| BallistaError::GrpcActionError(format!("{:?}", e)))?
+            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?
             .into_inner();
 
         // the schema should be the first message returned, else client should error
         match stream
             .message()
             .await
-            .map_err(|e| BallistaError::GrpcActionError(format!("{:?}", e)))?
+            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?
         {
             Some(flight_data) => {
                 // convert FlightData to a stream

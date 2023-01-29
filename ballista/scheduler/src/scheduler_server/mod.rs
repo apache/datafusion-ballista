@@ -216,8 +216,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         // We might receive buggy task updates from dead executors.
         if self.state.executor_manager.is_dead_executor(executor_id) {
             let error_msg = format!(
-                "Receive buggy tasks status from dead Executor {}, task status update ignored.",
-                executor_id
+                "Receive buggy tasks status from dead Executor {executor_id}, task status update ignored."
             );
             warn!("{}", error_msg);
             return Ok(());
@@ -267,10 +266,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                     )
                     .await
                     .unwrap_or_else(|e| {
-                        let msg = format!(
-                            "Error to remove Executor in Scheduler due to {:?}",
-                            e
-                        );
+                        let msg =
+                            format!("Error to remove Executor in Scheduler due to {e:?}");
                         error!("{}", msg);
                     });
 
@@ -586,8 +583,8 @@ mod test {
                     status: Some(job_status::Status::Failed(_))
                 }
             ),
-            "Expected job status to be failed but it was {:?}",
-            status
+            "{}",
+            format!("Expected job status to be failed but it was {status:?}")
         );
 
         assert_submitted_event("job", &metrics_collector);
@@ -630,8 +627,8 @@ mod test {
                     status: Some(job_status::Status::Failed(_))
                 }
             ),
-            "Expected job status to be failed but it was {:?}",
-            status
+            "{}",
+            format!("Expected job status to be failed but it was {status:?}")
         );
 
         assert_no_submitted_event("job", &metrics_collector);
@@ -714,7 +711,7 @@ mod test {
         BallistaConfig::builder()
             .set(
                 BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
-                format!("{}", partitions).as_str(),
+                format!("{partitions}").as_str(),
             )
             .build()
             .expect("creating BallistaConfig")

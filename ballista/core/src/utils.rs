@@ -135,8 +135,7 @@ impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
         }
 
         Err(DataFusionError::Execution(format!(
-            "No object store available for {}",
-            url
+            "No object store available for {url}",
         )))
     }
 }
@@ -267,7 +266,7 @@ fn build_exec_plan_diagram(
     {
         "CoalescePartitionsExec"
     } else {
-        println!("Unknown: {:?}", plan);
+        println!("Unknown: {plan:?}");
         "Unknown"
     };
 
@@ -277,8 +276,7 @@ fn build_exec_plan_diagram(
     if draw_entity {
         writeln!(
             w,
-            "\t\tstage_{}_exec_{} [shape=box, label=\"{}\"];",
-            stage_id, node_id, operator_str
+            "\t\tstage_{stage_id}_exec_{node_id} [shape=box, label=\"{operator_str}\"];",
         )?;
     }
     for child in plan.children() {
@@ -297,8 +295,7 @@ fn build_exec_plan_diagram(
             if draw_entity {
                 writeln!(
                     w,
-                    "\t\tstage_{}_exec_{} -> stage_{}_exec_{};",
-                    stage_id, child_id, stage_id, node_id
+                    "\t\tstage_{stage_id}_exec_{child_id} -> stage_{stage_id}_exec_{node_id};",
                 )?;
             }
         }
