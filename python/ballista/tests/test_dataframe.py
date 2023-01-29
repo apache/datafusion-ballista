@@ -145,6 +145,9 @@ def test_join():
     assert table.to_pydict() == expected
 
 
+@pytest.mark.skip(
+    reason="https://github.com/apache/arrow-datafusion-python/issues/135"
+)
 def test_window_lead(df):
     df = df.select(
         column("a"),
