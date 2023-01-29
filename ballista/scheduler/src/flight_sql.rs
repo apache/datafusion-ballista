@@ -581,13 +581,14 @@ impl FlightSqlService for FlightSqlServiceImpl {
         // Proxy the flight
         let addr = format!("http://{}:{}", fp.host, fp.port);
         debug!("Scheduler proxying flight for to {}", addr);
-        let connection = create_grpc_client_connection(addr.clone()).await.map_err(
-            |e| {
-                Status::internal(format!(
+        let connection =
+            create_grpc_client_connection(addr.clone())
+                .await
+                .map_err(|e| {
+                    Status::internal(format!(
                     "Error connecting to Ballista scheduler or executor at {addr}: {e:?}"
                 ))
-            },
-        )?;
+                })?;
         let mut flight_client = FlightServiceClient::new(connection);
         let buf = action.encode_to_vec();
         let request = Request::new(Ticket { ticket: buf });
