@@ -64,7 +64,7 @@ pub fn decode_protobuf(bytes: &[u8]) -> Result<BallistaAction, BallistaError> {
     let mut buf = Cursor::new(bytes);
 
     protobuf::Action::decode(&mut buf)
-        .map_err(|e| BallistaError::Internal(format!("{:?}", e)))
+        .map_err(|e| BallistaError::Internal(format!("{e:?}")))
         .and_then(|node| node.try_into())
 }
 
@@ -124,8 +124,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
         let ballista_plan: protobuf::BallistaPhysicalPlanNode =
             protobuf::BallistaPhysicalPlanNode::decode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
-                    "Could not deserialize BallistaPhysicalPlanNode: {}",
-                    e
+                    "Could not deserialize BallistaPhysicalPlanNode: {e}"
                 ))
             })?;
 
@@ -165,8 +164,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                             .map(|l| {
                                 l.clone().try_into().map_err(|e| {
                                     DataFusionError::Internal(format!(
-                                        "Fail to get partition location due to {:?}",
-                                        e
+                                        "Fail to get partition location due to {e:?}"
                                     ))
                                 })
                             })
@@ -212,8 +210,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 None => None,
                 other => {
                     return Err(DataFusionError::Internal(format!(
-                        "physical_plan::to_proto() invalid partitioning for ShuffleWriterExec: {:?}",
-                        other
+                        "physical_plan::to_proto() invalid partitioning for ShuffleWriterExec: {other:?}"
                     )));
                 }
             };
@@ -231,8 +228,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
 
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
-                    "failed to encode shuffle writer execution plan: {:?}",
-                    e
+                    "failed to encode shuffle writer execution plan: {e:?}"
                 ))
             })?;
 
@@ -246,8 +242,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         .map(|l| {
                             l.clone().try_into().map_err(|e| {
                                 DataFusionError::Internal(format!(
-                                    "Fail to get partition location due to {:?}",
-                                    e
+                                    "Fail to get partition location due to {e:?}"
                                 ))
                             })
                         })
@@ -264,8 +259,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             };
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
-                    "failed to encode shuffle reader execution plan: {:?}",
-                    e
+                    "failed to encode shuffle reader execution plan: {e:?}"
                 ))
             })?;
 
@@ -283,8 +277,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             };
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
-                    "failed to encode unresolved shuffle execution plan: {:?}",
-                    e
+                    "failed to encode unresolved shuffle execution plan: {e:?}"
                 ))
             })?;
 

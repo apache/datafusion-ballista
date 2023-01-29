@@ -78,9 +78,8 @@ async fn main() -> Result<()> {
     let port = opt.bind_port;
     let log_dir = opt.log_dir;
     let print_thread_info = opt.print_thread_info;
-    let log_file_name_prefix =
-        format!("scheduler_{}_{}_{}", namespace, external_host, port);
-    let scheduler_name = format!("{}:{}", external_host, port);
+    let log_file_name_prefix = format!("scheduler_{namespace}_{external_host}_{port}");
+    let scheduler_name = format!("{external_host}:{port}");
 
     let rust_log = env::var(EnvFilter::DEFAULT_ENV);
     let log_filter = EnvFilter::new(rust_log.unwrap_or(special_mod_log_level));
@@ -118,7 +117,7 @@ async fn main() -> Result<()> {
             .init();
     }
 
-    let addr = format!("{}:{}", bind_host, port);
+    let addr = format!("{bind_host}:{port}");
     let addr = addr.parse()?;
 
     let config = SchedulerConfig {

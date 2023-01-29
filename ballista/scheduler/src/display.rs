@@ -134,7 +134,7 @@ impl<'a, 'b> ExecutionPlanVisitor for IndentVisitor<'a, 'b> {
                 .aggregate_by_name()
                 .sorted_for_display()
                 .timestamps_removed();
-            write!(self.f, ", metrics=[{}]", metrics)?;
+            write!(self.f, ", metrics=[{metrics}]")?;
         } else {
             write!(self.f, ", metrics=[]")?;
         }

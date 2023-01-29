@@ -639,8 +639,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             Ok(task_definition)
         } else {
             Err(BallistaError::General(format!(
-                "Cannot prepare task definition for job {} which is not in active cache",
-                job_id
+                "Cannot prepare task definition for job {job_id} which is not in active cache"
             )))
         }
     }
@@ -729,7 +728,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 };
                 Ok(multi_task_definition)
             } else {
-                Err(BallistaError::General(format!("Cannot prepare multi task definition for job {} which is not in active cache", job_id)))
+                Err(BallistaError::General(format!("Cannot prepare multi task definition for job {job_id} which is not in active cache")))
             }
         } else {
             Err(BallistaError::General(

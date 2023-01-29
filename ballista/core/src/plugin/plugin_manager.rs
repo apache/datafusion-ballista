@@ -69,7 +69,7 @@ impl GlobalPluginManager {
             let library = Library::new(plugin_file.path()).map_err(|e| {
                 BallistaError::IoError(io::Error::new(
                     io::ErrorKind::Other,
-                    format!("load library error: {}", e),
+                    format!("load library error: {e}"),
                 ))
             })?;
 

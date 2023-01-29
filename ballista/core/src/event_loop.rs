@@ -134,8 +134,9 @@ impl<E> EventSender<E> {
     }
 
     pub async fn post_event(&self, event: E) -> Result<()> {
-        self.tx_event.send(event).await.map_err(|e| {
-            BallistaError::General(format!("Fail to send event due to {}", e))
-        })
+        self.tx_event
+            .send(event)
+            .await
+            .map_err(|e| BallistaError::General(format!("Fail to send event due to {e}")))
     }
 }
