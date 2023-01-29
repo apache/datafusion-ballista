@@ -18,22 +18,14 @@
 use datafusion::prelude::lit;
 use pyo3::{prelude::*, wrap_pyfunction};
 
-use datafusion::logical_expr::{self, BuiltinScalarFunction, WindowFunction};
 use datafusion::physical_plan::aggregates::AggregateFunction;
+use datafusion_expr::{self, BuiltinScalarFunction, window_function::find_df_window_func};
 
-use crate::errors;
 use crate::expression::PyExpr;
 
 #[pyfunction]
-fn array(value: Vec<PyExpr>) -> PyExpr {
-    PyExpr {
-        expr: logical_expr::array(value.into_iter().map(|x| x.expr).collect::<Vec<_>>()),
-    }
-}
-
-#[pyfunction]
 fn in_list(expr: PyExpr, value: Vec<PyExpr>, negated: bool) -> PyExpr {
-    logical_expr::in_list(
+    datafusion_expr::expr_fn::in_list(
         expr.expr,
         value.into_iter().map(|x| x.expr).collect::<Vec<_>>(),
         negated,
@@ -41,29 +33,12 @@ fn in_list(expr: PyExpr, value: Vec<PyExpr>, negated: bool) -> PyExpr {
     .into()
 }
 
-/// Current date and time
-#[pyfunction]
-fn now() -> PyExpr {
-    PyExpr {
-        // here lit(0) is a stub for conform to arity
-        expr: logical_expr::now(),
-    }
-}
-
-/// Returns a random value in the range 0.0 <= x < 1.0
-#[pyfunction]
-fn random() -> PyExpr {
-    PyExpr {
-        expr: logical_expr::random(),
-    }
-}
-
 /// Computes a binary hash of the given data. type is the algorithm to use.
 /// Standard algorithms are md5, sha224, sha256, sha384, sha512, blake2s, blake2b, and blake3.
 #[pyfunction(value, method)]
 fn digest(value: PyExpr, method: PyExpr) -> PyExpr {
     PyExpr {
-        expr: logical_expr::digest(value.expr, method.expr),
+        expr: datafusion_expr::expr_fn::digest(value.expr, method.expr),
     }
 }
 
@@ -72,7 +47,7 @@ fn digest(value: PyExpr, method: PyExpr) -> PyExpr {
 #[pyfunction(args = "*")]
 fn concat(args: Vec<PyExpr>) -> PyResult<PyExpr> {
     let args = args.into_iter().map(|e| e.expr).collect::<Vec<_>>();
-    Ok(logical_expr::concat(&args).into())
+    Ok(datafusion_expr::expr_fn::concat(&args).into())
 }
 
 /// Concatenates all but the first argument, with separators.
@@ -81,7 +56,7 @@ fn concat(args: Vec<PyExpr>) -> PyResult<PyExpr> {
 #[pyfunction(sep, args = "*")]
 fn concat_ws(sep: String, args: Vec<PyExpr>) -> PyResult<PyExpr> {
     let args = args.into_iter().map(|e| e.expr).collect::<Vec<_>>();
-    Ok(logical_expr::concat_ws(lit(sep), args).into())
+    Ok(datafusion_expr::expr_fn::concat_ws(lit(sep), args).into())
 }
 
 /// Creates a new Sort expression
@@ -92,11 +67,13 @@ fn order_by(
     nulls_first: Option<bool>,
 ) -> PyResult<PyExpr> {
     Ok(PyExpr {
-        expr: datafusion::logical_expr::Expr::Sort {
-            expr: Box::new(expr.expr),
-            asc: asc.unwrap_or(true),
-            nulls_first: nulls_first.unwrap_or(true),
-        },
+        expr: datafusion_expr::expr::Expr::Sort (
+            datafusion_expr::expr::Sort {
+                expr: Box::new(expr.expr),
+                asc: asc.unwrap_or(true),
+                nulls_first: nulls_first.unwrap_or(true),
+            }
+        ),
     })
 }
 
@@ -104,7 +81,7 @@ fn order_by(
 #[pyfunction]
 fn alias(expr: PyExpr, name: &str) -> PyResult<PyExpr> {
     Ok(PyExpr {
-        expr: datafusion::logical_expr::Expr::Alias(
+        expr: datafusion_expr::Expr::Alias(
             Box::new(expr.expr),
             String::from(name),
         ),
@@ -119,25 +96,25 @@ fn window(
     partition_by: Option<Vec<PyExpr>>,
     order_by: Option<Vec<PyExpr>>,
 ) -> PyResult<PyExpr> {
-    use std::str::FromStr;
-    let fun = WindowFunction::from_str(name)
-        .map_err(|e| -> errors::DataFusionError { e.into() })?;
+    let fun = find_df_window_func(name).unwrap();
+    let has_order_by = order_by.is_some();
     Ok(PyExpr {
-        expr: datafusion::logical_expr::Expr::WindowFunction {
-            fun,
-            args: args.into_iter().map(|x| x.expr).collect::<Vec<_>>(),
-            partition_by: partition_by
-                .unwrap_or_default()
-                .into_iter()
-                .map(|x| x.expr)
-                .collect::<Vec<_>>(),
-            order_by: order_by
-                .unwrap_or_default()
-                .into_iter()
-                .map(|x| x.expr)
-                .collect::<Vec<_>>(),
-            window_frame: None,
-        },
+        expr: datafusion_expr::expr::Expr::WindowFunction (
+            datafusion_expr::expr::WindowFunction {
+                fun,
+                args: args.into_iter().map(|x| x.expr).collect::<Vec<_>>(),
+                partition_by: partition_by
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|x| x.expr)
+                    .collect::<Vec<_>>(),
+                order_by: order_by
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|x| x.expr)
+                    .collect::<Vec<_>>(),
+                window_frame: datafusion_expr::window_frame::WindowFrame::new(has_order_by),
+            }),
     })
 }
 
@@ -149,7 +126,7 @@ macro_rules! scalar_function {
         #[doc = $DOC]
         #[pyfunction(args = "*")]
         fn $NAME(args: Vec<PyExpr>) -> PyExpr {
-            let expr = logical_expr::Expr::ScalarFunction {
+            let expr = datafusion_expr::Expr::ScalarFunction {
                 fun: BuiltinScalarFunction::$FUNC,
                 args: args.into_iter().map(|e| e.into()).collect(),
             };
@@ -166,12 +143,14 @@ macro_rules! aggregate_function {
         #[doc = $DOC]
         #[pyfunction(args = "*", distinct = "false")]
         fn $NAME(args: Vec<PyExpr>, distinct: bool) -> PyExpr {
-            let expr = logical_expr::Expr::AggregateFunction {
-                fun: AggregateFunction::$FUNC,
-                args: args.into_iter().map(|e| e.into()).collect(),
-                distinct,
-                filter: None,
-            };
+            let expr = datafusion_expr::Expr::AggregateFunction({
+                datafusion_expr::expr::AggregateFunction {
+                    fun: AggregateFunction::$FUNC,
+                    args: args.into_iter().map(|e| e.into()).collect(),
+                    distinct,
+                    filter: None,
+                }
+            });
             expr.into()
         }
     };
@@ -182,6 +161,7 @@ scalar_function!(acos, Acos);
 scalar_function!(ascii, Ascii, "Returns the numeric code of the first character of the argument. In UTF8 encoding, returns the Unicode code point of the character. In other multibyte encodings, the argument must be an ASCII character.");
 scalar_function!(asin, Asin);
 scalar_function!(atan, Atan);
+scalar_function!(atan2, Atan2);
 scalar_function!(
     bit_length,
     BitLength,
@@ -194,13 +174,17 @@ scalar_function!(
     CharacterLength,
     "Returns number of characters in the string."
 );
+scalar_function!(length, CharacterLength);
+scalar_function!(char_length, CharacterLength);
 scalar_function!(chr, Chr, "Returns the character with the given code.");
+scalar_function!(coalesce, Coalesce);
 scalar_function!(cos, Cos);
 scalar_function!(exp, Exp);
 scalar_function!(floor, Floor);
 scalar_function!(initcap, InitCap, "Converts the first letter of each word to upper case and the rest to lower case. Words are sequences of alphanumeric characters separated by non-alphanumeric characters.");
 scalar_function!(left, Left, "Returns first n characters in the string, or when n is negative, returns all but last |n| characters.");
 scalar_function!(ln, Ln);
+scalar_function!(log, Log);
 scalar_function!(log10, Log10);
 scalar_function!(log2, Log2);
 scalar_function!(lower, Lower, "Converts the string to all lower case");
@@ -212,6 +196,8 @@ scalar_function!(
     "Computes the MD5 hash of the argument, with the result written in hexadecimal."
 );
 scalar_function!(octet_length, OctetLength, "Returns number of bytes in the string. Since this version of the function accepts type character directly, it will not strip trailing spaces.");
+scalar_function!(power, Power);
+scalar_function!(pow, Power);
 scalar_function!(regexp_match, RegexpMatch);
 scalar_function!(
     regexp_replace,
@@ -262,11 +248,30 @@ scalar_function!(
     ToHex,
     "Converts the number to its equivalent hexadecimal representation."
 );
+scalar_function!(now, Now);
 scalar_function!(to_timestamp, ToTimestamp);
+scalar_function!(to_timestamp_millis, ToTimestampMillis);
+scalar_function!(to_timestamp_micros, ToTimestampMicros);
+scalar_function!(to_timestamp_seconds, ToTimestampSeconds);
+scalar_function!(current_date, CurrentDate);
+scalar_function!(current_time, CurrentTime);
+scalar_function!(datepart, DatePart);
+scalar_function!(date_part, DatePart);
+scalar_function!(date_trunc, DateTrunc);
+scalar_function!(datetrunc, DateTrunc);
+scalar_function!(date_bin, DateBin);
 scalar_function!(translate, Translate, "Replaces each character in string that matches a character in the from set with the corresponding character in the to set. If from is longer than to, occurrences of the extra characters in from are deleted.");
 scalar_function!(trim, Trim, "Removes the longest string containing only characters in characters (a space by default) from the start, end, or both ends (BOTH is the default) of string.");
 scalar_function!(trunc, Trunc);
 scalar_function!(upper, Upper, "Converts the string to all upper case.");
+scalar_function!(make_array, MakeArray);
+scalar_function!(array, MakeArray);
+scalar_function!(nullif, NullIf);
+//scalar_function!(uuid, Uuid);
+//scalar_function!(struct, Struct);
+scalar_function!(from_unixtime, FromUnixtime);
+scalar_function!(arrow_typeof, ArrowTypeof);
+scalar_function!(random, Random);
 
 aggregate_function!(avg, Avg);
 aggregate_function!(count, Count);
@@ -281,37 +286,55 @@ pub(crate) fn init_module(m: &PyModule) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(approx_distinct))?;
     m.add_wrapped(wrap_pyfunction!(alias))?;
     m.add_wrapped(wrap_pyfunction!(array))?;
+    m.add_wrapped(wrap_pyfunction!(arrow_typeof))?;
     m.add_wrapped(wrap_pyfunction!(ascii))?;
     m.add_wrapped(wrap_pyfunction!(asin))?;
     m.add_wrapped(wrap_pyfunction!(atan))?;
+    m.add_wrapped(wrap_pyfunction!(atan2))?;
     m.add_wrapped(wrap_pyfunction!(avg))?;
     m.add_wrapped(wrap_pyfunction!(bit_length))?;
     m.add_wrapped(wrap_pyfunction!(btrim))?;
     m.add_wrapped(wrap_pyfunction!(ceil))?;
     m.add_wrapped(wrap_pyfunction!(character_length))?;
     m.add_wrapped(wrap_pyfunction!(chr))?;
+    m.add_wrapped(wrap_pyfunction!(char_length))?;
+    m.add_wrapped(wrap_pyfunction!(coalesce))?;
     m.add_wrapped(wrap_pyfunction!(concat_ws))?;
     m.add_wrapped(wrap_pyfunction!(concat))?;
     m.add_wrapped(wrap_pyfunction!(cos))?;
     m.add_wrapped(wrap_pyfunction!(count))?;
+    m.add_wrapped(wrap_pyfunction!(current_date))?;
+    m.add_wrapped(wrap_pyfunction!(current_time))?;
+    m.add_wrapped(wrap_pyfunction!(date_bin))?;
+    m.add_wrapped(wrap_pyfunction!(datepart))?;
+    m.add_wrapped(wrap_pyfunction!(date_part))?;
+    m.add_wrapped(wrap_pyfunction!(datetrunc))?;
+    m.add_wrapped(wrap_pyfunction!(date_trunc))?;
     m.add_wrapped(wrap_pyfunction!(digest))?;
     m.add_wrapped(wrap_pyfunction!(exp))?;
     m.add_wrapped(wrap_pyfunction!(floor))?;
+    m.add_wrapped(wrap_pyfunction!(from_unixtime))?;
     m.add_wrapped(wrap_pyfunction!(in_list))?;
     m.add_wrapped(wrap_pyfunction!(initcap))?;
     m.add_wrapped(wrap_pyfunction!(left))?;
+    m.add_wrapped(wrap_pyfunction!(length))?;
     m.add_wrapped(wrap_pyfunction!(ln))?;
+    m.add_wrapped(wrap_pyfunction!(log))?;
     m.add_wrapped(wrap_pyfunction!(log10))?;
     m.add_wrapped(wrap_pyfunction!(log2))?;
     m.add_wrapped(wrap_pyfunction!(lower))?;
     m.add_wrapped(wrap_pyfunction!(lpad))?;
     m.add_wrapped(wrap_pyfunction!(ltrim))?;
     m.add_wrapped(wrap_pyfunction!(max))?;
+    m.add_wrapped(wrap_pyfunction!(make_array))?;
     m.add_wrapped(wrap_pyfunction!(md5))?;
     m.add_wrapped(wrap_pyfunction!(min))?;
     m.add_wrapped(wrap_pyfunction!(now))?;
+    m.add_wrapped(wrap_pyfunction!(nullif))?;
     m.add_wrapped(wrap_pyfunction!(octet_length))?;
     m.add_wrapped(wrap_pyfunction!(order_by))?;
+    m.add_wrapped(wrap_pyfunction!(power))?;
+    m.add_wrapped(wrap_pyfunction!(pow))?;
     m.add_wrapped(wrap_pyfunction!(random))?;
     m.add_wrapped(wrap_pyfunction!(regexp_match))?;
     m.add_wrapped(wrap_pyfunction!(regexp_replace))?;
@@ -332,15 +355,20 @@ pub(crate) fn init_module(m: &PyModule) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(sqrt))?;
     m.add_wrapped(wrap_pyfunction!(starts_with))?;
     m.add_wrapped(wrap_pyfunction!(strpos))?;
+    //m.add_wrapped(wrap_pyfunction!(struct))?;
     m.add_wrapped(wrap_pyfunction!(substr))?;
     m.add_wrapped(wrap_pyfunction!(sum))?;
     m.add_wrapped(wrap_pyfunction!(tan))?;
     m.add_wrapped(wrap_pyfunction!(to_hex))?;
     m.add_wrapped(wrap_pyfunction!(to_timestamp))?;
+    m.add_wrapped(wrap_pyfunction!(to_timestamp_millis))?;
+    m.add_wrapped(wrap_pyfunction!(to_timestamp_micros))?;
+    m.add_wrapped(wrap_pyfunction!(to_timestamp_seconds))?;
     m.add_wrapped(wrap_pyfunction!(translate))?;
     m.add_wrapped(wrap_pyfunction!(trim))?;
     m.add_wrapped(wrap_pyfunction!(trunc))?;
     m.add_wrapped(wrap_pyfunction!(upper))?;
+    //m.add_wrapped(wrap_pyfunction!(uuid))?;
     m.add_wrapped(wrap_pyfunction!(window))?;
     Ok(())
 }

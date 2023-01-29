@@ -29,7 +29,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::datasource::TableProvider;
 use datafusion::datasource::MemTable;
 use datafusion::execution::context::{SessionConfig, SessionContext};
-use datafusion::prelude::{CsvReadOptions, ParquetReadOptions};
+use datafusion::prelude::{CsvReadOptions, DataFrame, ParquetReadOptions};
 
 use crate::catalog::{PyCatalog, PyTable};
 use crate::dataframe::PyDataFrame;
@@ -75,7 +75,7 @@ impl PySessionContext {
         // TODO: config_options
     ) -> Self {
         let cfg = SessionConfig::new()
-            .create_default_catalog_and_schema(create_default_catalog_and_schema)
+            .with_create_default_catalog_and_schema(create_default_catalog_and_schema)
             .with_default_catalog_and_schema(default_catalog, default_schema)
             .with_information_schema(information_schema)
             .with_repartition_joins(repartition_joins)
@@ -103,6 +103,7 @@ impl PySessionContext {
     fn create_dataframe(
         &mut self,
         partitions: PyArrowType<Vec<Vec<RecordBatch>>>,
+        py: Python,
     ) -> PyResult<PyDataFrame> {
         let table = MemTable::try_new(partitions.0[0][0].schema(), partitions.0)
             .map_err(DataFusionError::from)?;
@@ -117,10 +118,9 @@ impl PySessionContext {
         self.ctx
             .register_table(&*name, Arc::new(table))
             .map_err(DataFusionError::from)?;
-        let table = self.ctx.table(&*name).map_err(DataFusionError::from)?;
+        let table = wait_for_future(py, self._table(&name)).map_err(DataFusionError::from)?;
 
-        let df = PyDataFrame::new(table);
-        Ok(df)
+        Ok(PyDataFrame::new(table))
     }
 
     fn register_table(&mut self, name: &str, table: &PyTable) -> PyResult<()> {
@@ -248,12 +248,20 @@ impl PySessionContext {
         self.ctx.tables().unwrap()
     }
 
-    fn table(&self, name: &str) -> PyResult<PyDataFrame> {
-        Ok(PyDataFrame::new(self.ctx.table(name)?))
+    fn table(&self, name: &str, py: Python) -> PyResult<PyDataFrame> {
+        let table = wait_for_future(py, self._table(name)).map_err(DataFusionError::from)?;
+
+        Ok(PyDataFrame::new(table))
     }
 
     fn empty_table(&self) -> PyResult<PyDataFrame> {
         Ok(PyDataFrame::new(self.ctx.read_empty()?))
+    }
+}
+
+impl PySessionContext {
+    async fn _table(&self, name: &str) -> datafusion_common::Result<DataFrame> {
+        self.ctx.table(name).await
     }
 }
 

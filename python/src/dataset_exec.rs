@@ -162,10 +162,6 @@ impl ExecutionPlan for DatasetExec {
         })
     }
 
-    fn relies_on_input_order(&self) -> bool {
-        false
-    }
-
     fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
         None
     }

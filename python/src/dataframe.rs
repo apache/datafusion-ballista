@@ -38,8 +38,8 @@ pub(crate) struct PyDataFrame {
 
 impl PyDataFrame {
     /// creates a new PyDataFrame
-    pub fn new(df: Arc<DataFrame>) -> Self {
-        Self { df }
+    pub fn new(df: DataFrame) -> Self {
+        Self { df: Arc::new(df) }
     }
 }
 
@@ -71,43 +71,43 @@ impl PyDataFrame {
 
     #[args(args = "*")]
     fn select_columns(&self, args: Vec<&str>) -> PyResult<Self> {
-        let df = self.df.select_columns(&args)?;
+        let df = self.df.as_ref().clone().select_columns(&args)?;
         Ok(Self::new(df))
     }
 
     #[args(args = "*")]
     fn select(&self, args: Vec<PyExpr>) -> PyResult<Self> {
         let expr = args.into_iter().map(|e| e.into()).collect();
-        let df = self.df.select(expr)?;
+        let df = self.df.as_ref().clone().select(expr)?;
         Ok(Self::new(df))
     }
 
     fn filter(&self, predicate: PyExpr) -> PyResult<Self> {
-        let df = self.df.filter(predicate.into())?;
+        let df = self.df.as_ref().clone().filter(predicate.into())?;
         Ok(Self::new(df))
     }
 
     fn with_column(&self, name: &str, expr: PyExpr) -> PyResult<Self> {
-        let df = self.df.with_column(name, expr.into())?;
+        let df = self.df.as_ref().clone().with_column(name, expr.into())?;
         Ok(Self::new(df))
     }
 
     fn aggregate(&self, group_by: Vec<PyExpr>, aggs: Vec<PyExpr>) -> PyResult<Self> {
         let group_by = group_by.into_iter().map(|e| e.into()).collect();
         let aggs = aggs.into_iter().map(|e| e.into()).collect();
-        let df = self.df.aggregate(group_by, aggs)?;
+        let df = self.df.as_ref().clone().aggregate(group_by, aggs)?;
         Ok(Self::new(df))
     }
 
     #[args(exprs = "*")]
     fn sort(&self, exprs: Vec<PyExpr>) -> PyResult<Self> {
         let exprs = exprs.into_iter().map(|e| e.into()).collect();
-        let df = self.df.sort(exprs)?;
+        let df = self.df.as_ref().clone().sort(exprs)?;
         Ok(Self::new(df))
     }
 
     fn limit(&self, count: usize) -> PyResult<Self> {
-        let df = self.df.limit(0, Some(count))?;
+        let df = self.df.as_ref().clone().limit(0, Some(count))?;
         Ok(Self::new(df))
     }
 
@@ -115,7 +115,7 @@ impl PyDataFrame {
     /// Unless some order is specified in the plan, there is no
     /// guarantee of the order of the result.
     fn collect(&self, py: Python) -> PyResult<Vec<PyObject>> {
-        let batches = wait_for_future(py, self.df.collect())?;
+        let batches = wait_for_future(py, self.df.as_ref().clone().collect())?;
         // cannot use PyResult<Vec<RecordBatch>> return type due to
         // https://github.com/PyO3/pyo3/issues/1813
         batches.into_iter().map(|rb| rb.to_pyarrow(py)).collect()
@@ -124,7 +124,7 @@ impl PyDataFrame {
     /// Print the result, 20 lines by default
     #[args(num = "20")]
     fn show(&self, py: Python, num: usize) -> PyResult<()> {
-        let df = self.df.limit(0, Some(num))?;
+        let df = self.df.as_ref().clone().limit(0, Some(num))?;
         let batches = wait_for_future(py, df.collect())?;
         pretty::print_batches(&batches)
             .map_err(|err| PyArrowException::new_err(err.to_string()))
@@ -153,16 +153,20 @@ impl PyDataFrame {
             }
         };
 
-        let df = self
-            .df
-            .join(right.df, join_type, &join_keys.0, &join_keys.1, None)?;
+        let df = self.df.as_ref().clone().join(
+            right.df.as_ref().clone(),
+            join_type,
+            &join_keys.0,
+            &join_keys.1,
+            None,
+        )?;
         Ok(Self::new(df))
     }
 
     /// Print the explain output to stdout
     #[args(verbose = false, analyze = false)]
     fn explain(&self, py: Python, verbose: bool, analyze: bool) -> PyResult<()> {
-        let df = self.df.explain(verbose, analyze)?;
+        let df = self.df.as_ref().clone().explain(verbose, analyze)?;
         let batches = wait_for_future(py, df.collect())?;
         pretty::print_batches(&batches)
             .map_err(|err| PyArrowException::new_err(err.to_string()))
@@ -176,7 +180,7 @@ impl PyDataFrame {
         verbose: bool,
         analyze: bool,
     ) -> PyResult<String> {
-        let df = self.df.explain(verbose, analyze)?;
+        let df = self.df.as_ref().clone().explain(verbose, analyze)?;
         let batches = wait_for_future(py, df.collect())?;
         let display = pretty::pretty_format_batches(&batches)
             .map_err(|err| PyArrowException::new_err(err.to_string()))?;
