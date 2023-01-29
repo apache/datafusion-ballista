@@ -583,7 +583,8 @@ mod test {
                     status: Some(job_status::Status::Failed(_))
                 }
             ),
-            "{}", "Expected job status to be failed but it was {status:?}"
+            "{}",
+            "Expected job status to be failed but it was {status:?}"
         );
 
         assert_submitted_event("job", &metrics_collector);
@@ -626,7 +627,8 @@ mod test {
                     status: Some(job_status::Status::Failed(_))
                 }
             ),
-            "{}", "Expected job status to be failed but it was {status:?}"
+            "{}",
+            "Expected job status to be failed but it was {status:?}"
         );
 
         assert_no_submitted_event("job", &metrics_collector);
