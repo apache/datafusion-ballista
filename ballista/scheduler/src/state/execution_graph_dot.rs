@@ -108,7 +108,7 @@ impl ExecutionGraphDot {
             for (reader_node, parent_stage_id) in &meta.readers {
                 // shuffle write node is always node zero
                 let parent_shuffle_write_node = format!("stage_{parent_stage_id}_0");
-                links.push(format!("{parent_shuffle_write_node} -> {reader_node}",));
+                links.push(format!("{parent_shuffle_write_node} -> {reader_node}"));
             }
             // keep the order deterministic
             links.sort();
