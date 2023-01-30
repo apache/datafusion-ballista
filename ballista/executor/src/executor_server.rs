@@ -738,7 +738,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
 
         if !is_subdirectory(path.as_path(), work_dir.as_path()) {
             return Err(Status::invalid_argument(format!(
-                "Path {path:?} is not a subdirectory of {work_dir:?}!!!",
+                "Path {path:?} is not a subdirectory of {work_dir:?}!!!"
             )));
         }
 

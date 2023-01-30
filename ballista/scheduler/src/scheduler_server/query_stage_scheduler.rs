@@ -286,7 +286,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     }
                     Err(e) => {
                         let msg = format!(
-                            "TaskManager error to handle Executor {executor_id} lost: {e}",
+                            "TaskManager error to handle Executor {executor_id} lost: {e}"
                         );
                         error!("{}", msg);
                     }

@@ -611,11 +611,7 @@ mod tests {
                 false
             };
 
-            assert!(
-                received,
-                "{}",
-                format!("Did not receive heartbeat for executor {i}")
-            );
+            assert!(received, "{}", "Did not receive heartbeat for executor {i}");
         }
 
         Ok(())

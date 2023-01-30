@@ -94,7 +94,7 @@ impl FlightService for BallistaFlightService {
                 let file = File::open(path)
                     .map_err(|e| {
                         BallistaError::General(format!(
-                            "Failed to open partition file at {path}: {e:?}",
+                            "Failed to open partition file at {path}: {e:?}"
                         ))
                     })
                     .map_err(|e| from_ballista_err(&e))?;

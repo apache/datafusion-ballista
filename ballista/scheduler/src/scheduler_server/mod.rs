@@ -584,7 +584,7 @@ mod test {
                 }
             ),
             "{}",
-            format!("Expected job status to be failed but it was {status:?}")
+            "Expected job status to be failed but it was {status:?}"
         );
 
         assert_submitted_event("job", &metrics_collector);
@@ -628,7 +628,7 @@ mod test {
                 }
             ),
             "{}",
-            format!("Expected job status to be failed but it was {status:?}")
+            "Expected job status to be failed but it was {status:?}"
         );
 
         assert_no_submitted_event("job", &metrics_collector);

@@ -370,7 +370,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                         .await
                         .map_err(|e| {
                             Status::internal(format!(
-                                "Failed to load SessionContext for session ID {session_id}: {e:?}",
+                                "Failed to load SessionContext for session ID {session_id}: {e:?}"
                             ))
                         })?;
                     (session_id, ctx)
@@ -383,7 +383,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                         .await
                         .map_err(|e| {
                             Status::internal(format!(
-                                "Failed to create SessionContext: {e:?}",
+                                "Failed to create SessionContext: {e:?}"
                             ))
                         })?;
 
@@ -458,7 +458,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .await
                 .map_err(|e| {
                     Status::internal(format!(
-                        "Failed to create new SessionContext: {e:?}",
+                        "Failed to create new SessionContext: {e:?}"
                     ))
                 })?;
 
