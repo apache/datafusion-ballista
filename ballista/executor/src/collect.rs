@@ -87,7 +87,7 @@ impl ExecutionPlan for CollectExec {
         let streams = (0..num_partitions)
             .map(|i| self.plan.execute(i, context.clone()))
             .collect::<Result<Vec<_>>>()
-            .map_err(|e| DataFusionError::Execution(format!("BallistaError: {:?}", e)))?;
+            .map_err(|e| DataFusionError::Execution(format!("BallistaError: {e:?}")))?;
 
         Ok(Box::pin(MergedRecordBatchStream {
             schema: self.schema(),

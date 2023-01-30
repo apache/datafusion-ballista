@@ -30,21 +30,20 @@ use ballista_core::serde::protobuf::{
     RegisterExecutorResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
-use ballista_core::serde::AsExecutionPlan;
-
-use object_store::{local::LocalFileSystem, path::Path, ObjectStore};
 
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::file_format::FileFormat;
 use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::TryStreamExt;
 use log::{debug, error, info, trace, warn};
+use object_store::{local::LocalFileSystem, path::Path, ObjectStore};
 
 use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use datafusion::prelude::SessionConfig;
+use datafusion::prelude::SessionContext;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
@@ -112,7 +111,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .save_executor_metadata(metadata.clone())
                 .await
                 .map_err(|e| {
-                    let msg = format!("Could not save executor metadata: {}", e);
+                    let msg = format!("Could not save executor metadata: {e}");
                     error!("{}", msg);
                     Status::internal(msg)
                 })?;
@@ -122,7 +121,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .save_executor_heartbeat(executor_heartbeat)
                 .await
                 .map_err(|e| {
-                    let msg = format!("Could not save executor heartbeat: {}", e);
+                    let msg = format!("Could not save executor heartbeat: {e}");
                     error!("{}", msg);
                     Status::internal(msg)
                 })?;
@@ -213,7 +212,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             }
             .await
             .map_err(|e| {
-                let msg = format!("Fail to do executor registration due to: {}", e);
+                let msg = format!("Fail to do executor registration due to: {e}");
                 error!("{}", msg);
                 Status::internal(msg)
             })?;
@@ -249,7 +248,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             .save_executor_heartbeat(executor_heartbeat)
             .await
             .map_err(|e| {
-                let msg = format!("Could not save executor heartbeat: {}", e);
+                let msg = format!("Could not save executor heartbeat: {e}");
                 error!("{}", msg);
                 Status::internal(msg)
             })?;
@@ -288,15 +287,17 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         &self,
         request: Request<GetFileMetadataParams>,
     ) -> Result<Response<GetFileMetadataResult>, Status> {
+        // Here, we use the default config, since we don't know the session id
+        let session_ctx = SessionContext::new();
+        let state = session_ctx.state();
+
         // TODO support multiple object stores
         let obj_store: Arc<dyn ObjectStore> = Arc::new(LocalFileSystem::new());
         // TODO shouldn't this take a ListingOption object as input?
 
         let GetFileMetadataParams { path, file_type } = request.into_inner();
-        // Here, we use the default config, since we don't know the session id
-        let config = SessionConfig::default().config_options();
         let file_format: Arc<dyn FileFormat> = match file_type.as_str() {
-            "parquet" => Ok(Arc::new(ParquetFormat::new(config))),
+            "parquet" => Ok(Arc::new(ParquetFormat::default())),
             // TODO implement for CSV
             _ => Err(tonic::Status::unimplemented(
                 "get_file_metadata unsupported file type",
@@ -308,30 +309,30 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             .list(Some(&path))
             .await
             .map_err(|e| {
-                let msg = format!("Error listing files: {}", e);
+                let msg = format!("Error listing files: {e}");
                 error!("{}", msg);
                 tonic::Status::internal(msg)
             })?
             .try_collect()
             .await
             .map_err(|e| {
-                let msg = format!("Error listing files: {}", e);
+                let msg = format!("Error listing files: {e}");
                 error!("{}", msg);
                 tonic::Status::internal(msg)
             })?;
 
         let schema = file_format
-            .infer_schema(&obj_store, &file_metas)
+            .infer_schema(&state, &obj_store, &file_metas)
             .await
             .map_err(|e| {
-                let msg = format!("Error inferring schema: {}", e);
+                let msg = format!("Error inferring schema: {e}");
                 error!("{}", msg);
                 tonic::Status::internal(msg)
             })?;
 
         Ok(Response::new(GetFileMetadataResult {
             schema: Some(schema.as_ref().try_into().map_err(|e| {
-                let msg = format!("Error inferring schema: {}", e);
+                let msg = format!("Error inferring schema: {e}");
                 error!("{}", msg);
                 tonic::Status::internal(msg)
             })?),
@@ -355,7 +356,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 config_builder = config_builder.set(&kv_pair.key, &kv_pair.value);
             }
             let config = config_builder.build().map_err(|e| {
-                let msg = format!("Could not parse configs: {}", e);
+                let msg = format!("Could not parse configs: {e}");
                 error!("{}", msg);
                 Status::internal(msg)
             })?;
@@ -369,8 +370,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                         .await
                         .map_err(|e| {
                             Status::internal(format!(
-                                "Failed to load SessionContext for session ID {}: {:?}",
-                                session_id, e
+                                "Failed to load SessionContext for session ID {session_id}: {e:?}"
                             ))
                         })?;
                     (session_id, ctx)
@@ -383,8 +383,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                         .await
                         .map_err(|e| {
                             Status::internal(format!(
-                                "Failed to create SessionContext: {:?}",
-                                e
+                                "Failed to create SessionContext: {e:?}"
                             ))
                         })?;
 
@@ -401,16 +400,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                         )
                     })
                     .map_err(|e| {
-                        let msg = format!("Could not parse logical plan protobuf: {}", e);
+                        let msg = format!("Could not parse logical plan protobuf: {e}");
                         error!("{}", msg);
                         Status::internal(msg)
                     })?,
                 Query::Sql(sql) => session_ctx
                     .sql(&sql)
                     .await
-                    .and_then(|df| df.to_logical_plan())
+                    .and_then(|df| df.into_optimized_plan())
                     .map_err(|e| {
-                        let msg = format!("Error parsing SQL: {}", e);
+                        let msg = format!("Error parsing SQL: {e}");
                         error!("{}", msg);
                         Status::internal(msg)
                     })?,
@@ -429,7 +428,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .await
                 .map_err(|e| {
                     let msg =
-                        format!("Failed to send JobQueued event for {}: {:?}", job_id, e);
+                        format!("Failed to send JobQueued event for {job_id}: {e:?}");
                     error!("{}", msg);
 
                     Status::internal(msg)
@@ -448,7 +447,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 config_builder = config_builder.set(&kv_pair.key, &kv_pair.value);
             }
             let config = config_builder.build().map_err(|e| {
-                let msg = format!("Could not parse configs: {}", e);
+                let msg = format!("Could not parse configs: {e}");
                 error!("{}", msg);
                 Status::internal(msg)
             })?;
@@ -459,8 +458,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .await
                 .map_err(|e| {
                     Status::internal(format!(
-                        "Failed to create new SessionContext: {:?}",
-                        e
+                        "Failed to create new SessionContext: {e:?}"
                     ))
                 })?;
 
@@ -482,7 +480,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         match self.state.task_manager.get_job_status(&job_id).await {
             Ok(status) => Ok(Response::new(GetJobStatusResult { status })),
             Err(e) => {
-                let msg = format!("Error getting status for job {}: {:?}", job_id, e);
+                let msg = format!("Error getting status for job {job_id}: {e:?}");
                 error!("{}", msg);
                 Err(Status::internal(msg))
             }
@@ -504,14 +502,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
         let executor_manager = self.state.executor_manager.clone();
         let event_sender = self.query_stage_event_loop.get_sender().map_err(|e| {
-            let msg = format!("Get query stage event loop error due to {:?}", e);
+            let msg = format!("Get query stage event loop error due to {e:?}");
             error!("{}", msg);
             Status::internal(msg)
         })?;
         Self::remove_executor(executor_manager, event_sender, &executor_id, Some(reason))
             .await
             .map_err(|e| {
-                let msg = format!("Error to remove executor in Scheduler due to {:?}", e);
+                let msg = format!("Error to remove executor in Scheduler due to {e:?}");
                 error!("{}", msg);
                 Status::internal(msg)
             })?;
@@ -529,14 +527,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         self.query_stage_event_loop
             .get_sender()
             .map_err(|e| {
-                let msg = format!("Get query stage event loop error due to {:?}", e);
+                let msg = format!("Get query stage event loop error due to {e:?}");
                 error!("{}", msg);
                 Status::internal(msg)
             })?
             .post_event(QueryStageSchedulerEvent::JobCancel(job_id))
             .await
             .map_err(|e| {
-                let msg = format!("Post to query stage event loop error due to {:?}", e);
+                let msg = format!("Post to query stage event loop error due to {e:?}");
                 error!("{}", msg);
                 Status::internal(msg)
             })?;
@@ -553,14 +551,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         self.query_stage_event_loop
             .get_sender()
             .map_err(|e| {
-                let msg = format!("Get query stage event loop error due to {:?}", e);
+                let msg = format!("Get query stage event loop error due to {e:?}");
                 error!("{}", msg);
                 Status::internal(msg)
             })?
             .post_event(QueryStageSchedulerEvent::JobDataClean(job_id))
             .await
             .map_err(|e| {
-                let msg = format!("Post to query stage event loop error due to {:?}", e);
+                let msg = format!("Post to query stage event loop error due to {e:?}");
                 error!("{}", msg);
                 Status::internal(msg)
             })?;
@@ -574,6 +572,7 @@ mod test {
     use std::time::Duration;
 
     use datafusion_proto::protobuf::LogicalPlanNode;
+    use datafusion_proto::protobuf::PhysicalPlanNode;
     use tonic::Request;
 
     use crate::config::SchedulerConfig;
@@ -581,8 +580,8 @@ mod test {
     use ballista_core::error::BallistaError;
     use ballista_core::serde::protobuf::{
         executor_registration::OptionalHost, executor_status, ExecutorRegistration,
-        ExecutorStatus, ExecutorStoppedParams, HeartBeatParams, PhysicalPlanNode,
-        PollWorkParams, RegisterExecutorParams,
+        ExecutorStatus, ExecutorStoppedParams, HeartBeatParams, PollWorkParams,
+        RegisterExecutorParams,
     };
     use ballista_core::serde::scheduler::ExecutorSpecification;
     use ballista_core::serde::BallistaCodec;

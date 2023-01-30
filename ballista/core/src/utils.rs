@@ -135,8 +135,7 @@ impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
         }
 
         Err(DataFusionError::Execution(format!(
-            "No object store available for {}",
-            url
+            "No object store available for {url}"
         )))
     }
 }
@@ -267,7 +266,7 @@ fn build_exec_plan_diagram(
     {
         "CoalescePartitionsExec"
     } else {
-        println!("Unknown: {:?}", plan);
+        println!("Unknown: {plan:?}");
         "Unknown"
     };
 
@@ -277,8 +276,7 @@ fn build_exec_plan_diagram(
     if draw_entity {
         writeln!(
             w,
-            "\t\tstage_{}_exec_{} [shape=box, label=\"{}\"];",
-            stage_id, node_id, operator_str
+            "\t\tstage_{stage_id}_exec_{node_id} [shape=box, label=\"{operator_str}\"];"
         )?;
     }
     for child in plan.children() {
@@ -297,8 +295,7 @@ fn build_exec_plan_diagram(
             if draw_entity {
                 writeln!(
                     w,
-                    "\t\tstage_{}_exec_{} -> stage_{}_exec_{};",
-                    stage_id, child_id, stage_id, node_id
+                    "\t\tstage_{stage_id}_exec_{child_id} -> stage_{stage_id}_exec_{node_id};"
                 )?;
             }
         }
@@ -327,7 +324,7 @@ pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
         ),
     )
     .with_query_planner(planner);
-    session_state.session_id = session_id;
+    session_state = session_state.with_session_id(session_id);
     // the SessionContext created here is the client side context, but the session_id is from server side.
     SessionContext::with_state(session_state)
 }
@@ -395,7 +392,7 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
                 logical_plan.clone(),
                 self.extension_codec.clone(),
                 self.plan_repr,
-                session_state.session_id.clone(),
+                session_state.session_id().to_string(),
             ))),
         }
     }

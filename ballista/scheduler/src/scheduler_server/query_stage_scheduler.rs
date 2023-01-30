@@ -26,8 +26,8 @@ use ballista_core::event_loop::{EventAction, EventSender};
 
 use crate::metrics::SchedulerMetricsCollector;
 use crate::scheduler_server::timestamp_millis;
-use ballista_core::serde::AsExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 use tokio::sync::mpsc;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
@@ -106,8 +106,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .submit_job(&job_id, &job_name, session_ctx, &plan, queued_at)
                         .await
                     {
-                        let fail_message =
-                            format!("Error planning job {}: {:?}", job_id, e);
+                        let fail_message = format!("Error planning job {job_id}: {e:?}");
                         error!("{}", &fail_message);
                         QueryStageSchedulerEvent::JobPlanningFailed {
                             job_id,
@@ -287,8 +286,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     }
                     Err(e) => {
                         let msg = format!(
-                            "TaskManager error to handle Executor {} lost: {}",
-                            executor_id, e
+                            "TaskManager error to handle Executor {executor_id} lost: {e}"
                         );
                         error!("{}", msg);
                     }

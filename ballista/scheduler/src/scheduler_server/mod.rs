@@ -21,13 +21,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ballista_core::error::Result;
 use ballista_core::event_loop::{EventLoop, EventSender};
 use ballista_core::serde::protobuf::{StopExecutorParams, TaskStatus};
-use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::default_session_builder;
 
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
@@ -215,8 +216,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         // We might receive buggy task updates from dead executors.
         if self.state.executor_manager.is_dead_executor(executor_id) {
             let error_msg = format!(
-                "Receive buggy tasks status from dead Executor {}, task status update ignored.",
-                executor_id
+                "Receive buggy tasks status from dead Executor {executor_id}, task status update ignored."
             );
             warn!("{}", error_msg);
             return Ok(());
@@ -266,10 +266,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                     )
                     .await
                     .unwrap_or_else(|e| {
-                        let msg = format!(
-                            "Error to remove Executor in Scheduler due to {:?}",
-                            e
-                        );
+                        let msg =
+                            format!("Error to remove Executor in Scheduler due to {e:?}");
                         error!("{}", msg);
                     });
 
@@ -350,6 +348,7 @@ mod test {
 
     use datafusion::test_util::scan_empty;
     use datafusion_proto::protobuf::LogicalPlanNode;
+    use datafusion_proto::protobuf::PhysicalPlanNode;
 
     use ballista_core::config::{
         BallistaConfig, TaskSchedulingPolicy, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
@@ -360,8 +359,8 @@ mod test {
 
     use ballista_core::serde::protobuf::{
         failed_task, job_status, task_status, ExecutionError, FailedTask, JobStatus,
-        MultiTaskDefinition, PhysicalPlanNode, ShuffleWritePartition, SuccessfulJob,
-        SuccessfulTask, TaskId, TaskStatus,
+        MultiTaskDefinition, ShuffleWritePartition, SuccessfulJob, SuccessfulTask,
+        TaskId, TaskStatus,
     };
     use ballista_core::serde::scheduler::{
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
@@ -584,8 +583,8 @@ mod test {
                     status: Some(job_status::Status::Failed(_))
                 }
             ),
-            "Expected job status to be failed but it was {:?}",
-            status
+            "{}",
+            "Expected job status to be failed but it was {status:?}"
         );
 
         assert_submitted_event("job", &metrics_collector);
@@ -613,7 +612,10 @@ mod test {
 
         ctx.register_table("explode", Arc::new(ExplodingTableProvider))?;
 
-        let plan = ctx.sql("SELECT * FROM explode").await?.to_logical_plan()?;
+        let plan = ctx
+            .sql("SELECT * FROM explode")
+            .await?
+            .into_optimized_plan()?;
 
         // This should fail when we try and create the physical plan
         let status = test.run("job", "", &plan).await?;
@@ -625,8 +627,8 @@ mod test {
                     status: Some(job_status::Status::Failed(_))
                 }
             ),
-            "Expected job status to be failed but it was {:?}",
-            status
+            "{}",
+            "Expected job status to be failed but it was {status:?}"
         );
 
         assert_no_submitted_event("job", &metrics_collector);
@@ -709,7 +711,7 @@ mod test {
         BallistaConfig::builder()
             .set(
                 BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
-                format!("{}", partitions).as_str(),
+                format!("{partitions}").as_str(),
             )
             .build()
             .expect("creating BallistaConfig")

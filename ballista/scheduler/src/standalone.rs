@@ -19,7 +19,6 @@ use crate::config::SchedulerConfig;
 use crate::metrics::default_metrics_collector;
 use crate::state::backend::cluster::DefaultClusterState;
 use crate::{scheduler_server::SchedulerServer, state::backend::sled::SledClient};
-use ballista_core::serde::protobuf::PhysicalPlanNode;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::create_grpc_server;
 use ballista_core::{
@@ -27,6 +26,7 @@ use ballista_core::{
     BALLISTA_VERSION,
 };
 use datafusion_proto::protobuf::LogicalPlanNode;
+use datafusion_proto::protobuf::PhysicalPlanNode;
 use log::info;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;

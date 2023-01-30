@@ -46,13 +46,13 @@ simd = ["datafusion/simd"]
 [dependencies]
 ahash = { version = "0.8", default-features = false }
 
-arrow-flight = { version = "28.0.0", features = ["flight-sql-experimental"] }
+arrow-flight = { version = "29.0.0", features = ["flight-sql-experimental"] }
 async-trait = "0.1.41"
 chrono = { version = "0.4", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = "15.0.0"
+datafusion = "16.1.0"
 datafusion-objectstore-hdfs = { version = "0.1.1", default-features = false, optional = true }
-datafusion-proto = "15.0.0"
+datafusion-proto = "16.1.0"
 futures = "0.3"
 hashbrown = "0.13"
 
@@ -68,7 +68,7 @@ prost = "0.11"
 prost-types = "0.11"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
-sqlparser = "0.27"
+sqlparser = "0.30.0"
 sys-info = "0.9.0"
 tokio = "1.0"
 tokio-stream = { version = "0.1", features = ["net"] }

@@ -29,28 +29,28 @@ use tonic::transport::Channel;
 use tonic::{Request, Response, Status};
 
 use ballista_core::error::BallistaError;
-use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
-use ballista_core::serde::protobuf::executor_grpc_server::{
-    ExecutorGrpc, ExecutorGrpcServer,
-};
-use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_core::serde::protobuf::{
-    executor_metric, executor_status, CancelTasksParams, CancelTasksResult,
-    ExecutorMetric, ExecutorStatus, HeartBeatParams, LaunchMultiTaskParams,
-    LaunchMultiTaskResult, LaunchTaskParams, LaunchTaskResult, RegisterExecutorParams,
-    RemoveJobDataParams, RemoveJobDataResult, StopExecutorParams, StopExecutorResult,
-    TaskStatus, UpdateTaskStatusParams,
+    executor_grpc_server::{ExecutorGrpc, ExecutorGrpcServer},
+    executor_metric, executor_status,
+    scheduler_grpc_client::SchedulerGrpcClient,
+    CancelTasksParams, CancelTasksResult, ExecutorMetric, ExecutorStatus,
+    HeartBeatParams, LaunchMultiTaskParams, LaunchMultiTaskResult, LaunchTaskParams,
+    LaunchTaskResult, RegisterExecutorParams, RemoveJobDataParams, RemoveJobDataResult,
+    StopExecutorParams, StopExecutorResult, TaskStatus, UpdateTaskStatusParams,
 };
 use ballista_core::serde::scheduler::PartitionId;
 use ballista_core::serde::scheduler::TaskDefinition;
-use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{
     collect_plan_metrics, create_grpc_client_connection, create_grpc_server,
 };
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::{
+    logical_plan::AsLogicalPlan,
+    physical_plan::{from_proto::parse_protobuf_hash_partitioning, AsExecutionPlan},
+};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
 
@@ -224,7 +224,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         if let Some(scheduler) = scheduler {
             Ok(scheduler)
         } else {
-            let scheduler_url = format!("http://{}", scheduler_id);
+            let scheduler_url = format!("http://{scheduler_id}");
             let connection = create_grpc_client_connection(scheduler_url).await?;
             let scheduler = SchedulerGrpcClient::new(connection);
 
@@ -628,7 +628,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                     scheduler_id: scheduler_id.clone(),
                     task: task
                         .try_into()
-                        .map_err(|e| Status::invalid_argument(format!("{}", e)))?,
+                        .map_err(|e| Status::invalid_argument(format!("{e}")))?,
                 })
                 .await
                 .unwrap();
@@ -650,7 +650,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         for multi_task in multi_tasks {
             let multi_task: Vec<TaskDefinition> = multi_task
                 .try_into()
-                .map_err(|e| Status::invalid_argument(format!("{}", e)))?;
+                .map_err(|e| Status::invalid_argument(format!("{e}")))?;
             for task in multi_task {
                 task_sender
                     .send(CuratorTaskDefinition {
@@ -731,16 +731,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                 Ok(Response::new(RemoveJobDataResult {}))
             } else {
                 Err(Status::invalid_argument(format!(
-                    "Path {:?} is not for a directory!!!",
-                    path
+                    "Path {path:?} is not for a directory!!!"
                 )))
             };
         }
 
         if !is_subdirectory(path.as_path(), work_dir.as_path()) {
             return Err(Status::invalid_argument(format!(
-                "Path {:?} is not a subdirectory of {:?}!!!",
-                path, work_dir
+                "Path {path:?} is not a subdirectory of {work_dir:?}!!!"
             )));
         }
 

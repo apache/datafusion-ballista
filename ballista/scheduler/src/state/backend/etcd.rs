@@ -57,7 +57,7 @@ impl StateBackendClient for EtcdClient {
             .clone()
             .get(key, None)
             .await
-            .map_err(|e| ballista_error(&format!("etcd error {:?}", e)))?
+            .map_err(|e| ballista_error(&format!("etcd error {e:?}")))?
             .kvs()
             .get(0)
             .map(|kv| kv.value().to_owned())
@@ -76,7 +76,7 @@ impl StateBackendClient for EtcdClient {
             .clone()
             .get(prefix, Some(GetOptions::new().with_prefix()))
             .await
-            .map_err(|e| ballista_error(&format!("etcd error {:?}", e)))?
+            .map_err(|e| ballista_error(&format!("etcd error {e:?}")))?
             .kvs()
             .iter()
             .map(|kv| (kv.key_str().unwrap().to_owned(), kv.value().to_owned()))
@@ -101,7 +101,7 @@ impl StateBackendClient for EtcdClient {
             .clone()
             .get(prefix, Some(options))
             .await
-            .map_err(|e| ballista_error(&format!("etcd error {:?}", e)))?
+            .map_err(|e| ballista_error(&format!("etcd error {e:?}")))?
             .kvs()
             .iter()
             .map(|kv| (kv.key_str().unwrap().to_owned(), kv.value().to_owned()))
@@ -118,7 +118,7 @@ impl StateBackendClient for EtcdClient {
             .clone()
             .get(prefix.clone(), Some(options))
             .await
-            .map_err(|e| ballista_error(&format!("etcd error {:?}", e)))?
+            .map_err(|e| ballista_error(&format!("etcd error {e:?}")))?
             .kvs()
             .iter()
             .map(|kv| {
@@ -139,7 +139,7 @@ impl StateBackendClient for EtcdClient {
             .await
             .map_err(|e| {
                 warn!("etcd put failed: {}", e);
-                ballista_error(&format!("etcd put failed: {}", e))
+                ballista_error(&format!("etcd put failed: {e}"))
             })
             .map(|_| ())
     }
@@ -163,7 +163,7 @@ impl StateBackendClient for EtcdClient {
             .await
             .map_err(|e| {
                 error!("etcd operation failed: {}", e);
-                ballista_error(&format!("etcd operation failed: {}", e))
+                ballista_error(&format!("etcd operation failed: {e}"))
             })
             .map(|_| ())
     }
@@ -181,7 +181,7 @@ impl StateBackendClient for EtcdClient {
         let current_value = etcd
             .get(from_key.as_str(), None)
             .await
-            .map_err(|e| ballista_error(&format!("etcd error {:?}", e)))?
+            .map_err(|e| ballista_error(&format!("etcd error {e:?}")))?
             .kvs()
             .get(0)
             .map(|kv| kv.value().to_owned());

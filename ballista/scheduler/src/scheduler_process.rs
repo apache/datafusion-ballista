@@ -26,11 +26,9 @@ use std::{net::SocketAddr, sync::Arc};
 use tonic::transport::server::Connected;
 use tower::Service;
 
-use datafusion_proto::protobuf::LogicalPlanNode;
+use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 
-use ballista_core::serde::protobuf::{
-    scheduler_grpc_server::SchedulerGrpcServer, PhysicalPlanNode,
-};
+use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::create_grpc_server;
 use ballista_core::BALLISTA_VERSION;

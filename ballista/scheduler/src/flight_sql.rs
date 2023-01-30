@@ -49,7 +49,6 @@ use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::action::ActionType::FetchPartition;
 use ballista_core::serde::protobuf::job_status;
 use ballista_core::serde::protobuf::JobStatus;
-use ballista_core::serde::protobuf::PhysicalPlanNode;
 use ballista_core::serde::protobuf::SuccessfulJob;
 use ballista_core::utils::create_grpc_client_connection;
 use dashmap::DashMap;
@@ -63,7 +62,7 @@ use datafusion::common::DFSchemaRef;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::common::batch_byte_size;
 use datafusion::prelude::SessionContext;
-use datafusion_proto::protobuf::LogicalPlanNode;
+use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use prost::Message;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::time::sleep;
@@ -131,7 +130,7 @@ impl FlightSqlServiceImpl {
         let config_builder = BallistaConfig::builder();
         let config = config_builder
             .build()
-            .map_err(|e| Status::internal(format!("Error building config: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Error building config: {e}")))?;
         let ctx = self
             .server
             .state
@@ -139,7 +138,7 @@ impl FlightSqlServiceImpl {
             .create_session(&config)
             .await
             .map_err(|e| {
-                Status::internal(format!("Failed to create SessionContext: {:?}", e))
+                Status::internal(format!("Failed to create SessionContext: {e:?}"))
             })?;
         let handle = Uuid::new_v4();
         self.contexts.insert(handle, ctx);
@@ -153,7 +152,7 @@ impl FlightSqlServiceImpl {
             .ok_or_else(|| Status::internal("No authorization header!"))?;
         let str = auth
             .to_str()
-            .map_err(|e| Status::internal(format!("Error parsing header: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Error parsing header: {e}")))?;
         let authorization = str.to_string();
         let bearer = "Bearer ";
         if !authorization.starts_with(bearer) {
@@ -162,13 +161,12 @@ impl FlightSqlServiceImpl {
         let auth = authorization[bearer.len()..].to_string();
 
         let handle = Uuid::from_str(auth.as_str())
-            .map_err(|e| Status::internal(format!("Error locking contexts: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Error locking contexts: {e}")))?;
         if let Some(context) = self.contexts.get(&handle) {
             Ok(context.clone())
         } else {
             Err(Status::internal(format!(
-                "Context handle not found: {}",
-                handle
+                "Context handle not found: {handle}"
             )))?
         }
     }
@@ -180,8 +178,8 @@ impl FlightSqlServiceImpl {
         let plan = ctx
             .sql(query)
             .await
-            .and_then(|df| df.to_logical_plan())
-            .map_err(|e| Status::internal(format!("Error building plan: {}", e)))?;
+            .and_then(|df| df.into_optimized_plan())
+            .map_err(|e| Status::internal(format!("Error building plan: {e}")))?;
         Ok(plan)
     }
 
@@ -193,14 +191,14 @@ impl FlightSqlServiceImpl {
             .get_job_status(job_id)
             .await
             .map_err(|e| {
-                let msg = format!("Error getting status for job {}: {:?}", job_id, e);
+                let msg = format!("Error getting status for job {job_id}: {e:?}");
                 error!("{}", msg);
                 Status::internal(msg)
             })?;
         let status: JobStatus = match status {
             Some(status) => status,
             None => {
-                let msg = format!("Error getting status for job {}!", job_id);
+                let msg = format!("Error getting status for job {job_id}!");
                 error!("{}", msg);
                 Err(Status::internal(msg))?
             }
@@ -208,7 +206,7 @@ impl FlightSqlServiceImpl {
         let status: job_status::Status = match status.status {
             Some(status) => status,
             None => {
-                let msg = format!("Error getting status for job {}!", job_id);
+                let msg = format!("Error getting status for job {job_id}!");
                 error!("{}", msg);
                 Err(Status::internal(msg))?
             }
@@ -288,7 +286,7 @@ impl FlightSqlServiceImpl {
             }
             let authority = format!("{}:{}", &host, &port);
             let loc = Location {
-                uri: format!("grpc+tcp://{}", authority),
+                uri: format!("grpc+tcp://{authority}"),
             };
             let buf = fetch.as_any().encode_to_vec();
             let ticket = Ticket { ticket: buf };
@@ -317,7 +315,7 @@ impl FlightSqlServiceImpl {
         };
         let authority = format!("{}:{}", &host, &port); // TODO: use advertise host
         let loc = Location {
-            uri: format!("grpc+tcp://{}", authority),
+            uri: format!("grpc+tcp://{authority}"),
         };
         let buf = fetch.as_any().encode_to_vec();
         let ticket = Ticket { ticket: buf };
@@ -340,8 +338,7 @@ impl FlightSqlServiceImpl {
             Ok(plan.clone())
         } else {
             Err(Status::internal(format!(
-                "Statement handle not found: {}",
-                handle
+                "Statement handle not found: {handle}"
             )))?
         }
     }
@@ -364,7 +361,7 @@ impl FlightSqlServiceImpl {
         let encoded_data = data_gen.schema_to_bytes(pair.0, pair.1);
         let mut schema_bytes = vec![];
         arrow::ipc::writer::write_message(&mut schema_bytes, encoded_data, pair.1)
-            .map_err(|e| Status::internal(format!("Error encoding schema: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Error encoding schema: {e}")))?;
         Ok(schema_bytes)
     }
 
@@ -374,13 +371,12 @@ impl FlightSqlServiceImpl {
         plan: &LogicalPlan,
     ) -> Result<String, Status> {
         let job_id = self.server.state.task_manager.generate_job_id();
-        let job_name = format!("Flight SQL job {}", job_id);
+        let job_name = format!("Flight SQL job {job_id}");
         self.server
             .submit_job(&job_id, &job_name, ctx, plan)
             .await
             .map_err(|e| {
-                let msg =
-                    format!("Failed to send JobQueued event for {}: {:?}", job_id, e);
+                let msg = format!("Failed to send JobQueued event for {job_id}: {e:?}");
                 error!("{}", msg);
                 Status::internal(msg)
             })?;
@@ -503,8 +499,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
             .map_err(|_| Status::invalid_argument("authorization not parsable"))?;
         if !authorization.starts_with(basic) {
             Err(Status::invalid_argument(format!(
-                "Auth type not implemented: {}",
-                authorization
+                "Auth type not implemented: {authorization}"
             )))?;
         }
         let base64 = &authorization[basic.len()..];
@@ -530,7 +525,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         };
         let result = Ok(result);
         let output = futures::stream::iter(vec![result]);
-        let str = format!("Bearer {}", token);
+        let str = format!("Bearer {token}");
         let mut resp: Response<Pin<Box<dyn Stream<Item = Result<_, _>> + Send>>> =
             Response::new(Box::pin(output));
         let md = MetadataValue::try_from(str)
@@ -555,7 +550,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
 
         let action: protobuf::Action = message
             .unpack()
-            .map_err(|e| Status::internal(format!("{:?}", e)))?
+            .map_err(|e| Status::internal(format!("{e:?}")))?
             .ok_or_else(|| Status::internal("Expected an Action but got None!"))?;
         let fp = match &action.action_type {
             Some(FetchPartition(fp)) => fp.clone(),
@@ -591,9 +586,8 @@ impl FlightSqlService for FlightSqlServiceImpl {
                 .await
                 .map_err(|e| {
                     Status::internal(format!(
-                        "Error connecting to Ballista scheduler or executor at {}: {:?}",
-                        addr, e
-                    ))
+                    "Error connecting to Ballista scheduler or executor at {addr}: {e:?}"
+                ))
                 })?;
         let mut flight_client = FlightServiceClient::new(connection);
         let buf = action.encode_to_vec();
@@ -602,7 +596,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let stream = flight_client
             .do_get(request)
             .await
-            .map_err(|e| Status::internal(format!("{:?}", e)))?
+            .map_err(|e| Status::internal(format!("{e:?}")))?
             .into_inner();
         Ok(Response::new(Box::pin(stream)))
     }
@@ -630,7 +624,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         debug!("get_flight_info_prepared_statement");
         let ctx = self.get_ctx(&request)?;
         let handle = Uuid::from_slice(handle.prepared_statement_handle.as_slice())
-            .map_err(|e| Status::internal(format!("Error decoding handle: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Error decoding handle: {e}")))?;
         let plan = self.get_plan(&handle)?;
         let resp = self.execute_plan(ctx, &plan).await?;
 
@@ -664,7 +658,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let ctx = self.get_ctx(&request)?;
         let data = self
             .tables(ctx)
-            .map_err(|e| Status::internal(format!("Error getting tables: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Error getting tables: {e}")))?;
         let resp = self.batch_to_schema_resp(&data, "get_flight_info_tables")?;
         Ok(resp)
     }
@@ -676,7 +670,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     ) -> Result<Response<FlightInfo>, Status> {
         debug!("get_flight_info_table_types");
         let data = FlightSqlServiceImpl::table_types()
-            .map_err(|e| Status::internal(format!("Error getting table types: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Error getting table types: {e}")))?;
         let resp = self.batch_to_schema_resp(&data, "get_flight_info_table_types")?;
         Ok(resp)
     }
@@ -852,7 +846,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         debug!("do_put_prepared_statement_update");
         let ctx = self.get_ctx(&request)?;
         let handle = Uuid::from_slice(handle.prepared_statement_handle.as_slice())
-            .map_err(|e| Status::internal(format!("Error decoding handle: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Error decoding handle: {e}")))?;
         let plan = self.get_plan(&handle)?;
         let _ = self.execute_plan(ctx, &plan).await?;
         debug!("Sending -1 rows affected");

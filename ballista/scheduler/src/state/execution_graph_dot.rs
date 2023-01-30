@@ -64,7 +64,7 @@ impl ExecutionGraphDot {
         if let Some(stage) = graph.stages().get(&stage_id) {
             let mut dot = String::new();
             writeln!(&mut dot, "digraph G {{")?;
-            let stage_name = format!("stage_{}", stage_id);
+            let stage_name = format!("stage_{stage_id}");
             write_stage_plan(&mut dot, &stage_name, stage.plan(), 0)?;
             writeln!(&mut dot, "}}")?;
             Ok(dot)
@@ -89,8 +89,8 @@ impl ExecutionGraphDot {
         #[allow(clippy::explicit_counter_loop)]
         for id in &stage_ids {
             let stage = stages.get(id).unwrap(); // safe unwrap
-            let stage_name = format!("stage_{}", id);
-            writeln!(&mut dot, "\tsubgraph cluster{} {{", cluster)?;
+            let stage_name = format!("stage_{id}");
+            writeln!(&mut dot, "\tsubgraph cluster{cluster} {{")?;
             writeln!(
                 &mut dot,
                 "\t\tlabel = \"Stage {} [{}]\";",
@@ -107,13 +107,13 @@ impl ExecutionGraphDot {
             let mut links = vec![];
             for (reader_node, parent_stage_id) in &meta.readers {
                 // shuffle write node is always node zero
-                let parent_shuffle_write_node = format!("stage_{}_0", parent_stage_id);
-                links.push(format!("{} -> {}", parent_shuffle_write_node, reader_node,));
+                let parent_shuffle_write_node = format!("stage_{parent_stage_id}_0");
+                links.push(format!("{parent_shuffle_write_node} -> {reader_node}",));
             }
             // keep the order deterministic
             links.sort();
             for link in links {
-                writeln!(&mut dot, "\t{}", link)?;
+                writeln!(&mut dot, "\t{link}")?;
             }
         }
 
@@ -145,7 +145,7 @@ fn write_plan_recursive(
     i: usize,
     state: &mut StagePlanState,
 ) -> Result<(), fmt::Error> {
-    let node_name = format!("{}_{}", prefix, i);
+    let node_name = format!("{prefix}_{i}");
     let display_name = get_operator_name(plan);
 
     if let Some(reader) = plan.as_any().downcast_ref::<ShuffleReaderExec>() {
@@ -163,18 +163,14 @@ fn write_plan_recursive(
     let mut metrics_str = vec![];
     if let Some(metrics) = plan.metrics() {
         if let Some(x) = metrics.output_rows() {
-            metrics_str.push(format!("output_rows={}", x))
+            metrics_str.push(format!("output_rows={x}"))
         }
         if let Some(x) = metrics.elapsed_compute() {
-            metrics_str.push(format!("elapsed_compute={}", x))
+            metrics_str.push(format!("elapsed_compute={x}"))
         }
     }
     if metrics_str.is_empty() {
-        writeln!(
-            f,
-            "\t\t{} [shape=box, label=\"{}\"]",
-            node_name, display_name
-        )?;
+        writeln!(f, "\t\t{node_name} [shape=box, label=\"{display_name}\"]")?;
     } else {
         writeln!(
             f,
@@ -189,7 +185,7 @@ fn write_plan_recursive(
     for (j, child) in plan.children().into_iter().enumerate() {
         write_plan_recursive(f, &node_name, child.as_ref(), j, state)?;
         // write link from child to parent
-        writeln!(f, "\t\t{}_{} -> {}", node_name, j, node_name)?;
+        writeln!(f, "\t\t{node_name}_{j} -> {node_name}")?;
     }
 
     Ok(())
@@ -240,7 +236,7 @@ fn get_operator_name(plan: &dyn ExecutionPlan) -> String {
         let expr = exec
             .expr()
             .iter()
-            .map(|(e, _)| format!("{}", e))
+            .map(|(e, _)| format!("{e}"))
             .collect::<Vec<String>>()
             .join(", ");
         format!("Projection: {}", sanitize_dot_label(&expr))
@@ -264,7 +260,7 @@ fn get_operator_name(plan: &dyn ExecutionPlan) -> String {
         let group_exprs_with_alias = exec.group_expr().expr();
         let group_expr = group_exprs_with_alias
             .iter()
-            .map(|(e, _)| format!("{}", e))
+            .map(|(e, _)| format!("{e}"))
             .collect::<Vec<String>>()
             .join(", ");
         let aggr_expr = exec
@@ -296,7 +292,7 @@ aggr=[{}]",
         let join_expr = exec
             .on()
             .iter()
-            .map(|(l, r)| format!("{} = {}", l, r))
+            .map(|(l, r)| format!("{l} = {r}"))
             .collect::<Vec<String>>()
             .join(" AND ");
         let filter_expr = if let Some(f) = exec.filter() {
@@ -335,7 +331,7 @@ filter_expr={}",
         )
     } else if let Some(exec) = plan.as_any().downcast_ref::<NdJsonExec>() {
         let parts = exec.output_partitioning().partition_count();
-        format!("JSON [{} partitions]", parts)
+        format!("JSON [{parts} partitions]")
     } else if let Some(exec) = plan.as_any().downcast_ref::<AvroExec>() {
         let parts = exec.output_partitioning().partition_count();
         format!(
@@ -370,7 +366,7 @@ filter_expr={}",
 fn format_partitioning(x: Partitioning) -> String {
     match x {
         Partitioning::UnknownPartitioning(n) | Partitioning::RoundRobinBatch(n) => {
-            format!("{} partitions", n)
+            format!("{n} partitions")
         }
         Partitioning::Hash(expr, n) => {
             format!("{} partitions, expr={}", n, format_expr_list(&expr))
@@ -379,7 +375,7 @@ fn format_partitioning(x: Partitioning) -> String {
 }
 
 fn format_expr_list(exprs: &[Arc<dyn PhysicalExpr>]) -> String {
-    let expr_strings: Vec<String> = exprs.iter().map(|e| format!("{}", e)).collect();
+    let expr_strings: Vec<String> = exprs.iter().map(|e| format!("{e}")).collect();
     expr_strings.join(", ")
 }
 
@@ -431,7 +427,7 @@ mod tests {
     async fn dot() -> Result<()> {
         let graph = test_graph().await?;
         let dot = ExecutionGraphDot::generate(Arc::new(graph))
-            .map_err(|e| BallistaError::Internal(format!("{:?}", e)))?;
+            .map_err(|e| BallistaError::Internal(format!("{e:?}")))?;
 
         let expected = r#"digraph G {
 	subgraph cluster0 {
@@ -504,7 +500,7 @@ filter_expr="]
     async fn query_stage() -> Result<()> {
         let graph = test_graph().await?;
         let dot = ExecutionGraphDot::generate_for_query_stage(Arc::new(graph), 3)
-            .map_err(|e| BallistaError::Internal(format!("{:?}", e)))?;
+            .map_err(|e| BallistaError::Internal(format!("{e:?}")))?;
 
         let expected = r#"digraph G {
 		stage_3_0 [shape=box, label="ShuffleWriter [48 partitions]"]
@@ -532,7 +528,7 @@ filter_expr="]
     async fn dot_optimized() -> Result<()> {
         let graph = test_graph_optimized().await?;
         let dot = ExecutionGraphDot::generate(Arc::new(graph))
-            .map_err(|e| BallistaError::Internal(format!("{:?}", e)))?;
+            .map_err(|e| BallistaError::Internal(format!("{e:?}")))?;
 
         let expected = r#"digraph G {
 	subgraph cluster0 {
@@ -596,7 +592,7 @@ filter_expr="]
     async fn query_stage_optimized() -> Result<()> {
         let graph = test_graph_optimized().await?;
         let dot = ExecutionGraphDot::generate_for_query_stage(Arc::new(graph), 4)
-            .map_err(|e| BallistaError::Internal(format!("{:?}", e)))?;
+            .map_err(|e| BallistaError::Internal(format!("{e:?}")))?;
 
         let expected = r#"digraph G {
 		stage_4_0 [shape=box, label="ShuffleWriter [48 partitions]"]
@@ -633,8 +629,14 @@ filter_expr="]
     }
 
     async fn test_graph() -> Result<ExecutionGraph> {
-        let ctx =
-            SessionContext::with_config(SessionConfig::new().with_target_partitions(48));
+        let mut config = SessionConfig::new()
+            .with_target_partitions(48)
+            .with_batch_size(4096);
+        config
+            .config_options_mut()
+            .optimizer
+            .enable_round_robin_repartition = false;
+        let ctx = SessionContext::with_config(config);
         let schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::UInt32, false),
             Field::new("b", DataType::UInt32, false),
@@ -646,16 +648,22 @@ filter_expr="]
         let df = ctx
             .sql("SELECT * FROM foo JOIN bar ON foo.a = bar.a JOIN baz on bar.b = baz.b")
             .await?;
-        let plan = df.to_logical_plan()?;
-        let plan = ctx.create_physical_plan(&plan).await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
         ExecutionGraph::new("scheduler_id", "job_id", "job_name", "session_id", plan, 0)
     }
 
     // With the improvement of https://github.com/apache/arrow-datafusion/pull/4122,
     // Redundant RepartitionExec can be removed so that the stage number will be reduced
     async fn test_graph_optimized() -> Result<ExecutionGraph> {
-        let ctx =
-            SessionContext::with_config(SessionConfig::new().with_target_partitions(48));
+        let mut config = SessionConfig::new()
+            .with_target_partitions(48)
+            .with_batch_size(4096);
+        config
+            .config_options_mut()
+            .optimizer
+            .enable_round_robin_repartition = false;
+        let ctx = SessionContext::with_config(config);
         let schema =
             Arc::new(Schema::new(vec![Field::new("a", DataType::UInt32, false)]));
         let table = Arc::new(MemTable::try_new(schema.clone(), vec![])?);
@@ -665,8 +673,8 @@ filter_expr="]
         let df = ctx
             .sql("SELECT * FROM foo JOIN bar ON foo.a = bar.a JOIN baz on bar.a = baz.a")
             .await?;
-        let plan = df.to_logical_plan()?;
-        let plan = ctx.create_physical_plan(&plan).await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = ctx.state().create_physical_plan(&plan).await?;
         ExecutionGraph::new("scheduler_id", "job_id", "job_name", "session_id", plan, 0)
     }
 }
