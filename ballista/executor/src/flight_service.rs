@@ -26,15 +26,13 @@ use ballista_core::error::BallistaError;
 use ballista_core::serde::decode_protobuf;
 use ballista_core::serde::scheduler::Action as BallistaAction;
 
+use arrow_flight::utils::batches_to_flight_data;
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty,
     FlightData, FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse,
     PutResult, SchemaResult, Ticket,
 };
-use datafusion::arrow::{
-    error::ArrowError, ipc::reader::FileReader, ipc::writer::IpcWriteOptions,
-    record_batch::RecordBatch,
-};
+use datafusion::arrow::{error::ArrowError, ipc::reader::FileReader};
 use futures::{Stream, StreamExt};
 use log::{debug, info, warn};
 use std::io::{Read, Seek};
@@ -142,7 +140,7 @@ impl FlightService for BallistaFlightService {
 
         let result = HandshakeResponse {
             protocol_version: 0,
-            payload: token.as_bytes().to_vec(),
+            payload: token.as_bytes().to_vec().into(),
         };
         let result = Ok(result);
         let output = futures::stream::iter(vec![result]);
@@ -182,8 +180,7 @@ impl FlightService for BallistaFlightService {
     ) -> Result<Response<Self::DoActionStream>, Status> {
         let action = request.into_inner();
 
-        let _action =
-            decode_protobuf(&action.body.to_vec()).map_err(|e| from_ballista_err(&e))?;
+        let _action = decode_protobuf(&action.body).map_err(|e| from_ballista_err(&e))?;
 
         Err(Status::unimplemented("do_action"))
     }
@@ -203,22 +200,6 @@ impl FlightService for BallistaFlightService {
     }
 }
 
-/// Convert a single RecordBatch into an iterator of FlightData (containing
-/// dictionaries and batches)
-fn create_flight_iter(
-    batch: &RecordBatch,
-    options: &IpcWriteOptions,
-) -> Box<dyn Iterator<Item = Result<FlightData, Status>>> {
-    let (flight_dictionaries, flight_batch) =
-        arrow_flight::utils::flight_data_from_arrow_batch(batch, options);
-    Box::new(
-        flight_dictionaries
-            .into_iter()
-            .chain(std::iter::once(flight_batch))
-            .map(Ok),
-    )
-}
-
 async fn stream_flight_data<T>(
     file_path: String,
     reader: FileReader<T>,
@@ -233,13 +214,18 @@ where
 
     let mut row_count = 0;
     for batch in reader {
-        if let Ok(x) = &batch {
-            row_count += x.num_rows();
-        }
-        let batch_flight_data: Vec<_> = batch
-            .map(|b| create_flight_iter(&b, &options).collect())
-            .map_err(|e| from_arrow_err(&e))?;
-        for batch in batch_flight_data.into_iter() {
+        let batch =
+            batch.map_err(|_| Status::internal("Error reading batches".to_string()))?;
+        row_count += batch.num_rows();
+
+        let schema = (*batch.schema()).clone();
+        let batch_flight_data = batches_to_flight_data(schema, vec![batch])
+            .map_err(|_| Status::internal("Error encoding batches".to_string()))?
+            .into_iter()
+            .map(Ok);
+        let batch_flight_data = batch_flight_data.skip(1); // throw away the schema because we've already sent it
+
+        for batch in batch_flight_data {
             send_response(&tx, batch).await?;
         }
     }

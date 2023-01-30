@@ -1553,6 +1553,7 @@ mod tests {
         use super::*;
         use ballista_core::serde::BallistaCodec;
         use datafusion::datasource::listing::ListingTableUrl;
+        use datafusion::execution::options::ReadOptions;
         use datafusion::physical_plan::ExecutionPlan;
         use datafusion_proto::logical_plan::AsLogicalPlan;
         use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -1582,7 +1583,8 @@ mod tests {
                     .delimiter(b'|')
                     .has_header(false)
                     .file_extension(".tbl");
-                let listing_options = options.to_listing_options(1);
+                let cfg = SessionConfig::new();
+                let listing_options = options.to_listing_options(&cfg);
                 let config = ListingTableConfig::new(path.clone())
                     .with_listing_options(listing_options)
                     .with_schema(Arc::new(schema));
