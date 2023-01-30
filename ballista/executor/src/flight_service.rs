@@ -26,13 +26,15 @@ use ballista_core::error::BallistaError;
 use ballista_core::serde::decode_protobuf;
 use ballista_core::serde::scheduler::Action as BallistaAction;
 
-use arrow_flight::utils::batches_to_flight_data;
+use arrow::ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty,
     FlightData, FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse,
     PutResult, SchemaResult, Ticket,
 };
-use datafusion::arrow::{error::ArrowError, ipc::reader::FileReader};
+use datafusion::arrow::{
+    error::ArrowError, ipc::reader::FileReader, record_batch::RecordBatch,
+};
 use futures::{Stream, StreamExt};
 use log::{debug, info, warn};
 use std::io::{Read, Seek};
@@ -200,6 +202,27 @@ impl FlightService for BallistaFlightService {
     }
 }
 
+/// Convert a single RecordBatch into an iterator of FlightData (containing
+/// dictionaries and batches)
+fn create_flight_iter(
+    batch: &RecordBatch,
+    options: &IpcWriteOptions,
+) -> Box<dyn Iterator<Item = Result<FlightData, Status>>> {
+    let data_gen = IpcDataGenerator::default();
+    let mut dictionary_tracker = DictionaryTracker::new(false);
+    let res = data_gen.encoded_batch(batch, &mut dictionary_tracker, options);
+    match res {
+        Ok((dicts, batch)) => {
+            let flights = dicts
+                .into_iter()
+                .chain(std::iter::once(batch))
+                .map(|x| x.into());
+            Box::new(flights.map(Ok))
+        }
+        Err(e) => Box::new(std::iter::once(Err(from_arrow_err(&e)))),
+    }
+}
+
 async fn stream_flight_data<T>(
     file_path: String,
     reader: FileReader<T>,
@@ -214,18 +237,13 @@ where
 
     let mut row_count = 0;
     for batch in reader {
-        let batch =
-            batch.map_err(|_| Status::internal("Error reading batches".to_string()))?;
-        row_count += batch.num_rows();
-
-        let schema = (*batch.schema()).clone();
-        let batch_flight_data = batches_to_flight_data(schema, vec![batch])
-            .map_err(|_| Status::internal("Error encoding batches".to_string()))?
-            .into_iter()
-            .map(Ok);
-        let batch_flight_data = batch_flight_data.skip(1); // throw away the schema because we've already sent it
-
-        for batch in batch_flight_data {
+        if let Ok(x) = &batch {
+            row_count += x.num_rows();
+        }
+        let batch_flight_data: Vec<_> = batch
+            .map(|b| create_flight_iter(&b, &options).collect())
+            .map_err(|e| from_arrow_err(&e))?;
+        for batch in batch_flight_data.into_iter() {
             send_response(&tx, batch).await?;
         }
     }
