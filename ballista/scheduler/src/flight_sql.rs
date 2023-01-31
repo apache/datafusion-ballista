@@ -24,7 +24,7 @@ use arrow_flight::sql::{
     CommandGetDbSchemas, CommandGetExportedKeys, CommandGetImportedKeys,
     CommandGetPrimaryKeys, CommandGetSqlInfo, CommandGetTableTypes, CommandGetTables,
     CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementQuery,
-    CommandStatementUpdate, ProstAnyExt, SqlInfo, TicketStatementQuery,
+    CommandStatementUpdate, SqlInfo, TicketStatementQuery,
 };
 use arrow_flight::{
     Action, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest,
@@ -42,7 +42,7 @@ use tonic::{Request, Response, Status, Streaming};
 use crate::scheduler_server::SchedulerServer;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::sql::ProstMessageExt;
-use arrow_flight::utils::flight_data_from_arrow_batch;
+use arrow_flight::utils::batches_to_flight_data;
 use arrow_flight::SchemaAsIpc;
 use ballista_core::config::BallistaConfig;
 use ballista_core::serde::protobuf;
@@ -289,7 +289,7 @@ impl FlightSqlServiceImpl {
                 uri: format!("grpc+tcp://{authority}"),
             };
             let buf = fetch.as_any().encode_to_vec();
-            let ticket = Ticket { ticket: buf };
+            let ticket = Ticket { ticket: buf.into() };
             let fiep = FlightEndpoint {
                 ticket: Some(ticket),
                 location: vec![loc],
@@ -318,7 +318,7 @@ impl FlightSqlServiceImpl {
             uri: format!("grpc+tcp://{authority}"),
         };
         let buf = fetch.as_any().encode_to_vec();
-        let ticket = Ticket { ticket: buf };
+        let ticket = Ticket { ticket: buf.into() };
         let fiep = FlightEndpoint {
             ticket: Some(ticket),
             location: vec![loc],
@@ -391,11 +391,11 @@ impl FlightSqlServiceImpl {
     ) -> Response<FlightInfo> {
         let flight_desc = FlightDescriptor {
             r#type: DescriptorType::Cmd.into(),
-            cmd: vec![],
+            cmd: Vec::new().into(),
             path: vec![],
         };
         let info = FlightInfo {
-            schema: schema_bytes,
+            schema: schema_bytes.into(),
             flight_descriptor: Some(flight_desc),
             endpoint: fieps,
             total_records: num_rows,
@@ -434,20 +434,16 @@ impl FlightSqlServiceImpl {
     }
 
     async fn record_batch_to_resp(
-        rb: &RecordBatch,
+        rb: RecordBatch,
     ) -> Result<
         Response<Pin<Box<dyn Stream<Item = Result<FlightData, Status>> + Send>>>,
         Status,
     > {
         type FlightResult = Result<FlightData, Status>;
         let (tx, rx): (Sender<FlightResult>, Receiver<FlightResult>) = channel(2);
-        let options = IpcWriteOptions::default();
-        let schema = SchemaAsIpc::new(rb.schema().as_ref(), &options).into();
-        tx.send(Ok(schema))
-            .await
-            .map_err(|_| Status::internal("Error sending schema".to_string()))?;
-        let (dict, flight) = flight_data_from_arrow_batch(rb, &options);
-        let flights = dict.into_iter().chain(std::iter::once(flight));
+        let schema = (*rb.schema()).clone();
+        let flights = batches_to_flight_data(schema, vec![rb])
+            .map_err(|_| Status::internal("Error encoding batches".to_string()))?;
         for flight in flights {
             tx.send(Ok(flight))
                 .await
@@ -521,7 +517,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
 
         let result = HandshakeResponse {
             protocol_version: 0,
-            payload: token.as_bytes().to_vec(),
+            payload: token.as_bytes().to_vec().into(),
         };
         let result = Ok(result);
         let output = futures::stream::iter(vec![result]);
@@ -537,7 +533,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     async fn do_get_fallback(
         &self,
         request: Request<Ticket>,
-        message: prost_types::Any,
+        message: arrow_flight::sql::Any,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         debug!("do_get_fallback type_url: {}", message.type_url);
         let ctx = self.get_ctx(&request)?;
@@ -564,7 +560,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
                 let rb = FlightSqlServiceImpl::table_types().map_err(|_| {
                     Status::internal("Error getting table types".to_string())
                 })?;
-                let resp = Self::record_batch_to_resp(&rb).await?;
+                let resp = Self::record_batch_to_resp(rb).await?;
                 return Ok(resp);
             }
             "get_flight_info_tables" => {
@@ -572,7 +568,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
                 let rb = self
                     .tables(ctx)
                     .map_err(|_| Status::internal("Error getting tables".to_string()))?;
-                let resp = Self::record_batch_to_resp(&rb).await?;
+                let resp = Self::record_batch_to_resp(rb).await?;
                 return Ok(resp);
             }
             _ => {}
@@ -591,7 +587,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
                 })?;
         let mut flight_client = FlightServiceClient::new(connection);
         let buf = action.encode_to_vec();
-        let request = Request::new(Ticket { ticket: buf });
+        let request = Request::new(Ticket { ticket: buf.into() });
 
         let stream = flight_client
             .do_get(request)
@@ -623,7 +619,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     ) -> Result<Response<FlightInfo>, Status> {
         debug!("get_flight_info_prepared_statement");
         let ctx = self.get_ctx(&request)?;
-        let handle = Uuid::from_slice(handle.prepared_statement_handle.as_slice())
+        let handle = Uuid::from_slice(handle.prepared_statement_handle.as_ref())
             .map_err(|e| Status::internal(format!("Error decoding handle: {e}")))?;
         let plan = self.get_plan(&handle)?;
         let resp = self.execute_plan(ctx, &plan).await?;
@@ -845,7 +841,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
     ) -> Result<i64, Status> {
         debug!("do_put_prepared_statement_update");
         let ctx = self.get_ctx(&request)?;
-        let handle = Uuid::from_slice(handle.prepared_statement_handle.as_slice())
+        let handle = Uuid::from_slice(handle.prepared_statement_handle.as_ref())
             .map_err(|e| Status::internal(format!("Error decoding handle: {e}")))?;
         let plan = self.get_plan(&handle)?;
         let _ = self.execute_plan(ctx, &plan).await?;
@@ -865,9 +861,9 @@ impl FlightSqlService for FlightSqlServiceImpl {
         let handle = self.cache_plan(plan)?;
         debug!("Prepared statement {}:\n{}", handle, query.query);
         let res = ActionCreatePreparedStatementResult {
-            prepared_statement_handle: handle.as_bytes().to_vec(),
-            dataset_schema: schema_bytes,
-            parameter_schema: vec![], // TODO: parameters
+            prepared_statement_handle: handle.as_bytes().to_vec().into(),
+            dataset_schema: schema_bytes.into(),
+            parameter_schema: Vec::new().into(), // TODO: parameters
         };
         Ok(res)
     }
@@ -878,7 +874,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         _request: Request<Action>,
     ) {
         debug!("do_action_close_prepared_statement");
-        let handle = Uuid::from_slice(handle.prepared_statement_handle.as_slice());
+        let handle = Uuid::from_slice(handle.prepared_statement_handle.as_ref());
         let handle = if let Ok(handle) = handle {
             debug!("Closing {}", handle);
             handle

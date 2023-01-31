@@ -116,7 +116,7 @@ impl BallistaClient {
             .encode(&mut buf)
             .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
 
-        let request = tonic::Request::new(Ticket { ticket: buf });
+        let request = tonic::Request::new(Ticket { ticket: buf.into() });
 
         let mut stream = self
             .flight_client

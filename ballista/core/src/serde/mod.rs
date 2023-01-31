@@ -52,10 +52,10 @@ impl ProstMessageExt for protobuf::Action {
         "type.googleapis.com/arrow.flight.protocol.sql.Action"
     }
 
-    fn as_any(&self) -> prost_types::Any {
-        prost_types::Any {
+    fn as_any(&self) -> arrow_flight::sql::Any {
+        arrow_flight::sql::Any {
             type_url: protobuf::Action::type_url().to_string(),
-            value: self.encode_to_vec(),
+            value: self.encode_to_vec().into(),
         }
     }
 }

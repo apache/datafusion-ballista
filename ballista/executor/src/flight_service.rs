@@ -26,14 +26,14 @@ use ballista_core::error::BallistaError;
 use ballista_core::serde::decode_protobuf;
 use ballista_core::serde::scheduler::Action as BallistaAction;
 
+use arrow::ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty,
     FlightData, FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse,
     PutResult, SchemaResult, Ticket,
 };
 use datafusion::arrow::{
-    error::ArrowError, ipc::reader::FileReader, ipc::writer::IpcWriteOptions,
-    record_batch::RecordBatch,
+    error::ArrowError, ipc::reader::FileReader, record_batch::RecordBatch,
 };
 use futures::{Stream, StreamExt};
 use log::{debug, info, warn};
@@ -142,7 +142,7 @@ impl FlightService for BallistaFlightService {
 
         let result = HandshakeResponse {
             protocol_version: 0,
-            payload: token.as_bytes().to_vec(),
+            payload: token.as_bytes().to_vec().into(),
         };
         let result = Ok(result);
         let output = futures::stream::iter(vec![result]);
@@ -182,8 +182,7 @@ impl FlightService for BallistaFlightService {
     ) -> Result<Response<Self::DoActionStream>, Status> {
         let action = request.into_inner();
 
-        let _action =
-            decode_protobuf(&action.body.to_vec()).map_err(|e| from_ballista_err(&e))?;
+        let _action = decode_protobuf(&action.body).map_err(|e| from_ballista_err(&e))?;
 
         Err(Status::unimplemented("do_action"))
     }
@@ -209,14 +208,19 @@ fn create_flight_iter(
     batch: &RecordBatch,
     options: &IpcWriteOptions,
 ) -> Box<dyn Iterator<Item = Result<FlightData, Status>>> {
-    let (flight_dictionaries, flight_batch) =
-        arrow_flight::utils::flight_data_from_arrow_batch(batch, options);
-    Box::new(
-        flight_dictionaries
-            .into_iter()
-            .chain(std::iter::once(flight_batch))
-            .map(Ok),
-    )
+    let data_gen = IpcDataGenerator::default();
+    let mut dictionary_tracker = DictionaryTracker::new(false);
+    let res = data_gen.encoded_batch(batch, &mut dictionary_tracker, options);
+    match res {
+        Ok((dicts, batch)) => {
+            let flights = dicts
+                .into_iter()
+                .chain(std::iter::once(batch))
+                .map(|x| x.into());
+            Box::new(flights.map(Ok))
+        }
+        Err(e) => Box::new(std::iter::once(Err(from_arrow_err(&e)))),
+    }
 }
 
 async fn stream_flight_data<T>(
