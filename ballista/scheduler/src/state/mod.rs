@@ -26,20 +26,22 @@ use std::time::Instant;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::SessionBuilder;
-use crate::state::backend::{ClusterState, Lock, StateBackendClient};
+use crate::state::backend::{Lock, StateBackendClient};
 use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::{TaskLauncher, TaskManager};
 
 use crate::config::SchedulerConfig;
 use crate::state::execution_graph::TaskDescription;
+use backend::cluster::ClusterState;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::TaskStatus;
-use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::serde::BallistaCodec;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info};
 use prost::Message;
 
@@ -99,13 +101,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     #[cfg(test)]
     pub fn new_with_default_scheduler_name(
         config_client: Arc<dyn StateBackendClient>,
-        cluster_client: Arc<dyn ClusterState>,
+        cluster_state: Arc<dyn ClusterState>,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
     ) -> Self {
         SchedulerState::new(
             config_client,
-            cluster_client,
+            cluster_state,
             session_builder,
             codec,
             "localhost:50050".to_owned(),
@@ -115,7 +117,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
     pub fn new(
         config_client: Arc<dyn StateBackendClient>,
-        cluster_client: Arc<dyn ClusterState>,
+        cluster_state: Arc<dyn ClusterState>,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
@@ -123,7 +125,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     ) -> Self {
         Self {
             executor_manager: ExecutorManager::new(
-                cluster_client,
+                cluster_state,
                 config.executor_slots_policy,
             ),
             task_manager: TaskManager::new(
@@ -141,7 +143,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     #[allow(dead_code)]
     pub(crate) fn with_task_launcher(
         config_client: Arc<dyn StateBackendClient>,
-        cluster_client: Arc<dyn ClusterState>,
+        cluster_state: Arc<dyn ClusterState>,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
@@ -150,7 +152,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     ) -> Self {
         Self {
             executor_manager: ExecutorManager::new(
-                cluster_client,
+                cluster_state,
                 config.executor_slots_policy,
             ),
             task_manager: TaskManager::with_launcher(
@@ -337,7 +339,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         if log::max_level() >= log::Level::Debug {
             // optimizing the plan here is redundant because the physical planner will do this again
             // but it is helpful to see what the optimized plan will be
-            let optimized_plan = session_ctx.optimize(plan)?;
+            let optimized_plan = session_ctx.state().optimize(plan)?;
             debug!("Optimized plan: {}", optimized_plan.display_indent());
         }
 
@@ -376,8 +378,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                                 .map_err(|e| {
                                     BallistaError::General(format!(
                                     "logical plan refers to path on local file system \
-                                    that is not accessible in the scheduler: {}: {:?}",
-                                    url, e
+                                    that is not accessible in the scheduler: {url}: {e:?}"
                                 ))
                                 })?;
                         }
@@ -390,7 +391,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         let mut verify_paths_exist = VerifyPathsExist {};
         plan.accept(&mut verify_paths_exist)?;
 
-        let plan = session_ctx.create_physical_plan(plan).await?;
+        let plan = session_ctx.state().create_physical_plan(plan).await?;
         debug!(
             "Physical plan: {}",
             DisplayableExecutionPlan::new(plan.as_ref()).indent()
@@ -456,7 +457,7 @@ mod test {
     use ballista_core::config::{BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS};
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::{
-        task_status, PhysicalPlanNode, ShuffleWritePartition, SuccessfulTask, TaskStatus,
+        task_status, ShuffleWritePartition, SuccessfulTask, TaskStatus,
     };
     use ballista_core::serde::scheduler::{
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
@@ -465,6 +466,7 @@ mod test {
     use ballista_core::utils::default_session_builder;
 
     use crate::config::SchedulerConfig;
+    use crate::state::backend::cluster::DefaultClusterState;
     use crate::test_utils::BlackholeTaskLauncher;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::logical_expr::{col, sum};
@@ -472,16 +474,18 @@ mod test {
     use datafusion::prelude::SessionContext;
     use datafusion::test_util::scan_empty;
     use datafusion_proto::protobuf::LogicalPlanNode;
+    use datafusion_proto::protobuf::PhysicalPlanNode;
     use std::sync::Arc;
 
     // We should free any reservations which are not assigned
     #[tokio::test]
     async fn test_offer_free_reservations() -> Result<()> {
         let state_storage = Arc::new(SledClient::try_new_temporary()?);
+        let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::new_with_default_scheduler_name(
                 state_storage.clone(),
-                state_storage,
+                cluster_state,
                 default_session_builder,
                 BallistaCodec::default(),
             ));
@@ -515,10 +519,11 @@ mod test {
             .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4")
             .build()?;
         let state_storage = Arc::new(SledClient::try_new_temporary()?);
+        let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::with_task_launcher(
                 state_storage.clone(),
-                state_storage,
+                cluster_state,
                 default_session_builder,
                 BallistaCodec::default(),
                 String::default(),
@@ -601,10 +606,11 @@ mod test {
             .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4")
             .build()?;
         let state_storage = Arc::new(SledClient::try_new_temporary()?);
+        let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::with_task_launcher(
                 state_storage.clone(),
-                state_storage,
+                cluster_state,
                 default_session_builder,
                 BallistaCodec::default(),
                 String::default(),
@@ -710,8 +716,8 @@ mod test {
         for i in 0..total_executors {
             result.push((
                 ExecutorMetadata {
-                    id: format!("executor-{}", i),
-                    host: format!("host-{}", i),
+                    id: format!("executor-{i}"),
+                    host: format!("host-{i}"),
                     port: 8080,
                     grpc_port: 9090,
                     specification: ExecutorSpecification {
@@ -719,7 +725,7 @@ mod test {
                     },
                 },
                 ExecutorData {
-                    executor_id: format!("executor-{}", i),
+                    executor_id: format!("executor-{i}"),
                     total_task_slots: slots_per_executor,
                     available_task_slots: slots_per_executor,
                 },
@@ -742,6 +748,6 @@ mod test {
             .build()
             .unwrap();
 
-        ctx.create_physical_plan(&plan).await.unwrap()
+        ctx.state().create_physical_plan(&plan).await.unwrap()
     }
 }

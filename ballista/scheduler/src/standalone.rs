@@ -17,9 +17,8 @@
 
 use crate::config::SchedulerConfig;
 use crate::metrics::default_metrics_collector;
-use crate::scheduler_server::SchedulerServer;
-use crate::state::backend::sled::SledClient;
-use ballista_core::serde::protobuf::PhysicalPlanNode;
+use crate::state::backend::cluster::DefaultClusterState;
+use crate::{scheduler_server::SchedulerServer, state::backend::sled::SledClient};
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::create_grpc_server;
 use ballista_core::{
@@ -27,20 +26,21 @@ use ballista_core::{
     BALLISTA_VERSION,
 };
 use datafusion_proto::protobuf::LogicalPlanNode;
+use datafusion_proto::protobuf::PhysicalPlanNode;
 use log::info;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
 
 pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
-    let client = Arc::new(SledClient::try_new_temporary()?);
+    let backend = Arc::new(SledClient::try_new_temporary()?);
 
     let metrics_collector = default_metrics_collector()?;
 
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
         SchedulerServer::new(
             "localhost:50050".to_owned(),
-            client.clone(),
-            client,
+            backend.clone(),
+            Arc::new(DefaultClusterState::new(backend)),
             BallistaCodec::default(),
             SchedulerConfig::default(),
             metrics_collector,

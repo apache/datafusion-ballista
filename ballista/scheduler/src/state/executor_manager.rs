@@ -17,12 +17,13 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::state::backend::{ClusterState, TaskDistribution};
+use crate::state::backend::TaskDistribution;
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf;
 
 use crate::config::SlotsPolicy;
+use crate::state::backend::cluster::ClusterState;
 use crate::state::execution_graph::RunningTaskInfo;
 use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 use ballista_core::serde::protobuf::{
@@ -161,6 +162,8 @@ impl ExecutorManager {
             self.reserve_slots_local(n).await
         } else {
             let alive_executors = self.get_alive_executors_within_one_minute();
+
+            println!("Alive executors: {alive_executors:?}");
 
             self.cluster_state
                 .reserve_slots(n, self.task_distribution, Some(alive_executors))
@@ -456,10 +459,7 @@ impl ExecutorManager {
         let current_ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| {
-                BallistaError::Internal(format!(
-                    "Error getting current timestamp: {:?}",
-                    e
-                ))
+                BallistaError::Internal(format!("Error getting current timestamp: {e:?}"))
             })?
             .as_secs();
 
@@ -648,6 +648,7 @@ impl ExecutorManager {
 #[cfg(test)]
 mod test {
     use crate::config::SlotsPolicy;
+    use crate::state::backend::cluster::DefaultClusterState;
     use crate::state::backend::sled::SledClient;
     use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
     use ballista_core::error::Result;
@@ -666,9 +667,11 @@ mod test {
     }
 
     async fn test_reserve_and_cancel_inner(slots_policy: SlotsPolicy) -> Result<()> {
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
+        let cluster_state = Arc::new(DefaultClusterState::new(Arc::new(
+            SledClient::try_new_temporary()?,
+        )));
 
-        let executor_manager = ExecutorManager::new(state_storage, slots_policy);
+        let executor_manager = ExecutorManager::new(cluster_state, slots_policy);
 
         let executors = test_executors(10, 4);
 
@@ -684,8 +687,7 @@ mod test {
         assert_eq!(
             reservations.len(),
             40,
-            "Expected 40 reservations for policy {:?}",
-            slots_policy
+            "Expected 40 reservations for policy {slots_policy:?}"
         );
 
         // Now cancel them
@@ -697,8 +699,7 @@ mod test {
         assert_eq!(
             reservations.len(),
             40,
-            "Expected 40 reservations for policy {:?}",
-            slots_policy
+            "Expected 40 reservations for policy {slots_policy:?}"
         );
 
         Ok(())
@@ -714,9 +715,11 @@ mod test {
     }
 
     async fn test_reserve_partial_inner(slots_policy: SlotsPolicy) -> Result<()> {
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
+        let cluster_state = Arc::new(DefaultClusterState::new(Arc::new(
+            SledClient::try_new_temporary()?,
+        )));
 
-        let executor_manager = ExecutorManager::new(state_storage, slots_policy);
+        let executor_manager = ExecutorManager::new(cluster_state, slots_policy);
 
         let executors = test_executors(10, 4);
 
@@ -769,9 +772,11 @@ mod test {
 
         let executors = test_executors(10, 4);
 
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
+        let cluster_state = Arc::new(DefaultClusterState::new(Arc::new(
+            SledClient::try_new_temporary()?,
+        )));
 
-        let executor_manager = ExecutorManager::new(state_storage, slots_policy);
+        let executor_manager = ExecutorManager::new(cluster_state, slots_policy);
 
         for (executor_metadata, executor_data) in executors {
             executor_manager
@@ -814,9 +819,11 @@ mod test {
     }
 
     async fn test_register_reserve_inner(slots_policy: SlotsPolicy) -> Result<()> {
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
+        let cluster_state = Arc::new(DefaultClusterState::new(Arc::new(
+            SledClient::try_new_temporary()?,
+        )));
 
-        let executor_manager = ExecutorManager::new(state_storage, slots_policy);
+        let executor_manager = ExecutorManager::new(cluster_state, slots_policy);
 
         let executors = test_executors(10, 4);
 
@@ -845,8 +852,8 @@ mod test {
         for i in 0..total_executors {
             result.push((
                 ExecutorMetadata {
-                    id: format!("executor-{}", i),
-                    host: format!("host-{}", i),
+                    id: format!("executor-{i}"),
+                    host: format!("host-{i}"),
                     port: 8080,
                     grpc_port: 9090,
                     specification: ExecutorSpecification {
@@ -854,7 +861,7 @@ mod test {
                     },
                 },
                 ExecutorData {
-                    executor_id: format!("executor-{}", i),
+                    executor_id: format!("executor-{i}"),
                     total_task_slots: slots_per_executor,
                     available_task_slots: slots_per_executor,
                 },

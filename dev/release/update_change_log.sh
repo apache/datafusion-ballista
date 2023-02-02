@@ -18,7 +18,7 @@
 # under the License.
 #
 
-# Adapted from https://github.com/apache/arrow-rs/tree/master/dev/release/update_change_log.sh
+# Adapted from https://github.com/apache/arrow-rs/tree/main/dev/release/update_change_log.sh
 
 # invokes the changelog generator from
 # https://github.com/github-changelog-generator/github-changelog-generator

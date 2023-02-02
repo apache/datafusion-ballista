@@ -27,6 +27,9 @@ docker-compose build
 
 . ./dev/build-set-env.sh
 docker build -t "apache/arrow-ballista-standalone:$BALLISTA_VERSION" -f dev/docker/ballista-standalone.Dockerfile .
+
 docker tag ballista-executor "apache/arrow-ballista-executor:$BALLISTA_VERSION"
 docker tag ballista-scheduler "apache/arrow-ballista-scheduler:$BALLISTA_VERSION"
 docker tag ballista-benchmarks "apache/arrow-ballista-benchmarks:$BALLISTA_VERSION"
+
+docker build -t "apache/arrow-ballista-cli:$BALLISTA_VERSION" -f dev/docker/ballista-cli.Dockerfile .

@@ -35,8 +35,8 @@ use crate::state::task_manager::TaskLauncher;
 use ballista_core::config::{BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS};
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    task_status, JobStatus, MultiTaskDefinition, PhysicalPlanNode, ShuffleWritePartition,
-    SuccessfulTask, TaskId, TaskStatus,
+    task_status, JobStatus, MultiTaskDefinition, ShuffleWritePartition, SuccessfulTask,
+    TaskId, TaskStatus,
 };
 use ballista_core::serde::scheduler::{
     ExecutorData, ExecutorMetadata, ExecutorSpecification,
@@ -51,7 +51,8 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::CsvReadOptions;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use datafusion_proto::protobuf::LogicalPlanNode;
+use crate::state::backend::cluster::DefaultClusterState;
+use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use parking_lot::Mutex;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 
@@ -125,7 +126,7 @@ pub async fn datafusion_test_context(path: &str) -> Result<SessionContext> {
             .delimiter(b'|')
             .has_header(false)
             .file_extension(".tbl");
-        let dir = format!("{}/{}", path, table);
+        let dir = format!("{path}/{table}");
         ctx.register_csv(table, &dir, options).await?;
     }
     Ok(ctx)
@@ -361,7 +362,7 @@ impl TaskLauncher for VirtualTaskLauncher {
             .send((executor.id.clone(), status))
             .await
             .map_err(|e| {
-                BallistaError::Internal(format!("Error sending task status: {:?}", e))
+                BallistaError::Internal(format!("Error sending task status: {e:?}"))
             })
     }
 }
@@ -381,6 +382,7 @@ impl SchedulerTest {
         runner: Option<Arc<dyn TaskRunner>>,
     ) -> Result<Self> {
         let state_storage = Arc::new(SledClient::try_new_temporary()?);
+        let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
 
         let ballista_config = BallistaConfig::builder()
             .set(
@@ -395,7 +397,7 @@ impl SchedulerTest {
         let executors: HashMap<String, VirtualExecutor> = (0..num_executors)
             .into_iter()
             .map(|i| {
-                let id = format!("virtual-executor-{}", i);
+                let id = format!("virtual-executor-{i}");
                 let executor = VirtualExecutor {
                     executor_id: id.clone(),
                     task_slots: task_slots_per_executor,
@@ -415,8 +417,8 @@ impl SchedulerTest {
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::with_task_launcher(
                 "localhost:50050".to_owned(),
-                state_storage.clone(),
                 state_storage,
+                cluster_state,
                 BallistaCodec::default(),
                 config,
                 metrics_collector,
@@ -691,8 +693,8 @@ pub fn assert_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
         .iter()
         .any(|ev| matches!(ev, MetricEvent::Submitted(_, _, _)));
 
-    assert!(queued, "Expected queued event for job {}", job_id);
-    assert!(submitted, "Expected submitted event for job {}", job_id);
+    assert!(queued, "{}", "Expected queued event for job {job_id}");
+    assert!(submitted, "{}", "Expected submitted event for job {job_id}");
 }
 
 pub fn assert_no_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
@@ -701,7 +703,7 @@ pub fn assert_no_submitted_event(job_id: &str, collector: &TestMetricsCollector)
         .iter()
         .any(|ev| matches!(ev, MetricEvent::Submitted(_, _, _)));
 
-    assert!(!found, "Expected no submitted event for job {}", job_id);
+    assert!(!found, "{}", "Expected no submitted event for job {job_id}");
 }
 
 pub fn assert_completed_event(job_id: &str, collector: &TestMetricsCollector) {
@@ -710,7 +712,7 @@ pub fn assert_completed_event(job_id: &str, collector: &TestMetricsCollector) {
         .iter()
         .any(|ev| matches!(ev, MetricEvent::Completed(_, _, _)));
 
-    assert!(found, "Expected completed event for job {}", job_id);
+    assert!(found, "{}", "Expected completed event for job {job_id}");
 }
 
 pub fn assert_cancelled_event(job_id: &str, collector: &TestMetricsCollector) {
@@ -719,7 +721,7 @@ pub fn assert_cancelled_event(job_id: &str, collector: &TestMetricsCollector) {
         .iter()
         .any(|ev| matches!(ev, MetricEvent::Cancelled(_)));
 
-    assert!(found, "Expected cancelled event for job {}", job_id);
+    assert!(found, "{}", "Expected cancelled event for job {job_id}");
 }
 
 pub fn assert_failed_event(job_id: &str, collector: &TestMetricsCollector) {
@@ -728,5 +730,5 @@ pub fn assert_failed_event(job_id: &str, collector: &TestMetricsCollector) {
         .iter()
         .any(|ev| matches!(ev, MetricEvent::Failed(_, _, _)));
 
-    assert!(found, "Expected failed event for job {}", job_id);
+    assert!(found, "{}", "Expected failed event for job {job_id}");
 }

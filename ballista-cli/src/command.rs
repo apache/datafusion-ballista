@@ -67,7 +67,7 @@ impl Command {
                     .map_err(BallistaError::DataFusionError)
             }
             Self::DescribeTable(name) => {
-                let df = ctx.sql(&format!("SHOW COLUMNS FROM {}", name)).await?;
+                let df = ctx.sql(&format!("SHOW COLUMNS FROM {name}")).await?;
                 let batches = df.collect().await?;
                 print_options
                     .print_batches(&batches, now)
@@ -97,10 +97,10 @@ impl Command {
             Self::SearchFunctions(function) => {
                 if let Ok(func) = function.parse::<Function>() {
                     let details = func.function_details()?;
-                    println!("{}", details);
+                    println!("{details}");
                     Ok(())
                 } else {
-                    let msg = format!("{} is not a supported function", function);
+                    let msg = format!("{function} is not a supported function");
                     Err(BallistaError::NotImplemented(msg))
                 }
             }

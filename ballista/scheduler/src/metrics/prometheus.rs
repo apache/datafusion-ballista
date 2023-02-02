@@ -60,7 +60,7 @@ impl PrometheusMetricsCollector {
             registry
         )
         .map_err(|e| {
-            BallistaError::Internal(format!("Error registering metric: {:?}", e))
+            BallistaError::Internal(format!("Error registering metric: {e:?}"))
         })?;
 
         let planning_time = register_histogram_with_registry!(
@@ -73,7 +73,7 @@ impl PrometheusMetricsCollector {
             registry
         )
         .map_err(|e| {
-            BallistaError::Internal(format!("Error registering metric: {:?}", e))
+            BallistaError::Internal(format!("Error registering metric: {e:?}"))
         })?;
 
         let failed = register_counter_with_registry!(
@@ -82,7 +82,7 @@ impl PrometheusMetricsCollector {
             registry
         )
         .map_err(|e| {
-            BallistaError::Internal(format!("Error registering metric: {:?}", e))
+            BallistaError::Internal(format!("Error registering metric: {e:?}"))
         })?;
 
         let cancelled = register_counter_with_registry!(
@@ -91,7 +91,7 @@ impl PrometheusMetricsCollector {
             registry
         )
         .map_err(|e| {
-            BallistaError::Internal(format!("Error registering metric: {:?}", e))
+            BallistaError::Internal(format!("Error registering metric: {e:?}"))
         })?;
 
         let completed = register_counter_with_registry!(
@@ -100,7 +100,7 @@ impl PrometheusMetricsCollector {
             registry
         )
         .map_err(|e| {
-            BallistaError::Internal(format!("Error registering metric: {:?}", e))
+            BallistaError::Internal(format!("Error registering metric: {e:?}"))
         })?;
 
         let submitted = register_counter_with_registry!(
@@ -109,7 +109,7 @@ impl PrometheusMetricsCollector {
             registry
         )
         .map_err(|e| {
-            BallistaError::Internal(format!("Error registering metric: {:?}", e))
+            BallistaError::Internal(format!("Error registering metric: {e:?}"))
         })?;
 
         let pending_queue_size = register_gauge_with_registry!(
@@ -118,7 +118,7 @@ impl PrometheusMetricsCollector {
             registry
         )
         .map_err(|e| {
-            BallistaError::Internal(format!("Error registering metric: {:?}", e))
+            BallistaError::Internal(format!("Error registering metric: {e:?}"))
         })?;
 
         let active_jobs = register_gauge_with_registry!(
@@ -127,7 +127,7 @@ impl PrometheusMetricsCollector {
             registry
         )
         .map_err(|e| {
-            BallistaError::Internal(format!("Error registering metric: {:?}", e))
+            BallistaError::Internal(format!("Error registering metric: {e:?}"))
         })?;
 
         Ok(Self {
@@ -191,7 +191,7 @@ impl SchedulerMetricsCollector for PrometheusMetricsCollector {
         let metric_families = prometheus::gather();
         let mut buffer = vec![];
         encoder.encode(&metric_families, &mut buffer).map_err(|e| {
-            BallistaError::Internal(format!("Error encoding prometheus metrics: {:?}", e))
+            BallistaError::Internal(format!("Error encoding prometheus metrics: {e:?}"))
         })?;
 
         Ok(Some((buffer, encoder.format_type().to_owned())))

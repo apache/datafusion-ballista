@@ -27,6 +27,9 @@ use datafusion::{
     datasource::{TableProvider, TableType},
 };
 
+use crate::errors::DataFusionError;
+use crate::utils::wait_for_future;
+
 #[pyclass(name = "Catalog", module = "ballista", subclass)]
 pub(crate) struct PyCatalog {
     catalog: Arc<dyn CatalogProvider>,
@@ -88,13 +91,11 @@ impl PyDatabase {
         self.database.table_names().into_iter().collect()
     }
 
-    fn table(&self, name: &str) -> PyResult<PyTable> {
-        match self.database.table(name) {
-            Some(table) => Ok(PyTable::new(table)),
-            None => Err(PyKeyError::new_err(format!(
-                "Table with name {} doesn't exist.",
-                name
-            ))),
+    fn table(&self, name: &str, py: Python) -> PyResult<PyTable> {
+        if let Some(table) = wait_for_future(py, self.database.table(name)) {
+            Ok(PyTable::new(table))
+        } else {
+            Err(DataFusionError::Common(format!("Table with name {name} doesn't exist.")).into())
         }
     }
 
