@@ -480,6 +480,7 @@ message HeartBeatParams {
   string executor_id = 1;
   repeated ExecutorMetric metrics = 2;
   ExecutorStatus status = 3;
+  ExecutorRegistration metadata = 4;
 }
 
 message HeartBeatResult {

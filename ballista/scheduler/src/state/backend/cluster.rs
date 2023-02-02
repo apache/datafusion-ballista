@@ -355,9 +355,16 @@ impl ClusterState for DefaultClusterState {
     ) -> error::Result<ExecutorMetadata> {
         let value = self.kv_store.get(Keyspace::Executors, executor_id).await?;
 
-        let decoded =
-            decode_into::<protobuf::ExecutorMetadata, ExecutorMetadata>(&value)?;
-        Ok(decoded)
+        // Throw error rather than panic if the executor metadata does not exist
+        if value.is_empty() {
+            Err(BallistaError::General(format!(
+                "The metadata of executor {executor_id} does not exist"
+            )))
+        } else {
+            let decoded =
+                decode_into::<protobuf::ExecutorMetadata, ExecutorMetadata>(&value)?;
+            Ok(decoded)
+        }
     }
 
     async fn save_executor_heartbeat(

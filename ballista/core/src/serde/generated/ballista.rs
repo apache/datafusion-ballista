@@ -827,6 +827,8 @@ pub struct HeartBeatParams {
     pub metrics: ::prost::alloc::vec::Vec<ExecutorMetric>,
     #[prost(message, optional, tag = "3")]
     pub status: ::core::option::Option<ExecutorStatus>,
+    #[prost(message, optional, tag = "4")]
+    pub metadata: ::core::option::Option<ExecutorRegistration>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
