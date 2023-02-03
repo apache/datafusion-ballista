@@ -163,7 +163,7 @@ impl ExecutorManager {
         } else {
             let alive_executors = self.get_alive_executors_within_one_minute();
 
-            println!("Alive executors: {alive_executors:?}");
+            debug!("Alive executors: {alive_executors:?}");
 
             self.cluster_state
                 .reserve_slots(n, self.task_distribution, Some(alive_executors))

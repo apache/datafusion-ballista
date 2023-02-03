@@ -129,6 +129,8 @@ async fn main() -> Result<()> {
         finished_job_state_clean_up_interval_seconds: opt
             .finished_job_state_clean_up_interval_seconds,
         advertise_flight_sql_endpoint: opt.advertise_flight_sql_endpoint,
+        job_resubmit_interval_ms: (opt.job_resubmit_interval_ms > 0)
+            .then_some(opt.job_resubmit_interval_ms),
     };
     start_server(scheduler_name, config_backend, cluster_state, addr, config).await?;
     Ok(())

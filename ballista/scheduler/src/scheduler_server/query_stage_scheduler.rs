@@ -43,17 +43,20 @@ pub(crate) struct QueryStageScheduler<
     state: Arc<SchedulerState<T, U>>,
     metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     pending_tasks: AtomicUsize,
+    job_resubmit_interval_ms: Option<u64>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageScheduler<T, U> {
     pub(crate) fn new(
         state: Arc<SchedulerState<T, U>>,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
+        job_resubmit_interval_ms: Option<u64>,
     ) -> Self {
         Self {
             state,
             metrics_collector,
             pending_tasks: AtomicUsize::default(),
+            job_resubmit_interval_ms,
         }
     }
 
@@ -164,14 +167,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .map(|res| res.assign(job_id.clone()))
                         .collect();
 
-                    if reservations.is_empty() {
+                    if reservations.is_empty() && self.job_resubmit_interval_ms.is_some()
+                    {
                         debug!(
                             "No task slots reserved for job {}, resubmitting after 200ms",
                             job_id
                         );
 
+                        let wait_ms = self.job_resubmit_interval_ms.unwrap();
                         tokio::task::spawn(async move {
-                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            tokio::time::sleep(Duration::from_millis(wait_ms)).await;
 
                             if let Err(e) = tx_event
                                 .post_event(QueryStageSchedulerEvent::JobSubmitted {
@@ -348,14 +353,59 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 #[cfg(test)]
 mod tests {
     use crate::config::SchedulerConfig;
+    use crate::scheduler_server::event::QueryStageSchedulerEvent;
     use crate::test_utils::{await_condition, SchedulerTest, TestMetricsCollector};
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
+    use ballista_core::event_loop::EventAction;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::logical_expr::{col, sum, LogicalPlan};
     use datafusion::test_util::scan_empty_with_partitions;
     use std::sync::Arc;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn test_job_resubmit() -> Result<()> {
+        let plan = test_plan(10);
+
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+
+        // Set resubmit interval of 1ms
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_job_resubmit_interval_ms(1)
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector.clone(),
+            0,
+            0,
+            None,
+        )
+        .await?;
+
+        test.submit("job-id", "job-name", &plan).await?;
+
+        let query_stage_scheduler = test.query_stage_scheduler();
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<QueryStageSchedulerEvent>(10);
+
+        let event = QueryStageSchedulerEvent::JobSubmitted {
+            job_id: "job-id".to_string(),
+            queued_at: 0,
+            submitted_at: 0,
+            resubmit: false,
+        };
+
+        query_stage_scheduler.on_receive(event, &tx, &rx).await?;
+
+        let next_event = rx.recv().await.unwrap();
+
+        assert!(matches!(
+            next_event,
+            QueryStageSchedulerEvent::JobSubmitted { job_id, resubmit, .. } if job_id == "job-id" && resubmit
+        ));
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn test_pending_task_metric() -> Result<()> {
