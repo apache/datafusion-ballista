@@ -42,7 +42,8 @@ use ballista_core::serde::protobuf::{task_status, RunningTask};
 use ballista_core::serde::scheduler::{
     ExecutorMetadata, PartitionId, PartitionLocation, PartitionStats,
 };
-use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::serde::BallistaCodec;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 
 use crate::display::print_stage_metrics;
 use crate::planner::DistributedPlanner;
@@ -345,7 +346,7 @@ impl ExecutionGraph {
 
                                             if !failed_stages.is_empty() {
                                                 let error_msg = format!(
-                                                        "Stages was marked failed, ignore FetchPartitionError from task {}", task_identity);
+                                                        "Stages was marked failed, ignore FetchPartitionError from task {task_identity}");
                                                 warn!("{}", error_msg);
                                             } else {
                                                 // There are different removal strategies here.
@@ -420,8 +421,7 @@ impl ExecutionGraph {
                                     }
                                     None => {
                                         let error_msg = format!(
-                                            "Task {} in Stage {} failed with unknown failure reasons, fail the stage",
-                                            partition_id, stage_id);
+                                            "Task {partition_id} in Stage {stage_id} failed with unknown failure reasons, fail the stage");
                                         error!("{}", error_msg);
                                         failed_stages.insert(stage_id, error_msg);
                                     }
@@ -570,8 +570,7 @@ impl ExecutionGraph {
                 }
             } else {
                 return Err(BallistaError::Internal(format!(
-                    "Invalid stage ID {} for job {}",
-                    stage_id, job_id
+                    "Invalid stage ID {stage_id} for job {job_id}"
                 )));
             }
         }
@@ -609,8 +608,7 @@ impl ExecutionGraph {
                 }
             } else {
                 return Err(BallistaError::Internal(format!(
-                    "Invalid stage ID {} for job {}",
-                    stage_id, job_id
+                    "Invalid stage ID {stage_id} for job {job_id}"
                 )));
             }
         }
@@ -635,8 +633,7 @@ impl ExecutionGraph {
                 }
             } else {
                 return Err(BallistaError::Internal(format!(
-                    "Invalid stage ID {} for job {}",
-                    stage_id, job_id
+                    "Invalid stage ID {stage_id} for job {job_id}"
                 )));
             }
         }
@@ -674,7 +671,7 @@ impl ExecutionGraph {
         // Fail the stage and also abort the job
         for (stage_id, err_msg) in &updated_stages.failed_stages {
             job_err_msg =
-                format!("Job failed due to stage {} failed: {}\n", stage_id, err_msg);
+                format!("Job failed due to stage {stage_id} failed: {err_msg}\n");
         }
 
         let mut events = vec![];
@@ -755,14 +752,12 @@ impl ExecutionGraph {
                         }
                     } else {
                         return Err(BallistaError::Internal(format!(
-                            "Error updating job {}: The stage {} as the output link of stage {}  should be unresolved",
-                            job_id, link, stage_id
+                            "Error updating job {job_id}: The stage {link} as the output link of stage {stage_id}  should be unresolved"
                         )));
                     }
                 } else {
                     return Err(BallistaError::Internal(format!(
-                        "Error updating job {}: Invalid output link {} for stage {}",
-                        job_id, stage_id, link
+                        "Error updating job {job_id}: Invalid output link {stage_id} for stage {link}"
                     )));
                 }
             }
@@ -874,7 +869,7 @@ impl ExecutionGraph {
                     .enumerate()
                     .find(|(_partition, info)| info.is_none())
                     .ok_or_else(|| {
-                        BallistaError::Internal(format!("Error getting next task for job {}: Stage {} is ready but has no pending tasks", job_id, stage_id))
+                        BallistaError::Internal(format!("Error getting next task for job {job_id}: Stage {stage_id} is ready but has no pending tasks"))
                     })?;
 
                 let partition = PartitionId {
@@ -914,7 +909,7 @@ impl ExecutionGraph {
                     output_partitioning: stage.output_partitioning.clone(),
                 })
             } else {
-                Err(BallistaError::General(format!("Stage {} is not a running stage", stage_id)))
+                Err(BallistaError::General(format!("Stage {stage_id} is not a running stage")))
             }
         }).transpose()?;
 
@@ -1411,7 +1406,7 @@ impl Debug for ExecutionGraph {
         let stages = self
             .stages
             .values()
-            .map(|stage| format!("{:?}", stage))
+            .map(|stage| format!("{stage:?}"))
             .collect::<Vec<String>>()
             .join("");
         write!(f, "ExecutionGraph[job_id={}, session_id={}, available_tasks={}, is_successful={}]\n{}",
@@ -1589,8 +1584,8 @@ mod test {
     use std::sync::Arc;
 
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::logical_expr::JoinType;
-    use datafusion::logical_expr::{col, count, sum, Expr};
+    use datafusion::logical_expr::expr::Sort;
+    use datafusion::logical_expr::{col, count, sum, Expr, JoinType};
     use datafusion::physical_plan::display::DisplayableExecutionPlan;
     use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion::test_util::scan_empty;
@@ -1609,7 +1604,7 @@ mod test {
     async fn test_drain_tasks() -> Result<()> {
         let mut agg_graph = test_aggregation_plan(4).await;
 
-        println!("Graph: {:?}", agg_graph);
+        println!("Graph: {agg_graph:?}");
 
         drain_tasks(&mut agg_graph)?;
 
@@ -1631,7 +1626,7 @@ mod test {
 
         drain_tasks(&mut join_graph)?;
 
-        println!("{:?}", join_graph);
+        println!("{join_graph:?}");
 
         assert!(join_graph.is_successful(), "Failed to complete join plan");
 
@@ -1639,7 +1634,7 @@ mod test {
 
         drain_tasks(&mut union_all_graph)?;
 
-        println!("{:?}", union_all_graph);
+        println!("{union_all_graph:?}");
 
         assert!(
             union_all_graph.is_successful(),
@@ -1650,7 +1645,7 @@ mod test {
 
         drain_tasks(&mut union_graph)?;
 
-        println!("{:?}", union_graph);
+        println!("{union_graph:?}");
 
         assert!(union_graph.is_successful(), "Failed to complete union plan");
 
@@ -2760,6 +2755,7 @@ mod test {
     async fn test_aggregation_plan(partition: usize) -> ExecutionGraph {
         let config = SessionConfig::new().with_target_partitions(partition);
         let ctx = Arc::new(SessionContext::with_config(config));
+        let session_state = ctx.state();
 
         let schema = Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
@@ -2773,9 +2769,12 @@ mod test {
             .build()
             .unwrap();
 
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+        let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+        let plan = session_state
+            .create_physical_plan(&optimized_plan)
+            .await
+            .unwrap();
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
@@ -2785,6 +2784,7 @@ mod test {
     async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
         let config = SessionConfig::new().with_target_partitions(partition);
         let ctx = Arc::new(SessionContext::with_config(config));
+        let session_state = ctx.state();
 
         let schema = Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
@@ -2801,9 +2801,12 @@ mod test {
             .build()
             .unwrap();
 
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+        let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+        let plan = session_state
+            .create_physical_plan(&optimized_plan)
+            .await
+            .unwrap();
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
@@ -2813,6 +2816,7 @@ mod test {
     async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
         let config = SessionConfig::new().with_target_partitions(partition);
         let ctx = Arc::new(SessionContext::with_config(config));
+        let session_state = ctx.state();
 
         let schema = Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
@@ -2826,16 +2830,24 @@ mod test {
             .build()
             .unwrap();
 
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+        let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+        let plan = session_state
+            .create_physical_plan(&optimized_plan)
+            .await
+            .unwrap();
 
         ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap()
     }
 
     async fn test_join_plan(partition: usize) -> ExecutionGraph {
-        let config = SessionConfig::new().with_target_partitions(partition);
+        let mut config = SessionConfig::new().with_target_partitions(partition);
+        config
+            .config_options_mut()
+            .optimizer
+            .enable_round_robin_repartition = false;
         let ctx = Arc::new(SessionContext::with_config(config));
+        let session_state = ctx.state();
 
         let schema = Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
@@ -2849,14 +2861,10 @@ mod test {
             .build()
             .unwrap();
 
-        let sort_expr = Expr::Sort {
-            expr: Box::new(col("id")),
-            asc: false,
-            nulls_first: false,
-        };
+        let sort_expr = Expr::Sort(Sort::new(Box::new(col("id")), false, false));
 
         let logical_plan = left_plan
-            .join(&right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
+            .join(right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
             .unwrap()
             .aggregate(vec![col("id")], vec![sum(col("gmv"))])
             .unwrap()
@@ -2865,16 +2873,19 @@ mod test {
             .build()
             .unwrap();
 
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+        let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+        let plan = session_state
+            .create_physical_plan(&optimized_plan)
+            .await
+            .unwrap();
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
         let graph = ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0)
             .unwrap();
 
-        println!("{:?}", graph);
+        println!("{graph:?}");
 
         graph
     }
@@ -2882,24 +2893,28 @@ mod test {
     async fn test_union_all_plan(partition: usize) -> ExecutionGraph {
         let config = SessionConfig::new().with_target_partitions(partition);
         let ctx = Arc::new(SessionContext::with_config(config));
+        let session_state = ctx.state();
 
         let logical_plan = ctx
             .sql("SELECT 1 as NUMBER union all SELECT 1 as NUMBER;")
             .await
             .unwrap()
-            .to_logical_plan()
+            .into_optimized_plan()
             .unwrap();
 
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+        let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+        let plan = session_state
+            .create_physical_plan(&optimized_plan)
+            .await
+            .unwrap();
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
         let graph = ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0)
             .unwrap();
 
-        println!("{:?}", graph);
+        println!("{graph:?}");
 
         graph
     }
@@ -2907,24 +2922,28 @@ mod test {
     async fn test_union_plan(partition: usize) -> ExecutionGraph {
         let config = SessionConfig::new().with_target_partitions(partition);
         let ctx = Arc::new(SessionContext::with_config(config));
+        let session_state = ctx.state();
 
         let logical_plan = ctx
             .sql("SELECT 1 as NUMBER union SELECT 1 as NUMBER;")
             .await
             .unwrap()
-            .to_logical_plan()
+            .into_optimized_plan()
             .unwrap();
 
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+        let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+        let plan = session_state
+            .create_physical_plan(&optimized_plan)
+            .await
+            .unwrap();
 
         println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
         let graph = ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0)
             .unwrap();
 
-        println!("{:?}", graph);
+        println!("{graph:?}");
 
         graph
     }

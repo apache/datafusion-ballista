@@ -96,7 +96,7 @@ pub async fn main() -> Result<()> {
     let args = Args::parse();
 
     if !args.quiet {
-        println!("Ballista CLI v{}", BALLISTA_CLI_VERSION);
+        println!("Ballista CLI v{BALLISTA_CLI_VERSION}");
     }
 
     if let Some(ref path) = args.data_path {
@@ -166,7 +166,7 @@ fn is_valid_file(dir: &str) -> std::result::Result<(), String> {
     if Path::new(dir).is_file() {
         Ok(())
     } else {
-        Err(format!("Invalid file '{}'", dir))
+        Err(format!("Invalid file '{dir}'"))
     }
 }
 
@@ -174,20 +174,20 @@ fn is_valid_data_dir(dir: &str) -> std::result::Result<(), String> {
     if Path::new(dir).is_dir() {
         Ok(())
     } else {
-        Err(format!("Invalid data directory '{}'", dir))
+        Err(format!("Invalid data directory '{dir}'"))
     }
 }
 
 fn is_valid_batch_size(size: &str) -> std::result::Result<(), String> {
     match size.parse::<usize>() {
         Ok(size) if size > 0 => Ok(()),
-        _ => Err(format!("Invalid batch size '{}'", size)),
+        _ => Err(format!("Invalid batch size '{size}'")),
     }
 }
 
 fn is_valid_concurrent_tasks_size(size: &str) -> std::result::Result<(), String> {
     match size.parse::<usize>() {
         Ok(size) if size > 0 => Ok(()),
-        _ => Err(format!("Invalid concurrent_tasks size '{}'", size)),
+        _ => Err(format!("Invalid concurrent_tasks size '{size}'")),
     }
 }

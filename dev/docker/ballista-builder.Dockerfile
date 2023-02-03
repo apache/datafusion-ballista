@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM rust:1.63.0-buster
+FROM rust:1-buster
 
 ARG EXT_UID
 

@@ -15,29 +15,15 @@
 # specific language governing permissions and limitations
 # under the License.
 
-[package]
-name = "ballista-examples"
-description = "Ballista usage examples"
-version = "0.10.0"
-homepage = "https://github.com/apache/arrow-ballista"
-repository = "https://github.com/apache/arrow-ballista"
-authors = ["Apache Arrow <dev@arrow.apache.org>"]
-license = "Apache-2.0"
-keywords = [ "arrow", "distributed", "query", "sql" ]
-edition = "2021"
-publish = false
-rust-version = "1.63"
+FROM ubuntu:22.04
 
-[[example]]
-name = "standalone_sql"
-path = "examples/standalone-sql.rs"
-required-features = ["ballista/standalone"]
+ARG RELEASE_FLAG=release
 
-[dependencies]
-ballista = { path = "../ballista/client", version = "0.10.0" }
-datafusion = "17.0.0"
-futures = "0.3"
-num_cpus = "1.13.0"
-prost = "0.11"
-tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "sync", "parking_lot"] }
-tonic = "0.8"
+ENV RELEASE_FLAG=${RELEASE_FLAG}
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=full
+
+COPY target/$RELEASE_FLAG/ballista-cli /root/ballista-cli
+
+COPY dev/docker/cli-entrypoint.sh /root/cli-entrypoint.sh
+ENTRYPOINT ["/root/cli-entrypoint.sh"]

@@ -185,8 +185,7 @@ impl DistributedPlanner {
             execution_plan.as_any().downcast_ref::<WindowAggExec>()
         {
             Err(BallistaError::NotImplemented(format!(
-                "WindowAggExec with window {:?}",
-                window
+                "WindowAggExec with window {window:?}"
             )))
         } else {
             Ok((
@@ -323,7 +322,7 @@ mod test {
     use crate::test_utils::datafusion_test_context;
     use ballista_core::error::BallistaError;
     use ballista_core::execution_plans::UnresolvedShuffleExec;
-    use ballista_core::serde::{protobuf, AsExecutionPlan, BallistaCodec};
+    use ballista_core::serde::BallistaCodec;
     use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
     use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
     use datafusion::physical_plan::joins::HashJoinExec;
@@ -335,8 +334,9 @@ mod test {
     use datafusion::prelude::SessionContext;
     use std::ops::Deref;
 
-    use ballista_core::serde::protobuf::PhysicalPlanNode;
+    use datafusion_proto::physical_plan::AsExecutionPlan;
     use datafusion_proto::protobuf::LogicalPlanNode;
+    use datafusion_proto::protobuf::PhysicalPlanNode;
     use std::sync::Arc;
     use uuid::Uuid;
 
@@ -349,6 +349,7 @@ mod test {
     #[tokio::test]
     async fn distributed_aggregate_plan() -> Result<(), BallistaError> {
         let ctx = datafusion_test_context("testdata").await?;
+        let session_state = ctx.state();
 
         // simplified form of TPC-H query 1
         let df = ctx
@@ -360,9 +361,9 @@ mod test {
             )
             .await?;
 
-        let plan = df.to_logical_plan()?;
-        let plan = ctx.optimize(&plan)?;
-        let plan = ctx.create_physical_plan(&plan).await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = session_state.optimize(&plan)?;
+        let plan = session_state.create_physical_plan(&plan).await?;
 
         let mut planner = DistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
@@ -434,6 +435,7 @@ mod test {
     #[tokio::test]
     async fn distributed_join_plan() -> Result<(), BallistaError> {
         let ctx = datafusion_test_context("testdata").await?;
+        let session_state = ctx.state();
 
         // simplified form of TPC-H query 12
         let df = ctx
@@ -472,9 +474,9 @@ order by
             )
             .await?;
 
-        let plan = df.to_logical_plan()?;
-        let plan = ctx.optimize(&plan)?;
-        let plan = ctx.create_physical_plan(&plan).await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = session_state.optimize(&plan)?;
+        let plan = session_state.create_physical_plan(&plan).await?;
 
         let mut planner = DistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
@@ -607,6 +609,7 @@ order by
     #[tokio::test]
     async fn roundtrip_serde_aggregate() -> Result<(), BallistaError> {
         let ctx = datafusion_test_context("testdata").await?;
+        let session_state = ctx.state();
 
         // simplified form of TPC-H query 1
         let df = ctx
@@ -618,42 +621,42 @@ order by
             )
             .await?;
 
-        let plan = df.to_logical_plan()?;
-        let plan = ctx.optimize(&plan)?;
-        let plan = ctx.create_physical_plan(&plan).await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = session_state.optimize(&plan)?;
+        let plan = session_state.create_physical_plan(&plan).await?;
 
         let mut planner = DistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
         let stages = planner.plan_query_stages(&job_uuid.to_string(), plan)?;
 
         let partial_hash = stages[0].children()[0].clone();
-        let partial_hash_serde = roundtrip_operator(partial_hash.clone())?;
+        let partial_hash_serde = roundtrip_operator(&ctx, partial_hash.clone())?;
 
         let partial_hash = downcast_exec!(partial_hash, AggregateExec);
         let partial_hash_serde = downcast_exec!(partial_hash_serde, AggregateExec);
 
         assert_eq!(
-            format!("{:?}", partial_hash),
-            format!("{:?}", partial_hash_serde)
+            format!("{partial_hash:?}"),
+            format!("{partial_hash_serde:?}")
         );
 
         Ok(())
     }
 
     fn roundtrip_operator(
+        ctx: &SessionContext,
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
-        let ctx = SessionContext::new();
         let codec: BallistaCodec<LogicalPlanNode, PhysicalPlanNode> =
             BallistaCodec::default();
-        let proto: protobuf::PhysicalPlanNode =
-            protobuf::PhysicalPlanNode::try_from_physical_plan(
+        let proto: datafusion_proto::protobuf::PhysicalPlanNode =
+            datafusion_proto::protobuf::PhysicalPlanNode::try_from_physical_plan(
                 plan.clone(),
                 codec.physical_extension_codec(),
             )?;
         let runtime = ctx.runtime_env();
         let result_exec_plan: Arc<dyn ExecutionPlan> = (proto).try_into_physical_plan(
-            &ctx,
+            ctx,
             runtime.deref(),
             codec.physical_extension_codec(),
         )?;

@@ -158,14 +158,14 @@ impl From<tokio::task::JoinError> for BallistaError {
     }
 }
 
-impl From<datafusion_proto::from_proto::Error> for BallistaError {
-    fn from(e: datafusion_proto::from_proto::Error) -> Self {
+impl From<datafusion_proto::logical_plan::from_proto::Error> for BallistaError {
+    fn from(e: datafusion_proto::logical_plan::from_proto::Error) -> Self {
         BallistaError::General(e.to_string())
     }
 }
 
-impl From<datafusion_proto::to_proto::Error> for BallistaError {
-    fn from(e: datafusion_proto::to_proto::Error) -> Self {
+impl From<datafusion_proto::logical_plan::to_proto::Error> for BallistaError {
+    fn from(e: datafusion_proto::logical_plan::to_proto::Error) -> Self {
         BallistaError::General(e.to_string())
     }
 }
@@ -180,15 +180,15 @@ impl Display for BallistaError {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self {
             BallistaError::NotImplemented(ref desc) => {
-                write!(f, "Not implemented: {}", desc)
+                write!(f, "Not implemented: {desc}")
             }
-            BallistaError::General(ref desc) => write!(f, "General error: {}", desc),
-            BallistaError::ArrowError(ref desc) => write!(f, "Arrow error: {}", desc),
+            BallistaError::General(ref desc) => write!(f, "General error: {desc}"),
+            BallistaError::ArrowError(ref desc) => write!(f, "Arrow error: {desc}"),
             BallistaError::DataFusionError(ref desc) => {
-                write!(f, "DataFusion error: {:?}", desc)
+                write!(f, "DataFusion error: {desc:?}")
             }
-            BallistaError::SqlError(ref desc) => write!(f, "SQL error: {:?}", desc),
-            BallistaError::IoError(ref desc) => write!(f, "IO error: {}", desc),
+            BallistaError::SqlError(ref desc) => write!(f, "SQL error: {desc:?}"),
+            BallistaError::IoError(ref desc) => write!(f, "IO error: {desc}"),
             // BallistaError::ReqwestError(ref desc) => write!(f, "Reqwest error: {}", desc),
             // BallistaError::HttpError(ref desc) => write!(f, "HTTP error: {}", desc),
             // BallistaError::KubeAPIError(ref desc) => write!(f, "Kube API error: {}", desc),
@@ -198,24 +198,23 @@ impl Display for BallistaError {
             // BallistaError::KubeAPIResponseError(ref desc) => {
             //     write!(f, "KubeAPI response error: {}", desc)
             // }
-            BallistaError::TonicError(desc) => write!(f, "Tonic error: {}", desc),
-            BallistaError::GrpcError(desc) => write!(f, "Grpc error: {}", desc),
+            BallistaError::TonicError(desc) => write!(f, "Tonic error: {desc}"),
+            BallistaError::GrpcError(desc) => write!(f, "Grpc error: {desc}"),
             BallistaError::GrpcConnectionError(desc) => {
-                write!(f, "Grpc connection error: {}", desc)
+                write!(f, "Grpc connection error: {desc}")
             }
             BallistaError::Internal(desc) => {
-                write!(f, "Internal Ballista error: {}", desc)
+                write!(f, "Internal Ballista error: {desc}")
             }
-            BallistaError::TokioError(desc) => write!(f, "Tokio join error: {}", desc),
+            BallistaError::TokioError(desc) => write!(f, "Tokio join error: {desc}"),
             BallistaError::GrpcActionError(desc) => {
-                write!(f, "Grpc Execute Action error: {}", desc)
+                write!(f, "Grpc Execute Action error: {desc}")
             }
             BallistaError::FetchFailed(executor_id, map_stage, map_partition, desc) => {
                 write!(
                     f,
-                    "Shuffle fetch partition error from Executor {}, map_stage {}, \
-                map_partition {}, error desc: {}",
-                    executor_id, map_stage, map_partition, desc
+                    "Shuffle fetch partition error from Executor {executor_id}, map_stage {map_stage}, \
+                map_partition {map_partition}, error desc: {desc}"
                 )
             }
             BallistaError::Cancelled => write!(f, "Task cancelled"),
@@ -248,7 +247,7 @@ impl From<BallistaError> for FailedTask {
             }
             BallistaError::IoError(io) => {
                 FailedTask {
-                    error: format!("Task failed due to Ballista IO error: {:?}", io),
+                    error: format!("Task failed due to Ballista IO error: {io:?}"),
                     // IO error is considered to be temporary and retryable
                     retryable: true,
                     count_to_failures: true,
@@ -257,7 +256,7 @@ impl From<BallistaError> for FailedTask {
             }
             BallistaError::DataFusionError(DataFusionError::IoError(io)) => {
                 FailedTask {
-                    error: format!("Task failed due to DataFusion IO error: {:?}", io),
+                    error: format!("Task failed due to DataFusion IO error: {io:?}"),
                     // IO error is considered to be temporary and retryable
                     retryable: true,
                     count_to_failures: true,
@@ -265,7 +264,7 @@ impl From<BallistaError> for FailedTask {
                 }
             }
             other => FailedTask {
-                error: format!("Task failed due to runtime execution error: {:?}", other),
+                error: format!("Task failed due to runtime execution error: {other:?}"),
                 retryable: false,
                 count_to_failures: false,
                 failed_reason: Some(FailedReason::ExecutionError(ExecutionError {})),
