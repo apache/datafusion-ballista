@@ -58,7 +58,7 @@ queries at scale factor 10 (10 GB) on a single node with a single executor and 2
 
 The tracking issue for improving these results is [#339](https://github.com/apache/arrow-ballista/issues/339).
 
-![benchmarks](https://sqlbenchmarks.io/sqlbench-h/results/env/workstation/sf10/distributed/sqlbench-h-workstation-10-distributed-perquery.png)
+![benchmarks](docs/sqlbench-h-workstation-10-distributed-perquery.png)
 
 # Getting Started
 
