@@ -15,13 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::cluster::event::ClusterEventSender;
+use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
+use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
 use crate::metrics::default_metrics_collector;
 use crate::state::backend::cluster::DefaultClusterState;
 use crate::{scheduler_server::SchedulerServer, state::backend::sled::SledClient};
 use ballista_core::serde::protobuf::PhysicalPlanNode;
 use ballista_core::serde::BallistaCodec;
-use ballista_core::utils::create_grpc_server;
+use ballista_core::utils::{create_grpc_server, default_session_builder};
 use ballista_core::{
     error::Result, serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer,
     BALLISTA_VERSION,
@@ -36,11 +39,19 @@ pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
 
     let metrics_collector = default_metrics_collector()?;
 
+    let cluster = BallistaCluster::new(
+        Arc::new(InMemoryClusterState::default()),
+        Arc::new(InMemoryJobState::new(
+            "localhost:50050",
+            default_session_builder,
+        )),
+    );
+
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
         SchedulerServer::new(
             "localhost:50050".to_owned(),
             backend.clone(),
-            Arc::new(DefaultClusterState::new(backend)),
+            cluster,
             BallistaCodec::default(),
             SchedulerConfig::default(),
             metrics_collector,

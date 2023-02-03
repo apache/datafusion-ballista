@@ -45,20 +45,20 @@ use std::fmt::{self, Write};
 use std::sync::Arc;
 
 /// Utility for producing dot diagrams from execution graphs
-pub struct ExecutionGraphDot {
-    graph: Arc<ExecutionGraph>,
+pub struct ExecutionGraphDot<'a> {
+    graph: &'a ExecutionGraph,
 }
 
-impl ExecutionGraphDot {
+impl<'a> ExecutionGraphDot<'a> {
     /// Create a DOT graph from the provided ExecutionGraph
-    pub fn generate(graph: Arc<ExecutionGraph>) -> Result<String, fmt::Error> {
+    pub fn generate(graph: &'a ExecutionGraph) -> Result<String, fmt::Error> {
         let mut dot = Self { graph };
         dot._generate()
     }
 
     /// Create a DOT graph for one query stage from the provided ExecutionGraph
     pub fn generate_for_query_stage(
-        graph: Arc<ExecutionGraph>,
+        graph: &ExecutionGraph,
         stage_id: usize,
     ) -> Result<String, fmt::Error> {
         if let Some(stage) = graph.stages().get(&stage_id) {
@@ -503,7 +503,7 @@ filter_expr="]
     #[tokio::test]
     async fn query_stage() -> Result<()> {
         let graph = test_graph().await?;
-        let dot = ExecutionGraphDot::generate_for_query_stage(Arc::new(graph), 3)
+        let dot = ExecutionGraphDot::generate_for_query_stage(&graph, 3)
             .map_err(|e| BallistaError::Internal(format!("{:?}", e)))?;
 
         let expected = r#"digraph G {
@@ -595,7 +595,7 @@ filter_expr="]
     #[tokio::test]
     async fn query_stage_optimized() -> Result<()> {
         let graph = test_graph_optimized().await?;
-        let dot = ExecutionGraphDot::generate_for_query_stage(Arc::new(graph), 4)
+        let dot = ExecutionGraphDot::generate_for_query_stage(&graph, 4)
             .map_err(|e| BallistaError::Internal(format!("{:?}", e)))?;
 
         let expected = r#"digraph G {

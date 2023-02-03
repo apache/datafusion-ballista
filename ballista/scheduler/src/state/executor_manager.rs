@@ -17,13 +17,13 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::state::backend::TaskDistribution;
+use crate::cluster::TaskDistribution;
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf;
 
+use crate::cluster::ClusterState;
 use crate::config::SlotsPolicy;
-use crate::state::backend::cluster::ClusterState;
 use crate::state::execution_graph::RunningTaskInfo;
 use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 use ballista_core::serde::protobuf::{

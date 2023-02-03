@@ -31,6 +31,7 @@ use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::{TaskLauncher, TaskManager};
 
+use crate::cluster::{BallistaCluster, JobState};
 use crate::config::SchedulerConfig;
 use crate::state::execution_graph::TaskDescription;
 use backend::cluster::ClusterState;
@@ -100,7 +101,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     #[cfg(test)]
     pub fn new_with_default_scheduler_name(
         config_client: Arc<dyn StateBackendClient>,
-        cluster_state: Arc<dyn ClusterState>,
+        cluster: BallistaCluster,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
     ) -> Self {
@@ -116,7 +117,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
     pub fn new(
         config_client: Arc<dyn StateBackendClient>,
-        cluster_state: Arc<dyn ClusterState>,
+        cluster: BallistaCluster,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
@@ -124,11 +125,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     ) -> Self {
         Self {
             executor_manager: ExecutorManager::new(
-                cluster_state,
+                cluster.cluster_state(),
                 config.executor_slots_policy,
             ),
             task_manager: TaskManager::new(
                 config_client.clone(),
+                cluster.job_state(),
                 session_builder,
                 codec.clone(),
                 scheduler_name,
@@ -142,7 +144,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     #[allow(dead_code)]
     pub(crate) fn with_task_launcher(
         config_client: Arc<dyn StateBackendClient>,
-        cluster_state: Arc<dyn ClusterState>,
+        cluster: BallistaCluster,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
@@ -151,11 +153,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     ) -> Self {
         Self {
             executor_manager: ExecutorManager::new(
-                cluster_state,
+                cluster.cluster_state(),
                 config.executor_slots_policy,
             ),
             task_manager: TaskManager::with_launcher(
                 config_client.clone(),
+                cluster.job_state(),
                 session_builder,
                 codec.clone(),
                 scheduler_name,
@@ -414,7 +417,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             job_id.clone(),
             self.config.finished_job_data_clean_up_interval_seconds,
         );
-        self.task_manager.delete_successful_job_delayed(
+        self.task_manager.clean_up_job_delayed(
             job_id,
             self.config.finished_job_state_clean_up_interval_seconds,
         );
@@ -423,7 +426,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     /// Spawn a delayed future to clean up job data on both Scheduler and Executors
     pub(crate) fn clean_up_failed_job(&self, job_id: String) {
         self.executor_manager.clean_up_job_data(job_id.clone());
-        self.task_manager.clean_up_failed_job_delayed(
+        self.task_manager.clean_up_job_delayed(
             job_id,
             self.config.finished_job_state_clean_up_interval_seconds,
         );

@@ -44,6 +44,9 @@ mod config {
 }
 
 use ballista_core::config::LogRotationPolicy;
+use ballista_core::utils::default_session_builder;
+use ballista_scheduler::cluster::memory::{InMemoryClusterState, InMemoryJobState};
+use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::config::SchedulerConfig;
 use ballista_scheduler::state::backend::cluster::DefaultClusterState;
 use config::prelude::*;
@@ -131,7 +134,16 @@ async fn main() -> Result<()> {
             .finished_job_state_clean_up_interval_seconds,
         advertise_flight_sql_endpoint: opt.advertise_flight_sql_endpoint,
     };
-    start_server(scheduler_name, config_backend, cluster_state, addr, config).await?;
+
+    let cluster = BallistaCluster::new(
+        Arc::new(InMemoryClusterState::default()),
+        Arc::new(InMemoryJobState::new(
+            &scheduler_name,
+            default_session_builder,
+        )),
+    );
+
+    start_server(scheduler_name, cluster, config_backend, addr, config).await?;
     Ok(())
 }
 

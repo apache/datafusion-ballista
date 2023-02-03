@@ -33,9 +33,10 @@ use log::{error, info, warn};
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
 use ballista_core::serde::protobuf::failed_task::FailedReason;
+use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
     self, execution_graph_stage::StageType, FailedTask, JobStatus, QueuedJob, ResultLost,
-    SuccessfulJob, TaskStatus,
+    RunningJob, SuccessfulJob, TaskStatus,
 };
 use ballista_core::serde::protobuf::{job_status, FailedJob, ShuffleWritePartition};
 use ballista_core::serde::protobuf::{task_status, RunningTask};
@@ -101,8 +102,8 @@ mod execution_stage;
 /// publish its outputs to the `ExecutionGraph`s `output_locations` representing the final query results.
 #[derive(Clone)]
 pub struct ExecutionGraph {
-    /// Curator scheduler name
-    scheduler_id: String,
+    /// Curator scheduler name. Can be `None` is `ExecutionGraph` is not currently curated by any scheduler
+    scheduler_id: Option<String>,
     /// ID for this job
     job_id: String,
     /// Job name, can be empty string
@@ -158,12 +159,14 @@ impl ExecutionGraph {
         let stages = builder.build(shuffle_stages)?;
 
         Ok(Self {
-            scheduler_id: scheduler_id.to_string(),
+            scheduler_id: Some(scheduler_id.to_string()),
             job_id: job_id.to_string(),
             job_name: job_name.to_string(),
             session_id: session_id.to_string(),
             status: JobStatus {
-                status: Some(job_status::Status::Queued(QueuedJob {})),
+                job_id: job_id.to_string(),
+                job_name: job_name.to_string(),
+                status: Some(job_status::Status::Queued(QueuedJob { queued_at })),
             },
             queued_at,
             start_time: timestamp_millis(),
@@ -216,6 +219,12 @@ impl ExecutionGraph {
 
     /// An ExecutionGraph is successful if all its stages are successful
     pub fn is_successful(&self) -> bool {
+        self.stages
+            .values()
+            .all(|s| matches!(s, ExecutionStage::Successful(_)))
+    }
+
+    pub fn is_complete(&self) -> bool {
         self.stages
             .values()
             .all(|s| matches!(s, ExecutionStage::Successful(_)))
@@ -838,6 +847,7 @@ impl ExecutionGraph {
             self.status,
             JobStatus {
                 status: Some(job_status::Status::Failed(_)),
+                ..
             }
         ) {
             warn!("Call pop_next_task on failed Job");
@@ -1211,7 +1221,14 @@ impl ExecutionGraph {
     /// fail job with error message
     pub fn fail_job(&mut self, error: String) {
         self.status = JobStatus {
-            status: Some(job_status::Status::Failed(FailedJob { error })),
+            job_id: self.job_id.clone(),
+            job_name: self.job_name.clone(),
+            status: Some(job_status::Status::Failed(FailedJob {
+                error,
+                queued_at: self.queued_at,
+                started_at: self.start_time,
+                ended_at: self.end_time,
+            })),
         };
     }
 
@@ -1231,8 +1248,14 @@ impl ExecutionGraph {
             .collect::<Result<Vec<_>>>()?;
 
         self.status = JobStatus {
+            job_id: self.job_id.clone(),
+            job_name: self.job_name.clone(),
             status: Some(job_status::Status::Successful(SuccessfulJob {
                 partition_location,
+
+                queued_at: self.queued_at,
+                started_at: self.start_time,
+                ended_at: self.end_time,
             })),
         };
         self.end_time = SystemTime::now()
@@ -1246,6 +1269,18 @@ impl ExecutionGraph {
     /// Clear the stage failure count for this stage if the stage is finally success
     fn clear_stage_failure(&mut self, stage_id: usize) {
         self.failed_stage_attempts.remove(&stage_id);
+    }
+
+    pub(crate) fn disown(&mut self) {
+        self.scheduler_id = None;
+
+        if let JobStatus {
+            status: Some(Status::Running(RunningJob { scheduler, .. })),
+            ..
+        } = &mut self.status
+        {
+            std::mem::take(scheduler);
+        }
     }
 
     pub(crate) async fn decode_execution_graph<
@@ -1309,7 +1344,7 @@ impl ExecutionGraph {
             .collect();
 
         Ok(ExecutionGraph {
-            scheduler_id: proto.scheduler_id,
+            scheduler_id: (!proto.scheduler_id.is_empty()).then_some(proto.scheduler_id),
             job_id: proto.job_id,
             job_name: proto.job_name,
             session_id: proto.session_id,
@@ -1399,7 +1434,7 @@ impl ExecutionGraph {
             stages,
             output_partitions: graph.output_partitions as u64,
             output_locations,
-            scheduler_id: graph.scheduler_id,
+            scheduler_id: graph.scheduler_id.unwrap_or_default(),
             task_id_gen: graph.task_id_gen as u32,
             failed_attempts,
         })

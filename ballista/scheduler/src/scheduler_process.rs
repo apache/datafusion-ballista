@@ -36,6 +36,7 @@ use ballista_core::utils::create_grpc_server;
 use ballista_core::BALLISTA_VERSION;
 
 use crate::api::{get_routes, EitherBody, Error};
+use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
 use crate::flight_sql::FlightSqlServiceImpl;
 use crate::metrics::default_metrics_collector;
@@ -46,8 +47,8 @@ use crate::state::backend::StateBackendClient;
 
 pub async fn start_server(
     scheduler_name: String,
+    cluster: BallistaCluster,
     config_backend: Arc<dyn StateBackendClient>,
-    cluster_state: Arc<dyn ClusterState>,
     addr: SocketAddr,
     config: SchedulerConfig,
 ) -> Result<()> {
@@ -67,7 +68,7 @@ pub async fn start_server(
         SchedulerServer::new(
             scheduler_name,
             config_backend.clone(),
-            cluster_state,
+            cluster,
             BallistaCodec::default(),
             config,
             metrics_collector,
