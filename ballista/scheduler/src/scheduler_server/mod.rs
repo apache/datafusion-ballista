@@ -54,7 +54,7 @@ pub mod externalscaler {
 pub mod event;
 mod external_scaler;
 mod grpc;
-mod query_stage_scheduler;
+pub(crate) mod query_stage_scheduler;
 
 pub(crate) type SessionBuilder = fn(SessionConfig) -> SessionState;
 
@@ -84,8 +84,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             scheduler_name.clone(),
             config.clone(),
         ));
-        let query_stage_scheduler =
-            Arc::new(QueryStageScheduler::new(state.clone(), metrics_collector));
+        let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
+            state.clone(),
+            metrics_collector,
+            config.job_resubmit_interval_ms,
+        ));
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
             config.event_loop_buffer_size as usize,
@@ -118,8 +121,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             scheduler_name.clone(),
             config.clone(),
         ));
-        let query_stage_scheduler =
-            Arc::new(QueryStageScheduler::new(state.clone(), metrics_collector));
+        let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
+            state.clone(),
+            metrics_collector,
+            config.job_resubmit_interval_ms,
+        ));
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
             config.event_loop_buffer_size as usize,
@@ -154,8 +160,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             config.clone(),
             task_launcher,
         ));
-        let query_stage_scheduler =
-            Arc::new(QueryStageScheduler::new(state.clone(), metrics_collector));
+        let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
+            state.clone(),
+            metrics_collector,
+            config.job_resubmit_interval_ms,
+        ));
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
             config.event_loop_buffer_size as usize,
@@ -177,6 +186,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         self.expire_dead_executors()?;
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn query_stage_scheduler(&self) -> Arc<QueryStageScheduler<T, U>> {
+        self.query_stage_scheduler.clone()
     }
 
     pub(crate) fn pending_tasks(&self) -> usize {

@@ -51,6 +51,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::CsvReadOptions;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
 use crate::state::backend::cluster::DefaultClusterState;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use parking_lot::Mutex;
@@ -384,13 +385,16 @@ impl SchedulerTest {
         let state_storage = Arc::new(SledClient::try_new_temporary()?);
         let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
 
-        let ballista_config = BallistaConfig::builder()
-            .set(
-                BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
-                format!("{}", num_executors * task_slots_per_executor).as_str(),
-            )
-            .build()
-            .expect("creating BallistaConfig");
+        let ballista_config = if num_executors > 0 && task_slots_per_executor > 0 {
+            BallistaConfig::builder()
+                .set(
+                    BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
+                    format!("{}", num_executors * task_slots_per_executor).as_str(),
+                )
+                .build()?
+        } else {
+            BallistaConfig::builder().build()?
+        };
 
         let runner = runner.unwrap_or_else(|| Arc::new(default_task_runner()));
 
@@ -475,6 +479,7 @@ impl SchedulerTest {
         job_name: &str,
         plan: &LogicalPlan,
     ) -> Result<()> {
+        println!("{:?}", self.ballista_config);
         let ctx = self
             .scheduler
             .state
@@ -487,6 +492,17 @@ impl SchedulerTest {
             .await?;
 
         Ok(())
+    }
+
+    pub async fn post_scheduler_event(
+        &self,
+        event: QueryStageSchedulerEvent,
+    ) -> Result<()> {
+        self.scheduler
+            .query_stage_event_loop
+            .get_sender()?
+            .post_event(event)
+            .await
     }
 
     pub async fn tick(&mut self) -> Result<()> {
@@ -595,6 +611,12 @@ impl SchedulerTest {
         };
 
         final_status
+    }
+
+    pub(crate) fn query_stage_scheduler(
+        &self,
+    ) -> Arc<QueryStageScheduler<LogicalPlanNode, PhysicalPlanNode>> {
+        self.scheduler.query_stage_scheduler()
     }
 }
 
