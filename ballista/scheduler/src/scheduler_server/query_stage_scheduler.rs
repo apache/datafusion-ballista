@@ -169,12 +169,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
                     if reservations.is_empty() && self.job_resubmit_interval_ms.is_some()
                     {
+                        let wait_ms = self.job_resubmit_interval_ms.unwrap();
+
                         debug!(
-                            "No task slots reserved for job {}, resubmitting after 200ms",
-                            job_id
+                            "No task slots reserved for job {job_id}, resubmitting after {wait_ms}ms"
                         );
 
-                        let wait_ms = self.job_resubmit_interval_ms.unwrap();
                         tokio::task::spawn(async move {
                             tokio::time::sleep(Duration::from_millis(wait_ms)).await;
 
