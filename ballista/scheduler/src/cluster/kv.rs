@@ -18,30 +18,33 @@
 use crate::cluster::storage::{KeyValueStore, Keyspace, Lock, Operation, WatchEvent};
 use crate::cluster::{
     reserve_slots_bias, reserve_slots_round_robin, ClusterState, ExecutorHeartbeatStream,
-    JobState, JobStateEventStream, JobStatus, TaskDistribution,
+    JobState, JobStateEvent, JobStateEventStream, JobStatus, TaskDistribution,
 };
+use crate::scheduler_server::SessionBuilder;
 use crate::state::execution_graph::ExecutionGraph;
 use crate::state::executor_manager::ExecutorReservation;
+use crate::state::session_manager::create_datafusion_context;
 use crate::state::{decode_into, decode_protobuf};
 use async_trait::async_trait;
 use ballista_core::config::BallistaConfig;
 use ballista_core::error::{BallistaError, Result};
+use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    self, AvailableTaskSlots, ExecutorHeartbeat, ExecutorTaskSlots,
+    self, ExecutorHeartbeat, ExecutorTaskSlots, FailedJob, KeyValuePair,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::serde::AsExecutionPlan;
 use ballista_core::serde::BallistaCodec;
+use dashmap::DashMap;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use futures::StreamExt;
-use itertools::Itertools;
+use log::warn;
 use prost::Message;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use dashmap::DashMap;
 
 /// State implementation based on underlying `KeyValueStore`
 pub struct KeyValueState<
@@ -54,9 +57,12 @@ pub struct KeyValueState<
     /// Codec used to serialize/deserialize execution plan
     codec: BallistaCodec<T, U>,
     /// Name of current scheduler. Should be `{host}:{port}`
+    #[allow(dead_code)]
     scheduler: String,
     /// In-memory store of queued jobs. Map from Job ID -> (Job Name, queued_at timestamp)
     queued_jobs: DashMap<String, (String, u64)>,
+    //// `SessionBuilder` for constructing `SessionContext` from stored `BallistaConfig`
+    session_builder: SessionBuilder,
 }
 
 impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
@@ -66,12 +72,14 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         scheduler: impl Into<String>,
         store: S,
         codec: BallistaCodec<T, U>,
+        session_builder: SessionBuilder,
     ) -> Self {
         Self {
             store,
             scheduler: scheduler.into(),
             codec,
             queued_jobs: DashMap::new(),
+            session_builder,
         }
     }
 }
@@ -362,8 +370,16 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> JobState
     for KeyValueState<S, T, U>
 {
-    async fn accept_job(&self, job_id: &str, job_name: &str, queued_at: u64) -> Result<()> {
-        todo!()
+    async fn accept_job(
+        &self,
+        job_id: &str,
+        job_name: &str,
+        queued_at: u64,
+    ) -> Result<()> {
+        self.queued_jobs
+            .insert(job_id.to_string(), (job_name.to_string(), queued_at));
+
+        Ok(())
     }
 
     async fn submit_job(&self, job_id: String, graph: &ExecutionGraph) -> Result<()> {
@@ -439,8 +455,44 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             .await
     }
 
+    async fn fail_unscheduled_job(&self, job_id: &str, reason: String) -> Result<()> {
+        if let Some((job_id, (job_name, queued_at))) = self.queued_jobs.remove(job_id) {
+            let status = JobStatus {
+                job_id: job_id.clone(),
+                job_name,
+                status: Some(Status::Failed(FailedJob {
+                    error: reason,
+                    queued_at,
+                    started_at: 0,
+                    ended_at: 0,
+                })),
+            };
+
+            self.store
+                .put(Keyspace::JobStatus, job_id, status.encode_to_vec())
+                .await
+        } else {
+            Err(BallistaError::Internal(format!(
+                "Could not fail unscheduled job {job_id}, not found in queued jobs"
+            )))
+        }
+    }
+
     async fn remove_job(&self, job_id: &str) -> Result<()> {
-        todo!()
+        if self.queued_jobs.remove(job_id).is_none() {
+            self.store
+                .apply_txn(vec![
+                    (Operation::Delete, Keyspace::JobStatus, job_id.to_string()),
+                    (
+                        Operation::Delete,
+                        Keyspace::ExecutionGraph,
+                        job_id.to_string(),
+                    ),
+                ])
+                .await
+        } else {
+            Ok(())
+        }
     }
 
     async fn try_acquire_job(&self, _job_id: &str) -> Result<Option<ExecutionGraph>> {
@@ -449,19 +501,81 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         ))
     }
 
-    async fn job_state_events(&self) -> JobStateEventStream {
-        todo!()
+    async fn job_state_events(&self) -> Result<JobStateEventStream> {
+        let watch = self
+            .store
+            .watch(Keyspace::JobStatus, String::default())
+            .await?;
+
+        let stream = watch
+            .filter_map(|event| {
+                futures::future::ready(match event {
+                    WatchEvent::Put(key, value) => {
+                        if let Some(job_id) = Keyspace::JobStatus.strip_prefix(&key) {
+                            match JobStatus::decode(value.as_slice()) {
+                                Ok(status) => Some(JobStateEvent::JobUpdated {
+                                    job_id: job_id.to_string(),
+                                    status,
+                                }),
+                                Err(err) => {
+                                    warn!(
+                                    "Error decoding job status from watch event: {err:?}"
+                                );
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                })
+            })
+            .boxed();
+
+        Ok(stream)
     }
 
     async fn get_session(&self, session_id: &str) -> Result<Arc<SessionContext>> {
-        todo!()
+        let value = self.store.get(Keyspace::Sessions, session_id).await?;
+
+        let settings: protobuf::SessionSettings = decode_protobuf(&value)?;
+
+        let mut config_builder = BallistaConfig::builder();
+        for kv_pair in &settings.configs {
+            config_builder = config_builder.set(&kv_pair.key, &kv_pair.value);
+        }
+        let config = config_builder.build()?;
+
+        Ok(create_datafusion_context(&config, self.session_builder))
     }
 
     async fn create_session(
         &self,
         config: &BallistaConfig,
     ) -> Result<Arc<SessionContext>> {
-        todo!()
+        let mut settings: Vec<KeyValuePair> = vec![];
+
+        for (key, value) in config.settings() {
+            settings.push(KeyValuePair {
+                key: key.clone(),
+                value: value.clone(),
+            })
+        }
+
+        let value = protobuf::SessionSettings { configs: settings };
+
+        let session = create_datafusion_context(config, self.session_builder);
+
+        self.store
+            .put(
+                Keyspace::Sessions,
+                session.session_id(),
+                value.encode_to_vec(),
+            )
+            .await?;
+
+        Ok(session)
     }
 
     async fn update_session(
@@ -469,7 +583,25 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         session_id: &str,
         config: &BallistaConfig,
     ) -> Result<Arc<SessionContext>> {
-        todo!()
+        let mut settings: Vec<KeyValuePair> = vec![];
+
+        for (key, value) in config.settings() {
+            settings.push(KeyValuePair {
+                key: key.clone(),
+                value: value.clone(),
+            })
+        }
+
+        let value = protobuf::SessionSettings { configs: settings };
+        self.store
+            .put(
+                Keyspace::Sessions,
+                session_id.to_owned(),
+                value.encode_to_vec(),
+            )
+            .await?;
+
+        Ok(create_datafusion_context(config, self.session_builder))
     }
 }
 

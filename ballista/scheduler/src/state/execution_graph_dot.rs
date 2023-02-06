@@ -430,7 +430,7 @@ mod tests {
     #[tokio::test]
     async fn dot() -> Result<()> {
         let graph = test_graph().await?;
-        let dot = ExecutionGraphDot::generate(Arc::new(graph))
+        let dot = ExecutionGraphDot::generate(&graph)
             .map_err(|e| BallistaError::Internal(format!("{:?}", e)))?;
 
         let expected = r#"digraph G {
@@ -531,7 +531,7 @@ filter_expr="]
     #[tokio::test]
     async fn dot_optimized() -> Result<()> {
         let graph = test_graph_optimized().await?;
-        let dot = ExecutionGraphDot::generate(Arc::new(graph))
+        let dot = ExecutionGraphDot::generate(&graph)
             .map_err(|e| BallistaError::Internal(format!("{:?}", e)))?;
 
         let expected = r#"digraph G {

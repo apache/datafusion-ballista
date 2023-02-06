@@ -1703,7 +1703,8 @@ mod test {
         assert!(matches!(
             status,
             protobuf::JobStatus {
-                status: Some(job_status::Status::Successful(_))
+                status: Some(job_status::Status::Successful(_)),
+                ..
             }
         ));
 
@@ -1915,7 +1916,8 @@ mod test {
             matches!(
                 agg_graph.status,
                 JobStatus {
-                    status: Some(job_status::Status::Queued(_))
+                    status: Some(job_status::Status::Queued(_)),
+                    ..
                 }
             ),
             "Expected job status to be running"
@@ -2000,7 +2002,8 @@ mod test {
             matches!(
                 agg_graph.status,
                 JobStatus {
-                    status: Some(job_status::Status::Failed(_))
+                    status: Some(job_status::Status::Failed(_)),
+                    ..
                 }
             ),
             "Expected job status to be Failed"

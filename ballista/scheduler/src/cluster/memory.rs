@@ -24,13 +24,15 @@ use crate::state::executor_manager::ExecutorReservation;
 use async_trait::async_trait;
 use ballista_core::config::BallistaConfig;
 use ballista_core::error::{BallistaError, Result};
-use ballista_core::serde::protobuf::{ExecutorHeartbeat, ExecutorTaskSlots};
+use ballista_core::serde::protobuf::{
+    executor_status, ExecutorHeartbeat, ExecutorStatus, ExecutorTaskSlots, FailedJob,
+};
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use dashmap::DashMap;
 use datafusion::prelude::SessionContext;
 
 use crate::cluster::event::ClusterEventSender;
-use crate::scheduler_server::SessionBuilder;
+use crate::scheduler_server::{timestamp_millis, SessionBuilder};
 use crate::state::session_manager::{
     create_datafusion_context, update_datafusion_context,
 };
@@ -39,8 +41,8 @@ use itertools::Itertools;
 use log::warn;
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
-use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::ops::DerefMut;
+
 use std::sync::Arc;
 
 #[derive(Default)]
@@ -145,6 +147,15 @@ impl ClusterState for InMemoryClusterState {
         mut spec: ExecutorData,
         reserve: bool,
     ) -> Result<Vec<ExecutorReservation>> {
+        let heartbeat = ExecutorHeartbeat {
+            executor_id: metadata.id.clone(),
+            timestamp: timestamp_millis(),
+            metrics: vec![],
+            status: Some(ExecutorStatus {
+                status: Some(executor_status::Status::Active(String::default())),
+            }),
+        };
+
         if reserve {
             let slots = std::mem::take(&mut spec.available_task_slots) as usize;
 
@@ -155,20 +166,39 @@ impl ClusterState for InMemoryClusterState {
 
             self.executors.insert(metadata.id.clone(), (metadata, spec));
 
+            self.heartbeat_sender.send(&heartbeat);
+
             Ok(reservations)
         } else {
             self.executors.insert(metadata.id.clone(), (metadata, spec));
+
+            self.heartbeat_sender.send(&heartbeat);
 
             Ok(vec![])
         }
     }
 
     async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()> {
-        todo!()
+        if let Some(pair) = self.executors.get_mut(&metadata.id).as_deref_mut() {
+            pair.0 = metadata;
+        } else {
+            warn!(
+                "Failed to update executor metadata, executor with ID {} not found",
+                metadata.id
+            );
+        }
+        Ok(())
     }
 
     async fn get_executor_metadata(&self, executor_id: &str) -> Result<ExecutorMetadata> {
-        todo!()
+        self.executors
+            .get(executor_id)
+            .map(|pair| pair.value().0.clone())
+            .ok_or_else(|| {
+                BallistaError::Internal(format!(
+                    "Not executor with ID {executor_id} found"
+                ))
+            })
     }
 
     async fn save_executor_heartbeat(&self, heartbeat: ExecutorHeartbeat) -> Result<()> {
@@ -247,7 +277,6 @@ impl InMemoryJobState {
 
 #[async_trait]
 impl JobState for InMemoryJobState {
-
     async fn submit_job(&self, job_id: String, _graph: &ExecutionGraph) -> Result<()> {
         self.job_event_sender.send(&JobStateEvent::JobAcquired {
             job_id,
@@ -328,8 +357,8 @@ impl JobState for InMemoryJobState {
         }
     }
 
-    async fn job_state_events(&self) -> JobStateEventStream {
-        Box::pin(self.job_event_sender.subscribe())
+    async fn job_state_events(&self) -> Result<JobStateEventStream> {
+        Ok(Box::pin(self.job_event_sender.subscribe()))
     }
 
     async fn remove_job(&self, job_id: &str) -> Result<()> {
@@ -347,7 +376,43 @@ impl JobState for InMemoryJobState {
             .collect())
     }
 
-    async fn accept_job(&self, job_id: &str, job_name: &str, queued_at: u64) -> Result<()> {
-        todo!()
+    async fn accept_job(
+        &self,
+        job_id: &str,
+        job_name: &str,
+        queued_at: u64,
+    ) -> Result<()> {
+        self.queued_jobs
+            .insert(job_id.to_string(), (job_name.to_string(), queued_at));
+
+        Ok(())
+    }
+
+    async fn fail_unscheduled_job(&self, job_id: &str, reason: String) -> Result<()> {
+        if let Some(pair) = self.queued_jobs.get(job_id) {
+            let (job_name, queued_at) = pair.value();
+            self.completed_jobs.insert(
+                job_id.to_string(),
+                (
+                    JobStatus {
+                        job_id: job_id.to_string(),
+                        job_name: job_name.clone(),
+                        status: Some(Status::Failed(FailedJob {
+                            error: reason,
+                            queued_at: *queued_at,
+                            started_at: 0,
+                            ended_at: timestamp_millis(),
+                        })),
+                    },
+                    None,
+                ),
+            );
+
+            Ok(())
+        } else {
+            Err(BallistaError::Internal(format!(
+                "Could not fail unscheduler job {job_id}, job not found in queued jobs"
+            )))
+        }
     }
 }

@@ -27,6 +27,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
+use datafusion_proto::protobuf::LogicalPlanNode;
 use prost::bytes::BufMut;
 use prost::Message;
 use std::fmt::Debug;
@@ -34,6 +35,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::{convert::TryInto, io::Cursor};
 
+use crate::serde::protobuf::PhysicalPlanNode;
 pub use generated::ballista as protobuf;
 
 pub mod generated;
@@ -132,16 +134,17 @@ impl PhysicalExtensionCodec for DefaultPhysicalExtensionCodec {
 }
 
 #[derive(Clone, Debug)]
-pub struct BallistaCodec<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
+pub struct BallistaCodec<
+    T: 'static + AsLogicalPlan = LogicalPlanNode,
+    U: 'static + AsExecutionPlan = PhysicalPlanNode,
+> {
     logical_extension_codec: Arc<dyn LogicalExtensionCodec>,
     physical_extension_codec: Arc<dyn PhysicalExtensionCodec>,
     logical_plan_repr: PhantomData<T>,
     physical_plan_repr: PhantomData<U>,
 }
 
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> Default
-    for BallistaCodec<T, U>
-{
+impl Default for BallistaCodec {
     fn default() -> Self {
         Self {
             logical_extension_codec: Arc::new(DefaultLogicalExtensionCodec {}),

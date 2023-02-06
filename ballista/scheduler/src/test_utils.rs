@@ -27,7 +27,6 @@ use async_trait::async_trait;
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
 use crate::scheduler_server::{timestamp_millis, SchedulerServer};
-use crate::state::backend::sled::SledClient;
 
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::task_manager::TaskLauncher;
@@ -50,8 +49,10 @@ use datafusion::logical_expr::{Expr, LogicalPlan};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::CsvReadOptions;
 
+use crate::cluster::BallistaCluster;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use crate::state::backend::cluster::DefaultClusterState;
+
+use ballista_core::utils::default_session_builder;
 use datafusion_proto::protobuf::LogicalPlanNode;
 use parking_lot::Mutex;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
@@ -59,6 +60,8 @@ use tokio::sync::mpsc::{channel, Receiver, Sender};
 pub const TPCH_TABLES: &[&str] = &[
     "part", "supplier", "partsupp", "customer", "orders", "lineitem", "nation", "region",
 ];
+
+const TEST_SCHEDULER_NAME: &str = "localhost:50050";
 
 /// Sometimes we need to construct logical plans that will produce errors
 /// when we try and create physical plan. A scan using `ExplodingTableProvider`
@@ -113,6 +116,10 @@ pub async fn await_condition<Fut: Future<Output = Result<bool>>, F: Fn() -> Fut>
     }
 
     Ok(false)
+}
+
+pub fn test_cluster_context() -> BallistaCluster {
+    BallistaCluster::new_memory(TEST_SCHEDULER_NAME, default_session_builder)
 }
 
 pub async fn datafusion_test_context(path: &str) -> Result<SessionContext> {
@@ -381,8 +388,7 @@ impl SchedulerTest {
         task_slots_per_executor: usize,
         runner: Option<Arc<dyn TaskRunner>>,
     ) -> Result<Self> {
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
-        let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
+        let cluster = BallistaCluster::new_from_config(&config).await?;
 
         let ballista_config = BallistaConfig::builder()
             .set(
@@ -415,10 +421,9 @@ impl SchedulerTest {
         };
 
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-            SchedulerServer::with_task_launcher(
+            SchedulerServer::new_with_task_launcher(
                 "localhost:50050".to_owned(),
-                state_storage,
-                cluster_state,
+                cluster,
                 BallistaCodec::default(),
                 config,
                 metrics_collector,
@@ -526,6 +531,7 @@ impl SchedulerTest {
 
             if let Some(JobStatus {
                 status: Some(inner),
+                ..
             }) = status.as_ref()
             {
                 match inner {
@@ -581,6 +587,7 @@ impl SchedulerTest {
 
             if let Some(JobStatus {
                 status: Some(inner),
+                ..
             }) = status.as_ref()
             {
                 match inner {

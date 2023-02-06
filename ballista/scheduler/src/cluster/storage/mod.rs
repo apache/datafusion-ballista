@@ -31,12 +31,15 @@ pub enum Keyspace {
     Executors,
     JobStatus,
     ExecutionGraph,
-    ActiveJobs,
-    CompletedJobs,
-    FailedJobs,
     Slots,
     Sessions,
     Heartbeats,
+}
+
+impl Keyspace {
+    pub fn strip_prefix<'a>(&'a self, key: &'a str) -> Option<&'a str> {
+        key.strip_prefix(&format!("{:?}/", self))
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Hash)]
@@ -47,7 +50,7 @@ pub enum Operation {
 
 /// A trait that defines a KeyValue interface with basic locking primitives for persisting Ballista cluster state
 #[async_trait]
-pub trait KeyValueStore: Send + Sync + Clone {
+pub trait KeyValueStore: Send + Sync + Clone + 'static {
     /// Retrieve the data associated with a specific key in a given keyspace.
     ///
     /// An empty vec is returned if the key does not exist.

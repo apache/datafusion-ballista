@@ -25,16 +25,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use crate::scheduler_server::SessionBuilder;
-use crate::state::backend::{Lock, StateBackendClient};
+
+use crate::state::backend::Lock;
 use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::{TaskLauncher, TaskManager};
 
-use crate::cluster::{BallistaCluster, JobState};
+use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
 use crate::state::execution_graph::TaskDescription;
-use backend::cluster::ClusterState;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
@@ -100,15 +99,11 @@ pub(super) struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExec
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T, U> {
     #[cfg(test)]
     pub fn new_with_default_scheduler_name(
-        config_client: Arc<dyn StateBackendClient>,
         cluster: BallistaCluster,
-        session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
     ) -> Self {
         SchedulerState::new(
-            config_client,
-            cluster_state,
-            session_builder,
+            cluster,
             codec,
             "localhost:50050".to_owned(),
             SchedulerConfig::default(),
@@ -116,9 +111,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     }
 
     pub fn new(
-        config_client: Arc<dyn StateBackendClient>,
         cluster: BallistaCluster,
-        session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
         config: SchedulerConfig,
@@ -129,23 +122,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 config.executor_slots_policy,
             ),
             task_manager: TaskManager::new(
-                config_client.clone(),
                 cluster.job_state(),
-                session_builder,
                 codec.clone(),
                 scheduler_name,
             ),
-            session_manager: SessionManager::new(config_client, session_builder),
+            session_manager: SessionManager::new(cluster.job_state()),
             codec,
             config,
         }
     }
 
     #[allow(dead_code)]
-    pub(crate) fn with_task_launcher(
-        config_client: Arc<dyn StateBackendClient>,
+    pub(crate) fn new_with_task_launcher(
         cluster: BallistaCluster,
-        session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
         config: SchedulerConfig,
@@ -157,14 +146,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 config.executor_slots_policy,
             ),
             task_manager: TaskManager::with_launcher(
-                config_client.clone(),
                 cluster.job_state(),
-                session_builder,
                 codec.clone(),
                 scheduler_name,
                 dispatcher,
             ),
-            session_manager: SessionManager::new(config_client, session_builder),
+            session_manager: SessionManager::new(cluster.job_state()),
             codec,
             config,
         }
@@ -455,7 +442,7 @@ pub async fn with_locks<Out, F: Future<Output = Out>>(
 
 #[cfg(test)]
 mod test {
-    use crate::state::backend::sled::SledClient;
+
     use crate::state::SchedulerState;
     use ballista_core::config::{BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS};
     use ballista_core::error::Result;
@@ -466,11 +453,10 @@ mod test {
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
     };
     use ballista_core::serde::BallistaCodec;
-    use ballista_core::utils::default_session_builder;
 
     use crate::config::SchedulerConfig;
-    use crate::state::backend::cluster::DefaultClusterState;
-    use crate::test_utils::BlackholeTaskLauncher;
+
+    use crate::test_utils::{test_cluster_context, BlackholeTaskLauncher};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::logical_expr::{col, sum};
     use datafusion::physical_plan::ExecutionPlan;
@@ -479,16 +465,14 @@ mod test {
     use datafusion_proto::protobuf::LogicalPlanNode;
     use std::sync::Arc;
 
+    const TEST_SCHEDULER_NAME: &str = "localhost:50050";
+
     // We should free any reservations which are not assigned
     #[tokio::test]
     async fn test_offer_free_reservations() -> Result<()> {
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
-        let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::new_with_default_scheduler_name(
-                state_storage,
-                cluster_state,
-                default_session_builder,
+                test_cluster_context(),
                 BallistaCodec::default(),
             ));
 
@@ -520,15 +504,12 @@ mod test {
         let config = BallistaConfig::builder()
             .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4")
             .build()?;
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
-        let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
+
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
-            Arc::new(SchedulerState::with_task_launcher(
-                state_storage,
-                cluster_state,
-                default_session_builder,
+            Arc::new(SchedulerState::new_with_task_launcher(
+                test_cluster_context(),
                 BallistaCodec::default(),
-                String::default(),
+                TEST_SCHEDULER_NAME.into(),
                 SchedulerConfig::default(),
                 Arc::new(BlackholeTaskLauncher::default()),
             ));
@@ -607,15 +588,12 @@ mod test {
         let config = BallistaConfig::builder()
             .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4")
             .build()?;
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
-        let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
+
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
-            Arc::new(SchedulerState::with_task_launcher(
-                state_storage,
-                cluster_state,
-                default_session_builder,
+            Arc::new(SchedulerState::new_with_task_launcher(
+                test_cluster_context(),
                 BallistaCodec::default(),
-                String::default(),
+                TEST_SCHEDULER_NAME.into(),
                 SchedulerConfig::default(),
                 Arc::new(BlackholeTaskLauncher::default()),
             ));

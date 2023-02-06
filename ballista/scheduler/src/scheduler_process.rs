@@ -22,7 +22,7 @@ use futures::future::{self, Either, TryFutureExt};
 use hyper::{server::conn::AddrStream, service::make_service_fn, Server};
 use log::info;
 use std::convert::Infallible;
-use std::{net::SocketAddr, sync::Arc};
+use std::net::SocketAddr;
 use tonic::transport::server::Connected;
 use tower::Service;
 
@@ -42,13 +42,9 @@ use crate::flight_sql::FlightSqlServiceImpl;
 use crate::metrics::default_metrics_collector;
 use crate::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
 use crate::scheduler_server::SchedulerServer;
-use crate::state::backend::cluster::ClusterState;
-use crate::state::backend::StateBackendClient;
 
 pub async fn start_server(
-    scheduler_name: String,
     cluster: BallistaCluster,
-    config_backend: Arc<dyn StateBackendClient>,
     addr: SocketAddr,
     config: SchedulerConfig,
 ) -> Result<()> {
@@ -66,8 +62,7 @@ pub async fn start_server(
 
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
         SchedulerServer::new(
-            scheduler_name,
-            config_backend.clone(),
+            config.scheduler_name(),
             cluster,
             BallistaCodec::default(),
             config,
