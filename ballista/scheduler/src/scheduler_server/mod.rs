@@ -32,6 +32,7 @@ use datafusion_proto::physical_plan::AsExecutionPlan;
 
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
+use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use log::{error, warn};
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
@@ -335,6 +336,29 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                 reason,
             ))
             .await?;
+        Ok(())
+    }
+
+    async fn do_register_executor(&self, metadata: ExecutorMetadata) -> Result<()> {
+        let executor_data = ExecutorData {
+            executor_id: metadata.id.clone(),
+            total_task_slots: metadata.specification.task_slots,
+            available_task_slots: metadata.specification.task_slots,
+        };
+
+        // Save the executor to state
+        let reservations = self
+            .state
+            .executor_manager
+            .register_executor(metadata, executor_data, false)
+            .await?;
+
+        // If we are using push-based scheduling then reserve this executors slots and send
+        // them for scheduling tasks.
+        if self.state.config.is_push_staged_scheduling() {
+            self.offer_reservation(reservations).await?;
+        }
+
         Ok(())
     }
 }

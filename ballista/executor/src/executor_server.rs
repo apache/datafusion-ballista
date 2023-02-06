@@ -246,6 +246,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             status: Some(ExecutorStatus {
                 status: Some(executor_status::Status::Active("".to_string())),
             }),
+            metadata: Some(self.executor.metadata.clone()),
         };
         let mut scheduler = self.scheduler_to_register.clone();
         match scheduler
