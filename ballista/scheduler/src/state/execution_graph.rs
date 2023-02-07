@@ -35,7 +35,7 @@ use ballista_core::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    self, execution_graph_stage::StageType, FailedTask, JobStatus, QueuedJob, ResultLost,
+    self, execution_graph_stage::StageType, FailedTask, JobStatus, ResultLost,
     RunningJob, SuccessfulJob, TaskStatus,
 };
 use ballista_core::serde::protobuf::{job_status, FailedJob, ShuffleWritePartition};
@@ -158,6 +158,8 @@ impl ExecutionGraph {
         let builder = ExecutionStageBuilder::new();
         let stages = builder.build(shuffle_stages)?;
 
+        let started_at = timestamp_millis();
+
         Ok(Self {
             scheduler_id: Some(scheduler_id.to_string()),
             job_id: job_id.to_string(),
@@ -166,10 +168,14 @@ impl ExecutionGraph {
             status: JobStatus {
                 job_id: job_id.to_string(),
                 job_name: job_name.to_string(),
-                status: Some(job_status::Status::Queued(QueuedJob { queued_at })),
+                status: Some(Status::Running(RunningJob {
+                    queued_at,
+                    started_at,
+                    scheduler: scheduler_id.to_string(),
+                })),
             },
             queued_at,
-            start_time: timestamp_millis(),
+            start_time: started_at,
             end_time: 0,
             stages,
             output_partitions,
@@ -1223,7 +1229,7 @@ impl ExecutionGraph {
         self.status = JobStatus {
             job_id: self.job_id.clone(),
             job_name: self.job_name.clone(),
-            status: Some(job_status::Status::Failed(FailedJob {
+            status: Some(Status::Failed(FailedJob {
                 error,
                 queued_at: self.queued_at,
                 started_at: self.start_time,
@@ -1269,18 +1275,6 @@ impl ExecutionGraph {
     /// Clear the stage failure count for this stage if the stage is finally success
     fn clear_stage_failure(&mut self, stage_id: usize) {
         self.failed_stage_attempts.remove(&stage_id);
-    }
-
-    pub(crate) fn disown(&mut self) {
-        self.scheduler_id = None;
-
-        if let JobStatus {
-            status: Some(Status::Running(RunningJob { scheduler, .. })),
-            ..
-        } = &mut self.status
-        {
-            std::mem::take(scheduler);
-        }
     }
 
     pub(crate) async fn decode_execution_graph<
@@ -1621,24 +1615,20 @@ fn partition_to_location(
 #[cfg(test)]
 mod test {
     use std::collections::HashSet;
-    use std::sync::Arc;
-
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::logical_expr::JoinType;
-    use datafusion::logical_expr::{col, count, sum, Expr};
-    use datafusion::physical_plan::display::DisplayableExecutionPlan;
-    use datafusion::prelude::{SessionConfig, SessionContext};
-    use datafusion::test_util::scan_empty;
 
     use crate::scheduler_server::event::QueryStageSchedulerEvent;
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::{
-        self, failed_task, job_status, task_status, ExecutionError, FailedTask,
-        FetchPartitionError, IoError, JobStatus, TaskKilled, TaskStatus,
+        self, failed_task, job_status, ExecutionError, FailedTask, FetchPartitionError,
+        IoError, JobStatus, TaskKilled,
     };
-    use ballista_core::serde::scheduler::{ExecutorMetadata, ExecutorSpecification};
 
-    use crate::state::execution_graph::{ExecutionGraph, TaskDescription};
+    use crate::state::execution_graph::ExecutionGraph;
+    use crate::test_utils::{
+        mock_completed_task, mock_executor, mock_failed_task, test_aggregation_plan,
+        test_coalesce_plan, test_join_plan, test_two_aggregations_plan,
+        test_union_all_plan, test_union_plan,
+    };
 
     #[tokio::test]
     async fn test_drain_tasks() -> Result<()> {
@@ -1910,18 +1900,6 @@ mod test {
             4,
             4,
         )?;
-
-        // TODO the JobStatus is not 'Running' here, no place to mark it to 'Running' in current code base.
-        assert!(
-            matches!(
-                agg_graph.status,
-                JobStatus {
-                    status: Some(job_status::Status::Queued(_)),
-                    ..
-                }
-            ),
-            "Expected job status to be running"
-        );
 
         assert_eq!(agg_graph.available_tasks(), 2);
         drain_tasks(&mut agg_graph)?;
@@ -2793,266 +2771,5 @@ mod test {
         }
 
         Ok(())
-    }
-
-    async fn test_aggregation_plan(partition: usize) -> ExecutionGraph {
-        let config = SessionConfig::new().with_target_partitions(partition);
-        let ctx = Arc::new(SessionContext::with_config(config));
-
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
-
-        let logical_plan = scan_empty(None, &schema, Some(vec![0, 1]))
-            .unwrap()
-            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
-            .unwrap()
-            .build()
-            .unwrap();
-
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
-
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
-
-        println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
-
-        ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap()
-    }
-
-    async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
-        let config = SessionConfig::new().with_target_partitions(partition);
-        let ctx = Arc::new(SessionContext::with_config(config));
-
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("name", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
-
-        let logical_plan = scan_empty(None, &schema, Some(vec![0, 1, 2]))
-            .unwrap()
-            .aggregate(vec![col("id"), col("name")], vec![sum(col("gmv"))])
-            .unwrap()
-            .aggregate(vec![col("id")], vec![count(col("id"))])
-            .unwrap()
-            .build()
-            .unwrap();
-
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
-
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
-
-        println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
-
-        ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap()
-    }
-
-    async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
-        let config = SessionConfig::new().with_target_partitions(partition);
-        let ctx = Arc::new(SessionContext::with_config(config));
-
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
-
-        let logical_plan = scan_empty(None, &schema, Some(vec![0, 1]))
-            .unwrap()
-            .limit(0, Some(1))
-            .unwrap()
-            .build()
-            .unwrap();
-
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
-
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
-
-        ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap()
-    }
-
-    async fn test_join_plan(partition: usize) -> ExecutionGraph {
-        let config = SessionConfig::new().with_target_partitions(partition);
-        let ctx = Arc::new(SessionContext::with_config(config));
-
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
-
-        let left_plan = scan_empty(Some("left"), &schema, None).unwrap();
-
-        let right_plan = scan_empty(Some("right"), &schema, None)
-            .unwrap()
-            .build()
-            .unwrap();
-
-        let sort_expr = Expr::Sort {
-            expr: Box::new(col("id")),
-            asc: false,
-            nulls_first: false,
-        };
-
-        let logical_plan = left_plan
-            .join(&right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
-            .unwrap()
-            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
-            .unwrap()
-            .sort(vec![sort_expr])
-            .unwrap()
-            .build()
-            .unwrap();
-
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
-
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
-
-        println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
-
-        let graph = ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0)
-            .unwrap();
-
-        println!("{:?}", graph);
-
-        graph
-    }
-
-    async fn test_union_all_plan(partition: usize) -> ExecutionGraph {
-        let config = SessionConfig::new().with_target_partitions(partition);
-        let ctx = Arc::new(SessionContext::with_config(config));
-
-        let logical_plan = ctx
-            .sql("SELECT 1 as NUMBER union all SELECT 1 as NUMBER;")
-            .await
-            .unwrap()
-            .to_logical_plan()
-            .unwrap();
-
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
-
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
-
-        println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
-
-        let graph = ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0)
-            .unwrap();
-
-        println!("{:?}", graph);
-
-        graph
-    }
-
-    async fn test_union_plan(partition: usize) -> ExecutionGraph {
-        let config = SessionConfig::new().with_target_partitions(partition);
-        let ctx = Arc::new(SessionContext::with_config(config));
-
-        let logical_plan = ctx
-            .sql("SELECT 1 as NUMBER union SELECT 1 as NUMBER;")
-            .await
-            .unwrap()
-            .to_logical_plan()
-            .unwrap();
-
-        let optimized_plan = ctx.optimize(&logical_plan).unwrap();
-
-        let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
-
-        println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
-
-        let graph = ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0)
-            .unwrap();
-
-        println!("{:?}", graph);
-
-        graph
-    }
-
-    fn mock_executor(executor_id: String) -> ExecutorMetadata {
-        ExecutorMetadata {
-            id: executor_id,
-            host: "localhost2".to_string(),
-            port: 8080,
-            grpc_port: 9090,
-            specification: ExecutorSpecification { task_slots: 1 },
-        }
-    }
-
-    fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStatus {
-        let mut partitions: Vec<protobuf::ShuffleWritePartition> = vec![];
-
-        let num_partitions = task
-            .output_partitioning
-            .map(|p| p.partition_count())
-            .unwrap_or(1);
-
-        for partition_id in 0..num_partitions {
-            partitions.push(protobuf::ShuffleWritePartition {
-                partition_id: partition_id as u64,
-                path: format!(
-                    "/{}/{}/{}",
-                    task.partition.job_id,
-                    task.partition.stage_id,
-                    task.partition.partition_id
-                ),
-                num_batches: 1,
-                num_rows: 1,
-                num_bytes: 1,
-            })
-        }
-
-        // Complete the task
-        protobuf::TaskStatus {
-            task_id: task.task_id as u32,
-            job_id: task.partition.job_id.clone(),
-            stage_id: task.partition.stage_id as u32,
-            stage_attempt_num: task.stage_attempt_num as u32,
-            partition_id: task.partition.partition_id as u32,
-            launch_time: 0,
-            start_exec_time: 0,
-            end_exec_time: 0,
-            metrics: vec![],
-            status: Some(task_status::Status::Successful(protobuf::SuccessfulTask {
-                executor_id: executor_id.to_owned(),
-                partitions,
-            })),
-        }
-    }
-
-    fn mock_failed_task(task: TaskDescription, failed_task: FailedTask) -> TaskStatus {
-        let mut partitions: Vec<protobuf::ShuffleWritePartition> = vec![];
-
-        let num_partitions = task
-            .output_partitioning
-            .map(|p| p.partition_count())
-            .unwrap_or(1);
-
-        for partition_id in 0..num_partitions {
-            partitions.push(protobuf::ShuffleWritePartition {
-                partition_id: partition_id as u64,
-                path: format!(
-                    "/{}/{}/{}",
-                    task.partition.job_id,
-                    task.partition.stage_id,
-                    task.partition.partition_id
-                ),
-                num_batches: 1,
-                num_rows: 1,
-                num_bytes: 1,
-            })
-        }
-
-        // Fail the task
-        protobuf::TaskStatus {
-            task_id: task.task_id as u32,
-            job_id: task.partition.job_id.clone(),
-            stage_id: task.partition.stage_id as u32,
-            stage_attempt_num: task.stage_attempt_num as u32,
-            partition_id: task.partition.partition_id as u32,
-            launch_time: 0,
-            start_exec_time: 0,
-            end_exec_time: 0,
-            metrics: vec![],
-            status: Some(task_status::Status::Failed(failed_task)),
-        }
     }
 }

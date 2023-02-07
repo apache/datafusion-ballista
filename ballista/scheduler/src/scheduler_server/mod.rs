@@ -361,6 +361,13 @@ mod test {
 
         let job_id = "job";
 
+        // Enqueue job
+        scheduler
+            .state
+            .task_manager
+            .queue_job(job_id, "", timestamp_millis())
+            .await?;
+
         // Submit job
         scheduler
             .state
@@ -373,7 +380,6 @@ mod test {
             .state
             .task_manager
             .get_active_execution_graph(job_id)
-            .await
         {
             let task = {
                 let mut graph = graph.write().await;
@@ -427,7 +433,6 @@ mod test {
             .state
             .task_manager
             .get_active_execution_graph(job_id)
-            .await
             .expect("Fail to find graph in the cache");
 
         let final_graph = final_graph.read().await;

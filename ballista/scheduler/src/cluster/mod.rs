@@ -20,6 +20,9 @@ pub mod kv;
 pub mod memory;
 pub mod storage;
 
+#[cfg(test)]
+pub mod test;
+
 use crate::cluster::kv::KeyValueState;
 use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
 use crate::cluster::storage::etcd::EtcdClient;
@@ -203,7 +206,7 @@ pub enum TaskDistribution {
 
 /// A trait that contains the necessary method to maintain a globally consistent view of cluster resources
 #[tonic::async_trait]
-pub trait ClusterState: Send + Sync {
+pub trait ClusterState: Send + Sync + 'static {
     /// Reserve up to `num_slots` executor task slots. If not enough task slots are available, reserve
     /// as many as possible.
     ///
@@ -264,7 +267,8 @@ pub trait ClusterState: Send + Sync {
     async fn executor_heartbeats(&self) -> Result<HashMap<String, ExecutorHeartbeat>>;
 }
 
-#[derive(Debug, Clone)]
+/// Events related to the state of jobs. Implementations may or may not support all event types.
+#[derive(Debug, Clone, PartialEq)]
 pub enum JobStateEvent {
     /// Event when a job status has been updated
     JobUpdated {
@@ -372,14 +376,16 @@ pub trait JobState: Send + Sync {
     ) -> Result<Arc<SessionContext>>;
 }
 
-pub(crate) fn reserve_slots_bias<'a, I: Iterator<Item = &'a mut AvailableTaskSlots>>(
-    mut slots: I,
+pub(crate) fn reserve_slots_bias(
+    mut slots: Vec<&mut AvailableTaskSlots>,
     mut n: u32,
 ) -> Vec<ExecutorReservation> {
     let mut reservations = Vec::with_capacity(n as usize);
 
+    let mut iter = slots.iter_mut();
+
     while n > 0 {
-        if let Some(executor) = slots.next() {
+        if let Some(executor) = iter.next() {
             let take = executor.slots.min(n);
             for _ in 0..take {
                 reservations
@@ -396,24 +402,37 @@ pub(crate) fn reserve_slots_bias<'a, I: Iterator<Item = &'a mut AvailableTaskSlo
     reservations
 }
 
-pub(crate) fn reserve_slots_round_robin<
-    'a,
-    I: Iterator<Item = &'a mut AvailableTaskSlots>,
->(
-    mut slots: I,
+pub(crate) fn reserve_slots_round_robin(
+    mut slots: Vec<&mut AvailableTaskSlots>,
     mut n: u32,
 ) -> Vec<ExecutorReservation> {
     let mut reservations = Vec::with_capacity(n as usize);
 
-    while n > 0 {
-        if let Some(executor) = slots.next() {
-            if executor.slots > 0 {
-                reservations
-                    .push(ExecutorReservation::new_free(executor.executor_id.clone()));
-                executor.slots -= 1;
-                n -= 1;
+    let mut last_updated_idx = 0usize;
+
+    loop {
+        let n_before = n;
+        for (idx, data) in slots.iter_mut().enumerate() {
+            if n == 0 {
+                break;
             }
-        } else {
+
+            // Since the vector is sorted in descending order,
+            // if finding one executor has not enough slots, the following will have not enough, either
+            if data.slots == 0 {
+                break;
+            }
+
+            reservations.push(ExecutorReservation::new_free(data.executor_id.clone()));
+            data.slots -= 1;
+            n -= 1;
+
+            if idx >= last_updated_idx {
+                last_updated_idx = idx + 1;
+            }
+        }
+
+        if n_before == n {
             break;
         }
     }

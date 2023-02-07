@@ -30,7 +30,8 @@ use ballista_core::config::BallistaConfig;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    self, ExecutorHeartbeat, ExecutorTaskSlots, FailedJob, KeyValuePair,
+    self, AvailableTaskSlots, ExecutorHeartbeat, ExecutorTaskSlots, FailedJob,
+    KeyValuePair, PhysicalPlanNode, QueuedJob,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::serde::AsExecutionPlan;
@@ -38,7 +39,9 @@ use ballista_core::serde::BallistaCodec;
 use dashmap::DashMap;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::protobuf::LogicalPlanNode;
 use futures::StreamExt;
+use itertools::Itertools;
 use log::warn;
 use prost::Message;
 use std::collections::{HashMap, HashSet};
@@ -49,8 +52,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// State implementation based on underlying `KeyValueStore`
 pub struct KeyValueState<
     S: KeyValueStore,
-    T: 'static + AsLogicalPlan,
-    U: 'static + AsExecutionPlan,
+    T: 'static + AsLogicalPlan = LogicalPlanNode,
+    U: 'static + AsExecutionPlan = PhysicalPlanNode,
 > {
     /// Underlying `KeyValueStore`
     store: S,
@@ -107,17 +110,25 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     ))
                 })?;
 
-            let slots_iter = slots.task_slots.iter_mut().filter(|slots| {
-                executors
-                    .as_ref()
-                    .map(|executors| executors.contains(&slots.executor_id))
-                    .unwrap_or(true)
-            });
+            let mut available_slots: Vec<&mut AvailableTaskSlots> = slots
+                .task_slots
+                .iter_mut()
+                .filter_map(|data| {
+                    (data.slots > 0
+                        && executors
+                            .as_ref()
+                            .map(|executors| executors.contains(&data.executor_id))
+                            .unwrap_or(true))
+                    .then_some(data)
+                })
+                .collect();
+
+            available_slots.sort_by(|a, b| Ord::cmp(&b.slots, &a.slots));
 
             let reservations = match distribution {
-                TaskDistribution::Bias => reserve_slots_bias(slots_iter, num_slots),
+                TaskDistribution::Bias => reserve_slots_bias(available_slots, num_slots),
                 TaskDistribution::RoundRobin => {
-                    reserve_slots_round_robin(slots_iter, num_slots)
+                    reserve_slots_round_robin(available_slots, num_slots)
                 }
             };
 
@@ -151,17 +162,25 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     ))
                 })?;
 
-            let slots_iter = slots.task_slots.iter_mut().filter(|slots| {
-                executors
-                    .as_ref()
-                    .map(|executors| executors.contains(&slots.executor_id))
-                    .unwrap_or(true)
-            });
+            let mut available_slots: Vec<&mut AvailableTaskSlots> = slots
+                .task_slots
+                .iter_mut()
+                .filter_map(|data| {
+                    (data.slots > 0
+                        && executors
+                            .as_ref()
+                            .map(|executors| executors.contains(&data.executor_id))
+                            .unwrap_or(true))
+                    .then_some(data)
+                })
+                .collect();
+
+            available_slots.sort_by(|a, b| Ord::cmp(&b.slots, &a.slots));
 
             let reservations = match distribution {
-                TaskDistribution::Bias => reserve_slots_bias(slots_iter, num_slots),
+                TaskDistribution::Bias => reserve_slots_bias(available_slots, num_slots),
                 TaskDistribution::RoundRobin => {
-                    reserve_slots_round_robin(slots_iter, num_slots)
+                    reserve_slots_round_robin(available_slots, num_slots)
                 }
             };
 
@@ -181,7 +200,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         &self,
         reservations: Vec<ExecutorReservation>,
     ) -> Result<()> {
-        let lock = self.store.lock(Keyspace::Slots, "global").await?;
+        let lock = self.store.lock(Keyspace::Slots, "all").await?;
 
         with_lock(lock, async {
             let resources = self.store.get(Keyspace::Slots, "all").await?;
@@ -209,7 +228,9 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 }
             }
 
-            Ok(())
+            self.store
+                .put(Keyspace::Slots, "all".to_string(), slots.encode_to_vec())
+                .await
         })
         .await
     }
@@ -246,25 +267,80 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         .await?;
 
         if !reserve {
-            let proto: protobuf::ExecutorData = spec.into();
-            self.store
-                .put(Keyspace::Slots, executor_id, proto.encode_to_vec())
-                .await?;
+            let available_slots = AvailableTaskSlots {
+                executor_id,
+                slots: spec.available_task_slots,
+            };
+
+            let lock = self.store.lock(Keyspace::Slots, "all").await?;
+
+            with_lock(lock, async {
+                let current_slots = self.store.get(Keyspace::Slots, "all").await?;
+
+                let mut current_slots: ExecutorTaskSlots =
+                    decode_protobuf(current_slots.as_slice())?;
+
+                if let Some((idx, _)) =
+                    current_slots.task_slots.iter().find_position(|slots| {
+                        slots.executor_id == available_slots.executor_id
+                    })
+                {
+                    current_slots.task_slots[idx] = available_slots;
+                } else {
+                    current_slots.task_slots.push(available_slots);
+                }
+
+                self.store
+                    .put(
+                        Keyspace::Slots,
+                        "all".to_string(),
+                        current_slots.encode_to_vec(),
+                    )
+                    .await
+            })
+            .await?;
+
             Ok(vec![])
         } else {
-            let mut specification = spec;
-            let num_slots = specification.available_task_slots as usize;
+            let num_slots = spec.available_task_slots as usize;
             let mut reservations: Vec<ExecutorReservation> = vec![];
             for _ in 0..num_slots {
                 reservations.push(ExecutorReservation::new_free(executor_id.clone()));
             }
 
-            specification.available_task_slots = 0;
+            let available_slots = AvailableTaskSlots {
+                executor_id,
+                slots: 0,
+            };
 
-            let proto: protobuf::ExecutorData = specification.into();
-            self.store
-                .put(Keyspace::Slots, executor_id, proto.encode_to_vec())
-                .await?;
+            let lock = self.store.lock(Keyspace::Slots, "all").await?;
+
+            with_lock(lock, async {
+                let current_slots = self.store.get(Keyspace::Slots, "all").await?;
+
+                let mut current_slots: ExecutorTaskSlots =
+                    decode_protobuf(current_slots.as_slice())?;
+
+                if let Some((idx, _)) =
+                    current_slots.task_slots.iter().find_position(|slots| {
+                        slots.executor_id == available_slots.executor_id
+                    })
+                {
+                    current_slots.task_slots[idx] = available_slots;
+                } else {
+                    current_slots.task_slots.push(available_slots);
+                }
+
+                self.store
+                    .put(
+                        Keyspace::Slots,
+                        "all".to_string(),
+                        current_slots.encode_to_vec(),
+                    )
+                    .await
+            })
+            .await?;
+
             Ok(reservations)
         }
     }
@@ -383,26 +459,34 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     }
 
     async fn submit_job(&self, job_id: String, graph: &ExecutionGraph) -> Result<()> {
-        let status = graph.status();
-        let encoded_graph =
-            ExecutionGraph::encode_execution_graph(graph.clone(), &self.codec)?;
+        if self.queued_jobs.get(&job_id).is_some() {
+            let status = graph.status();
+            let encoded_graph =
+                ExecutionGraph::encode_execution_graph(graph.clone(), &self.codec)?;
 
-        self.store
-            .apply_txn(vec![
-                (
-                    Operation::Put(status.encode_to_vec()),
-                    Keyspace::JobStatus,
-                    job_id.clone(),
-                ),
-                (
-                    Operation::Put(encoded_graph.encode_to_vec()),
-                    Keyspace::ExecutionGraph,
-                    job_id.clone(),
-                ),
-            ])
-            .await?;
+            self.store
+                .apply_txn(vec![
+                    (
+                        Operation::Put(status.encode_to_vec()),
+                        Keyspace::JobStatus,
+                        job_id.clone(),
+                    ),
+                    (
+                        Operation::Put(encoded_graph.encode_to_vec()),
+                        Keyspace::ExecutionGraph,
+                        job_id.clone(),
+                    ),
+                ])
+                .await?;
 
-        Ok(())
+            self.queued_jobs.remove(&job_id);
+
+            Ok(())
+        } else {
+            Err(BallistaError::Internal(format!(
+                "Failed to submit job {job_id}, job was not in queueud jobs"
+            )))
+        }
     }
 
     async fn get_jobs(&self) -> Result<HashSet<String>> {
@@ -410,11 +494,21 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     }
 
     async fn get_job_status(&self, job_id: &str) -> Result<Option<JobStatus>> {
-        let value = self.store.get(Keyspace::JobStatus, job_id).await?;
+        if let Some((job_name, queued_at)) = self.queued_jobs.get(job_id).as_deref() {
+            Ok(Some(JobStatus {
+                job_id: job_id.to_string(),
+                job_name: job_name.clone(),
+                status: Some(Status::Queued(QueuedJob {
+                    queued_at: *queued_at,
+                })),
+            }))
+        } else {
+            let value = self.store.get(Keyspace::JobStatus, job_id).await?;
 
-        (!value.is_empty())
-            .then(|| decode_protobuf(value.as_slice()))
-            .transpose()
+            (!value.is_empty())
+                .then(|| decode_protobuf(value.as_slice()))
+                .transpose()
+        }
     }
 
     async fn get_execution_graph(&self, job_id: &str) -> Result<Option<ExecutionGraph>> {
@@ -609,4 +703,88 @@ async fn with_lock<Out, F: Future<Output = Out>>(mut lock: Box<dyn Lock>, op: F)
     let result = op.await;
     lock.unlock().await;
     result
+}
+
+#[cfg(test)]
+mod test {
+    use crate::cluster::kv::KeyValueState;
+    use crate::cluster::storage::sled::SledClient;
+    use crate::cluster::test::{
+        test_executor_registration, test_fuzz_reservations, test_job_lifecycle,
+        test_job_planning_failure, test_reservation,
+    };
+    use crate::cluster::TaskDistribution;
+    use crate::test_utils::{
+        test_aggregation_plan, test_join_plan, test_two_aggregations_plan,
+    };
+    use ballista_core::error::Result;
+    use ballista_core::serde::BallistaCodec;
+    use ballista_core::utils::default_session_builder;
+
+    #[cfg(feature = "sled")]
+    fn make_sled_state() -> Result<KeyValueState<SledClient>> {
+        Ok(KeyValueState::new(
+            "",
+            SledClient::try_new_temporary()?,
+            BallistaCodec::default(),
+            default_session_builder,
+        ))
+    }
+
+    #[cfg(feature = "sled")]
+    #[tokio::test]
+    async fn test_sled_executor_reservation() -> Result<()> {
+        test_executor_registration(make_sled_state()?).await
+    }
+
+    #[cfg(feature = "sled")]
+    #[tokio::test]
+    async fn test_sled_reserve() -> Result<()> {
+        test_reservation(make_sled_state()?, TaskDistribution::Bias).await?;
+        test_reservation(make_sled_state()?, TaskDistribution::RoundRobin).await?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "sled")]
+    #[tokio::test]
+    async fn test_sled_fuzz_reserve() -> Result<()> {
+        test_fuzz_reservations(make_sled_state()?, 10, TaskDistribution::Bias, 10, 10)
+            .await?;
+        test_fuzz_reservations(
+            make_sled_state()?,
+            10,
+            TaskDistribution::RoundRobin,
+            10,
+            10,
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "sled")]
+    #[tokio::test]
+    async fn test_sled_job_lifecycle() -> Result<()> {
+        test_job_lifecycle(make_sled_state()?, test_aggregation_plan(4).await).await?;
+        test_job_lifecycle(make_sled_state()?, test_two_aggregations_plan(4).await)
+            .await?;
+        test_job_lifecycle(make_sled_state()?, test_join_plan(4).await).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "sled")]
+    #[tokio::test]
+    async fn test_in_memory_job_planning_failure() -> Result<()> {
+        test_job_planning_failure(make_sled_state()?, test_aggregation_plan(4).await)
+            .await?;
+        test_job_planning_failure(
+            make_sled_state()?,
+            test_two_aggregations_plan(4).await,
+        )
+        .await?;
+        test_job_planning_failure(make_sled_state()?, test_join_plan(4).await).await?;
+
+        Ok(())
+    }
 }

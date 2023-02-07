@@ -169,6 +169,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         }
     }
 
+    /// Enqueue a job for scheduling
+    pub async fn queue_job(
+        &self,
+        job_id: &str,
+        job_name: &str,
+        queued_at: u64,
+    ) -> Result<()> {
+        self.state.accept_job(job_id, job_name, queued_at).await
+    }
+
     /// Generate an ExecutionGraph for the job and save it to the persistent state.
     /// By default, this job will be curated by the scheduler which receives it.
     /// Then we will also save it to the active execution graph
@@ -222,7 +232,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Get the status of of a job. First look in the active cache.
     /// If no one found, then in the Active/Completed jobs, and then in Failed jobs
     pub async fn get_job_status(&self, job_id: &str) -> Result<Option<JobStatus>> {
-        self.state.get_job_status(job_id).await
+        if let Some(graph) = self.get_active_execution_graph(job_id) {
+            let guard = graph.read().await;
+
+            Ok(Some(guard.status()))
+        } else {
+            self.state.get_job_status(job_id).await
+        }
     }
 
     /// Get the execution graph of of a job. First look in the active cache.
@@ -231,8 +247,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         &self,
         job_id: &str,
     ) -> Result<Option<Arc<ExecutionGraph>>> {
-        if let Some(cached) = self.active_job_cache.get(job_id) {
-            let guard = cached.execution_graph.read().await;
+        if let Some(cached) = self.get_active_execution_graph(job_id) {
+            let guard = cached.read().await;
 
             Ok(Some(Arc::new(guard.deref().clone())))
         } else {
@@ -264,8 +280,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             debug!("Updating {} tasks in job {}", num_tasks, job_id);
 
             // let graph = self.get_active_execution_graph(&job_id).await;
-            let job_events = if let Some(cached) = self.active_job_cache.get(&job_id) {
-                let mut graph = cached.execution_graph.write().await;
+            let job_events = if let Some(cached) =
+                self.get_active_execution_graph(&job_id)
+            {
+                let mut graph = cached.write().await;
                 graph.update_task_status(
                     executor,
                     statuses,
@@ -346,7 +364,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     pub(crate) async fn succeed_job(&self, job_id: &str) -> Result<()> {
         debug!("Moving job {} from Active to Success", job_id);
 
-        if let Some(graph) = self.remove_active_execution_graph(job_id).await {
+        if let Some(graph) = self.remove_active_execution_graph(job_id) {
             let graph = graph.read().await.clone();
             if graph.is_successful() {
                 self.state.save_job(job_id, &graph).await?;
@@ -376,7 +394,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         failure_reason: String,
     ) -> Result<(Vec<RunningTaskInfo>, usize)> {
         let (tasks_to_cancel, pending_tasks) = if let Some(graph) =
-            self.get_active_execution_graph(job_id).await
+            self.get_active_execution_graph(job_id)
         {
             let mut guard = graph.write().await;
 
@@ -416,14 +434,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     pub async fn update_job(&self, job_id: &str) -> Result<usize> {
-        debug!("Update job {} in Active", job_id);
-        if let Some(graph) = self.get_active_execution_graph(job_id).await {
+        debug!("Update active job {job_id}");
+        if let Some(graph) = self.get_active_execution_graph(job_id) {
             let mut graph = graph.write().await;
 
             let curr_available_tasks = graph.available_tasks();
 
             graph.revive();
-            let graph = graph.clone();
+
+            println!("Saving job with status {:?}", graph.status());
 
             self.state.save_job(job_id, &graph).await?;
 
@@ -461,7 +480,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Retrieve the number of available tasks for the given job. The value returned
     /// is strictly a point-in-time snapshot
     pub async fn get_available_task_count(&self, job_id: &str) -> Result<usize> {
-        if let Some(graph) = self.get_active_execution_graph(job_id).await {
+        if let Some(graph) = self.get_active_execution_graph(job_id) {
             let available_tasks = graph.read().await.available_tasks();
             Ok(available_tasks)
         } else {
@@ -620,48 +639,24 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Get the `ExecutionGraph` for the given job ID from cache
-    pub(crate) async fn get_active_execution_graph(
+    pub(crate) fn get_active_execution_graph(
         &self,
         job_id: &str,
     ) -> Option<Arc<RwLock<ExecutionGraph>>> {
         self.active_job_cache
             .get(job_id)
-            .map(|value| value.execution_graph.clone())
+            .as_deref()
+            .map(|cached| cached.execution_graph.clone())
     }
 
     /// Remove the `ExecutionGraph` for the given job ID from cache
-    pub(crate) async fn remove_active_execution_graph(
+    pub(crate) fn remove_active_execution_graph(
         &self,
         job_id: &str,
     ) -> Option<Arc<RwLock<ExecutionGraph>>> {
         self.active_job_cache
             .remove(job_id)
             .map(|value| value.1.execution_graph)
-    }
-
-    /// Get the `ExecutionGraph` for the given job ID. This will search fist in the `ActiveJobs`
-    /// keyspace and then, if it doesn't find anything, search the `CompletedJobs` keyspace.
-    pub(crate) async fn get_execution_graph(
-        &self,
-        job_id: &str,
-    ) -> Result<ExecutionGraph> {
-        if let Some(active) = self.active_job_cache.get(job_id) {
-            let guard = active.execution_graph.read().await;
-
-            Ok(guard.clone())
-        } else {
-            let graph =
-                self.state
-                    .get_execution_graph(job_id)
-                    .await?
-                    .ok_or_else(|| {
-                        BallistaError::Internal(format!(
-                            "No ExecutionGraph found for job {job_id}"
-                        ))
-                    })?;
-
-            Ok(graph)
-        }
     }
 
     /// Generate a new random Job ID

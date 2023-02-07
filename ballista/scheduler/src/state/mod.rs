@@ -20,13 +20,11 @@ use datafusion::datasource::source_as_provider;
 use datafusion::logical_expr::PlanVisitor;
 use std::any::type_name;
 use std::collections::HashMap;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
-use crate::state::backend::Lock;
 use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::{TaskLauncher, TaskManager};
@@ -44,7 +42,6 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::{debug, error, info};
 use prost::Message;
 
-pub mod backend;
 pub mod execution_graph;
 pub mod execution_graph_dot;
 pub mod executor_manager;
@@ -420,26 +417,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     }
 }
 
-pub async fn with_lock<Out, F: Future<Output = Out>>(
-    mut lock: Box<dyn Lock>,
-    op: F,
-) -> Out {
-    let result = op.await;
-    lock.unlock().await;
-    result
-}
-/// It takes multiple locks and reverse the order for releasing them to prevent a race condition.
-pub async fn with_locks<Out, F: Future<Output = Out>>(
-    locks: Vec<Box<dyn Lock>>,
-    op: F,
-) -> Out {
-    let result = op.await;
-    for mut lock in locks.into_iter().rev() {
-        lock.unlock().await;
-    }
-    result
-}
-
 #[cfg(test)]
 mod test {
 
@@ -456,6 +433,7 @@ mod test {
 
     use crate::config::SchedulerConfig;
 
+    use crate::scheduler_server::timestamp_millis;
     use crate::test_utils::{test_cluster_context, BlackholeTaskLauncher};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::logical_expr::{col, sum};
@@ -521,6 +499,10 @@ mod test {
         // Create 4 jobs so we have four pending tasks
         state
             .task_manager
+            .queue_job("job-1", "", timestamp_millis())
+            .await?;
+        state
+            .task_manager
             .submit_job(
                 "job-1",
                 "",
@@ -528,6 +510,10 @@ mod test {
                 plan.clone(),
                 0,
             )
+            .await?;
+        state
+            .task_manager
+            .queue_job("job-2", "", timestamp_millis())
             .await?;
         state
             .task_manager
@@ -541,6 +527,10 @@ mod test {
             .await?;
         state
             .task_manager
+            .queue_job("job-3", "", timestamp_millis())
+            .await?;
+        state
+            .task_manager
             .submit_job(
                 "job-3",
                 "",
@@ -548,6 +538,10 @@ mod test {
                 plan.clone(),
                 0,
             )
+            .await?;
+        state
+            .task_manager
+            .queue_job("job-4", "", timestamp_millis())
             .await?;
         state
             .task_manager
@@ -605,6 +599,10 @@ mod test {
         // Create a job
         state
             .task_manager
+            .queue_job("job-1", "", timestamp_millis())
+            .await?;
+        state
+            .task_manager
             .submit_job(
                 "job-1",
                 "",
@@ -623,7 +621,6 @@ mod test {
             let plan_graph = state
                 .task_manager
                 .get_active_execution_graph("job-1")
-                .await
                 .unwrap();
             let task_def = plan_graph
                 .write()
