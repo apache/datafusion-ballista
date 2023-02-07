@@ -215,8 +215,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
         let mut jobs = vec![];
         for job_id in &job_ids {
-            if let Some(cached) = self.active_job_cache.get(job_id) {
-                let graph = cached.execution_graph.read().await;
+            if let Some(cached) = self.get_active_execution_graph(job_id) {
+                let graph = cached.read().await;
                 jobs.push(graph.deref().into());
             } else {
                 let graph = self.state
