@@ -21,6 +21,7 @@ pub mod memory;
 pub mod storage;
 
 #[cfg(test)]
+#[allow(clippy::uninlined_format_args)]
 pub mod test;
 
 use crate::cluster::kv::KeyValueState;
