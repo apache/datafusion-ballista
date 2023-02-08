@@ -21,16 +21,18 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ballista_core::error::Result;
 use ballista_core::event_loop::{EventLoop, EventSender};
 use ballista_core::serde::protobuf::{StopExecutorParams, TaskStatus};
-use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::serde::BallistaCodec;
 
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 
 use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
+use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use log::{error, warn};
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
@@ -52,7 +54,7 @@ pub mod externalscaler {
 pub mod event;
 mod external_scaler;
 mod grpc;
-mod query_stage_scheduler;
+pub(crate) mod query_stage_scheduler;
 
 pub(crate) type SessionBuilder = fn(SessionConfig) -> SessionState;
 
@@ -79,8 +81,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             scheduler_name.clone(),
             config.clone(),
         ));
-        let query_stage_scheduler =
-            Arc::new(QueryStageScheduler::new(state.clone(), metrics_collector));
+        let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
+            state.clone(),
+            metrics_collector,
+            config.job_resubmit_interval_ms,
+        ));
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
             config.event_loop_buffer_size as usize,
@@ -112,8 +117,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             config.clone(),
             task_launcher,
         ));
-        let query_stage_scheduler =
-            Arc::new(QueryStageScheduler::new(state.clone(), metrics_collector));
+        let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
+            state.clone(),
+            metrics_collector,
+            config.job_resubmit_interval_ms,
+        ));
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
             config.event_loop_buffer_size as usize,
@@ -135,6 +143,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         self.expire_dead_executors()?;
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn query_stage_scheduler(&self) -> Arc<QueryStageScheduler<T, U>> {
+        self.query_stage_scheduler.clone()
     }
 
     pub(crate) fn pending_tasks(&self) -> usize {
@@ -174,8 +187,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         // We might receive buggy task updates from dead executors.
         if self.state.executor_manager.is_dead_executor(executor_id) {
             let error_msg = format!(
-                "Receive buggy tasks status from dead Executor {}, task status update ignored.",
-                executor_id
+                "Receive buggy tasks status from dead Executor {executor_id}, task status update ignored."
             );
             warn!("{}", error_msg);
             return Ok(());
@@ -225,10 +237,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                     )
                     .await
                     .unwrap_or_else(|e| {
-                        let msg = format!(
-                            "Error to remove Executor in Scheduler due to {:?}",
-                            e
-                        );
+                        let msg =
+                            format!("Error to remove Executor in Scheduler due to {e:?}");
                         error!("{}", msg);
                     });
 
@@ -284,6 +294,29 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             .await?;
         Ok(())
     }
+
+    async fn do_register_executor(&self, metadata: ExecutorMetadata) -> Result<()> {
+        let executor_data = ExecutorData {
+            executor_id: metadata.id.clone(),
+            total_task_slots: metadata.specification.task_slots,
+            available_task_slots: metadata.specification.task_slots,
+        };
+
+        // Save the executor to state
+        let reservations = self
+            .state
+            .executor_manager
+            .register_executor(metadata, executor_data, false)
+            .await?;
+
+        // If we are using push-based scheduling then reserve this executors slots and send
+        // them for scheduling tasks.
+        if self.state.config.is_push_staged_scheduling() {
+            self.offer_reservation(reservations).await?;
+        }
+
+        Ok(())
+    }
 }
 
 pub fn timestamp_secs() -> u64 {
@@ -309,6 +342,7 @@ mod test {
 
     use datafusion::test_util::scan_empty;
     use datafusion_proto::protobuf::LogicalPlanNode;
+    use datafusion_proto::protobuf::PhysicalPlanNode;
 
     use ballista_core::config::{
         BallistaConfig, TaskSchedulingPolicy, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
@@ -319,8 +353,8 @@ mod test {
 
     use ballista_core::serde::protobuf::{
         failed_task, job_status, task_status, ExecutionError, FailedTask, JobStatus,
-        MultiTaskDefinition, PhysicalPlanNode, ShuffleWritePartition, SuccessfulJob,
-        SuccessfulTask, TaskId, TaskStatus,
+        MultiTaskDefinition, ShuffleWritePartition, SuccessfulJob, SuccessfulTask,
+        TaskId, TaskStatus,
     };
     use ballista_core::serde::scheduler::{
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
@@ -548,8 +582,8 @@ mod test {
                     ..
                 }
             ),
-            "Expected job status to be failed but it was {:?}",
-            status
+            "{}",
+            "Expected job status to be failed but it was {status:?}"
         );
 
         assert_submitted_event("job", &metrics_collector);
@@ -577,7 +611,10 @@ mod test {
 
         ctx.register_table("explode", Arc::new(ExplodingTableProvider))?;
 
-        let plan = ctx.sql("SELECT * FROM explode").await?.to_logical_plan()?;
+        let plan = ctx
+            .sql("SELECT * FROM explode")
+            .await?
+            .into_optimized_plan()?;
 
         // This should fail when we try and create the physical plan
         let status = test.run("job", "", &plan).await?;
@@ -590,8 +627,8 @@ mod test {
                     ..
                 }
             ),
-            "Expected job status to be failed but it was {:?}",
-            status
+            "{}",
+            "Expected job status to be failed but it was {status:?}"
         );
 
         assert_no_submitted_event("job", &metrics_collector);
@@ -673,7 +710,7 @@ mod test {
         BallistaConfig::builder()
             .set(
                 BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
-                format!("{}", partitions).as_str(),
+                format!("{partitions}").as_str(),
             )
             .build()
             .expect("creating BallistaConfig")

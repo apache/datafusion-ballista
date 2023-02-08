@@ -39,7 +39,7 @@ This will create the following images:
 
 ## Start a Cluster
 
-Using the [docker-compose.yml](https://github.com/apache/arrow-ballista/blob/master/docker-compose.yml) from the
+Using the [docker-compose.yml](https://github.com/apache/arrow-ballista/blob/main/docker-compose.yml) from the
 source repository, run the following command to start a cluster:
 
 ```bash

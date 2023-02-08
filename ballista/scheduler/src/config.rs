@@ -44,6 +44,9 @@ pub struct SchedulerConfig {
     pub finished_job_state_clean_up_interval_seconds: u64,
     /// The route endpoint for proxying flight sql results via scheduler
     pub advertise_flight_sql_endpoint: Option<String>,
+    /// If provided, submitted jobs which do not have tasks scheduled will be resubmitted after `job_resubmit_interval_ms`
+    /// milliseconds
+    pub job_resubmit_interval_ms: Option<u64>,
     /// Configuration for ballista cluster storage
     pub cluster_storage: ClusterStorageConfig,
 }
@@ -61,6 +64,7 @@ impl Default for SchedulerConfig {
             finished_job_state_clean_up_interval_seconds: 3600,
             advertise_flight_sql_endpoint: None,
             cluster_storage: ClusterStorageConfig::Memory,
+            job_resubmit_interval_ms: None,
         }
     }
 }
@@ -130,6 +134,11 @@ impl SchedulerConfig {
 
     pub fn with_cluster_storage(mut self, config: ClusterStorageConfig) -> Self {
         self.cluster_storage = config;
+        self
+    }
+
+    pub fn with_job_resubmit_interval_ms(mut self, interval_ms: u64) -> Self {
+        self.job_resubmit_interval_ms = Some(interval_ms);
         self
     }
 }

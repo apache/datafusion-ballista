@@ -34,8 +34,8 @@ use crate::state::task_manager::TaskLauncher;
 use ballista_core::config::{BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS};
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    task_status, FailedTask, JobStatus, MultiTaskDefinition, PhysicalPlanNode,
-    ShuffleWritePartition, SuccessfulTask, TaskId, TaskStatus,
+    task_status, FailedTask, JobStatus, MultiTaskDefinition, ShuffleWritePartition,
+    SuccessfulTask, TaskId, TaskStatus,
 };
 use ballista_core::serde::scheduler::{
     ExecutorData, ExecutorMetadata, ExecutorSpecification,
@@ -45,6 +45,7 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::DataFusionError;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::context::{SessionConfig, SessionContext, SessionState};
+use datafusion::logical_expr::expr::Sort;
 use datafusion::logical_expr::{Expr, LogicalPlan};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::ExecutionPlan;
@@ -54,9 +55,10 @@ use datafusion::test_util::scan_empty;
 use crate::cluster::BallistaCluster;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
+use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
 use crate::state::execution_graph::{ExecutionGraph, TaskDescription};
 use ballista_core::utils::default_session_builder;
-use datafusion_proto::protobuf::LogicalPlanNode;
+use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use parking_lot::Mutex;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 
@@ -136,7 +138,7 @@ pub async fn datafusion_test_context(path: &str) -> Result<SessionContext> {
             .delimiter(b'|')
             .has_header(false)
             .file_extension(".tbl");
-        let dir = format!("{}/{}", path, table);
+        let dir = format!("{path}/{table}");
         ctx.register_csv(table, &dir, options).await?;
     }
     Ok(ctx)
@@ -372,7 +374,7 @@ impl TaskLauncher for VirtualTaskLauncher {
             .send((executor.id.clone(), status))
             .await
             .map_err(|e| {
-                BallistaError::Internal(format!("Error sending task status: {:?}", e))
+                BallistaError::Internal(format!("Error sending task status: {e:?}"))
             })
     }
 }
@@ -393,20 +395,23 @@ impl SchedulerTest {
     ) -> Result<Self> {
         let cluster = BallistaCluster::new_from_config(&config).await?;
 
-        let ballista_config = BallistaConfig::builder()
-            .set(
-                BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
-                format!("{}", num_executors * task_slots_per_executor).as_str(),
-            )
-            .build()
-            .expect("creating BallistaConfig");
+        let ballista_config = if num_executors > 0 && task_slots_per_executor > 0 {
+            BallistaConfig::builder()
+                .set(
+                    BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
+                    format!("{}", num_executors * task_slots_per_executor).as_str(),
+                )
+                .build()?
+        } else {
+            BallistaConfig::builder().build()?
+        };
 
         let runner = runner.unwrap_or_else(|| Arc::new(default_task_runner()));
 
         let executors: HashMap<String, VirtualExecutor> = (0..num_executors)
             .into_iter()
             .map(|i| {
-                let id = format!("virtual-executor-{}", i);
+                let id = format!("virtual-executor-{i}");
                 let executor = VirtualExecutor {
                     executor_id: id.clone(),
                     task_slots: task_slots_per_executor,
@@ -483,6 +488,7 @@ impl SchedulerTest {
         job_name: &str,
         plan: &LogicalPlan,
     ) -> Result<()> {
+        println!("{:?}", self.ballista_config);
         let ctx = self
             .scheduler
             .state
@@ -495,6 +501,17 @@ impl SchedulerTest {
             .await?;
 
         Ok(())
+    }
+
+    pub async fn post_scheduler_event(
+        &self,
+        event: QueryStageSchedulerEvent,
+    ) -> Result<()> {
+        self.scheduler
+            .query_stage_event_loop
+            .get_sender()?
+            .post_event(event)
+            .await
     }
 
     pub async fn tick(&mut self) -> Result<()> {
@@ -646,6 +663,12 @@ impl SchedulerTest {
 
         final_status
     }
+
+    pub(crate) fn query_stage_scheduler(
+        &self,
+    ) -> Arc<QueryStageScheduler<LogicalPlanNode, PhysicalPlanNode>> {
+        self.scheduler.query_stage_scheduler()
+    }
 }
 
 #[derive(Clone)]
@@ -731,7 +754,7 @@ pub fn assert_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
         .iter()
         .any(|ev| matches!(ev, MetricEvent::Submitted(_, _, _)));
 
-    assert!(found, "Expected submitted event for job {}", job_id);
+    assert!(found, "{}", "Expected submitted event for job {job_id}");
 }
 
 pub fn assert_no_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
@@ -740,7 +763,7 @@ pub fn assert_no_submitted_event(job_id: &str, collector: &TestMetricsCollector)
         .iter()
         .any(|ev| matches!(ev, MetricEvent::Submitted(_, _, _)));
 
-    assert!(!found, "Expected no submitted event for job {}", job_id);
+    assert!(!found, "{}", "Expected no submitted event for job {job_id}");
 }
 
 pub fn assert_completed_event(job_id: &str, collector: &TestMetricsCollector) {
@@ -749,7 +772,7 @@ pub fn assert_completed_event(job_id: &str, collector: &TestMetricsCollector) {
         .iter()
         .any(|ev| matches!(ev, MetricEvent::Completed(_, _, _)));
 
-    assert!(found, "Expected completed event for job {}", job_id);
+    assert!(found, "{}", "Expected completed event for job {job_id}");
 }
 
 pub fn assert_cancelled_event(job_id: &str, collector: &TestMetricsCollector) {
@@ -758,7 +781,7 @@ pub fn assert_cancelled_event(job_id: &str, collector: &TestMetricsCollector) {
         .iter()
         .any(|ev| matches!(ev, MetricEvent::Cancelled(_)));
 
-    assert!(found, "Expected cancelled event for job {}", job_id);
+    assert!(found, "{}", "Expected cancelled event for job {job_id}");
 }
 
 pub fn assert_failed_event(job_id: &str, collector: &TestMetricsCollector) {
@@ -767,12 +790,13 @@ pub fn assert_failed_event(job_id: &str, collector: &TestMetricsCollector) {
         .iter()
         .any(|ev| matches!(ev, MetricEvent::Failed(_, _, _)));
 
-    assert!(found, "Expected failed event for job {}", job_id);
+    assert!(found, "{}", "Expected failed event for job {job_id}");
 }
 
 pub async fn test_aggregation_plan(partition: usize) -> ExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::with_config(config));
+    let session_state = ctx.state();
 
     let schema = Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
@@ -786,9 +810,12 @@ pub async fn test_aggregation_plan(partition: usize) -> ExecutionGraph {
         .build()
         .unwrap();
 
-    let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
-    let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+    let plan = session_state
+        .create_physical_plan(&optimized_plan)
+        .await
+        .unwrap();
 
     println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
@@ -798,6 +825,7 @@ pub async fn test_aggregation_plan(partition: usize) -> ExecutionGraph {
 pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::with_config(config));
+    let session_state = ctx.state();
 
     let schema = Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
@@ -814,9 +842,12 @@ pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
         .build()
         .unwrap();
 
-    let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
-    let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+    let plan = session_state
+        .create_physical_plan(&optimized_plan)
+        .await
+        .unwrap();
 
     println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
@@ -826,6 +857,7 @@ pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
 pub async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::with_config(config));
+    let session_state = ctx.state();
 
     let schema = Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
@@ -839,16 +871,24 @@ pub async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
         .build()
         .unwrap();
 
-    let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
-    let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+    let plan = session_state
+        .create_physical_plan(&optimized_plan)
+        .await
+        .unwrap();
 
     ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap()
 }
 
 pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
-    let config = SessionConfig::new().with_target_partitions(partition);
+    let mut config = SessionConfig::new().with_target_partitions(partition);
+    config
+        .config_options_mut()
+        .optimizer
+        .enable_round_robin_repartition = false;
     let ctx = Arc::new(SessionContext::with_config(config));
+    let session_state = ctx.state();
 
     let schema = Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
@@ -862,14 +902,10 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
         .build()
         .unwrap();
 
-    let sort_expr = Expr::Sort {
-        expr: Box::new(col("id")),
-        asc: false,
-        nulls_first: false,
-    };
+    let sort_expr = Expr::Sort(Sort::new(Box::new(col("id")), false, false));
 
     let logical_plan = left_plan
-        .join(&right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
+        .join(right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
         .unwrap()
         .aggregate(vec![col("id")], vec![sum(col("gmv"))])
         .unwrap()
@@ -878,16 +914,19 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
         .build()
         .unwrap();
 
-    let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
-    let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+    let plan = session_state
+        .create_physical_plan(&optimized_plan)
+        .await
+        .unwrap();
 
     println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
     let graph =
         ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap();
 
-    println!("{:?}", graph);
+    println!("{graph:?}");
 
     graph
 }
@@ -895,24 +934,28 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
 pub async fn test_union_all_plan(partition: usize) -> ExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::with_config(config));
+    let session_state = ctx.state();
 
     let logical_plan = ctx
         .sql("SELECT 1 as NUMBER union all SELECT 1 as NUMBER;")
         .await
         .unwrap()
-        .to_logical_plan()
+        .into_optimized_plan()
         .unwrap();
 
-    let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
-    let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+    let plan = session_state
+        .create_physical_plan(&optimized_plan)
+        .await
+        .unwrap();
 
     println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
     let graph =
         ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap();
 
-    println!("{:?}", graph);
+    println!("{graph:?}");
 
     graph
 }
@@ -920,24 +963,28 @@ pub async fn test_union_all_plan(partition: usize) -> ExecutionGraph {
 pub async fn test_union_plan(partition: usize) -> ExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::with_config(config));
+    let session_state = ctx.state();
 
     let logical_plan = ctx
         .sql("SELECT 1 as NUMBER union SELECT 1 as NUMBER;")
         .await
         .unwrap()
-        .to_logical_plan()
+        .into_optimized_plan()
         .unwrap();
 
-    let optimized_plan = ctx.optimize(&logical_plan).unwrap();
+    let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
-    let plan = ctx.create_physical_plan(&optimized_plan).await.unwrap();
+    let plan = session_state
+        .create_physical_plan(&optimized_plan)
+        .await
+        .unwrap();
 
     println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
     let graph =
         ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap();
 
-    println!("{:?}", graph);
+    println!("{graph:?}");
 
     graph
 }

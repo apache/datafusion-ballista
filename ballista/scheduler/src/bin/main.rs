@@ -116,6 +116,8 @@ async fn main() -> Result<()> {
             .finished_job_state_clean_up_interval_seconds,
         advertise_flight_sql_endpoint: opt.advertise_flight_sql_endpoint,
         cluster_storage: ClusterStorageConfig::Memory,
+        job_resubmit_interval_ms: (opt.job_resubmit_interval_ms > 0)
+            .then_some(opt.job_resubmit_interval_ms),
     };
 
     let cluster = BallistaCluster::new_from_config(&config).await?;

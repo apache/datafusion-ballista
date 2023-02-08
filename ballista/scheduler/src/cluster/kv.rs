@@ -31,15 +31,15 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
     self, AvailableTaskSlots, ExecutorHeartbeat, ExecutorTaskSlots, FailedJob,
-    KeyValuePair, PhysicalPlanNode, QueuedJob,
+    KeyValuePair, QueuedJob,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
-use ballista_core::serde::AsExecutionPlan;
 use ballista_core::serde::BallistaCodec;
 use dashmap::DashMap;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
-use datafusion_proto::protobuf::LogicalPlanNode;
+use datafusion_proto::physical_plan::AsExecutionPlan;
+use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use futures::StreamExt;
 use itertools::Itertools;
 use log::warn;
@@ -105,8 +105,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             let mut slots =
                 ExecutorTaskSlots::decode(resources.as_slice()).map_err(|err| {
                     BallistaError::Internal(format!(
-                        "Unexpected value in executor slots state: {:?}",
-                        err
+                        "Unexpected value in executor slots state: {err:?}"
                     ))
                 })?;
 
@@ -157,8 +156,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             let mut slots =
                 ExecutorTaskSlots::decode(resources.as_slice()).map_err(|err| {
                     BallistaError::Internal(format!(
-                        "Unexpected value in executor slots state: {:?}",
-                        err
+                        "Unexpected value in executor slots state: {err:?}"
                     ))
                 })?;
 
@@ -208,8 +206,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             let mut slots =
                 ExecutorTaskSlots::decode(resources.as_slice()).map_err(|err| {
                     BallistaError::Internal(format!(
-                        "Unexpected value in executor slots state: {:?}",
-                        err
+                        "Unexpected value in executor slots state: {err:?}"
                     ))
                 })?;
 
@@ -246,10 +243,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         let current_ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| {
-                BallistaError::Internal(format!(
-                    "Error getting current timestamp: {:?}",
-                    e
-                ))
+                BallistaError::Internal(format!("Error getting current timestamp: {e:?}"))
             })?
             .as_secs();
 
@@ -373,10 +367,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         let current_ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| {
-                BallistaError::Internal(format!(
-                    "Error getting current timestamp: {:?}",
-                    e
-                ))
+                BallistaError::Internal(format!("Error getting current timestamp: {e:?}"))
             })?
             .as_secs();
 

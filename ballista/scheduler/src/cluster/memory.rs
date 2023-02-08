@@ -34,9 +34,7 @@ use datafusion::prelude::SessionContext;
 
 use crate::cluster::event::ClusterEventSender;
 use crate::scheduler_server::{timestamp_millis, timestamp_secs, SessionBuilder};
-use crate::state::session_manager::{
-    create_datafusion_context, update_datafusion_context,
-};
+use crate::state::session_manager::create_datafusion_context;
 use ballista_core::serde::protobuf::job_status::Status;
 use itertools::Itertools;
 use log::warn;
@@ -408,7 +406,7 @@ impl JobState for InMemoryJobState {
             .get(session_id)
             .map(|sess| sess.clone())
             .ok_or_else(|| {
-                BallistaError::General(format!("No session for {} found", session_id))
+                BallistaError::General(format!("No session for {session_id} found"))
             })
     }
 
@@ -427,16 +425,11 @@ impl JobState for InMemoryJobState {
         session_id: &str,
         config: &BallistaConfig,
     ) -> Result<Arc<SessionContext>> {
-        if let Some(mut session) = self.sessions.get_mut(session_id) {
-            *session = update_datafusion_context(session.clone(), config);
-            Ok(session.clone())
-        } else {
-            let session = create_datafusion_context(config, self.session_builder);
-            self.sessions
-                .insert(session_id.to_string(), session.clone());
+        let session = create_datafusion_context(config, self.session_builder);
+        self.sessions
+            .insert(session_id.to_string(), session.clone());
 
-            Ok(session)
-        }
+        Ok(session)
     }
 
     async fn job_state_events(&self) -> Result<JobStateEventStream> {

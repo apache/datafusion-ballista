@@ -38,7 +38,7 @@ pub enum Keyspace {
 
 impl Keyspace {
     pub fn strip_prefix<'a>(&'a self, key: &'a str) -> Option<&'a str> {
-        key.strip_prefix(&format!("{:?}/", self))
+        key.strip_prefix(&format!("{self:?}/"))
     }
 }
 
@@ -112,6 +112,17 @@ pub trait KeyValueStore: Send + Sync + Clone + 'static {
 
     /// Permanently delete a key from state
     async fn delete(&self, keyspace: Keyspace, key: &str) -> Result<()>;
+}
+
+/// Method of distributing tasks to available executor slots
+#[derive(Debug, Clone, Copy)]
+pub enum TaskDistribution {
+    /// Eagerly assign tasks to executor slots. This will assign as many task slots per executor
+    /// as are currently available
+    Bias,
+    /// Distributed tasks evenely across executors. This will try and iterate through available executors
+    /// and assign one task to each executor until all tasks are assigned.
+    RoundRobin,
 }
 
 /// A Watch is a cancelable stream of put or delete events in the [StateBackendClient]

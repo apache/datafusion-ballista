@@ -199,7 +199,8 @@ impl<S: ClusterState> ClusterStateTest<S> {
         assert_eq!(
             self.reservations.len(),
             n,
-            "Expectedt {n} open reservations but found {}",
+            "Expectedt {} open reservations but found {}",
+            n,
             self.reservations.len()
         );
         self
@@ -213,7 +214,8 @@ impl<S: ClusterState> ClusterStateTest<S> {
         assert_eq!(
             self.reservations.len(),
             n,
-            "Expectedt {n} open reservations but found {}",
+            "Expected {} open reservations but found {}",
+            n,
             self.reservations.len()
         );
 

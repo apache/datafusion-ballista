@@ -51,7 +51,7 @@ pub async fn exec_from_lines(
                 if line.ends_with(';') {
                     match exec_and_print(ctx, print_options, query).await {
                         Ok(_) => {}
-                        Err(err) => println!("{:?}", err),
+                        Err(err) => println!("{err:?}"),
                     }
                     query = "".to_owned();
                 } else {
@@ -68,7 +68,7 @@ pub async fn exec_from_lines(
     if !query.is_empty() {
         match exec_and_print(ctx, print_options, query).await {
             Ok(_) => {}
-            Err(err) => println!("{:?}", err),
+            Err(err) => println!("{err:?}"),
         }
     }
 }
@@ -110,7 +110,7 @@ pub async fn exec_from_repl(ctx: &BallistaContext, print_options: &mut PrintOpti
                                     if let Err(e) =
                                         command.execute(&mut print_options).await
                                     {
-                                        eprintln!("{}", e)
+                                        eprintln!("{e}")
                                     }
                                 } else {
                                     eprintln!(
@@ -124,7 +124,7 @@ pub async fn exec_from_repl(ctx: &BallistaContext, print_options: &mut PrintOpti
                         }
                         _ => {
                             if let Err(e) = cmd.execute(ctx, &mut print_options).await {
-                                eprintln!("{}", e)
+                                eprintln!("{e}")
                             }
                         }
                     }
@@ -136,7 +136,7 @@ pub async fn exec_from_repl(ctx: &BallistaContext, print_options: &mut PrintOpti
                 rl.add_history_entry(line.trim_end());
                 match exec_and_print(ctx, &print_options, line).await {
                     Ok(_) => {}
-                    Err(err) => eprintln!("{:?}", err),
+                    Err(err) => eprintln!("{err:?}"),
                 }
             }
             Err(ReadlineError::Interrupted) => {
@@ -148,7 +148,7 @@ pub async fn exec_from_repl(ctx: &BallistaContext, print_options: &mut PrintOpti
                 break;
             }
             Err(err) => {
-                eprintln!("Unknown error happened {:?}", err);
+                eprintln!("Unknown error happened {err:?}");
                 break;
             }
         }

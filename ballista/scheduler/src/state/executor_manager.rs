@@ -24,7 +24,7 @@ use ballista_core::serde::protobuf;
 
 use crate::cluster::ClusterState;
 use crate::config::SlotsPolicy;
-use crate::scheduler_server::timestamp_secs;
+
 use crate::state::execution_graph::RunningTaskInfo;
 use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 use ballista_core::serde::protobuf::{
@@ -40,7 +40,6 @@ use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tonic::transport::Channel;
-use tracing::trace;
 
 type ExecutorClients = Arc<DashMap<String, ExecutorGrpcClient<Channel>>>;
 
@@ -165,7 +164,7 @@ impl ExecutorManager {
         } else {
             let alive_executors = self.get_alive_executors_within_one_minute();
 
-            trace!("alive executors: {:?}", alive_executors);
+            debug!("Alive executors: {alive_executors:?}");
 
             self.cluster_state
                 .reserve_slots(n, self.task_distribution, Some(alive_executors))
@@ -463,9 +462,16 @@ impl ExecutorManager {
 
         self.test_scheduler_connectivity(&metadata).await?;
 
+        let current_ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| {
+                BallistaError::Internal(format!("Error getting current timestamp: {e:?}"))
+            })?
+            .as_secs();
+
         let initial_heartbeat = ExecutorHeartbeat {
             executor_id: metadata.id.clone(),
-            timestamp: timestamp_secs(),
+            timestamp: current_ts,
             metrics: vec![],
             status: Some(ExecutorStatus {
                 status: Some(executor_status::Status::Active(String::default())),
@@ -686,8 +692,7 @@ mod test {
         assert_eq!(
             reservations.len(),
             40,
-            "Expected 40 reservations for policy {:?}",
-            slots_policy
+            "Expected 40 reservations for policy {slots_policy:?}"
         );
 
         // Now cancel them
@@ -699,8 +704,7 @@ mod test {
         assert_eq!(
             reservations.len(),
             40,
-            "Expected 40 reservations for policy {:?}",
-            slots_policy
+            "Expected 40 reservations for policy {slots_policy:?}"
         );
 
         Ok(())
@@ -849,8 +853,8 @@ mod test {
         for i in 0..total_executors {
             result.push((
                 ExecutorMetadata {
-                    id: format!("executor-{}", i),
-                    host: format!("host-{}", i),
+                    id: format!("executor-{i}"),
+                    host: format!("host-{i}"),
                     port: 8080,
                     grpc_port: 9090,
                     specification: ExecutorSpecification {
@@ -858,7 +862,7 @@ mod test {
                     },
                 },
                 ExecutorData {
-                    executor_id: format!("executor-{}", i),
+                    executor_id: format!("executor-{i}"),
                     total_task_slots: slots_per_executor,
                     available_task_slots: slots_per_executor,
                 },

@@ -34,11 +34,12 @@ use crate::config::SchedulerConfig;
 use crate::state::execution_graph::TaskDescription;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::TaskStatus;
-use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::serde::BallistaCodec;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info};
 use prost::Message;
 
@@ -325,7 +326,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         if log::max_level() >= log::Level::Debug {
             // optimizing the plan here is redundant because the physical planner will do this again
             // but it is helpful to see what the optimized plan will be
-            let optimized_plan = session_ctx.optimize(plan)?;
+            let optimized_plan = session_ctx.state().optimize(plan)?;
             debug!("Optimized plan: {}", optimized_plan.display_indent());
         }
 
@@ -364,8 +365,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                                 .map_err(|e| {
                                     BallistaError::General(format!(
                                     "logical plan refers to path on local file system \
-                                    that is not accessible in the scheduler: {}: {:?}",
-                                    url, e
+                                    that is not accessible in the scheduler: {url}: {e:?}"
                                 ))
                                 })?;
                         }
@@ -378,7 +378,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         let mut verify_paths_exist = VerifyPathsExist {};
         plan.accept(&mut verify_paths_exist)?;
 
-        let plan = session_ctx.create_physical_plan(plan).await?;
+        let plan = session_ctx.state().create_physical_plan(plan).await?;
         debug!(
             "Physical plan: {}",
             DisplayableExecutionPlan::new(plan.as_ref()).indent()
@@ -424,7 +424,7 @@ mod test {
     use ballista_core::config::{BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS};
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::{
-        task_status, PhysicalPlanNode, ShuffleWritePartition, SuccessfulTask, TaskStatus,
+        task_status, ShuffleWritePartition, SuccessfulTask, TaskStatus,
     };
     use ballista_core::serde::scheduler::{
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
@@ -441,6 +441,7 @@ mod test {
     use datafusion::prelude::SessionContext;
     use datafusion::test_util::scan_empty;
     use datafusion_proto::protobuf::LogicalPlanNode;
+    use datafusion_proto::protobuf::PhysicalPlanNode;
     use std::sync::Arc;
 
     const TEST_SCHEDULER_NAME: &str = "localhost:50050";
@@ -693,8 +694,8 @@ mod test {
         for i in 0..total_executors {
             result.push((
                 ExecutorMetadata {
-                    id: format!("executor-{}", i),
-                    host: format!("host-{}", i),
+                    id: format!("executor-{i}"),
+                    host: format!("host-{i}"),
                     port: 8080,
                     grpc_port: 9090,
                     specification: ExecutorSpecification {
@@ -702,7 +703,7 @@ mod test {
                     },
                 },
                 ExecutorData {
-                    executor_id: format!("executor-{}", i),
+                    executor_id: format!("executor-{i}"),
                     total_task_slots: slots_per_executor,
                     available_task_slots: slots_per_executor,
                 },
@@ -725,6 +726,6 @@ mod test {
             .build()
             .unwrap();
 
-        ctx.create_physical_plan(&plan).await.unwrap()
+        ctx.state().create_physical_plan(&plan).await.unwrap()
     }
 }

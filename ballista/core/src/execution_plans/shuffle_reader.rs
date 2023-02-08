@@ -98,10 +98,6 @@ impl ExecutionPlan for ShuffleReaderExec {
         None
     }
 
-    fn relies_on_input_order(&self) -> bool {
-        false
-    }
-
     fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
         vec![]
     }
@@ -407,16 +403,10 @@ fn fetch_partition_local_inner(
     path: &str,
 ) -> result::Result<FileReader<File>, BallistaError> {
     let file = File::open(path).map_err(|e| {
-        BallistaError::General(format!(
-            "Failed to open partition file at {}: {:?}",
-            path, e
-        ))
+        BallistaError::General(format!("Failed to open partition file at {path}: {e:?}"))
     })?;
     FileReader::try_new(file, None).map_err(|e| {
-        BallistaError::General(format!(
-            "Failed to new arrow FileReader at {}: {:?}",
-            path, e
-        ))
+        BallistaError::General(format!("Failed to new arrow FileReader at {path}: {e:?}"))
     })
 }
 
@@ -589,7 +579,7 @@ mod tests {
 
         let batches = utils::collect_stream(&mut stream)
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))
             .unwrap();
 
         let path = batches[0].columns()[1]
@@ -606,7 +596,7 @@ mod tests {
 
         let result = utils::collect_stream(&mut stream)
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))
             .unwrap();
 
         assert_eq!(result.len(), 2);
@@ -656,7 +646,7 @@ mod tests {
                     partition_id,
                 },
                 executor_meta: ExecutorMetadata {
-                    id: format!("exec{}", partition_id),
+                    id: format!("exec{partition_id}"),
                     host: "localhost".to_string(),
                     port: 50051,
                     grpc_port: 50052,
