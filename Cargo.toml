@@ -16,13 +16,19 @@
 # under the License.
 
 [workspace]
-exclude = ["python"]
-members = ["benchmarks", "ballista/client", "ballista/core", "ballista/executor", "ballista/scheduler", "examples", "ballista-cli",
+members = [
+    "ballista-cli",
+    "ballista/client",
+    "ballista/core",
+    "ballista/executor",
+    "ballista/scheduler",
+    "benchmarks",
+    "examples",
 ]
+exclude = ["python"]
 
 # cargo build --profile release-lto
 [profile.release-lto]
 codegen-units = 1
 inherits = "release"
 lto = true
-
