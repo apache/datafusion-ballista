@@ -19,22 +19,127 @@
 
 # Release Process
 
-## Branching
+Development happens on the `main` branch, and most of the time, we depend on DataFusion using a git dependency (depending
+on a specific git revision) rather than using an official release from crates.io. This allows us to pick up new
+features and bug fixes frequently by creating PRs to move to a later revision of the code. It also means we can
+incrementally make updates that are required due to changes in DataFusion rather than having a large amount of work
+to do when the next official release is available.
 
-### Major Release
+When there is a new official release of DataFusion, we update the `main` branch to point to that, update the version
+number, and create a new release branch, such as `branch-0.11`. Once this branch is created, we switch the `main` branch
+back to using GitHub dependencies. The release activity (such as generating the changelog) can then happen on the
+release branch without blocking ongoing development in the `main` branch.
 
-Ballista typically has major releases from the `master` branch every 4 weeks.
+We can cherry-pick commits from the `main` branch into `branch-0.11` as needed and then create new patch releases
+from that branch.
 
-## Prerequisite
+## Who Can Create Releases?
 
+Although some tasks can only be performed by a PMC member, many tasks can be performed by committers and contributors.
+
+### Release Preparation
+
+| Task                                                             | Role Required |
+| ---------------------------------------------------------------- | ------------- |
+| Create PRs against main branch to update DataFusion dependencies | None          |
+| Create PRs against main branch to update Ballista version        | None          |
+| Create release branch (e.g. branch-0.11)                         | Committer     |
+| Create PRs against release branch with CHANGELOG                 | None          |
+| Create PRs against release branch with cherry-picked commits     | None          |
+| Create release candidate tag                                     | Committer     |
+
+### Release
+
+| Task                                                | Role Required |
+| --------------------------------------------------- | ------------- |
+| Create release candidate tarball and publish to SVN | PMC           |
+| Start vote on mailing list                          | PMC           |
+| Call vote on mailing list                           | PMC           |
+| Publish release tarball to SVN                      | PMC           |
+| Publish binary artifacts to crates.io               | PMC           |
+
+### Post-Release
+
+| Task                                                    | Role Required |
+| ------------------------------------------------------- | ------------- |
+| Create PR against arrow-site with updated documentation | None          |
+
+## Detailed Guide
+
+### Prerequisite
+
+- You will need a GitHub Personal Access Token with "repo" access. Follow
+  [these instructions](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token)
+  to generate one if you do not already have one.
 - Have upstream git repo `git@github.com:apache/arrow-ballista.git` add as git remote `apache`.
-- Created a peronal access token in Github for changelog automation script.
-  - Github PAT should be created with `repo` access
-- Make sure your signing key is added to the following files in SVN:
-  - https://dist.apache.org/repos/dist/dev/arrow/KEYS
-  - https://dist.apache.org/repos/dist/release/arrow/KEYS
 
-### How to add signing key
+### Preparing the `main` Branch
+
+Before creating a new release:
+
+- We need to ensure that the main branch does not have any GitHub dependencies
+- a PR should be created and merged to update the major version number of the project. There is a script to automate
+  updating the version number: `./dev/update_ballista_versions.py 0.11.0`
+- A new release branch should be created, such as `branch-0.11`
+
+Once the release branch has been created, the `main` branch can immediately go back to depending on DataFusion with a
+GitHub dependency.
+
+### Change Log
+
+### Update CHANGELOG.md
+
+Define release branch (e.g. `branch-0.11`), base version tag (e.g. `0.7.0`) and future version tag (e.g. `0.9.0`). Commits
+between the base version tag and the release branch will be used to populate the changelog content.
+
+```bash
+# create the changelog
+CHANGELOG_GITHUB_TOKEN=<TOKEN> ./dev/release/update_change_log-ballista.sh main 0.8.0 0.7.0
+# review change log / edit issues and labels if needed, rerun until you are happy with the result
+git commit -a -m 'Create changelog for release'
+```
+
+_If you see the error `"You have exceeded a secondary rate limit"` when running this script, try reducing the CPU
+allocation to slow the process down and throttle the number of GitHub requests made per minute, by modifying the
+value of the `--cpus` argument in the `update_change_log.sh` script._
+
+You can add `invalid` or `development-process` label to exclude items from
+release notes. Add `datafusion`, `ballista` and `python` labels to group items
+into each sub-project's change log.
+
+Send a PR to get these changes merged into the release branch (e.g. `branch-0.11`). If new commits that could change the
+change log content landed in the release branch before you could merge the PR, you need to rerun the changelog update
+script to regenerate the changelog and update the PR accordingly.
+
+## Prepare release candidate artifacts
+
+After the PR gets merged, you are ready to create release artifacts based off the
+merged commit.
+
+(Note you need to be a committer to run these scripts as they upload to the apache svn distribution servers)
+
+### Pick a Release Candidate (RC) number
+
+Pick numbers in sequential order, with `0` for `rc0`, `1` for `rc1`, etc.
+
+### Create git tag for the release:
+
+While the official release artifacts are signed tarballs and zip files, we also
+tag the commit it was created for convenience and code archaeology.
+
+Using a string such as `0.11.0` as the `<version>`, create and push the tag by running these commands:
+
+```shell
+git tag <version>-<rc>
+# push tag to Github remote
+git push apache <version>
+```
+
+### Create, sign, and upload artifacts
+
+- Make sure your signing key is added to the following files in SVN:
+    - https://dist.apache.org/repos/dist/dev/arrow/KEYS
+    - https://dist.apache.org/repos/dist/release/arrow/KEYS
 
 See instructions at https://infra.apache.org/release-signing.html#generate for generating keys.
 
@@ -54,115 +159,10 @@ Follow the instructions in the header of the KEYS file to append your key. Here 
 svn commit KEYS -m "Add key for John Doe"
 ```
 
-## Process Overview
-
-As part of the Apache governance model, official releases consist of signed
-source tarballs approved by the PMC.
-
-We then use the code in the approved artifacts to release to crates.io and
-PyPI.
-
-### Change Log
-
-We maintain `CHANGELOG.md` for each sub project so our users know what has been
-changed between releases.
-
-The CHANGELOG is managed automatically using
-[update_change_log.sh](https://github.com/apache/arrow-ballista/blob/master/dev/release/update_change_log.sh)
-
-This script creates a changelog using github PRs and issues based on the labels
-associated with them.
-
-## Prepare release commits and PR
-
-Prepare a PR to update `CHANGELOG.md` and versions to reflect the planned
-release.
-
-See [#801](https://github.com/apache/arrow-ballista/pull/801) for an example.
-
-Here are the commands that could be used to prepare the `0.8.0` release:
-
-### Update Version
-
-Checkout the master commit to be released
-
-```
-git fetch apache
-git checkout apache/master
-```
-
-Update version in `ballista/Cargo.toml` to `0.8.0`:
-
-```
-./dev/update_ballista_versions.py 0.8.0
-```
-
-Lastly commit the version change:
-
-```
-git commit -a -m 'Update version'
-```
-
-### Update CHANGELOG.md
-
-Define release branch (e.g. `master`), base version tag (e.g. `0.8.0`) and future version tag (e.g. `0.9.0`). Commits
-between the base version tag and the release branch will be used to populate the changelog content.
-
-You will need a GitHub Personal Access Token for the following steps. Follow
-[these instructions](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token)
-to generate one if you do not already have one.
-
-```bash
-# create the changelog
-CHANGELOG_GITHUB_TOKEN=<TOKEN> ./dev/release/update_change_log-ballista.sh master 0.8.0 0.7.0
-# review change log / edit issues and labels if needed, rerun until you are happy with the result
-git commit -a -m 'Create changelog for release'
-```
-
-_If you see the error `"You have exceeded a secondary rate limit"` when running this script, try reducing the CPU
-allocation to slow the process down and throttle the number of GitHub requests made per minute, by modifying the
-value of the `--cpus` argument in the `update_change_log.sh` script._
-
-You can add `invalid` or `development-process` label to exclude items from
-release notes. Add `datafusion`, `ballista` and `python` labels to group items
-into each sub-project's change log.
-
-Send a PR to get these changes merged into `master` branch. If new commits that
-could change the change log content landed in the `master` branch before you
-could merge the PR, you need to rerun the changelog update script to regenerate
-the changelog and update the PR accordingly.
-
-## Prepare release candidate artifacts
-
-After the PR gets merged, you are ready to create release artifacts based off the
-merged commit.
-
-(Note you need to be a committer to run these scripts as they upload to the apache svn distribution servers)
-
-### Pick a Release Candidate (RC) number
-
-Pick numbers in sequential order, with `0` for `rc0`, `1` for `rc1`, etc.
-
-### Create git tag for the release:
-
-While the official release artifacts are signed tarballs and zip files, we also
-tag the commit it was created for convenience and code archaeology.
-
-Using a string such as `0.8.0` as the `<version>`, create and push the tag by running these commands:
-
-```shell
-git fetch apache
-git tag <version>-<rc> apache/master
-# push tag to Github remote
-git push apache <version>
-```
-
-### Create, sign, and upload artifacts
-
 Run `create-tarball.sh` with the `<version>` tag and `<rc>` and you found in previous steps:
 
 ```shell
-GH_TOKEN=<TOKEN> ./dev/release/create-tarball.sh 0.8.0 0
+GH_TOKEN=<TOKEN> ./dev/release/create-tarball.sh 0.11.0 1
 ```
 
 The `create-tarball.sh` script
@@ -212,13 +212,13 @@ For the release to become "official" it needs at least three PMC members to vote
 The `dev/release/verify-release-candidate.sh` is a script in this repository that can assist in the verification process. Run it like:
 
 ```
-./dev/release/verify-release-candidate.sh 0.8.0 0
+./dev/release/verify-release-candidate.sh 0.11.0 0
 ```
 
 #### If the release is not approved
 
 If the release is not approved, fix whatever the problem is, merge changelog
-changes into master if there is any and try again with the next RC number.
+changes into main if there is any and try again with the next RC number.
 
 ## Finalize the release
 
@@ -231,7 +231,7 @@ https://dist.apache.org/repos/dist/release/arrow/arrow-ballista-0.8.0/, using
 the `release-tarball.sh` script:
 
 ```shell
-./dev/release/release-tarball.sh 0.8.0 0
+./dev/release/release-tarball.sh 0.11.0 1
 ```
 
 Congratulations! The release is now official!
@@ -241,9 +241,9 @@ Congratulations! The release is now official!
 Tag the same release candidate commit with the final release tag
 
 ```
-git co apache 0.8.0-rc1
-git tag 0.8.0
-git push apache 0.8.0
+git checkout 0.11.0-rc1
+git tag 0.11.0
+git push apache 0.11.0
 ```
 
 ### Publish on Crates.io
@@ -364,8 +364,8 @@ with a copy of the previous release announcement.
 Run the following commands to get the number of commits and number of unique contributors for inclusion in the blog post.
 
 ```bash
-git log --pretty=oneline 0.9.0..0.8.0 ballista ballista-cli examples | wc -l
-git shortlog -sn 0.9.0..0.8.0 ballista ballista-cli examples | wc -l
+git log --pretty=oneline 0.11.0..0.10.0 ballista ballista-cli examples | wc -l
+git shortlog -sn 0.11.0..0.10.0 ballista ballista-cli examples | wc -l
 ```
 
 Once there is consensus on the contents of the post, create a PR to add a blog post to the

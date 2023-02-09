@@ -25,22 +25,28 @@ We welcome and encourage contributions of all kinds, such as:
 2. Documentation improvements
 3. Code (PR or PR Review)
 
-In addition to submitting new PRs, we have a healthy tradition of community members helping review each other's PRs. Doing so is a great way to help the community as well as get more familiar with Rust and the relevant codebases.
+In addition to submitting new PRs, we have a healthy tradition of community members helping review each other's PRs.
+Doing so is a great way to help the community as well as get more familiar with Rust and the relevant codebases.
 
 You can find a curated
 [good-first-issue](https://github.com/apache/arrow-ballista/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
 list to help you get started.
 
-# Developer's guide
+# Developer's Guide
 
-This section describes how you can get started at developing DataFusion.
+This section describes how you can get started with Ballista development.
 
-For information on developing with Ballista, see the
-[Ballista developer documentation](docs/developer/README.md).
+## Bootstrap Environment
 
-### Bootstrap environment
+Ballista contains components implemented in the following programming languages:
 
-DataFusion is written in Rust and it uses a standard rust toolkit:
+- Rust (Scheduler and Executor processes, Client library)
+- Python (Python bindings)
+- Javascript (Scheduler Web UI)
+
+### Rust Environment
+
+We use the standard Rust development tools.
 
 - `cargo build`
 - `cargo fmt` to format the code
@@ -50,8 +56,6 @@ DataFusion is written in Rust and it uses a standard rust toolkit:
 Testing setup:
 
 - `rustup update stable` DataFusion uses the latest stable release of rust
-- `git submodule init`
-- `git submodule update`
 
 Formatting instructions:
 
@@ -63,191 +67,45 @@ or run them all at once:
 
 - [dev/rust_lint.sh](dev/rust_lint.sh)
 
-## Test Organization
+### Rust Process Configuration
 
-DataFusion has several levels of tests in its [Test
-Pyramid](https://martinfowler.com/articles/practical-test-pyramid.html)
-and tries to follow [Testing Organization](https://doc.rust-lang.org/book/ch11-03-test-organization.html) in the The Book.
+The scheduler and executor processes can be configured using toml files, environment variables and command-line
+arguments. The specification for config options can be found here:
 
-This section highlights the most important test modules that exist
+- [ballista/scheduler/scheduler_config_spec.toml](ballista/scheduler/scheduler_config_spec.toml)
+- [ballista/executor/executor_config_spec.toml](ballista/executor/executor_config_spec.toml)
 
-### Unit tests
+Those files fully define Ballista's configuration. If there is a discrepancy between this documentation and the
+files, assume those files are correct.
 
-Tests for the code in an individual module are defined in the same source file with a `test` module, following Rust convention
+To get a list of command-line arguments, run the binary with `--help`
 
-### Rust Integration Tests
+There is an example config file at [ballista/executor/examples/example_executor_config.toml](ballista/executor/examples/example_executor_config.toml)
 
-There are several tests of the public interface of the DataFusion library in the [tests](https://github.com/apache/arrow-datafusion/blob/master/datafusion/tests) directory.
+The order of precedence for arguments is: default config file < environment variables < specified config file < command line arguments.
 
-You can run these tests individually using a command such as
+The executor and scheduler will look for the default config file at `/etc/ballista/[executor|scheduler].toml` To
+specify a config file use the `--config-file` argument.
 
-```shell
-cargo test -p datafusion --tests sql_integration
-```
+Environment variables are prefixed by `BALLISTA_EXECUTOR` or `BALLISTA_SCHEDULER` for the executor and scheduler
+respectively. Hyphens in command line arguments become underscores. For example, the `--scheduler-host` argument
+for the executor becomes `BALLISTA_EXECUTOR_SCHEDULER_HOST`
 
-One very important test is the [sql_integraton](https://github.com/apache/arrow-datafusion/blob/master/datafusion/tests/sql_integration.rs) test which validates DataFusion's ability to run a large assortment of SQL queries against an assortment of data setsups.
+### Python Environment
 
-### SQL / Postgres Integration Tests
+Refer to the instructions in the Python Bindings [README](./python/README.md)
 
-The [integration-tests](https://github.com/apache/arrow-datafusion/blob/master/datafusion/integration-tests] directory contains a harness that runs certain queries against both postgres and datafusion and compares results
+### Javascript Environment
 
-#### setup environment
+Refer to the instructions in the Scheduler Web UI [README](./ballista/scheduler/ui/README.md)
 
-```shell
-export POSTGRES_DB=postgres
-export POSTGRES_USER=postgres
-export POSTGRES_HOST=localhost
-export POSTGRES_PORT=5432
-```
+## Integration Tests
 
-#### Install dependencies
-
-```shell
-# Install dependencies
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -r integration-tests/requirements.txt
-
-# setup environment
-POSTGRES_DB=postgres POSTGRES_USER=postgres POSTGRES_HOST=localhost POSTGRES_PORT=5432 python -m pytest -v integration-tests/test_psql_parity.py
-
-# Create
-psql -d "$POSTGRES_DB" -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -c 'CREATE TABLE IF NOT EXISTS test (
-  c1 character varying NOT NULL,
-  c2 integer NOT NULL,
-  c3 smallint NOT NULL,
-  c4 smallint NOT NULL,
-  c5 integer NOT NULL,
-  c6 bigint NOT NULL,
-  c7 smallint NOT NULL,
-  c8 integer NOT NULL,
-  c9 bigint NOT NULL,
-  c10 character varying NOT NULL,
-  c11 double precision NOT NULL,
-  c12 double precision NOT NULL,
-  c13 character varying NOT NULL
-);'
-
-psql -d "$POSTGRES_DB" -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -c "\copy test FROM '$(pwd)/testing/data/csv/aggregate_test_100.csv' WITH (FORMAT csv, HEADER true);"
-```
-
-#### Invoke the test runner
-
-```shell
-python -m pytest -v integration-tests/test_psql_parity.py
-```
-
-## Benchmarks
-
-### Criterion Benchmarks
-
-[Criterion](https://docs.rs/criterion/latest/criterion/index.html) is a statistics-driven micro-benchmarking framework used by DataFusion for evaluating the performance of specific code-paths. In particular, the criterion benchmarks help to both guide optimisation efforts, and prevent performance regressions within DataFusion.
-
-Criterion integrates with Cargo's built-in [benchmark support](https://doc.rust-lang.org/cargo/commands/cargo-bench.html) and a given benchmark can be run with
-
-```
-cargo bench --bench BENCHMARK_NAME
-```
-
-A full list of benchmarks can be found [here](./datafusion/benches).
-
-_[cargo-criterion](https://github.com/bheisler/cargo-criterion) may also be used for more advanced reporting._
-
-#### Parquet SQL Benchmarks
-
-The parquet SQL benchmarks can be run with
-
-```
- cargo bench --bench parquet_query_sql
-```
-
-These randomly generate a parquet file, and then benchmark queries sourced from [parquet_query_sql.sql](./datafusion/core/benches/parquet_query_sql.sql) against it. This can therefore be a quick way to add coverage of particular query and/or data paths.
-
-If the environment variable `PARQUET_FILE` is set, the benchmark will run queries against this file instead of a randomly generated one. This can be useful for performing multiple runs, potentially with different code, against the same source data, or for testing against a custom dataset.
-
-The benchmark will automatically remove any generated parquet file on exit, however, if interrupted (e.g. by CTRL+C) it will not. This can be useful for analysing the particular file after the fact, or preserving it to use with `PARQUET_FILE` in subsequent runs.
-
-### Upstream Benchmark Suites
-
-Instructions and tooling for running upstream benchmark suites against DataFusion and/or Ballista can be found in [benchmarks](./benchmarks).
-
-These are valuable for comparative evaluation against alternative Arrow implementations and query engines.
-
-## How to add a new scalar function
-
-Below is a checklist of what you need to do to add a new scalar function to DataFusion:
-
-- Add the actual implementation of the function:
-  - [here](datafusion/physical-expr/src/string_expressions.rs) for string functions
-  - [here](datafusion/physical-expr/src/math_expressions.rs) for math functions
-  - [here](datafusion/physical-expr/src/datetime_expressions.rs) for datetime functions
-  - create a new module [here](datafusion/physical-expr/src) for other functions
-- In [core/src/physical_plan](datafusion/core/src/physical_plan/functions.rs), add:
-  - a new variant to `BuiltinScalarFunction`
-  - a new entry to `FromStr` with the name of the function as called by SQL
-  - a new line in `return_type` with the expected return type of the function, given an incoming type
-  - a new line in `signature` with the signature of the function (number and types of its arguments)
-  - a new line in `create_physical_expr`/`create_physical_fun` mapping the built-in to the implementation
-  - tests to the function.
-- In [core/tests/sql](datafusion/core/tests/sql), add a new test where the function is called through SQL against well known data and returns the expected result.
-- In [core/src/logical_plan/expr](datafusion/core/src/logical_plan/expr.rs), add:
-  - a new entry of the `unary_scalar_expr!` macro for the new function.
-- In [core/src/logical_plan/mod](datafusion/core/src/logical_plan/mod.rs), add:
-  - a new entry in the `pub use expr::{}` set.
-
-## How to add a new aggregate function
-
-Below is a checklist of what you need to do to add a new aggregate function to DataFusion:
-
-- Add the actual implementation of an `Accumulator` and `AggregateExpr`:
-  - [here](datafusion/src/physical_plan/string_expressions.rs) for string functions
-  - [here](datafusion/src/physical_plan/math_expressions.rs) for math functions
-  - [here](datafusion/src/physical_plan/datetime_expressions.rs) for datetime functions
-  - create a new module [here](datafusion/src/physical_plan) for other functions
-- In [src/physical_plan/aggregates](datafusion/src/physical_plan/aggregates.rs), add:
-  - a new variant to `BuiltinAggregateFunction`
-  - a new entry to `FromStr` with the name of the function as called by SQL
-  - a new line in `return_type` with the expected return type of the function, given an incoming type
-  - a new line in `signature` with the signature of the function (number and types of its arguments)
-  - a new line in `create_aggregate_expr` mapping the built-in to the implementation
-  - tests to the function.
-- In [tests/sql.rs](datafusion/tests/sql.rs), add a new test where the function is called through SQL against well known data and returns the expected result.
-
-## How to display plans graphically
-
-The query plans represented by `LogicalPlan` nodes can be graphically
-rendered using [Graphviz](http://www.graphviz.org/).
-
-To do so, save the output of the `display_graphviz` function to a file.:
-
-```rust
-// Create plan somehow...
-let mut output = File::create("/tmp/plan.dot")?;
-write!(output, "{}", plan.display_graphviz());
-```
-
-Then, use the `dot` command line tool to render it into a file that
-can be displayed. For example, the following command creates a
-`/tmp/plan.pdf` file:
+The integration tests can be executed by running the following command from the root of the repository.
 
 ```bash
-dot -Tpdf < /tmp/plan.dot > /tmp/plan.pdf
+./dev/integration-tests.sh
 ```
-
-## Specification
-
-We formalize DataFusion semantics and behaviors through specification
-documents. These specifications are useful to be used as references to help
-resolve ambiguities during development or code reviews.
-
-You are also welcome to propose changes to existing specifications or create
-new specifications as you see fit.
-
-Here is the list current active specifications:
-
-- [Output field name semantic](https://arrow.apache.org/datafusion/specification/output-field-name-semantic.html)
-- [Invariants](https://arrow.apache.org/datafusion/specification/invariants.html)
-
-All specifications are stored in the `docs/source/specification` folder.
 
 ## How to format `.md` document
 

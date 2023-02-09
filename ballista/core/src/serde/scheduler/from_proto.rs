@@ -26,27 +26,29 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::error::BallistaError;
-use crate::serde::protobuf;
-use crate::serde::protobuf::action::ActionType;
-use crate::serde::protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
 use crate::serde::scheduler::{
     Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, PartitionId,
     PartitionLocation, PartitionStats, TaskDefinition,
 };
+
+use crate::serde::protobuf;
+use protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
 
 impl TryInto<Action> for protobuf::Action {
     type Error = BallistaError;
 
     fn try_into(self) -> Result<Action, Self::Error> {
         match self.action_type {
-            Some(ActionType::FetchPartition(fetch)) => Ok(Action::FetchPartition {
-                job_id: fetch.job_id,
-                stage_id: fetch.stage_id as usize,
-                partition_id: fetch.partition_id as usize,
-                path: fetch.path,
-                host: fetch.host,
-                port: fetch.port as u16,
-            }),
+            Some(protobuf::action::ActionType::FetchPartition(fetch)) => {
+                Ok(Action::FetchPartition {
+                    job_id: fetch.job_id,
+                    stage_id: fetch.stage_id as usize,
+                    partition_id: fetch.partition_id as usize,
+                    path: fetch.path,
+                    host: fetch.host,
+                    port: fetch.port as u16,
+                })
+            }
             _ => Err(BallistaError::General(
                 "scheduler::from_proto(Action) invalid or missing action".to_owned(),
             )),
