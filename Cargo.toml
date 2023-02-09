@@ -16,16 +16,9 @@
 # under the License.
 
 [workspace]
-members = [
-    "benchmarks",
-    "ballista/client",
-    "ballista/core",
-    "ballista/executor",
-    "ballista/scheduler",
-    "examples",
-    "ballista-cli",
-]
 exclude = ["python"]
+members = ["benchmarks", "ballista/client", "ballista/core", "ballista/executor", "ballista/scheduler", "examples", "ballista-cli",
+]
 
 # cargo build --profile release-lto
 [profile.release-lto]
