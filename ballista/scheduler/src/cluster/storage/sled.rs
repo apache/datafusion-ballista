@@ -284,7 +284,7 @@ impl Stream for SledWatch {
 mod tests {
     use super::{KeyValueStore, SledClient, Watch, WatchEvent};
 
-    use crate::cluster::storage::Keyspace;
+    use crate::cluster::storage::{Keyspace, Operation};
 
     use futures::StreamExt;
     use std::result::Result;
@@ -305,33 +305,31 @@ mod tests {
         Ok(())
     }
 
-    // #[tokio::test]
-    // async fn multiple_operation() -> Result<(), Box<dyn std::error::Error>> {
-    //     let client = create_instance()?;
-    //     let key = "key".to_string();
-    //     let value = "value".as_bytes().to_vec();
-    //     let locks = client
-    //         .acquire_locks(vec![(Keyspace::ActiveJobs, ""), (Keyspace::Slots, "")])
-    //         .await?;
-    //
-    //     let _r: ballista_core::error::Result<()> = with_locks(locks, async {
-    //         let txn_ops = vec![
-    //             (Operation::Put(value.clone()), Keyspace::Slots, key.clone()),
-    //             (
-    //                 Operation::Put(value.clone()),
-    //                 Keyspace::ActiveJobs,
-    //                 key.clone(),
-    //             ),
-    //         ];
-    //         client.apply_txn(txn_ops).await?;
-    //         Ok(())
-    //     })
-    //     .await;
-    //
-    //     assert_eq!(client.get(Keyspace::Slots, key.as_str()).await?, value);
-    //     assert_eq!(client.get(Keyspace::ActiveJobs, key.as_str()).await?, value);
-    //     Ok(())
-    // }
+    #[tokio::test]
+    async fn multiple_operation() -> Result<(), Box<dyn std::error::Error>> {
+        let client = create_instance()?;
+        let key = "key".to_string();
+        let value = "value".as_bytes().to_vec();
+        {
+            let _locks = client
+                .acquire_locks(vec![(Keyspace::JobStatus, ""), (Keyspace::Slots, "")])
+                .await?;
+
+            let txn_ops = vec![
+                (Operation::Put(value.clone()), Keyspace::Slots, key.clone()),
+                (
+                    Operation::Put(value.clone()),
+                    Keyspace::JobStatus,
+                    key.clone(),
+                ),
+            ];
+            client.apply_txn(txn_ops).await?;
+        }
+
+        assert_eq!(client.get(Keyspace::Slots, key.as_str()).await?, value);
+        assert_eq!(client.get(Keyspace::JobStatus, key.as_str()).await?, value);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn read_empty() -> Result<(), Box<dyn std::error::Error>> {
