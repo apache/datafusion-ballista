@@ -15,21 +15,23 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::error::DataFusionError;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use std::convert::TryInto;
 
 use crate::error::BallistaError;
-use crate::serde::protobuf;
-use crate::serde::protobuf::action::ActionType;
 
-use crate::serde::protobuf::{
-    operator_metric, KeyValuePair, NamedCount, NamedGauge, NamedTime,
-};
+use crate::serde::protobuf;
+use datafusion_proto::protobuf as datafusion_protobuf;
+
 use crate::serde::scheduler::{
     Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, PartitionId,
     PartitionLocation, PartitionStats, TaskDefinition,
 };
 use datafusion::physical_plan::Partitioning;
+use protobuf::{
+    action::ActionType, operator_metric, KeyValuePair, NamedCount, NamedGauge, NamedTime,
+};
 
 impl TryInto<protobuf::Action> for Action {
     type Error = BallistaError;
@@ -98,21 +100,20 @@ impl Into<protobuf::PartitionStats> for PartitionStats {
 
 pub fn hash_partitioning_to_proto(
     output_partitioning: Option<&Partitioning>,
-) -> Result<Option<protobuf::PhysicalHashRepartition>, BallistaError> {
+) -> Result<Option<datafusion_protobuf::PhysicalHashRepartition>, BallistaError> {
     match output_partitioning {
         Some(Partitioning::Hash(exprs, partition_count)) => {
-            Ok(Some(protobuf::PhysicalHashRepartition {
+            Ok(Some(datafusion_protobuf::PhysicalHashRepartition {
                 hash_expr: exprs
                     .iter()
                     .map(|expr| expr.clone().try_into())
-                    .collect::<Result<Vec<_>, BallistaError>>()?,
+                    .collect::<Result<Vec<_>, DataFusionError>>()?,
                 partition_count: *partition_count as u64,
             }))
         }
         None => Ok(None),
         other => Err(BallistaError::General(format!(
-            "scheduler::to_proto() invalid partitioning for ExecutePartition: {:?}",
-            other
+            "scheduler::to_proto() invalid partitioning for ExecutePartition: {other:?}"
         ))),
     }
 }

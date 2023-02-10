@@ -60,7 +60,7 @@ impl PluginRegistrar for UDFPluginManager {
             library.get(b"registrar_udf_plugin\0").map_err(|e| {
                 BallistaError::IoError(io::Error::new(
                     io::ErrorKind::Other,
-                    format!("not found fn registrar_udf_plugin in the library: {}", e),
+                    format!("not found fn registrar_udf_plugin in the library: {e}"),
                 ))
             })?;
 
@@ -73,7 +73,7 @@ impl PluginRegistrar for UDFPluginManager {
                 if self.scalar_udfs.contains_key(udf_name) {
                     Err(BallistaError::IoError(io::Error::new(
                         io::ErrorKind::Other,
-                        format!("udf name: {} already exists", udf_name),
+                        format!("udf name: {udf_name} already exists"),
                     )))
                 } else {
                     let scalar_udf = udf_plugin.get_scalar_udf_by_name(udf_name)?;
@@ -91,7 +91,7 @@ impl PluginRegistrar for UDFPluginManager {
                 if self.aggregate_udfs.contains_key(udaf_name) {
                     Err(BallistaError::IoError(io::Error::new(
                         io::ErrorKind::Other,
-                        format!("udaf name: {} already exists", udaf_name),
+                        format!("udaf name: {udaf_name} already exists"),
                     )))
                 } else {
                     let aggregate_udf =

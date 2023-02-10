@@ -36,11 +36,12 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
 use ballista_core::serde::scheduler::ExecutorMetadata;
-use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::serde::BallistaCodec;
 use dashmap::DashMap;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info, warn};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
@@ -638,8 +639,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             Ok(task_definition)
         } else {
             Err(BallistaError::General(format!(
-                "Cannot prepare task definition for job {} which is not in active cache",
-                job_id
+                "Cannot prepare task definition for job {job_id} which is not in active cache"
             )))
         }
     }
@@ -728,7 +728,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 };
                 Ok(multi_task_definition)
             } else {
-                Err(BallistaError::General(format!("Cannot prepare multi task definition for job {} which is not in active cache", job_id)))
+                Err(BallistaError::General(format!("Cannot prepare multi task definition for job {job_id} which is not in active cache")))
             }
         } else {
             Err(BallistaError::General(

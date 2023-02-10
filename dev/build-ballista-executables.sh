@@ -1,3 +1,5 @@
+#!/bin/bash
+
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -15,8 +17,14 @@
 # specific language governing permissions and limitations
 # under the License.
 
-[target.x86_64-apple-darwin]
-rustflags = [
-  "-C", "link-arg=-undefined",
-  "-C", "link-arg=dynamic_lookup",
-]
+set -e
+
+RELEASE_FLAG=${RELEASE_FLAG:=release}
+
+# TODO: it would be very nice if we could make CI work the exact same way so the build logic isn't duplicated
+
+# build a docker container in which to run the build - this is to make life easier for Windows & Mac users
+docker build -t ballista-builder --build-arg EXT_UID="$(id -u)" -f dev/docker/ballista-builder.Dockerfile .
+
+# run cargo & yarn builds inside the builder container
+docker run -v $(pwd):/home/builder/workspace --env RELEASE_FLAG=$RELEASE_FLAG ballista-builder

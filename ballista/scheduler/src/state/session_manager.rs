@@ -128,27 +128,6 @@ pub fn create_datafusion_context(
     Arc::new(SessionContext::with_state(session_state))
 }
 
-/// Update the existing DataFusion session context with Ballista Configuration
-pub fn update_datafusion_context(
-    session_ctx: Arc<SessionContext>,
-    ballista_config: &BallistaConfig,
-) -> Arc<SessionContext> {
-    {
-        let mut mut_state = session_ctx.state.write();
-        // TODO Currently we have to start from default session config due to the interface not support update
-        let config = SessionConfig::default()
-            .with_target_partitions(ballista_config.default_shuffle_partitions())
-            .with_batch_size(ballista_config.default_batch_size())
-            .with_repartition_joins(ballista_config.repartition_joins())
-            .with_repartition_aggregations(ballista_config.repartition_aggregations())
-            .with_repartition_windows(ballista_config.repartition_windows())
-            .with_parquet_pruning(ballista_config.parquet_pruning());
-        let config = propagate_ballista_configs(config, ballista_config);
-        mut_state.config = config;
-    }
-    session_ctx
-}
-
 fn propagate_ballista_configs(
     config: SessionConfig,
     ballista_config: &BallistaConfig,

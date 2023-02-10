@@ -14,3 +14,16 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+
+FROM ubuntu:22.04
+
+ARG RELEASE_FLAG=release
+
+ENV RELEASE_FLAG=${RELEASE_FLAG}
+ENV RUST_LOG=info
+ENV RUST_BACKTRACE=full
+
+COPY target/$RELEASE_FLAG/ballista-cli /root/ballista-cli
+
+COPY dev/docker/cli-entrypoint.sh /root/cli-entrypoint.sh
+ENTRYPOINT ["/root/cli-entrypoint.sh"]
