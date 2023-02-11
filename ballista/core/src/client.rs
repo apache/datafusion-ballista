@@ -34,6 +34,7 @@ use arrow_flight::{flight_service_client::FlightServiceClient, FlightData};
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::{
     datatypes::{Schema, SchemaRef},
+    error::ArrowError,
     record_batch::RecordBatch,
 };
 use datafusion::error::DataFusionError;
@@ -171,7 +172,11 @@ impl Stream for FlightDataStream {
         self.stream.poll_next_unpin(cx).map(|x| match x {
             Some(flight_data_chunk_result) => {
                 let converted_chunk = flight_data_chunk_result
-                    .map_err(|e| DataFusionError::Execution(format!("{}", e)))
+                    .map_err(|e| {
+                        DataFusionError::ArrowError(ArrowError::from_external_error(
+                            Box::new(e),
+                        ))
+                    })
                     .and_then(|flight_data_chunk| {
                         flight_data_to_arrow_batch(
                             &flight_data_chunk,

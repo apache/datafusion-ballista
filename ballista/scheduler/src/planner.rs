@@ -326,17 +326,15 @@ mod test {
     use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
     use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
     use datafusion::physical_plan::joins::HashJoinExec;
+    use datafusion::physical_plan::projection::ProjectionExec;
     use datafusion::physical_plan::sorts::sort::SortExec;
-    use datafusion::physical_plan::{
-        coalesce_partitions::CoalescePartitionsExec, projection::ProjectionExec,
-    };
+    use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
     use datafusion::physical_plan::{displayable, ExecutionPlan};
     use datafusion::prelude::SessionContext;
-    use std::ops::Deref;
-
     use datafusion_proto::physical_plan::AsExecutionPlan;
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
+    use std::ops::Deref;
     use std::sync::Arc;
     use uuid::Uuid;
 
@@ -375,19 +373,19 @@ mod test {
         /* Expected result:
 
         ShuffleWriterExec: Some(Hash([Column { name: "l_returnflag", index: 0 }], 2))
-          AggregateExec: mode=Partial, gby=[l_returnflag@1 as l_returnflag], aggr=[SUM(l_extendedprice Multiply Int64(1))]
-            CsvExec: source=Path(testdata/lineitem: [testdata/lineitem/partition0.tbl,testdata/lineitem/partition1.tbl]), has_header=false
+          AggregateExec: mode=Partial, gby=[l_returnflag@1 as l_returnflag], aggr=[SUM(lineitem.l_extendedprice * Int64(1))]
+            CsvExec: files={2 groups: [[ballista/scheduler/testdata/lineitem/partition1.tbl], [ballista/scheduler/testdata/lineitem/partition0.tbl]]}, has_header=false, limit=None, projection=[l_extendedprice, l_returnflag]
 
         ShuffleWriterExec: None
-          ProjectionExec: expr=[l_returnflag@0 as l_returnflag, SUM(lineitem.l_extendedprice Multiply Int64(1))@1 as sum_disc_price]
-            AggregateExec: mode=FinalPartitioned, gby=[l_returnflag@0 as l_returnflag], aggr=[SUM(l_extendedprice Multiply Int64(1))]
-              CoalesceBatchesExec: target_batch_size=4096
-                UnresolvedShuffleExec
+          SortExec: [l_returnflag@0 ASC NULLS LAST]
+            ProjectionExec: expr=[l_returnflag@0 as l_returnflag, SUM(lineitem.l_extendedprice * Int64(1))@1 as sum_disc_price]
+              AggregateExec: mode=FinalPartitioned, gby=[l_returnflag@0 as l_returnflag], aggr=[SUM(lineitem.l_extendedprice * Int64(1))]
+                CoalesceBatchesExec: target_batch_size=8192
+                  UnresolvedShuffleExec
 
         ShuffleWriterExec: None
-          SortExec: [l_returnflag@0 ASC]
-            CoalescePartitionsExec
-              UnresolvedShuffleExec
+          SortPreservingMergeExec: [l_returnflag@0 ASC NULLS LAST]
+            UnresolvedShuffleExec
         */
 
         assert_eq!(3, stages.len());
@@ -399,7 +397,9 @@ mod test {
 
         // verify stage 1
         let stage1 = stages[1].children()[0].clone();
-        let projection = downcast_exec!(stage1, ProjectionExec);
+        let sort = downcast_exec!(stage1, SortExec);
+        let projection = sort.children()[0].clone();
+        let projection = downcast_exec!(projection, ProjectionExec);
         let final_hash = projection.children()[0].clone();
         let final_hash = downcast_exec!(final_hash, AggregateExec);
         assert!(*final_hash.mode() == AggregateMode::FinalPartitioned);
@@ -414,15 +414,8 @@ mod test {
 
         // verify stage 2
         let stage2 = stages[2].children()[0].clone();
-        let sort = downcast_exec!(stage2, SortExec);
-        let coalesce_partitions = sort.children()[0].clone();
-        let coalesce_partitions =
-            downcast_exec!(coalesce_partitions, CoalescePartitionsExec);
-        assert_eq!(
-            coalesce_partitions.output_partitioning().partition_count(),
-            1
-        );
-        let unresolved_shuffle = coalesce_partitions.children()[0].clone();
+        let merge = downcast_exec!(stage2, SortPreservingMergeExec);
+        let unresolved_shuffle = merge.children()[0].clone();
         let unresolved_shuffle =
             downcast_exec!(unresolved_shuffle, UnresolvedShuffleExec);
         assert_eq!(unresolved_shuffle.stage_id, 2);
