@@ -22,9 +22,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::{any::Any, pin::Pin};
 
-use datafusion::arrow::{
-    datatypes::SchemaRef, error::Result as ArrowResult, record_batch::RecordBatch,
-};
+use datafusion::arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
@@ -118,7 +116,7 @@ struct MergedRecordBatchStream {
 }
 
 impl Stream for MergedRecordBatchStream {
-    type Item = ArrowResult<RecordBatch>;
+    type Item = Result<RecordBatch>;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
