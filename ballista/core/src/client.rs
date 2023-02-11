@@ -172,18 +172,14 @@ impl Stream for FlightDataStream {
         self.stream.poll_next_unpin(cx).map(|x| match x {
             Some(flight_data_chunk_result) => {
                 let converted_chunk = flight_data_chunk_result
-                    .map_err(|e| {
-                        DataFusionError::ArrowError(ArrowError::from_external_error(
-                            Box::new(e),
-                        ))
-                    })
+                    .map_err(|e| ArrowError::from_external_error(Box::new(e)).into())
                     .and_then(|flight_data_chunk| {
                         flight_data_to_arrow_batch(
                             &flight_data_chunk,
                             self.schema.clone(),
                             &self.dictionaries_by_id,
                         )
-                        .map_err(|e| DataFusionError::ArrowError(e))
+                        .map_err(DataFusionError::ArrowError)
                     });
                 Some(converted_chunk)
             }

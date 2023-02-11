@@ -215,7 +215,7 @@ impl Stream for LocalShuffleStream {
         _: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         if let Some(batch) = self.reader.next() {
-            return Poll::Ready(Some(batch.map_err(|e| DataFusionError::ArrowError(e))));
+            return Poll::Ready(Some(batch.map_err(|e| e.into())));
         }
         Poll::Ready(None)
     }
