@@ -18,4 +18,4 @@
 # under the License.
 
 set -ex
-find . -mindepth 2 -name 'Cargo.toml' -exec cargo tomlfmt -p {} \;
+find . -mindepth 2 -name 'Cargo.toml' -exec cargo tomlfmt -k -p {} \;

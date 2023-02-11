@@ -289,6 +289,7 @@ message ExecutorMetadata {
   ExecutorSpecification specification = 5;
 }
 
+
 // Used by grpc
 message ExecutorRegistration {
   string id = 1;
@@ -334,6 +335,15 @@ message ExecutorResource {
   oneof resource {
     uint32 task_slots = 1;
   }
+}
+
+message AvailableTaskSlots {
+  string executor_id = 1;
+  uint32 slots = 2;
+    }
+
+message ExecutorTaskSlots {
+  repeated AvailableTaskSlots task_slots = 1;
 }
 
 message ExecutorData {
@@ -544,18 +554,33 @@ message GetJobStatusParams {
 
 message SuccessfulJob {
   repeated PartitionLocation partition_location = 1;
+  uint64 queued_at = 2;
+  uint64 started_at = 3;
+  uint64 ended_at = 4;
 }
 
-message QueuedJob {}
+message QueuedJob {
+  uint64 queued_at = 1;
+}
 
 // TODO: add progress report
-message RunningJob {}
+message RunningJob {
+  uint64 queued_at = 1;
+  uint64 started_at = 2;
+  string scheduler = 3;
+}
 
 message FailedJob {
   string error = 1;
+  uint64 queued_at = 2;
+  uint64 started_at = 3;
+  uint64 ended_at = 4;
 }
 
 message JobStatus {
+  string job_id = 5;
+  string job_name = 6;
+
   oneof status {
     QueuedJob queued = 1;
     RunningJob running = 2;

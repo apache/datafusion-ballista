@@ -17,18 +17,18 @@
 
 //! Ballista Rust scheduler binary.
 
-use std::{env, io, sync::Arc};
+use std::{env, io};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use ballista_core::print_version;
 use ballista_scheduler::scheduler_process::start_server;
-#[cfg(feature = "etcd")]
-use ballista_scheduler::state::backend::etcd::EtcdClient;
-use ballista_scheduler::state::backend::memory::MemoryBackendClient;
-#[cfg(feature = "sled")]
-use ballista_scheduler::state::backend::sled::SledClient;
-use ballista_scheduler::state::backend::{StateBackend, StateBackendClient};
+
+use crate::config::{Config, ResultExt};
+use ballista_core::config::LogRotationPolicy;
+use ballista_scheduler::cluster::BallistaCluster;
+use ballista_scheduler::config::{ClusterStorageConfig, SchedulerConfig};
+use tracing_subscriber::EnvFilter;
 
 #[macro_use]
 extern crate configure_me;
@@ -43,12 +43,6 @@ mod config {
     ));
 }
 
-use ballista_core::config::LogRotationPolicy;
-use ballista_scheduler::config::SchedulerConfig;
-use ballista_scheduler::state::backend::cluster::DefaultClusterState;
-use config::prelude::*;
-use tracing_subscriber::EnvFilter;
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // parse options
@@ -61,25 +55,14 @@ async fn main() -> Result<()> {
         std::process::exit(0);
     }
 
-    let config_backend = init_kv_backend(&opt.config_backend, &opt).await?;
-
-    let cluster_state = if opt.cluster_backend == opt.config_backend {
-        Arc::new(DefaultClusterState::new(config_backend.clone()))
-    } else {
-        let cluster_kv_store = init_kv_backend(&opt.cluster_backend, &opt).await?;
-
-        Arc::new(DefaultClusterState::new(cluster_kv_store))
-    };
-
     let special_mod_log_level = opt.log_level_setting;
-    let namespace = opt.namespace;
-    let external_host = opt.external_host;
-    let bind_host = opt.bind_host;
-    let port = opt.bind_port;
     let log_dir = opt.log_dir;
     let print_thread_info = opt.print_thread_info;
-    let log_file_name_prefix = format!("scheduler_{namespace}_{external_host}_{port}");
-    let scheduler_name = format!("{external_host}:{port}");
+
+    let log_file_name_prefix = format!(
+        "scheduler_{}_{}_{}",
+        opt.namespace, opt.external_host, opt.bind_port
+    );
 
     let rust_log = env::var(EnvFilter::DEFAULT_ENV);
     let log_filter = EnvFilter::new(rust_log.unwrap_or(special_mod_log_level));
@@ -117,10 +100,13 @@ async fn main() -> Result<()> {
             .init();
     }
 
-    let addr = format!("{bind_host}:{port}");
+    let addr = format!("{}:{}", opt.bind_host, opt.bind_port);
     let addr = addr.parse()?;
 
     let config = SchedulerConfig {
+        namespace: opt.namespace,
+        external_host: opt.external_host,
+        bind_port: opt.bind_port,
         scheduling_policy: opt.scheduler_policy,
         event_loop_buffer_size: opt.event_loop_buffer_size,
         executor_slots_policy: opt.executor_slots_policy,
@@ -129,54 +115,13 @@ async fn main() -> Result<()> {
         finished_job_state_clean_up_interval_seconds: opt
             .finished_job_state_clean_up_interval_seconds,
         advertise_flight_sql_endpoint: opt.advertise_flight_sql_endpoint,
+        cluster_storage: ClusterStorageConfig::Memory,
         job_resubmit_interval_ms: (opt.job_resubmit_interval_ms > 0)
             .then_some(opt.job_resubmit_interval_ms),
     };
-    start_server(scheduler_name, config_backend, cluster_state, addr, config).await?;
+
+    let cluster = BallistaCluster::new_from_config(&config).await?;
+
+    start_server(cluster, addr, config).await?;
     Ok(())
-}
-
-async fn init_kv_backend(
-    backend: &StateBackend,
-    opt: &Config,
-) -> Result<Arc<dyn StateBackendClient>> {
-    let cluster_backend: Arc<dyn StateBackendClient> = match backend {
-        #[cfg(feature = "etcd")]
-        StateBackend::Etcd => {
-            let etcd = etcd_client::Client::connect(&[opt.etcd_urls.clone()], None)
-                .await
-                .context("Could not connect to etcd")?;
-            Arc::new(EtcdClient::new(opt.namespace.clone(), etcd))
-        }
-        #[cfg(not(feature = "etcd"))]
-        StateBackend::Etcd => {
-            unimplemented!(
-                "build the scheduler with the `etcd` feature to use the etcd config backend"
-            )
-        }
-        #[cfg(feature = "sled")]
-        StateBackend::Sled => {
-            if opt.sled_dir.is_empty() {
-                Arc::new(
-                    SledClient::try_new_temporary()
-                        .context("Could not create sled config backend")?,
-                )
-            } else {
-                println!("{}", opt.sled_dir);
-                Arc::new(
-                    SledClient::try_new(opt.sled_dir.clone())
-                        .context("Could not create sled config backend")?,
-                )
-            }
-        }
-        #[cfg(not(feature = "sled"))]
-        StateBackend::Sled => {
-            unimplemented!(
-                "build the scheduler with the `sled` feature to use the sled config backend"
-            )
-        }
-        StateBackend::Memory => Arc::new(MemoryBackendClient::new()),
-    };
-
-    Ok(cluster_backend)
 }

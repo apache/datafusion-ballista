@@ -25,6 +25,13 @@ use std::fmt;
 /// Configurations for the ballista scheduler of scheduling jobs and tasks
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
+    /// Namespace of this scheduler. Schedulers using the same cluster storage and namespace
+    /// will share gloabl cluster state.
+    pub namespace: String,
+    /// The external hostname of the scheduler
+    pub external_host: String,
+    /// The bind port for the scheduler's gRPC service
+    pub bind_port: u16,
     /// The task scheduling policy for the scheduler
     pub scheduling_policy: TaskSchedulingPolicy,
     /// The event loop buffer size. for a system of high throughput, a larger value like 1000000 is recommended
@@ -40,25 +47,50 @@ pub struct SchedulerConfig {
     /// If provided, submitted jobs which do not have tasks scheduled will be resubmitted after `job_resubmit_interval_ms`
     /// milliseconds
     pub job_resubmit_interval_ms: Option<u64>,
+    /// Configuration for ballista cluster storage
+    pub cluster_storage: ClusterStorageConfig,
 }
 
 impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
+            namespace: String::default(),
+            external_host: "localhost".to_string(),
+            bind_port: 50050,
             scheduling_policy: TaskSchedulingPolicy::PullStaged,
             event_loop_buffer_size: 10000,
             executor_slots_policy: SlotsPolicy::Bias,
             finished_job_data_clean_up_interval_seconds: 300,
             finished_job_state_clean_up_interval_seconds: 3600,
             advertise_flight_sql_endpoint: None,
+            cluster_storage: ClusterStorageConfig::Memory,
             job_resubmit_interval_ms: None,
         }
     }
 }
 
 impl SchedulerConfig {
+    pub fn scheduler_name(&self) -> String {
+        format!("{}:{}", self.external_host, self.bind_port)
+    }
+
     pub fn is_push_staged_scheduling(&self) -> bool {
         matches!(self.scheduling_policy, TaskSchedulingPolicy::PushStaged)
+    }
+
+    pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.namespace = namespace.into();
+        self
+    }
+
+    pub fn with_hostname(mut self, hostname: impl Into<String>) -> Self {
+        self.external_host = hostname.into();
+        self
+    }
+
+    pub fn with_port(mut self, port: u16) -> Self {
+        self.bind_port = port;
+        self
     }
 
     pub fn with_scheduler_policy(mut self, policy: TaskSchedulingPolicy) -> Self {
@@ -100,10 +132,24 @@ impl SchedulerConfig {
         self
     }
 
+    pub fn with_cluster_storage(mut self, config: ClusterStorageConfig) -> Self {
+        self.cluster_storage = config;
+        self
+    }
+
     pub fn with_job_resubmit_interval_ms(mut self, interval_ms: u64) -> Self {
         self.job_resubmit_interval_ms = Some(interval_ms);
         self
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum ClusterStorageConfig {
+    Memory,
+    #[cfg(feature = "etcd")]
+    Etcd(Vec<String>),
+    #[cfg(feature = "sled")]
+    Sled(Option<String>),
 }
 
 // an enum used to configure the executor slots policy

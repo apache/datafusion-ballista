@@ -581,6 +581,20 @@ pub mod executor_resource {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AvailableTaskSlots {
+    #[prost(string, tag = "1")]
+    pub executor_id: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub slots: u32,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecutorTaskSlots {
+    #[prost(message, repeated, tag = "1")]
+    pub task_slots: ::prost::alloc::vec::Vec<AvailableTaskSlots>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorData {
     #[prost(string, tag = "1")]
     pub executor_id: ::prost::alloc::string::String,
@@ -933,23 +947,49 @@ pub struct GetJobStatusParams {
 pub struct SuccessfulJob {
     #[prost(message, repeated, tag = "1")]
     pub partition_location: ::prost::alloc::vec::Vec<PartitionLocation>,
+    #[prost(uint64, tag = "2")]
+    pub queued_at: u64,
+    #[prost(uint64, tag = "3")]
+    pub started_at: u64,
+    #[prost(uint64, tag = "4")]
+    pub ended_at: u64,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct QueuedJob {}
+pub struct QueuedJob {
+    #[prost(uint64, tag = "1")]
+    pub queued_at: u64,
+}
 /// TODO: add progress report
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RunningJob {}
+pub struct RunningJob {
+    #[prost(uint64, tag = "1")]
+    pub queued_at: u64,
+    #[prost(uint64, tag = "2")]
+    pub started_at: u64,
+    #[prost(string, tag = "3")]
+    pub scheduler: ::prost::alloc::string::String,
+}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FailedJob {
     #[prost(string, tag = "1")]
     pub error: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub queued_at: u64,
+    #[prost(uint64, tag = "3")]
+    pub started_at: u64,
+    #[prost(uint64, tag = "4")]
+    pub ended_at: u64,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct JobStatus {
+    #[prost(string, tag = "5")]
+    pub job_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub job_name: ::prost::alloc::string::String,
     #[prost(oneof = "job_status::Status", tags = "1, 2, 3, 4")]
     pub status: ::core::option::Option<job_status::Status>,
 }

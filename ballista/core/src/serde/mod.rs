@@ -26,11 +26,13 @@ use datafusion::execution::FunctionRegistry;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion_proto::common::proto_error;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_hash_partitioning;
+use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use datafusion_proto::{
     convert_required,
     logical_plan::{AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec},
     physical_plan::{AsExecutionPlan, PhysicalExtensionCodec},
 };
+
 use prost::Message;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -69,16 +71,17 @@ pub fn decode_protobuf(bytes: &[u8]) -> Result<BallistaAction, BallistaError> {
 }
 
 #[derive(Clone, Debug)]
-pub struct BallistaCodec<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
+pub struct BallistaCodec<
+    T: 'static + AsLogicalPlan = LogicalPlanNode,
+    U: 'static + AsExecutionPlan = PhysicalPlanNode,
+> {
     logical_extension_codec: Arc<dyn LogicalExtensionCodec>,
     physical_extension_codec: Arc<dyn PhysicalExtensionCodec>,
     logical_plan_repr: PhantomData<T>,
     physical_plan_repr: PhantomData<U>,
 }
 
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> Default
-    for BallistaCodec<T, U>
-{
+impl Default for BallistaCodec {
     fn default() -> Self {
         Self {
             logical_extension_codec: Arc::new(DefaultLogicalExtensionCodec {}),
