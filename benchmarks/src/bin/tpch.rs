@@ -1671,8 +1671,8 @@ mod tests {
                     )
                     .unwrap();
                 assert_eq!(
-                    format!("{physical_plan:?}"),
-                    format!("{round_trip:?}"),
+                    format!("{}", displayable(physical_plan.as_ref()).indent()),
+                    format!("{}", displayable(round_trip.as_ref()).indent()),
                     "physical plan round trip failed"
                 );
             }
@@ -1721,27 +1721,27 @@ mod tests {
             };
         }
 
-        // test_round_trip_physical!(physical_round_trip_q1, 1);
-        // test_round_trip_physical!(physical_round_trip_q2, 2);
-        // test_round_trip_physical!(physical_round_trip_q3, 3);
+        test_round_trip_physical!(physical_round_trip_q1, 1);
+        test_round_trip_physical!(physical_round_trip_q2, 2);
+        test_round_trip_physical!(physical_round_trip_q3, 3);
         test_round_trip_physical!(physical_round_trip_q4, 4);
         test_round_trip_physical!(physical_round_trip_q5, 5);
-        // test_round_trip_physical!(physical_round_trip_q6, 6);
-        // test_round_trip_physical!(physical_round_trip_q7, 7);
-        // test_round_trip_physical!(physical_round_trip_q8, 8);
-        // test_round_trip_physical!(physical_round_trip_q9, 9);
-        // test_round_trip_physical!(physical_round_trip_q10, 10);
-        // test_round_trip_physical!(physical_round_trip_q11, 11);
+        test_round_trip_physical!(physical_round_trip_q6, 6);
+        test_round_trip_physical!(physical_round_trip_q7, 7);
+        test_round_trip_physical!(physical_round_trip_q8, 8);
+        test_round_trip_physical!(physical_round_trip_q9, 9);
+        test_round_trip_physical!(physical_round_trip_q10, 10);
+        test_round_trip_physical!(physical_round_trip_q11, 11);
         test_round_trip_physical!(physical_round_trip_q12, 12);
-        // test_round_trip_physical!(physical_round_trip_q13, 13);
-        // test_round_trip_physical!(physical_round_trip_q14, 14);
-        // test_round_trip_physical!(physical_round_trip_q15, 15);
-        // test_round_trip_physical!(physical_round_trip_q16, 16);
-        // test_round_trip_physical!(physical_round_trip_q17, 17);
-        // test_round_trip_physical!(physical_round_trip_q18, 18);
-        // test_round_trip_physical!(physical_round_trip_q19, 19);
+        test_round_trip_physical!(physical_round_trip_q13, 13);
+        test_round_trip_physical!(physical_round_trip_q14, 14);
+        // test_round_trip_physical!(physical_round_trip_q15, 15); // https://github.com/apache/arrow-ballista/issues/330
+        test_round_trip_physical!(physical_round_trip_q16, 16);
+        test_round_trip_physical!(physical_round_trip_q17, 17);
+        test_round_trip_physical!(physical_round_trip_q18, 18);
+        test_round_trip_physical!(physical_round_trip_q19, 19);
         test_round_trip_physical!(physical_round_trip_q20, 20);
         test_round_trip_physical!(physical_round_trip_q21, 21);
-        // test_round_trip_physical!(physical_round_trip_q22, 22);
+        test_round_trip_physical!(physical_round_trip_q22, 22);
     }
 }
