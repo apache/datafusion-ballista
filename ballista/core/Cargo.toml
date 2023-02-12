@@ -46,13 +46,13 @@ simd = ["datafusion/simd"]
 [dependencies]
 ahash = { version = "0.8", default-features = false }
 
-arrow-flight = { version = "31.0.0", features = ["flight-sql-experimental"] }
+arrow-flight = { version = "32.0.0", features = ["flight-sql-experimental"] }
 async-trait = "0.1.41"
 chrono = { version = "0.4", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = "17.0.0"
+datafusion = { version = "18.0.0", git = "https://github.com/apache/arrow-datafusion", rev = "18.0.0-rc1" }
 datafusion-objectstore-hdfs = { version = "0.1.1", default-features = false, optional = true }
-datafusion-proto = "17.0.0"
+datafusion-proto = { version = "18.0.0", git = "https://github.com/apache/arrow-datafusion", rev = "18.0.0-rc1" }
 futures = "0.3"
 hashbrown = "0.13"
 

@@ -104,6 +104,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             } => {
                 info!("Job {} queued with name {:?}", job_id, job_name);
 
+                self.state
+                    .task_manager
+                    .queue_job(&job_id, &job_name, queued_at)
+                    .await?;
+
                 let state = self.state.clone();
                 tokio::spawn(async move {
                     let event = if let Err(e) = state
@@ -272,6 +277,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .await?;
             }
             QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status) => {
+                debug!(
+                    "processing task status updates from {executor_id}: {:?}",
+                    tasks_status
+                );
+
                 let num_status = tasks_status.len();
                 match self
                     .state
@@ -363,6 +373,7 @@ mod tests {
     use datafusion::test_util::scan_empty_with_partitions;
     use std::sync::Arc;
     use std::time::Duration;
+    use tracing_subscriber::EnvFilter;
 
     #[tokio::test]
     async fn test_job_resubmit() -> Result<()> {
@@ -409,6 +420,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_pending_task_metric() -> Result<()> {
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .init();
+
         let plan = test_plan(10);
 
         let metrics_collector = Arc::new(TestMetricsCollector::default());
@@ -450,7 +465,7 @@ mod tests {
         test.tick().await?;
 
         // Job should be finished now
-        let _ = test.await_completion("job-1").await?;
+        let _ = test.await_completion_timeout("job-1", 5_000).await?;
 
         Ok(())
     }
