@@ -38,15 +38,15 @@ default = ["mimalloc"]
 
 [dependencies]
 anyhow = "1"
-arrow = { version = "31.0.0" }
-arrow-flight = { version = "31.0.0" }
+arrow = { version = "32.0.0" }
+arrow-flight = { version = "32.0.0" }
 async-trait = "0.1.41"
 ballista-core = { path = "../core", version = "0.10.0" }
 chrono = { version = "0.4", default-features = false }
 configure_me = "0.4.0"
 dashmap = "5.4.0"
-datafusion = "17.0.0"
-datafusion-proto = "17.0.0"
+datafusion = { version = "18.0.0", git = "https://github.com/apache/arrow-datafusion", rev = "18.0.0-rc1" }
+datafusion-proto = { version = "18.0.0", git = "https://github.com/apache/arrow-datafusion", rev = "18.0.0-rc1" }
 futures = "0.3"
 hyper = "0.14.4"
 log = "0.4"

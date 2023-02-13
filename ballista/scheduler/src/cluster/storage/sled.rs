@@ -20,14 +20,14 @@ use std::{sync::Arc, task::Poll};
 
 use ballista_core::error::{ballista_error, BallistaError, Result};
 
+use crate::cluster::storage::KeyValueStore;
+use async_trait::async_trait;
 use futures::{FutureExt, Stream};
 use log::warn;
 use sled_package as sled;
 use tokio::sync::Mutex;
 
-use crate::state::backend::{
-    Keyspace, Lock, Operation, StateBackendClient, Watch, WatchEvent,
-};
+use crate::cluster::storage::{Keyspace, Lock, Operation, Watch, WatchEvent};
 
 /// A [`StateBackendClient`] implementation that uses file-based storage to save cluster state.
 #[derive(Clone)]
@@ -64,8 +64,8 @@ fn sled_to_ballista_error(e: sled::Error) -> BallistaError {
     }
 }
 
-#[tonic::async_trait]
-impl StateBackendClient for SledClient {
+#[async_trait]
+impl KeyValueStore for SledClient {
     async fn get(&self, keyspace: Keyspace, key: &str) -> Result<Vec<u8>> {
         let key = format!("/{keyspace:?}/{key}");
         Ok(self
@@ -260,7 +260,7 @@ impl Stream for SledWatch {
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
+    ) -> Poll<Option<Self::Item>> {
         match self.get_mut().subscriber.poll_unpin(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(None) => Poll::Ready(None),
@@ -282,10 +282,10 @@ impl Stream for SledWatch {
 
 #[cfg(test)]
 mod tests {
-    use super::{SledClient, StateBackendClient, Watch, WatchEvent};
+    use super::{KeyValueStore, SledClient, Watch, WatchEvent};
 
-    use crate::state::backend::{Keyspace, Operation};
-    use crate::state::with_locks;
+    use crate::cluster::storage::{Keyspace, Operation};
+
     use futures::StreamExt;
     use std::result::Result;
 
@@ -310,26 +310,24 @@ mod tests {
         let client = create_instance()?;
         let key = "key".to_string();
         let value = "value".as_bytes().to_vec();
-        let locks = client
-            .acquire_locks(vec![(Keyspace::ActiveJobs, ""), (Keyspace::Slots, "")])
-            .await?;
+        {
+            let _locks = client
+                .acquire_locks(vec![(Keyspace::JobStatus, ""), (Keyspace::Slots, "")])
+                .await?;
 
-        let _r: ballista_core::error::Result<()> = with_locks(locks, async {
             let txn_ops = vec![
                 (Operation::Put(value.clone()), Keyspace::Slots, key.clone()),
                 (
                     Operation::Put(value.clone()),
-                    Keyspace::ActiveJobs,
+                    Keyspace::JobStatus,
                     key.clone(),
                 ),
             ];
             client.apply_txn(txn_ops).await?;
-            Ok(())
-        })
-        .await;
+        }
 
         assert_eq!(client.get(Keyspace::Slots, key.as_str()).await?, value);
-        assert_eq!(client.get(Keyspace::ActiveJobs, key.as_str()).await?, value);
+        assert_eq!(client.get(Keyspace::JobStatus, key.as_str()).await?, value);
         Ok(())
     }
 
@@ -368,7 +366,7 @@ mod tests {
         let client = create_instance()?;
         let key = "key";
         let value = "value".as_bytes();
-        let mut watch: Box<dyn Watch> =
+        let mut watch: Box<dyn Watch<Item = WatchEvent>> =
             client.watch(Keyspace::Slots, key.to_owned()).await?;
         client
             .put(Keyspace::Slots, key.to_owned(), value.to_vec())
