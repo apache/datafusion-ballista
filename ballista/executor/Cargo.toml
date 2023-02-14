@@ -46,7 +46,7 @@ chrono = { version = "0.4", default-features = false }
 configure_me = "0.4.0"
 dashmap = "5.4.0"
 datafusion = { version = "18.0.0", git = "https://github.com/apache/arrow-datafusion", rev = "18.0.0-rc1" }
-datafusion-proto = { version = "18.0.0", git = "https://github.com/apache/arrow-datafusion", rev = "18.0.0-rc1" }
+datafusion-proto = { version = "18.0.0", git = "https://github.com/apache/arrow-datafusion", rev = "18.0.0" }
 futures = "0.3"
 hyper = "0.14.4"
 log = "0.4"
