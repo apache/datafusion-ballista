@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -368,6 +369,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         }
 
         Ok(())
+    }
+
+    pub fn get_alive_executors_within_one_minute(&self) -> HashSet<String> {
+        self.state
+            .executor_manager
+            .get_alive_executors_within_one_minute()
     }
 }
 
