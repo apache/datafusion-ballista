@@ -19,7 +19,7 @@
 #
 
 # Usage:
-# CHANGELOG_GITHUB_TOKEN=<TOKEN> ./update_change_log-ballista.sh master 0.7.0 0.6.0
+# CHANGELOG_GITHUB_TOKEN=<TOKEN> ./update_change_log-ballista.sh main 0.7.0 0.6.0
 
 RELEASE_BRANCH=$1
 RELEASE_TAG=$2

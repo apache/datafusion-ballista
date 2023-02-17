@@ -111,7 +111,7 @@ message ListingTableScanNode {
     ParquetFormat parquet = 11;
     AvroFormat avro = 12;
   }
-  repeated datafusion.LogicalExprNode file_sort_order = 13;
+  repeated LogicalExprNode file_sort_order = 13;
 }
 
 message ViewTableScanNode {

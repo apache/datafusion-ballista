@@ -29,7 +29,7 @@ use ballista_core::serde::protobuf::{
     HeartBeatResult, PollWorkParams, PollWorkResult, RegisterExecutorParams,
     RegisterExecutorResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
 };
-use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
+use ballista_core::serde::scheduler::ExecutorMetadata;
 
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::file_format::FileFormat;
@@ -188,30 +188,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 grpc_port: metadata.grpc_port as u16,
                 specification: metadata.specification.unwrap().into(),
             };
-            let executor_data = ExecutorData {
-                executor_id: metadata.id.clone(),
-                total_task_slots: metadata.specification.task_slots,
-                available_task_slots: metadata.specification.task_slots,
-            };
 
-            async {
-                // Save the executor to state
-                let reservations = self
-                    .state
-                    .executor_manager
-                    .register_executor(metadata, executor_data, false)
-                    .await?;
-
-                // If we are using push-based scheduling then reserve this executors slots and send
-                // them for scheduling tasks.
-                if self.state.config.is_push_staged_scheduling() {
-                    self.offer_reservation(reservations).await?;
-                }
-
-                Ok::<(), ballista_core::error::BallistaError>(())
-            }
-            .await
-            .map_err(|e| {
+            self.do_register_executor(metadata).await.map_err(|e| {
                 let msg = format!("Fail to do executor registration due to: {e}");
                 error!("{}", msg);
                 Status::internal(msg)
@@ -228,12 +206,49 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         &self,
         request: Request<HeartBeatParams>,
     ) -> Result<Response<HeartBeatResult>, Status> {
+        let remote_addr = request.remote_addr();
         let HeartBeatParams {
             executor_id,
             metrics,
             status,
+            metadata,
         } = request.into_inner();
         debug!("Received heart beat request for {:?}", executor_id);
+
+        // If not registered, do registration first before saving heart beat
+        if let Err(e) = self
+            .state
+            .executor_manager
+            .get_executor_metadata(&executor_id)
+            .await
+        {
+            warn!("Fail to get executor metadata: {}", e);
+            if let Some(metadata) = metadata {
+                let metadata = ExecutorMetadata {
+                    id: metadata.id,
+                    host: metadata
+                        .optional_host
+                        .map(|h| match h {
+                            OptionalHost::Host(host) => host,
+                        })
+                        .unwrap_or_else(|| remote_addr.unwrap().ip().to_string()),
+                    port: metadata.port as u16,
+                    grpc_port: metadata.grpc_port as u16,
+                    specification: metadata.specification.unwrap().into(),
+                };
+
+                self.do_register_executor(metadata).await.map_err(|e| {
+                    let msg = format!("Fail to do executor registration due to: {e}");
+                    error!("{}", msg);
+                    Status::internal(msg)
+                })?;
+            } else {
+                return Err(Status::invalid_argument(format!(
+                    "The registration spec for executor {executor_id} is not included"
+                )));
+            }
+        }
+
         let executor_heartbeat = ExecutorHeartbeat {
             executor_id,
             timestamp: SystemTime::now()
@@ -243,6 +258,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             metrics,
             status,
         };
+
         self.state
             .executor_manager
             .save_executor_heartbeat(executor_heartbeat)
@@ -506,13 +522,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             error!("{}", msg);
             Status::internal(msg)
         })?;
-        Self::remove_executor(executor_manager, event_sender, &executor_id, Some(reason))
-            .await
-            .map_err(|e| {
-                let msg = format!("Error to remove executor in Scheduler due to {e:?}");
-                error!("{}", msg);
-                Status::internal(msg)
-            })?;
+
+        Self::remove_executor(
+            executor_manager,
+            event_sender,
+            &executor_id,
+            Some(reason),
+            self.executor_termination_grace_period,
+        );
 
         Ok(Response::new(ExecutorStoppedResult {}))
     }
@@ -568,7 +585,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
 #[cfg(all(test, feature = "sled"))]
 mod test {
-    use std::sync::Arc;
+
     use std::time::Duration;
 
     use datafusion_proto::protobuf::LogicalPlanNode;
@@ -585,23 +602,22 @@ mod test {
     };
     use ballista_core::serde::scheduler::ExecutorSpecification;
     use ballista_core::serde::BallistaCodec;
-    use ballista_core::utils::default_session_builder;
 
-    use crate::state::backend::cluster::DefaultClusterState;
     use crate::state::executor_manager::DEFAULT_EXECUTOR_TIMEOUT_SECONDS;
-    use crate::state::{backend::sled::SledClient, SchedulerState};
+    use crate::state::SchedulerState;
+    use crate::test_utils::await_condition;
+    use crate::test_utils::test_cluster_context;
 
     use super::{SchedulerGrpc, SchedulerServer};
 
     #[tokio::test]
     async fn test_poll_work() -> Result<(), BallistaError> {
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
-        let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
+        let cluster = test_cluster_context();
+
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
-                state_storage.clone(),
-                cluster_state.clone(),
+                cluster.clone(),
                 BallistaCodec::default(),
                 SchedulerConfig::default(),
                 default_metrics_collector().unwrap(),
@@ -628,9 +644,7 @@ mod test {
         assert!(response.tasks.is_empty());
         let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerState::new_with_default_scheduler_name(
-                state_storage.clone(),
-                cluster_state.clone(),
-                default_session_builder,
+                cluster.clone(),
                 BallistaCodec::default(),
             );
         state.init().await?;
@@ -662,9 +676,7 @@ mod test {
         assert!(response.tasks.is_empty());
         let state: SchedulerState<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerState::new_with_default_scheduler_name(
-                state_storage.clone(),
-                cluster_state,
-                default_session_builder,
+                cluster.clone(),
                 BallistaCodec::default(),
             );
         state.init().await?;
@@ -686,15 +698,14 @@ mod test {
 
     #[tokio::test]
     async fn test_stop_executor() -> Result<(), BallistaError> {
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
-        let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
+        let cluster = test_cluster_context();
+
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
-                state_storage,
-                cluster_state,
+                cluster.clone(),
                 BallistaCodec::default(),
-                SchedulerConfig::default(),
+                SchedulerConfig::default().with_remove_executor_wait_secs(0),
                 default_metrics_collector().unwrap(),
             );
         scheduler.init().await?;
@@ -752,16 +763,74 @@ mod test {
             .await
             .expect("getting executor");
 
+        let is_stopped = await_condition(Duration::from_millis(10), 5, || {
+            futures::future::ready(Ok(state.executor_manager.is_dead_executor("abc")))
+        })
+        .await?;
+
         // executor should be marked to dead
-        assert!(state.executor_manager.is_dead_executor("abc"));
+        assert!(is_stopped, "Executor not marked dead after 50ms");
 
         let active_executors = state
             .executor_manager
             .get_alive_executors_within_one_minute();
         assert!(active_executors.is_empty());
 
-        let expired_executors = state.executor_manager.get_expired_executors();
+        let expired_executors = state
+            .executor_manager
+            .get_expired_executors(scheduler.executor_termination_grace_period);
         assert!(expired_executors.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_register_executor_in_heartbeat_service() -> Result<(), BallistaError> {
+        let cluster = test_cluster_context();
+
+        let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
+            SchedulerServer::new(
+                "localhost:50050".to_owned(),
+                cluster,
+                BallistaCodec::default(),
+                SchedulerConfig::default(),
+                default_metrics_collector().unwrap(),
+            );
+        scheduler.init().await?;
+
+        let exec_meta = ExecutorRegistration {
+            id: "abc".to_owned(),
+            optional_host: Some(OptionalHost::Host("http://localhost:8080".to_owned())),
+            port: 0,
+            grpc_port: 0,
+            specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
+        };
+
+        let request: Request<HeartBeatParams> = Request::new(HeartBeatParams {
+            executor_id: exec_meta.id.clone(),
+            metrics: vec![],
+            status: Some(ExecutorStatus {
+                status: Some(executor_status::Status::Active("".to_string())),
+            }),
+            metadata: Some(exec_meta.clone()),
+        });
+        scheduler
+            .heart_beat_from_executor(request)
+            .await
+            .expect("Received error response");
+
+        let state = scheduler.state.clone();
+        // executor should be registered
+        let stored_executor = state
+            .executor_manager
+            .get_executor_metadata("abc")
+            .await
+            .expect("getting executor");
+
+        assert_eq!(stored_executor.grpc_port, 0);
+        assert_eq!(stored_executor.port, 0);
+        assert_eq!(stored_executor.specification.task_slots, 2);
+        assert_eq!(stored_executor.host, "http://localhost:8080".to_owned());
 
         Ok(())
     }
@@ -769,13 +838,12 @@ mod test {
     #[tokio::test]
     #[ignore]
     async fn test_expired_executor() -> Result<(), BallistaError> {
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
-        let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
+        let cluster = test_cluster_context();
+
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
-                state_storage,
-                cluster_state,
+                cluster.clone(),
                 BallistaCodec::default(),
                 SchedulerConfig::default(),
                 default_metrics_collector().unwrap(),
@@ -823,6 +891,7 @@ mod test {
             status: Some(ExecutorStatus {
                 status: Some(executor_status::Status::Active("".to_string())),
             }),
+            metadata: Some(exec_meta.clone()),
         });
 
         let _response = scheduler
@@ -836,7 +905,9 @@ mod test {
             .get_alive_executors_within_one_minute();
         assert_eq!(active_executors.len(), 1);
 
-        let expired_executors = state.executor_manager.get_expired_executors();
+        let expired_executors = state
+            .executor_manager
+            .get_expired_executors(scheduler.executor_termination_grace_period);
         assert!(expired_executors.is_empty());
 
         // simulate the heartbeat timeout

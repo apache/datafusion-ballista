@@ -52,49 +52,6 @@ pub struct UnresolvedShuffleExecNode {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ScanLimit {
-    /// wrap into a message to make it optional
-    #[prost(uint32, tag = "1")]
-    pub limit: u32,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ExplainExecNode {
-    #[prost(message, optional, tag = "1")]
-    pub schema: ::core::option::Option<::datafusion_proto::protobuf::Schema>,
-    #[prost(message, repeated, tag = "2")]
-    pub stringified_plans: ::prost::alloc::vec::Vec<
-        ::datafusion_proto::protobuf::StringifiedPlan,
-    >,
-    #[prost(bool, tag = "3")]
-    pub verbose: bool,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PhysicalColumn {
-    #[prost(string, tag = "1")]
-    pub name: ::prost::alloc::string::String,
-    #[prost(uint32, tag = "2")]
-    pub index: u32,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct JoinOn {
-    #[prost(message, optional, tag = "1")]
-    pub left: ::core::option::Option<PhysicalColumn>,
-    #[prost(message, optional, tag = "2")]
-    pub right: ::core::option::Option<PhysicalColumn>,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct EmptyExecNode {
-    #[prost(bool, tag = "1")]
-    pub produce_one_row: bool,
-    #[prost(message, optional, tag = "2")]
-    pub schema: ::core::option::Option<::datafusion_proto::protobuf::Schema>,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleReaderExecNode {
     #[prost(message, repeated, tag = "1")]
     pub partition: ::prost::alloc::vec::Vec<ShuffleReaderPartition>,
@@ -583,7 +540,7 @@ pub mod executor_metric {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorStatus {
-    #[prost(oneof = "executor_status::Status", tags = "1, 2, 3")]
+    #[prost(oneof = "executor_status::Status", tags = "1, 2, 3, 4")]
     pub status: ::core::option::Option<executor_status::Status>,
 }
 /// Nested message and enum types in `ExecutorStatus`.
@@ -597,6 +554,8 @@ pub mod executor_status {
         Dead(::prost::alloc::string::String),
         #[prost(string, tag = "3")]
         Unknown(::prost::alloc::string::String),
+        #[prost(string, tag = "4")]
+        Terminating(::prost::alloc::string::String),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -621,6 +580,20 @@ pub mod executor_resource {
         #[prost(uint32, tag = "1")]
         TaskSlots(u32),
     }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AvailableTaskSlots {
+    #[prost(string, tag = "1")]
+    pub executor_id: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub slots: u32,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecutorTaskSlots {
+    #[prost(message, repeated, tag = "1")]
+    pub task_slots: ::prost::alloc::vec::Vec<AvailableTaskSlots>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -870,6 +843,8 @@ pub struct HeartBeatParams {
     pub metrics: ::prost::alloc::vec::Vec<ExecutorMetric>,
     #[prost(message, optional, tag = "3")]
     pub status: ::core::option::Option<ExecutorStatus>,
+    #[prost(message, optional, tag = "4")]
+    pub metadata: ::core::option::Option<ExecutorRegistration>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -977,24 +952,46 @@ pub struct SuccessfulJob {
     #[prost(uint64, tag = "2")]
     pub queued_at: u64,
     #[prost(uint64, tag = "3")]
-    pub completed_at: u64,
+    pub started_at: u64,
+    #[prost(uint64, tag = "4")]
+    pub ended_at: u64,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct QueuedJob {}
+pub struct QueuedJob {
+    #[prost(uint64, tag = "1")]
+    pub queued_at: u64,
+}
 /// TODO: add progress report
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RunningJob {}
+pub struct RunningJob {
+    #[prost(uint64, tag = "1")]
+    pub queued_at: u64,
+    #[prost(uint64, tag = "2")]
+    pub started_at: u64,
+    #[prost(string, tag = "3")]
+    pub scheduler: ::prost::alloc::string::String,
+}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FailedJob {
     #[prost(string, tag = "1")]
     pub error: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub queued_at: u64,
+    #[prost(uint64, tag = "3")]
+    pub started_at: u64,
+    #[prost(uint64, tag = "4")]
+    pub ended_at: u64,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct JobStatus {
+    #[prost(string, tag = "5")]
+    pub job_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub job_name: ::prost::alloc::string::String,
     #[prost(oneof = "job_status::Status", tags = "1, 2, 3, 4")]
     pub status: ::core::option::Option<job_status::Status>,
 }
@@ -1124,64 +1121,6 @@ pub struct RunningTaskInfo {
     pub stage_id: u32,
     #[prost(uint32, tag = "4")]
     pub partition_id: u32,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum PartitionMode {
-    CollectLeft = 0,
-    Partitioned = 1,
-    Auto = 2,
-}
-impl PartitionMode {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            PartitionMode::CollectLeft => "COLLECT_LEFT",
-            PartitionMode::Partitioned => "PARTITIONED",
-            PartitionMode::Auto => "AUTO",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "COLLECT_LEFT" => Some(Self::CollectLeft),
-            "PARTITIONED" => Some(Self::Partitioned),
-            "AUTO" => Some(Self::Auto),
-            _ => None,
-        }
-    }
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum AggregateMode {
-    Partial = 0,
-    Final = 1,
-    FinalPartitioned = 2,
-}
-impl AggregateMode {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            AggregateMode::Partial => "PARTIAL",
-            AggregateMode::Final => "FINAL",
-            AggregateMode::FinalPartitioned => "FINAL_PARTITIONED",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "PARTIAL" => Some(Self::Partial),
-            "FINAL" => Some(Self::Final),
-            "FINAL_PARTITIONED" => Some(Self::FinalPartitioned),
-            _ => None,
-        }
-    }
 }
 /// Generated client implementations.
 pub mod scheduler_grpc_client {
