@@ -19,7 +19,7 @@
 name = "ballista"
 description = "Ballista Distributed Compute"
 license = "Apache-2.0"
-version = "0.10.0"
+version = "0.11.0"
 homepage = "https://github.com/apache/arrow-ballista"
 repository = "https://github.com/apache/arrow-ballista"
 readme = "README.md"
@@ -28,9 +28,9 @@ edition = "2021"
 rust-version = "1.63"
 
 [dependencies]
-ballista-core = { path = "../core", version = "0.10.0" }
-ballista-executor = { path = "../executor", version = "0.10.0", optional = true }
-ballista-scheduler = { path = "../scheduler", version = "0.10.0", optional = true }
+ballista-core = { path = "../core", version = "0.11.0" }
+ballista-executor = { path = "../executor", version = "0.11.0", optional = true }
+ballista-scheduler = { path = "../scheduler", version = "0.11.0", optional = true }
 datafusion = "18.0.0"
 datafusion-proto = "18.0.0"
 futures = "0.3"
