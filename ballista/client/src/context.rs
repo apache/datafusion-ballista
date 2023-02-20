@@ -40,7 +40,8 @@ use datafusion::datasource::{source_as_provider, TableProvider};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::{CreateExternalTable, LogicalPlan, TableScan};
 use datafusion::prelude::{
-    AvroReadOptions, CsvReadOptions, ParquetReadOptions, SessionConfig, SessionContext, NdJsonReadOptions,
+    AvroReadOptions, CsvReadOptions, NdJsonReadOptions, ParquetReadOptions,
+    SessionConfig, SessionContext,
 };
 use datafusion::sql::parser::{DFParser, Statement as DFStatement};
 
