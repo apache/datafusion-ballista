@@ -82,6 +82,10 @@ jobs:
           sudo apt-get -qq update
           sudo apt-get -qq install -y nodejs npm
           npm install -g yarn
+          cat /etc/*-release
+          node --version
+          npm --version
+          yarn --version
       - name: Run yarn build
         run: |
           cd ballista/scheduler/ui
