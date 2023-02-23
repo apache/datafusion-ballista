@@ -47,6 +47,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
+use crate::scheduler_server::timestamp_millis;
 use tracing::trace;
 
 type ActiveJobCache = Arc<DashMap<String, JobInfoCache>>;
@@ -417,6 +418,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
             self.state.save_job(job_id, &guard).await?;
 
+            // After state is saved, remove job from active cache
+            let _ = self.remove_active_execution_graph(job_id);
+
             (running_tasks, pending_tasks)
         } else {
             // TODO listen the job state update event and fix task cancelling
@@ -536,10 +540,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 plan,
                 output_partitioning,
                 session_id: task.session_id,
-                launch_time: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64,
+                launch_time: timestamp_millis(),
                 props: vec![],
             };
             Ok(task_definition)

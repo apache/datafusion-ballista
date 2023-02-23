@@ -1232,6 +1232,7 @@ impl ExecutionGraph {
 
     /// fail job with error message
     pub fn fail_job(&mut self, error: String) {
+        self.end_time = timestamp_millis();
         self.status = JobStatus {
             job_id: self.job_id.clone(),
             job_name: self.job_name.clone(),
@@ -1259,6 +1260,7 @@ impl ExecutionGraph {
             .map(|l| l.try_into())
             .collect::<Result<Vec<_>>>()?;
 
+        self.end_time = timestamp_millis();
         self.status = JobStatus {
             job_id: self.job_id.clone(),
             job_name: self.job_name.clone(),
@@ -1270,10 +1272,6 @@ impl ExecutionGraph {
                 ended_at: self.end_time,
             })),
         };
-        self.end_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
 
         Ok(())
     }
