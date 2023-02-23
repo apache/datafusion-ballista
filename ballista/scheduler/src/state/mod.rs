@@ -20,20 +20,18 @@ use datafusion::datasource::source_as_provider;
 use datafusion::logical_expr::PlanVisitor;
 use std::any::type_name;
 use std::collections::HashMap;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use crate::scheduler_server::SessionBuilder;
-use crate::state::backend::{Lock, StateBackendClient};
+
 use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::{TaskLauncher, TaskManager};
 
+use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
 use crate::state::execution_graph::TaskDescription;
-use backend::cluster::ClusterState;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::BallistaCodec;
@@ -45,7 +43,6 @@ use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info};
 use prost::Message;
 
-pub mod backend;
 pub mod execution_graph;
 pub mod execution_graph_dot;
 pub mod executor_manager;
@@ -100,15 +97,11 @@ pub(super) struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExec
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T, U> {
     #[cfg(test)]
     pub fn new_with_default_scheduler_name(
-        config_client: Arc<dyn StateBackendClient>,
-        cluster_state: Arc<dyn ClusterState>,
-        session_builder: SessionBuilder,
+        cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
     ) -> Self {
         SchedulerState::new(
-            config_client,
-            cluster_state,
-            session_builder,
+            cluster,
             codec,
             "localhost:50050".to_owned(),
             SchedulerConfig::default(),
@@ -116,35 +109,30 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     }
 
     pub fn new(
-        config_client: Arc<dyn StateBackendClient>,
-        cluster_state: Arc<dyn ClusterState>,
-        session_builder: SessionBuilder,
+        cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
         config: SchedulerConfig,
     ) -> Self {
         Self {
             executor_manager: ExecutorManager::new(
-                cluster_state,
+                cluster.cluster_state(),
                 config.executor_slots_policy,
             ),
             task_manager: TaskManager::new(
-                config_client.clone(),
-                session_builder,
+                cluster.job_state(),
                 codec.clone(),
                 scheduler_name,
             ),
-            session_manager: SessionManager::new(config_client, session_builder),
+            session_manager: SessionManager::new(cluster.job_state()),
             codec,
             config,
         }
     }
 
     #[allow(dead_code)]
-    pub(crate) fn with_task_launcher(
-        config_client: Arc<dyn StateBackendClient>,
-        cluster_state: Arc<dyn ClusterState>,
-        session_builder: SessionBuilder,
+    pub(crate) fn new_with_task_launcher(
+        cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
         config: SchedulerConfig,
@@ -152,17 +140,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     ) -> Self {
         Self {
             executor_manager: ExecutorManager::new(
-                cluster_state,
+                cluster.cluster_state(),
                 config.executor_slots_policy,
             ),
             task_manager: TaskManager::with_launcher(
-                config_client.clone(),
-                session_builder,
+                cluster.job_state(),
                 codec.clone(),
                 scheduler_name,
                 dispatcher,
             ),
-            session_manager: SessionManager::new(config_client, session_builder),
+            session_manager: SessionManager::new(cluster.job_state()),
             codec,
             config,
         }
@@ -414,7 +401,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             job_id.clone(),
             self.config.finished_job_data_clean_up_interval_seconds,
         );
-        self.task_manager.delete_successful_job_delayed(
+        self.task_manager.clean_up_job_delayed(
             job_id,
             self.config.finished_job_state_clean_up_interval_seconds,
         );
@@ -423,36 +410,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     /// Spawn a delayed future to clean up job data on both Scheduler and Executors
     pub(crate) fn clean_up_failed_job(&self, job_id: String) {
         self.executor_manager.clean_up_job_data(job_id.clone());
-        self.task_manager.clean_up_failed_job_delayed(
+        self.task_manager.clean_up_job_delayed(
             job_id,
             self.config.finished_job_state_clean_up_interval_seconds,
         );
     }
 }
 
-pub async fn with_lock<Out, F: Future<Output = Out>>(
-    mut lock: Box<dyn Lock>,
-    op: F,
-) -> Out {
-    let result = op.await;
-    lock.unlock().await;
-    result
-}
-/// It takes multiple locks and reverse the order for releasing them to prevent a race condition.
-pub async fn with_locks<Out, F: Future<Output = Out>>(
-    locks: Vec<Box<dyn Lock>>,
-    op: F,
-) -> Out {
-    let result = op.await;
-    for mut lock in locks.into_iter().rev() {
-        lock.unlock().await;
-    }
-    result
-}
-
 #[cfg(test)]
 mod test {
-    use crate::state::backend::sled::SledClient;
+
     use crate::state::SchedulerState;
     use ballista_core::config::{BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS};
     use ballista_core::error::Result;
@@ -463,11 +430,11 @@ mod test {
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
     };
     use ballista_core::serde::BallistaCodec;
-    use ballista_core::utils::default_session_builder;
 
     use crate::config::SchedulerConfig;
-    use crate::state::backend::cluster::DefaultClusterState;
-    use crate::test_utils::BlackholeTaskLauncher;
+
+    use crate::scheduler_server::timestamp_millis;
+    use crate::test_utils::{test_cluster_context, BlackholeTaskLauncher};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::logical_expr::{col, sum};
     use datafusion::physical_plan::ExecutionPlan;
@@ -477,16 +444,14 @@ mod test {
     use datafusion_proto::protobuf::PhysicalPlanNode;
     use std::sync::Arc;
 
+    const TEST_SCHEDULER_NAME: &str = "localhost:50050";
+
     // We should free any reservations which are not assigned
     #[tokio::test]
     async fn test_offer_free_reservations() -> Result<()> {
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
-        let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::new_with_default_scheduler_name(
-                state_storage,
-                cluster_state,
-                default_session_builder,
+                test_cluster_context(),
                 BallistaCodec::default(),
             ));
 
@@ -518,15 +483,12 @@ mod test {
         let config = BallistaConfig::builder()
             .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4")
             .build()?;
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
-        let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
+
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
-            Arc::new(SchedulerState::with_task_launcher(
-                state_storage,
-                cluster_state,
-                default_session_builder,
+            Arc::new(SchedulerState::new_with_task_launcher(
+                test_cluster_context(),
                 BallistaCodec::default(),
-                String::default(),
+                TEST_SCHEDULER_NAME.into(),
                 SchedulerConfig::default(),
                 Arc::new(BlackholeTaskLauncher::default()),
             ));
@@ -538,6 +500,10 @@ mod test {
         // Create 4 jobs so we have four pending tasks
         state
             .task_manager
+            .queue_job("job-1", "", timestamp_millis())
+            .await?;
+        state
+            .task_manager
             .submit_job(
                 "job-1",
                 "",
@@ -545,6 +511,10 @@ mod test {
                 plan.clone(),
                 0,
             )
+            .await?;
+        state
+            .task_manager
+            .queue_job("job-2", "", timestamp_millis())
             .await?;
         state
             .task_manager
@@ -558,6 +528,10 @@ mod test {
             .await?;
         state
             .task_manager
+            .queue_job("job-3", "", timestamp_millis())
+            .await?;
+        state
+            .task_manager
             .submit_job(
                 "job-3",
                 "",
@@ -565,6 +539,10 @@ mod test {
                 plan.clone(),
                 0,
             )
+            .await?;
+        state
+            .task_manager
+            .queue_job("job-4", "", timestamp_millis())
             .await?;
         state
             .task_manager
@@ -605,15 +583,12 @@ mod test {
         let config = BallistaConfig::builder()
             .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4")
             .build()?;
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
-        let cluster_state = Arc::new(DefaultClusterState::new(state_storage.clone()));
+
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
-            Arc::new(SchedulerState::with_task_launcher(
-                state_storage,
-                cluster_state,
-                default_session_builder,
+            Arc::new(SchedulerState::new_with_task_launcher(
+                test_cluster_context(),
                 BallistaCodec::default(),
-                String::default(),
+                TEST_SCHEDULER_NAME.into(),
                 SchedulerConfig::default(),
                 Arc::new(BlackholeTaskLauncher::default()),
             ));
@@ -623,6 +598,10 @@ mod test {
         let plan = test_graph(session_ctx.clone()).await;
 
         // Create a job
+        state
+            .task_manager
+            .queue_job("job-1", "", timestamp_millis())
+            .await?;
         state
             .task_manager
             .submit_job(
@@ -643,7 +622,6 @@ mod test {
             let plan_graph = state
                 .task_manager
                 .get_active_execution_graph("job-1")
-                .await
                 .unwrap();
             let task_def = plan_graph
                 .write()

@@ -18,7 +18,7 @@
 [package]
 name = "ballista-cli"
 description = "Command Line Client for Ballista distributed query engine."
-version = "0.10.0"
+version = "0.11.0"
 authors = ["Apache Arrow <dev@arrow.apache.org>"]
 edition = "2021"
 keywords = ["ballista", "cli"]
@@ -29,12 +29,12 @@ rust-version = "1.63"
 readme = "README.md"
 
 [dependencies]
-ballista = { path = "../ballista/client", version = "0.10.0", features = [
+ballista = { path = "../ballista/client", version = "0.11.0", features = [
     "standalone",
 ] }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = "17.0.0"
-datafusion-cli = "17.0.0"
+datafusion = "18.0.0"
+datafusion-cli = "18.0.0"
 dirs = "4.0.0"
 env_logger = "0.10"
 mimalloc = { version = "0.1", default-features = false }

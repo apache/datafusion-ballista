@@ -92,7 +92,7 @@ rusty-tags.vi
 .flatbuffers/
 
 .vscode
-venv/*
+venv/
 
 # apache release artifacts
 dev/dist

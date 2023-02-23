@@ -21,6 +21,7 @@ use datafusion::arrow::datatypes::SchemaRef;
 use log::info;
 use parking_lot::Mutex;
 use sqlparser::ast::Statement;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -355,10 +356,14 @@ impl BallistaContext {
             let state = self.state.lock();
             for (name, prov) in &state.tables {
                 // ctx is shared between queries, check table exists or not before register
-                let table_ref = TableReference::Bare { table: name };
+                let table_ref = TableReference::Bare {
+                    table: Cow::Borrowed(name),
+                };
                 if !ctx.table_exist(table_ref)? {
                     ctx.register_table(
-                        TableReference::Bare { table: name },
+                        TableReference::Bare {
+                            table: Cow::Borrowed(name),
+                        },
                         Arc::clone(prov),
                     )?;
                 }

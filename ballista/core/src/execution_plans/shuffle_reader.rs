@@ -29,7 +29,7 @@ use crate::client::BallistaClient;
 use crate::serde::scheduler::{PartitionLocation, PartitionStats};
 
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::error::{ArrowError, Result as ArrowResult};
+use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::reader::FileReader;
 use datafusion::arrow::record_batch::RecordBatch;
 
@@ -208,14 +208,14 @@ impl LocalShuffleStream {
 }
 
 impl Stream for LocalShuffleStream {
-    type Item = ArrowResult<RecordBatch>;
+    type Item = Result<RecordBatch>;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
         _: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         if let Some(batch) = self.reader.next() {
-            return Poll::Ready(Some(batch));
+            return Poll::Ready(Some(batch.map_err(|e| e.into())));
         }
         Poll::Ready(None)
     }

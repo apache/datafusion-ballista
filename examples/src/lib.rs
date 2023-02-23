@@ -15,7 +15,4 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#[allow(dead_code)]
-mod oneshot;
-#[allow(dead_code)]
-pub(crate) mod subscriber;
+pub mod test_util;

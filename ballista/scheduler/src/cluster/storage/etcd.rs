@@ -15,24 +15,22 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Etcd config backend.
-
 use std::collections::HashSet;
 
 use std::task::Poll;
 
+use async_trait::async_trait;
 use ballista_core::error::{ballista_error, Result};
 use std::time::Instant;
 
+use crate::cluster::storage::KeyValueStore;
 use etcd_client::{
     GetOptions, LockOptions, LockResponse, Txn, TxnOp, WatchOptions, WatchStream, Watcher,
 };
 use futures::{Stream, StreamExt};
 use log::{debug, error, warn};
 
-use crate::state::backend::{
-    Keyspace, Lock, Operation, StateBackendClient, Watch, WatchEvent,
-};
+use crate::cluster::storage::{Keyspace, Lock, Operation, Watch, WatchEvent};
 
 /// A [`StateBackendClient`] implementation that uses etcd to save cluster state.
 #[derive(Clone)]
@@ -47,8 +45,8 @@ impl EtcdClient {
     }
 }
 
-#[tonic::async_trait]
-impl StateBackendClient for EtcdClient {
+#[async_trait]
+impl KeyValueStore for EtcdClient {
     async fn get(&self, keyspace: Keyspace, key: &str) -> Result<Vec<u8>> {
         let key = format!("/{}/{:?}/{}", self.namespace, keyspace, key);
 

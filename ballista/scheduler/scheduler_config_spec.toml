@@ -31,17 +31,10 @@ doc = "Route for proxying flight results via scheduler. Should be of the form 'I
 
 [[param]]
 abbr = "b"
-name = "config_backend"
-type = "ballista_scheduler::state::backend::StateBackend"
-doc = "The configuration backend for the scheduler, possible values: etcd, memory, sled. Default: sled"
-default = "ballista_scheduler::state::backend::StateBackend::Sled"
-
-[[param]]
-abbr = "c"
 name = "cluster_backend"
-type = "ballista_scheduler::state::backend::StateBackend"
+type = "ballista_scheduler::cluster::ClusterStorage"
 doc = "The configuration backend for the scheduler cluster state, possible values: etcd, memory, sled. Default: sled"
-default = "ballista_scheduler::state::backend::StateBackend::Sled"
+default = "ballista_scheduler::cluster::ClusterStorage::Sled"
 
 [[param]]
 abbr = "n"

@@ -182,13 +182,13 @@ mod test {
     use crate::executor::Executor;
     use crate::metrics::LoggingMetricsCollector;
     use arrow::datatypes::{Schema, SchemaRef};
-    use arrow::error::ArrowError;
     use arrow::record_batch::RecordBatch;
     use ballista_core::execution_plans::ShuffleWriterExec;
     use ballista_core::serde::protobuf::ExecutorRegistration;
     use datafusion::execution::context::TaskContext;
 
     use ballista_core::serde::scheduler::PartitionId;
+    use datafusion::error::DataFusionError;
     use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_plan::{
         ExecutionPlan, Partitioning, RecordBatchStream, SendableRecordBatchStream,
@@ -213,7 +213,7 @@ mod test {
     }
 
     impl Stream for NeverendingRecordBatchStream {
-        type Item = Result<RecordBatch, ArrowError>;
+        type Item = Result<RecordBatch, DataFusionError>;
 
         fn poll_next(
             self: Pin<&mut Self>,
