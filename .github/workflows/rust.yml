@@ -74,14 +74,23 @@ jobs:
 
   react-build:
     name: React build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # proprietary github image, not ubuntu:latest
+    container:
+      image: ubuntu:latest # actual ubuntu:latest that ubuntu publishes
     steps:
       - uses: actions/checkout@v3
       - name: Install dependencies
         run: |
-          sudo apt-get -qq update
-          sudo apt-get -qq install -y nodejs npm
+          apt-get -qq update
+          apt-get -qq install -y nodejs npm
           npm install -g yarn
+          cat /etc/*-release
+          which node
+          which npm
+          which yarn
+          node --version
+          npm --version
+          yarn --version
       - name: Run yarn build
         run: |
           cd ballista/scheduler/ui

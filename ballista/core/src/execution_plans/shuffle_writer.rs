@@ -219,10 +219,7 @@ impl ShuffleWriterExec {
                         partitioner.partition(
                             input_batch,
                             |output_partition, output_batch| {
-                                // write non-empty batch out
-
-                                // TODO optimize so we don't write or fetch empty partitions
-                                // if output_batch.num_rows() > 0 {
+                                // partition func in datafusion make sure not write empty output_batch.
                                 let timer = write_metrics.write_time.timer();
                                 match &mut writers[output_partition] {
                                     Some(w) => {

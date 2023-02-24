@@ -85,7 +85,6 @@ def main():
             'ballista/client',
             'benchmarks',
             'examples',
-            'python',
         ]
     ])
     new_version = args.new_version
