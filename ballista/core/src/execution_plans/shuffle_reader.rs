@@ -47,12 +47,12 @@ use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::common::AbortOnDropMany;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use itertools::Itertools;
-use log::{error, info};
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
+use tracing::{info, warn};
 
 /// ShuffleReaderExec reads partitions that have already been materialized by a ShuffleWriterExec
 /// being executed by an executor
@@ -287,7 +287,13 @@ fn send_fetch_partitions(
         for p in local_locations {
             let r = PartitionReaderEnum::Local.fetch_partition(&p).await;
             if let Err(e) = response_sender_c.send(r).await {
-                error!("Fail to send response event to the channel due to {}", e);
+                warn!(
+                    job_id = p.partition_id.job_id,
+                    stage_id = p.partition_id.stage_id,
+                    partition_id = p.partition_id.partition_id,
+                    "Fail to send response event to the channel due to {}",
+                    e
+                );
             }
         }
     });
@@ -302,7 +308,13 @@ fn send_fetch_partitions(
             let r = PartitionReaderEnum::FlightRemote.fetch_partition(&p).await;
             // Block if the channel buffer is ful
             if let Err(e) = response_sender.send(r).await {
-                error!("Fail to send response event to the channel due to {}", e);
+                warn!(
+                    job_id = p.partition_id.job_id,
+                    stage_id = p.partition_id.stage_id,
+                    partition_id = p.partition_id.partition_id,
+                    "Fail to send response event to the channel due to {}",
+                    e
+                );
             }
             // Increase semaphore by dropping existing permits.
             drop(permit);
