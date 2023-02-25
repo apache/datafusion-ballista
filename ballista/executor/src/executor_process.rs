@@ -330,7 +330,7 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
 
     if notify_scheduler {
         // Send a heartbeat to update status of executor to `Fenced`. This should signal to the
-        // scheduler to no longer scheduler tasks on this executor
+        // scheduler to no longer schedule tasks on this executor
         if let Err(error) = scheduler
             .heart_beat_from_executor(HeartBeatParams {
                 executor_id: executor_id.clone(),
