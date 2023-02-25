@@ -39,6 +39,49 @@ use ballista_core::serde::scheduler::PartitionId;
 
 type AbortHandles = Arc<DashMap<(usize, PartitionId), AbortHandle>>;
 
+pub trait ExecutionEngine: Sync + Send {
+    /// Create an execution plan that will execute the given physical plan and write the
+    /// output batches to shuffle files in Arrow IPC format.
+    fn new_shuffle_writer(
+        &self,
+        job_id: String,
+        stage_id: usize,
+        plan: Arc<dyn ExecutionPlan>,
+        work_dir: &str,
+    ) -> Result<Arc<ShuffleWriterExec>, BallistaError>;
+}
+
+struct DataFusionExecutionEngine {}
+
+impl ExecutionEngine for DataFusionExecutionEngine {
+    fn new_shuffle_writer(
+        &self,
+        job_id: String,
+        stage_id: usize,
+        plan: Arc<dyn ExecutionPlan>,
+        work_dir: &str,
+    ) -> Result<Arc<ShuffleWriterExec>, BallistaError> {
+        let exec = if let Some(shuffle_writer) =
+            plan.as_any().downcast_ref::<ShuffleWriterExec>()
+        {
+            // recreate the shuffle writer with the correct working directory
+            ShuffleWriterExec::try_new(
+                job_id,
+                stage_id,
+                plan.children()[0].clone(),
+                work_dir.to_string(),
+                shuffle_writer.shuffle_output_partitioning().cloned(),
+            )
+        } else {
+            Err(DataFusionError::Internal(
+                "Plan passed to execute_shuffle_write is not a ShuffleWriterExec"
+                    .to_string(),
+            ))
+        }?;
+        Ok(Arc::new(exec))
+    }
+}
+
 /// Ballista executor
 #[derive(Clone)]
 pub struct Executor {
@@ -65,6 +108,9 @@ pub struct Executor {
 
     /// Handles to abort executing tasks
     abort_handles: AbortHandles,
+
+    /// Execution engine to use
+    execution_engine: Arc<dyn ExecutionEngine>,
 }
 
 impl Executor {
@@ -75,6 +121,7 @@ impl Executor {
         runtime: Arc<RuntimeEnv>,
         metrics_collector: Arc<dyn ExecutorMetricsCollector>,
         concurrent_tasks: usize,
+        execution_engine: Option<Arc<dyn ExecutionEngine>>,
     ) -> Self {
         Self {
             metadata,
@@ -86,6 +133,8 @@ impl Executor {
             metrics_collector,
             concurrent_tasks,
             abort_handles: Default::default(),
+            execution_engine: execution_engine
+                .unwrap_or_else(|| Arc::new(DataFusionExecutionEngine {})),
         }
     }
 }
@@ -130,24 +179,8 @@ impl Executor {
         stage_id: usize,
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Arc<ShuffleWriterExec>, BallistaError> {
-        let exec = if let Some(shuffle_writer) =
-            plan.as_any().downcast_ref::<ShuffleWriterExec>()
-        {
-            // recreate the shuffle writer with the correct working directory
-            ShuffleWriterExec::try_new(
-                job_id,
-                stage_id,
-                plan.children()[0].clone(),
-                self.work_dir.clone(),
-                shuffle_writer.shuffle_output_partitioning().cloned(),
-            )
-        } else {
-            Err(DataFusionError::Internal(
-                "Plan passed to execute_shuffle_write is not a ShuffleWriterExec"
-                    .to_string(),
-            ))
-        }?;
-        Ok(Arc::new(exec))
+        self.execution_engine
+            .new_shuffle_writer(job_id, stage_id, plan, &self.work_dir)
     }
 
     pub async fn cancel_task(
@@ -302,6 +335,7 @@ mod test {
             ctx.runtime_env(),
             Arc::new(LoggingMetricsCollector {}),
             2,
+            None,
         );
 
         let (sender, receiver) = tokio::sync::oneshot::channel();

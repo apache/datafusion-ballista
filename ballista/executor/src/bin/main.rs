@@ -77,6 +77,7 @@ async fn main() -> Result<()> {
         print_thread_info: opt.print_thread_info,
         job_data_ttl_seconds: opt.job_data_ttl_seconds,
         job_data_clean_up_interval_seconds: opt.job_data_clean_up_interval_seconds,
+        execution_engine: None,
     };
 
     start_executor_process(config).await
