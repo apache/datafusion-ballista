@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -195,6 +196,10 @@ struct ExecutorEnv {
 
 unsafe impl Sync for ExecutorEnv {}
 
+/// Global flag indicating whether the executor is terminating. This should be
+/// set to `true` when the executor receives a shutdown signal
+pub static TERMINATING: AtomicBool = AtomicBool::new(false);
+
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T, U> {
     fn new(
         scheduler_to_register: SchedulerGrpcClient<Channel>,
@@ -240,11 +245,17 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
     /// 1. First Heartbeat to its registration scheduler, if successful then return; else go next.
     /// 2. Heartbeat to schedulers which has launching tasks to this executor until one succeeds
     async fn heartbeat(&self) {
+        let status = if TERMINATING.load(Ordering::Acquire) {
+            executor_status::Status::Terminating(String::default())
+        } else {
+            executor_status::Status::Active(String::default())
+        };
+
         let heartbeat_params = HeartBeatParams {
             executor_id: self.executor.metadata.id.clone(),
             metrics: self.get_executor_metrics(),
             status: Some(ExecutorStatus {
-                status: Some(executor_status::Status::Active("".to_string())),
+                status: Some(status),
             }),
             metadata: Some(self.executor.metadata.clone()),
         };

@@ -85,6 +85,10 @@ impl ExecutorReservation {
 /// to be dead.
 pub const DEFAULT_EXECUTOR_TIMEOUT_SECONDS: u64 = 180;
 
+// TODO move to configuration file
+/// Interval check for expired or dead executors
+pub const EXPIRE_DEAD_EXECUTOR_INTERVAL_SECS: u64 = 15;
+
 #[derive(Clone)]
 pub(crate) struct ExecutorManager {
     // executor slot policy
@@ -140,14 +144,19 @@ impl ExecutorManager {
         tokio::task::spawn(async move {
             while let Some(heartbeat) = heartbeat_stream.next().await {
                 let executor_id = heartbeat.executor_id.clone();
-                if let Some(ExecutorStatus {
-                    status: Some(executor_status::Status::Dead(_)),
-                }) = heartbeat.status
+
+                match heartbeat
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.status.as_ref())
                 {
-                    heartbeats.remove(&executor_id);
-                    dead_executors.insert(executor_id);
-                } else {
-                    heartbeats.insert(executor_id, heartbeat);
+                    Some(executor_status::Status::Dead(_)) => {
+                        heartbeats.remove(&executor_id);
+                        dead_executors.insert(executor_id);
+                    }
+                    _ => {
+                        heartbeats.insert(executor_id, heartbeat);
+                    }
                 }
             }
         });
@@ -614,18 +623,38 @@ impl ExecutorManager {
             .iter()
             .filter_map(|pair| {
                 let (exec, heartbeat) = pair.pair();
-                (heartbeat.timestamp > last_seen_ts_threshold).then(|| exec.clone())
+
+                let active = matches!(
+                    heartbeat
+                        .status
+                        .as_ref()
+                        .and_then(|status| status.status.as_ref()),
+                    Some(executor_status::Status::Active(_))
+                );
+                let live = heartbeat.timestamp > last_seen_ts_threshold;
+
+                (active && live).then(|| exec.clone())
             })
             .collect()
     }
 
     /// Return a list of expired executors
-    pub(crate) fn get_expired_executors(&self) -> Vec<ExecutorHeartbeat> {
+    pub(crate) fn get_expired_executors(
+        &self,
+        termination_grace_period: u64,
+    ) -> Vec<ExecutorHeartbeat> {
         let now_epoch_ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards");
+        // Threshold for last heartbeat from Active executor before marking dead
         let last_seen_threshold = now_epoch_ts
             .checked_sub(Duration::from_secs(DEFAULT_EXECUTOR_TIMEOUT_SECONDS))
+            .unwrap_or_else(|| Duration::from_secs(0))
+            .as_secs();
+
+        // Threshold for last heartbeat for Fenced executor before marking dead
+        let termination_wait_threshold = now_epoch_ts
+            .checked_sub(Duration::from_secs(termination_grace_period))
             .unwrap_or_else(|| Duration::from_secs(0))
             .as_secs();
 
@@ -634,7 +663,22 @@ impl ExecutorManager {
             .iter()
             .filter_map(|pair| {
                 let (_exec, heartbeat) = pair.pair();
-                (heartbeat.timestamp <= last_seen_threshold).then(|| heartbeat.clone())
+
+                let terminating = matches!(
+                    heartbeat
+                        .status
+                        .as_ref()
+                        .and_then(|status| status.status.as_ref()),
+                    Some(executor_status::Status::Terminating(_))
+                );
+
+                let grace_period_expired =
+                    heartbeat.timestamp <= termination_wait_threshold;
+
+                let expired = heartbeat.timestamp <= last_seen_threshold;
+
+                ((terminating && grace_period_expired) || expired)
+                    .then(|| heartbeat.clone())
             })
             .collect::<Vec<_>>();
         expired_executors
@@ -656,9 +700,12 @@ mod test {
 
     use crate::config::SlotsPolicy;
 
+    use crate::scheduler_server::timestamp_secs;
     use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
     use crate::test_utils::test_cluster_context;
     use ballista_core::error::Result;
+    use ballista_core::serde::protobuf::executor_status::Status;
+    use ballista_core::serde::protobuf::{ExecutorHeartbeat, ExecutorStatus};
     use ballista_core::serde::scheduler::{
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
     };
@@ -840,6 +887,56 @@ mod test {
         let reservations = executor_manager.reserve_slots(1).await?;
 
         assert_eq!(reservations.len(), 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_ignore_fenced_executors() -> Result<()> {
+        test_ignore_fenced_executors_inner(SlotsPolicy::Bias).await?;
+        test_ignore_fenced_executors_inner(SlotsPolicy::RoundRobin).await?;
+        test_ignore_fenced_executors_inner(SlotsPolicy::RoundRobinLocal).await?;
+
+        Ok(())
+    }
+
+    async fn test_ignore_fenced_executors_inner(slots_policy: SlotsPolicy) -> Result<()> {
+        let cluster = test_cluster_context();
+
+        let executor_manager =
+            ExecutorManager::new(cluster.cluster_state(), slots_policy);
+
+        // Setup two executors initially
+        let executors = test_executors(2, 4);
+
+        for (executor_metadata, executor_data) in executors {
+            let _ = executor_manager
+                .register_executor(executor_metadata, executor_data, false)
+                .await?;
+        }
+
+        // Fence one of the executors
+        executor_manager
+            .save_executor_heartbeat(ExecutorHeartbeat {
+                executor_id: "executor-0".to_string(),
+                timestamp: timestamp_secs(),
+                metrics: vec![],
+                status: Some(ExecutorStatus {
+                    status: Some(Status::Terminating(String::default())),
+                }),
+            })
+            .await?;
+
+        let reservations = executor_manager.reserve_slots(8).await?;
+
+        assert_eq!(reservations.len(), 4, "Expected only four reservations");
+
+        assert!(
+            reservations
+                .iter()
+                .all(|res| res.executor_id == "executor-1"),
+            "Expected all reservations from non-fenced executor",
+        );
 
         Ok(())
     }

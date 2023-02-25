@@ -18,6 +18,7 @@
 //! Ballista Executor Process
 
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{env, io};
@@ -41,18 +42,21 @@ use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 
 use ballista_core::config::{LogRotationPolicy, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
+use ballista_core::serde::protobuf::executor_resource::Resource;
+use ballista_core::serde::protobuf::executor_status::Status;
 use ballista_core::serde::protobuf::{
     executor_registration, scheduler_grpc_client::SchedulerGrpcClient,
-    ExecutorRegistration, ExecutorStoppedParams,
+    ExecutorRegistration, ExecutorResource, ExecutorSpecification, ExecutorStatus,
+    ExecutorStoppedParams, HeartBeatParams,
 };
-use ballista_core::serde::scheduler::ExecutorSpecification;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{
     create_grpc_client_connection, create_grpc_server, with_object_store_provider,
 };
 use ballista_core::BALLISTA_VERSION;
 
-use crate::executor::Executor;
+use crate::executor::{Executor, TasksDrainedFuture};
+use crate::executor_server::TERMINATING;
 use crate::flight_service::BallistaFlightService;
 use crate::metrics::LoggingMetricsCollector;
 use crate::shutdown::Shutdown;
@@ -155,12 +159,11 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
             .map(executor_registration::OptionalHost::Host),
         port: opt.port as u32,
         grpc_port: opt.grpc_port as u32,
-        specification: Some(
-            ExecutorSpecification {
-                task_slots: concurrent_tasks as u32,
-            }
-            .into(),
-        ),
+        specification: Some(ExecutorSpecification {
+            resources: vec![ExecutorResource {
+                resource: Some(Resource::TaskSlots(concurrent_tasks as u32)),
+            }],
+        }),
     };
 
     let config = with_object_store_provider(
@@ -295,6 +298,8 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
         shutdown_noti.subscribe_for_shutdown(),
     )));
 
+    let tasks_drained = TasksDrainedFuture(executor);
+
     // Concurrently run the service checking and listen for the `shutdown` signal and wait for the stop request coming.
     // The check_services runs until an error is encountered, so under normal circumstances, this `select!` statement runs
     // until the `shutdown` signal is received or a stop request is coming.
@@ -319,7 +324,41 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
         },
     };
 
+    // Set status to fenced
+    info!("setting executor to TERMINATING status");
+    TERMINATING.store(true, Ordering::Release);
+
     if notify_scheduler {
+        // Send a heartbeat to update status of executor to `Fenced`. This should signal to the
+        // scheduler to no longer schedule tasks on this executor
+        if let Err(error) = scheduler
+            .heart_beat_from_executor(HeartBeatParams {
+                executor_id: executor_id.clone(),
+                metrics: vec![],
+                status: Some(ExecutorStatus {
+                    status: Some(Status::Terminating(String::default())),
+                }),
+                metadata: Some(ExecutorRegistration {
+                    id: executor_id.clone(),
+                    optional_host: opt
+                        .external_host
+                        .clone()
+                        .map(executor_registration::OptionalHost::Host),
+                    port: opt.port as u32,
+                    grpc_port: opt.grpc_port as u32,
+                    specification: Some(ExecutorSpecification {
+                        resources: vec![ExecutorResource {
+                            resource: Some(Resource::TaskSlots(concurrent_tasks as u32)),
+                        }],
+                    }),
+                }),
+            })
+            .await
+        {
+            error!("error sending heartbeat with fenced status: {:?}", error);
+        }
+
+        // TODO we probably don't need a separate rpc call for this....
         if let Err(error) = scheduler
             .executor_stopped(ExecutorStoppedParams {
                 executor_id,
@@ -329,6 +368,9 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
         {
             error!("ExecutorStopped grpc failed: {:?}", error);
         }
+
+        // Wait for tasks to drain
+        tasks_drained.await;
     }
 
     // Extract the `shutdown_complete` receiver and transmitter

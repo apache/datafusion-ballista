@@ -19,7 +19,10 @@
 
 use dashmap::DashMap;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use crate::metrics::ExecutorMetricsCollector;
 use ballista_core::error::BallistaError;
@@ -36,6 +39,20 @@ use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use futures::future::AbortHandle;
 
 use ballista_core::serde::scheduler::PartitionId;
+
+pub struct TasksDrainedFuture(pub Arc<Executor>);
+
+impl Future for TasksDrainedFuture {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.0.abort_handles.len() > 0 {
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
+    }
+}
 
 type AbortHandles = Arc<DashMap<(usize, PartitionId), AbortHandle>>;
 
@@ -174,6 +191,10 @@ impl Executor {
 
     pub fn work_dir(&self) -> &str {
         &self.work_dir
+    }
+
+    pub fn active_task_count(&self) -> usize {
+        self.abort_handles.len()
     }
 }
 
