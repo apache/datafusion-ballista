@@ -310,7 +310,8 @@ impl ShuffleWriter for ShuffleWriterExec {
         input_partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<Vec<ShuffleWritePartition>> {
-        self.execute_shuffle_write_internal(input_partition, context).await
+        self.execute_shuffle_write_internal(input_partition, context)
+            .await
     }
 }
 
