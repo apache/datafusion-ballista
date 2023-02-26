@@ -70,6 +70,8 @@ pub trait ShuffleWriter: Sync + Send + Debug {
         input_partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<Vec<ShuffleWritePartition>>;
+
+    fn collect_plan_metrics(&self) -> Vec<MetricsSet>;
 }
 
 /// ShuffleWriterExec represents a section of a query plan that has consistent partitioning and
@@ -312,6 +314,10 @@ impl ShuffleWriter for ShuffleWriterExec {
     ) -> Result<Vec<ShuffleWritePartition>> {
         self.execute_shuffle_write_internal(input_partition, context)
             .await
+    }
+
+    fn collect_plan_metrics(&self) -> Vec<MetricsSet> {
+        utils::collect_plan_metrics(self.plan.as_ref())
     }
 }
 

@@ -129,7 +129,7 @@ impl Executor {
         job_id: String,
         stage_id: usize,
         plan: Arc<dyn ExecutionPlan>,
-    ) -> Result<Arc<ShuffleWriterExec>, BallistaError> {
+    ) -> Result<Arc<dyn ShuffleWriter>, BallistaError> {
         let exec = if let Some(shuffle_writer) =
             plan.as_any().downcast_ref::<ShuffleWriterExec>()
         {
