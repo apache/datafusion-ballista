@@ -65,7 +65,7 @@ pub trait ExecutionEngine: Sync + Send {
         stage_id: usize,
         plan: Arc<dyn ExecutionPlan>,
         work_dir: &str,
-    ) -> Result<Arc<ShuffleWriterExec>, BallistaError>;
+    ) -> Result<Arc<dyn ShuffleWriter>, BallistaError>;
 }
 
 struct DataFusionExecutionEngine {}
@@ -77,7 +77,7 @@ impl ExecutionEngine for DataFusionExecutionEngine {
         stage_id: usize,
         plan: Arc<dyn ExecutionPlan>,
         work_dir: &str,
-    ) -> Result<Arc<ShuffleWriterExec>, BallistaError> {
+    ) -> Result<Arc<dyn ShuffleWriter>, BallistaError> {
         let exec = if let Some(shuffle_writer) =
             plan.as_any().downcast_ref::<ShuffleWriterExec>()
         {
@@ -195,7 +195,7 @@ impl Executor {
         job_id: String,
         stage_id: usize,
         plan: Arc<dyn ExecutionPlan>,
-    ) -> Result<Arc<ShuffleWriterExec>, BallistaError> {
+    ) -> Result<Arc<dyn ShuffleWriter>, BallistaError> {
         self.execution_engine
             .new_shuffle_writer(job_id, stage_id, plan, &self.work_dir)
     }
