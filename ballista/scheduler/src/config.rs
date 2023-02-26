@@ -49,6 +49,9 @@ pub struct SchedulerConfig {
     pub job_resubmit_interval_ms: Option<u64>,
     /// Configuration for ballista cluster storage
     pub cluster_storage: ClusterStorageConfig,
+    /// Time in seconds to allow executor for graceful shutdown. Once an executor signals it has entered Terminating status
+    /// the scheduler should only consider the executor dead after this time interval has elapsed
+    pub executor_termination_grace_period: u64,
 }
 
 impl Default for SchedulerConfig {
@@ -65,6 +68,7 @@ impl Default for SchedulerConfig {
             advertise_flight_sql_endpoint: None,
             cluster_storage: ClusterStorageConfig::Memory,
             job_resubmit_interval_ms: None,
+            executor_termination_grace_period: 0,
         }
     }
 }
@@ -139,6 +143,11 @@ impl SchedulerConfig {
 
     pub fn with_job_resubmit_interval_ms(mut self, interval_ms: u64) -> Self {
         self.job_resubmit_interval_ms = Some(interval_ms);
+        self
+    }
+
+    pub fn with_remove_executor_wait_secs(mut self, value: u64) -> Self {
+        self.executor_termination_grace_period = value;
         self
     }
 }
