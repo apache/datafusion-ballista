@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use crate::metrics::ExecutorMetricsCollector;
 use ballista_core::error::BallistaError;
-use ballista_core::execution_plans::ShuffleWriterExec;
+use ballista_core::execution_plans::{ShuffleWriter, ShuffleWriterExec};
 use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::ExecutorRegistration;
 use datafusion::error::DataFusionError;
@@ -147,7 +147,7 @@ impl Executor {
         &self,
         task_id: usize,
         partition: PartitionId,
-        shuffle_writer: Arc<ShuffleWriterExec>,
+        shuffle_writer: Arc<dyn ShuffleWriter>,
         task_ctx: Arc<TaskContext>,
         _shuffle_output_partitioning: Option<Partitioning>,
     ) -> Result<Vec<protobuf::ShuffleWritePartition>, BallistaError> {

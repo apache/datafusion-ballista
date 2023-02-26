@@ -22,7 +22,9 @@
 
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 
+use async_trait::async_trait;
 use std::any::Any;
+use std::fmt::Debug;
 use std::future::Future;
 use std::iter::Iterator;
 use std::path::PathBuf;
@@ -56,6 +58,19 @@ use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::repartition::BatchPartitioner;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use log::{debug, info};
+
+/// ShuffleWriter represents a section of a query plan that has consistent partitioning and
+/// can be executed as one unit with each partition being executed in parallel. The output of each
+/// partition is re-partitioned and streamed to disk in Arrow IPC format. Future stages of the query
+/// will use the ShuffleReaderExec to read these results.
+#[async_trait]
+pub trait ShuffleWriter: Sync + Send + Debug {
+    async fn execute_shuffle_write(
+        &self,
+        input_partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<Vec<ShuffleWritePartition>>;
+}
 
 /// ShuffleWriterExec represents a section of a query plan that has consistent partitioning and
 /// can be executed as one unit with each partition being executed in parallel. The output of each
@@ -139,7 +154,7 @@ impl ShuffleWriterExec {
         self.shuffle_output_partitioning.as_ref()
     }
 
-    pub fn execute_shuffle_write(
+    fn execute_shuffle_write_internal(
         &self,
         input_partition: usize,
         context: Arc<TaskContext>,
@@ -288,6 +303,18 @@ impl ShuffleWriterExec {
     }
 }
 
+#[async_trait]
+impl ShuffleWriter for ShuffleWriterExec {
+    async fn execute_shuffle_write(
+        &self,
+        input_partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<Vec<ShuffleWritePartition>> {
+        let fut = self.execute_shuffle_write_internal(input_partition, context);
+        fut.await
+    }
+}
+
 impl ExecutionPlan for ShuffleWriterExec {
     fn as_any(&self) -> &dyn Any {
         self
@@ -335,7 +362,7 @@ impl ExecutionPlan for ShuffleWriterExec {
 
         let schema_captured = schema.clone();
         let fut_stream = self
-            .execute_shuffle_write(partition, context)
+            .execute_shuffle_write_internal(partition, context)
             .and_then(|part_loc| async move {
                 // build metadata result batch
                 let num_writers = part_loc.len();
