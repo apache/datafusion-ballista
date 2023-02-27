@@ -85,8 +85,7 @@ pub fn encode_protobuf<T: Message + Default>(msg: &T) -> Result<Vec<u8>> {
 }
 
 #[derive(Clone)]
-pub(super) struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
-{
+pub struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
     pub executor_manager: ExecutorManager,
     pub task_manager: TaskManager<T, U>,
     pub session_manager: SessionManager,

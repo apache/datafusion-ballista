@@ -90,7 +90,7 @@ pub const DEFAULT_EXECUTOR_TIMEOUT_SECONDS: u64 = 180;
 pub const EXPIRE_DEAD_EXECUTOR_INTERVAL_SECS: u64 = 15;
 
 #[derive(Clone)]
-pub(crate) struct ExecutorManager {
+pub struct ExecutorManager {
     // executor slot policy
     slots_policy: SlotsPolicy,
     task_distribution: TaskDistribution,
