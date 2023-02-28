@@ -141,3 +141,9 @@ name = "job_resubmit_interval_ms"
 type = "u64"
 default = "0"
 doc = "If job is not able to be scheduled on submission, wait for this interval and resubmit. Default value of 0 indicates that job shuuld not be resubmitted"
+
+[[param]]
+name = "executor_termination_grace_period"
+type = "u64"
+default = "30"
+doc = "Time in seconds an executor should be considered lost after it enters terminating status"

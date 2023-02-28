@@ -540,7 +540,7 @@ pub mod executor_metric {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorStatus {
-    #[prost(oneof = "executor_status::Status", tags = "1, 2, 3")]
+    #[prost(oneof = "executor_status::Status", tags = "1, 2, 3, 4")]
     pub status: ::core::option::Option<executor_status::Status>,
 }
 /// Nested message and enum types in `ExecutorStatus`.
@@ -554,6 +554,8 @@ pub mod executor_status {
         Dead(::prost::alloc::string::String),
         #[prost(string, tag = "3")]
         Unknown(::prost::alloc::string::String),
+        #[prost(string, tag = "4")]
+        Terminating(::prost::alloc::string::String),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]

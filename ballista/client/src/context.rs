@@ -18,6 +18,7 @@
 //! Distributed execution context.
 
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::execution::context::DataFilePaths;
 use log::info;
 use parking_lot::Mutex;
 use sqlparser::ast::Statement;
@@ -39,7 +40,8 @@ use datafusion::datasource::{source_as_provider, TableProvider};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::{CreateExternalTable, LogicalPlan, TableScan};
 use datafusion::prelude::{
-    AvroReadOptions, CsvReadOptions, ParquetReadOptions, SessionConfig, SessionContext,
+    AvroReadOptions, CsvReadOptions, NdJsonReadOptions, ParquetReadOptions,
+    SessionConfig, SessionContext,
 };
 use datafusion::sql::parser::{DFParser, Statement as DFStatement};
 
@@ -207,36 +209,47 @@ impl BallistaContext {
         })
     }
 
+    /// Create a DataFrame representing an Json table scan
+    /// TODO fetch schema from scheduler instead of resolving locally
+    pub async fn read_json<P: DataFilePaths>(
+        &self,
+        paths: P,
+        options: NdJsonReadOptions<'_>,
+    ) -> Result<DataFrame> {
+        let df = self.context.read_json(paths, options).await?;
+        Ok(df)
+    }
+
     /// Create a DataFrame representing an Avro table scan
     /// TODO fetch schema from scheduler instead of resolving locally
-    pub async fn read_avro(
+    pub async fn read_avro<P: DataFilePaths>(
         &self,
-        path: &str,
+        paths: P,
         options: AvroReadOptions<'_>,
     ) -> Result<DataFrame> {
-        let df = self.context.read_avro(path, options).await?;
+        let df = self.context.read_avro(paths, options).await?;
         Ok(df)
     }
 
     /// Create a DataFrame representing a Parquet table scan
     /// TODO fetch schema from scheduler instead of resolving locally
-    pub async fn read_parquet(
+    pub async fn read_parquet<P: DataFilePaths>(
         &self,
-        path: &str,
+        paths: P,
         options: ParquetReadOptions<'_>,
     ) -> Result<DataFrame> {
-        let df = self.context.read_parquet(path, options).await?;
+        let df = self.context.read_parquet(paths, options).await?;
         Ok(df)
     }
 
     /// Create a DataFrame representing a CSV table scan
     /// TODO fetch schema from scheduler instead of resolving locally
-    pub async fn read_csv(
+    pub async fn read_csv<P: DataFilePaths>(
         &self,
-        path: &str,
+        paths: P,
         options: CsvReadOptions<'_>,
     ) -> Result<DataFrame> {
-        let df = self.context.read_csv(path, options).await?;
+        let df = self.context.read_csv(paths, options).await?;
         Ok(df)
     }
 

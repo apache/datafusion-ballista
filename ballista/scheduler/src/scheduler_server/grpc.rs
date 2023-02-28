@@ -258,6 +258,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             metrics,
             status,
         };
+
         self.state
             .executor_manager
             .save_executor_heartbeat(executor_heartbeat)
@@ -521,13 +522,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             error!("{}", msg);
             Status::internal(msg)
         })?;
-        Self::remove_executor(executor_manager, event_sender, &executor_id, Some(reason))
-            .await
-            .map_err(|e| {
-                let msg = format!("Error to remove executor in Scheduler due to {e:?}");
-                error!("{}", msg);
-                Status::internal(msg)
-            })?;
+
+        Self::remove_executor(
+            executor_manager,
+            event_sender,
+            &executor_id,
+            Some(reason),
+            self.executor_termination_grace_period,
+        );
 
         Ok(Response::new(ExecutorStoppedResult {}))
     }
@@ -603,6 +605,7 @@ mod test {
 
     use crate::state::executor_manager::DEFAULT_EXECUTOR_TIMEOUT_SECONDS;
     use crate::state::SchedulerState;
+    use crate::test_utils::await_condition;
     use crate::test_utils::test_cluster_context;
 
     use super::{SchedulerGrpc, SchedulerServer};
@@ -702,7 +705,7 @@ mod test {
                 "localhost:50050".to_owned(),
                 cluster.clone(),
                 BallistaCodec::default(),
-                SchedulerConfig::default(),
+                SchedulerConfig::default().with_remove_executor_wait_secs(0),
                 default_metrics_collector().unwrap(),
             );
         scheduler.init().await?;
@@ -760,15 +763,22 @@ mod test {
             .await
             .expect("getting executor");
 
+        let is_stopped = await_condition(Duration::from_millis(10), 5, || {
+            futures::future::ready(Ok(state.executor_manager.is_dead_executor("abc")))
+        })
+        .await?;
+
         // executor should be marked to dead
-        assert!(state.executor_manager.is_dead_executor("abc"));
+        assert!(is_stopped, "Executor not marked dead after 50ms");
 
         let active_executors = state
             .executor_manager
             .get_alive_executors_within_one_minute();
         assert!(active_executors.is_empty());
 
-        let expired_executors = state.executor_manager.get_expired_executors();
+        let expired_executors = state
+            .executor_manager
+            .get_expired_executors(scheduler.executor_termination_grace_period);
         assert!(expired_executors.is_empty());
 
         Ok(())
@@ -895,7 +905,9 @@ mod test {
             .get_alive_executors_within_one_minute();
         assert_eq!(active_executors.len(), 1);
 
-        let expired_executors = state.executor_manager.get_expired_executors();
+        let expired_executors = state
+            .executor_manager
+            .get_expired_executors(scheduler.executor_termination_grace_period);
         assert!(expired_executors.is_empty());
 
         // simulate the heartbeat timeout
