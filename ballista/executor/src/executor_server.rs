@@ -339,9 +339,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let stage_id = task.stage_id;
         let stage_attempt_num = task.stage_attempt_num;
         let partition_id = task.partition_id;
-        let shuffle_writer =
-            self.executor
-                .new_shuffle_writer(job_id.clone(), stage_id, plan)?;
+        let query_stage_exec = self.executor.execution_engine.create_query_stage_exec(
+            job_id.clone(),
+            stage_id,
+            plan,
+            &self.executor.work_dir,
+        )?;
 
         let part = PartitionId {
             job_id: job_id.clone(),
@@ -353,10 +356,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
         let execution_result = self
             .executor
-            .execute_shuffle_write(
+            .execute_query_stage(
                 task_id,
                 part.clone(),
-                shuffle_writer.clone(),
+                query_stage_exec.clone(),
                 task_context,
                 shuffle_output_partitioning,
             )
@@ -364,7 +367,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         info!("Done with task {}", task_identity);
         debug!("Statistics: {:?}", execution_result);
 
-        let plan_metrics = shuffle_writer.collect_plan_metrics();
+        let plan_metrics = query_stage_exec.collect_plan_metrics();
         let operator_metrics = plan_metrics
             .into_iter()
             .map(|m| m.try_into())

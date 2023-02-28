@@ -23,16 +23,16 @@ use std::sync::Arc;
 
 use crate::metrics::ExecutorMetricsCollector;
 use ballista_core::error::BallistaError;
-use ballista_core::execution_plans::ShuffleWriter;
-use ballista_core::execution_plans::ShuffleWriterExec;
+use ballista_core::execution_plans::{
+    DefaultExecutionEngine, ExecutionEngine, QueryStageExecutor,
+};
 use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::ExecutorRegistration;
-use datafusion::error::DataFusionError;
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::udaf::AggregateUDF;
 use datafusion::physical_plan::udf::ScalarUDF;
-use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+use datafusion::physical_plan::Partitioning;
 use futures::future::AbortHandle;
 
 use ballista_core::serde::scheduler::PartitionId;
@@ -65,6 +65,10 @@ pub struct Executor {
 
     /// Handles to abort executing tasks
     abort_handles: AbortHandles,
+
+    /// Execution engine that the executor will delegate to
+    /// for executing query stages
+    pub(crate) execution_engine: Arc<dyn ExecutionEngine>,
 }
 
 impl Executor {
@@ -86,6 +90,7 @@ impl Executor {
             metrics_collector,
             concurrent_tasks,
             abort_handles: Default::default(),
+            execution_engine: Arc::new(DefaultExecutionEngine {}),
         }
     }
 }
@@ -94,16 +99,16 @@ impl Executor {
     /// Execute one partition of a query stage and persist the result to disk in IPC format. On
     /// success, return a RecordBatch containing metadata about the results, including path
     /// and statistics.
-    pub async fn execute_shuffle_write(
+    pub async fn execute_query_stage(
         &self,
         task_id: usize,
         partition: PartitionId,
-        shuffle_writer: Arc<dyn ShuffleWriter>,
+        query_stage_exec: Arc<dyn QueryStageExecutor>,
         task_ctx: Arc<TaskContext>,
         _shuffle_output_partitioning: Option<Partitioning>,
     ) -> Result<Vec<protobuf::ShuffleWritePartition>, BallistaError> {
         let (task, abort_handle) = futures::future::abortable(
-            shuffle_writer.execute_shuffle_write(partition.partition_id, task_ctx),
+            query_stage_exec.execute_query_stage(partition.partition_id, task_ctx),
         );
 
         self.abort_handles
@@ -117,37 +122,10 @@ impl Executor {
             &partition.job_id,
             partition.stage_id,
             partition.partition_id,
-            shuffle_writer,
+            query_stage_exec,
         );
 
         Ok(partitions)
-    }
-
-    /// Recreate the shuffle writer with the correct working directory.
-    pub fn new_shuffle_writer(
-        &self,
-        job_id: String,
-        stage_id: usize,
-        plan: Arc<dyn ExecutionPlan>,
-    ) -> Result<Arc<dyn ShuffleWriter>, BallistaError> {
-        let exec = if let Some(shuffle_writer) =
-            plan.as_any().downcast_ref::<ShuffleWriterExec>()
-        {
-            // recreate the shuffle writer with the correct working directory
-            ShuffleWriterExec::try_new(
-                job_id,
-                stage_id,
-                plan.children()[0].clone(),
-                self.work_dir.clone(),
-                shuffle_writer.shuffle_output_partitioning().cloned(),
-            )
-        } else {
-            Err(DataFusionError::Internal(
-                "Plan passed to execute_shuffle_write is not a ShuffleWriterExec"
-                    .to_string(),
-            ))
-        }?;
-        Ok(Arc::new(exec))
     }
 
     pub async fn cancel_task(
@@ -315,7 +293,7 @@ mod test {
                 partition_id: 0,
             };
             let task_result = executor_clone
-                .execute_shuffle_write(
+                .execute_query_stage(
                     1,
                     part,
                     Arc::new(shuffle_write),

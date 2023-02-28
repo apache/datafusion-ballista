@@ -59,19 +59,61 @@ use datafusion::physical_plan::repartition::BatchPartitioner;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use log::{debug, info};
 
-/// ShuffleWriter represents a section of a query plan that has consistent partitioning and
+/// QueryStageExecutor executes a section of a query plan that has consistent partitioning and
 /// can be executed as one unit with each partition being executed in parallel. The output of each
 /// partition is re-partitioned and streamed to disk in Arrow IPC format. Future stages of the query
 /// will use the ShuffleReaderExec to read these results.
 #[async_trait]
-pub trait ShuffleWriter: Sync + Send + Debug {
-    async fn execute_shuffle_write(
+pub trait QueryStageExecutor: Sync + Send + Debug {
+    async fn execute_query_stage(
         &self,
         input_partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<Vec<ShuffleWritePartition>>;
 
     fn collect_plan_metrics(&self) -> Vec<MetricsSet>;
+}
+
+pub trait ExecutionEngine: Sync + Send {
+    fn create_query_stage_exec(
+        &self,
+        job_id: String,
+        stage_id: usize,
+        plan: Arc<dyn ExecutionPlan>,
+        work_dir: &str,
+    ) -> Result<Arc<dyn QueryStageExecutor>>;
+}
+
+pub struct DefaultExecutionEngine {}
+
+impl ExecutionEngine for DefaultExecutionEngine {
+    fn create_query_stage_exec(
+        &self,
+        job_id: String,
+        stage_id: usize,
+        plan: Arc<dyn ExecutionPlan>,
+        work_dir: &str,
+    ) -> Result<Arc<dyn QueryStageExecutor>> {
+        // the query plan created by the scheduler always starts with a ShuffleWriterExec
+        let exec = if let Some(shuffle_writer) =
+            plan.as_any().downcast_ref::<ShuffleWriterExec>()
+        {
+            // recreate the shuffle writer with the correct working directory
+            ShuffleWriterExec::try_new(
+                job_id,
+                stage_id,
+                plan.children()[0].clone(),
+                work_dir.to_string(),
+                shuffle_writer.shuffle_output_partitioning().cloned(),
+            )
+        } else {
+            Err(DataFusionError::Internal(
+                "Plan passed to new_query_stage_exec is not a ShuffleWriterExec"
+                    .to_string(),
+            ))
+        }?;
+        Ok(Arc::new(exec))
+    }
 }
 
 /// ShuffleWriterExec represents a section of a query plan that has consistent partitioning and
@@ -306,8 +348,8 @@ impl ShuffleWriterExec {
 }
 
 #[async_trait]
-impl ShuffleWriter for ShuffleWriterExec {
-    async fn execute_shuffle_write(
+impl QueryStageExecutor for ShuffleWriterExec {
+    async fn execute_query_stage(
         &self,
         input_partition: usize,
         context: Arc<TaskContext>,
