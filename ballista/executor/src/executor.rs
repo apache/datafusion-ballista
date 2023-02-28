@@ -79,6 +79,7 @@ impl Executor {
         runtime: Arc<RuntimeEnv>,
         metrics_collector: Arc<dyn ExecutorMetricsCollector>,
         concurrent_tasks: usize,
+        execution_engine: Option<Arc<dyn ExecutionEngine>>,
     ) -> Self {
         Self {
             metadata,
@@ -90,7 +91,8 @@ impl Executor {
             metrics_collector,
             concurrent_tasks,
             abort_handles: Default::default(),
-            execution_engine: Arc::new(DefaultExecutionEngine {}),
+            execution_engine: execution_engine
+                .unwrap_or_else(|| Arc::new(DefaultExecutionEngine {})),
         }
     }
 }
@@ -280,6 +282,7 @@ mod test {
             ctx.runtime_env(),
             Arc::new(LoggingMetricsCollector {}),
             2,
+            None,
         );
 
         let (sender, receiver) = tokio::sync::oneshot::channel();

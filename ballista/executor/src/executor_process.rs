@@ -178,6 +178,7 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
         runtime,
         metrics_collector,
         concurrent_tasks,
+        None,
     ));
 
     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;
