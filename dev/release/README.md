@@ -290,13 +290,9 @@ dot -Tsvg dev/release/crate-deps.dot > dev/release/crate-deps.svg
 
 ### Publish Docker Images
 
-We release the Docker image that was voted on rather than build a new image. We do this by re-tagging the image.
+Pushing a release tag causes Docker images to be published.
 
-```bash
-$ docker pull ghcr.io/apache/arrow-ballista-standalone:0.10.0-rc3
-$ docker tag ghcr.io/apache/arrow-ballista-standalone:0.10.0-rc3 ghcr.io/apache/arrow-ballista-standalone:0.10.0
-$ docker push ghcr.io/apache/arrow-ballista-standalone:0.10.0
-```
+Images can be found at [https://github.com/apache/arrow-ballista/pkgs/container/arrow-ballista-standalone](https://github.com/apache/arrow-ballista/pkgs/container/arrow-ballista-standalone)
 
 ### Call the vote
 
