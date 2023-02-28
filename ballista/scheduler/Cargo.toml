@@ -43,7 +43,7 @@ sled = ["sled_package", "tokio-stream"]
 
 [dependencies]
 anyhow = "1"
-arrow-flight = { version = "32.0.0", features = ["flight-sql-experimental"] }
+arrow-flight = { version = "33.0.0", features = ["flight-sql-experimental"] }
 async-recursion = "1.0.0"
 async-trait = "0.1.41"
 ballista-core = { path = "../core", version = "0.11.0" }
@@ -51,8 +51,8 @@ base64 = { version = "0.13", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
 configure_me = "0.4.0"
 dashmap = "5.4.0"
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "cfbb14d" }
-datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "cfbb14d" }
+datafusion = "19.0.0"
+datafusion-proto = "19.0.0"
 etcd-client = { version = "0.10", optional = true }
 flatbuffers = { version = "22.9.29" }
 futures = "0.3"
@@ -78,7 +78,11 @@ tonic = "0.8"
 tower = { version = "0.4" }
 tracing = "0.1.36"
 tracing-appender = "0.2.2"
-tracing-subscriber = { version = "0.3.15", features = ["fmt", "env-filter", "ansi"] }
+tracing-subscriber = { version = "0.3.15", features = [
+    "fmt",
+    "env-filter",
+    "ansi",
+] }
 uuid = { version = "1.0", features = ["v4"] }
 warp = "0.3"
 
@@ -87,4 +91,7 @@ ballista-core = { path = "../core", version = "0.11.0" }
 
 [build-dependencies]
 configure_me_codegen = "=0.4.0"
-tonic-build = { version = "0.8", default-features = false, features = ["transport", "prost"] }
+tonic-build = { version = "0.8", default-features = false, features = [
+    "transport",
+    "prost",
+] }
