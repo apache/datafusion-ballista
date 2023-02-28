@@ -34,8 +34,8 @@ snmalloc = ["snmalloc-rs"]
 
 [dependencies]
 ballista = { path = "../ballista/client", version = "0.11.0" }
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "cfbb14d" }
-datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "cfbb14d" }
+datafusion = "19.0.0"
+datafusion-proto = "19.0.0"
 env_logger = "0.10"
 futures = "0.3"
 mimalloc = { version = "0.1", optional = true, default-features = false }
@@ -45,7 +45,12 @@ serde = "1.0.136"
 serde_json = "1.0.78"
 snmalloc-rs = { version = "0.3", optional = true }
 structopt = { version = "0.3", default-features = false }
-tokio = { version = "^1.0", features = ["macros", "rt", "rt-multi-thread", "parking_lot"] }
+tokio = { version = "^1.0", features = [
+    "macros",
+    "rt",
+    "rt-multi-thread",
+    "parking_lot",
+] }
 
 [dev-dependencies]
 ballista-core = { path = "../ballista/core", version = "0.11.0" }
