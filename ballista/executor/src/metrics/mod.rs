@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista_core::execution_plans::QueryStageExecutor;
+use crate::execution_engine::QueryStageExecutor;
 use log::info;
 use std::sync::Arc;
 

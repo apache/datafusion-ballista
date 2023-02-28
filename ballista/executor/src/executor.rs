@@ -17,25 +17,23 @@
 
 //! Ballista executor logic
 
-use dashmap::DashMap;
-use std::collections::HashMap;
-use std::sync::Arc;
-
+use crate::execution_engine::DefaultExecutionEngine;
+use crate::execution_engine::ExecutionEngine;
+use crate::execution_engine::QueryStageExecutor;
 use crate::metrics::ExecutorMetricsCollector;
 use ballista_core::error::BallistaError;
-use ballista_core::execution_plans::{
-    DefaultExecutionEngine, ExecutionEngine, QueryStageExecutor,
-};
 use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::ExecutorRegistration;
+use ballista_core::serde::scheduler::PartitionId;
+use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::udaf::AggregateUDF;
 use datafusion::physical_plan::udf::ScalarUDF;
 use datafusion::physical_plan::Partitioning;
 use futures::future::AbortHandle;
-
-use ballista_core::serde::scheduler::PartitionId;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 type AbortHandles = Arc<DashMap<(usize, PartitionId), AbortHandle>>;
 
@@ -167,6 +165,7 @@ mod test {
     use ballista_core::serde::protobuf::ExecutorRegistration;
     use datafusion::execution::context::TaskContext;
 
+    use crate::execution_engine::DefaultQueryStageExec;
     use ballista_core::serde::scheduler::PartitionId;
     use datafusion::error::DataFusionError;
     use datafusion::physical_expr::PhysicalSortExpr;
@@ -266,6 +265,8 @@ mod test {
         )
         .expect("creating shuffle writer");
 
+        let query_stage_exec = DefaultQueryStageExec::new(shuffle_write);
+
         let executor_registration = ExecutorRegistration {
             id: "executor".to_string(),
             port: 0,
@@ -299,7 +300,7 @@ mod test {
                 .execute_query_stage(
                     1,
                     part,
-                    Arc::new(shuffle_write),
+                    Arc::new(query_stage_exec),
                     ctx.task_ctx(),
                     None,
                 )

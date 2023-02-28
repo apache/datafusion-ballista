@@ -18,6 +18,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod collect;
+pub mod execution_engine;
 pub mod execution_loop;
 pub mod executor;
 pub mod executor_process;
