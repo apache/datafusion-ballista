@@ -23,7 +23,6 @@
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 
 use std::any::Any;
-use std::fmt::Debug;
 use std::future::Future;
 use std::iter::Iterator;
 use std::path::PathBuf;
@@ -140,7 +139,7 @@ impl ShuffleWriterExec {
         self.shuffle_output_partitioning.as_ref()
     }
 
-    pub fn execute_shuffle_write_internal(
+    pub fn execute_shuffle_write(
         &self,
         input_partition: usize,
         context: Arc<TaskContext>,
@@ -336,7 +335,7 @@ impl ExecutionPlan for ShuffleWriterExec {
 
         let schema_captured = schema.clone();
         let fut_stream = self
-            .execute_shuffle_write_internal(partition, context)
+            .execute_shuffle_write(partition, context)
             .and_then(|part_loc| async move {
                 // build metadata result batch
                 let num_writers = part_loc.len();
