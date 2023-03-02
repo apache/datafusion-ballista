@@ -16,8 +16,6 @@
 // under the License.
 
 //! Distributed query execution
-//!
-//! This code is EXPERIMENTAL and still under development
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -84,7 +82,6 @@ impl DistributedPlanner {
         job_id: &'a str,
         execution_plan: Arc<dyn ExecutionPlan>,
     ) -> Result<PartialQueryStageResult> {
-        // async move {
         // recurse down and replace children
         if execution_plan.children().is_empty() {
             return Ok((execution_plan, vec![]));
@@ -109,17 +106,7 @@ impl DistributedPlanner {
                 children[0].clone(),
                 None,
             )?;
-            let unresolved_shuffle = Arc::new(UnresolvedShuffleExec::new(
-                shuffle_writer.stage_id(),
-                shuffle_writer.schema(),
-                shuffle_writer.output_partitioning().partition_count(),
-                shuffle_writer
-                    .shuffle_output_partitioning()
-                    .map(|p| p.partition_count())
-                    .unwrap_or_else(|| {
-                        shuffle_writer.output_partitioning().partition_count()
-                    }),
-            ));
+            let unresolved_shuffle = create_unresolved_shuffle(&shuffle_writer);
             stages.push(shuffle_writer);
             Ok((
                 with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
@@ -135,17 +122,7 @@ impl DistributedPlanner {
                 children[0].clone(),
                 None,
             )?;
-            let unresolved_shuffle = Arc::new(UnresolvedShuffleExec::new(
-                shuffle_writer.stage_id(),
-                shuffle_writer.schema(),
-                shuffle_writer.output_partitioning().partition_count(),
-                shuffle_writer
-                    .shuffle_output_partitioning()
-                    .map(|p| p.partition_count())
-                    .unwrap_or_else(|| {
-                        shuffle_writer.output_partitioning().partition_count()
-                    }),
-            ));
+            let unresolved_shuffle = create_unresolved_shuffle(&shuffle_writer);
             stages.push(shuffle_writer);
             Ok((
                 with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
@@ -162,17 +139,7 @@ impl DistributedPlanner {
                         children[0].clone(),
                         Some(repart.partitioning().to_owned()),
                     )?;
-                    let unresolved_shuffle = Arc::new(UnresolvedShuffleExec::new(
-                        shuffle_writer.stage_id(),
-                        shuffle_writer.schema(),
-                        shuffle_writer.output_partitioning().partition_count(),
-                        shuffle_writer
-                            .shuffle_output_partitioning()
-                            .map(|p| p.partition_count())
-                            .unwrap_or_else(|| {
-                                shuffle_writer.output_partitioning().partition_count()
-                            }),
-                    ));
+                    let unresolved_shuffle = create_unresolved_shuffle(&shuffle_writer);
                     stages.push(shuffle_writer);
                     Ok((unresolved_shuffle, stages))
                 }
@@ -185,8 +152,7 @@ impl DistributedPlanner {
             execution_plan.as_any().downcast_ref::<WindowAggExec>()
         {
             Err(BallistaError::NotImplemented(format!(
-                "WindowAggExec with window {:?}",
-                window
+                "WindowAggExec with window {window:?}"
             )))
         } else {
             Ok((
@@ -201,6 +167,20 @@ impl DistributedPlanner {
         self.next_stage_id += 1;
         self.next_stage_id
     }
+}
+
+fn create_unresolved_shuffle(
+    shuffle_writer: &ShuffleWriterExec,
+) -> Arc<UnresolvedShuffleExec> {
+    Arc::new(UnresolvedShuffleExec::new(
+        shuffle_writer.stage_id(),
+        shuffle_writer.schema(),
+        shuffle_writer.output_partitioning().partition_count(),
+        shuffle_writer
+            .shuffle_output_partitioning()
+            .map(|p| p.partition_count())
+            .unwrap_or_else(|| shuffle_writer.output_partitioning().partition_count()),
+    ))
 }
 
 /// Returns the unresolved shuffles in the execution plan
@@ -323,20 +303,19 @@ mod test {
     use crate::test_utils::datafusion_test_context;
     use ballista_core::error::BallistaError;
     use ballista_core::execution_plans::UnresolvedShuffleExec;
-    use ballista_core::serde::{protobuf, AsExecutionPlan, BallistaCodec};
+    use ballista_core::serde::BallistaCodec;
     use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
     use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
     use datafusion::physical_plan::joins::HashJoinExec;
+    use datafusion::physical_plan::projection::ProjectionExec;
     use datafusion::physical_plan::sorts::sort::SortExec;
-    use datafusion::physical_plan::{
-        coalesce_partitions::CoalescePartitionsExec, projection::ProjectionExec,
-    };
+    use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
     use datafusion::physical_plan::{displayable, ExecutionPlan};
     use datafusion::prelude::SessionContext;
-    use std::ops::Deref;
-
-    use ballista_core::serde::protobuf::PhysicalPlanNode;
+    use datafusion_proto::physical_plan::AsExecutionPlan;
     use datafusion_proto::protobuf::LogicalPlanNode;
+    use datafusion_proto::protobuf::PhysicalPlanNode;
+    use std::ops::Deref;
     use std::sync::Arc;
     use uuid::Uuid;
 
@@ -349,6 +328,7 @@ mod test {
     #[tokio::test]
     async fn distributed_aggregate_plan() -> Result<(), BallistaError> {
         let ctx = datafusion_test_context("testdata").await?;
+        let session_state = ctx.state();
 
         // simplified form of TPC-H query 1
         let df = ctx
@@ -360,9 +340,9 @@ mod test {
             )
             .await?;
 
-        let plan = df.to_logical_plan()?;
-        let plan = ctx.optimize(&plan)?;
-        let plan = ctx.create_physical_plan(&plan).await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = session_state.optimize(&plan)?;
+        let plan = session_state.create_physical_plan(&plan).await?;
 
         let mut planner = DistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
@@ -374,19 +354,19 @@ mod test {
         /* Expected result:
 
         ShuffleWriterExec: Some(Hash([Column { name: "l_returnflag", index: 0 }], 2))
-          AggregateExec: mode=Partial, gby=[l_returnflag@1 as l_returnflag], aggr=[SUM(l_extendedprice Multiply Int64(1))]
-            CsvExec: source=Path(testdata/lineitem: [testdata/lineitem/partition0.tbl,testdata/lineitem/partition1.tbl]), has_header=false
+          AggregateExec: mode=Partial, gby=[l_returnflag@1 as l_returnflag], aggr=[SUM(lineitem.l_extendedprice * Int64(1))]
+            CsvExec: files={2 groups: [[ballista/scheduler/testdata/lineitem/partition1.tbl], [ballista/scheduler/testdata/lineitem/partition0.tbl]]}, has_header=false, limit=None, projection=[l_extendedprice, l_returnflag]
 
         ShuffleWriterExec: None
-          ProjectionExec: expr=[l_returnflag@0 as l_returnflag, SUM(lineitem.l_extendedprice Multiply Int64(1))@1 as sum_disc_price]
-            AggregateExec: mode=FinalPartitioned, gby=[l_returnflag@0 as l_returnflag], aggr=[SUM(l_extendedprice Multiply Int64(1))]
-              CoalesceBatchesExec: target_batch_size=4096
-                UnresolvedShuffleExec
+          SortExec: [l_returnflag@0 ASC NULLS LAST]
+            ProjectionExec: expr=[l_returnflag@0 as l_returnflag, SUM(lineitem.l_extendedprice * Int64(1))@1 as sum_disc_price]
+              AggregateExec: mode=FinalPartitioned, gby=[l_returnflag@0 as l_returnflag], aggr=[SUM(lineitem.l_extendedprice * Int64(1))]
+                CoalesceBatchesExec: target_batch_size=8192
+                  UnresolvedShuffleExec
 
         ShuffleWriterExec: None
-          SortExec: [l_returnflag@0 ASC]
-            CoalescePartitionsExec
-              UnresolvedShuffleExec
+          SortPreservingMergeExec: [l_returnflag@0 ASC NULLS LAST]
+            UnresolvedShuffleExec
         */
 
         assert_eq!(3, stages.len());
@@ -398,7 +378,9 @@ mod test {
 
         // verify stage 1
         let stage1 = stages[1].children()[0].clone();
-        let projection = downcast_exec!(stage1, ProjectionExec);
+        let sort = downcast_exec!(stage1, SortExec);
+        let projection = sort.children()[0].clone();
+        let projection = downcast_exec!(projection, ProjectionExec);
         let final_hash = projection.children()[0].clone();
         let final_hash = downcast_exec!(final_hash, AggregateExec);
         assert!(*final_hash.mode() == AggregateMode::FinalPartitioned);
@@ -413,15 +395,8 @@ mod test {
 
         // verify stage 2
         let stage2 = stages[2].children()[0].clone();
-        let sort = downcast_exec!(stage2, SortExec);
-        let coalesce_partitions = sort.children()[0].clone();
-        let coalesce_partitions =
-            downcast_exec!(coalesce_partitions, CoalescePartitionsExec);
-        assert_eq!(
-            coalesce_partitions.output_partitioning().partition_count(),
-            1
-        );
-        let unresolved_shuffle = coalesce_partitions.children()[0].clone();
+        let merge = downcast_exec!(stage2, SortPreservingMergeExec);
+        let unresolved_shuffle = merge.children()[0].clone();
         let unresolved_shuffle =
             downcast_exec!(unresolved_shuffle, UnresolvedShuffleExec);
         assert_eq!(unresolved_shuffle.stage_id, 2);
@@ -434,6 +409,7 @@ mod test {
     #[tokio::test]
     async fn distributed_join_plan() -> Result<(), BallistaError> {
         let ctx = datafusion_test_context("testdata").await?;
+        let session_state = ctx.state();
 
         // simplified form of TPC-H query 12
         let df = ctx
@@ -472,9 +448,9 @@ order by
             )
             .await?;
 
-        let plan = df.to_logical_plan()?;
-        let plan = ctx.optimize(&plan)?;
-        let plan = ctx.create_physical_plan(&plan).await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = session_state.optimize(&plan)?;
+        let plan = session_state.create_physical_plan(&plan).await?;
 
         let mut planner = DistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
@@ -607,6 +583,7 @@ order by
     #[tokio::test]
     async fn roundtrip_serde_aggregate() -> Result<(), BallistaError> {
         let ctx = datafusion_test_context("testdata").await?;
+        let session_state = ctx.state();
 
         // simplified form of TPC-H query 1
         let df = ctx
@@ -618,42 +595,42 @@ order by
             )
             .await?;
 
-        let plan = df.to_logical_plan()?;
-        let plan = ctx.optimize(&plan)?;
-        let plan = ctx.create_physical_plan(&plan).await?;
+        let plan = df.into_optimized_plan()?;
+        let plan = session_state.optimize(&plan)?;
+        let plan = session_state.create_physical_plan(&plan).await?;
 
         let mut planner = DistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
         let stages = planner.plan_query_stages(&job_uuid.to_string(), plan)?;
 
         let partial_hash = stages[0].children()[0].clone();
-        let partial_hash_serde = roundtrip_operator(partial_hash.clone())?;
+        let partial_hash_serde = roundtrip_operator(&ctx, partial_hash.clone())?;
 
         let partial_hash = downcast_exec!(partial_hash, AggregateExec);
         let partial_hash_serde = downcast_exec!(partial_hash_serde, AggregateExec);
 
         assert_eq!(
-            format!("{:?}", partial_hash),
-            format!("{:?}", partial_hash_serde)
+            format!("{partial_hash:?}"),
+            format!("{partial_hash_serde:?}")
         );
 
         Ok(())
     }
 
     fn roundtrip_operator(
+        ctx: &SessionContext,
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
-        let ctx = SessionContext::new();
         let codec: BallistaCodec<LogicalPlanNode, PhysicalPlanNode> =
             BallistaCodec::default();
-        let proto: protobuf::PhysicalPlanNode =
-            protobuf::PhysicalPlanNode::try_from_physical_plan(
+        let proto: datafusion_proto::protobuf::PhysicalPlanNode =
+            datafusion_proto::protobuf::PhysicalPlanNode::try_from_physical_plan(
                 plan.clone(),
                 codec.physical_extension_codec(),
             )?;
         let runtime = ctx.runtime_env();
         let result_exec_plan: Arc<dyn ExecutionPlan> = (proto).try_into_physical_plan(
-            &ctx,
+            ctx,
             runtime.deref(),
             codec.physical_extension_codec(),
         )?;

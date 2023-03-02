@@ -58,14 +58,14 @@ jobs:
       - uses: r-lib/actions/pr-fetch@master
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Rebase on ${{ github.repository }} master
+      - name: Rebase on ${{ github.repository }} main
         run: |
           set -ex
           git config user.name "$(git log -1 --pretty=format:%an)"
           git config user.email "$(git log -1 --pretty=format:%ae)"
           git remote add upstream https://github.com/${{ github.repository }}
-          git fetch --unshallow upstream master
-          git rebase upstream/master
+          git fetch --unshallow upstream main
+          git rebase upstream/main
       - uses: r-lib/actions/pr-push@master
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}

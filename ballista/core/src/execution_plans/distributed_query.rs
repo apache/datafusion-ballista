@@ -25,7 +25,7 @@ use crate::serde::protobuf::{
 };
 use crate::utils::create_grpc_client_connection;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::error::{ArrowError, Result as ArrowResult};
+use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
@@ -136,10 +136,6 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         None
     }
 
-    fn relies_on_input_order(&self) -> bool {
-        false
-    }
-
     fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
         vec![]
     }
@@ -166,17 +162,15 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         assert_eq!(0, partition);
 
         let mut buf: Vec<u8> = vec![];
-        let plan_message =
-            T::try_from_logical_plan(&self.plan, self.extension_codec.as_ref()).map_err(
-                |e| {
-                    DataFusionError::Internal(format!(
-                        "failed to serialize logical plan: {:?}",
-                        e
-                    ))
-                },
-            )?;
+        let plan_message = T::try_from_logical_plan(
+            &self.plan,
+            self.extension_codec.as_ref(),
+        )
+        .map_err(|e| {
+            DataFusionError::Internal(format!("failed to serialize logical plan: {e:?}"))
+        })?;
         plan_message.try_encode(&mut buf).map_err(|e| {
-            DataFusionError::Execution(format!("failed to encode logical plan: {:?}", e))
+            DataFusionError::Execution(format!("failed to encode logical plan: {e:?}"))
         })?;
 
         let query = ExecuteQueryParams {
@@ -233,19 +227,19 @@ async fn execute_query(
     scheduler_url: String,
     session_id: String,
     query: ExecuteQueryParams,
-) -> Result<impl Stream<Item = ArrowResult<RecordBatch>> + Send> {
+) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
     info!("Connecting to Ballista scheduler at {}", scheduler_url);
     // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
     let connection = create_grpc_client_connection(scheduler_url)
         .await
-        .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
     let mut scheduler = SchedulerGrpcClient::new(connection);
 
     let query_result = scheduler
         .execute_query(query)
         .await
-        .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?
+        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
         .into_inner();
 
     assert_eq!(
@@ -262,7 +256,7 @@ async fn execute_query(
                 job_id: job_id.clone(),
             })
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
             .into_inner();
         let status = status.and_then(|s| s.status);
         let wait_future = tokio::time::sleep(Duration::from_millis(100));
@@ -321,7 +315,7 @@ async fn fetch_partition(
     let port = metadata.port as u16;
     let mut ballista_client = BallistaClient::try_new(host, port)
         .await
-        .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
     ballista_client
         .fetch_partition(
             &metadata.id,

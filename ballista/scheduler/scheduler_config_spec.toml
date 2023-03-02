@@ -31,10 +31,10 @@ doc = "Route for proxying flight results via scheduler. Should be of the form 'I
 
 [[param]]
 abbr = "b"
-name = "config_backend"
-type = "ballista_scheduler::state::backend::StateBackend"
-doc = "The configuration backend for the scheduler, possible values: etcd, memory, sled. Default: sled"
-default = "ballista_scheduler::state::backend::StateBackend::Sled"
+name = "cluster_backend"
+type = "ballista_scheduler::cluster::ClusterStorage"
+doc = "The configuration backend for the scheduler cluster state, possible values: etcd, memory, sled. Default: sled"
+default = "ballista_scheduler::cluster::ClusterStorage::Sled"
 
 [[param]]
 abbr = "n"
@@ -135,3 +135,15 @@ name = "log_rotation_policy"
 type = "ballista_core::config::LogRotationPolicy"
 doc = "Tracing log rotation policy, possible values: minutely, hourly, daily, never. Default: daily"
 default = "ballista_core::config::LogRotationPolicy::Daily"
+
+[[param]]
+name = "job_resubmit_interval_ms"
+type = "u64"
+default = "0"
+doc = "If job is not able to be scheduled on submission, wait for this interval and resubmit. Default value of 0 indicates that job shuuld not be resubmitted"
+
+[[param]]
+name = "executor_termination_grace_period"
+type = "u64"
+default = "30"
+doc = "Time in seconds an executor should be considered lost after it enters terminating status"

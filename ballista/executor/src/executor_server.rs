@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -29,28 +30,28 @@ use tonic::transport::Channel;
 use tonic::{Request, Response, Status};
 
 use ballista_core::error::BallistaError;
-use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
-use ballista_core::serde::protobuf::executor_grpc_server::{
-    ExecutorGrpc, ExecutorGrpcServer,
-};
-use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_core::serde::protobuf::{
-    executor_metric, executor_status, CancelTasksParams, CancelTasksResult,
-    ExecutorMetric, ExecutorStatus, HeartBeatParams, LaunchMultiTaskParams,
-    LaunchMultiTaskResult, LaunchTaskParams, LaunchTaskResult, RegisterExecutorParams,
-    RemoveJobDataParams, RemoveJobDataResult, StopExecutorParams, StopExecutorResult,
-    TaskStatus, UpdateTaskStatusParams,
+    executor_grpc_server::{ExecutorGrpc, ExecutorGrpcServer},
+    executor_metric, executor_status,
+    scheduler_grpc_client::SchedulerGrpcClient,
+    CancelTasksParams, CancelTasksResult, ExecutorMetric, ExecutorStatus,
+    HeartBeatParams, LaunchMultiTaskParams, LaunchMultiTaskResult, LaunchTaskParams,
+    LaunchTaskResult, RegisterExecutorParams, RemoveJobDataParams, RemoveJobDataResult,
+    StopExecutorParams, StopExecutorResult, TaskStatus, UpdateTaskStatusParams,
 };
 use ballista_core::serde::scheduler::PartitionId;
 use ballista_core::serde::scheduler::TaskDefinition;
-use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{
     collect_plan_metrics, create_grpc_client_connection, create_grpc_server,
 };
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::{
+    logical_plan::AsLogicalPlan,
+    physical_plan::{from_proto::parse_protobuf_hash_partitioning, AsExecutionPlan},
+};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
 
@@ -195,6 +196,10 @@ struct ExecutorEnv {
 
 unsafe impl Sync for ExecutorEnv {}
 
+/// Global flag indicating whether the executor is terminating. This should be
+/// set to `true` when the executor receives a shutdown signal
+pub static TERMINATING: AtomicBool = AtomicBool::new(false);
+
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T, U> {
     fn new(
         scheduler_to_register: SchedulerGrpcClient<Channel>,
@@ -224,7 +229,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         if let Some(scheduler) = scheduler {
             Ok(scheduler)
         } else {
-            let scheduler_url = format!("http://{}", scheduler_id);
+            let scheduler_url = format!("http://{scheduler_id}");
             let connection = create_grpc_client_connection(scheduler_url).await?;
             let scheduler = SchedulerGrpcClient::new(connection);
 
@@ -240,12 +245,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
     /// 1. First Heartbeat to its registration scheduler, if successful then return; else go next.
     /// 2. Heartbeat to schedulers which has launching tasks to this executor until one succeeds
     async fn heartbeat(&self) {
+        let status = if TERMINATING.load(Ordering::Acquire) {
+            executor_status::Status::Terminating(String::default())
+        } else {
+            executor_status::Status::Active(String::default())
+        };
+
         let heartbeat_params = HeartBeatParams {
             executor_id: self.executor.metadata.id.clone(),
             metrics: self.get_executor_metrics(),
             status: Some(ExecutorStatus {
-                status: Some(executor_status::Status::Active("".to_string())),
+                status: Some(status),
             }),
+            metadata: Some(self.executor.metadata.clone()),
         };
         let mut scheduler = self.scheduler_to_register.clone();
         match scheduler
@@ -628,7 +640,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                     scheduler_id: scheduler_id.clone(),
                     task: task
                         .try_into()
-                        .map_err(|e| Status::invalid_argument(format!("{}", e)))?,
+                        .map_err(|e| Status::invalid_argument(format!("{e}")))?,
                 })
                 .await
                 .unwrap();
@@ -650,7 +662,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         for multi_task in multi_tasks {
             let multi_task: Vec<TaskDefinition> = multi_task
                 .try_into()
-                .map_err(|e| Status::invalid_argument(format!("{}", e)))?;
+                .map_err(|e| Status::invalid_argument(format!("{e}")))?;
             for task in multi_task {
                 task_sender
                     .send(CuratorTaskDefinition {
@@ -731,16 +743,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                 Ok(Response::new(RemoveJobDataResult {}))
             } else {
                 Err(Status::invalid_argument(format!(
-                    "Path {:?} is not for a directory!!!",
-                    path
+                    "Path {path:?} is not for a directory!!!"
                 )))
             };
         }
 
         if !is_subdirectory(path.as_path(), work_dir.as_path()) {
             return Err(Status::invalid_argument(format!(
-                "Path {:?} is not a subdirectory of {:?}!!!",
-                path, work_dir
+                "Path {path:?} is not a subdirectory of {work_dir:?}!!!"
             )));
         }
 

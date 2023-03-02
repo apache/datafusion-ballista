@@ -74,14 +74,23 @@ jobs:
 
   react-build:
     name: React build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # proprietary github image, not ubuntu:latest
+    container:
+      image: ubuntu:latest # actual ubuntu:latest that ubuntu publishes
     steps:
       - uses: actions/checkout@v3
       - name: Install dependencies
         run: |
-          sudo apt-get -qq update
-          sudo apt-get -qq install -y nodejs npm
+          apt-get -qq update
+          apt-get -qq install -y nodejs npm
           npm install -g yarn
+          cat /etc/*-release
+          which node
+          which npm
+          which yarn
+          node --version
+          npm --version
+          yarn --version
       - name: Run yarn build
         run: |
           cd ballista/scheduler/ui
@@ -117,12 +126,7 @@ jobs:
       - name: Install protobuf compiler
         shell: bash
         run: |
-          mkdir -p $HOME/d/protoc
-          cd $HOME/d/protoc
-          export PROTO_ZIP="protoc-21.4-linux-x86_64.zip"
-          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.4/$PROTO_ZIP
-          unzip $PROTO_ZIP
-          export PATH=$PATH:$HOME/d/protoc/bin
+          apt-get -qq update && apt-get -y -qq install protobuf-compiler
           protoc --version
       - name: Cache Cargo
         uses: actions/cache@v3
@@ -407,7 +411,10 @@ jobs:
           #
           # ignore ./Cargo.toml because putting workspaces in multi-line lists make it easy to read
           ci/scripts/rust_toml_fmt.sh
-          git diff --exit-code
+          if test -f "./Cargo.toml.bak"; then
+              echo "cargo tomlfmt found format violations"
+              exit 1
+          fi
         env:
           CARGO_HOME: "/github/home/.cargo"
           CARGO_TARGET_DIR: "/github/home/target"

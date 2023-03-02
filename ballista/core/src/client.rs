@@ -34,9 +34,10 @@ use arrow_flight::{flight_service_client::FlightServiceClient, FlightData};
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::{
     datatypes::{Schema, SchemaRef},
-    error::{ArrowError, Result as ArrowResult},
+    error::ArrowError,
     record_batch::RecordBatch,
 };
+use datafusion::error::DataFusionError;
 
 use crate::serde::protobuf;
 use crate::utils::create_grpc_client_connection;
@@ -56,16 +57,15 @@ impl BallistaClient {
     /// Create a new BallistaClient to connect to the executor listening on the specified
     /// host and port
     pub async fn try_new(host: &str, port: u16) -> Result<Self> {
-        let addr = format!("http://{}:{}", host, port);
+        let addr = format!("http://{host}:{port}");
         debug!("BallistaClient connecting to {}", addr);
         let connection =
             create_grpc_client_connection(addr.clone())
                 .await
                 .map_err(|e| {
                     BallistaError::GrpcConnectionError(format!(
-                        "Error connecting to Ballista scheduler or executor at {}: {:?}",
-                        addr, e
-                    ))
+                    "Error connecting to Ballista scheduler or executor at {addr}: {e:?}"
+                ))
                 })?;
         let flight_client = FlightServiceClient::new(connection);
         debug!("BallistaClient connected OK");
@@ -115,22 +115,22 @@ impl BallistaClient {
 
         serialized_action
             .encode(&mut buf)
-            .map_err(|e| BallistaError::GrpcActionError(format!("{:?}", e)))?;
+            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
 
-        let request = tonic::Request::new(Ticket { ticket: buf });
+        let request = tonic::Request::new(Ticket { ticket: buf.into() });
 
         let mut stream = self
             .flight_client
             .do_get(request)
             .await
-            .map_err(|e| BallistaError::GrpcActionError(format!("{:?}", e)))?
+            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?
             .into_inner();
 
         // the schema should be the first message returned, else client should error
         match stream
             .message()
             .await
-            .map_err(|e| BallistaError::GrpcActionError(format!("{:?}", e)))?
+            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?
         {
             Some(flight_data) => {
                 // convert FlightData to a stream
@@ -163,7 +163,7 @@ impl FlightDataStream {
 }
 
 impl Stream for FlightDataStream {
-    type Item = ArrowResult<RecordBatch>;
+    type Item = datafusion::error::Result<RecordBatch>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -172,13 +172,14 @@ impl Stream for FlightDataStream {
         self.stream.poll_next_unpin(cx).map(|x| match x {
             Some(flight_data_chunk_result) => {
                 let converted_chunk = flight_data_chunk_result
-                    .map_err(|e| ArrowError::from_external_error(Box::new(e)))
+                    .map_err(|e| ArrowError::from_external_error(Box::new(e)).into())
                     .and_then(|flight_data_chunk| {
                         flight_data_to_arrow_batch(
                             &flight_data_chunk,
                             self.schema.clone(),
                             &self.dictionaries_by_id,
                         )
+                        .map_err(DataFusionError::ArrowError)
                     });
                 Some(converted_chunk)
             }

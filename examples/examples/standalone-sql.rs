@@ -16,6 +16,7 @@
 // under the License.
 
 use ballista::prelude::{BallistaConfig, BallistaContext, Result};
+use ballista_examples::test_util;
 use datafusion::prelude::CsvReadOptions;
 
 #[tokio::main]
@@ -26,10 +27,12 @@ async fn main() -> Result<()> {
 
     let ctx = BallistaContext::standalone(&config, 2).await?;
 
+    let testdata = test_util::examples_test_data();
+
     // register csv file with the execution context
     ctx.register_csv(
         "test",
-        "testdata/aggregate_test_100.csv",
+        &format!("{testdata}/aggregate_test_100.csv"),
         CsvReadOptions::new(),
     )
     .await?;

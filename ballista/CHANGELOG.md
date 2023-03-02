@@ -19,6 +19,88 @@
 
 # Changelog
 
+## [0.11.0](https://github.com/apache/arrow-ballista/tree/0.11.0) (2023-02-19)
+
+[Full Changelog](https://github.com/apache/arrow-ballista/compare/0.10.0...0.11.0)
+
+**Implemented enhancements:**
+
+- Remove `python` since it has been moved to its own repo, `arrow-ballista-python` [\#653](https://github.com/apache/arrow-ballista/issues/653)
+-  Add executor self-registration mechanism in the heartbeat service [\#648](https://github.com/apache/arrow-ballista/issues/648)
+- Upgrade to DataFusion 17 [\#638](https://github.com/apache/arrow-ballista/issues/638)
+- Move Python bindings to separate repo? [\#635](https://github.com/apache/arrow-ballista/issues/635)
+- Implement new release process [\#622](https://github.com/apache/arrow-ballista/issues/622)
+- Change default branch name from master to main [\#618](https://github.com/apache/arrow-ballista/issues/618)
+- Update latest datafusion dependency [\#610](https://github.com/apache/arrow-ballista/issues/610)
+- Implement optimizer rule to remove redundant repartitioning [\#608](https://github.com/apache/arrow-ballista/issues/608)
+- ballista-cli as \(docker\) images [\#600](https://github.com/apache/arrow-ballista/issues/600)
+- Update contributor guide [\#598](https://github.com/apache/arrow-ballista/issues/598)
+- Fix cargo clippy [\#570](https://github.com/apache/arrow-ballista/issues/570)
+- Support Alibaba Cloud OSS with ObjectStore [\#566](https://github.com/apache/arrow-ballista/issues/566)
+- Refactor `StateBackendClient` to be a higher-level interface [\#554](https://github.com/apache/arrow-ballista/issues/554)
+- Make it concurrently to launch tasks to executors [\#544](https://github.com/apache/arrow-ballista/issues/544)
+- Simplify docs [\#531](https://github.com/apache/arrow-ballista/issues/531)
+- Provide an in-memory StateBackend [\#505](https://github.com/apache/arrow-ballista/issues/505)
+- Add support for Azure blob storage [\#294](https://github.com/apache/arrow-ballista/issues/294)
+- Add a workflow to build the image and publish it to the package [\#71](https://github.com/apache/arrow-ballista/issues/71)
+
+**Fixed bugs:**
+
+- Rust / Check Cargo.toml formatting \(amd64, stable\) \(pull\_request\) Failing [\#662](https://github.com/apache/arrow-ballista/issues/662)
+- Protobuf parsing error [\#646](https://github.com/apache/arrow-ballista/issues/646)
+- jobs from python client not showing up in Scheduler UI [\#625](https://github.com/apache/arrow-ballista/issues/625)
+- ballista ui fails to build [\#594](https://github.com/apache/arrow-ballista/issues/594)
+- cargo build --release fails for ballista-scheduler [\#590](https://github.com/apache/arrow-ballista/issues/590)
+- docker build fails [\#589](https://github.com/apache/arrow-ballista/issues/589)
+- Multi-scheduler Job Starvation [\#585](https://github.com/apache/arrow-ballista/issues/585)
+- Cannot query file from S3  [\#559](https://github.com/apache/arrow-ballista/issues/559)
+- Benchmark q16 fails [\#373](https://github.com/apache/arrow-ballista/issues/373)
+
+**Documentation updates:**
+
+- Check in benchmark image [\#647](https://github.com/apache/arrow-ballista/pull/647) ([andygrove](https://github.com/andygrove))
+- MINOR: Fix benchmark image link [\#596](https://github.com/apache/arrow-ballista/pull/596) ([andygrove](https://github.com/andygrove))
+
+**Merged pull requests:**
+
+- Upgrade to DataFusion 18 [\#668](https://github.com/apache/arrow-ballista/pull/668) ([andygrove](https://github.com/andygrove))
+- Enable physical plan round-trip tests [\#666](https://github.com/apache/arrow-ballista/pull/666) ([andygrove](https://github.com/andygrove))
+- Upgrade to DataFusion 18.0.0-rc1 [\#664](https://github.com/apache/arrow-ballista/pull/664) ([andygrove](https://github.com/andygrove))
+- add test\_util to make examples work well [\#661](https://github.com/apache/arrow-ballista/pull/661) ([jiangzhx](https://github.com/jiangzhx))
+- Minor refactor to reduce duplicate code [\#659](https://github.com/apache/arrow-ballista/pull/659) ([andygrove](https://github.com/andygrove))
+- Cluster state refactor Part 2 [\#658](https://github.com/apache/arrow-ballista/pull/658) ([thinkharderdev](https://github.com/thinkharderdev))
+- Remove `python` dir & python-related workflows [\#654](https://github.com/apache/arrow-ballista/pull/654) ([iajoiner](https://github.com/iajoiner))
+- Add executor self-registration mechanism in the heartbeat service [\#649](https://github.com/apache/arrow-ballista/pull/649) ([yahoNanJing](https://github.com/yahoNanJing))
+- Upgrade to DataFusion 17 [\#639](https://github.com/apache/arrow-ballista/pull/639) ([avantgardnerio](https://github.com/avantgardnerio))
+- Upgrade to DataFusion 16 \(again\) [\#636](https://github.com/apache/arrow-ballista/pull/636) ([avantgardnerio](https://github.com/avantgardnerio))
+- Update release process documentation [\#632](https://github.com/apache/arrow-ballista/pull/632) ([andygrove](https://github.com/andygrove))
+- Implement new release process [\#623](https://github.com/apache/arrow-ballista/pull/623) ([andygrove](https://github.com/andygrove))
+- Update contributor guide [\#617](https://github.com/apache/arrow-ballista/pull/617) ([andygrove](https://github.com/andygrove))
+- Fix Cargo.toml format issue [\#616](https://github.com/apache/arrow-ballista/pull/616) ([andygrove](https://github.com/andygrove))
+- Refactor scheduler main [\#615](https://github.com/apache/arrow-ballista/pull/615) ([andygrove](https://github.com/andygrove))
+- Refactor executor main [\#614](https://github.com/apache/arrow-ballista/pull/614) ([andygrove](https://github.com/andygrove))
+- Update datafusion dependency to the latest version [\#612](https://github.com/apache/arrow-ballista/pull/612) ([yahoNanJing](https://github.com/yahoNanJing))
+- Add support for Azure Blob Storage [\#599](https://github.com/apache/arrow-ballista/pull/599) ([aidankovacic-8451](https://github.com/aidankovacic-8451))
+- Python: add method to get explain output as a string [\#593](https://github.com/apache/arrow-ballista/pull/593) ([andygrove](https://github.com/andygrove))
+- Handle job resubmission [\#586](https://github.com/apache/arrow-ballista/pull/586) ([thinkharderdev](https://github.com/thinkharderdev))
+- updated readme to contain correct versions of dependencies. [\#580](https://github.com/apache/arrow-ballista/pull/580) ([saikrishna1-bidgely](https://github.com/saikrishna1-bidgely))
+- Update graphviz-rust requirement from 0.4.0 to 0.5.0 [\#574](https://github.com/apache/arrow-ballista/pull/574) ([dependabot[bot]](https://github.com/apps/dependabot))
+- Super minor spelling error [\#573](https://github.com/apache/arrow-ballista/pull/573) ([jdye64](https://github.com/jdye64))
+- Fix cargo clippy [\#571](https://github.com/apache/arrow-ballista/pull/571) ([yahoNanJing](https://github.com/yahoNanJing))
+- Support Alibaba Cloud OSS with ObjectStore [\#567](https://github.com/apache/arrow-ballista/pull/567) ([r4ntix](https://github.com/r4ntix))
+- fix\(ui\): fix last seen [\#562](https://github.com/apache/arrow-ballista/pull/562) ([duyet](https://github.com/duyet))
+- Cluster state refactor part 1 [\#560](https://github.com/apache/arrow-ballista/pull/560) ([thinkharderdev](https://github.com/thinkharderdev))
+- Make it concurrently to launch tasks to executors [\#557](https://github.com/apache/arrow-ballista/pull/557) ([yahoNanJing](https://github.com/yahoNanJing))
+- Update datafusion requirement from 14.0.0 to 15.0.0 [\#552](https://github.com/apache/arrow-ballista/pull/552) ([yahoNanJing](https://github.com/yahoNanJing))
+- docs: fix style in the Helm readme [\#551](https://github.com/apache/arrow-ballista/pull/551) ([haoxins](https://github.com/haoxins))
+- Fix Helm chart's image format [\#550](https://github.com/apache/arrow-ballista/pull/550) ([haoxins](https://github.com/haoxins))
+- Update env\_logger requirement from 0.9 to 0.10 [\#539](https://github.com/apache/arrow-ballista/pull/539) ([dependabot[bot]](https://github.com/apps/dependabot))
+- only build docker images on rc tags [\#535](https://github.com/apache/arrow-ballista/pull/535) ([andygrove](https://github.com/andygrove))
+- Remove `--locked` when building Python wheels [\#533](https://github.com/apache/arrow-ballista/pull/533) ([andygrove](https://github.com/andygrove))
+- Bump actions/labeler from 4.0.2 to 4.1.0 [\#525](https://github.com/apache/arrow-ballista/pull/525) ([dependabot[bot]](https://github.com/apps/dependabot))
+- Provide a memory StateBackendClient [\#523](https://github.com/apache/arrow-ballista/pull/523) ([yahoNanJing](https://github.com/yahoNanJing))
+
+
 ## [0.10.0](https://github.com/apache/arrow-ballista/tree/0.10.0) (2022-11-18)
 
 [Full Changelog](https://github.com/apache/arrow-ballista/compare/0.9.0...0.10.0)
