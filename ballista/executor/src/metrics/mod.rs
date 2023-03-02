@@ -15,8 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista_core::execution_plans::ShuffleWriterExec;
-use datafusion::physical_plan::display::DisplayableExecutionPlan;
+use crate::execution_engine::QueryStageExecutor;
 use log::info;
 use std::sync::Arc;
 
@@ -32,7 +31,7 @@ pub trait ExecutorMetricsCollector: Send + Sync {
         job_id: &str,
         stage_id: usize,
         partition: usize,
-        plan: Arc<ShuffleWriterExec>,
+        plan: Arc<dyn QueryStageExecutor>,
     );
 }
 
@@ -47,14 +46,11 @@ impl ExecutorMetricsCollector for LoggingMetricsCollector {
         job_id: &str,
         stage_id: usize,
         partition: usize,
-        plan: Arc<ShuffleWriterExec>,
+        plan: Arc<dyn QueryStageExecutor>,
     ) {
         info!(
-            "=== [{}/{}/{}] Physical plan with metrics ===\n{}\n",
-            job_id,
-            stage_id,
-            partition,
-            DisplayableExecutionPlan::with_metrics(plan.as_ref()).indent()
+            "=== [{}/{}/{}] Physical plan with metrics ===\n{:?}\n",
+            job_id, stage_id, partition, plan
         );
     }
 }

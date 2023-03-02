@@ -29,7 +29,6 @@ use crate::{as_task_status, TaskExecutionTimes};
 use ballista_core::error::BallistaError;
 use ballista_core::serde::scheduler::{ExecutorSpecification, PartitionId};
 use ballista_core::serde::BallistaCodec;
-use ballista_core::utils::collect_plan_metrics;
 use datafusion::execution::context::TaskContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_hash_partitioning;
@@ -209,8 +208,12 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         plan.schema().as_ref(),
     )?;
 
-    let shuffle_writer_plan =
-        executor.new_shuffle_writer(job_id.clone(), stage_id as usize, plan)?;
+    let query_stage_exec = executor.execution_engine.create_query_stage_exec(
+        job_id.clone(),
+        stage_id as usize,
+        plan,
+        &executor.work_dir,
+    )?;
     dedicated_executor.spawn(async move {
         use std::panic::AssertUnwindSafe;
         let part = PartitionId {
@@ -219,10 +222,10 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             partition_id: partition_id as usize,
         };
 
-        let execution_result = match AssertUnwindSafe(executor.execute_shuffle_write(
+        let execution_result = match AssertUnwindSafe(executor.execute_query_stage(
             task_id as usize,
             part.clone(),
-            shuffle_writer_plan.clone(),
+            query_stage_exec.clone(),
             task_context,
             shuffle_output_partitioning,
         ))
@@ -240,7 +243,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         info!("Done with task {}", task_identity);
         debug!("Statistics: {:?}", execution_result);
 
-        let plan_metrics = collect_plan_metrics(shuffle_writer_plan.as_ref());
+        let plan_metrics = query_stage_exec.collect_plan_metrics();
         let operator_metrics = plan_metrics
             .into_iter()
             .map(|m| m.try_into())
