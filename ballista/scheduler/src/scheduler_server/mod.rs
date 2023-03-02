@@ -105,7 +105,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     }
 
     #[allow(dead_code)]
-    pub(crate) fn new_with_task_launcher(
+    pub fn new_with_task_launcher(
         scheduler_name: String,
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,

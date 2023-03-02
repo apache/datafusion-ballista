@@ -58,7 +58,7 @@ pub const TASK_MAX_FAILURES: usize = 4;
 pub const STAGE_MAX_FAILURES: usize = 4;
 
 #[async_trait::async_trait]
-pub(crate) trait TaskLauncher: Send + Sync + 'static {
+pub trait TaskLauncher: Send + Sync + 'static {
     async fn launch_tasks(
         &self,
         executor: &ExecutorMetadata,
