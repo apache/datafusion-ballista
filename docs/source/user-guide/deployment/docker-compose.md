@@ -27,7 +27,7 @@ There are no officially published Docker images, so it is currently necessary to
 Run the following commands to clone the source repository and build the Docker image.
 
 ```bash
-git clone git@github.com:apache/arrow-ballista.git -b 8.0.0
+git clone git@github.com:apache/arrow-ballista.git -b 0.9.0
 cd arrow-ballista
 ./dev/build-ballista-docker.sh
 ```
