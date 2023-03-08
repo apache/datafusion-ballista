@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::config::Extensions;
 use datafusion::physical_plan::ExecutionPlan;
 
 use ballista_core::serde::protobuf::{
@@ -50,6 +51,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     mut scheduler: SchedulerGrpcClient<Channel>,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
+    default_extensions: Extensions,
 ) -> Result<(), BallistaError> {
     let executor_specification: ExecutorSpecification = executor
         .metadata
@@ -111,6 +113,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         task,
                         &codec,
                         &dedicated_executor,
+                        default_extensions.clone(),
                     )
                     .await
                     {
@@ -152,6 +155,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     task: TaskDefinition,
     codec: &BallistaCodec<T, U>,
     dedicated_executor: &DedicatedExecutor,
+    extensions: Extensions,
 ) -> Result<(), BallistaError> {
     let task_id = task.task_id;
     let task_attempt_num = task.task_attempt_num;
@@ -185,14 +189,15 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     }
     let runtime = executor.runtime.clone();
     let session_id = task.session_id.clone();
-    let task_context = Arc::new(TaskContext::new(
+    let task_context = Arc::new(TaskContext::try_new(
         task_identity.clone(),
         session_id,
         task_props,
         task_scalar_functions,
         task_aggregate_functions,
         runtime.clone(),
-    ));
+        extensions,
+    )?);
 
     let plan: Arc<dyn ExecutionPlan> =
         U::try_decode(task.plan.as_slice()).and_then(|proto| {

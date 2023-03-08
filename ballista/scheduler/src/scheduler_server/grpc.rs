@@ -17,6 +17,7 @@
 
 use ballista_core::config::{BallistaConfig, BALLISTA_JOB_NAME};
 use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
+use datafusion::config::Extensions;
 use std::convert::TryInto;
 
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
@@ -150,7 +151,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .await
             {
                 while let Some((_, task)) = assignments.pop() {
-                    match self.state.task_manager.prepare_task_definition(task) {
+                    match self.state.task_manager.prepare_task_definition(task).await {
                         Ok(task_definition) => next_tasks.push(task_definition),
                         Err(e) => {
                             error!("Error preparing task definition: {:?}", e);
@@ -382,7 +383,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     let ctx = self
                         .state
                         .session_manager
-                        .update_session(&session_id, &config)
+                        .update_session(&session_id, &config, Extensions::default())
                         .await
                         .map_err(|e| {
                             Status::internal(format!(
@@ -395,7 +396,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     let ctx = self
                         .state
                         .session_manager
-                        .create_session(&config)
+                        .create_session(&config, Extensions::default())
                         .await
                         .map_err(|e| {
                             Status::internal(format!(
@@ -470,7 +471,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             let session = self
                 .state
                 .session_manager
-                .create_session(&config)
+                .create_session(&config, Extensions::default())
                 .await
                 .map_err(|e| {
                     Status::internal(format!(

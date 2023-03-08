@@ -468,6 +468,7 @@ message MultiTaskDefinition {
 
 message SessionSettings {
   repeated KeyValuePair configs = 1;
+  repeated KeyValuePair extensions = 2;
 }
 
 message JobSessionConfig {

@@ -24,10 +24,13 @@ use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
+use datafusion::config::ConfigEntry;
+use futures::future::try_join_all;
 
 use crate::cluster::JobState;
 use ballista_core::serde::protobuf::{
-    self, JobStatus, MultiTaskDefinition, TaskDefinition, TaskId, TaskStatus,
+    self, JobStatus, KeyValuePair, MultiTaskDefinition, TaskDefinition, TaskId,
+    TaskStatus,
 };
 use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
 use ballista_core::serde::scheduler::ExecutorMetadata;
@@ -500,7 +503,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     #[allow(dead_code)]
-    pub fn prepare_task_definition(
+    pub async fn prepare_task_definition(
         &self,
         task: TaskDescription,
     ) -> Result<TaskDefinition> {
@@ -530,6 +533,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let output_partitioning =
                 hash_partitioning_to_proto(task.output_partitioning.as_ref())?;
 
+            let props = self
+                .state
+                .get_session(&task.session_id)
+                .await?
+                .state()
+                .config_options()
+                .entries()
+                .into_iter()
+                .filter_map(|ConfigEntry { key, value, .. }| {
+                    value.map(|value| KeyValuePair { key, value })
+                })
+                .collect();
+
             let task_definition = TaskDefinition {
                 task_id: task.task_id as u32,
                 task_attempt_num: task.task_attempt as u32,
@@ -541,7 +557,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 output_partitioning,
                 session_id: task.session_id,
                 launch_time: timestamp_millis(),
-                props: vec![],
+                props,
             };
             Ok(task_definition)
         } else {
@@ -558,10 +574,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         tasks: Vec<Vec<TaskDescription>>,
         executor_manager: &ExecutorManager,
     ) -> Result<()> {
-        let multi_tasks: Result<Vec<MultiTaskDefinition>> = tasks
+        let multi_tasks: Vec<_> = tasks
             .into_iter()
             .map(|stage_tasks| self.prepare_multi_task_definition(stage_tasks))
             .collect();
+        let multi_tasks = try_join_all(multi_tasks).await;
 
         self.launcher
             .launch_tasks(executor, multi_tasks?, executor_manager)
@@ -570,7 +587,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     #[allow(dead_code)]
     /// Prepare a MultiTaskDefinition with multiple tasks belonging to the same job stage
-    fn prepare_multi_task_definition(
+    async fn prepare_multi_task_definition(
         &self,
         tasks: Vec<TaskDescription>,
     ) -> Result<MultiTaskDefinition> {
@@ -579,6 +596,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let job_id = task.partition.job_id.clone();
             let stage_id = task.partition.stage_id;
             let stage_attempt_num = task.stage_attempt_num;
+
+            let props: Vec<_> = self
+                .state
+                .get_session(&session_id)
+                .await?
+                .state()
+                .config_options()
+                .entries()
+                .into_iter()
+                .filter_map(|ConfigEntry { key, value, .. }| {
+                    value.map(|value| KeyValuePair { key, value })
+                })
+                .collect();
 
             if log::max_level() >= log::Level::Debug {
                 let task_ids: Vec<usize> = tasks
@@ -631,7 +661,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                         .duration_since(UNIX_EPOCH)
                         .unwrap()
                         .as_millis() as u64,
-                    props: vec![],
+                    props: props.clone(),
                 };
                 Ok(multi_task_definition)
             } else {

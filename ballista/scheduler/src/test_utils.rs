@@ -16,6 +16,7 @@
 // under the License.
 
 use ballista_core::error::{BallistaError, Result};
+use datafusion::config::Extensions;
 use std::any::Any;
 use std::collections::HashMap;
 use std::future::Future;
@@ -478,7 +479,7 @@ impl SchedulerTest {
         self.scheduler
             .state
             .session_manager
-            .create_session(&self.ballista_config)
+            .create_session(&self.ballista_config, Extensions::default())
             .await
     }
 
@@ -493,7 +494,7 @@ impl SchedulerTest {
             .scheduler
             .state
             .session_manager
-            .create_session(&self.ballista_config)
+            .create_session(&self.ballista_config, Extensions::default())
             .await?;
 
         self.scheduler
@@ -618,7 +619,7 @@ impl SchedulerTest {
             .scheduler
             .state
             .session_manager
-            .create_session(&self.ballista_config)
+            .create_session(&self.ballista_config, Extensions::default())
             .await?;
 
         self.scheduler

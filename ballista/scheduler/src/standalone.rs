@@ -25,6 +25,7 @@ use ballista_core::{
     error::Result, serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer,
     BALLISTA_VERSION,
 };
+use datafusion::config::Extensions;
 use datafusion_proto::protobuf::LogicalPlanNode;
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use log::info;
@@ -39,6 +40,7 @@ pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
         "localhost:50050",
         default_session_builder,
         BallistaCodec::default(),
+        Extensions::default(),
     );
 
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =

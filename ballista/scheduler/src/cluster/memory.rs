@@ -30,6 +30,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use dashmap::DashMap;
+use datafusion::config::Extensions;
 use datafusion::prelude::SessionContext;
 
 use crate::cluster::event::ClusterEventSender;
@@ -413,8 +414,10 @@ impl JobState for InMemoryJobState {
     async fn create_session(
         &self,
         config: &BallistaConfig,
+        extensions: Extensions,
     ) -> Result<Arc<SessionContext>> {
-        let session = create_datafusion_context(config, self.session_builder);
+        let session =
+            create_datafusion_context(None, config, extensions, self.session_builder);
         self.sessions.insert(session.session_id(), session.clone());
 
         Ok(session)
@@ -424,8 +427,14 @@ impl JobState for InMemoryJobState {
         &self,
         session_id: &str,
         config: &BallistaConfig,
+        extensions: Extensions,
     ) -> Result<Arc<SessionContext>> {
-        let session = create_datafusion_context(config, self.session_builder);
+        let session = create_datafusion_context(
+            Some(session_id.to_string()),
+            config,
+            extensions,
+            self.session_builder,
+        );
         self.sessions
             .insert(session_id.to_string(), session.clone());
 

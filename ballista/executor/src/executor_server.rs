@@ -16,6 +16,7 @@
 // under the License.
 
 use ballista_core::BALLISTA_VERSION;
+use datafusion::config::Extensions;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::ops::Deref;
@@ -84,6 +85,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     codec: BallistaCodec<T, U>,
     stop_send: mpsc::Sender<bool>,
     shutdown_noti: &ShutdownNotifier,
+    default_extensions: Extensions,
 ) -> Result<ServerHandle, BallistaError> {
     let channel_buf_size = executor.concurrent_tasks * 50;
     let (tx_task, rx_task) = mpsc::channel::<CuratorTaskDefinition>(channel_buf_size);
@@ -99,6 +101,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
             tx_stop: stop_send,
         },
         codec,
+        default_extensions,
     );
 
     // 1. Start executor grpc service
@@ -182,6 +185,7 @@ pub struct ExecutorServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPl
     codec: BallistaCodec<T, U>,
     scheduler_to_register: SchedulerGrpcClient<Channel>,
     schedulers: SchedulerClients,
+    default_extensions: Extensions,
 }
 
 #[derive(Clone)]
@@ -206,6 +210,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         executor: Arc<Executor>,
         executor_env: ExecutorEnv,
         codec: BallistaCodec<T, U>,
+        default_extensions: Extensions,
     ) -> Self {
         Self {
             _start_time: SystemTime::now()
@@ -217,6 +222,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             codec,
             scheduler_to_register,
             schedulers: Default::default(),
+            default_extensions,
         }
     }
 
@@ -321,14 +327,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
         let session_id = task.session_id;
         let runtime = self.executor.runtime.clone();
-        let task_context = Arc::new(TaskContext::new(
+        let task_context = Arc::new(TaskContext::try_new(
             task_identity.clone(),
             session_id,
             task_props,
             task_scalar_functions,
             task_aggregate_functions,
             runtime.clone(),
-        ));
+            self.default_extensions.clone(),
+        )?);
 
         let encoded_plan = &task.plan.as_slice();
 

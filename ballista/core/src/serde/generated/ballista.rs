@@ -807,6 +807,8 @@ pub struct MultiTaskDefinition {
 pub struct SessionSettings {
     #[prost(message, repeated, tag = "1")]
     pub configs: ::prost::alloc::vec::Vec<KeyValuePair>,
+    #[prost(message, repeated, tag = "2")]
+    pub extensions: ::prost::alloc::vec::Vec<KeyValuePair>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

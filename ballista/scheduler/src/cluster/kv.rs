@@ -36,6 +36,7 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::serde::BallistaCodec;
 use dashmap::DashMap;
+use datafusion::config::{ConfigOptions, Extensions};
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -66,6 +67,8 @@ pub struct KeyValueState<
     queued_jobs: DashMap<String, (String, u64)>,
     //// `SessionBuilder` for constructing `SessionContext` from stored `BallistaConfig`
     session_builder: SessionBuilder,
+    /// Default datafusion config extensions
+    default_extensions: Extensions,
 }
 
 impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
@@ -76,6 +79,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         store: S,
         codec: BallistaCodec<T, U>,
         session_builder: SessionBuilder,
+        default_extensions: Extensions,
     ) -> Self {
         Self {
             store,
@@ -83,6 +87,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             codec,
             queued_jobs: DashMap::new(),
             session_builder,
+            default_extensions,
         }
     }
 }
@@ -632,12 +637,24 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         }
         let config = config_builder.build()?;
 
-        Ok(create_datafusion_context(&config, self.session_builder))
+        let mut extensions =
+            ConfigOptions::with_extensions(self.default_extensions.clone());
+        for kv_pair in &settings.extensions {
+            extensions.set(&kv_pair.key, &kv_pair.value)?;
+        }
+
+        Ok(create_datafusion_context(
+            Some(session_id.to_string()),
+            &config,
+            extensions.extensions,
+            self.session_builder,
+        ))
     }
 
     async fn create_session(
         &self,
         config: &BallistaConfig,
+        extensions: Extensions,
     ) -> Result<Arc<SessionContext>> {
         let mut settings: Vec<KeyValuePair> = vec![];
 
@@ -648,9 +665,26 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             })
         }
 
-        let value = protobuf::SessionSettings { configs: settings };
+        let session =
+            create_datafusion_context(None, config, extensions, self.session_builder);
 
-        let session = create_datafusion_context(config, self.session_builder);
+        let extensions = session
+            .state()
+            .config_options()
+            .entries()
+            .iter()
+            .filter_map(|config| {
+                config.value.as_ref().map(|value| KeyValuePair {
+                    key: config.key.clone(),
+                    value: value.clone(),
+                })
+            })
+            .collect();
+
+        let value = protobuf::SessionSettings {
+            configs: settings,
+            extensions,
+        };
 
         self.store
             .put(
@@ -667,6 +701,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         &self,
         session_id: &str,
         config: &BallistaConfig,
+        extensions: Extensions,
     ) -> Result<Arc<SessionContext>> {
         let mut settings: Vec<KeyValuePair> = vec![];
 
@@ -677,7 +712,31 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             })
         }
 
-        let value = protobuf::SessionSettings { configs: settings };
+        let session = create_datafusion_context(
+            Some(session_id.to_string()),
+            config,
+            extensions,
+            self.session_builder,
+        );
+
+        let extensions = session
+            .state()
+            .config_options()
+            .entries()
+            .iter()
+            .filter_map(|config| {
+                config.value.as_ref().map(|value| KeyValuePair {
+                    key: config.key.clone(),
+                    value: value.clone(),
+                })
+            })
+            .collect();
+
+        let value = protobuf::SessionSettings {
+            configs: settings,
+            extensions,
+        };
+
         self.store
             .put(
                 Keyspace::Sessions,
@@ -686,7 +745,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             )
             .await?;
 
-        Ok(create_datafusion_context(config, self.session_builder))
+        Ok(session)
     }
 }
 
@@ -714,11 +773,14 @@ mod test {
 
     #[cfg(feature = "sled")]
     fn make_sled_state() -> Result<KeyValueState<SledClient>> {
+        use datafusion::config::Extensions;
+
         Ok(KeyValueState::new(
             "",
             SledClient::try_new_temporary()?,
             BallistaCodec::default(),
             default_session_builder,
+            Extensions::default(),
         ))
     }
 

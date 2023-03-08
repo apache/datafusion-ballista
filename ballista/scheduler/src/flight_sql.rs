@@ -30,6 +30,7 @@ use arrow_flight::{
     Action, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest,
     HandshakeResponse, Location, Ticket,
 };
+use datafusion::config::Extensions;
 use log::{debug, error, warn};
 use std::convert::TryFrom;
 use std::pin::Pin;
@@ -136,7 +137,7 @@ impl FlightSqlServiceImpl {
             .server
             .state
             .session_manager
-            .create_session(&config)
+            .create_session(&config, Extensions::default())
             .await
             .map_err(|e| {
                 Status::internal(format!("Failed to create SessionContext: {e:?}"))

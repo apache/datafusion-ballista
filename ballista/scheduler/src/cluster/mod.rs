@@ -40,6 +40,7 @@ use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::default_session_builder;
 use clap::ArgEnum;
+use datafusion::config::Extensions;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -109,9 +110,15 @@ impl BallistaCluster {
         scheduler: impl Into<String>,
         session_builder: SessionBuilder,
         codec: BallistaCodec<T, U>,
+        default_extensions: Extensions,
     ) -> Self {
-        let kv_state =
-            Arc::new(KeyValueState::new(scheduler, store, codec, session_builder));
+        let kv_state = Arc::new(KeyValueState::new(
+            scheduler,
+            store,
+            codec,
+            session_builder,
+            default_extensions,
+        ));
         Self {
             cluster_state: kv_state.clone(),
             job_state: kv_state,
@@ -137,6 +144,7 @@ impl BallistaCluster {
                     scheduler,
                     default_session_builder,
                     BallistaCodec::default(),
+                    Extensions::default(),
                 ))
             }
             #[cfg(not(feature = "etcd"))]
@@ -156,6 +164,7 @@ impl BallistaCluster {
                         scheduler,
                         default_session_builder,
                         BallistaCodec::default(),
+                        Extensions::default(),
                     ))
                 } else {
                     info!("Initializing Sled database in temp directory");
@@ -166,6 +175,7 @@ impl BallistaCluster {
                         scheduler,
                         default_session_builder,
                         BallistaCodec::default(),
+                        Extensions::default(),
                     ))
                 }
             }
@@ -368,6 +378,7 @@ pub trait JobState: Send + Sync {
     async fn create_session(
         &self,
         config: &BallistaConfig,
+        extensions: Extensions,
     ) -> Result<Arc<SessionContext>>;
 
     // Update a new saved session. If the session does not exist, a new one will be created
@@ -375,6 +386,7 @@ pub trait JobState: Send + Sync {
         &self,
         session_id: &str,
         config: &BallistaConfig,
+        extensions: Extensions,
     ) -> Result<Arc<SessionContext>>;
 }
 

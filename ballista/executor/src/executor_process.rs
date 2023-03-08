@@ -25,6 +25,7 @@ use std::{env, io};
 
 use anyhow::{Context, Result};
 use arrow_flight::flight_service_server::FlightServiceServer;
+use datafusion::config::Extensions;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use log::{error, info, warn};
@@ -281,6 +282,7 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
                     default_codec,
                     stop_send,
                     &shutdown_noti,
+                    Extensions::default(),
                 )
                 .await?,
             );
@@ -290,6 +292,7 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
                 scheduler.clone(),
                 executor.clone(),
                 default_codec,
+                Extensions::default(),
             )));
         }
     };

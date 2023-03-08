@@ -18,7 +18,10 @@
 use crate::scheduler_server::SessionBuilder;
 use ballista_core::config::BallistaConfig;
 use ballista_core::error::Result;
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::{
+    config::Extensions,
+    prelude::{SessionConfig, SessionContext},
+};
 
 use crate::cluster::JobState;
 use datafusion::common::ScalarValue;
@@ -39,15 +42,19 @@ impl SessionManager {
         &self,
         session_id: &str,
         config: &BallistaConfig,
+        extensions: Extensions,
     ) -> Result<Arc<SessionContext>> {
-        self.state.update_session(session_id, config).await
+        self.state
+            .update_session(session_id, config, extensions)
+            .await
     }
 
     pub async fn create_session(
         &self,
         config: &BallistaConfig,
+        extensions: Extensions,
     ) -> Result<Arc<SessionContext>> {
-        self.state.create_session(config).await
+        self.state.create_session(config, extensions).await
     }
 
     pub async fn get_session(&self, session_id: &str) -> Result<Arc<SessionContext>> {
@@ -57,7 +64,9 @@ impl SessionManager {
 
 /// Create a DataFusion session context that is compatible with Ballista Configuration
 pub fn create_datafusion_context(
+    session_id: Option<String>,
     ballista_config: &BallistaConfig,
+    extensions: Extensions,
     session_builder: SessionBuilder,
 ) -> Arc<SessionContext> {
     let config = SessionConfig::new()
@@ -67,9 +76,14 @@ pub fn create_datafusion_context(
         .with_repartition_aggregations(ballista_config.repartition_aggregations())
         .with_repartition_windows(ballista_config.repartition_windows())
         .with_parquet_pruning(ballista_config.parquet_pruning());
-    let config = propagate_ballista_configs(config, ballista_config);
+    let mut config = propagate_ballista_configs(config, ballista_config);
+    config.config_options_mut().extensions = extensions;
 
     let session_state = session_builder(config);
+    let session_state = match session_id {
+        Some(session_id) => session_state.with_session_id(session_id),
+        None => session_state,
+    };
     Arc::new(SessionContext::with_state(session_state))
 }
 
