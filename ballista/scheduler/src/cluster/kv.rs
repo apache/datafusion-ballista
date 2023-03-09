@@ -638,7 +638,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         let config = config_builder.build()?;
 
         let mut extensions =
-            ConfigOptions::with_extensions(self.default_extensions.clone());
+            ConfigOptions::new().with_extensions(self.default_extensions.clone());
         for kv_pair in &settings.extensions {
             extensions.set(&kv_pair.key, &kv_pair.value)?;
         }
