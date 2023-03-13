@@ -41,7 +41,7 @@ anyhow = "1"
 arrow = { version = "33.0.0" }
 arrow-flight = { version = "33.0.0" }
 async-trait = "0.1.41"
-ballista-core = { path = "../core", version = "0.11.0" }
+ballista-core = { path = "../core", version = "0.11.0", features = ["s3"] }
 chrono = { version = "0.4", default-features = false }
 configure_me = "0.4.0"
 dashmap = "5.4.0"
