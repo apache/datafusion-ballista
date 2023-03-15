@@ -661,7 +661,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                         .duration_since(UNIX_EPOCH)
                         .unwrap()
                         .as_millis() as u64,
-                    props: props.clone(),
+                    props,
                 };
                 Ok(multi_task_definition)
             } else {

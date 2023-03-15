@@ -170,7 +170,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
         let total_num_tasks = tasks_status.len();
         let reservations = (0..total_num_tasks)
-            .into_iter()
             .map(|_| ExecutorReservation::new_free(executor_id.to_owned()))
             .collect();
 
