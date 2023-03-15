@@ -85,7 +85,23 @@ impl TaskLauncher for DefaultTaskLauncher {
         tasks: Vec<MultiTaskDefinition>,
         executor_manager: &ExecutorManager,
     ) -> Result<()> {
-        info!("Launching multi task on executor {:?}", executor.id);
+        if log::max_level() >= log::Level::Info {
+            let tasks_ids: Vec<String> = tasks
+                .iter()
+                .map(|task| {
+                    let task_ids: Vec<u32> = task
+                        .task_ids
+                        .iter()
+                        .map(|task_id| task_id.partition_id)
+                        .collect();
+                    format!("{}/{}/{:?}", task.job_id, task.stage_id, task_ids)
+                })
+                .collect();
+            info!(
+                "Launching multi task on executor {:?} for {:?}",
+                executor.id, tasks_ids
+            );
+        }
         let mut client = executor_manager.get_client(&executor.id).await?;
         client
             .launch_multi_task(protobuf::LaunchMultiTaskParams {

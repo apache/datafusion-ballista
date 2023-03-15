@@ -786,7 +786,12 @@ impl RunningStage {
         partition: usize,
         metrics: Vec<OperatorMetricsSet>,
     ) -> Result<()> {
-        if let Some(combined_metrics) = &mut self.stage_metrics {
+        // For some cases, task metrics not set, especially for testings.
+        if metrics.is_empty() {
+            return Ok(());
+        }
+
+        let new_metrics_set = if let Some(combined_metrics) = &mut self.stage_metrics {
             if metrics.len() != combined_metrics.len() {
                 return Err(BallistaError::Internal(format!("Error updating task metrics to stage {}, task metrics array size {} does not equal \
                 with the stage metrics array size {} for task {}", self.stage_id, metrics.len(), combined_metrics.len(), partition)));
@@ -801,23 +806,21 @@ impl RunningStage {
                 })
                 .collect::<Result<Vec<_>>>()?;
 
-            let new_metrics_set = combined_metrics
+            combined_metrics
                 .iter_mut()
                 .zip(metrics_values_array)
                 .map(|(first, second)| {
                     Self::combine_metrics_set(first, second, partition)
                 })
-                .collect();
-            self.stage_metrics = Some(new_metrics_set)
+                .collect()
         } else {
-            let new_metrics_set = metrics
+            metrics
                 .into_iter()
                 .map(|ms| ms.try_into())
-                .collect::<Result<Vec<_>>>()?;
-            if !new_metrics_set.is_empty() {
-                self.stage_metrics = Some(new_metrics_set)
-            }
-        }
+                .collect::<Result<Vec<_>>>()?
+        };
+        self.stage_metrics = Some(new_metrics_set);
+
         Ok(())
     }
 
@@ -935,6 +938,11 @@ impl SuccessfulStage {
                 _ => task_infos.push(None),
             }
         }
+        let stage_metrics = if self.stage_metrics.is_empty() {
+            None
+        } else {
+            Some(self.stage_metrics.clone())
+        };
         RunningStage {
             stage_id: self.stage_id,
             stage_attempt_num: self.stage_attempt_num + 1,
@@ -946,7 +954,7 @@ impl SuccessfulStage {
             task_infos,
             // It is Ok to forget the previous task failure attempts
             task_failure_numbers: vec![0; self.partitions],
-            stage_metrics: Some(self.stage_metrics.clone()),
+            stage_metrics,
         }
     }
 

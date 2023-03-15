@@ -131,11 +131,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             resubmit: false,
                         }
                     };
-                    tx_event
-                        .post_event(event)
-                        .await
-                        .map_err(|e| error!("Fail to send event due to {}", e))
-                        .unwrap();
+                    if let Err(e) = tx_event.post_event(event).await {
+                        error!("Fail to send event due to {}", e);
+                    }
                 });
             }
             QueryStageSchedulerEvent::JobSubmitted {

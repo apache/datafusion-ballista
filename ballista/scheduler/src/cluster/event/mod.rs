@@ -194,7 +194,7 @@ mod test {
             }
         });
 
-        let expected: Vec<i32> = (0..100).into_iter().collect();
+        let expected: Vec<i32> = (0..100).collect();
 
         let results = handle.await.unwrap();
         assert_eq!(results.len(), 3);
@@ -233,7 +233,7 @@ mod test {
 
         // When we reach capacity older events should be dropped so we only see
         // the last 8 events in our subscribers
-        let expected: Vec<i32> = (92..100).into_iter().collect();
+        let expected: Vec<i32> = (92..100).collect();
 
         let results = handle.await.unwrap();
         assert_eq!(results.len(), 3);
@@ -271,7 +271,7 @@ mod test {
             }
         });
 
-        let expected: Vec<i32> = (1..=100).into_iter().collect();
+        let expected: Vec<i32> = (1..=100).collect();
 
         let results = handle.await.unwrap();
         assert_eq!(results.len(), 3);

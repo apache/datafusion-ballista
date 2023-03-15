@@ -278,7 +278,6 @@ pub fn default_task_runner() -> impl TaskRunner {
             };
 
         let partitions: Vec<ShuffleWritePartition> = (0..partitions)
-            .into_iter()
             .map(|i| ShuffleWritePartition {
                 partition_id: i as u64,
                 path: String::default(),
@@ -409,7 +408,6 @@ impl SchedulerTest {
         let runner = runner.unwrap_or_else(|| Arc::new(default_task_runner()));
 
         let executors: HashMap<String, VirtualExecutor> = (0..num_executors)
-            .into_iter()
             .map(|i| {
                 let id = format!("virtual-executor-{i}");
                 let executor = VirtualExecutor {

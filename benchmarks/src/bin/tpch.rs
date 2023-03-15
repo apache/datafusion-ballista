@@ -981,10 +981,7 @@ impl BenchmarkRun {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .expect("current time is later than UNIX_EPOCH")
                 .as_secs(),
-            arguments: std::env::args()
-                .skip(1)
-                .into_iter()
-                .collect::<Vec<String>>(),
+            arguments: std::env::args().skip(1).collect::<Vec<String>>(),
             query,
             iterations: vec![],
         }
