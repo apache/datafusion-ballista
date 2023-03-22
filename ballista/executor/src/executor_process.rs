@@ -56,7 +56,7 @@ use ballista_core::utils::{
 };
 use ballista_core::BALLISTA_VERSION;
 
-use crate::executor::{Executor, TasksDrainedFuture};
+use crate::executor::Executor;
 use crate::executor_server::TERMINATING;
 use crate::flight_service::BallistaFlightService;
 use crate::metrics::LoggingMetricsCollector;
@@ -301,7 +301,7 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
         shutdown_noti.subscribe_for_shutdown(),
     )));
 
-    let tasks_drained = TasksDrainedFuture(executor);
+    let tasks_drained = executor.wait_drained();
 
     // Concurrently run the service checking and listen for the `shutdown` signal and wait for the stop request coming.
     // The check_services runs until an error is encountered, so under normal circumstances, this `select!` statement runs

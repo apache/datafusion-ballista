@@ -48,7 +48,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::RwLock;
+use tokio::sync::{watch, RwLock};
 
 use crate::scheduler_server::timestamp_millis;
 use tracing::trace;
@@ -115,6 +115,8 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     // Cache for active jobs curated by this scheduler
     active_job_cache: ActiveJobCache,
     launcher: Arc<dyn TaskLauncher>,
+    drained: Arc<watch::Sender<()>>,
+    check_drained: watch::Receiver<()>,
 }
 
 #[derive(Clone)]
@@ -149,13 +151,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         codec: BallistaCodec<T, U>,
         scheduler_id: String,
     ) -> Self {
-        Self {
+        Self::with_launcher(
             state,
             codec,
-            scheduler_id: scheduler_id.clone(),
-            active_job_cache: Arc::new(DashMap::new()),
-            launcher: Arc::new(DefaultTaskLauncher::new(scheduler_id)),
-        }
+            scheduler_id.clone(),
+            Arc::new(DefaultTaskLauncher::new(scheduler_id)),
+        )
     }
 
     #[allow(dead_code)]
@@ -165,12 +166,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         scheduler_id: String,
         launcher: Arc<dyn TaskLauncher>,
     ) -> Self {
+        let (drained, check_drained) = watch::channel(());
+
         Self {
             state,
             codec,
             scheduler_id,
             active_job_cache: Arc::new(DashMap::new()),
             launcher,
+            drained: Arc::new(drained),
+            check_drained,
         }
     }
 
@@ -690,9 +695,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         &self,
         job_id: &str,
     ) -> Option<Arc<RwLock<ExecutionGraph>>> {
-        self.active_job_cache
+        let removed = self
+            .active_job_cache
             .remove(job_id)
-            .map(|value| value.1.execution_graph)
+            .map(|value| value.1.execution_graph);
+
+        if self.get_active_job_count() == 0 {
+            self.drained.send_replace(());
+        }
+
+        removed
     }
 
     /// Generate a new random Job ID
@@ -720,6 +732,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 error!("Failed to delete job {job_id}: {err:?}");
             }
         });
+    }
+
+    pub async fn wait_drained(&self) {
+        let mut check_drained = self.check_drained.clone();
+
+        loop {
+            if self.get_active_job_count() == 0 {
+                break;
+            }
+
+            if check_drained.changed().await.is_err() {
+                break;
+            };
+        }
     }
 }
 

@@ -19,10 +19,7 @@
 
 use dashmap::DashMap;
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
 use crate::metrics::ExecutorMetricsCollector;
 use ballista_core::error::BallistaError;
@@ -37,22 +34,9 @@ use datafusion::physical_plan::udaf::AggregateUDF;
 use datafusion::physical_plan::udf::ScalarUDF;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use futures::future::AbortHandle;
+use tokio::sync::watch;
 
 use ballista_core::serde::scheduler::PartitionId;
-
-pub struct TasksDrainedFuture(pub Arc<Executor>);
-
-impl Future for TasksDrainedFuture {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if self.0.abort_handles.len() > 0 {
-            Poll::Pending
-        } else {
-            Poll::Ready(())
-        }
-    }
-}
 
 type AbortHandles = Arc<DashMap<(usize, PartitionId), AbortHandle>>;
 
@@ -82,6 +66,9 @@ pub struct Executor {
 
     /// Handles to abort executing tasks
     abort_handles: AbortHandles,
+
+    drained: Arc<watch::Sender<()>>,
+    check_drained: watch::Receiver<()>,
 }
 
 impl Executor {
@@ -93,17 +80,15 @@ impl Executor {
         metrics_collector: Arc<dyn ExecutorMetricsCollector>,
         concurrent_tasks: usize,
     ) -> Self {
-        Self {
+        Self::with_functions(
             metadata,
-            work_dir: work_dir.to_owned(),
-            // TODO add logic to dynamically load UDF/UDAFs libs from files
-            scalar_functions: HashMap::new(),
-            aggregate_functions: HashMap::new(),
+            work_dir,
             runtime,
             metrics_collector,
             concurrent_tasks,
-            abort_handles: Default::default(),
-        }
+            HashMap::new(),
+            HashMap::new(),
+        )
     }
 
     pub fn with_functions(
@@ -115,6 +100,8 @@ impl Executor {
         scalar_functions: HashMap<String, Arc<ScalarUDF>>,
         aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
     ) -> Self {
+        let (drained, check_drained) = watch::channel(());
+
         Self {
             metadata,
             work_dir: work_dir.to_owned(),
@@ -124,6 +111,8 @@ impl Executor {
             metrics_collector,
             concurrent_tasks,
             abort_handles: Default::default(),
+            drained: Arc::new(drained),
+            check_drained,
         }
     }
 }
@@ -147,9 +136,11 @@ impl Executor {
         self.abort_handles
             .insert((task_id, partition.clone()), abort_handle);
 
-        let partitions = task.await??;
+        let partitions = task.await;
 
-        self.abort_handles.remove(&(task_id, partition.clone()));
+        self.remove_handle(task_id, partition.clone());
+
+        let partitions = partitions??;
 
         self.metrics_collector.record_stage(
             &partition.job_id,
@@ -196,14 +187,14 @@ impl Executor {
         stage_id: usize,
         partition_id: usize,
     ) -> Result<bool, BallistaError> {
-        if let Some((_, handle)) = self.abort_handles.remove(&(
+        if let Some((_, handle)) = self.remove_handle(
             task_id,
             PartitionId {
                 job_id,
                 stage_id,
                 partition_id,
             },
-        )) {
+        ) {
             handle.abort();
             Ok(true)
         } else {
@@ -217,6 +208,33 @@ impl Executor {
 
     pub fn active_task_count(&self) -> usize {
         self.abort_handles.len()
+    }
+
+    pub async fn wait_drained(&self) {
+        let mut check_drained = self.check_drained.clone();
+        loop {
+            if self.active_task_count() == 0 {
+                break;
+            }
+
+            if check_drained.changed().await.is_err() {
+                break;
+            };
+        }
+    }
+
+    fn remove_handle(
+        &self,
+        task_id: usize,
+        partition: PartitionId,
+    ) -> Option<((usize, PartitionId), AbortHandle)> {
+        let removed = self.abort_handles.remove(&(task_id, partition));
+
+        if self.active_task_count() == 0 {
+            self.drained.send_replace(());
+        }
+
+        removed
     }
 }
 

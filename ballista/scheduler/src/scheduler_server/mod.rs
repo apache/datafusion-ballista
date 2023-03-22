@@ -381,6 +381,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     pub fn session_manager(&self) -> SessionManager {
         self.state.session_manager.clone()
     }
+
+    pub async fn wait_drained(&self) {
+        self.state.task_manager.wait_drained().await;
+    }
 }
 
 pub fn timestamp_secs() -> u64 {
