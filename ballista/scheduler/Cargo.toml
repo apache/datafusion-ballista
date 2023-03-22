@@ -51,8 +51,8 @@ base64 = { version = "0.13", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
 configure_me = "0.4.0"
 dashmap = "5.4.0"
-datafusion = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v18.0.0-cx.1" }
-datafusion-proto = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v18.0.0-cx.1" }
+datafusion = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v18.0.0-cx.2" }
+datafusion-proto = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v18.0.0-cx.2" }
 etcd-client = { version = "0.10", optional = true }
 flatbuffers = { version = "22.9.29" }
 futures = "0.3"

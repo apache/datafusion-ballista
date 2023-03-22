@@ -33,8 +33,8 @@ ballista = { path = "../ballista/client", version = "0.10.0", features = [
     "standalone",
 ] }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v18.0.0-cx.1" }
-datafusion-cli = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v18.0.0-cx.1" }
+datafusion = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v18.0.0-cx.2" }
+datafusion-cli = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v18.0.0-cx.2" }
 dirs = "4.0.0"
 env_logger = "0.10"
 mimalloc = { version = "0.1", default-features = false }
