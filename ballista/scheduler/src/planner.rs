@@ -462,32 +462,34 @@ order by
         /* Expected result:
 
         ShuffleWriterExec: Some(Hash([Column { name: "l_orderkey", index: 0 }], 2))
-          CoalesceBatchesExec: target_batch_size=4096
-            FilterExec: l_shipmode@4 IN ([Literal { value: Utf8("MAIL") }, Literal { value: Utf8("SHIP") }]) AND l_commitdate@2 < l_receiptdate@3 AND l_shipdate@1 < l_commitdate@2 AND l_receiptdate@3 >= 8766 AND l_receiptdate@3 < 9131
-              CsvExec: source=Path(testdata/lineitem: [testdata/lineitem/partition0.tbl,testdata/lineitem/partition1.tbl]), has_header=false
+          ProjectionExec: expr=[l_orderkey@0 as l_orderkey, l_shipmode@4 as l_shipmode]
+            CoalesceBatchesExec: target_batch_size=8192
+              FilterExec: (l_shipmode@4 = SHIP OR l_shipmode@4 = MAIL) AND l_commitdate@2 < l_receiptdate@3 AND l_shipdate@1 < l_commitdate@2 AND l_receiptdate@3 >= 8766 AND l_receiptdate@3 < 9131
+                CsvExec: files={2 groups: [[testdata/lineitem/partition0.tbl], [testdata/lineitem/partition1.tbl]]}, has_header=false, limit=None, projection=[l_orderkey, l_shipdate, l_commitdate, l_receiptdate, l_shipmode]
 
         ShuffleWriterExec: Some(Hash([Column { name: "o_orderkey", index: 0 }], 2))
-          CsvExec: source=Path(testdata/orders: [testdata/orders/orders.tbl]), has_header=false
+          CsvExec: files={1 group: [[testdata/orders/orders.tbl]]}, has_header=false, limit=None, projection=[o_orderkey, o_orderpriority]
 
         ShuffleWriterExec: Some(Hash([Column { name: "l_shipmode", index: 0 }], 2))
-          AggregateExec: mode=Partial, gby=[l_shipmode@4 as l_shipmode], aggr=[SUM(CASE WHEN #orders.o_orderpriority Eq Utf8("1-URGENT") Or #orders.o_orderpriority Eq Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), SUM(CASE WHEN #orders.o_orderpriority NotEq Utf8("1-URGENT") And #orders.o_orderpriority NotEq Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
-            CoalesceBatchesExec: target_batch_size=4096
-              HashJoinExec: mode=Partitioned, join_type=Inner, on=[(Column { name: "l_orderkey", index: 0 }, Column { name: "o_orderkey", index: 0 })]
-                CoalesceBatchesExec: target_batch_size=4096
-                  UnresolvedShuffleExec
-                CoalesceBatchesExec: target_batch_size=4096
+          AggregateExec: mode=Partial, gby=[l_shipmode@0 as l_shipmode], aggr=[SUM(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), SUM(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
+            ProjectionExec: expr=[l_shipmode@1 as l_shipmode, o_orderpriority@3 as o_orderpriority]
+              CoalesceBatchesExec: target_batch_size=8192
+                HashJoinExec: mode=Partitioned, join_type=Inner, on=[(Column { name: "l_orderkey", index: 0 }, Column { name: "o_orderkey", index: 0 })]
+                  CoalesceBatchesExec: target_batch_size=8192
+                    UnresolvedShuffleExec
+                  CoalesceBatchesExec: target_batch_size=8192
+                    UnresolvedShuffleExec
+
+        ShuffleWriterExec: None
+          SortExec: expr=[l_shipmode@0 ASC NULLS LAST]
+            ProjectionExec: expr=[l_shipmode@0 as l_shipmode, SUM(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@1 as high_line_count, SUM(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@2 as low_line_count]
+              AggregateExec: mode=FinalPartitioned, gby=[l_shipmode@0 as l_shipmode], aggr=[SUM(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), SUM(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
+                CoalesceBatchesExec: target_batch_size=8192
                   UnresolvedShuffleExec
 
         ShuffleWriterExec: None
-          ProjectionExec: expr=[l_shipmode@0 as l_shipmode, SUM(CASE WHEN #orders.o_orderpriority Eq Utf8("1-URGENT") Or #orders.o_orderpriority Eq Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@1 as high_line_count, SUM(CASE WHEN #orders.o_orderpriority NotEq Utf8("1-URGENT") And #orders.o_orderpriority NotEq Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@2 as low_line_count]
-            AggregateExec: mode=FinalPartitioned, gby=[l_shipmode@0 as l_shipmode], aggr=[SUM(CASE WHEN #orders.o_orderpriority Eq Utf8("1-URGENT") Or #orders.o_orderpriority Eq Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), SUM(CASE WHEN #orders.o_orderpriority NotEq Utf8("1-URGENT") And #orders.o_orderpriority NotEq Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
-              CoalesceBatchesExec: target_batch_size=4096
-                UnresolvedShuffleExec
-
-        ShuffleWriterExec: None
-          SortExec: [l_shipmode@0 ASC]
-            CoalescePartitionsExec
-              UnresolvedShuffleExec
+          SortPreservingMergeExec: [l_shipmode@0 ASC NULLS LAST]
+            UnresolvedShuffleExec
         */
 
         assert_eq!(5, stages.len());
@@ -537,7 +539,10 @@ order by
 
         let hash_agg = downcast_exec!(input, AggregateExec);
 
-        let coalesce_batches = hash_agg.children()[0].clone();
+        let projection = hash_agg.children()[0].clone();
+        let projection = downcast_exec!(projection, ProjectionExec);
+
+        let coalesce_batches = projection.children()[0].clone();
         let coalesce_batches = downcast_exec!(coalesce_batches, CoalesceBatchesExec);
 
         let join = coalesce_batches.children()[0].clone();
