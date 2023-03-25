@@ -24,16 +24,30 @@ ENV RUST_BACKTRACE=full
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && \
-    apt-get -y install libssl-dev openssl zlib1g zlib1g-dev libpq-dev cmake protobuf-compiler netcat curl unzip \
-    nodejs npm && \
-    npm install -g yarn
+    apt-get -y install libssl-dev openssl zlib1g zlib1g-dev libpq-dev cmake protobuf-compiler netcat curl unzip
+
+# install nvm
+ENV NODE_VER=18.9.0
+ENV NVM_DIR /usr/local/nvm
+RUN mkdir $NVM_DIR
+
+RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh | bash
+RUN chmod +x $NVM_DIR/nvm.sh
+
+# Install node using nvm
+RUN . $NVM_DIR/nvm.sh && nvm install $NODE_VER && nvm alias default $NODE_VER && nvm use default
+
+ENV NODE_PATH $NVM_DIR/versions/node/v$NODE_VER/lib/node_modules
+ENV PATH      $NVM_DIR/versions/node/v$NODE_VER/bin:$PATH
+
+# install yarn
+RUN npm install -g yarn
 
 # create build user with same UID as 
 RUN adduser -q -u $EXT_UID builder --home /home/builder && \
     mkdir -p /home/builder/workspace
 USER builder
 
-ENV NODE_VER=18.9.0
 ENV HOME=/home/builder
 ENV PATH=$HOME/.cargo/bin:$PATH
 
