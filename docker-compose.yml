@@ -26,7 +26,7 @@ services:
     build:
       dockerfile: dev/docker/ballista-scheduler.Dockerfile
       context: .
-    command: "--config-backend etcd --etcd-urls etcd:2379 --bind-host 0.0.0.0"
+    command: "--cluster-backend etcd --etcd-urls etcd:2379 --bind-host 0.0.0.0"
     ports:
       - "80:80"
       - "50050:50050"
