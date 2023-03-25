@@ -26,6 +26,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
       - name: Installs Rust and Cargo
-        run: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+        run: curl -y --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
       - name: Run script
         run: ./dev/build-ballista-docker.sh
