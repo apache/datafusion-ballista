@@ -27,7 +27,7 @@ RUN apt-get update && \
     apt-get -y install libssl-dev openssl zlib1g zlib1g-dev libpq-dev cmake protobuf-compiler netcat curl unzip
 
 # install nvm
-ENV NODE_VER=18.9.0
+ENV NODE_VER=16.9.1
 ENV NVM_DIR /usr/local/nvm
 RUN mkdir $NVM_DIR
 
