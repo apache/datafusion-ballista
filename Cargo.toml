@@ -27,9 +27,28 @@ members = [
 ]
 exclude = ["python"]
 
+[workspace.dependencies]
+arrow = { version = "34.0.0" }
+arrow-flight = { version = "34.0.0", features = ["flight-sql-experimental"] }
+datafusion = "20.0.0"
+datafusion-proto = "20.0.0"
+
 # cargo build --profile release-lto
 [profile.release-lto]
 codegen-units = 1
 inherits = "release"
 lto = true
 
+# the release profile takes a long time to build so we can use this profile during development to save time
+# cargo build --profile release-nonlto
+[profile.release-nonlto]
+codegen-units = 16
+debug = false
+debug-assertions = false
+incremental = false
+inherits = "release"
+lto = false
+opt-level = 3
+overflow-checks = false
+panic = 'unwind'
+rpath = false
