@@ -163,14 +163,18 @@ impl ClusterState for InMemoryClusterState {
         mut spec: ExecutorData,
         reserve: bool,
     ) -> Result<Vec<ExecutorReservation>> {
-        let heartbeat = ExecutorHeartbeat {
-            executor_id: metadata.id.clone(),
+        let executor_id = metadata.id.clone();
+
+        self.save_executor_metadata(metadata).await?;
+        self.save_executor_heartbeat(ExecutorHeartbeat {
+            executor_id: executor_id.clone(),
             timestamp: timestamp_secs(),
             metrics: vec![],
             status: Some(ExecutorStatus {
                 status: Some(executor_status::Status::Active(String::default())),
             }),
-        };
+        })
+        .await?;
 
         let mut guard = self.task_slots.lock();
 
@@ -178,37 +182,28 @@ impl ClusterState for InMemoryClusterState {
         if let Some((idx, _)) = guard
             .task_slots
             .iter()
-            .find_position(|slots| slots.executor_id == metadata.id)
+            .find_position(|slots| slots.executor_id == executor_id)
         {
             guard.task_slots.swap_remove(idx);
         }
 
         if reserve {
             let slots = std::mem::take(&mut spec.available_task_slots) as usize;
-
             let reservations = (0..slots)
-                .map(|_| ExecutorReservation::new_free(metadata.id.clone()))
+                .map(|_| ExecutorReservation::new_free(executor_id.clone()))
                 .collect();
 
-            self.executors.insert(metadata.id.clone(), metadata.clone());
-
             guard.task_slots.push(AvailableTaskSlots {
-                executor_id: metadata.id,
+                executor_id,
                 slots: 0,
             });
 
-            self.heartbeat_sender.send(&heartbeat);
-
             Ok(reservations)
         } else {
-            self.executors.insert(metadata.id.clone(), metadata.clone());
-
             guard.task_slots.push(AvailableTaskSlots {
-                executor_id: metadata.id,
+                executor_id,
                 slots: spec.available_task_slots,
             });
-
-            self.heartbeat_sender.send(&heartbeat);
 
             Ok(vec![])
         }

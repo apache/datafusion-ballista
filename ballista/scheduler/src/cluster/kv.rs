@@ -20,7 +20,7 @@ use crate::cluster::{
     reserve_slots_bias, reserve_slots_round_robin, ClusterState, ExecutorHeartbeatStream,
     JobState, JobStateEvent, JobStateEventStream, JobStatus, TaskDistribution,
 };
-use crate::scheduler_server::SessionBuilder;
+use crate::scheduler_server::{timestamp_secs, SessionBuilder};
 use crate::state::execution_graph::ExecutionGraph;
 use crate::state::executor_manager::ExecutorReservation;
 use crate::state::session_manager::create_datafusion_context;
@@ -47,7 +47,6 @@ use prost::Message;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// State implementation based on underlying `KeyValueStore`
 pub struct KeyValueState<
@@ -240,22 +239,17 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     ) -> Result<Vec<ExecutorReservation>> {
         let executor_id = metadata.id.clone();
 
-        let current_ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| {
-                BallistaError::Internal(format!("Error getting current timestamp: {e:?}"))
-            })?
-            .as_secs();
-
         //TODO this should be in a transaction
         // Now that we know we can connect, save the metadata and slots
         self.save_executor_metadata(metadata).await?;
         self.save_executor_heartbeat(ExecutorHeartbeat {
             executor_id: executor_id.clone(),
-            timestamp: current_ts,
+            timestamp: timestamp_secs(),
             metrics: vec![],
             status: Some(protobuf::ExecutorStatus {
-                status: Some(protobuf::executor_status::Status::Active("".to_string())),
+                status: Some(
+                    protobuf::executor_status::Status::Active(String::default()),
+                ),
             }),
         })
         .await?;
@@ -364,16 +358,9 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     }
 
     async fn remove_executor(&self, executor_id: &str) -> Result<()> {
-        let current_ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| {
-                BallistaError::Internal(format!("Error getting current timestamp: {e:?}"))
-            })?
-            .as_secs();
-
         let value = ExecutorHeartbeat {
             executor_id: executor_id.to_owned(),
-            timestamp: current_ts,
+            timestamp: timestamp_secs(),
             metrics: vec![],
             status: Some(protobuf::ExecutorStatus {
                 status: Some(protobuf::executor_status::Status::Dead("".to_string())),
