@@ -104,12 +104,14 @@ pub struct ExecutorManager {
     // dead executor sets:
     dead_executors: Arc<DashSet<String>>,
     clients: ExecutorClients,
+    grpc_client_connection_timeout: Duration
 }
 
 impl ExecutorManager {
     pub(crate) fn new(
         cluster_state: Arc<dyn ClusterState>,
         slots_policy: SlotsPolicy,
+        timeout: Duration
     ) -> Self {
         let task_distribution = match slots_policy {
             SlotsPolicy::Bias => TaskDistribution::Bias,
@@ -127,6 +129,7 @@ impl ExecutorManager {
             executor_data: Arc::new(Mutex::new(HashMap::new())),
             dead_executors: Arc::new(DashSet::new()),
             clients: Default::default(),
+            grpc_client_connection_timeout: timeout
         }
     }
 
@@ -399,7 +402,7 @@ impl ExecutorManager {
                 "http://{}:{}",
                 executor_metadata.host, executor_metadata.grpc_port
             );
-            let connection = create_grpc_client_connection(executor_url).await?;
+            let connection = create_grpc_client_connection(executor_url, self.grpc_client_connection_timeout).await?;
             let client = ExecutorGrpcClient::new(connection);
 
             {
@@ -698,6 +701,8 @@ impl ExecutorManager {
 #[cfg(test)]
 mod test {
 
+    use std::time::Duration;
+
     use crate::config::SlotsPolicy;
 
     use crate::scheduler_server::timestamp_secs;
@@ -723,7 +728,7 @@ mod test {
         let cluster = test_cluster_context();
 
         let executor_manager =
-            ExecutorManager::new(cluster.cluster_state(), slots_policy);
+            ExecutorManager::new(cluster.cluster_state(), slots_policy, Duration::from_secs(20));
 
         let executors = test_executors(10, 4);
 
@@ -770,7 +775,7 @@ mod test {
         let cluster = test_cluster_context();
 
         let executor_manager =
-            ExecutorManager::new(cluster.cluster_state(), slots_policy);
+            ExecutorManager::new(cluster.cluster_state(), slots_policy, Duration::from_secs(20));
 
         let executors = test_executors(10, 4);
 
@@ -825,7 +830,7 @@ mod test {
 
         let cluster = test_cluster_context();
         let executor_manager =
-            ExecutorManager::new(cluster.cluster_state(), slots_policy);
+            ExecutorManager::new(cluster.cluster_state(), slots_policy, Duration::from_secs(20));
 
         for (executor_metadata, executor_data) in executors {
             executor_manager
@@ -871,7 +876,7 @@ mod test {
         let cluster = test_cluster_context();
 
         let executor_manager =
-            ExecutorManager::new(cluster.cluster_state(), slots_policy);
+            ExecutorManager::new(cluster.cluster_state(), slots_policy, Duration::from_secs(20));
 
         let executors = test_executors(10, 4);
 
@@ -904,7 +909,7 @@ mod test {
         let cluster = test_cluster_context();
 
         let executor_manager =
-            ExecutorManager::new(cluster.cluster_state(), slots_policy);
+            ExecutorManager::new(cluster.cluster_state(), slots_policy, Duration::from_secs(20));
 
         // Setup two executors initially
         let executors = test_executors(2, 4);

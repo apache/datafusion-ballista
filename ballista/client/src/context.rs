@@ -25,6 +25,7 @@ use sqlparser::ast::Statement;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use ballista_core::config::BallistaConfig;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
@@ -95,7 +96,8 @@ impl BallistaContext {
             "Connecting to Ballista scheduler at {}",
             scheduler_url.clone()
         );
-        let connection = create_grpc_client_connection(scheduler_url.clone())
+        let connection_timeout = Duration::from_secs(config.grpc_connnection_timeout() as u64);
+        let connection = create_grpc_client_connection(scheduler_url.clone(), connection_timeout)
             .await
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
         let mut scheduler = SchedulerGrpcClient::new(connection);
@@ -147,7 +149,7 @@ impl BallistaContext {
 
         log::info!("Running in local mode. Scheduler will be run in-proc");
 
-        let addr = ballista_scheduler::standalone::new_standalone_scheduler().await?;
+        let addr = ballista_scheduler::standalone::new_standalone_scheduler(Duration::from_secs(config.grpc_connnection_timeout() as u64)).await?;
         let scheduler_url = format!("http://localhost:{}", addr.port());
         let mut scheduler = loop {
             match SchedulerGrpcClient::connect(scheduler_url.clone()).await {
@@ -197,6 +199,7 @@ impl BallistaContext {
             scheduler,
             concurrent_tasks,
             default_codec,
+            Duration::from_secs(config.grpc_connnection_timeout() as u64)
         )
         .await?;
 

@@ -78,6 +78,7 @@ struct CuratorTaskStatus {
 pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     mut scheduler: SchedulerGrpcClient<Channel>,
     bind_host: String,
+    timeout: Duration,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
     stop_send: mpsc::Sender<bool>,
@@ -113,7 +114,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
         let mut grpc_shutdown = shutdown_noti.subscribe_for_shutdown();
         tokio::spawn(async move {
             let shutdown_signal = grpc_shutdown.recv();
-            let grpc_server_future = create_grpc_server()
+            let grpc_server_future = create_grpc_server(timeout)
                 .add_service(server)
                 .serve_with_shutdown(addr, shutdown_signal);
             grpc_server_future.await.map_err(|e| {
@@ -147,7 +148,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     // 4. Start TaskRunnerPool loop
     {
         let task_runner_pool = TaskRunnerPool::new(executor_server.clone());
-        task_runner_pool.start(rx_task, rx_task_status, shutdown_noti);
+        task_runner_pool.start(rx_task, rx_task_status, shutdown_noti, timeout);
     }
 
     Ok(server)
@@ -221,6 +222,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
     async fn get_scheduler_client(
         &self,
         scheduler_id: &str,
+        timeout: Duration
     ) -> Result<SchedulerGrpcClient<Channel>, BallistaError> {
         let scheduler = self.schedulers.get(scheduler_id).map(|value| value.clone());
         // If channel does not exist, create a new one
@@ -228,7 +230,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             Ok(scheduler)
         } else {
             let scheduler_url = format!("http://{scheduler_id}");
-            let connection = create_grpc_client_connection(scheduler_url).await?;
+            let connection = create_grpc_client_connection(scheduler_url, timeout).await?;
             let scheduler = SchedulerGrpcClient::new(connection);
 
             {
@@ -477,6 +479,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
         mut rx_task: mpsc::Receiver<CuratorTaskDefinition>,
         mut rx_task_status: mpsc::Receiver<CuratorTaskStatus>,
         shutdown_noti: &ShutdownNotifier,
+        timeout: Duration
     ) {
         //1. loop for task status reporting
         let executor_server = self.executor_server.clone();
@@ -534,7 +537,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                 }
 
                 for (scheduler_id, tasks_status) in curator_task_status_map.into_iter() {
-                    match executor_server.get_scheduler_client(&scheduler_id).await {
+                    match executor_server.get_scheduler_client(&scheduler_id, timeout).await {
                         Ok(mut scheduler) => {
                             if let Err(e) = scheduler
                                 .update_task_status(UpdateTaskStatusParams {
