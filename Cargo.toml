@@ -31,7 +31,7 @@ exclude = ["python"]
 arrow = { version = "34.0.0" }
 arrow-flight = { version = "34.0.0", features = ["flight-sql-experimental"] }
 datafusion = "20.0.0"
-datafusion-proto = "20.0.0"
+datafusion-proto = "21.0.0"
 
 # cargo build --profile release-lto
 [profile.release-lto]
