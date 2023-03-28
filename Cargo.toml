@@ -16,22 +16,14 @@
 # under the License.
 
 [workspace]
-members = [
-    "ballista-cli",
-    "ballista/client",
-    "ballista/core",
-    "ballista/executor",
-    "ballista/scheduler",
-    "benchmarks",
-    "examples",
-]
+members = ["ballista-cli", "ballista/client", "ballista/core", "ballista/executor", "ballista/scheduler", "benchmarks", "examples"]
 exclude = ["python"]
 
 [workspace.dependencies]
 arrow = { version = "34.0.0" }
 arrow-flight = { version = "34.0.0", features = ["flight-sql-experimental"] }
-datafusion = "20.0.0"
-datafusion-proto = "20.0.0"
+datafusion = "21.0.0"
+datafusion-proto = "21.0.0"
 
 # cargo build --profile release-lto
 [profile.release-lto]

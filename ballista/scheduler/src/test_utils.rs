@@ -882,7 +882,7 @@ pub async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
 pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
     let mut config = SessionConfig::new().with_target_partitions(partition);
     config
-        .config_options_mut()
+        .options_mut()
         .optimizer
         .enable_round_robin_repartition = false;
     let ctx = Arc::new(SessionContext::with_config(config));
@@ -905,7 +905,7 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
     let logical_plan = left_plan
         .join(right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
         .unwrap()
-        .aggregate(vec![col("id")], vec![sum(col("gmv"))])
+        .aggregate(vec![col("left.id")], vec![sum(col("left.gmv"))])
         .unwrap()
         .sort(vec![sort_expr])
         .unwrap()

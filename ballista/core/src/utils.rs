@@ -24,7 +24,9 @@ use crate::serde::scheduler::PartitionStats;
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::{ipc::writer::FileWriter, record_batch::RecordBatch};
-use datafusion::datasource::object_store::{ObjectStoreProvider, ObjectStoreRegistry};
+use datafusion::datasource::object_store::{
+    DefaultObjectStoreRegistry, ObjectStoreRegistry,
+};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::{
     QueryPlanner, SessionConfig, SessionContext, SessionState,
@@ -78,65 +80,93 @@ pub fn default_session_builder(config: SessionConfig) -> SessionState {
 
 /// Get a RuntimeConfig with specific ObjectStoreDetector in the ObjectStoreRegistry
 pub fn with_object_store_provider(config: RuntimeConfig) -> RuntimeConfig {
-    config.with_object_store_registry(Arc::new(ObjectStoreRegistry::new_with_provider(
-        Some(Arc::new(FeatureBasedObjectStoreProvider)),
-    )))
+    let object_store_registry = BallistaObjectStoreRegistry::new();
+    config.with_object_store_registry(Arc::new(object_store_registry))
 }
 
 /// An object store detector based on which features are enable for different kinds of object stores
-pub struct FeatureBasedObjectStoreProvider;
+#[derive(Debug, Default)]
+pub struct BallistaObjectStoreRegistry {
+    inner: DefaultObjectStoreRegistry,
+}
 
-impl ObjectStoreProvider for FeatureBasedObjectStoreProvider {
+impl BallistaObjectStoreRegistry {
+    pub fn new() -> Self {
+        Default::default()
+    }
+}
+
+impl ObjectStoreRegistry for BallistaObjectStoreRegistry {
+    fn register_store(
+        &self,
+        url: &Url,
+        store: Arc<dyn ObjectStore>,
+    ) -> Option<Arc<dyn ObjectStore>> {
+        self.inner.register_store(url, store)
+    }
+
     /// Detector a suitable object store based on its url if possible
     /// Return the key and object store
     #[allow(unused_variables)]
-    fn get_by_url(&self, url: &Url) -> datafusion::error::Result<Arc<dyn ObjectStore>> {
-        #[cfg(any(feature = "hdfs", feature = "hdfs3"))]
-        {
-            let store = HadoopFileSystem::new(url.as_str());
-            if let Some(store) = store {
-                return Ok(Arc::new(store));
-            }
-        }
-
-        #[cfg(feature = "s3")]
-        {
-            if url.as_str().starts_with("s3://") {
-                if let Some(bucket_name) = url.host_str() {
-                    let store = AmazonS3Builder::from_env()
-                        .with_bucket_name(bucket_name)
-                        .build()?;
-                    return Ok(Arc::new(store));
-                }
-            // Support Alibaba Cloud OSS
-            // Use S3 compatibility mode to access Alibaba Cloud OSS
-            // The `AWS_ENDPOINT` should have bucket name included
-            } else if url.as_str().starts_with("oss://") {
-                if let Some(bucket_name) = url.host_str() {
-                    let store = AmazonS3Builder::from_env()
-                        .with_virtual_hosted_style_request(true)
-                        .with_bucket_name(bucket_name)
-                        .build()?;
-                    return Ok(Arc::new(store));
+    fn get_store(&self, url: &Url) -> datafusion::error::Result<Arc<dyn ObjectStore>> {
+        self.inner.get_store(url).or_else(|_| {
+            #[cfg(any(feature = "hdfs", feature = "hdfs3"))]
+            {
+                if let Some(store) = HadoopFileSystem::new(url.as_str()) {
+                    let store = Arc::new(store);
+                    self.inner.register_store(url, store.clone());
+                    return Ok(store);
                 }
             }
-        }
 
-        #[cfg(feature = "azure")]
-        {
-            if url.to_string().starts_with("azure://") {
-                if let Some(bucket_name) = url.host_str() {
-                    let store = MicrosoftAzureBuilder::from_env()
-                        .with_container_name(bucket_name)
-                        .build()?;
-                    return Ok(Arc::new(store));
+            #[cfg(feature = "s3")]
+            {
+                if url.as_str().starts_with("s3://") {
+                    if let Some(bucket_name) = url.host_str() {
+                        let store = Arc::new(
+                            AmazonS3Builder::from_env()
+                                .with_bucket_name(bucket_name)
+                                .build()?,
+                        );
+                        self.inner.register_store(url, store.clone());
+                        return Ok(store);
+                    }
+                // Support Alibaba Cloud OSS
+                // Use S3 compatibility mode to access Alibaba Cloud OSS
+                // The `AWS_ENDPOINT` should have bucket name included
+                } else if url.as_str().starts_with("oss://") {
+                    if let Some(bucket_name) = url.host_str() {
+                        let store = Arc::new(
+                            AmazonS3Builder::from_env()
+                                .with_virtual_hosted_style_request(true)
+                                .with_bucket_name(bucket_name)
+                                .build()?,
+                        );
+                        self.inner.register_store(url, store.clone());
+                        return Ok(store);
+                    }
                 }
             }
-        }
 
-        Err(DataFusionError::Execution(format!(
-            "No object store available for {url}"
-        )))
+            #[cfg(feature = "azure")]
+            {
+                if url.to_string().starts_with("azure://") {
+                    if let Some(bucket_name) = url.host_str() {
+                        let store = Arc::new(
+                            MicrosoftAzureBuilder::from_env()
+                                .with_container_name(bucket_name)
+                                .build()?,
+                        );
+                        self.inner.register_store(url, store.clone());
+                        return Ok(store);
+                    }
+                }
+            }
+
+            Err(DataFusionError::Execution(format!(
+                "No object store available for {url}"
+            )))
+        })
     }
 }
 

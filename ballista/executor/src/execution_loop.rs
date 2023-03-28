@@ -15,13 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::config::Extensions;
+use datafusion::config::ConfigOptions;
 use datafusion::physical_plan::ExecutionPlan;
 
 use ballista_core::serde::protobuf::{
     scheduler_grpc_client::SchedulerGrpcClient, PollWorkParams, PollWorkResult,
     TaskDefinition, TaskStatus,
 };
+use datafusion::prelude::SessionConfig;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::cpu_bound_executor::DedicatedExecutor;
@@ -173,6 +174,11 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     for kv_pair in task.props {
         task_props.insert(kv_pair.key, kv_pair.value);
     }
+    let mut config = ConfigOptions::new();
+    for (k, v) in task_props {
+        config.set(&k, &v)?;
+    }
+    let session_config = SessionConfig::from(config);
 
     let mut task_scalar_functions = HashMap::new();
     let mut task_aggregate_functions = HashMap::new();
@@ -185,15 +191,14 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     }
     let runtime = executor.runtime.clone();
     let session_id = task.session_id.clone();
-    let task_context = Arc::new(TaskContext::try_new(
-        task_identity.clone(),
+    let task_context = Arc::new(TaskContext::new(
+        Some(task_identity.clone()),
         session_id,
-        task_props,
+        session_config,
         task_scalar_functions,
         task_aggregate_functions,
         runtime.clone(),
-        Extensions::default(),
-    )?);
+    ));
 
     let plan: Arc<dyn ExecutionPlan> =
         U::try_decode(task.plan.as_slice()).and_then(|proto| {

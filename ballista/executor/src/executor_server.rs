@@ -16,7 +16,8 @@
 // under the License.
 
 use ballista_core::BALLISTA_VERSION;
-use datafusion::config::Extensions;
+use datafusion::config::ConfigOptions;
+use datafusion::prelude::SessionConfig;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::ops::Deref;
@@ -307,6 +308,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         info!("Start to run task {}", task_identity);
         let task = curator_task.task;
         let task_props = task.props;
+        let mut config = ConfigOptions::new();
+        for (k, v) in task_props {
+            config.set(&k, &v)?;
+        }
+        let session_config = SessionConfig::from(config);
 
         let mut task_scalar_functions = HashMap::new();
         let mut task_aggregate_functions = HashMap::new();
@@ -320,15 +326,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
         let session_id = task.session_id;
         let runtime = self.executor.runtime.clone();
-        let task_context = Arc::new(TaskContext::try_new(
-            task_identity.clone(),
+        let task_context = Arc::new(TaskContext::new(
+            Some(task_identity.clone()),
             session_id,
-            task_props,
+            session_config,
             task_scalar_functions,
             task_aggregate_functions,
             runtime.clone(),
-            Extensions::default(),
-        )?);
+        ));
 
         let encoded_plan = &task.plan.as_slice();
 
