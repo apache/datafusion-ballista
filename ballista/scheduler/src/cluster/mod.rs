@@ -29,7 +29,7 @@ use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
 use crate::cluster::storage::etcd::EtcdClient;
 use crate::cluster::storage::sled::SledClient;
 use crate::cluster::storage::KeyValueStore;
-use crate::config::{ClusterStorageConfig, SchedulerConfig};
+use crate::config::{ClusterStorageConfig, SchedulerConfig, TaskDistribution};
 use crate::scheduler_server::SessionBuilder;
 use crate::state::execution_graph::ExecutionGraph;
 use crate::state::executor_manager::ExecutorReservation;
@@ -194,17 +194,6 @@ impl BallistaCluster {
 /// Stream of `ExecutorHeartbeat`. This stream should contain all `ExecutorHeartbeats` received
 /// by any schedulers with a shared `ClusterState`
 pub type ExecutorHeartbeatStream = Pin<Box<dyn Stream<Item = ExecutorHeartbeat> + Send>>;
-
-/// Method of distributing tasks to available executor slots
-#[derive(Debug, Clone, Copy)]
-pub enum TaskDistribution {
-    /// Eagerly assign tasks to executor slots. This will assign as many task slots per executor
-    /// as are currently available
-    Bias,
-    /// Distributed tasks evenely across executors. This will try and iterate through available executors
-    /// and assign one task to each executor until all tasks are assigned.
-    RoundRobin,
-}
 
 /// A trait that contains the necessary method to maintain a globally consistent view of cluster resources
 #[tonic::async_trait]

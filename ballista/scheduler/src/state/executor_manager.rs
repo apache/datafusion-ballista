@@ -17,15 +17,13 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::cluster::TaskDistribution;
-
 #[cfg(not(test))]
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf;
 
 use crate::cluster::ClusterState;
-use crate::config::SlotsPolicy;
+use crate::config::TaskDistribution;
 
 use crate::state::execution_graph::RunningTaskInfo;
 use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
@@ -101,13 +99,8 @@ pub struct ExecutorManager {
 impl ExecutorManager {
     pub(crate) fn new(
         cluster_state: Arc<dyn ClusterState>,
-        slots_policy: SlotsPolicy,
+        task_distribution: TaskDistribution,
     ) -> Self {
-        let task_distribution = match slots_policy {
-            SlotsPolicy::Bias => TaskDistribution::Bias,
-            SlotsPolicy::RoundRobin => TaskDistribution::RoundRobin,
-        };
-
         Self {
             task_distribution,
             cluster_state,
@@ -511,7 +504,7 @@ impl ExecutorManager {
 #[cfg(test)]
 mod test {
 
-    use crate::config::SlotsPolicy;
+    use crate::config::TaskDistribution;
 
     use crate::scheduler_server::timestamp_secs;
     use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
@@ -525,17 +518,19 @@ mod test {
 
     #[tokio::test]
     async fn test_reserve_and_cancel() -> Result<()> {
-        test_reserve_and_cancel_inner(SlotsPolicy::Bias).await?;
-        test_reserve_and_cancel_inner(SlotsPolicy::RoundRobin).await?;
+        test_reserve_and_cancel_inner(TaskDistribution::Bias).await?;
+        test_reserve_and_cancel_inner(TaskDistribution::RoundRobin).await?;
 
         Ok(())
     }
 
-    async fn test_reserve_and_cancel_inner(slots_policy: SlotsPolicy) -> Result<()> {
+    async fn test_reserve_and_cancel_inner(
+        task_distribution: TaskDistribution,
+    ) -> Result<()> {
         let cluster = test_cluster_context();
 
         let executor_manager =
-            ExecutorManager::new(cluster.cluster_state(), slots_policy);
+            ExecutorManager::new(cluster.cluster_state(), task_distribution);
 
         let executors = test_executors(10, 4);
 
@@ -551,7 +546,7 @@ mod test {
         assert_eq!(
             reservations.len(),
             40,
-            "Expected 40 reservations for policy {slots_policy:?}"
+            "Expected 40 reservations for policy {task_distribution:?}"
         );
 
         // Now cancel them
@@ -563,7 +558,7 @@ mod test {
         assert_eq!(
             reservations.len(),
             40,
-            "Expected 40 reservations for policy {slots_policy:?}"
+            "Expected 40 reservations for policy {task_distribution:?}"
         );
 
         Ok(())
@@ -571,17 +566,19 @@ mod test {
 
     #[tokio::test]
     async fn test_reserve_partial() -> Result<()> {
-        test_reserve_partial_inner(SlotsPolicy::Bias).await?;
-        test_reserve_partial_inner(SlotsPolicy::RoundRobin).await?;
+        test_reserve_partial_inner(TaskDistribution::Bias).await?;
+        test_reserve_partial_inner(TaskDistribution::RoundRobin).await?;
 
         Ok(())
     }
 
-    async fn test_reserve_partial_inner(slots_policy: SlotsPolicy) -> Result<()> {
+    async fn test_reserve_partial_inner(
+        task_distribution: TaskDistribution,
+    ) -> Result<()> {
         let cluster = test_cluster_context();
 
         let executor_manager =
-            ExecutorManager::new(cluster.cluster_state(), slots_policy);
+            ExecutorManager::new(cluster.cluster_state(), task_distribution);
 
         let executors = test_executors(10, 4);
 
@@ -621,13 +618,15 @@ mod test {
 
     #[tokio::test]
     async fn test_reserve_concurrent() -> Result<()> {
-        test_reserve_concurrent_inner(SlotsPolicy::Bias).await?;
-        test_reserve_concurrent_inner(SlotsPolicy::RoundRobin).await?;
+        test_reserve_concurrent_inner(TaskDistribution::Bias).await?;
+        test_reserve_concurrent_inner(TaskDistribution::RoundRobin).await?;
 
         Ok(())
     }
 
-    async fn test_reserve_concurrent_inner(slots_policy: SlotsPolicy) -> Result<()> {
+    async fn test_reserve_concurrent_inner(
+        task_distribution: TaskDistribution,
+    ) -> Result<()> {
         let (sender, mut receiver) =
             tokio::sync::mpsc::channel::<Result<Vec<ExecutorReservation>>>(1000);
 
@@ -635,7 +634,7 @@ mod test {
 
         let cluster = test_cluster_context();
         let executor_manager =
-            ExecutorManager::new(cluster.cluster_state(), slots_policy);
+            ExecutorManager::new(cluster.cluster_state(), task_distribution);
 
         for (executor_metadata, executor_data) in executors {
             executor_manager
@@ -670,17 +669,19 @@ mod test {
 
     #[tokio::test]
     async fn test_register_reserve() -> Result<()> {
-        test_register_reserve_inner(SlotsPolicy::Bias).await?;
-        test_register_reserve_inner(SlotsPolicy::RoundRobin).await?;
+        test_register_reserve_inner(TaskDistribution::Bias).await?;
+        test_register_reserve_inner(TaskDistribution::RoundRobin).await?;
 
         Ok(())
     }
 
-    async fn test_register_reserve_inner(slots_policy: SlotsPolicy) -> Result<()> {
+    async fn test_register_reserve_inner(
+        task_distribution: TaskDistribution,
+    ) -> Result<()> {
         let cluster = test_cluster_context();
 
         let executor_manager =
-            ExecutorManager::new(cluster.cluster_state(), slots_policy);
+            ExecutorManager::new(cluster.cluster_state(), task_distribution);
 
         let executors = test_executors(10, 4);
 
@@ -702,17 +703,19 @@ mod test {
 
     #[tokio::test]
     async fn test_ignore_fenced_executors() -> Result<()> {
-        test_ignore_fenced_executors_inner(SlotsPolicy::Bias).await?;
-        test_ignore_fenced_executors_inner(SlotsPolicy::RoundRobin).await?;
+        test_ignore_fenced_executors_inner(TaskDistribution::Bias).await?;
+        test_ignore_fenced_executors_inner(TaskDistribution::RoundRobin).await?;
 
         Ok(())
     }
 
-    async fn test_ignore_fenced_executors_inner(slots_policy: SlotsPolicy) -> Result<()> {
+    async fn test_ignore_fenced_executors_inner(
+        task_distribution: TaskDistribution,
+    ) -> Result<()> {
         let cluster = test_cluster_context();
 
         let executor_manager =
-            ExecutorManager::new(cluster.cluster_state(), slots_policy);
+            ExecutorManager::new(cluster.cluster_state(), task_distribution);
 
         // Setup two executors initially
         let executors = test_executors(2, 4);
