@@ -98,7 +98,7 @@ doc = "Delayed interval for cleaning up finished job state. Default: 3600"
 [[param]]
 name = "executor_slots_policy"
 type = "ballista_scheduler::config::SlotsPolicy"
-doc = "The executor slots policy for the scheduler, possible values: bias, round-robin, round-robin-local. Default: bias"
+doc = "The executor slots policy for the scheduler, possible values: bias, round-robin. Default: bias"
 default = "ballista_scheduler::config::SlotsPolicy::Bias"
 
 [[param]]

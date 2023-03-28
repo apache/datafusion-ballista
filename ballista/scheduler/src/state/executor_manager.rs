@@ -105,9 +105,7 @@ impl ExecutorManager {
     ) -> Self {
         let task_distribution = match slots_policy {
             SlotsPolicy::Bias => TaskDistribution::Bias,
-            SlotsPolicy::RoundRobin | SlotsPolicy::RoundRobinLocal => {
-                TaskDistribution::RoundRobin
-            }
+            SlotsPolicy::RoundRobin => TaskDistribution::RoundRobin,
         };
 
         Self {
@@ -529,7 +527,6 @@ mod test {
     async fn test_reserve_and_cancel() -> Result<()> {
         test_reserve_and_cancel_inner(SlotsPolicy::Bias).await?;
         test_reserve_and_cancel_inner(SlotsPolicy::RoundRobin).await?;
-        test_reserve_and_cancel_inner(SlotsPolicy::RoundRobinLocal).await?;
 
         Ok(())
     }
@@ -576,7 +573,6 @@ mod test {
     async fn test_reserve_partial() -> Result<()> {
         test_reserve_partial_inner(SlotsPolicy::Bias).await?;
         test_reserve_partial_inner(SlotsPolicy::RoundRobin).await?;
-        test_reserve_partial_inner(SlotsPolicy::RoundRobinLocal).await?;
 
         Ok(())
     }
@@ -627,7 +623,6 @@ mod test {
     async fn test_reserve_concurrent() -> Result<()> {
         test_reserve_concurrent_inner(SlotsPolicy::Bias).await?;
         test_reserve_concurrent_inner(SlotsPolicy::RoundRobin).await?;
-        test_reserve_concurrent_inner(SlotsPolicy::RoundRobinLocal).await?;
 
         Ok(())
     }
@@ -677,7 +672,6 @@ mod test {
     async fn test_register_reserve() -> Result<()> {
         test_register_reserve_inner(SlotsPolicy::Bias).await?;
         test_register_reserve_inner(SlotsPolicy::RoundRobin).await?;
-        test_register_reserve_inner(SlotsPolicy::RoundRobinLocal).await?;
 
         Ok(())
     }
@@ -710,7 +704,6 @@ mod test {
     async fn test_ignore_fenced_executors() -> Result<()> {
         test_ignore_fenced_executors_inner(SlotsPolicy::Bias).await?;
         test_ignore_fenced_executors_inner(SlotsPolicy::RoundRobin).await?;
-        test_ignore_fenced_executors_inner(SlotsPolicy::RoundRobinLocal).await?;
 
         Ok(())
     }
