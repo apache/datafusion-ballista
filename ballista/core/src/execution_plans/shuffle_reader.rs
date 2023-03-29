@@ -60,14 +60,14 @@ pub struct ShuffleReaderConfig {
     // Specifies the time in seconds before the grpc connection is timed out.
     pub grpc_connection_timeout: Duration,
     // Specifies the maximum number of remote partitions that will be read concurrently.
-    pub max_concurrent_remote_fetches: usize
+    pub max_concurrent_remote_fetches: usize,
 }
 
 impl Default for ShuffleReaderConfig {
     fn default() -> Self {
         Self {
             grpc_connection_timeout: Duration::from_secs(20),
-            max_concurrent_remote_fetches: 50
+            max_concurrent_remote_fetches: 50,
         }
     }
 }
@@ -81,7 +81,7 @@ pub struct ShuffleReaderExec {
     pub(crate) schema: SchemaRef,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
-    config: ShuffleReaderConfig
+    config: ShuffleReaderConfig,
 }
 
 impl ShuffleReaderExec {
@@ -89,13 +89,13 @@ impl ShuffleReaderExec {
     pub fn try_new(
         partition: Vec<Vec<PartitionLocation>>,
         schema: SchemaRef,
-        config: ShuffleReaderConfig
+        config: ShuffleReaderConfig,
     ) -> Result<Self> {
         Ok(Self {
             partition,
             schema,
             metrics: ExecutionPlanMetricsSet::new(),
-            config
+            config,
         })
     }
 }
@@ -157,8 +157,7 @@ impl ExecutionPlan for ShuffleReaderExec {
         // Shuffle partitions for evenly send fetching partition requests to avoid hot executors within multiple tasks
         partition_locations.shuffle(&mut thread_rng());
 
-        let response_receiver =
-            send_fetch_partitions(partition_locations, self.config);
+        let response_receiver = send_fetch_partitions(partition_locations, self.config);
 
         let result = RecordBatchStreamAdapter::new(
             Arc::new(self.schema.as_ref().clone()),
@@ -285,9 +284,10 @@ impl Stream for AbortableReceiverStream {
 
 fn send_fetch_partitions(
     partition_locations: Vec<PartitionLocation>,
-    config: ShuffleReaderConfig
+    config: ShuffleReaderConfig,
 ) -> AbortableReceiverStream {
-    let (response_sender, response_receiver) = mpsc::channel(config.max_concurrent_remote_fetches);
+    let (response_sender, response_receiver) =
+        mpsc::channel(config.max_concurrent_remote_fetches);
     let semaphore = Arc::new(Semaphore::new(config.max_concurrent_remote_fetches));
     let mut join_handles = vec![];
     let (local_locations, remote_locations): (Vec<_>, Vec<_>) = partition_locations
@@ -304,7 +304,9 @@ fn send_fetch_partitions(
     let response_sender_c = response_sender.clone();
     let join_handle = tokio::spawn(async move {
         for p in local_locations {
-            let r = PartitionReaderEnum::Local.fetch_partition(&p, config.clone().grpc_connection_timeout).await;
+            let r = PartitionReaderEnum::Local
+                .fetch_partition(&p, config.clone().grpc_connection_timeout)
+                .await;
             if let Err(e) = response_sender_c.send(r).await {
                 error!("Fail to send response event to the channel due to {}", e);
             }
@@ -318,7 +320,9 @@ fn send_fetch_partitions(
         let join_handle = tokio::spawn(async move {
             // Block if exceeds max request number
             let permit = semaphore.acquire_owned().await.unwrap();
-            let r = PartitionReaderEnum::FlightRemote.fetch_partition(&p, config.clone().grpc_connection_timeout).await;
+            let r = PartitionReaderEnum::FlightRemote
+                .fetch_partition(&p, config.clone().grpc_connection_timeout)
+                .await;
             // Block if the channel buffer is ful
             if let Err(e) = response_sender.send(r).await {
                 error!("Fail to send response event to the channel due to {}", e);
@@ -343,7 +347,7 @@ trait PartitionReader: Send + Sync + Clone {
     async fn fetch_partition(
         &self,
         location: &PartitionLocation,
-        timeout: Duration
+        timeout: Duration,
     ) -> result::Result<SendableRecordBatchStream, BallistaError>;
 }
 
@@ -361,10 +365,12 @@ impl PartitionReader for PartitionReaderEnum {
     async fn fetch_partition(
         &self,
         location: &PartitionLocation,
-        timeout: Duration
+        timeout: Duration,
     ) -> result::Result<SendableRecordBatchStream, BallistaError> {
         match self {
-            PartitionReaderEnum::FlightRemote => fetch_partition_remote(location, timeout).await,
+            PartitionReaderEnum::FlightRemote => {
+                fetch_partition_remote(location, timeout).await
+            }
             PartitionReaderEnum::Local => fetch_partition_local(location).await,
             PartitionReaderEnum::ObjectStoreRemote => {
                 fetch_partition_object_store(location).await
@@ -375,7 +381,7 @@ impl PartitionReader for PartitionReaderEnum {
 
 async fn fetch_partition_remote(
     location: &PartitionLocation,
-    timeout: Duration
+    timeout: Duration,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
@@ -383,19 +389,18 @@ async fn fetch_partition_remote(
     // And we should also avoid to keep alive too many connections for long time.
     let host = metadata.host.as_str();
     let port = metadata.port;
-    let mut ballista_client =
-        BallistaClient::try_new(host, port, timeout)
-            .await
-            .map_err(|error| match error {
-                // map grpc connection error to partition fetch error.
-                BallistaError::GrpcConnectionError(msg) => BallistaError::FetchFailed(
-                    metadata.id.clone(),
-                    partition_id.stage_id,
-                    partition_id.partition_id,
-                    msg,
-                ),
-                other => other,
-            })?;
+    let mut ballista_client = BallistaClient::try_new(host, port, timeout)
+        .await
+        .map_err(|error| match error {
+            // map grpc connection error to partition fetch error.
+            BallistaError::GrpcConnectionError(msg) => BallistaError::FetchFailed(
+                metadata.id.clone(),
+                partition_id.stage_id,
+                partition_id.partition_id,
+                msg,
+            ),
+            other => other,
+        })?;
 
     ballista_client
         .fetch_partition(&metadata.id, partition_id, &location.path, host, port)
@@ -556,8 +561,11 @@ mod tests {
             })
         }
         let shuffle_reader_config: ShuffleReaderConfig = Default::default();
-        let shuffle_reader_exec =
-            ShuffleReaderExec::try_new(vec![partitions], Arc::new(schema), shuffle_reader_config)?;
+        let shuffle_reader_exec = ShuffleReaderExec::try_new(
+            vec![partitions],
+            Arc::new(schema),
+            shuffle_reader_config,
+        )?;
         let mut stream = shuffle_reader_exec.execute(0, task_ctx)?;
         let batches = utils::collect_stream(&mut stream).await;
 

@@ -54,7 +54,7 @@ pub struct SchedulerConfig {
     pub executor_termination_grace_period: u64,
     // Time in seconds before gRPC service connections are timed out
     pub grpc_client_connection_timeout: u64,
-    pub grpc_server_connection_timeout: u64
+    pub grpc_server_connection_timeout: u64,
 }
 
 impl Default for SchedulerConfig {

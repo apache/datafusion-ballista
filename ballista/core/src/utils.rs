@@ -400,7 +400,7 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
 
 pub async fn create_grpc_client_connection<D>(
     dst: D,
-    timeout: Duration
+    timeout: Duration,
 ) -> std::result::Result<Channel, Error>
 where
     D: std::convert::TryInto<tonic::transport::Endpoint>,

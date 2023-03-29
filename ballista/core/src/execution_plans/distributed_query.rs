@@ -189,7 +189,6 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             )),
         };
 
-
         let stream = futures::stream::once(
             execute_query(
                 self.scheduler_url.clone(),
@@ -237,9 +236,10 @@ async fn execute_query(
 ) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
     info!("Connecting to Ballista scheduler at {}", scheduler_url);
     // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
-    let connection = create_grpc_client_connection(scheduler_url, connection_timeout.clone())
-        .await
-        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+    let connection =
+        create_grpc_client_connection(scheduler_url, connection_timeout.clone())
+            .await
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
     let mut scheduler = SchedulerGrpcClient::new(connection);
 

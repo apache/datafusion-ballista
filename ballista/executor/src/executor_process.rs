@@ -192,9 +192,12 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
 
     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;
     let connection = if connect_timeout == 0 {
-        create_grpc_client_connection(scheduler_url, Duration::from_secs(opt.grpc_client_connection_timeout))
-            .await
-            .context("Could not connect to scheduler")
+        create_grpc_client_connection(
+            scheduler_url,
+            Duration::from_secs(opt.grpc_client_connection_timeout),
+        )
+        .await
+        .context("Could not connect to scheduler")
     } else {
         // this feature was added to support docker-compose so that we can have the executor
         // wait for the scheduler to start, or at least run for 10 seconds before failing so
@@ -204,9 +207,12 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
         while x.is_none()
             && Instant::now().elapsed().as_secs() - start_time < connect_timeout
         {
-            match create_grpc_client_connection(scheduler_url.clone(), Duration::from_secs(opt.grpc_client_connection_timeout))
-                .await
-                .context("Could not connect to scheduler")
+            match create_grpc_client_connection(
+                scheduler_url.clone(),
+                Duration::from_secs(opt.grpc_client_connection_timeout),
+            )
+            .await
+            .context("Could not connect to scheduler")
             {
                 Ok(conn) => {
                     info!("Connected to scheduler at {}", scheduler_url);

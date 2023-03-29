@@ -77,9 +77,11 @@ pub async fn start_server(
 
             let keda_scaler = ExternalScalerServer::new(scheduler_server.clone());
 
-            let tonic_builder = create_grpc_server(Duration::from_secs(config.grpc_server_connection_timeout.clone()))
-                .add_service(scheduler_grpc_server)
-                .add_service(keda_scaler);
+            let tonic_builder = create_grpc_server(Duration::from_secs(
+                config.grpc_server_connection_timeout.clone(),
+            ))
+            .add_service(scheduler_grpc_server)
+            .add_service(keda_scaler);
 
             #[cfg(feature = "flight-sql")]
             let tonic_builder = tonic_builder.add_service(FlightServiceServer::new(
