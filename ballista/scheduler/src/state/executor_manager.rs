@@ -32,8 +32,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::utils::create_grpc_client_connection;
-use dashmap::{DashMap, DashSet};
-use futures::StreamExt;
+use dashmap::DashMap;
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -91,8 +90,6 @@ pub const EXPIRE_DEAD_EXECUTOR_INTERVAL_SECS: u64 = 15;
 pub struct ExecutorManager {
     task_distribution: TaskDistribution,
     cluster_state: Arc<dyn ClusterState>,
-    // dead executor sets:
-    dead_executors: Arc<DashSet<String>>,
     clients: ExecutorClients,
 }
 
@@ -104,31 +101,12 @@ impl ExecutorManager {
         Self {
             task_distribution,
             cluster_state,
-            dead_executors: Arc::new(DashSet::new()),
             clients: Default::default(),
         }
     }
 
-    /// Initialize a background process that will listen for executor heartbeats
     pub async fn init(&self) -> Result<()> {
-        let mut heartbeat_stream = self.cluster_state.executor_heartbeat_stream().await?;
-
-        info!("Initializing heartbeat listener");
-
-        let dead_executors = self.dead_executors.clone();
-        tokio::task::spawn(async move {
-            while let Some(heartbeat) = heartbeat_stream.next().await {
-                let executor_id = heartbeat.executor_id.clone();
-
-                if let Some(executor_status::Status::Dead(_)) = heartbeat
-                    .status
-                    .as_ref()
-                    .and_then(|status| status.status.as_ref())
-                {
-                    dead_executors.insert(executor_id);
-                }
-            }
-        });
+        self.cluster_state.init().await?;
 
         Ok(())
     }
@@ -137,7 +115,7 @@ impl ExecutorManager {
     /// for scheduling.
     /// This operation is atomic, so if this method return an Err, no slots have been reserved.
     pub async fn reserve_slots(&self, n: u32) -> Result<Vec<ExecutorReservation>> {
-        let alive_executors = self.get_alive_executors_within_one_minute().await?;
+        let alive_executors = self.get_alive_executors_within_one_minute();
 
         debug!("Alive executors: {alive_executors:?}");
 
@@ -227,14 +205,7 @@ impl ExecutorManager {
 
     /// Send rpc to Executors to clean up the job data
     async fn clean_up_job_data_inner(&self, job_id: String) {
-        let alive_executors = if let Ok(alive_executors) =
-            self.get_alive_executors_within_one_minute().await
-        {
-            alive_executors
-        } else {
-            warn!("Fail to get alive executors within one minute");
-            HashSet::new()
-        };
+        let alive_executors = self.get_alive_executors_within_one_minute();
         for executor in alive_executors {
             let job_id_clone = job_id.to_owned();
             if let Ok(mut client) = self.get_client(&executor).await {
@@ -286,7 +257,6 @@ impl ExecutorManager {
         let heartbeat_timestamps: Vec<(String, u64)> = self
             .cluster_state
             .executor_heartbeats()
-            .await?
             .into_iter()
             .map(|(executor_id, heartbeat)| (executor_id, heartbeat.timestamp))
             .collect();
@@ -366,13 +336,7 @@ impl ExecutorManager {
         reason: Option<String>,
     ) -> Result<()> {
         info!("Removing executor {}: {:?}", executor_id, reason);
-        self.cluster_state.remove_executor(executor_id).await?;
-
-        let executor_id = executor_id.to_owned();
-
-        self.dead_executors.insert(executor_id);
-
-        Ok(())
+        self.cluster_state.remove_executor(executor_id).await
     }
 
     #[cfg(not(test))]
@@ -413,19 +377,26 @@ impl ExecutorManager {
     }
 
     pub(crate) fn is_dead_executor(&self, executor_id: &str) -> bool {
-        self.dead_executors.contains(executor_id)
+        self.cluster_state
+            .get_executor_heartbeat(executor_id)
+            .map_or(true, |heartbeat| {
+                matches!(
+                    heartbeat.status,
+                    Some(ballista_core::serde::generated::ballista::ExecutorStatus {
+                        status: Some(executor_status::Status::Dead(_))
+                    })
+                )
+            })
     }
 
     /// Retrieve the set of all executor IDs where the executor has been observed in the last
     /// `last_seen_ts_threshold` seconds.
-    pub(crate) async fn get_alive_executors(
+    pub(crate) fn get_alive_executors(
         &self,
         last_seen_ts_threshold: u64,
-    ) -> Result<HashSet<String>> {
-        Ok(self
-            .cluster_state
+    ) -> HashSet<String> {
+        self.cluster_state
             .executor_heartbeats()
-            .await?
             .iter()
             .filter_map(|(exec, heartbeat)| {
                 let active = matches!(
@@ -439,14 +410,14 @@ impl ExecutorManager {
 
                 (active && live).then(|| exec.clone())
             })
-            .collect())
+            .collect()
     }
 
     /// Return a list of expired executors
-    pub(crate) async fn get_expired_executors(
+    pub(crate) fn get_expired_executors(
         &self,
         termination_grace_period: u64,
-    ) -> Result<Vec<ExecutorHeartbeat>> {
+    ) -> Vec<ExecutorHeartbeat> {
         let now_epoch_ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards");
@@ -462,10 +433,8 @@ impl ExecutorManager {
             .unwrap_or_else(|| Duration::from_secs(0))
             .as_secs();
 
-        Ok(self
-            .cluster_state
+        self.cluster_state
             .executor_heartbeats()
-            .await?
             .iter()
             .filter_map(|(_exec, heartbeat)| {
                 let terminating = matches!(
@@ -484,12 +453,10 @@ impl ExecutorManager {
                 ((terminating && grace_period_expired) || expired)
                     .then(|| heartbeat.clone())
             })
-            .collect::<Vec<_>>())
+            .collect::<Vec<_>>()
     }
 
-    pub(crate) async fn get_alive_executors_within_one_minute(
-        &self,
-    ) -> Result<HashSet<String>> {
+    pub(crate) fn get_alive_executors_within_one_minute(&self) -> HashSet<String> {
         let now_epoch_ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards");
@@ -497,7 +464,6 @@ impl ExecutorManager {
             .checked_sub(Duration::from_secs(60))
             .unwrap_or_else(|| Duration::from_secs(0));
         self.get_alive_executors(last_seen_threshold.as_secs())
-            .await
     }
 }
 

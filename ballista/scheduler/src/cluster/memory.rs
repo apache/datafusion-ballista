@@ -16,8 +16,8 @@
 // under the License.
 
 use crate::cluster::{
-    reserve_slots_bias, reserve_slots_round_robin, ClusterState, ExecutorHeartbeatStream,
-    JobState, JobStateEvent, JobStateEventStream, JobStatus, TaskDistribution,
+    reserve_slots_bias, reserve_slots_round_robin, ClusterState, JobState, JobStateEvent,
+    JobStateEventStream, JobStatus, TaskDistribution,
 };
 use crate::state::execution_graph::ExecutionGraph;
 use crate::state::executor_manager::ExecutorReservation;
@@ -53,9 +53,6 @@ pub struct InMemoryClusterState {
     executors: DashMap<String, ExecutorMetadata>,
     /// Last heartbeat received for each executor
     heartbeats: DashMap<String, ExecutorHeartbeat>,
-    /// Broadcast channel sender for heartbeats, If `None` there are not
-    /// subscribers
-    heartbeat_sender: ClusterEventSender<ExecutorHeartbeat>,
 }
 
 #[async_trait]
@@ -226,14 +223,12 @@ impl ClusterState for InMemoryClusterState {
     }
 
     async fn save_executor_heartbeat(&self, heartbeat: ExecutorHeartbeat) -> Result<()> {
-        if let Some(mut last) = self.heartbeats.get_mut(&heartbeat.executor_id) {
-            let _ = std::mem::replace(last.deref_mut(), heartbeat.clone());
+        let executor_id = heartbeat.executor_id.clone();
+        if let Some(mut last) = self.heartbeats.get_mut(&executor_id) {
+            let _ = std::mem::replace(last.deref_mut(), heartbeat);
         } else {
-            self.heartbeats
-                .insert(heartbeat.executor_id.clone(), heartbeat.clone());
+            self.heartbeats.insert(executor_id, heartbeat);
         }
-
-        self.heartbeat_sender.send(&heartbeat);
 
         Ok(())
     }
@@ -251,34 +246,20 @@ impl ClusterState for InMemoryClusterState {
             }
         }
 
-        if let Some(heartbeat) = self.heartbeats.get_mut(executor_id).as_deref_mut() {
-            let new_heartbeat = ExecutorHeartbeat {
-                executor_id: executor_id.to_string(),
-                timestamp: timestamp_secs(),
-                metrics: vec![],
-                status: Some(ExecutorStatus {
-                    status: Some(executor_status::Status::Dead(String::default())),
-                }),
-            };
-
-            *heartbeat = new_heartbeat;
-
-            self.heartbeat_sender.send(heartbeat);
-        }
+        self.heartbeats.remove(executor_id);
 
         Ok(())
     }
 
-    async fn executor_heartbeat_stream(&self) -> Result<ExecutorHeartbeatStream> {
-        Ok(Box::pin(self.heartbeat_sender.subscribe()))
-    }
-
-    async fn executor_heartbeats(&self) -> Result<HashMap<String, ExecutorHeartbeat>> {
-        Ok(self
-            .heartbeats
+    fn executor_heartbeats(&self) -> HashMap<String, ExecutorHeartbeat> {
+        self.heartbeats
             .iter()
             .map(|r| (r.key().clone(), r.value().clone()))
-            .collect())
+            .collect()
+    }
+
+    fn get_executor_heartbeat(&self, executor_id: &str) -> Option<ExecutorHeartbeat> {
+        self.heartbeats.get(executor_id).map(|r| r.value().clone())
     }
 }
 

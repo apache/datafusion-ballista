@@ -773,14 +773,12 @@ mod test {
 
         let active_executors = state
             .executor_manager
-            .get_alive_executors_within_one_minute()
-            .await?;
+            .get_alive_executors_within_one_minute();
         assert!(active_executors.is_empty());
 
         let expired_executors = state
             .executor_manager
-            .get_expired_executors(scheduler.executor_termination_grace_period)
-            .await?;
+            .get_expired_executors(scheduler.executor_termination_grace_period);
         assert!(expired_executors.is_empty());
 
         Ok(())
@@ -904,14 +902,12 @@ mod test {
 
         let active_executors = state
             .executor_manager
-            .get_alive_executors_within_one_minute()
-            .await?;
+            .get_alive_executors_within_one_minute();
         assert_eq!(active_executors.len(), 1);
 
         let expired_executors = state
             .executor_manager
-            .get_expired_executors(scheduler.executor_termination_grace_period)
-            .await?;
+            .get_expired_executors(scheduler.executor_termination_grace_period);
         assert!(expired_executors.is_empty());
 
         // simulate the heartbeat timeout
@@ -923,8 +919,7 @@ mod test {
 
         let active_executors = state
             .executor_manager
-            .get_alive_executors_within_one_minute()
-            .await?;
+            .get_alive_executors_within_one_minute();
         assert!(active_executors.is_empty());
         Ok(())
     }

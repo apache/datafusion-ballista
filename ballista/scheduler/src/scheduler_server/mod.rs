@@ -223,16 +223,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         let termination_grace_period = self.executor_termination_grace_period;
         tokio::task::spawn(async move {
             loop {
-                let expired_executors = if let Ok(expired_executors) = state
+                let expired_executors = state
                     .executor_manager
-                    .get_expired_executors(termination_grace_period)
-                    .await
-                {
-                    expired_executors
-                } else {
-                    warn!("Fail to get expired executors");
-                    vec![]
-                };
+                    .get_expired_executors(termination_grace_period);
                 for expired in expired_executors {
                     let executor_id = expired.executor_id.clone();
                     let executor_manager = state.executor_manager.clone();

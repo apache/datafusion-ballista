@@ -198,6 +198,11 @@ pub type ExecutorHeartbeatStream = Pin<Box<dyn Stream<Item = ExecutorHeartbeat> 
 /// A trait that contains the necessary method to maintain a globally consistent view of cluster resources
 #[tonic::async_trait]
 pub trait ClusterState: Send + Sync + 'static {
+    /// Initialize when it's necessary, especially for state with backend storage
+    async fn init(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Reserve up to `num_slots` executor task slots. If not enough task slots are available, reserve
     /// as many as possible.
     ///
@@ -250,12 +255,11 @@ pub trait ClusterState: Send + Sync + 'static {
     /// Remove the executor from the cluster
     async fn remove_executor(&self, executor_id: &str) -> Result<()>;
 
-    /// Return the stream of executor heartbeats observed by all schedulers in the cluster.
-    /// This can be aggregated to provide an eventually consistent view of all executors within the cluster
-    async fn executor_heartbeat_stream(&self) -> Result<ExecutorHeartbeatStream>;
-
     /// Return a map of the last seen heartbeat for all active executors
-    async fn executor_heartbeats(&self) -> Result<HashMap<String, ExecutorHeartbeat>>;
+    fn executor_heartbeats(&self) -> HashMap<String, ExecutorHeartbeat>;
+
+    /// Get executor heartbeat for the provided executor ID. Return None if the executor does not exist
+    fn get_executor_heartbeat(&self, executor_id: &str) -> Option<ExecutorHeartbeat>;
 }
 
 /// Events related to the state of jobs. Implementations may or may not support all event types.
