@@ -345,6 +345,9 @@ impl BallistaContext {
                 Statement::ShowColumns { .. } => {
                     is_show_variable = true;
                 }
+                Statement::ShowTables { .. } => {
+                    is_show_variable = true;
+                }
                 _ => {
                     is_show_variable = false;
                 }

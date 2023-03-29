@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::config::Extensions;
 use datafusion::physical_plan::ExecutionPlan;
 
 use ballista_core::serde::protobuf::{
@@ -184,14 +185,15 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     }
     let runtime = executor.runtime.clone();
     let session_id = task.session_id.clone();
-    let task_context = Arc::new(TaskContext::new(
+    let task_context = Arc::new(TaskContext::try_new(
         task_identity.clone(),
         session_id,
         task_props,
         task_scalar_functions,
         task_aggregate_functions,
         runtime.clone(),
-    ));
+        Extensions::default(),
+    )?);
 
     let plan: Arc<dyn ExecutionPlan> =
         U::try_decode(task.plan.as_slice()).and_then(|proto| {
