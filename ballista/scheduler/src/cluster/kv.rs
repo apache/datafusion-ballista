@@ -56,6 +56,8 @@ pub struct KeyValueState<
 > {
     /// Underlying `KeyValueStore`
     store: S,
+    /// ExecutorMetadata cache, executor_id -> ExecutorMetadata
+    executors: Arc<DashMap<String, ExecutorMetadata>>,
     /// ExecutorHeartbeat cache, executor_id -> ExecutorHeartbeat
     executor_heartbeats: Arc<DashMap<String, ExecutorHeartbeat>>,
     /// Codec used to serialize/deserialize execution plan
@@ -80,6 +82,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     ) -> Self {
         Self {
             store,
+            executors: Arc::new(DashMap::new()),
             executor_heartbeats: Arc::new(DashMap::new()),
             scheduler: scheduler.into(),
             codec,
@@ -147,6 +150,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         info!("Initializing heartbeat listener");
 
         let heartbeats = self.executor_heartbeats.clone();
+        let executors = self.executors.clone();
         tokio::task::spawn(async move {
             while let Some(heartbeat) = heartbeat_stream.next().await {
                 let executor_id = heartbeat.executor_id.clone();
@@ -158,6 +162,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 {
                     Some(protobuf::executor_status::Status::Dead(_)) => {
                         heartbeats.remove(&executor_id);
+                        executors.remove(&executor_id);
                     }
                     _ => {
                         heartbeats.insert(executor_id, heartbeat);
@@ -414,19 +419,35 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
     async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()> {
         let executor_id = metadata.id.clone();
-        let proto: protobuf::ExecutorMetadata = metadata.into();
 
+        let proto: protobuf::ExecutorMetadata = metadata.clone().into();
         self.store
-            .put(Keyspace::Executors, executor_id, proto.encode_to_vec())
-            .await
+            .put(
+                Keyspace::Executors,
+                executor_id.clone(),
+                proto.encode_to_vec(),
+            )
+            .await?;
+
+        self.executors.insert(executor_id, metadata);
+
+        Ok(())
     }
 
     async fn get_executor_metadata(&self, executor_id: &str) -> Result<ExecutorMetadata> {
-        let value = self.store.get(Keyspace::Executors, executor_id).await?;
+        let metadata = if let Some(metadata) = self.executors.get(executor_id) {
+            metadata.value().clone()
+        } else {
+            let value = self.store.get(Keyspace::Executors, executor_id).await?;
+            let decoded =
+                decode_into::<protobuf::ExecutorMetadata, ExecutorMetadata>(&value)?;
+            self.executors
+                .insert(executor_id.to_string(), decoded.clone());
 
-        let decoded =
-            decode_into::<protobuf::ExecutorMetadata, ExecutorMetadata>(&value)?;
-        Ok(decoded)
+            decoded
+        };
+
+        Ok(metadata)
     }
 
     async fn save_executor_heartbeat(&self, heartbeat: ExecutorHeartbeat) -> Result<()> {
