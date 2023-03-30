@@ -116,7 +116,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         Self {
             executor_manager: ExecutorManager::new(
                 cluster.cluster_state(),
-                config.executor_slots_policy,
+                config.task_distribution,
             ),
             task_manager: TaskManager::new(
                 cluster.job_state(),
@@ -140,7 +140,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         Self {
             executor_manager: ExecutorManager::new(
                 cluster.cluster_state(),
-                config.executor_slots_policy,
+                config.task_distribution,
             ),
             task_manager: TaskManager::with_launcher(
                 cluster.job_state(),

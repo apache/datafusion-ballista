@@ -96,10 +96,10 @@ default = "3600"
 doc = "Delayed interval for cleaning up finished job state. Default: 3600"
 
 [[param]]
-name = "executor_slots_policy"
-type = "ballista_scheduler::config::SlotsPolicy"
-doc = "The executor slots policy for the scheduler, possible values: bias, round-robin, round-robin-local. Default: bias"
-default = "ballista_scheduler::config::SlotsPolicy::Bias"
+name = "task_distribution"
+type = "ballista_scheduler::config::TaskDistribution"
+doc = "The policy of distributing tasks to available executor slots, possible values: bias, round-robin. Default: bias"
+default = "ballista_scheduler::config::TaskDistribution::Bias"
 
 [[param]]
 name = "plugin_dir"
