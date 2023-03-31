@@ -104,9 +104,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             } => {
                 info!("Job {} queued with name {:?}", job_id, job_name);
 
-                self.metrics_collector
-                    .record_queued(&job_id, timestamp_millis());
-
                 self.state
                     .task_manager
                     .queue_job(&job_id, &job_name, queued_at)
@@ -134,11 +131,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             resubmit: false,
                         }
                     };
-                    tx_event
-                        .post_event(event)
-                        .await
-                        .map_err(|e| error!("Fail to send event due to {}", e))
-                        .unwrap();
+                    if let Err(e) = tx_event.post_event(event).await {
+                        error!("Fail to send event due to {}", e);
+                    }
                 });
             }
             QueryStageSchedulerEvent::JobSubmitted {
@@ -185,6 +180,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
                         tokio::task::spawn(async move {
                             tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+
                             if let Err(e) = tx_event
                                 .post_event(QueryStageSchedulerEvent::JobSubmitted {
                                     job_id,

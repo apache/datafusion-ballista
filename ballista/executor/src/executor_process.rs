@@ -56,6 +56,7 @@ use ballista_core::utils::{
 };
 use ballista_core::BALLISTA_VERSION;
 
+use crate::execution_engine::ExecutionEngine;
 use crate::executor::Executor;
 use crate::executor_server::TERMINATING;
 use crate::flight_service::BallistaFlightService;
@@ -83,6 +84,9 @@ pub struct ExecutorProcessConfig {
     pub log_rotation_policy: LogRotationPolicy,
     pub job_data_ttl_seconds: u64,
     pub job_data_clean_up_interval_seconds: u64,
+    /// Optional execution engine to use to execute physical plans, will default to
+    /// DataFusion if none is provided.
+    pub execution_engine: Option<Arc<dyn ExecutionEngine>>,
 }
 
 pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
@@ -182,6 +186,7 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
         runtime,
         metrics_collector,
         concurrent_tasks,
+        opt.execution_engine,
     ));
 
     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;
@@ -333,7 +338,7 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
 
     if notify_scheduler {
         // Send a heartbeat to update status of executor to `Fenced`. This should signal to the
-        // scheduler to no longer scheduler tasks on this executor
+        // scheduler to no longer schedule tasks on this executor
         if let Err(error) = scheduler
             .heart_beat_from_executor(HeartBeatParams {
                 executor_id: executor_id.clone(),

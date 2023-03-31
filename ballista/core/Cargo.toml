@@ -19,7 +19,7 @@
 name = "ballista-core"
 description = "Ballista Distributed Compute"
 license = "Apache-2.0"
-version = "0.10.0"
+version = "0.11.0"
 homepage = "https://github.com/apache/arrow-ballista"
 repository = "https://github.com/apache/arrow-ballista"
 readme = "README.md"
@@ -45,14 +45,13 @@ simd = ["datafusion/simd"]
 
 [dependencies]
 ahash = { version = "0.8", default-features = false }
-
-arrow-flight = { version = "32.0.0", features = ["flight-sql-experimental"] }
+arrow-flight = { workspace = true }
 async-trait = "0.1.41"
 chrono = { version = "0.4", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
-datafusion = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v18.0.0-cx.2" }
+datafusion = { workspace = true }
 datafusion-objectstore-hdfs = { version = "0.1.1", default-features = false, optional = true }
-datafusion-proto = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v18.0.0-cx.2" }
+datafusion-proto = { workspace = true }
 futures = "0.3"
 hashbrown = "0.13"
 itertools = "0.10"
@@ -60,7 +59,7 @@ itertools = "0.10"
 lazy_static = "1.4.0"
 libloading = "0.7.3"
 log = "0.4"
-lru = "0.8.1"
+lru = "0.10.0"
 object_store = "0.5.2"
 once_cell = "1.9.0"
 
@@ -70,7 +69,7 @@ prost = "0.11"
 prost-types = "0.11"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
-sqlparser = "0.30.0"
+sqlparser = "0.32.0"
 sys-info = "0.9.0"
 tokio = "1.0"
 tokio-stream = { version = "0.1", features = ["net"] }
@@ -85,4 +84,7 @@ tempfile = "3"
 
 [build-dependencies]
 rustc_version = "0.4.0"
-tonic-build = { version = "0.8", default-features = false, features = ["transport", "prost"] }
+tonic-build = { version = "0.8", default-features = false, features = [
+    "transport",
+    "prost",
+] }

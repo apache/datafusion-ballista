@@ -26,7 +26,7 @@
 First, run scheduler from project:
 
 ```shell
-$ cd rust/scheduler
+$ cd ballista/scheduler
 $ RUST_LOG=info cargo run --release
 ...
     Finished release [optimized] target(s) in 11.92s
@@ -36,7 +36,7 @@ $ RUST_LOG=info cargo run --release
 and run executor in new terminal:
 
 ```shell
-$ cd rust/executor
+$ cd ballista/executor
 $ RUST_LOG=info cargo run --release
     Finished release [optimized] target(s) in 0.09s
     Running `/path-to-project/target/release/ballista-executor`
@@ -45,7 +45,7 @@ $ RUST_LOG=info cargo run --release
 ### Run Client project
 
 ```shell
-$ cd scheduler/ui
+$ cd ballista/scheduler/ui
 $ yarn
 Resolving packages...
 $ yarn start

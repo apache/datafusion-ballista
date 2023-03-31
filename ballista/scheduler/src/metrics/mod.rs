@@ -26,10 +26,6 @@ use std::sync::Arc;
 /// will be passed when constructing the `QueryStageScheduler` which is the core event loop of the scheduler.
 /// The event loop will then record metric events through this trait.
 pub trait SchedulerMetricsCollector: Send + Sync {
-    /// Record that job with `job_id` was queued. This will be invoked
-    /// when the job is queued for scheduling.
-    /// When invoked should specify the timestamp in milliseconds when the job was queued
-    fn record_queued(&self, job_id: &str, queued_at: u64);
     /// Record that job with `job_id` was submitted. This will be invoked
     /// after the job's `ExecutionGraph` is created and it is ready to be scheduled
     /// on executors.
@@ -66,7 +62,6 @@ pub trait SchedulerMetricsCollector: Send + Sync {
 pub struct NoopMetricsCollector {}
 
 impl SchedulerMetricsCollector for NoopMetricsCollector {
-    fn record_queued(&self, _job_id: &str, _queued_at: u64) {}
     fn record_submitted(&self, _job_id: &str, _queued_at: u64, _submitted_at: u64) {}
     fn record_completed(&self, _job_id: &str, _queued_at: u64, _completed_att: u64) {}
     fn record_failed(&self, _job_id: &str, _queued_at: u64, _failed_at: u64) {}

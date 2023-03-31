@@ -19,7 +19,7 @@
 name = "ballista-executor"
 description = "Ballista Distributed Compute - Executor"
 license = "Apache-2.0"
-version = "0.10.0"
+version = "0.11.0"
 homepage = "https://github.com/apache/arrow-ballista"
 repository = "https://github.com/apache/arrow-ballista"
 readme = "README.md"
@@ -38,15 +38,15 @@ default = ["mimalloc"]
 
 [dependencies]
 anyhow = "1"
-arrow = { version = "32.0.0" }
-arrow-flight = { version = "32.0.0" }
+arrow = { workspace = true }
+arrow-flight = { workspace = true }
 async-trait = "0.1.41"
-ballista-core = { path = "../core", version = "0.10.0" }
+ballista-core = { path = "../core", version = "0.11.0", features = ["s3"] }
 chrono = { version = "0.4", default-features = false }
 configure_me = "0.4.0"
 dashmap = "5.4.0"
-datafusion = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v18.0.0-cx.2" }
-datafusion-proto = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v18.0.0-cx.2" }
+datafusion = { workspace = true }
+datafusion-proto = { workspace = true }
 futures = "0.3"
 hyper = "0.14.4"
 log = "0.4"
@@ -54,12 +54,22 @@ mimalloc = { version = "0.1", default-features = false, optional = true }
 num_cpus = "1.13.0"
 parking_lot = "0.12"
 tempfile = "3"
-tokio = { version = "1.0", features = ["macros", "rt", "rt-multi-thread", "parking_lot", "signal"] }
+tokio = { version = "1.0", features = [
+    "macros",
+    "rt",
+    "rt-multi-thread",
+    "parking_lot",
+    "signal",
+] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = "0.8"
 tracing = "0.1.36"
 tracing-appender = "0.2.2"
-tracing-subscriber = { version = "0.3.15", features = ["fmt", "env-filter", "ansi"] }
+tracing-subscriber = { version = "0.3.15", features = [
+    "fmt",
+    "env-filter",
+    "ansi",
+] }
 uuid = { version = "1.0", features = ["v4"] }
 
 [dev-dependencies]

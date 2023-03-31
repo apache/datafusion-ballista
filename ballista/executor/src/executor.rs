@@ -17,26 +17,24 @@
 
 //! Ballista executor logic
 
-use dashmap::DashMap;
-use std::collections::HashMap;
-use std::sync::Arc;
-
+use crate::execution_engine::DefaultExecutionEngine;
+use crate::execution_engine::ExecutionEngine;
+use crate::execution_engine::QueryStageExecutor;
 use crate::metrics::ExecutorMetricsCollector;
 use ballista_core::error::BallistaError;
-use ballista_core::execution_plans::ShuffleWriterExec;
 use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::ExecutorRegistration;
-use datafusion::error::DataFusionError;
+use ballista_core::serde::scheduler::PartitionId;
+use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
-
 use datafusion::physical_plan::udaf::AggregateUDF;
 use datafusion::physical_plan::udf::ScalarUDF;
-use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+use datafusion::physical_plan::Partitioning;
 use futures::future::AbortHandle;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::watch;
-
-use ballista_core::serde::scheduler::PartitionId;
 
 type AbortHandles = Arc<DashMap<(usize, PartitionId), AbortHandle>>;
 
@@ -67,6 +65,10 @@ pub struct Executor {
     /// Handles to abort executing tasks
     abort_handles: AbortHandles,
 
+    /// Execution engine that the executor will delegate to
+    /// for executing query stages
+    pub(crate) execution_engine: Arc<dyn ExecutionEngine>,
+
     drained: Arc<watch::Sender<()>>,
     check_drained: watch::Receiver<()>,
 }
@@ -79,6 +81,7 @@ impl Executor {
         runtime: Arc<RuntimeEnv>,
         metrics_collector: Arc<dyn ExecutorMetricsCollector>,
         concurrent_tasks: usize,
+        execution_engine: Option<Arc<dyn ExecutionEngine>>,
     ) -> Self {
         Self::with_functions(
             metadata,
@@ -86,17 +89,20 @@ impl Executor {
             runtime,
             metrics_collector,
             concurrent_tasks,
+            execution_engine,
             HashMap::new(),
             HashMap::new(),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn with_functions(
         metadata: ExecutorRegistration,
         work_dir: &str,
         runtime: Arc<RuntimeEnv>,
         metrics_collector: Arc<dyn ExecutorMetricsCollector>,
         concurrent_tasks: usize,
+        execution_engine: Option<Arc<dyn ExecutionEngine>>,
         scalar_functions: HashMap<String, Arc<ScalarUDF>>,
         aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
     ) -> Self {
@@ -111,6 +117,8 @@ impl Executor {
             metrics_collector,
             concurrent_tasks,
             abort_handles: Default::default(),
+            execution_engine: execution_engine
+                .unwrap_or_else(|| Arc::new(DefaultExecutionEngine {})),
             drained: Arc::new(drained),
             check_drained,
         }
@@ -121,16 +129,16 @@ impl Executor {
     /// Execute one partition of a query stage and persist the result to disk in IPC format. On
     /// success, return a RecordBatch containing metadata about the results, including path
     /// and statistics.
-    pub async fn execute_shuffle_write(
+    pub async fn execute_query_stage(
         &self,
         task_id: usize,
         partition: PartitionId,
-        shuffle_writer: Arc<ShuffleWriterExec>,
+        query_stage_exec: Arc<dyn QueryStageExecutor>,
         task_ctx: Arc<TaskContext>,
         _shuffle_output_partitioning: Option<Partitioning>,
     ) -> Result<Vec<protobuf::ShuffleWritePartition>, BallistaError> {
         let (task, abort_handle) = futures::future::abortable(
-            shuffle_writer.execute_shuffle_write(partition.partition_id, task_ctx),
+            query_stage_exec.execute_query_stage(partition.partition_id, task_ctx),
         );
 
         self.abort_handles
@@ -146,38 +154,10 @@ impl Executor {
             &partition.job_id,
             partition.stage_id,
             partition.partition_id,
-            shuffle_writer,
+            query_stage_exec,
         );
 
         Ok(partitions)
-    }
-
-    /// Recreate the shuffle writer with the correct working directory.
-    pub fn new_shuffle_writer(
-        &self,
-        job_id: String,
-        stage_id: usize,
-        plan: Arc<dyn ExecutionPlan>,
-    ) -> Result<Arc<ShuffleWriterExec>, BallistaError> {
-        let exec = if let Some(shuffle_writer) =
-            plan.as_any().downcast_ref::<ShuffleWriterExec>()
-        {
-            // recreate the shuffle writer with the correct working directory
-            ShuffleWriterExec::try_new_with_limit(
-                job_id,
-                stage_id,
-                plan.children()[0].clone(),
-                self.work_dir.clone(),
-                shuffle_writer.shuffle_output_partitioning().cloned(),
-                shuffle_writer.limit(),
-            )
-        } else {
-            Err(DataFusionError::Internal(
-                "Plan passed to execute_shuffle_write is not a ShuffleWriterExec"
-                    .to_string(),
-            ))
-        }?;
-        Ok(Arc::new(exec))
     }
 
     pub async fn cancel_task(
@@ -248,6 +228,7 @@ mod test {
     use ballista_core::serde::protobuf::ExecutorRegistration;
     use datafusion::execution::context::TaskContext;
 
+    use crate::execution_engine::DefaultQueryStageExec;
     use ballista_core::serde::scheduler::PartitionId;
     use datafusion::error::DataFusionError;
     use datafusion::physical_expr::PhysicalSortExpr;
@@ -347,6 +328,8 @@ mod test {
         )
         .expect("creating shuffle writer");
 
+        let query_stage_exec = DefaultQueryStageExec::new(shuffle_write);
+
         let executor_registration = ExecutorRegistration {
             id: "executor".to_string(),
             port: 0,
@@ -363,6 +346,7 @@ mod test {
             ctx.runtime_env(),
             Arc::new(LoggingMetricsCollector {}),
             2,
+            None,
         );
 
         let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -376,10 +360,10 @@ mod test {
                 partition_id: 0,
             };
             let task_result = executor_clone
-                .execute_shuffle_write(
+                .execute_query_stage(
                     1,
                     part,
-                    Arc::new(shuffle_write),
+                    Arc::new(query_stage_exec),
                     ctx.task_ctx(),
                     None,
                 )

@@ -24,6 +24,7 @@ use ballista_core::serde::protobuf;
 
 use crate::cluster::ClusterState;
 use crate::config::SlotsPolicy;
+
 use crate::state::execution_graph::RunningTaskInfo;
 use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 use ballista_core::serde::protobuf::{

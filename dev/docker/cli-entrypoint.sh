@@ -1,3 +1,5 @@
+#!/bin/bash
+#
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -15,26 +17,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-version: 2
-updates:
-  - package-ecosystem: cargo
-    directory: "/"
-    schedule:
-      interval: daily
-    open-pull-requests-limit: 10
-    target-branch: main
-    labels: [auto-dependencies]
-    ignore:
-      # arrow and datafusion are bumped manually
-      - dependency-name: "arrow*"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "datafusion*"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "sqlparser"
-        update-types: ["version-update:semver-major"]
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 10
-    labels: [auto-dependencies]
+set -e
+
+/root/ballista-cli "$@"
