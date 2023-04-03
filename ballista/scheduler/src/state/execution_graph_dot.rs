@@ -627,7 +627,7 @@ filter_expr="]
             .with_target_partitions(48)
             .with_batch_size(4096);
         config
-            .config_options_mut()
+            .options_mut()
             .optimizer
             .enable_round_robin_repartition = false;
         let ctx = SessionContext::with_config(config);
@@ -654,7 +654,7 @@ filter_expr="]
             .with_target_partitions(48)
             .with_batch_size(4096);
         config
-            .config_options_mut()
+            .options_mut()
             .optimizer
             .enable_round_robin_repartition = false;
         let ctx = SessionContext::with_config(config);
