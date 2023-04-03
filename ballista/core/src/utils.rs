@@ -94,6 +94,64 @@ impl BallistaObjectStoreRegistry {
     pub fn new() -> Self {
         Default::default()
     }
+
+    /// Find a suitable object store based on its url and enabled features if possible
+    fn get_feature_store(
+        &self,
+        url: &Url,
+    ) -> datafusion::error::Result<Arc<dyn ObjectStore>> {
+        #[cfg(any(feature = "hdfs", feature = "hdfs3"))]
+        {
+            if let Some(store) = HadoopFileSystem::new(url.as_str()) {
+                return Ok(Arc::new(store));
+            }
+        }
+
+        #[cfg(feature = "s3")]
+        {
+            if url.as_str().starts_with("s3://") {
+                if let Some(bucket_name) = url.host_str() {
+                    let store = Arc::new(
+                        AmazonS3Builder::from_env()
+                            .with_bucket_name(bucket_name)
+                            .build()?,
+                    );
+                    return Ok(store);
+                }
+            // Support Alibaba Cloud OSS
+            // Use S3 compatibility mode to access Alibaba Cloud OSS
+            // The `AWS_ENDPOINT` should have bucket name included
+            } else if url.as_str().starts_with("oss://") {
+                if let Some(bucket_name) = url.host_str() {
+                    let store = Arc::new(
+                        AmazonS3Builder::from_env()
+                            .with_virtual_hosted_style_request(true)
+                            .with_bucket_name(bucket_name)
+                            .build()?,
+                    );
+                    return Ok(store);
+                }
+            }
+        }
+
+        #[cfg(feature = "azure")]
+        {
+            if url.to_string().starts_with("azure://") {
+                if let Some(bucket_name) = url.host_str() {
+                    let store = Arc::new(
+                        MicrosoftAzureBuilder::from_env()
+                            .with_container_name(bucket_name)
+                            .build()?,
+                    );
+                    return Ok(store);
+                }
+            }
+        }
+
+        Err(DataFusionError::Execution(format!(
+            "No object store available for: {url}"
+        )))
+    }
 }
 
 impl ObjectStoreRegistry for BallistaObjectStoreRegistry {
@@ -105,67 +163,12 @@ impl ObjectStoreRegistry for BallistaObjectStoreRegistry {
         self.inner.register_store(url, store)
     }
 
-    /// Detector a suitable object store based on its url if possible
-    /// Return the key and object store
-    #[allow(unused_variables)]
     fn get_store(&self, url: &Url) -> datafusion::error::Result<Arc<dyn ObjectStore>> {
         self.inner.get_store(url).or_else(|_| {
-            #[cfg(any(feature = "hdfs", feature = "hdfs3"))]
-            {
-                if let Some(store) = HadoopFileSystem::new(url.as_str()) {
-                    let store = Arc::new(store);
-                    self.inner.register_store(url, store.clone());
-                    return Ok(store);
-                }
-            }
+            let store = self.get_feature_store(url)?;
+            self.inner.register_store(url, store.clone());
 
-            #[cfg(feature = "s3")]
-            {
-                if url.as_str().starts_with("s3://") {
-                    if let Some(bucket_name) = url.host_str() {
-                        let store = Arc::new(
-                            AmazonS3Builder::from_env()
-                                .with_bucket_name(bucket_name)
-                                .build()?,
-                        );
-                        self.inner.register_store(url, store.clone());
-                        return Ok(store);
-                    }
-                // Support Alibaba Cloud OSS
-                // Use S3 compatibility mode to access Alibaba Cloud OSS
-                // The `AWS_ENDPOINT` should have bucket name included
-                } else if url.as_str().starts_with("oss://") {
-                    if let Some(bucket_name) = url.host_str() {
-                        let store = Arc::new(
-                            AmazonS3Builder::from_env()
-                                .with_virtual_hosted_style_request(true)
-                                .with_bucket_name(bucket_name)
-                                .build()?,
-                        );
-                        self.inner.register_store(url, store.clone());
-                        return Ok(store);
-                    }
-                }
-            }
-
-            #[cfg(feature = "azure")]
-            {
-                if url.to_string().starts_with("azure://") {
-                    if let Some(bucket_name) = url.host_str() {
-                        let store = Arc::new(
-                            MicrosoftAzureBuilder::from_env()
-                                .with_container_name(bucket_name)
-                                .build()?,
-                        );
-                        self.inner.register_store(url, store.clone());
-                        return Ok(store);
-                    }
-                }
-            }
-
-            Err(DataFusionError::Execution(format!(
-                "No object store available for {url}"
-            )))
+            Ok(store)
         })
     }
 }
