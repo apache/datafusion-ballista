@@ -140,9 +140,9 @@ impl BallistaClient {
             let res = match result {
                 Ok(res) => res,
                 Err(ref err) => {
-                    // IO related error like connection timeout, reset... will warp with Code::Internal
+                    // IO related error like connection timeout, reset... will warp with Code::Unknown
                     // This means IO related error will retry.
-                    if i == IO_RETRIES_TIMES - 1 || err.code() != Code::Internal {
+                    if i == IO_RETRIES_TIMES - 1 || err.code() != Code::Unknown {
                         return BallistaError::GrpcActionError(format!(
                             "{:?}",
                             result.unwrap_err()
@@ -171,7 +171,7 @@ impl BallistaClient {
                     };
                 }
                 Err(e) => {
-                    if i == IO_RETRIES_TIMES - 1 || e.code() != Code::Internal {
+                    if i == IO_RETRIES_TIMES - 1 || e.code() != Code::Unknown {
                         return BallistaError::GrpcActionError(format!(
                             "{:?}",
                             e.to_string()
