@@ -54,7 +54,7 @@ pub struct BallistaClient {
 }
 
 const IO_RETRIES_TIMES: u8 = 3;
-const IO_RETRY_WAIT_TIME_MS: u64 = 5000;
+const IO_RETRY_WAIT_TIME_MS: u64 = 3000;
 
 impl BallistaClient {
     /// Create a new BallistaClient to connect to the executor listening on the specified
@@ -170,7 +170,7 @@ impl BallistaClient {
                     };
                 }
                 Err(e) => {
-                    if i == IO_RETRIES_TIMES - 1 {
+                    if i == IO_RETRIES_TIMES - 1 || e.code() != Code::Internal{
                         return BallistaError::GrpcActionError(format!(
                             "{:?}",
                             e.to_string()
