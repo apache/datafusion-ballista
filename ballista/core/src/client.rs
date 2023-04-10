@@ -62,14 +62,13 @@ impl BallistaClient {
     pub async fn try_new(host: &str, port: u16) -> Result<Self> {
         let addr = format!("http://{host}:{port}");
         debug!("BallistaClient connecting to {}", addr);
-        let connection =
-            create_grpc_client_connection(addr.clone())
-                .await
-                .map_err(|e| {
-                    BallistaError::GrpcConnectionError(format!(
-                        "Error connecting to Ballista scheduler or executor at {addr}: {e:?}"
-                    ))
-                })?;
+        let connection = create_grpc_client_connection(addr.clone()).await.map_err(
+            |e| {
+                BallistaError::GrpcConnectionError(format!(
+                    "Error connecting to Ballista scheduler or executor at {addr}: {e:?}"
+                ))
+            },
+        )?;
         let flight_client = FlightServiceClient::new(connection);
         debug!("BallistaClient connected OK");
 
@@ -122,25 +121,32 @@ impl BallistaClient {
 
         for i in 0..IO_RETRIES_TIMES {
             if i > 0 {
-                warn!("Remote shuffle read fail, retry {} times, sleep {} ms.", i, IO_RETRY_WAIT_TIME_MS);
+                warn!(
+                    "Remote shuffle read fail, retry {} times, sleep {} ms.",
+                    i, IO_RETRY_WAIT_TIME_MS
+                );
                 tokio::time::sleep(std::time::Duration::from_millis(
-                    IO_RETRY_WAIT_TIME_MS
-                )).await;
+                    IO_RETRY_WAIT_TIME_MS,
+                ))
+                .await;
             }
 
-            let request = tonic::Request::new(Ticket { ticket: buf.clone().into() });
-            let result = self
-                .flight_client
-                .do_get(request)
-                .await;
+            let request = tonic::Request::new(Ticket {
+                ticket: buf.clone().into(),
+            });
+            let result = self.flight_client.do_get(request).await;
 
             let res = match result {
-                Ok(res) => { res }
+                Ok(res) => res,
                 Err(ref err) => {
                     // IO related error like connection timeout, reset... will warp with Code::Internal
                     // This means IO related error will retry.
                     if i == IO_RETRIES_TIMES - 1 || err.code() != Code::Internal {
-                        return BallistaError::GrpcActionError(format!("{:?}", result.unwrap_err())).into();
+                        return BallistaError::GrpcActionError(format!(
+                            "{:?}",
+                            result.unwrap_err()
+                        ))
+                        .into();
                     }
                     // retry request
                     continue;
@@ -148,10 +154,7 @@ impl BallistaClient {
             };
 
             let mut stream = res.into_inner();
-            match stream
-                .message()
-                .await
-            {
+            match stream.message().await {
                 Ok(res) => {
                     return match res {
                         Some(flight_data) => {
@@ -168,7 +171,11 @@ impl BallistaClient {
                 }
                 Err(e) => {
                     if i == IO_RETRIES_TIMES - 1 {
-                        return BallistaError::GrpcActionError(format!("{:?}", e.to_string())).into();
+                        return BallistaError::GrpcActionError(format!(
+                            "{:?}",
+                            e.to_string()
+                        ))
+                        .into();
                     }
                     continue;
                 }
@@ -211,7 +218,7 @@ impl Stream for FlightDataStream {
                             self.schema.clone(),
                             &self.dictionaries_by_id,
                         )
-                            .map_err(DataFusionError::ArrowError)
+                        .map_err(DataFusionError::ArrowError)
                     });
                 Some(converted_chunk)
             }
