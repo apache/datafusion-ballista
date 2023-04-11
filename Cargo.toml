@@ -20,10 +20,10 @@ members = ["ballista-cli", "ballista/client", "ballista/core", "ballista/executo
 exclude = ["python"]
 
 [workspace.dependencies]
-arrow = { version = "34.0.0" }
-arrow-flight = { version = "34.0.0", features = ["flight-sql-experimental"] }
-datafusion = "21.0.0"
-datafusion-proto = "21.0.0"
+arrow = { version = "36.0.0" }
+arrow-flight = { version = "36.0.0", features = ["flight-sql-experimental"] }
+datafusion = "22.0.0"
+datafusion-proto = "22.0.0"
 
 # cargo build --profile release-lto
 [profile.release-lto]

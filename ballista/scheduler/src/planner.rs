@@ -109,7 +109,8 @@ impl DistributedPlanner {
             let unresolved_shuffle = create_unresolved_shuffle(&shuffle_writer);
             stages.push(shuffle_writer);
             Ok((
-                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
+                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?
+                    .into(),
                 stages,
             ))
         } else if let Some(_sort_preserving_merge) = execution_plan
@@ -125,7 +126,8 @@ impl DistributedPlanner {
             let unresolved_shuffle = create_unresolved_shuffle(&shuffle_writer);
             stages.push(shuffle_writer);
             Ok((
-                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
+                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?
+                    .into(),
                 stages,
             ))
         } else if let Some(repart) =
@@ -156,7 +158,7 @@ impl DistributedPlanner {
             )))
         } else {
             Ok((
-                with_new_children_if_necessary(execution_plan, children)?,
+                with_new_children_if_necessary(execution_plan, children)?.into(),
                 stages,
             ))
         }
@@ -251,7 +253,7 @@ pub fn remove_unresolved_shuffles(
             new_children.push(remove_unresolved_shuffles(child, partition_locations)?);
         }
     }
-    Ok(with_new_children_if_necessary(stage, new_children)?)
+    Ok(with_new_children_if_necessary(stage, new_children)?.into())
 }
 
 /// Rollback the ShuffleReaderExec to UnresolvedShuffleExec.
@@ -279,7 +281,7 @@ pub fn rollback_resolved_shuffles(
             new_children.push(rollback_resolved_shuffles(child)?);
         }
     }
-    Ok(with_new_children_if_necessary(stage, new_children)?)
+    Ok(with_new_children_if_necessary(stage, new_children)?.into())
 }
 
 fn create_shuffle_writer(
