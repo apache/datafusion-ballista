@@ -365,7 +365,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                     }
                 }
             }
-            return Ok(VisitRecursion::Continue);
+            Ok(VisitRecursion::Continue)
         })?;
 
         let plan = session_ctx.state().create_physical_plan(plan).await?;
