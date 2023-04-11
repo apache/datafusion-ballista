@@ -164,7 +164,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         self.query_stage_scheduler.metrics_collector()
     }
 
-    pub(crate) async fn submit_job(
+    pub async fn submit_job(
         &self,
         job_id: &str,
         job_name: &str,
@@ -185,7 +185,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
 
     /// It just send task status update event to the channel,
     /// and will not guarantee the event processing completed after return
-    pub(crate) async fn update_task_status(
+    pub async fn update_task_status(
         &self,
         executor_id: &str,
         tasks_status: Vec<TaskStatus>,
