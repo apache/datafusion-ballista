@@ -53,6 +53,7 @@ pub struct BallistaClient {
     flight_client: FlightServiceClient<tonic::transport::channel::Channel>,
 }
 
+//TODO make this configurable
 const IO_RETRIES_TIMES: u8 = 3;
 const IO_RETRY_WAIT_TIME_MS: u64 = 3000;
 
