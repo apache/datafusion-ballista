@@ -337,6 +337,9 @@ impl BallistaContext {
                 Statement::ShowColumns { .. } => {
                     is_show_variable = true;
                 }
+                Statement::ShowTables { .. } => {
+                    is_show_variable = true;
+                }
                 _ => {
                     is_show_variable = false;
                 }
@@ -397,7 +400,7 @@ impl BallistaContext {
                 ref if_not_exists,
                 ..
             }) => {
-                let table_exists = ctx.table_exist(name.as_table_reference())?;
+                let table_exists = ctx.table_exist(name)?;
                 let schema: SchemaRef = Arc::new(schema.as_ref().to_owned().into());
                 let table_partition_cols = table_partition_cols
                     .iter()
@@ -419,17 +422,12 @@ impl BallistaContext {
                             if !schema.fields().is_empty() {
                                 options = options.schema(&schema);
                             }
-                            self.register_csv(
-                                name.as_table_reference().table(),
-                                location,
-                                options,
-                            )
-                            .await?;
+                            self.register_csv(name.table(), location, options).await?;
                             Ok(DataFrame::new(ctx.state(), plan))
                         }
                         "parquet" => {
                             self.register_parquet(
-                                name.as_table_reference().table(),
+                                name.table(),
                                 location,
                                 ParquetReadOptions::default()
                                     .table_partition_cols(table_partition_cols),
@@ -439,7 +437,7 @@ impl BallistaContext {
                         }
                         "avro" => {
                             self.register_avro(
-                                name.as_table_reference().table(),
+                                name.table(),
                                 location,
                                 AvroReadOptions::default()
                                     .table_partition_cols(table_partition_cols),

@@ -20,7 +20,7 @@ use crate::cluster::{
     reserve_slots_bias, reserve_slots_round_robin, ClusterState, ExecutorHeartbeatStream,
     JobState, JobStateEvent, JobStateEventStream, JobStatus, TaskDistribution,
 };
-use crate::scheduler_server::SessionBuilder;
+use crate::scheduler_server::{timestamp_secs, SessionBuilder};
 use crate::state::execution_graph::ExecutionGraph;
 use crate::state::executor_manager::ExecutorReservation;
 use crate::state::session_manager::create_datafusion_context;
@@ -42,12 +42,11 @@ use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use futures::StreamExt;
 use itertools::Itertools;
-use log::warn;
+use log::{info, warn};
 use prost::Message;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// State implementation based on underlying `KeyValueStore`
 pub struct KeyValueState<
@@ -57,6 +56,10 @@ pub struct KeyValueState<
 > {
     /// Underlying `KeyValueStore`
     store: S,
+    /// ExecutorMetadata cache, executor_id -> ExecutorMetadata
+    executors: Arc<DashMap<String, ExecutorMetadata>>,
+    /// ExecutorHeartbeat cache, executor_id -> ExecutorHeartbeat
+    executor_heartbeats: Arc<DashMap<String, ExecutorHeartbeat>>,
     /// Codec used to serialize/deserialize execution plan
     codec: BallistaCodec<T, U>,
     /// Name of current scheduler. Should be `{host}:{port}`
@@ -79,11 +82,57 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     ) -> Self {
         Self {
             store,
+            executors: Arc::new(DashMap::new()),
+            executor_heartbeats: Arc::new(DashMap::new()),
             scheduler: scheduler.into(),
             codec,
             queued_jobs: DashMap::new(),
             session_builder,
         }
+    }
+
+    /// Initialize the set of active executor heartbeats from storage
+    async fn init_active_executor_heartbeats(&self) -> Result<()> {
+        let heartbeats = self.store.scan(Keyspace::Heartbeats, None).await?;
+
+        for (_, value) in heartbeats {
+            let data: ExecutorHeartbeat = decode_protobuf(&value)?;
+            if let Some(protobuf::ExecutorStatus {
+                status: Some(protobuf::executor_status::Status::Active(_)),
+            }) = &data.status
+            {
+                self.executor_heartbeats
+                    .insert(data.executor_id.clone(), data);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Return the stream of executor heartbeats observed by all schedulers in the cluster.
+    /// This can be aggregated to provide an eventually consistent view of all executors within the cluster
+    async fn executor_heartbeat_stream(&self) -> Result<ExecutorHeartbeatStream> {
+        let events = self
+            .store
+            .watch(Keyspace::Heartbeats, String::default())
+            .await?;
+
+        Ok(events
+            .filter_map(|event| {
+                futures::future::ready(match event {
+                    WatchEvent::Put(_, value) => {
+                        if let Ok(heartbeat) =
+                            decode_protobuf::<ExecutorHeartbeat>(&value)
+                        {
+                            Some(heartbeat)
+                        } else {
+                            None
+                        }
+                    }
+                    WatchEvent::Delete(_) => None,
+                })
+            })
+            .boxed())
     }
 }
 
@@ -91,6 +140,40 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     ClusterState for KeyValueState<S, T, U>
 {
+    /// Initialize a background process that will listen for executor heartbeats and update the in-memory cache
+    /// of executor heartbeats
+    async fn init(&self) -> Result<()> {
+        self.init_active_executor_heartbeats().await?;
+
+        let mut heartbeat_stream = self.executor_heartbeat_stream().await?;
+
+        info!("Initializing heartbeat listener");
+
+        let heartbeats = self.executor_heartbeats.clone();
+        let executors = self.executors.clone();
+        tokio::task::spawn(async move {
+            while let Some(heartbeat) = heartbeat_stream.next().await {
+                let executor_id = heartbeat.executor_id.clone();
+
+                match heartbeat
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.status.as_ref())
+                {
+                    Some(protobuf::executor_status::Status::Dead(_)) => {
+                        heartbeats.remove(&executor_id);
+                        executors.remove(&executor_id);
+                    }
+                    _ => {
+                        heartbeats.insert(executor_id, heartbeat);
+                    }
+                }
+            }
+        });
+
+        Ok(())
+    }
+
     async fn reserve_slots(
         &self,
         num_slots: u32,
@@ -240,22 +323,17 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     ) -> Result<Vec<ExecutorReservation>> {
         let executor_id = metadata.id.clone();
 
-        let current_ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| {
-                BallistaError::Internal(format!("Error getting current timestamp: {e:?}"))
-            })?
-            .as_secs();
-
         //TODO this should be in a transaction
         // Now that we know we can connect, save the metadata and slots
         self.save_executor_metadata(metadata).await?;
         self.save_executor_heartbeat(ExecutorHeartbeat {
             executor_id: executor_id.clone(),
-            timestamp: current_ts,
+            timestamp: timestamp_secs(),
             metrics: vec![],
             status: Some(protobuf::ExecutorStatus {
-                status: Some(protobuf::executor_status::Status::Active("".to_string())),
+                status: Some(
+                    protobuf::executor_status::Status::Active(String::default()),
+                ),
             }),
         })
         .await?;
@@ -341,39 +419,54 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
     async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()> {
         let executor_id = metadata.id.clone();
-        let proto: protobuf::ExecutorMetadata = metadata.into();
 
+        let proto: protobuf::ExecutorMetadata = metadata.clone().into();
         self.store
-            .put(Keyspace::Executors, executor_id, proto.encode_to_vec())
-            .await
+            .put(
+                Keyspace::Executors,
+                executor_id.clone(),
+                proto.encode_to_vec(),
+            )
+            .await?;
+
+        self.executors.insert(executor_id, metadata);
+
+        Ok(())
     }
 
     async fn get_executor_metadata(&self, executor_id: &str) -> Result<ExecutorMetadata> {
-        let value = self.store.get(Keyspace::Executors, executor_id).await?;
+        let metadata = if let Some(metadata) = self.executors.get(executor_id) {
+            metadata.value().clone()
+        } else {
+            let value = self.store.get(Keyspace::Executors, executor_id).await?;
+            let decoded =
+                decode_into::<protobuf::ExecutorMetadata, ExecutorMetadata>(&value)?;
+            self.executors
+                .insert(executor_id.to_string(), decoded.clone());
 
-        let decoded =
-            decode_into::<protobuf::ExecutorMetadata, ExecutorMetadata>(&value)?;
-        Ok(decoded)
+            decoded
+        };
+
+        Ok(metadata)
     }
 
     async fn save_executor_heartbeat(&self, heartbeat: ExecutorHeartbeat) -> Result<()> {
         let executor_id = heartbeat.executor_id.clone();
         self.store
-            .put(Keyspace::Heartbeats, executor_id, heartbeat.encode_to_vec())
-            .await
+            .put(
+                Keyspace::Heartbeats,
+                executor_id.clone(),
+                heartbeat.clone().encode_to_vec(),
+            )
+            .await?;
+        self.executor_heartbeats.insert(executor_id, heartbeat);
+        Ok(())
     }
 
     async fn remove_executor(&self, executor_id: &str) -> Result<()> {
-        let current_ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| {
-                BallistaError::Internal(format!("Error getting current timestamp: {e:?}"))
-            })?
-            .as_secs();
-
         let value = ExecutorHeartbeat {
             executor_id: executor_id.to_owned(),
-            timestamp: current_ts,
+            timestamp: timestamp_secs(),
             metrics: vec![],
             status: Some(protobuf::ExecutorStatus {
                 status: Some(protobuf::executor_status::Status::Dead("".to_string())),
@@ -384,52 +477,24 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         self.store
             .put(Keyspace::Heartbeats, executor_id.to_owned(), value)
             .await?;
+        self.executor_heartbeats.remove(executor_id);
 
         // TODO Check the Executor reservation logic for push-based scheduling
 
         Ok(())
     }
 
-    async fn executor_heartbeat_stream(&self) -> Result<ExecutorHeartbeatStream> {
-        let events = self
-            .store
-            .watch(Keyspace::Heartbeats, String::default())
-            .await?;
-
-        Ok(events
-            .filter_map(|event| {
-                futures::future::ready(match event {
-                    WatchEvent::Put(_, value) => {
-                        if let Ok(heartbeat) =
-                            decode_protobuf::<ExecutorHeartbeat>(&value)
-                        {
-                            Some(heartbeat)
-                        } else {
-                            None
-                        }
-                    }
-                    WatchEvent::Delete(_) => None,
-                })
-            })
-            .boxed())
+    fn executor_heartbeats(&self) -> HashMap<String, ExecutorHeartbeat> {
+        self.executor_heartbeats
+            .iter()
+            .map(|r| (r.key().clone(), r.value().clone()))
+            .collect()
     }
 
-    async fn executor_heartbeats(&self) -> Result<HashMap<String, ExecutorHeartbeat>> {
-        let heartbeats = self.store.scan(Keyspace::Heartbeats, None).await?;
-
-        let mut heartbeat_map = HashMap::with_capacity(heartbeats.len());
-
-        for (_, value) in heartbeats {
-            let data: ExecutorHeartbeat = decode_protobuf(&value)?;
-            if let Some(protobuf::ExecutorStatus {
-                status: Some(protobuf::executor_status::Status::Active(_)),
-            }) = &data.status
-            {
-                heartbeat_map.insert(data.executor_id.clone(), data);
-            }
-        }
-
-        Ok(heartbeat_map)
+    fn get_executor_heartbeat(&self, executor_id: &str) -> Option<ExecutorHeartbeat> {
+        self.executor_heartbeats
+            .get(executor_id)
+            .map(|r| r.value().clone())
     }
 }
 

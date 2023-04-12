@@ -22,12 +22,12 @@ use std::convert::TryInto;
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
-    executor_status, CancelJobParams, CancelJobResult, CleanJobDataParams,
-    CleanJobDataResult, ExecuteQueryParams, ExecuteQueryResult, ExecutorHeartbeat,
-    ExecutorStatus, ExecutorStoppedParams, ExecutorStoppedResult, GetFileMetadataParams,
-    GetFileMetadataResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
-    HeartBeatResult, PollWorkParams, PollWorkResult, RegisterExecutorParams,
-    RegisterExecutorResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
+    CancelJobParams, CancelJobResult, CleanJobDataParams, CleanJobDataResult,
+    ExecuteQueryParams, ExecuteQueryResult, ExecutorHeartbeat, ExecutorStoppedParams,
+    ExecutorStoppedResult, GetFileMetadataParams, GetFileMetadataResult,
+    GetJobStatusParams, GetJobStatusResult, HeartBeatParams, HeartBeatResult,
+    PollWorkParams, PollWorkResult, RegisterExecutorParams, RegisterExecutorResult,
+    UpdateTaskStatusParams, UpdateTaskStatusResult,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 
@@ -47,7 +47,7 @@ use datafusion::prelude::SessionContext;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
-use crate::scheduler_server::{timestamp_secs, SchedulerServer};
+use crate::scheduler_server::SchedulerServer;
 use crate::state::executor_manager::ExecutorReservation;
 
 #[tonic::async_trait]
@@ -72,19 +72,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         } = request.into_inner()
         {
             trace!("Received poll_work request for {:?}", metadata);
-            // We might receive buggy poll work requests from dead executors.
-            if self
-                .state
-                .executor_manager
-                .is_dead_executor(&metadata.id.clone())
-            {
-                let error_msg = format!(
-                    "Receive buggy poll work request from dead Executor {}",
-                    metadata.id.clone()
-                );
-                warn!("{}", error_msg);
-                return Err(Status::internal(error_msg));
-            }
             let metadata = ExecutorMetadata {
                 id: metadata.id,
                 host: metadata
@@ -97,14 +84,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 grpc_port: metadata.grpc_port as u16,
                 specification: metadata.specification.unwrap().into(),
             };
-            let executor_heartbeat = ExecutorHeartbeat {
-                executor_id: metadata.id.clone(),
-                timestamp: timestamp_secs(),
-                metrics: vec![],
-                status: Some(ExecutorStatus {
-                    status: Some(executor_status::Status::Active("".to_string())),
-                }),
-            };
 
             self.state
                 .executor_manager
@@ -112,16 +91,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .await
                 .map_err(|e| {
                     let msg = format!("Could not save executor metadata: {e}");
-                    error!("{}", msg);
-                    Status::internal(msg)
-                })?;
-
-            self.state
-                .executor_manager
-                .save_executor_heartbeat(executor_heartbeat)
-                .await
-                .map_err(|e| {
-                    let msg = format!("Could not save executor heartbeat: {e}");
                     error!("{}", msg);
                     Status::internal(msg)
                 })?;

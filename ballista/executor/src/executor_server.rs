@@ -16,6 +16,8 @@
 // under the License.
 
 use ballista_core::BALLISTA_VERSION;
+use datafusion::config::ConfigOptions;
+use datafusion::prelude::SessionConfig;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::ops::Deref;
@@ -42,9 +44,7 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::scheduler::PartitionId;
 use ballista_core::serde::scheduler::TaskDefinition;
 use ballista_core::serde::BallistaCodec;
-use ballista_core::utils::{
-    collect_plan_metrics, create_grpc_client_connection, create_grpc_server,
-};
+use ballista_core::utils::{create_grpc_client_connection, create_grpc_server};
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
@@ -348,6 +348,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         info!("Start to run task {}", task_identity);
         let task = curator_task;
         let task_props = task.props;
+        let mut config = ConfigOptions::new();
+        for (k, v) in task_props {
+            config.set(&k, &v)?;
+        }
+        let session_config = SessionConfig::from(config);
 
         let mut task_scalar_functions = HashMap::new();
         let mut task_aggregate_functions = HashMap::new();
@@ -362,9 +367,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let session_id = task.session_id;
         let runtime = self.executor.runtime.clone();
         let task_context = Arc::new(TaskContext::new(
-            task_identity.to_string(),
+            Some(task_identity.to_string()),
             session_id,
-            task_props,
+            session_config,
             task_scalar_functions,
             task_aggregate_functions,
             runtime.clone(),
@@ -381,9 +386,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let stage_id = task.stage_id;
         let stage_attempt_num = task.stage_attempt_num;
         let partition_id = task.partition_id;
-        let shuffle_writer_plan =
-            self.executor
-                .new_shuffle_writer(job_id.clone(), stage_id, plan)?;
+        let query_stage_exec = self.executor.execution_engine.create_query_stage_exec(
+            job_id.clone(),
+            stage_id,
+            plan,
+            &self.executor.work_dir,
+        )?;
 
         let part = PartitionId {
             job_id: job_id.clone(),
@@ -395,10 +403,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
         let execution_result = self
             .executor
-            .execute_shuffle_write(
+            .execute_query_stage(
                 task_id,
                 part.clone(),
-                shuffle_writer_plan.clone(),
+                query_stage_exec.clone(),
                 task_context,
                 shuffle_output_partitioning,
             )
@@ -406,7 +414,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         info!("Done with task {}", task_identity);
         debug!("Statistics: {:?}", execution_result);
 
-        let plan_metrics = collect_plan_metrics(shuffle_writer_plan.as_ref());
+        let plan_metrics = query_stage_exec.collect_plan_metrics();
         let operator_metrics = plan_metrics
             .into_iter()
             .map(|m| m.try_into())

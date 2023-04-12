@@ -268,6 +268,50 @@ jobs:
           # do not produce debug symbols to keep memory usage down
           RUSTFLAGS: "-C debuginfo=0"
 
+  # verify that the benchmark queries return the correct results
+  verify-benchmark-results:
+    name: verify benchmark results (amd64)
+    needs: [linux-build-lib]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64]
+        rust: [stable]
+    container:
+      image: ${{ matrix.arch }}/rust
+      env:
+        # Disable full debug symbol generation to speed up CI build and keep memory down
+        # "1" means line tables only, which is useful for panic tracebacks.
+        RUSTFLAGS: "-C debuginfo=1"
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: true
+      - name: Install protobuf compiler
+        shell: bash
+        run: |
+          apt-get -qq update && apt-get -y -qq install protobuf-compiler
+          protoc --version
+      - name: Cache Cargo
+        uses: actions/cache@v3
+        with:
+          path: /github/home/.cargo
+          # this key equals the ones on `linux-build-lib` for re-use
+          key: cargo-cache-
+      - name: Cache Rust dependencies
+        uses: actions/cache@v3
+        with:
+          path: /github/home/target
+          # this key equals the ones on `linux-build-lib` for re-use
+          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}
+      - name: Setup Rust toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ matrix.rust }}
+      - name: Verify that benchmark queries return expected results
+        run: |
+          cargo test --package ballista-benchmarks --profile release-nonlto --features=ci -- --test-threads=1
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -313,7 +357,7 @@ jobs:
           if [[ $DOCKER_TAG =~ ^[0-9\.]+-rc[0-9]+$ ]]
           then
             echo "publishing docker tag $DOCKER_TAG"
-            docker tag arrow-ballista-standalone:latest ghcr.io/apache/arrow-ballista-standalone:$DOCKER_TAG 
+            docker tag arrow-ballista-standalone:latest ghcr.io/apache/arrow-ballista-standalone:$DOCKER_TAG
             docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
             docker push ghcr.io/apache/arrow-ballista-standalone:$DOCKER_TAG
           fi

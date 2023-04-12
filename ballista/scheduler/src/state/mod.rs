@@ -48,7 +48,7 @@ pub mod execution_graph_dot;
 pub mod executor_manager;
 pub mod session_manager;
 pub mod session_registry;
-pub(crate) mod task_manager;
+pub mod task_manager;
 
 pub fn decode_protobuf<T: Message + Default>(bytes: &[u8]) -> Result<T> {
     T::decode(bytes).map_err(|e| {
@@ -116,7 +116,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         Self {
             executor_manager: ExecutorManager::new(
                 cluster.cluster_state(),
-                config.executor_slots_policy,
+                config.task_distribution,
             ),
             task_manager: TaskManager::new(
                 cluster.job_state(),
@@ -140,7 +140,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         Self {
             executor_manager: ExecutorManager::new(
                 cluster.cluster_state(),
-                config.executor_slots_policy,
+                config.task_distribution,
             ),
             task_manager: TaskManager::with_launcher(
                 cluster.job_state(),
@@ -170,7 +170,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
         let total_num_tasks = tasks_status.len();
         let reservations = (0..total_num_tasks)
-            .into_iter()
             .map(|_| ExecutorReservation::new_free(executor_id.to_owned()))
             .collect();
 

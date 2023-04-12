@@ -29,7 +29,7 @@ use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
 use crate::cluster::storage::etcd::EtcdClient;
 use crate::cluster::storage::sled::SledClient;
 use crate::cluster::storage::KeyValueStore;
-use crate::config::{ClusterStorageConfig, SchedulerConfig};
+use crate::config::{ClusterStorageConfig, SchedulerConfig, TaskDistribution};
 use crate::scheduler_server::SessionBuilder;
 use crate::state::execution_graph::ExecutionGraph;
 use crate::state::executor_manager::ExecutorReservation;
@@ -195,20 +195,14 @@ impl BallistaCluster {
 /// by any schedulers with a shared `ClusterState`
 pub type ExecutorHeartbeatStream = Pin<Box<dyn Stream<Item = ExecutorHeartbeat> + Send>>;
 
-/// Method of distributing tasks to available executor slots
-#[derive(Debug, Clone, Copy)]
-pub enum TaskDistribution {
-    /// Eagerly assign tasks to executor slots. This will assign as many task slots per executor
-    /// as are currently available
-    Bias,
-    /// Distributed tasks evenely across executors. This will try and iterate through available executors
-    /// and assign one task to each executor until all tasks are assigned.
-    RoundRobin,
-}
-
 /// A trait that contains the necessary method to maintain a globally consistent view of cluster resources
 #[tonic::async_trait]
 pub trait ClusterState: Send + Sync + 'static {
+    /// Initialize when it's necessary, especially for state with backend storage
+    async fn init(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Reserve up to `num_slots` executor task slots. If not enough task slots are available, reserve
     /// as many as possible.
     ///
@@ -261,12 +255,11 @@ pub trait ClusterState: Send + Sync + 'static {
     /// Remove the executor from the cluster
     async fn remove_executor(&self, executor_id: &str) -> Result<()>;
 
-    /// Return the stream of executor heartbeats observed by all schedulers in the cluster.
-    /// This can be aggregated to provide an eventually consistent view of all executors within the cluster
-    async fn executor_heartbeat_stream(&self) -> Result<ExecutorHeartbeatStream>;
-
     /// Return a map of the last seen heartbeat for all active executors
-    async fn executor_heartbeats(&self) -> Result<HashMap<String, ExecutorHeartbeat>>;
+    fn executor_heartbeats(&self) -> HashMap<String, ExecutorHeartbeat>;
+
+    /// Get executor heartbeat for the provided executor ID. Return None if the executor does not exist
+    fn get_executor_heartbeat(&self, executor_id: &str) -> Option<ExecutorHeartbeat>;
 }
 
 /// Events related to the state of jobs. Implementations may or may not support all event types.

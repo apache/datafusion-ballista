@@ -278,7 +278,6 @@ pub fn default_task_runner() -> impl TaskRunner {
             };
 
         let partitions: Vec<ShuffleWritePartition> = (0..partitions)
-            .into_iter()
             .map(|i| ShuffleWritePartition {
                 partition_id: i as u64,
                 path: String::default(),
@@ -409,7 +408,6 @@ impl SchedulerTest {
         let runner = runner.unwrap_or_else(|| Arc::new(default_task_runner()));
 
         let executors: HashMap<String, VirtualExecutor> = (0..num_executors)
-            .into_iter()
             .map(|i| {
                 let id = format!("virtual-executor-{i}");
                 let executor = VirtualExecutor {
@@ -884,7 +882,7 @@ pub async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
 pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
     let mut config = SessionConfig::new().with_target_partitions(partition);
     config
-        .config_options_mut()
+        .options_mut()
         .optimizer
         .enable_round_robin_repartition = false;
     let ctx = Arc::new(SessionContext::with_config(config));
@@ -907,7 +905,7 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
     let logical_plan = left_plan
         .join(right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
         .unwrap()
-        .aggregate(vec![col("id")], vec![sum(col("gmv"))])
+        .aggregate(vec![col("left.id")], vec![sum(col("left.gmv"))])
         .unwrap()
         .sort(vec![sort_expr])
         .unwrap()
