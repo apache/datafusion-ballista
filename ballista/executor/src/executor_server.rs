@@ -303,7 +303,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
     ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
         let runtime = self.executor.runtime.clone();
         let task = curator_task;
-        let task_props = task.props.clone();
+        let task_props = task.props;
+        let mut config = ConfigOptions::new();
+        for (k, v) in task_props {
+            config.set(&k, &v)?;
+        }
+        let session_config = SessionConfig::from(config);
+
         let mut task_scalar_functions = HashMap::new();
         let mut task_aggregate_functions = HashMap::new();
         for scalar_func in self.executor.scalar_functions.clone() {
@@ -314,9 +320,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         }
 
         let task_context = Arc::new(TaskContext::new(
-            task_identity.clone(),
+            Some(task_identity.clone()),
             task.session_id.clone(),
-            task_props,
+            session_config,
             task_scalar_functions,
             task_aggregate_functions,
             runtime.clone(),
