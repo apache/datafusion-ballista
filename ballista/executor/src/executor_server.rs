@@ -720,15 +720,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
             let multi_task: Vec<TaskDefinition> = multi_task
                 .try_into()
                 .map_err(|e| Status::invalid_argument(format!("{e}")))?;
-            for task in multi_task {
-                task_sender
-                    .send(CuratorTaskDefinition {
-                        scheduler_id: scheduler_id.clone(),
-                        tasks: vec![task],
-                    })
-                    .await
-                    .unwrap();
-            }
+            task_sender
+                .send(CuratorTaskDefinition {
+                    scheduler_id: scheduler_id.clone(),
+                    tasks: multi_task,
+                })
+                .await
+                .unwrap();
         }
         Ok(Response::new(LaunchMultiTaskResult { success: true }))
     }
