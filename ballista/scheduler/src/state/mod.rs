@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::common::tree_node::{TreeNode, VisitRecursion};
 use datafusion::datasource::listing::{ListingTable, ListingTableUrl};
 use datafusion::datasource::source_as_provider;
-use datafusion::logical_expr::PlanVisitor;
+use datafusion::error::DataFusionError;
 use std::any::type_name;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -328,53 +329,44 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             debug!("Optimized plan: {}", optimized_plan.display_indent());
         }
 
-        struct VerifyPathsExist {}
-        impl PlanVisitor for VerifyPathsExist {
-            type Error = BallistaError;
-
-            fn pre_visit(
-                &mut self,
-                plan: &LogicalPlan,
-            ) -> std::result::Result<bool, Self::Error> {
-                if let LogicalPlan::TableScan(scan) = plan {
-                    let provider = source_as_provider(&scan.source)?;
-                    if let Some(table) = provider.as_any().downcast_ref::<ListingTable>()
-                    {
-                        let local_paths: Vec<&ListingTableUrl> = table
-                            .table_paths()
-                            .iter()
-                            .filter(|url| url.as_str().starts_with("file:///"))
-                            .collect();
-                        if !local_paths.is_empty() {
-                            // These are local files rather than remote object stores, so we
-                            // need to check that they are accessible on the scheduler (the client
-                            // may not be on the same host, or the data path may not be correctly
-                            // mounted in the container). There could be thousands of files so we
-                            // just check the first one.
-                            let url = &local_paths[0].as_str();
-                            // the unwraps are safe here because we checked that the url starts with file:///
-                            // we need to check both versions here to support Linux & Windows
-                            ListingTableUrl::parse(url.strip_prefix("file://").unwrap())
-                                .or_else(|_| {
-                                    ListingTableUrl::parse(
-                                        url.strip_prefix("file:///").unwrap(),
-                                    )
-                                })
-                                .map_err(|e| {
-                                    BallistaError::General(format!(
+        plan.apply(&mut |plan| {
+            if let LogicalPlan::TableScan(scan) = plan {
+                let provider = source_as_provider(&scan.source)?;
+                if let Some(table) = provider.as_any().downcast_ref::<ListingTable>() {
+                    let local_paths: Vec<&ListingTableUrl> = table
+                        .table_paths()
+                        .iter()
+                        .filter(|url| url.as_str().starts_with("file:///"))
+                        .collect();
+                    if !local_paths.is_empty() {
+                        // These are local files rather than remote object stores, so we
+                        // need to check that they are accessible on the scheduler (the client
+                        // may not be on the same host, or the data path may not be correctly
+                        // mounted in the container). There could be thousands of files so we
+                        // just check the first one.
+                        let url = &local_paths[0].as_str();
+                        // the unwraps are safe here because we checked that the url starts with file:///
+                        // we need to check both versions here to support Linux & Windows
+                        ListingTableUrl::parse(url.strip_prefix("file://").unwrap())
+                            .or_else(|_| {
+                                ListingTableUrl::parse(
+                                    url.strip_prefix("file:///").unwrap(),
+                                )
+                            })
+                            .map_err(|e| {
+                                DataFusionError::External(
+                                    format!(
                                     "logical plan refers to path on local file system \
-                                    that is not accessible in the scheduler: {url}: {e:?}"
-                                ))
-                                })?;
-                        }
+                                that is not accessible in the scheduler: {url}: {e:?}"
+                                )
+                                    .into(),
+                                )
+                            })?;
                     }
                 }
-                Ok(true)
             }
-        }
-
-        let mut verify_paths_exist = VerifyPathsExist {};
-        plan.accept(&mut verify_paths_exist)?;
+            Ok(VisitRecursion::Continue)
+        })?;
 
         let plan = session_ctx.state().create_physical_plan(plan).await?;
         debug!(
