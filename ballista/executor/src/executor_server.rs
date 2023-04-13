@@ -67,6 +67,7 @@ type SchedulerClients = Arc<DashMap<String, SchedulerGrpcClient<Channel>>>;
 #[derive(Debug)]
 struct CuratorTaskDefinition {
     scheduler_id: String,
+    plan: Vec<u8>,
     tasks: Vec<TaskDefinition>,
 }
 
@@ -300,6 +301,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         &self,
         task_identity: String,
         curator_task: TaskDefinition,
+        plan: Vec<u8>,
     ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
         let runtime = self.executor.runtime.clone();
         let task = curator_task;
@@ -327,9 +329,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             task_aggregate_functions,
             runtime.clone(),
         ));
-        let encoded_plan = &task.plan.as_slice();
 
-        Ok(U::try_decode(encoded_plan)
+        Ok(U::try_decode(&plan)
             .and_then(|proto| {
                 proto.try_into_physical_plan(
                     task_context.deref(),
@@ -631,6 +632,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                 };
                 if let Some(task) = maybe_task {
                     let server = executor_server.clone();
+                    let plan = task.plan;
+
                     let first_task = task.tasks.get(0).unwrap().clone();
                     let out = dedicated_executor.spawn(async move {
                         let task_identity = format!(
@@ -643,7 +646,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                             &first_task.task_attempt_num,
                         );
 
-                        server.decode_task(task_identity, first_task).await
+                        server.decode_task(task_identity, first_task, plan).await
                     });
 
                     let plan = out.await.unwrap().unwrap();
@@ -706,12 +709,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         } = request.into_inner();
         let task_sender = self.executor_env.tx_task.clone();
         for task in tasks {
+            let (task_def, plan) = task
+                .try_into()
+                .map_err(|e| Status::invalid_argument(format!("{e}")))?;
+
             task_sender
                 .send(CuratorTaskDefinition {
                     scheduler_id: scheduler_id.clone(),
-                    tasks: vec![task
-                        .try_into()
-                        .map_err(|e| Status::invalid_argument(format!("{e}")))?],
+                    plan,
+                    tasks: vec![task_def],
                 })
                 .await
                 .unwrap();
@@ -731,12 +737,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         } = request.into_inner();
         let task_sender = self.executor_env.tx_task.clone();
         for multi_task in multi_tasks {
-            let multi_task: Vec<TaskDefinition> = multi_task
+            let (multi_task, plan): (Vec<TaskDefinition>, Vec<u8>) = multi_task
                 .try_into()
                 .map_err(|e| Status::invalid_argument(format!("{e}")))?;
             task_sender
                 .send(CuratorTaskDefinition {
                     scheduler_id: scheduler_id.clone(),
+                    plan,
                     tasks: multi_task,
                 })
                 .await
