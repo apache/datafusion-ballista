@@ -302,7 +302,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         curator_task: TaskDefinition,
         plan: &[u8],
     ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
-        let runtime = self.executor.runtime.clone();
         let task = curator_task;
         let task_identity = task_identity(&task);
         let task_props = task.props;
@@ -327,14 +326,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             session_config,
             task_scalar_functions,
             task_aggregate_functions,
-            runtime.clone(),
+            self.executor.runtime.clone(),
         ));
 
         Ok(U::try_decode(plan)
             .and_then(|proto| {
                 proto.try_into_physical_plan(
                     task_context.deref(),
-                    runtime.deref(),
+                    &self.executor.runtime,
                     self.codec.physical_extension_codec(),
                 )
             })?
