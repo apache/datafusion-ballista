@@ -299,12 +299,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
     async fn decode_task(
         &self,
-        task_identity: String,
         curator_task: TaskDefinition,
         plan: Vec<u8>,
     ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
         let runtime = self.executor.runtime.clone();
         let task = curator_task;
+        let task_identity = task_identity(&task);
         let task_props = task.props;
         let mut config = ConfigOptions::new();
         for (k, v) in task_props {
@@ -323,7 +323,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
         let task_context = Arc::new(TaskContext::new(
             Some(task_identity),
-            task.session_id.clone(),
+            task.session_id,
             session_config,
             task_scalar_functions,
             task_aggregate_functions,
@@ -509,6 +509,18 @@ struct TaskRunnerPool<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> 
     executor_server: Arc<ExecutorServer<T, U>>,
 }
 
+fn task_identity(task: &TaskDefinition) -> String {
+    format!(
+        "TID {} {}/{}.{}/{}.{}",
+        &task.task_id,
+        &task.job_id,
+        &task.stage_id,
+        &task.stage_attempt_num,
+        &task.partition_id,
+        &task.task_attempt_num,
+    )
+}
+
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T, U> {
     fn new(executor_server: Arc<ExecutorServer<T, U>>) -> Self {
         Self { executor_server }
@@ -635,19 +647,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                     let plan = task.plan;
 
                     let first_task = task.tasks.get(0).unwrap().clone();
-                    let out = dedicated_executor.spawn(async move {
-                        let task_identity = format!(
-                            "TID {} {}/{}.{}/{}.{}",
-                            &first_task.task_id,
-                            &first_task.job_id,
-                            &first_task.stage_id,
-                            &first_task.stage_attempt_num,
-                            &first_task.partition_id,
-                            &first_task.task_attempt_num,
-                        );
-
-                        server.decode_task(task_identity, first_task, plan).await
-                    });
+                    let out = dedicated_executor
+                        .spawn(async move { server.decode_task(first_task, plan).await });
 
                     let plan = out.await.unwrap().unwrap();
                     let scheduler_id = task.scheduler_id.clone();
@@ -656,15 +657,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                         let plan = plan.clone();
                         let scheduler_id = scheduler_id.clone();
 
-                        let task_identity = format!(
-                            "TID {} {}/{}.{}/{}.{}",
-                            &curator_task.task_id,
-                            &curator_task.job_id,
-                            &curator_task.stage_id,
-                            &curator_task.stage_attempt_num,
-                            &curator_task.partition_id,
-                            &curator_task.task_attempt_num,
-                        );
+                        let task_identity = task_identity(&curator_task);
                         info!("Received task {:?}", &task_identity);
 
                         let server = executor_server.clone();
