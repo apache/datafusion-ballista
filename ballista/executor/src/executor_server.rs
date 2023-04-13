@@ -328,9 +328,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             task_aggregate_functions,
             self.executor.runtime.clone(),
         ));
-        
-        let plan = U::try_decode(plan)
-        .and_then(|proto| {
+
+        let plan = U::try_decode(plan).and_then(|proto| {
             proto.try_into_physical_plan(
                 task_context.deref(),
                 &self.executor.runtime,
@@ -353,7 +352,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         task_identity: &str,
         scheduler_id: String,
         curator_task: TaskDefinition,
-        query_stage_exec: Arc<dyn QueryStageExecutor>, 
+        query_stage_exec: Arc<dyn QueryStageExecutor>,
     ) -> Result<(), BallistaError> {
         let start_exec_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
