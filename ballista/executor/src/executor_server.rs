@@ -648,8 +648,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                     let curator_task = task.tasks[0].clone();
                     let out: tokio::sync::oneshot::Receiver<
                         Result<Arc<dyn ExecutionPlan>, BallistaError>,
-                    > = dedicated_executor
-                        .spawn(async move { server.decode_task(curator_task, &plan).await });
+                    > = dedicated_executor.spawn(async move {
+                        server.decode_task(curator_task, &plan).await
+                    });
 
                     let plan = out.await;
 
