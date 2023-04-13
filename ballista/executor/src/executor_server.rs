@@ -47,7 +47,6 @@ use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{create_grpc_client_connection, create_grpc_server};
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::{
     logical_plan::AsLogicalPlan,
     physical_plan::{from_proto::parse_protobuf_hash_partitioning, AsExecutionPlan},
@@ -56,6 +55,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
 
 use crate::cpu_bound_executor::DedicatedExecutor;
+use crate::execution_engine::QueryStageExecutor;
 use crate::executor::Executor;
 use crate::shutdown::ShutdownNotifier;
 use crate::{as_task_status, TaskExecutionTimes};
@@ -301,7 +301,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         &self,
         curator_task: TaskDefinition,
         plan: &[u8],
-    ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
+    ) -> Result<Arc<dyn QueryStageExecutor>, BallistaError> {
         let task = curator_task;
         let task_identity = task_identity(&task);
         let task_props = task.props;
@@ -328,16 +328,24 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             task_aggregate_functions,
             self.executor.runtime.clone(),
         ));
+        
+        let plan = U::try_decode(plan)
+        .and_then(|proto| {
+            proto.try_into_physical_plan(
+                task_context.deref(),
+                &self.executor.runtime,
+                self.codec.physical_extension_codec(),
+            )
+        })?;
 
-        Ok(U::try_decode(plan)
-            .and_then(|proto| {
-                proto.try_into_physical_plan(
-                    task_context.deref(),
-                    &self.executor.runtime,
-                    self.codec.physical_extension_codec(),
-                )
-            })?
-            .clone())
+        let r = self.executor.execution_engine.create_query_stage_exec(
+            task.job_id,
+            task.stage_id,
+            plan,
+            &self.executor.work_dir,
+        )?;
+
+        Ok(r)
     }
 
     async fn run_task(
@@ -345,7 +353,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         task_identity: &str,
         scheduler_id: String,
         curator_task: TaskDefinition,
-        plan: Arc<dyn ExecutionPlan>,
+        query_stage_exec: Arc<dyn QueryStageExecutor>, 
     ) -> Result<(), BallistaError> {
         let start_exec_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -384,7 +392,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
             task.output_partitioning.as_ref(),
             task_context.as_ref(),
-            plan.schema().as_ref(),
+            query_stage_exec.schema().as_ref(),
         )?;
 
         let task_id = task.task_id;
@@ -392,12 +400,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let stage_id = task.stage_id;
         let stage_attempt_num = task.stage_attempt_num;
         let partition_id = task.partition_id;
-        let query_stage_exec = self.executor.execution_engine.create_query_stage_exec(
-            job_id.clone(),
-            stage_id,
-            plan,
-            &self.executor.work_dir,
-        )?;
 
         let part = PartitionId {
             job_id: job_id.clone(),
@@ -646,7 +648,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                     let plan = task.plan;
                     let curator_task = task.tasks[0].clone();
                     let out: tokio::sync::oneshot::Receiver<
-                        Result<Arc<dyn ExecutionPlan>, BallistaError>,
+                        Result<Arc<dyn QueryStageExecutor>, BallistaError>,
                     > = dedicated_executor.spawn(async move {
                         server.decode_task(curator_task, &plan).await
                     });
