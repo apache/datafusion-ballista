@@ -299,13 +299,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
     async fn decode_task(
         &self,
-        curator_task: TaskDefinition,
+        curator_task: &TaskDefinition,
         plan: Vec<u8>,
     ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
         let runtime = self.executor.runtime.clone();
         let task = curator_task;
         let task_identity = task_identity(&task);
-        let task_props = task.props;
+        let task_props = &task.props;
         let mut config = ConfigOptions::new();
         for (k, v) in task_props {
             config.set(&k, &v)?;
@@ -323,7 +323,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
         let task_context = Arc::new(TaskContext::new(
             Some(task_identity),
-            task.session_id,
+            task.session_id.clone(),
             session_config,
             task_scalar_functions,
             task_aggregate_functions,
@@ -646,11 +646,33 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                     let server = executor_server.clone();
                     let plan = task.plan;
 
-                    let first_task = task.tasks.get(0).unwrap().clone();
-                    let out = dedicated_executor
-                        .spawn(async move { server.decode_task(first_task, plan).await });
+                    let first_task = task.tasks[0];
+                    let out: tokio::sync::oneshot::Receiver<
+                        Result<Arc<dyn ExecutionPlan>, BallistaError>,
+                    > = dedicated_executor
+                        .spawn(async move { server.decode_task(&first_task, plan).await });
 
-                    let plan = out.await.unwrap().unwrap();
+                    let plan = out.await;
+
+                    let plan = match plan {
+                        Ok(Ok(plan)) => plan,
+                        Ok(Err(e)) => {
+                            error!(
+                                "Failed to decode the plan of task {:?} due to {:?}",
+                                task_identity(&task.tasks[0]),
+                                e
+                            );
+                            return;
+                        }
+                        Err(e) => {
+                            error!(
+                                "Failed to receive error plan of task {:?} due to {:?}",
+                                task_identity(&task.tasks[0]),
+                                e
+                            );
+                            return;
+                        }
+                    };
                     let scheduler_id = task.scheduler_id.clone();
 
                     for curator_task in task.tasks {
