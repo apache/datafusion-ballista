@@ -330,7 +330,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             runtime.clone(),
         ));
 
-        Ok(U::try_decode(&plan)
+        Ok(U::try_decode(plan)
             .and_then(|proto| {
                 proto.try_into_physical_plan(
                     task_context.deref(),
