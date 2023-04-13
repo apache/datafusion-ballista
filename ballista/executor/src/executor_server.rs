@@ -337,14 +337,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             )
         })?;
 
-        let r = self.executor.execution_engine.create_query_stage_exec(
+        Ok(self.executor.execution_engine.create_query_stage_exec(
             task.job_id,
             task.stage_id,
             plan,
             &self.executor.work_dir,
-        )?;
-
-        Ok(r)
+        )?)
     }
 
     async fn run_task(
