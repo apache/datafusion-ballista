@@ -299,8 +299,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
     async fn decode_task(
         &self,
-        curator_task: &TaskDefinition,
-        plan: Vec<u8>,
+        curator_task: TaskDefinition,
+        plan: &[u8],
     ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
         let runtime = self.executor.runtime.clone();
         let task = curator_task;
@@ -645,12 +645,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                 if let Some(task) = maybe_task {
                     let server = executor_server.clone();
                     let plan = task.plan;
-
-                    let first_task = task.tasks[0];
+                    let curator_task = task.tasks[0].clone();
                     let out: tokio::sync::oneshot::Receiver<
                         Result<Arc<dyn ExecutionPlan>, BallistaError>,
                     > = dedicated_executor
-                        .spawn(async move { server.decode_task(&first_task, plan).await });
+                        .spawn(async move { server.decode_task(curator_task, &plan).await });
 
                     let plan = out.await;
 
