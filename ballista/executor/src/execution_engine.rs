@@ -22,9 +22,10 @@ use ballista_core::serde::protobuf::ShuffleWritePartition;
 use ballista_core::utils;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::ExecutionPlan;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display, Formatter};
 use std::sync::Arc;
 
 /// Execution engine extension point
@@ -44,7 +45,7 @@ pub trait ExecutionEngine: Sync + Send {
 /// partition is re-partitioned and streamed to disk in Arrow IPC format. Future stages of the query
 /// will use the ShuffleReaderExec to read these results.
 #[async_trait]
-pub trait QueryStageExecutor: Sync + Send + Debug {
+pub trait QueryStageExecutor: Sync + Send + Debug + Display {
     async fn execute_query_stage(
         &self,
         input_partition: usize,
@@ -96,6 +97,14 @@ pub struct DefaultQueryStageExec {
 impl DefaultQueryStageExec {
     pub fn new(shuffle_writer: ShuffleWriterExec) -> Self {
         Self { shuffle_writer }
+    }
+}
+
+impl Display for DefaultQueryStageExec {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let metrics =
+            DisplayableExecutionPlan::with_metrics(&self.shuffle_writer).indent();
+        write!(f, "{metrics}")
     }
 }
 

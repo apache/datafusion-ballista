@@ -39,6 +39,7 @@ use log::{error, warn};
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
+use crate::state::execution_graph::ExecutionGraph;
 
 use crate::state::executor_manager::{
     ExecutorManager, ExecutorReservation, DEFAULT_EXECUTOR_TIMEOUT_SECONDS,
@@ -164,7 +165,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         self.query_stage_scheduler.metrics_collector()
     }
 
-    pub(crate) async fn submit_job(
+    pub async fn submit_job(
         &self,
         job_id: &str,
         job_name: &str,
@@ -183,9 +184,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             .await
     }
 
+    pub async fn get_execution_graph(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<Arc<ExecutionGraph>>> {
+        self.state
+            .task_manager
+            .get_job_execution_graph(job_id)
+            .await
+    }
+
     /// It just send task status update event to the channel,
     /// and will not guarantee the event processing completed after return
-    pub(crate) async fn update_task_status(
+    pub async fn update_task_status(
         &self,
         executor_id: &str,
         tasks_status: Vec<TaskStatus>,
