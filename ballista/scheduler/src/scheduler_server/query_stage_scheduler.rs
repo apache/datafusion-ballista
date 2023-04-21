@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::{EventAction, EventSender};
@@ -30,6 +30,7 @@ use crate::scheduler_server::timestamp_millis;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
@@ -44,6 +45,7 @@ pub(crate) struct QueryStageScheduler<
     metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     pending_tasks: AtomicUsize,
     job_resubmit_interval_ms: Option<u64>,
+    event_expected_processing_duration: u64,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageScheduler<T, U> {
@@ -51,12 +53,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
         state: Arc<SchedulerState<T, U>>,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
         job_resubmit_interval_ms: Option<u64>,
+        event_expected_processing_duration: u64,
     ) -> Self {
         Self {
             state,
             metrics_collector,
             pending_tasks: AtomicUsize::default(),
             job_resubmit_interval_ms,
+            event_expected_processing_duration,
         }
     }
 
@@ -93,6 +97,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         tx_event: &mpsc::Sender<QueryStageSchedulerEvent>,
         _rx_event: &mpsc::Receiver<QueryStageSchedulerEvent>,
     ) -> Result<()> {
+        let mut time_recorder = None;
+        if self.event_expected_processing_duration > 0 {
+            time_recorder = Some((Instant::now(), event.clone()));
+        };
         let tx_event = EventSender::new(tx_event.clone());
         match event {
             QueryStageSchedulerEvent::JobQueued {
@@ -349,7 +357,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.state.executor_manager.clean_up_job_data(job_id);
             }
         }
-
+        if let Some((start, ec)) = time_recorder {
+            let duration = start.elapsed();
+            if duration.ge(&core::time::Duration::from_micros(
+                self.event_expected_processing_duration,
+            )) {
+                warn!(
+                    "[METRICS] {:?} event cost {:?} us!",
+                    ec,
+                    duration.as_micros()
+                );
+            }
+        }
         Ok(())
     }
 

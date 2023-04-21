@@ -140,10 +140,16 @@ default = "ballista_core::config::LogRotationPolicy::Daily"
 name = "job_resubmit_interval_ms"
 type = "u64"
 default = "0"
-doc = "If job is not able to be scheduled on submission, wait for this interval and resubmit. Default value of 0 indicates that job shuuld not be resubmitted"
+doc = "If job is not able to be scheduled on submission, wait for this interval and resubmit. Default value of 0 indicates that job should not be resubmitted"
 
 [[param]]
 name = "executor_termination_grace_period"
 type = "u64"
 default = "30"
 doc = "Time in seconds an executor should be considered lost after it enters terminating status"
+
+[[param]]
+name = "scheduler_event_expected_processing_duration"
+type = "u64"
+default = "0"
+doc = "The maximum expected processing time of a scheduler event (microseconds). Zero means disable."

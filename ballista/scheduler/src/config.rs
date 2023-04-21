@@ -52,6 +52,8 @@ pub struct SchedulerConfig {
     /// Time in seconds to allow executor for graceful shutdown. Once an executor signals it has entered Terminating status
     /// the scheduler should only consider the executor dead after this time interval has elapsed
     pub executor_termination_grace_period: u64,
+    /// The maximum expected processing time of a scheduler event (microseconds). Zero means disable.
+    pub scheduler_event_expected_processing_duration: u64,
 }
 
 impl Default for SchedulerConfig {
@@ -69,6 +71,7 @@ impl Default for SchedulerConfig {
             cluster_storage: ClusterStorageConfig::Memory,
             job_resubmit_interval_ms: None,
             executor_termination_grace_period: 0,
+            scheduler_event_expected_processing_duration: 0,
         }
     }
 }
