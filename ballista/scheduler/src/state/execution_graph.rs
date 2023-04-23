@@ -132,7 +132,7 @@ pub struct ExecutionGraph {
     failed_stage_attempts: HashMap<usize, HashSet<usize>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RunningTaskInfo {
     pub task_id: usize,
     pub job_id: String,
