@@ -20,7 +20,6 @@ use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
 use std::iter::FromIterator;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::metrics::MetricsSet;
@@ -42,7 +41,7 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::protobuf::{job_status, FailedJob, ShuffleWritePartition};
 use ballista_core::serde::protobuf::{task_status, RunningTask};
 use ballista_core::serde::scheduler::{
-    ExecutorMetadata, PartitionId, PartitionLocation, PartitionStats,
+    ExecutorMetadata, PartitionLocation, PartitionStats,
 };
 use ballista_core::serde::BallistaCodec;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -330,20 +329,18 @@ impl ExecutionGraph {
                                     task_status.task_id, stage_id, task_stage_attempt_num, stage_id, running_stage.stage_attempt_num);
                                 continue;
                             }
-                            let partition_id = task_status.clone().partition_id as usize;
+                            let partitions = &task_status.partitions;
                             let task_identity = format!(
-                                "TID {} {}/{}.{}/{}",
+                                "TID {} {}/{}.{}/{:?}",
                                 task_status.task_id,
                                 job_id,
                                 stage_id,
                                 task_stage_attempt_num,
-                                partition_id
+                                partitions
                             );
                             let operator_metrics = task_status.metrics.clone();
 
-                            if !running_stage
-                                .update_task_info(partition_id, task_status.clone())
-                            {
+                            if !running_stage.update_task_info(&task_status) {
                                 continue;
                             }
 
@@ -364,9 +361,7 @@ impl ExecutionGraph {
                                             let map_stage_id = fetch_partiton_error
                                                 .map_stage_id
                                                 as usize;
-                                            let map_partition_id = fetch_partiton_error
-                                                .map_partition_id
-                                                as usize;
+
                                             let executor_id =
                                                 fetch_partiton_error.executor_id;
 
@@ -385,7 +380,6 @@ impl ExecutionGraph {
                                                     running_stage
                                                         .remove_input_partitions(
                                                             map_stage_id,
-                                                            map_partition_id,
                                                             &executor_id,
                                                         )?;
 
@@ -423,18 +417,20 @@ impl ExecutionGraph {
                                         if failed_task.retryable
                                             && failed_task.count_to_failures
                                         {
-                                            if running_stage
-                                                .task_failure_number(partition_id)
+                                            if running_stage.task_failures
                                                 < max_task_failures
                                             {
-                                                // TODO add new struct to track all the failed task infos
                                                 // The failure TaskInfo is ignored and set to None here
-                                                running_stage
-                                                    .reset_task_info(partition_id);
+                                                running_stage.reset_task_info(
+                                                    partitions
+                                                        .iter()
+                                                        .map(|p| *p as usize),
+                                                );
+                                                running_stage.task_failures += 1;
                                             } else {
                                                 let error_msg = format!(
-                        "Task {} in Stage {} failed {} times, fail the stage, most recent failure reason: {:?}",
-                        partition_id, stage_id, max_task_failures, failed_task.error
+                        "Stage {} had {} task failures, fail the stage, most recent failure reason: {:?}",
+                        stage_id, max_task_failures, failed_task.error
                     );
                                                 error!("{}", error_msg);
                                                 failed_stages.insert(stage_id, error_msg);
@@ -442,12 +438,14 @@ impl ExecutionGraph {
                                         } else if failed_task.retryable {
                                             // TODO add new struct to track all the failed task infos
                                             // The failure TaskInfo is ignored and set to None here
-                                            running_stage.reset_task_info(partition_id);
+                                            running_stage.reset_task_info(
+                                                partitions.iter().map(|p| *p as usize),
+                                            );
                                         }
                                     }
                                     None => {
                                         let error_msg = format!(
-                                            "Task {partition_id} in Stage {stage_id} failed with unknown failure reasons, fail the stage");
+                                            "Task {partitions:?} in Stage {stage_id} failed with unknown failure reasons, fail the stage");
                                         error!("{}", error_msg);
                                         failed_stages.insert(stage_id, error_msg);
                                     }
@@ -457,14 +455,11 @@ impl ExecutionGraph {
                             )) = task_status.status
                             {
                                 // update task metrics for successfu task
-                                running_stage.update_task_metrics(
-                                    partition_id,
-                                    operator_metrics,
-                                )?;
+                                running_stage.update_task_metrics(operator_metrics)?;
 
                                 locations.append(&mut partition_to_location(
                                     &job_id,
-                                    partition_id,
+                                    partitions.iter().map(|p| *p as usize).collect(),
                                     stage_id,
                                     executor,
                                     successful_task.partitions,
@@ -508,14 +503,14 @@ impl ExecutionGraph {
                     for task_status in stage_task_statuses.into_iter() {
                         let task_stage_attempt_num =
                             task_status.stage_attempt_num as usize;
-                        let partition_id = task_status.clone().partition_id as usize;
+                        let partitions = &task_status.partitions;
                         let task_identity = format!(
-                            "TID {} {}/{}.{}/{}",
+                            "TID {} {}/{}.{}/{:?}",
                             task_status.task_id,
                             job_id,
                             stage_id,
                             task_stage_attempt_num,
-                            partition_id
+                            partitions
                         );
                         let mut should_ignore = true;
                         // handle delayed failed tasks if the stage's next attempt is still in UnResolved status.
@@ -551,15 +546,11 @@ impl ExecutionGraph {
                                             );
                                         let map_stage_id =
                                             fetch_partiton_error.map_stage_id as usize;
-                                        let map_partition_id = fetch_partiton_error
-                                            .map_partition_id
-                                            as usize;
                                         let executor_id =
                                             fetch_partiton_error.executor_id;
                                         let removed_map_partitions = unsolved_stage
                                             .remove_input_partitions(
                                                 map_stage_id,
-                                                map_partition_id,
                                                 &executor_id,
                                             )?;
 
@@ -591,7 +582,7 @@ impl ExecutionGraph {
                         "Stage {}/{} is not in running when updating the status of tasks {:?}",
                         job_id,
                         stage_id,
-                        stage_task_statuses.into_iter().map(|task_status| task_status.partition_id).collect::<Vec<_>>(),
+                        stage_task_statuses.into_iter().map(|task_status| task_status.partitions).collect::<Vec<_>>(),
                     );
                 }
             } else {
@@ -649,8 +640,9 @@ impl ExecutionGraph {
                                 *partition, stage_id
                             )));
                         }
-                        running_stage.reset_task_info(*partition);
                     }
+
+                    running_stage.reset_task_info(missing_parts.iter().copied());
                 } else {
                     warn!(
                         "Stage {}/{} is not in Running state when try to reset the running task. ",
@@ -854,6 +846,7 @@ impl ExecutionGraph {
     pub fn pop_next_task(
         &mut self,
         executor_id: &str,
+        num_tasks: usize,
     ) -> Result<Option<TaskDescription>> {
         if matches!(
             self.status,
@@ -876,81 +869,79 @@ impl ExecutionGraph {
                 false
             }
         });
-        let next_task_id = if find_candidate {
-            Some(self.next_task_id())
+
+        if find_candidate {
+            let task_id = self.next_task_id();
+
+            let next_task = self.stages.iter_mut().find(|(_stage_id, stage)| {
+                if let ExecutionStage::Running(stage) = stage {
+                    stage.available_tasks() > 0
+                } else {
+                    false
+                }
+            }).map(|(stage_id, stage)| {
+                if let ExecutionStage::Running(stage) = stage {
+
+                    let mut partitions = vec![];
+                    let task_info = TaskInfo {
+                        task_id,
+                        scheduled_time: timestamp_millis() as u128,
+                        // Those times will be updated when the task finish
+                        launch_time: 0,
+                        start_exec_time: 0,
+                        end_exec_time: 0,
+                        finish_time: 0,
+                        task_status: task_status::Status::Running(RunningTask {
+                            executor_id: executor_id.to_owned()
+                        }),
+                    };
+
+                    for (partition, status) in stage.task_infos
+                        .iter_mut()
+                        .enumerate()
+                        .filter(|(_,status)| status.is_none())
+                        .take(num_tasks) {
+                        *status = Some(task_info.clone());
+                        partitions.push(partition);
+                    }
+
+                    if partitions.is_empty() {
+                        return Err(BallistaError::Internal(format!("Error getting next task for job {job_id}: Stage {stage_id} is ready but has no pending tasks")));
+                    }
+
+                    Ok(TaskDescription {
+                        session_id,
+                        partitions: TaskPartitions {
+                            job_id,
+                            stage_id: *stage_id,
+                            partitions
+                        },
+                        stage_attempt_num: stage.stage_attempt_num,
+                        task_id,
+                        plan: stage.plan.clone(),
+                        output_partitioning: stage.output_partitioning.clone(),
+                    })
+                } else {
+                    Err(BallistaError::General(format!("Stage {stage_id} is not a running stage")))
+                }
+            }).transpose()?;
+
+            // If no available tasks found in the running stage,
+            // try to find a resolved stage and convert it to the running stage
+            if next_task.is_none() {
+                if self.revive() {
+                    self.pop_next_task(executor_id, num_tasks)
+                } else {
+                    Ok(None)
+                }
+            } else {
+                Ok(next_task)
+            }
+        } else if self.revive() {
+            self.pop_next_task(executor_id, num_tasks)
         } else {
-            None
-        };
-
-        let mut next_task = self.stages.iter_mut().find(|(_stage_id, stage)| {
-            if let ExecutionStage::Running(stage) = stage {
-                stage.available_tasks() > 0
-            } else {
-                false
-            }
-        }).map(|(stage_id, stage)| {
-            if let ExecutionStage::Running(stage) = stage {
-                let (partition_id, _) = stage
-                    .task_infos
-                    .iter()
-                    .enumerate()
-                    .find(|(_partition, info)| info.is_none())
-                    .ok_or_else(|| {
-                        BallistaError::Internal(format!("Error getting next task for job {job_id}: Stage {stage_id} is ready but has no pending tasks"))
-                    })?;
-
-                let partition = PartitionId {
-                    job_id,
-                    stage_id: *stage_id,
-                    partition_id,
-                };
-
-                let task_id = next_task_id.unwrap();
-                let task_attempt = stage.task_failure_numbers[partition_id];
-                let task_info = TaskInfo {
-                    task_id,
-                    scheduled_time: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis(),
-                    // Those times will be updated when the task finish
-                    launch_time: 0,
-                    start_exec_time: 0,
-                    end_exec_time: 0,
-                    finish_time: 0,
-                    task_status: task_status::Status::Running(RunningTask {
-                        executor_id: executor_id.to_owned()
-                    }),
-                };
-
-                // Set the task info to Running for new task
-                stage.task_infos[partition_id] = Some(task_info);
-
-                Ok(TaskDescription {
-                    session_id,
-                    partition,
-                    stage_attempt_num: stage.stage_attempt_num,
-                    task_id,
-                    task_attempt,
-                    plan: stage.plan.clone(),
-                    output_partitioning: stage.output_partitioning.clone(),
-                })
-            } else {
-                Err(BallistaError::General(format!("Stage {stage_id} is not a running stage")))
-            }
-        }).transpose()?;
-
-        // If no available tasks found in the running stage,
-        // try to find a resolved stage and convert it to the running stage
-        if next_task.is_none() {
-            if self.revive() {
-                next_task = self.pop_next_task(executor_id)?;
-            } else {
-                next_task = None;
-            }
+            Ok(None)
         }
-
-        Ok(next_task)
     }
 
     pub fn update_status(&mut self, status: JobStatus) {
@@ -1558,17 +1549,30 @@ impl ExecutionPlanVisitor for ExecutionStageBuilder {
     }
 }
 
+#[derive(Clone)]
+pub struct TaskPartitions {
+    pub job_id: String,
+    pub stage_id: usize,
+    pub partitions: Vec<usize>,
+}
+
 /// Represents the basic unit of work for the Ballista executor. Will execute
 /// one partition of one stage on one task slot.
 #[derive(Clone)]
 pub struct TaskDescription {
     pub session_id: String,
-    pub partition: PartitionId,
+    pub partitions: TaskPartitions,
     pub stage_attempt_num: usize,
     pub task_id: usize,
-    pub task_attempt: usize,
     pub plan: Arc<dyn ExecutionPlan>,
     pub output_partitioning: Option<Partitioning>,
+}
+
+impl TaskDescription {
+    /// Total number of partitions executed as part of this task
+    pub fn concurrency(&self) -> usize {
+        self.partitions.partitions.len()
+    }
 }
 
 impl Debug for TaskDescription {
@@ -1576,14 +1580,13 @@ impl Debug for TaskDescription {
         let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent();
         write!(
             f,
-            "TaskDescription[session_id: {},job: {}, stage: {}.{}, partition: {} task_id {}, task attempt {}]\n{}",
+            "TaskDescription[session_id: {},job: {}, stage: {}.{}, partitions: {:?} task_id {}]\n{}",
             self.session_id,
-            self.partition.job_id,
-            self.partition.stage_id,
+            self.partitions.job_id,
+            self.partitions.stage_id,
             self.stage_attempt_num,
-            self.partition.partition_id,
+            self.partitions.partitions,
             self.task_id,
-            self.task_attempt,
             plan
         )
     }
@@ -1591,7 +1594,7 @@ impl Debug for TaskDescription {
 
 fn partition_to_location(
     job_id: &str,
-    map_partition_id: usize,
+    map_partitions: Vec<usize>,
     stage_id: usize,
     executor: &ExecutorMetadata,
     shuffles: Vec<ShuffleWritePartition>,
@@ -1599,12 +1602,10 @@ fn partition_to_location(
     shuffles
         .into_iter()
         .map(|shuffle| PartitionLocation {
-            map_partition_id,
-            partition_id: PartitionId {
-                job_id: job_id.to_owned(),
-                stage_id,
-                partition_id: shuffle.partition_id as usize,
-            },
+            job_id: job_id.to_string(),
+            stage_id,
+            map_partitions: map_partitions.clone(),
+            output_partition: shuffle.output_partition as usize,
             executor_meta: executor.clone(),
             partition_stats: PartitionStats::new(
                 Some(shuffle.num_rows),
@@ -1731,13 +1732,13 @@ mod test {
         assert_eq!(join_graph.available_tasks(), 2);
 
         // Complete the first stage
-        if let Some(task) = join_graph.pop_next_task(&executor1.id)? {
+        if let Some(task) = join_graph.pop_next_task(&executor1.id, 1)? {
             let task_status = mock_completed_task(task, &executor1.id);
             join_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
         }
 
         // Complete the second stage
-        if let Some(task) = join_graph.pop_next_task(&executor2.id)? {
+        if let Some(task) = join_graph.pop_next_task(&executor2.id, 1)? {
             let task_status = mock_completed_task(task, &executor2.id);
             join_graph.update_task_status(&executor2, vec![task_status], 1, 1)?;
         }
@@ -1747,12 +1748,12 @@ mod test {
         assert_eq!(join_graph.available_tasks(), 4);
 
         // Complete 1 task
-        if let Some(task) = join_graph.pop_next_task(&executor1.id)? {
+        if let Some(task) = join_graph.pop_next_task(&executor1.id, 1)? {
             let task_status = mock_completed_task(task, &executor1.id);
             join_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
         }
         // Mock 1 running task
-        let _task = join_graph.pop_next_task(&executor1.id)?;
+        let _task = join_graph.pop_next_task(&executor1.id, 1)?;
 
         let reset = join_graph.reset_stages_on_lost_executor(&executor1.id)?;
 
@@ -1782,13 +1783,13 @@ mod test {
         assert_eq!(join_graph.available_tasks(), 2);
 
         // Complete the first stage
-        if let Some(task) = join_graph.pop_next_task(&executor1.id)? {
+        if let Some(task) = join_graph.pop_next_task(&executor1.id, 1)? {
             let task_status = mock_completed_task(task, &executor1.id);
             join_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
         }
 
         // Complete the second stage
-        if let Some(task) = join_graph.pop_next_task(&executor2.id)? {
+        if let Some(task) = join_graph.pop_next_task(&executor2.id, 1)? {
             let task_status = mock_completed_task(task, &executor2.id);
             join_graph.update_task_status(&executor2, vec![task_status], 1, 1)?;
         }
@@ -1824,25 +1825,25 @@ mod test {
         assert_eq!(agg_graph.available_tasks(), 1);
 
         // Complete the first stage
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
             let task_status = mock_completed_task(task, &executor1.id);
             agg_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
         }
 
         // 1st task in the second stage
-        if let Some(task) = agg_graph.pop_next_task(&executor2.id)? {
+        if let Some(task) = agg_graph.pop_next_task(&executor2.id, 1)? {
             let task_status = mock_completed_task(task, &executor2.id);
             agg_graph.update_task_status(&executor2, vec![task_status], 1, 1)?;
         }
 
         // 2rd task in the second stage
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
             let task_status = mock_completed_task(task, &executor1.id);
             agg_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
         }
 
         // 3rd task in the second stage, scheduled but not completed
-        let task = agg_graph.pop_next_task(&executor1.id)?;
+        let task = agg_graph.pop_next_task(&executor1.id, 1)?;
 
         // There is 1 task pending schedule now
         assert_eq!(agg_graph.available_tasks(), 1);
@@ -1877,17 +1878,17 @@ mod test {
         agg_graph.revive();
 
         // Complete the first stage
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
             let task_status = mock_completed_task(task, &executor1.id);
             agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
         }
 
         // 1st task in the second stage
-        let task1 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task1 = agg_graph.pop_next_task(&executor2.id, 1)?.unwrap();
         let task_status1 = mock_completed_task(task1, &executor2.id);
 
         // 2rd task in the second stage
-        let task2 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task2 = agg_graph.pop_next_task(&executor2.id, 1)?.unwrap();
         let task_status2 = mock_failed_task(
             task2,
             FailedTask {
@@ -1925,17 +1926,17 @@ mod test {
         agg_graph.revive();
 
         // Complete the first stage
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
             let task_status = mock_completed_task(task, &executor1.id);
             agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
         }
 
         // 1st task in the second stage
-        let task1 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task1 = agg_graph.pop_next_task(&executor2.id, 1)?.unwrap();
         let task_status1 = mock_completed_task(task1, &executor2.id);
 
         // 2rd task in the second stage, failed due to IOError
-        let task2 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task2 = agg_graph.pop_next_task(&executor2.id, 1)?.unwrap();
         let task_status2 = mock_failed_task(
             task2.clone(),
             FailedTask {
@@ -1955,16 +1956,13 @@ mod test {
 
         assert_eq!(agg_graph.available_tasks(), 1);
 
-        let mut last_attempt = 0;
         // 2rd task's attempts
-        for attempt in 1..5 {
-            if let Some(task2_attempt) = agg_graph.pop_next_task(&executor2.id)? {
+        for _attempt in 1..5 {
+            if let Some(task2_attempt) = agg_graph.pop_next_task(&executor2.id, 1)? {
                 assert_eq!(
-                    task2_attempt.partition.partition_id,
-                    task2.partition.partition_id
+                    task2_attempt.partitions.partitions,
+                    task2.partitions.partitions
                 );
-                assert_eq!(task2_attempt.task_attempt, attempt);
-                last_attempt = task2_attempt.task_attempt;
                 let task_status = mock_failed_task(
                     task2_attempt.clone(),
                     FailedTask {
@@ -1988,14 +1986,23 @@ mod test {
                     ..
                 }
             ),
-            "Expected job status to be Failed"
+            "Expected job status to be Failed but was {:?}",
+            agg_graph.status
         );
 
-        assert_eq!(last_attempt, 3);
-
         let failure_reason = format!("{:?}", agg_graph.status);
-        assert!(failure_reason.contains("Task 1 in Stage 2 failed 4 times, fail the stage, most recent failure reason"));
-        assert!(failure_reason.contains("IOError"));
+        assert!(
+            failure_reason.contains(
+                "Stage 2 had 4 task failures, fail the stage, most recent failure reason"
+            ),
+            "Unexpected failure reason {}",
+            failure_reason
+        );
+        assert!(
+            failure_reason.contains("IOError"),
+            "Unexpected failure reason {}",
+            failure_reason
+        );
         assert!(!agg_graph.is_successful());
 
         Ok(())
@@ -2010,25 +2017,25 @@ mod test {
         agg_graph.revive();
 
         // Complete the Stage 1
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
             let task_status = mock_completed_task(task, &executor1.id);
             agg_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
         }
 
         // 1st task in the Stage 2
-        if let Some(task) = agg_graph.pop_next_task(&executor2.id)? {
+        if let Some(task) = agg_graph.pop_next_task(&executor2.id, 1)? {
             let task_status = mock_completed_task(task, &executor2.id);
             agg_graph.update_task_status(&executor2, vec![task_status], 1, 1)?;
         }
 
         // 2rd task in the Stage 2
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
             let task_status = mock_completed_task(task, &executor1.id);
             agg_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
         }
 
         // 3rd task in the Stage 2, scheduled on executor 2 but not completed
-        let task = agg_graph.pop_next_task(&executor2.id)?;
+        let task = agg_graph.pop_next_task(&executor2.id, 1)?;
 
         // There is 1 task pending schedule now
         assert_eq!(agg_graph.available_tasks(), 1);
@@ -2041,7 +2048,7 @@ mod test {
         assert_eq!(agg_graph.available_tasks(), 1);
 
         // Complete the Stage 1 again
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
             let task_status = mock_completed_task(task, &executor1.id);
             agg_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
         }
@@ -2083,17 +2090,17 @@ mod test {
         agg_graph.revive();
 
         // Complete the Stage 1
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
             let task_status = mock_completed_task(task, &executor1.id);
             agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
         }
 
         // 1st task in the Stage 2
-        let task1 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task1 = agg_graph.pop_next_task(&executor2.id, 1)?.unwrap();
         let task_status1 = mock_completed_task(task1, &executor2.id);
 
         // 2nd task in the Stage 2, failed due to FetchPartitionError
-        let task2 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task2 = agg_graph.pop_next_task(&executor2.id, 1)?.unwrap();
         let task_status2 = mock_failed_task(
             task2,
             FailedTask {
@@ -2104,14 +2111,14 @@ mod test {
                     FetchPartitionError {
                         executor_id: executor1.id.clone(),
                         map_stage_id: 1,
-                        map_partition_id: 0,
+                        map_partitions: vec![0],
                     },
                 )),
             },
         );
 
         let mut running_task_count = 0;
-        while let Some(_task) = agg_graph.pop_next_task(&executor2.id)? {
+        while let Some(_task) = agg_graph.pop_next_task(&executor2.id, 1)? {
             running_task_count += 1;
         }
         assert_eq!(running_task_count, 2);
@@ -2151,21 +2158,21 @@ mod test {
         assert_eq!(agg_graph.stage_count(), 3);
 
         // Complete the Stage 1
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
             let task_status = mock_completed_task(task, &executor1.id);
             agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
         }
 
         // Complete the Stage 2, 5 tasks run on executor_2 and 3 tasks run on executor_1
         for _i in 0..5 {
-            if let Some(task) = agg_graph.pop_next_task(&executor2.id)? {
+            if let Some(task) = agg_graph.pop_next_task(&executor2.id, 1)? {
                 let task_status = mock_completed_task(task, &executor2.id);
                 agg_graph.update_task_status(&executor2, vec![task_status], 4, 4)?;
             }
         }
         assert_eq!(agg_graph.available_tasks(), 3);
         for _i in 0..3 {
-            if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
                 let task_status = mock_completed_task(task, &executor1.id);
                 agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
             }
@@ -2174,7 +2181,7 @@ mod test {
         // Run Stage 3, 6 tasks failed due to FetchPartitionError on different map partitions on executor_2
         let mut many_fetch_failure_status = vec![];
         for part in 2..8 {
-            if let Some(task) = agg_graph.pop_next_task(&executor3.id)? {
+            if let Some(task) = agg_graph.pop_next_task(&executor3.id, 1)? {
                 let task_status = mock_failed_task(
                     task,
                     FailedTask {
@@ -2186,7 +2193,7 @@ mod test {
                                 FetchPartitionError {
                                     executor_id: executor2.id.clone(),
                                     map_stage_id: 2,
-                                    map_partition_id: part,
+                                    map_partitions: vec![part],
                                 },
                             ),
                         ),
@@ -2218,13 +2225,13 @@ mod test {
         agg_graph.revive();
 
         for attempt in 0..6 {
-            if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
                 let task_status = mock_completed_task(task, &executor1.id);
                 agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
             }
 
             // 1rd task in the Stage 2, failed due to FetchPartitionError
-            if let Some(task1) = agg_graph.pop_next_task(&executor2.id)? {
+            if let Some(task1) = agg_graph.pop_next_task(&executor2.id, 1)? {
                 let task_status1 = mock_failed_task(
                     task1.clone(),
                     FailedTask {
@@ -2236,7 +2243,7 @@ mod test {
                                 FetchPartitionError {
                                     executor_id: executor1.id.clone(),
                                     map_stage_id: 1,
-                                    map_partition_id: 0,
+                                    map_partitions: vec![0],
                                 },
                             ),
                         ),
@@ -2290,14 +2297,14 @@ mod test {
         assert_eq!(agg_graph.stage_count(), 3);
 
         // Complete the Stage 1
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
             let task_status = mock_completed_task(task, &executor1.id);
             agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
         }
 
         // Complete the Stage 2, 5 tasks run on executor_2, 2 tasks run on executor_1, 1 task runs on executor_3
         for _i in 0..5 {
-            if let Some(task) = agg_graph.pop_next_task(&executor2.id)? {
+            if let Some(task) = agg_graph.pop_next_task(&executor2.id, 1)? {
                 let task_status = mock_completed_task(task, &executor2.id);
                 agg_graph.update_task_status(&executor2, vec![task_status], 4, 4)?;
             }
@@ -2305,13 +2312,13 @@ mod test {
         assert_eq!(agg_graph.available_tasks(), 3);
 
         for _i in 0..2 {
-            if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
                 let task_status = mock_completed_task(task, &executor1.id);
                 agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
             }
         }
 
-        if let Some(task) = agg_graph.pop_next_task(&executor3.id)? {
+        if let Some(task) = agg_graph.pop_next_task(&executor3.id, 1)? {
             let task_status = mock_completed_task(task, &executor3.id);
             agg_graph.update_task_status(&executor3, vec![task_status], 4, 4)?;
         }
@@ -2319,15 +2326,15 @@ mod test {
 
         //Run Stage 3
         // 1st task scheduled
-        let task_1 = agg_graph.pop_next_task(&executor3.id)?.unwrap();
+        let task_1 = agg_graph.pop_next_task(&executor3.id, 1)?.unwrap();
         // 2nd task scheduled
-        let task_2 = agg_graph.pop_next_task(&executor3.id)?.unwrap();
+        let task_2 = agg_graph.pop_next_task(&executor3.id, 1)?.unwrap();
         // 3rd task scheduled
-        let task_3 = agg_graph.pop_next_task(&executor3.id)?.unwrap();
+        let task_3 = agg_graph.pop_next_task(&executor3.id, 1)?.unwrap();
         // 4th task scheduled
-        let task_4 = agg_graph.pop_next_task(&executor3.id)?.unwrap();
+        let task_4 = agg_graph.pop_next_task(&executor3.id, 1)?.unwrap();
         // 5th task scheduled
-        let task_5 = agg_graph.pop_next_task(&executor3.id)?.unwrap();
+        let task_5 = agg_graph.pop_next_task(&executor3.id, 1)?.unwrap();
 
         // Stage 3, 1st task failed due to FetchPartitionError(executor2)
         let task_status_1 = mock_failed_task(
@@ -2340,7 +2347,7 @@ mod test {
                     FetchPartitionError {
                         executor_id: executor2.id.clone(),
                         map_stage_id: 2,
-                        map_partition_id: 0,
+                        map_partitions: vec![0],
                     },
                 )),
             },
@@ -2364,7 +2371,7 @@ mod test {
                     FetchPartitionError {
                         executor_id: executor2.id.clone(),
                         map_stage_id: 2,
-                        map_partition_id: 1,
+                        map_partitions: vec![0],
                     },
                 )),
             },
@@ -2387,7 +2394,7 @@ mod test {
                     FetchPartitionError {
                         executor_id: executor1.id.clone(),
                         map_stage_id: 2,
-                        map_partition_id: 1,
+                        map_partitions: vec![0],
                     },
                 )),
             },
@@ -2401,7 +2408,7 @@ mod test {
 
         // Finish 4 tasks in Stage 2, to make some progress
         for _i in 0..4 {
-            if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
                 let task_status = mock_completed_task(task, &executor1.id);
                 agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
             }
@@ -2421,7 +2428,7 @@ mod test {
                     FetchPartitionError {
                         executor_id: executor1.id.clone(),
                         map_stage_id: 2,
-                        map_partition_id: 1,
+                        map_partitions: vec![1],
                     },
                 )),
             },
@@ -2435,7 +2442,7 @@ mod test {
 
         // Finish the other 3 tasks in Stage 2
         for _i in 0..3 {
-            if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
                 let task_status = mock_completed_task(task, &executor1.id);
                 agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
             }
@@ -2455,7 +2462,7 @@ mod test {
                     FetchPartitionError {
                         executor_id: executor3.id.clone(),
                         map_stage_id: 2,
-                        map_partition_id: 1,
+                        map_partitions: vec![1],
                     },
                 )),
             },
@@ -2494,14 +2501,14 @@ mod test {
         assert_eq!(agg_graph.stage_count(), 3);
 
         // Complete the Stage 1
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
             let task_status = mock_completed_task(task, &executor1.id);
             agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
         }
 
         // Complete the Stage 2, 5 tasks run on executor_2, 3 tasks run on executor_1
         for _i in 0..5 {
-            if let Some(task) = agg_graph.pop_next_task(&executor2.id)? {
+            if let Some(task) = agg_graph.pop_next_task(&executor2.id, 1)? {
                 let task_status = mock_completed_task(task, &executor2.id);
                 agg_graph.update_task_status(&executor2, vec![task_status], 4, 4)?;
             }
@@ -2509,7 +2516,7 @@ mod test {
         assert_eq!(agg_graph.available_tasks(), 3);
 
         for _i in 0..3 {
-            if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
                 let task_status = mock_completed_task(task, &executor1.id);
                 agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
             }
@@ -2518,13 +2525,13 @@ mod test {
 
         // Run Stage 3
         // 1st task scheduled
-        let task_1 = agg_graph.pop_next_task(&executor3.id)?.unwrap();
+        let task_1 = agg_graph.pop_next_task(&executor3.id, 1)?.unwrap();
         // 2nd task scheduled
-        let task_2 = agg_graph.pop_next_task(&executor3.id)?.unwrap();
+        let task_2 = agg_graph.pop_next_task(&executor3.id, 1)?.unwrap();
 
         // Stage 3, 1st task failed due to FetchPartitionError(executor2)
         let task_status_1 = mock_failed_task(
-            task_1,
+            task_1.clone(),
             FailedTask {
                 error: "FetchPartitionError".to_string(),
                 retryable: false,
@@ -2533,7 +2540,12 @@ mod test {
                     FetchPartitionError {
                         executor_id: executor2.id.clone(),
                         map_stage_id: 2,
-                        map_partition_id: 0,
+                        map_partitions: task_1
+                            .partitions
+                            .partitions
+                            .iter()
+                            .map(|p| *p as u32)
+                            .collect(),
                     },
                 )),
             },
@@ -2549,7 +2561,7 @@ mod test {
         // Complete the 5 tasks in Stage 2's new attempts
         let mut task_status_vec = vec![];
         for _i in 0..5 {
-            if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
                 task_status_vec.push(mock_completed_task(task, &executor1.id))
             }
         }
@@ -2565,7 +2577,7 @@ mod test {
                     FetchPartitionError {
                         executor_id: executor1.id.clone(),
                         map_stage_id: 2,
-                        map_partition_id: 1,
+                        map_partitions: vec![1],
                     },
                 )),
             },
@@ -2597,21 +2609,21 @@ mod test {
         assert_eq!(agg_graph.stage_count(), 3);
 
         // Complete the Stage 1
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
             let task_status = mock_completed_task(task, &executor1.id);
             agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
         }
 
         // Complete the Stage 2, 5 tasks run on executor_2, 3 tasks run on executor_1
         for _i in 0..5 {
-            if let Some(task) = agg_graph.pop_next_task(&executor2.id)? {
+            if let Some(task) = agg_graph.pop_next_task(&executor2.id, 1)? {
                 let task_status = mock_completed_task(task, &executor2.id);
                 agg_graph.update_task_status(&executor2, vec![task_status], 4, 4)?;
             }
         }
         assert_eq!(agg_graph.available_tasks(), 3);
         for _i in 0..3 {
-            if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+            if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
                 let task_status = mock_completed_task(task, &executor1.id);
                 agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
             }
@@ -2620,9 +2632,9 @@ mod test {
 
         // Run Stage 3
         // 1rd task in the Stage 3, failed due to FetchPartitionError(executor1)
-        if let Some(task1) = agg_graph.pop_next_task(&executor3.id)? {
+        if let Some(task1) = agg_graph.pop_next_task(&executor3.id, 1)? {
             let task_status1 = mock_failed_task(
-                task1,
+                task1.clone(),
                 FailedTask {
                     error: "FetchPartitionError".to_string(),
                     retryable: false,
@@ -2631,7 +2643,12 @@ mod test {
                         FetchPartitionError {
                             executor_id: executor1.id.clone(),
                             map_stage_id: 2,
-                            map_partition_id: 0,
+                            map_partitions: task1
+                                .partitions
+                                .partitions
+                                .iter()
+                                .map(|p| *p as u32)
+                                .collect(),
                         },
                     )),
                 },
@@ -2647,9 +2664,9 @@ mod test {
         assert_eq!(agg_graph.available_tasks(), 3);
 
         // 1rd task in the Stage 2's new attempt, failed due to FetchPartitionError(executor1)
-        if let Some(task1) = agg_graph.pop_next_task(&executor3.id)? {
+        if let Some(task1) = agg_graph.pop_next_task(&executor3.id, 1)? {
             let task_status1 = mock_failed_task(
-                task1,
+                task1.clone(),
                 FailedTask {
                     error: "FetchPartitionError".to_string(),
                     retryable: false,
@@ -2658,7 +2675,12 @@ mod test {
                         FetchPartitionError {
                             executor_id: executor1.id.clone(),
                             map_stage_id: 1,
-                            map_partition_id: 0,
+                            map_partitions: task1
+                                .partitions
+                                .partitions
+                                .iter()
+                                .map(|p| *p as u32)
+                                .collect(),
                         },
                     )),
                 },
@@ -2698,19 +2720,19 @@ mod test {
         agg_graph.revive();
 
         // Complete the Stage 1
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
+        if let Some(task) = agg_graph.pop_next_task(&executor1.id, 1)? {
             let task_status = mock_completed_task(task, &executor1.id);
             agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
         }
 
         // 1st task in the Stage 2
-        let task1 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task1 = agg_graph.pop_next_task(&executor2.id, 1)?.unwrap();
         let task_status1 = mock_completed_task(task1, &executor2.id);
 
         // 2nd task in the Stage 2, failed due to FetchPartitionError
-        let task2 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task2 = agg_graph.pop_next_task(&executor2.id, 1)?.unwrap();
         let task_status2 = mock_failed_task(
-            task2,
+            task2.clone(),
             FailedTask {
                 error: "FetchPartitionError".to_string(),
                 retryable: false,
@@ -2719,14 +2741,19 @@ mod test {
                     FetchPartitionError {
                         executor_id: executor1.id.clone(),
                         map_stage_id: 1,
-                        map_partition_id: 0,
+                        map_partitions: task2
+                            .partitions
+                            .partitions
+                            .iter()
+                            .map(|p| *p as u32)
+                            .collect(),
                     },
                 )),
             },
         );
 
         // 3rd task in the Stage 2, failed due to ExecutionError
-        let task3 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task3 = agg_graph.pop_next_task(&executor2.id, 1)?.unwrap();
         let task_status3 = mock_failed_task(
             task3,
             FailedTask {
@@ -2769,7 +2796,7 @@ mod test {
 
     fn drain_tasks(graph: &mut ExecutionGraph) -> Result<()> {
         let executor = mock_executor("executor-id1".to_string());
-        while let Some(task) = graph.pop_next_task(&executor.id)? {
+        while let Some(task) = graph.pop_next_task(&executor.id, 1)? {
             let task_status = mock_completed_task(task, &executor.id);
             graph.update_task_status(&executor, vec![task_status], 1, 1)?;
         }

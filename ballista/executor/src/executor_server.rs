@@ -16,7 +16,7 @@
 // under the License.
 
 use ballista_core::BALLISTA_VERSION;
-use datafusion::config::Extensions;
+use datafusion::config::{ConfigOptions, Extensions};
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::ops::Deref;
@@ -36,16 +36,17 @@ use ballista_core::serde::protobuf::{
     executor_metric, executor_status,
     scheduler_grpc_client::SchedulerGrpcClient,
     CancelTasksParams, CancelTasksResult, ExecutorMetric, ExecutorStatus,
-    HeartBeatParams, LaunchMultiTaskParams, LaunchMultiTaskResult, LaunchTaskParams,
-    LaunchTaskResult, RegisterExecutorParams, RemoveJobDataParams, RemoveJobDataResult,
-    StopExecutorParams, StopExecutorResult, TaskStatus, UpdateTaskStatusParams,
+    HeartBeatParams, LaunchTaskParams, LaunchTaskResult, RegisterExecutorParams,
+    RemoveJobDataParams, RemoveJobDataResult, StopExecutorParams, StopExecutorResult,
+    TaskStatus, UpdateTaskStatusParams,
 };
-use ballista_core::serde::scheduler::PartitionId;
+
 use ballista_core::serde::scheduler::TaskDefinition;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{create_grpc_client_connection, create_grpc_server};
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
+use datafusion::prelude::SessionConfig;
 use datafusion_proto::{
     logical_plan::AsLogicalPlan,
     physical_plan::{from_proto::parse_protobuf_hash_partitioning, AsExecutionPlan},
@@ -74,7 +75,7 @@ struct CuratorTaskDefinition {
 #[derive(Debug)]
 struct CuratorTaskStatus {
     scheduler_id: String,
-    task_status: TaskStatus,
+    task_status: Vec<TaskStatus>,
 }
 
 pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
@@ -309,6 +310,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let task = curator_task;
         let task_identity = task_identity(&task);
         let task_props = task.props;
+        let mut config =
+            ConfigOptions::new().with_extensions(self.default_extensions.clone());
+        for (k, v) in task_props {
+            config.set(&k, &v)?;
+        }
+        let session_config = SessionConfig::from(config);
 
         let mut task_scalar_functions = HashMap::new();
         let mut task_aggregate_functions = HashMap::new();
@@ -319,15 +326,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             task_aggregate_functions.insert(agg_func.0, agg_func.1);
         }
 
-        let task_context = Arc::new(TaskContext::try_new(
-            task_identity,
+        let task_context = Arc::new(TaskContext::new(
+            Some(task_identity),
             task.session_id.clone(),
-            task_props,
+            session_config,
             task_scalar_functions,
             task_aggregate_functions,
             self.executor.runtime.clone(),
-            self.default_extensions.clone(),
-        )?);
+        ));
 
         let plan = U::try_decode(plan).and_then(|proto| {
             proto.try_into_physical_plan(
@@ -360,6 +366,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let task = curator_task;
         let task_props = task.props;
 
+        let mut config =
+            ConfigOptions::new().with_extensions(self.default_extensions.clone());
+        for (k, v) in task_props {
+            config.set(&k, &v)?;
+        }
+        let session_config = SessionConfig::from(config);
+
         let mut task_scalar_functions = HashMap::new();
         let mut task_aggregate_functions = HashMap::new();
         // TODO combine the functions from Executor's functions and TaskDefintion's function resources
@@ -372,15 +385,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
         let session_id = task.session_id;
         let runtime = self.executor.runtime.clone();
-        let task_context = Arc::new(TaskContext::try_new(
-            task_identity.to_string(),
+        let task_context = Arc::new(TaskContext::new(
+            Some(task_identity.to_string()),
             session_id,
-            task_props,
+            session_config,
             task_scalar_functions,
             task_aggregate_functions,
             runtime.clone(),
-            self.default_extensions.clone(),
-        )?);
+        ));
 
         let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
             task.output_partitioning.as_ref(),
@@ -392,21 +404,17 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let job_id = task.job_id;
         let stage_id = task.stage_id;
         let stage_attempt_num = task.stage_attempt_num;
-        let partition_id = task.partition_id;
-
-        let part = PartitionId {
-            job_id: job_id.clone(),
-            stage_id,
-            partition_id,
-        };
+        let partitions = task.partitions;
 
         info!("Start to execute shuffle write for task {}", task_identity);
 
         let execution_result = self
             .executor
             .execute_query_stage(
+                &job_id,
                 task_id,
-                part.clone(),
+                task_id,
+                &partitions,
                 query_stage_exec.clone(),
                 task_context,
                 shuffle_output_partitioning,
@@ -435,9 +443,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let task_status = as_task_status(
             execution_result,
             executor_id.clone(),
+            job_id,
+            stage_id,
             task_id,
+            partitions,
             stage_attempt_num,
-            part,
             Some(operator_metrics),
             task_execution_times,
         );
@@ -446,7 +456,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         task_status_sender
             .send(CuratorTaskStatus {
                 scheduler_id,
-                task_status,
+                task_status: vec![task_status],
             })
             .await
             .unwrap();
@@ -505,13 +515,12 @@ struct TaskRunnerPool<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> 
 
 fn task_identity(task: &TaskDefinition) -> String {
     format!(
-        "TID {} {}/{}.{}/{}.{}",
+        "TID {} {}/{}.{}/{:?}",
         &task.task_id,
         &task.job_id,
         &task.stage_id,
         &task.stage_attempt_num,
-        &task.partition_id,
-        &task.task_attempt_num,
+        &task.partitions,
     )
 }
 
@@ -551,7 +560,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                     let task_status_vec = curator_task_status_map
                         .entry(task_status.scheduler_id)
                         .or_insert_with(Vec::new);
-                    task_status_vec.push(task_status.task_status);
+                    task_status_vec.extend(task_status.task_status);
                     fetched_task_num += 1;
                 } else {
                     info!("Channel is closed and will exit the task status report loop.");
@@ -566,8 +575,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                             let task_status_vec = curator_task_status_map
                                 .entry(task_status.scheduler_id)
                                 .or_insert_with(Vec::new);
-                            task_status_vec.push(task_status.task_status);
-                            fetched_task_num += 1;
+                            fetched_task_num += task_status.task_status.len();
+                            task_status_vec.extend(task_status.task_status);
                         }
                         Err(TryRecvError::Empty) => {
                             info!("Fetched {} tasks status to report", fetched_task_num);
@@ -734,33 +743,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         Ok(Response::new(LaunchTaskResult { success: true }))
     }
 
-    /// by this interface, it can reduce the deserialization cost for multiple tasks
-    /// belong to the same job stage running on the same one executor
-    async fn launch_multi_task(
-        &self,
-        request: Request<LaunchMultiTaskParams>,
-    ) -> Result<Response<LaunchMultiTaskResult>, Status> {
-        let LaunchMultiTaskParams {
-            multi_tasks,
-            scheduler_id,
-        } = request.into_inner();
-        let task_sender = self.executor_env.tx_task.clone();
-        for multi_task in multi_tasks {
-            let (multi_task, plan): (Vec<TaskDefinition>, Vec<u8>) = multi_task
-                .try_into()
-                .map_err(|e| Status::invalid_argument(format!("{e}")))?;
-            task_sender
-                .send(CuratorTaskDefinition {
-                    scheduler_id: scheduler_id.clone(),
-                    plan,
-                    tasks: multi_task,
-                })
-                .await
-                .unwrap();
-        }
-        Ok(Response::new(LaunchMultiTaskResult { success: true }))
-    }
-
     async fn stop_executor(
         &self,
         request: Request<StopExecutorParams>,
@@ -796,12 +778,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         for task in task_infos {
             if let Err(e) = self
                 .executor
-                .cancel_task(
-                    task.task_id as usize,
-                    task.job_id,
-                    task.stage_id as usize,
-                    task.partition_id as usize,
-                )
+                .cancel_task(task.task_id as usize, task.job_id, task.stage_id as usize)
                 .await
             {
                 error!("Error cancelling task: {:?}", e);

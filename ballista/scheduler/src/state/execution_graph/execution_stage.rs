@@ -20,7 +20,6 @@ use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
 use std::iter::FromIterator;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use datafusion::physical_optimizer::join_selection::JoinSelection;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
@@ -45,6 +44,7 @@ use datafusion_proto::physical_plan::from_proto::parse_protobuf_hash_partitionin
 use datafusion_proto::physical_plan::AsExecutionPlan;
 
 use crate::display::DisplayableBallistaExecutionPlan;
+use crate::scheduler_server::timestamp_millis;
 
 /// A stage in the ExecutionGraph,
 /// represents a set of tasks (one per each `partition`) which can be executed concurrently.
@@ -186,9 +186,8 @@ pub(crate) struct RunningStage {
     /// TaskInfo of each already scheduled task. If info is None, the partition has not yet been scheduled.
     /// The index of the Vec is the task's partition id
     pub(crate) task_infos: Vec<Option<TaskInfo>>,
-    /// Track the number of failures for each partition's task attempts.
-    /// The index of the Vec is the task's partition id.
-    pub(crate) task_failure_numbers: Vec<usize>,
+    /// Track the number of task failures for this stage
+    pub(crate) task_failures: usize,
     /// Combined metrics of the already finished tasks in the stage, If it is None, no task is finished yet.
     pub(crate) stage_metrics: Option<Vec<MetricsSet>>,
 }
@@ -329,7 +328,6 @@ impl UnresolvedStage {
     pub(super) fn remove_input_partitions(
         &mut self,
         input_stage_id: usize,
-        _input_partition_id: usize,
         executor_id: &str,
     ) -> Result<HashSet<usize>> {
         if let Some(stage_output) = self.inputs.get_mut(&input_stage_id) {
@@ -340,7 +338,7 @@ impl UnresolvedStage {
                 .for_each(|(_partition, locs)| {
                     locs.iter().for_each(|loc| {
                         if loc.executor_meta.id == executor_id {
-                            bad_map_partitions.insert(loc.map_partition_id);
+                            bad_map_partitions.extend(&loc.map_partitions);
                         }
                     });
 
@@ -381,7 +379,7 @@ impl UnresolvedStage {
         // Optimize join order based on new resolved statistics
         let optimize_join = JoinSelection::new();
         let plan =
-            optimize_join.optimize(plan, SessionConfig::default().config_options())?;
+            optimize_join.optimize(plan, SessionConfig::default().options_mut())?;
 
         Ok(ResolvedStage::new(
             self.stage_id,
@@ -616,7 +614,7 @@ impl RunningStage {
             inputs,
             plan,
             task_infos: vec![None; partitions],
-            task_failure_numbers: vec![0; partitions],
+            task_failures: 0,
             stage_metrics: None,
         }
     }
@@ -755,50 +753,33 @@ impl RunningStage {
     }
 
     /// Update the TaskInfo for task partition
-    pub(super) fn update_task_info(
-        &mut self,
-        partition_id: usize,
-        status: TaskStatus,
-    ) -> bool {
-        debug!("Updating TaskInfo for partition {}", partition_id);
-        let task_info = self.task_infos[partition_id].as_ref().unwrap();
-        let task_id = task_info.task_id;
-        if (status.task_id as usize) < task_id {
-            warn!("Ignore TaskStatus update with TID {} because there is more recent task attempt with TID {} running for partition {}",
-                status.task_id, task_id, partition_id);
-            return false;
-        }
-        let scheduled_time = task_info.scheduled_time;
-        let task_status = status.status.unwrap();
-        let updated_task_info = TaskInfo {
-            task_id,
-            scheduled_time,
-            launch_time: status.launch_time as u128,
-            start_exec_time: status.start_exec_time as u128,
-            end_exec_time: status.end_exec_time as u128,
-            finish_time: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis(),
-            task_status: task_status.clone(),
-        };
-        self.task_infos[partition_id] = Some(updated_task_info);
+    pub(super) fn update_task_info(&mut self, status: &TaskStatus) -> bool {
+        let task_status = status.status.as_ref().unwrap();
+        for partition_id in &status.partitions {
+            debug!("Updating TaskInfo for partition {}", partition_id);
+            let task_info = self.task_infos[*partition_id as usize].as_ref().unwrap();
+            let task_id = task_info.task_id;
 
-        if let task_status::Status::Failed(failed_task) = task_status {
-            // if the failed task is retryable, increase the task failure count for this partition
-            if failed_task.retryable {
-                self.task_failure_numbers[partition_id] += 1;
-            }
-        } else {
-            self.task_failure_numbers[partition_id] = 0;
+            let scheduled_time = task_info.scheduled_time;
+
+            let updated_task_info = TaskInfo {
+                task_id,
+                scheduled_time,
+                launch_time: status.launch_time as u128,
+                start_exec_time: status.start_exec_time as u128,
+                end_exec_time: status.end_exec_time as u128,
+                finish_time: timestamp_millis() as u128,
+                task_status: task_status.clone(),
+            };
+            self.task_infos[*partition_id as usize] = Some(updated_task_info);
         }
+
         true
     }
 
     /// update and combine the task metrics to the stage metrics
     pub(super) fn update_task_metrics(
         &mut self,
-        partition: usize,
         metrics: Vec<OperatorMetricsSet>,
     ) -> Result<()> {
         // For some cases, task metrics not set, especially for testings.
@@ -809,7 +790,7 @@ impl RunningStage {
         let new_metrics_set = if let Some(combined_metrics) = &mut self.stage_metrics {
             if metrics.len() != combined_metrics.len() {
                 return Err(BallistaError::Internal(format!("Error updating task metrics to stage {}, task metrics array size {} does not equal \
-                with the stage metrics array size {} for task {}", self.stage_id, metrics.len(), combined_metrics.len(), partition)));
+                with the stage metrics array size {}", self.stage_id, metrics.len(), combined_metrics.len())));
             }
             let metrics_values_array = metrics
                 .into_iter()
@@ -824,9 +805,7 @@ impl RunningStage {
             combined_metrics
                 .iter_mut()
                 .zip(metrics_values_array)
-                .map(|(first, second)| {
-                    Self::combine_metrics_set(first, second, partition)
-                })
+                .map(|(first, second)| Self::combine_metrics_set(first, second))
                 .collect()
         } else {
             metrics
@@ -842,24 +821,21 @@ impl RunningStage {
     pub(super) fn combine_metrics_set(
         first: &mut MetricsSet,
         second: Vec<MetricValue>,
-        partition: usize,
     ) -> MetricsSet {
         for metric_value in second {
             // TODO recheck the lable logic
-            let new_metric = Arc::new(Metric::new(metric_value, Some(partition)));
+            let new_metric = Arc::new(Metric::new(metric_value, None));
             first.push(new_metric);
         }
         first.aggregate_by_name()
     }
 
-    pub(super) fn task_failure_number(&self, partition_id: usize) -> usize {
-        self.task_failure_numbers[partition_id]
-    }
-
-    /// Reset the task info for the given task partition. This should be called when a task failed and need to be
+    /// Reset the task info for the given task ID. This should be called when a task failed and need to be
     /// re-scheduled.
-    pub fn reset_task_info(&mut self, partition_id: usize) {
-        self.task_infos[partition_id] = None;
+    pub fn reset_task_info(&mut self, partitions: impl Iterator<Item = usize>) {
+        for partition in partitions {
+            self.task_infos[partition] = None;
+        }
     }
 
     /// Reset the running and completed tasks on a given executor
@@ -897,7 +873,6 @@ impl RunningStage {
     pub(super) fn remove_input_partitions(
         &mut self,
         input_stage_id: usize,
-        _input_partition_id: usize,
         executor_id: &str,
     ) -> Result<HashSet<usize>> {
         if let Some(stage_output) = self.inputs.get_mut(&input_stage_id) {
@@ -908,7 +883,7 @@ impl RunningStage {
                 .for_each(|(_partition, locs)| {
                     locs.iter().for_each(|loc| {
                         if loc.executor_meta.id == executor_id {
-                            bad_map_partitions.insert(loc.map_partition_id);
+                            bad_map_partitions.extend(&loc.map_partitions);
                         }
                     });
 
@@ -966,9 +941,8 @@ impl SuccessfulStage {
             output_links: self.output_links.clone(),
             inputs: self.inputs.clone(),
             plan: self.plan.clone(),
+            task_failures: 0,
             task_infos,
-            // It is Ok to forget the previous task failure attempts
-            task_failure_numbers: vec![0; self.partitions],
             stage_metrics,
         }
     }
@@ -1275,12 +1249,12 @@ impl StageOutput {
     pub(super) fn add_partition(&mut self, partition_location: PartitionLocation) {
         if let Some(parts) = self
             .partition_locations
-            .get_mut(&partition_location.partition_id.partition_id)
+            .get_mut(&partition_location.output_partition)
         {
             parts.push(partition_location)
         } else {
             self.partition_locations.insert(
-                partition_location.partition_id.partition_id,
+                partition_location.output_partition,
                 vec![partition_location],
             );
         }

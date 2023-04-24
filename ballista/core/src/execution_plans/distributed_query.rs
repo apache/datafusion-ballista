@@ -39,6 +39,7 @@ use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
+use itertools::Itertools;
 use log::{error, info};
 use std::any::Any;
 use std::fmt::Debug;
@@ -308,18 +309,26 @@ async fn fetch_partition(
     let metadata = location.executor_meta.ok_or_else(|| {
         DataFusionError::Internal("Received empty executor metadata".to_owned())
     })?;
-    let partition_id = location.partition_id.ok_or_else(|| {
-        DataFusionError::Internal("Received empty partition id".to_owned())
-    })?;
+
     let host = metadata.host.as_str();
     let port = metadata.port as u16;
     let mut ballista_client = BallistaClient::try_new(host, port)
         .await
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+
+    let map_partitions = location
+        .map_partitions
+        .into_iter()
+        .map(|p| p as usize)
+        .collect_vec();
+
     ballista_client
         .fetch_partition(
             &metadata.id,
-            &partition_id.into(),
+            &location.job_id,
+            location.stage_id as usize,
+            location.output_partition as usize,
+            &map_partitions,
             &location.path,
             host,
             port,

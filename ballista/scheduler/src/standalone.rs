@@ -18,14 +18,13 @@
 use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
 use crate::metrics::default_metrics_collector;
-use crate::{cluster::storage::sled::SledClient, scheduler_server::SchedulerServer};
+use crate::scheduler_server::SchedulerServer;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{create_grpc_server, default_session_builder};
 use ballista_core::{
     error::Result, serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer,
     BALLISTA_VERSION,
 };
-use datafusion::config::Extensions;
 use datafusion_proto::protobuf::LogicalPlanNode;
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use log::info;
@@ -35,13 +34,7 @@ use tokio::net::TcpListener;
 pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
     let metrics_collector = default_metrics_collector()?;
 
-    let cluster = BallistaCluster::new_kv(
-        SledClient::try_new_temporary()?,
-        "localhost:50050",
-        default_session_builder,
-        BallistaCodec::default(),
-        Extensions::default(),
-    );
+    let cluster = BallistaCluster::new_memory("standalone", default_session_builder);
 
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
         SchedulerServer::new(

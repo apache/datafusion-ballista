@@ -39,7 +39,6 @@ use ballista_core::serde::protobuf::{
     task_status, FailedTask, OperatorMetricsSet, ShuffleWritePartition, SuccessfulTask,
     TaskStatus,
 };
-use ballista_core::serde::scheduler::PartitionId;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TaskExecutionTimes {
@@ -48,18 +47,21 @@ pub struct TaskExecutionTimes {
     end_exec_time: u64,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn as_task_status(
     execution_result: ballista_core::error::Result<Vec<ShuffleWritePartition>>,
     executor_id: String,
+    job_id: String,
+    stage_id: usize,
     task_id: usize,
+    partitions: Vec<usize>,
     stage_attempt_num: usize,
-    partition_id: PartitionId,
     operator_metrics: Option<Vec<OperatorMetricsSet>>,
     execution_times: TaskExecutionTimes,
 ) -> TaskStatus {
     let metrics = operator_metrics.unwrap_or_default();
     match execution_result {
-        Ok(partitions) => {
+        Ok(shuffle_partitions) => {
             info!(
                 "Task {:?} finished with operator_metrics array size {}",
                 task_id,
@@ -67,17 +69,17 @@ pub fn as_task_status(
             );
             TaskStatus {
                 task_id: task_id as u32,
-                job_id: partition_id.job_id,
-                stage_id: partition_id.stage_id as u32,
+                job_id,
+                stage_id: stage_id as u32,
                 stage_attempt_num: stage_attempt_num as u32,
-                partition_id: partition_id.partition_id as u32,
+                partitions: partitions.into_iter().map(|p| p as u32).collect(),
                 launch_time: execution_times.launch_time,
                 start_exec_time: execution_times.start_exec_time,
                 end_exec_time: execution_times.end_exec_time,
                 metrics,
                 status: Some(task_status::Status::Successful(SuccessfulTask {
                     executor_id,
-                    partitions,
+                    partitions: shuffle_partitions,
                 })),
             }
         }
@@ -87,10 +89,10 @@ pub fn as_task_status(
 
             TaskStatus {
                 task_id: task_id as u32,
-                job_id: partition_id.job_id,
-                stage_id: partition_id.stage_id as u32,
+                job_id,
+                stage_id: stage_id as u32,
                 stage_attempt_num: stage_attempt_num as u32,
-                partition_id: partition_id.partition_id as u32,
+                partitions: partitions.into_iter().map(|p| p as u32).collect(),
                 launch_time: execution_times.launch_time,
                 start_exec_time: execution_times.start_exec_time,
                 end_exec_time: execution_times.end_exec_time,

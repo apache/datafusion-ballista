@@ -109,15 +109,15 @@ async fn main() -> Result<()> {
         bind_port: opt.bind_port,
         scheduling_policy: opt.scheduler_policy,
         event_loop_buffer_size: opt.event_loop_buffer_size,
-        executor_slots_policy: opt.executor_slots_policy,
+        task_distribution: opt.task_distribution,
         finished_job_data_clean_up_interval_seconds: opt
             .finished_job_data_clean_up_interval_seconds,
         finished_job_state_clean_up_interval_seconds: opt
             .finished_job_state_clean_up_interval_seconds,
         advertise_flight_sql_endpoint: opt.advertise_flight_sql_endpoint,
         cluster_storage: ClusterStorageConfig::Memory,
-        job_resubmit_interval_ms: (opt.job_resubmit_interval_ms > 0)
-            .then_some(opt.job_resubmit_interval_ms),
+        scheduler_tick_interval_ms: opt.scheduler_tick_interval_ms,
+        tasks_per_tick: opt.tasks_per_tick,
         executor_termination_grace_period: opt.executor_termination_grace_period,
     };
 

@@ -4,7 +4,10 @@
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BallistaPhysicalPlanNode {
-    #[prost(oneof = "ballista_physical_plan_node::PhysicalPlanType", tags = "1, 2, 3")]
+    #[prost(
+        oneof = "ballista_physical_plan_node::PhysicalPlanType",
+        tags = "1, 2, 3, 4"
+    )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
     >,
@@ -20,7 +23,17 @@ pub mod ballista_physical_plan_node {
         ShuffleReader(super::ShuffleReaderExecNode),
         #[prost(message, tag = "3")]
         UnresolvedShuffle(super::UnresolvedShuffleExecNode),
+        #[prost(message, tag = "4")]
+        CoalesceTasks(super::CoalesceTaskExecNode),
     }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CoalesceTaskExecNode {
+    #[prost(message, optional, tag = "1")]
+    pub input: ::core::option::Option<::datafusion_proto::protobuf::PhysicalPlanNode>,
+    #[prost(uint32, repeated, tag = "2")]
+    pub partitions: ::prost::alloc::vec::Vec<u32>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -31,6 +44,8 @@ pub struct ShuffleWriterExecNode {
     pub job_id: ::prost::alloc::string::String,
     #[prost(uint32, tag = "2")]
     pub stage_id: u32,
+    #[prost(uint32, repeated, tag = "5")]
+    pub partitions: ::prost::alloc::vec::Vec<u32>,
     #[prost(message, optional, tag = "3")]
     pub input: ::core::option::Option<::datafusion_proto::protobuf::PhysicalPlanNode>,
     #[prost(message, optional, tag = "4")]
@@ -343,39 +358,22 @@ pub struct FetchPartition {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PartitionLocation {
+    #[prost(string, tag = "6")]
+    pub job_id: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "7")]
+    pub stage_id: u32,
     /// partition_id of the map stage who produces the shuffle.
-    #[prost(uint32, tag = "1")]
-    pub map_partition_id: u32,
+    #[prost(uint32, repeated, tag = "1")]
+    pub map_partitions: ::prost::alloc::vec::Vec<u32>,
     /// partition_id of the shuffle, a composition of(job_id + map_stage_id + partition_id).
-    #[prost(message, optional, tag = "2")]
-    pub partition_id: ::core::option::Option<PartitionId>,
+    #[prost(uint32, tag = "2")]
+    pub output_partition: u32,
     #[prost(message, optional, tag = "3")]
     pub executor_meta: ::core::option::Option<ExecutorMetadata>,
     #[prost(message, optional, tag = "4")]
     pub partition_stats: ::core::option::Option<PartitionStats>,
     #[prost(string, tag = "5")]
     pub path: ::prost::alloc::string::String,
-}
-/// Unique identifier for a materialized partition of data
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct PartitionId {
-    #[prost(string, tag = "1")]
-    pub job_id: ::prost::alloc::string::String,
-    #[prost(uint32, tag = "2")]
-    pub stage_id: u32,
-    #[prost(uint32, tag = "4")]
-    pub partition_id: u32,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct TaskId {
-    #[prost(uint32, tag = "1")]
-    pub task_id: u32,
-    #[prost(uint32, tag = "2")]
-    pub task_attempt_num: u32,
-    #[prost(uint32, tag = "3")]
-    pub partition_id: u32,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -670,8 +668,8 @@ pub struct FetchPartitionError {
     pub executor_id: ::prost::alloc::string::String,
     #[prost(uint32, tag = "2")]
     pub map_stage_id: u32,
-    #[prost(uint32, tag = "3")]
-    pub map_partition_id: u32,
+    #[prost(uint32, repeated, tag = "3")]
+    pub map_partitions: ::prost::alloc::vec::Vec<u32>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -688,8 +686,10 @@ pub struct TaskKilled {}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleWritePartition {
-    #[prost(uint64, tag = "1")]
-    pub partition_id: u64,
+    #[prost(uint32, repeated, tag = "1")]
+    pub partitions: ::prost::alloc::vec::Vec<u32>,
+    #[prost(uint32, tag = "6")]
+    pub output_partition: u32,
     #[prost(string, tag = "2")]
     pub path: ::prost::alloc::string::String,
     #[prost(uint64, tag = "3")]
@@ -710,8 +710,8 @@ pub struct TaskStatus {
     pub stage_id: u32,
     #[prost(uint32, tag = "4")]
     pub stage_attempt_num: u32,
-    #[prost(uint32, tag = "5")]
-    pub partition_id: u32,
+    #[prost(uint32, repeated, tag = "5")]
+    pub partitions: ::prost::alloc::vec::Vec<u32>,
     #[prost(uint64, tag = "6")]
     pub launch_time: u64,
     #[prost(uint64, tag = "7")]
@@ -752,16 +752,14 @@ pub struct PollWorkParams {
 pub struct TaskDefinition {
     #[prost(uint32, tag = "1")]
     pub task_id: u32,
-    #[prost(uint32, tag = "2")]
-    pub task_attempt_num: u32,
     #[prost(string, tag = "3")]
     pub job_id: ::prost::alloc::string::String,
     #[prost(uint32, tag = "4")]
     pub stage_id: u32,
     #[prost(uint32, tag = "5")]
     pub stage_attempt_num: u32,
-    #[prost(uint32, tag = "6")]
-    pub partition_id: u32,
+    #[prost(uint32, repeated, tag = "6")]
+    pub partitions: ::prost::alloc::vec::Vec<u32>,
     #[prost(bytes = "vec", tag = "7")]
     pub plan: ::prost::alloc::vec::Vec<u8>,
     /// Output partition for shuffle writer
@@ -774,32 +772,6 @@ pub struct TaskDefinition {
     #[prost(uint64, tag = "10")]
     pub launch_time: u64,
     #[prost(message, repeated, tag = "11")]
-    pub props: ::prost::alloc::vec::Vec<KeyValuePair>,
-}
-/// A set of tasks in the same stage
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MultiTaskDefinition {
-    #[prost(message, repeated, tag = "1")]
-    pub task_ids: ::prost::alloc::vec::Vec<TaskId>,
-    #[prost(string, tag = "2")]
-    pub job_id: ::prost::alloc::string::String,
-    #[prost(uint32, tag = "3")]
-    pub stage_id: u32,
-    #[prost(uint32, tag = "4")]
-    pub stage_attempt_num: u32,
-    #[prost(bytes = "vec", tag = "5")]
-    pub plan: ::prost::alloc::vec::Vec<u8>,
-    /// Output partition for shuffle writer
-    #[prost(message, optional, tag = "6")]
-    pub output_partitioning: ::core::option::Option<
-        ::datafusion_proto::protobuf::PhysicalHashRepartition,
-    >,
-    #[prost(string, tag = "7")]
-    pub session_id: ::prost::alloc::string::String,
-    #[prost(uint64, tag = "8")]
-    pub launch_time: u64,
-    #[prost(message, repeated, tag = "9")]
     pub props: ::prost::alloc::vec::Vec<KeyValuePair>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -1070,23 +1042,7 @@ pub struct LaunchTaskParams {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct LaunchMultiTaskParams {
-    /// Allow to launch a task set to an executor at once
-    #[prost(message, repeated, tag = "1")]
-    pub multi_tasks: ::prost::alloc::vec::Vec<MultiTaskDefinition>,
-    #[prost(string, tag = "2")]
-    pub scheduler_id: ::prost::alloc::string::String,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LaunchTaskResult {
-    /// TODO when part of the task set are scheduled successfully
-    #[prost(bool, tag = "1")]
-    pub success: bool,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct LaunchMultiTaskResult {
     /// TODO when part of the task set are scheduled successfully
     #[prost(bool, tag = "1")]
     pub success: bool,
@@ -1121,8 +1077,6 @@ pub struct RunningTaskInfo {
     pub job_id: ::prost::alloc::string::String,
     #[prost(uint32, tag = "3")]
     pub stage_id: u32,
-    #[prost(uint32, tag = "4")]
-    pub partition_id: u32,
 }
 /// Generated client implementations.
 pub mod scheduler_grpc_client {
@@ -1474,25 +1428,6 @@ pub mod executor_grpc_client {
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.ExecutorGrpc/LaunchTask",
-            );
-            self.inner.unary(request.into_request(), path, codec).await
-        }
-        pub async fn launch_multi_task(
-            &mut self,
-            request: impl tonic::IntoRequest<super::LaunchMultiTaskParams>,
-        ) -> Result<tonic::Response<super::LaunchMultiTaskResult>, tonic::Status> {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::new(
-                        tonic::Code::Unknown,
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/ballista.protobuf.ExecutorGrpc/LaunchMultiTask",
             );
             self.inner.unary(request.into_request(), path, codec).await
         }
@@ -2112,10 +2047,6 @@ pub mod executor_grpc_server {
             &self,
             request: tonic::Request<super::LaunchTaskParams>,
         ) -> Result<tonic::Response<super::LaunchTaskResult>, tonic::Status>;
-        async fn launch_multi_task(
-            &self,
-            request: tonic::Request<super::LaunchMultiTaskParams>,
-        ) -> Result<tonic::Response<super::LaunchMultiTaskResult>, tonic::Status>;
         async fn stop_executor(
             &self,
             request: tonic::Request<super::StopExecutorParams>,
@@ -2215,46 +2146,6 @@ pub mod executor_grpc_server {
                     let fut = async move {
                         let inner = inner.0;
                         let method = LaunchTaskSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/ballista.protobuf.ExecutorGrpc/LaunchMultiTask" => {
-                    #[allow(non_camel_case_types)]
-                    struct LaunchMultiTaskSvc<T: ExecutorGrpc>(pub Arc<T>);
-                    impl<
-                        T: ExecutorGrpc,
-                    > tonic::server::UnaryService<super::LaunchMultiTaskParams>
-                    for LaunchMultiTaskSvc<T> {
-                        type Response = super::LaunchMultiTaskResult;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::LaunchMultiTaskParams>,
-                        ) -> Self::Future {
-                            let inner = self.0.clone();
-                            let fut = async move {
-                                (*inner).launch_multi_task(request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let inner = inner.0;
-                        let method = LaunchMultiTaskSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

@@ -77,7 +77,7 @@ pub fn create_datafusion_context(
         .with_repartition_windows(ballista_config.repartition_windows())
         .with_parquet_pruning(ballista_config.parquet_pruning());
     let mut config = propagate_ballista_configs(config, ballista_config);
-    config.config_options_mut().extensions = extensions;
+    config.options_mut().extensions = extensions;
 
     let session_state = session_builder(config);
     let session_state = match session_id {

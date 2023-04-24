@@ -150,12 +150,14 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
         opt.concurrent_tasks
     };
 
+    // assign this executor an unique ID
+    let executor_id = Uuid::new_v4().to_string();
+
     info!("Running with config:");
     info!("work_dir: {}", work_dir);
     info!("concurrent_tasks: {}", concurrent_tasks);
+    info!("executor_id: {}", executor_id);
 
-    // assign this executor an unique ID
-    let executor_id = Uuid::new_v4().to_string();
     let executor_meta = ExecutorRegistration {
         id: executor_id.clone(),
         optional_host: opt

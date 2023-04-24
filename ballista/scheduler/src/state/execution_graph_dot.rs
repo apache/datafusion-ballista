@@ -151,9 +151,7 @@ fn write_plan_recursive(
     if let Some(reader) = plan.as_any().downcast_ref::<ShuffleReaderExec>() {
         for part in &reader.partition {
             for loc in part {
-                state
-                    .readers
-                    .insert(node_name.clone(), loc.partition_id.stage_id);
+                state.readers.insert(node_name.clone(), loc.stage_id);
             }
         }
     } else if let Some(reader) = plan.as_any().downcast_ref::<UnresolvedShuffleExec>() {
@@ -627,7 +625,7 @@ filter_expr="]
             .with_target_partitions(48)
             .with_batch_size(4096);
         config
-            .config_options_mut()
+            .options_mut()
             .optimizer
             .enable_round_robin_repartition = false;
         let ctx = SessionContext::with_config(config);
@@ -654,7 +652,7 @@ filter_expr="]
             .with_target_partitions(48)
             .with_batch_size(4096);
         config
-            .config_options_mut()
+            .options_mut()
             .optimizer
             .enable_round_robin_repartition = false;
         let ctx = SessionContext::with_config(config);

@@ -96,10 +96,10 @@ default = "3600"
 doc = "Delayed interval for cleaning up finished job state. Default: 3600"
 
 [[param]]
-name = "executor_slots_policy"
-type = "ballista_scheduler::config::SlotsPolicy"
-doc = "The executor slots policy for the scheduler, possible values: bias, round-robin, round-robin-local. Default: bias"
-default = "ballista_scheduler::config::SlotsPolicy::Bias"
+name = "task_distribution"
+type = "ballista_scheduler::config::TaskDistribution"
+doc = "The policy of distributing tasks to available executor slots, possible values: bias, round-robin. Default: bias"
+default = "ballista_scheduler::config::TaskDistribution::Bias"
 
 [[param]]
 name = "plugin_dir"
@@ -137,10 +137,17 @@ doc = "Tracing log rotation policy, possible values: minutely, hourly, daily, ne
 default = "ballista_core::config::LogRotationPolicy::Daily"
 
 [[param]]
-name = "job_resubmit_interval_ms"
+name = "scheduler_tick_interval_ms"
 type = "u64"
-default = "0"
-doc = "If job is not able to be scheduled on submission, wait for this interval and resubmit. Default value of 0 indicates that job shuuld not be resubmitted"
+default = "500"
+doc = "If the scheduler cannot scheduler pending tasks due to lack of available resources, it will attempt again after (approximately) this interval in milliseconds. Default of 500ms"
+
+[[param]]
+name = "tasks_per_tick"
+type = "u64"
+default = "256"
+doc = "The maximum number of tasks that can be scheduled on each scheduler tick"
+
 
 [[param]]
 name = "executor_termination_grace_period"

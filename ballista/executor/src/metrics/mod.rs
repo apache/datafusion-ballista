@@ -30,7 +30,7 @@ pub trait ExecutorMetricsCollector: Send + Sync {
         &self,
         job_id: &str,
         stage_id: usize,
-        partition: usize,
+        partitions: &[usize],
         plan: Arc<dyn QueryStageExecutor>,
     );
 }
@@ -45,12 +45,12 @@ impl ExecutorMetricsCollector for LoggingMetricsCollector {
         &self,
         job_id: &str,
         stage_id: usize,
-        partition: usize,
+        partitions: &[usize],
         plan: Arc<dyn QueryStageExecutor>,
     ) {
         info!(
-            "=== [{}/{}/{}] Physical plan with metrics ===\n{:?}\n",
-            job_id, stage_id, partition, plan
+            "=== [{}/{}/{:?}] Physical plan with metrics ===\n{:?}\n",
+            job_id, stage_id, partitions, plan
         );
     }
 }

@@ -18,11 +18,13 @@
 //! This module contains execution plans that are needed to distribute DataFusion's execution plans into
 //! several Ballista executors.
 
+mod coalesce_tasks;
 mod distributed_query;
 mod shuffle_reader;
 mod shuffle_writer;
 mod unresolved_shuffle;
 
+pub use coalesce_tasks::CoalesceTasksExec;
 pub use distributed_query::DistributedQueryExec;
 pub use shuffle_reader::ShuffleReaderExec;
 pub use shuffle_writer::ShuffleWriterExec;

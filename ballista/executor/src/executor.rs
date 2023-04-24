@@ -24,7 +24,7 @@ use crate::metrics::ExecutorMetricsCollector;
 use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::ExecutorRegistration;
-use ballista_core::serde::scheduler::PartitionId;
+
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -36,7 +36,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::watch;
 
-type AbortHandles = Arc<DashMap<(usize, PartitionId), AbortHandle>>;
+/// Map from (Job ID, task ID) -> AbortHandle for running task
+type AbortHandles = Arc<DashMap<(String, usize), AbortHandle>>;
 
 /// Ballista executor
 #[derive(Clone)]
@@ -129,52 +130,47 @@ impl Executor {
     /// Execute one partition of a query stage and persist the result to disk in IPC format. On
     /// success, return a RecordBatch containing metadata about the results, including path
     /// and statistics.
+    #[allow(clippy::too_many_arguments)]
     pub async fn execute_query_stage(
         &self,
+        job_id: &str,
+        stage_id: usize,
         task_id: usize,
-        partition: PartitionId,
+        partitions: &[usize],
         query_stage_exec: Arc<dyn QueryStageExecutor>,
         task_ctx: Arc<TaskContext>,
         _shuffle_output_partitioning: Option<Partitioning>,
     ) -> Result<Vec<protobuf::ShuffleWritePartition>, BallistaError> {
         let (task, abort_handle) = futures::future::abortable(
-            query_stage_exec.execute_query_stage(partition.partition_id, task_ctx),
+            query_stage_exec.execute_query_stage(partitions.to_vec(), task_ctx),
         );
 
         self.abort_handles
-            .insert((task_id, partition.clone()), abort_handle);
+            .insert((job_id.to_string(), task_id), abort_handle);
 
-        let partitions = task.await;
+        let shuffle_partitions = task.await;
 
-        self.remove_handle(task_id, partition.clone());
+        self.remove_handle(job_id.to_string(), task_id);
 
-        let partitions = partitions??;
+        let shuffle_partitions = shuffle_partitions??;
 
         self.metrics_collector.record_stage(
-            &partition.job_id,
-            partition.stage_id,
-            partition.partition_id,
+            job_id,
+            stage_id,
+            partitions,
             query_stage_exec,
         );
 
-        Ok(partitions)
+        Ok(shuffle_partitions)
     }
 
     pub async fn cancel_task(
         &self,
         task_id: usize,
         job_id: String,
-        stage_id: usize,
-        partition_id: usize,
+        _stage_id: usize,
     ) -> Result<bool, BallistaError> {
-        if let Some((_, handle)) = self.remove_handle(
-            task_id,
-            PartitionId {
-                job_id,
-                stage_id,
-                partition_id,
-            },
-        ) {
+        if let Some((_, handle)) = self.remove_handle(job_id, task_id) {
             handle.abort();
             Ok(true)
         } else {
@@ -205,10 +201,10 @@ impl Executor {
 
     fn remove_handle(
         &self,
+        job_id: String,
         task_id: usize,
-        partition: PartitionId,
-    ) -> Option<((usize, PartitionId), AbortHandle)> {
-        let removed = self.abort_handles.remove(&(task_id, partition));
+    ) -> Option<((String, usize), AbortHandle)> {
+        let removed = self.abort_handles.remove(&(job_id, task_id));
 
         if self.active_task_count() == 0 {
             self.drained.send_replace(());
@@ -224,12 +220,11 @@ mod test {
     use crate::metrics::LoggingMetricsCollector;
     use arrow::datatypes::{Schema, SchemaRef};
     use arrow::record_batch::RecordBatch;
-    use ballista_core::execution_plans::ShuffleWriterExec;
+    use ballista_core::execution_plans::{CoalesceTasksExec, ShuffleWriterExec};
     use ballista_core::serde::protobuf::ExecutorRegistration;
     use datafusion::execution::context::TaskContext;
 
     use crate::execution_engine::DefaultQueryStageExec;
-    use ballista_core::serde::scheduler::PartitionId;
     use datafusion::error::DataFusionError;
     use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_plan::{
@@ -322,7 +317,11 @@ mod test {
         let shuffle_write = ShuffleWriterExec::try_new(
             "job-id".to_owned(),
             1,
-            Arc::new(NeverendingOperator),
+            vec![0],
+            Arc::new(CoalesceTasksExec::new(
+                Arc::new(NeverendingOperator),
+                vec![0],
+            )),
             work_dir.clone(),
             None,
         )
@@ -354,15 +353,12 @@ mod test {
         // Spawn our non-terminating task on a separate fiber.
         let executor_clone = executor.clone();
         tokio::task::spawn(async move {
-            let part = PartitionId {
-                job_id: "job-id".to_owned(),
-                stage_id: 1,
-                partition_id: 0,
-            };
             let task_result = executor_clone
                 .execute_query_stage(
+                    "job-id",
                     1,
-                    part,
+                    1,
+                    &[0],
                     Arc::new(query_stage_exec),
                     ctx.task_ctx(),
                     None,
@@ -375,7 +371,7 @@ mod test {
         // poll until that happens.
         for _ in 0..20 {
             if executor
-                .cancel_task(1, "job-id".to_owned(), 1, 0)
+                .cancel_task(1, "job-id".to_owned(), 1)
                 .await
                 .expect("cancelling task")
             {

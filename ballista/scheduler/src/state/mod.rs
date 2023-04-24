@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::common::tree_node::{TreeNode, VisitRecursion};
+use datafusion::common::DataFusionError;
 use datafusion::datasource::listing::{ListingTable, ListingTableUrl};
 use datafusion::datasource::source_as_provider;
-use datafusion::logical_expr::PlanVisitor;
 use std::any::type_name;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -116,7 +117,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         Self {
             executor_manager: ExecutorManager::new(
                 cluster.cluster_state(),
-                config.executor_slots_policy,
+                config.task_distribution,
             ),
             task_manager: TaskManager::new(
                 cluster.job_state(),
@@ -135,16 +136,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
         config: SchedulerConfig,
-        dispatcher: Arc<dyn TaskLauncher>,
+        dispatcher: Arc<dyn TaskLauncher<T, U>>,
     ) -> Self {
         Self {
             executor_manager: ExecutorManager::new(
                 cluster.cluster_state(),
-                config.executor_slots_policy,
+                config.task_distribution,
             ),
             task_manager: TaskManager::with_launcher(
                 cluster.job_state(),
-                codec.clone(),
                 scheduler_name,
                 dispatcher,
             ),
@@ -168,7 +168,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             .get_executor_metadata(executor_id)
             .await?;
 
-        let total_num_tasks = tasks_status.len();
+        // each task can consume multiple slots, so ensure here that we count each task partition
+        let total_num_tasks = tasks_status
+            .iter()
+            .map(|status| status.partitions.len())
+            .sum::<usize>();
         let reservations = (0..total_num_tasks)
             .map(|_| ExecutorReservation::new_free(executor_id.to_owned()))
             .collect();
@@ -201,38 +205,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         {
             Ok((assignments, mut unassigned_reservations, pending_tasks)) => {
                 // Put tasks to the same executor together
-                // And put tasks belonging to the same stage together for creating MultiTaskDefinition
                 let mut executor_stage_assignments: HashMap<
                     String,
-                    HashMap<(String, usize), Vec<TaskDescription>>,
+                    Vec<TaskDescription>,
                 > = HashMap::new();
                 for (executor_id, task) in assignments.into_iter() {
-                    let stage_key =
-                        (task.partition.job_id.clone(), task.partition.stage_id);
-                    if let Some(tasks) = executor_stage_assignments.get_mut(&executor_id)
-                    {
-                        if let Some(executor_stage_tasks) = tasks.get_mut(&stage_key) {
-                            executor_stage_tasks.push(task);
-                        } else {
-                            tasks.insert(stage_key, vec![task]);
-                        }
-                    } else {
-                        let mut executor_stage_tasks: HashMap<
-                            (String, usize),
-                            Vec<TaskDescription>,
-                        > = HashMap::new();
-                        executor_stage_tasks.insert(stage_key, vec![task]);
-                        executor_stage_assignments
-                            .insert(executor_id, executor_stage_tasks);
-                    }
+                    let tasks = executor_stage_assignments
+                        .entry(executor_id)
+                        .or_insert_with(Vec::new);
+                    tasks.push(task);
                 }
 
                 let mut join_handles = vec![];
                 for (executor_id, tasks) in executor_stage_assignments.into_iter() {
-                    let tasks: Vec<Vec<TaskDescription>> = tasks.into_values().collect();
                     // Total number of tasks to be launched for one executor
-                    let n_tasks: usize =
-                        tasks.iter().map(|stage_tasks| stage_tasks.len()).sum();
+                    let n_tasks: usize = tasks.len();
 
                     let task_manager = self.task_manager.clone();
                     let executor_manager = self.executor_manager.clone();
@@ -243,11 +230,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                         {
                             Ok(executor) => {
                                 if let Err(e) = task_manager
-                                    .launch_multi_task(
-                                        &executor,
-                                        tasks,
-                                        &executor_manager,
-                                    )
+                                    .launch_tasks(&executor, tasks, &executor_manager)
                                     .await
                                 {
                                     error!("Failed to launch new task: {:?}", e);
@@ -328,53 +311,44 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             debug!("Optimized plan: {}", optimized_plan.display_indent());
         }
 
-        struct VerifyPathsExist {}
-        impl PlanVisitor for VerifyPathsExist {
-            type Error = BallistaError;
-
-            fn pre_visit(
-                &mut self,
-                plan: &LogicalPlan,
-            ) -> std::result::Result<bool, Self::Error> {
-                if let LogicalPlan::TableScan(scan) = plan {
-                    let provider = source_as_provider(&scan.source)?;
-                    if let Some(table) = provider.as_any().downcast_ref::<ListingTable>()
-                    {
-                        let local_paths: Vec<&ListingTableUrl> = table
-                            .table_paths()
-                            .iter()
-                            .filter(|url| url.as_str().starts_with("file:///"))
-                            .collect();
-                        if !local_paths.is_empty() {
-                            // These are local files rather than remote object stores, so we
-                            // need to check that they are accessible on the scheduler (the client
-                            // may not be on the same host, or the data path may not be correctly
-                            // mounted in the container). There could be thousands of files so we
-                            // just check the first one.
-                            let url = &local_paths[0].as_str();
-                            // the unwraps are safe here because we checked that the url starts with file:///
-                            // we need to check both versions here to support Linux & Windows
-                            ListingTableUrl::parse(url.strip_prefix("file://").unwrap())
-                                .or_else(|_| {
-                                    ListingTableUrl::parse(
-                                        url.strip_prefix("file:///").unwrap(),
+        plan.apply(&mut |plan| {
+            if let LogicalPlan::TableScan(scan) = plan {
+                let provider = source_as_provider(&scan.source)?;
+                if let Some(table) = provider.as_any().downcast_ref::<ListingTable>() {
+                    let local_paths: Vec<&ListingTableUrl> = table
+                        .table_paths()
+                        .iter()
+                        .filter(|url| url.as_str().starts_with("file:///"))
+                        .collect();
+                    if !local_paths.is_empty() {
+                        // These are local files rather than remote object stores, so we
+                        // need to check that they are accessible on the scheduler (the client
+                        // may not be on the same host, or the data path may not be correctly
+                        // mounted in the container). There could be thousands of files so we
+                        // just check the first one.
+                        let url = &local_paths[0].as_str();
+                        // the unwraps are safe here because we checked that the url starts with file:///
+                        // we need to check both versions here to support Linux & Windows
+                        ListingTableUrl::parse(url.strip_prefix("file://").unwrap())
+                            .or_else(|_| {
+                                ListingTableUrl::parse(
+                                    url.strip_prefix("file:///").unwrap(),
+                                )
+                            })
+                            .map_err(|e| {
+                                DataFusionError::External(
+                                    format!(
+                                        "logical plan refers to path on local file system \
+                                that is not accessible in the scheduler: {url}: {e:?}"
                                     )
-                                })
-                                .map_err(|e| {
-                                    BallistaError::General(format!(
-                                    "logical plan refers to path on local file system \
-                                    that is not accessible in the scheduler: {url}: {e:?}"
-                                ))
-                                })?;
-                        }
+                                        .into(),
+                                )
+                            })?;
                     }
                 }
-                Ok(true)
             }
-        }
-
-        let mut verify_paths_exist = VerifyPathsExist {};
-        plan.accept(&mut verify_paths_exist)?;
+            Ok(VisitRecursion::Continue)
+        })?;
 
         let plan = session_ctx.state().create_physical_plan(plan).await?;
         debug!(
@@ -631,12 +605,19 @@ mod test {
             let task_def = plan_graph
                 .write()
                 .await
-                .pop_next_task(&executor_data.executor_id)?
+                .pop_next_task(&executor_data.executor_id, 1)?
                 .unwrap();
+
             let mut partitions: Vec<ShuffleWritePartition> = vec![];
             for partition_id in 0..4 {
                 partitions.push(ShuffleWritePartition {
-                    partition_id: partition_id as u64,
+                    partitions: task_def
+                        .partitions
+                        .partitions
+                        .iter()
+                        .map(|p| *p as u32)
+                        .collect(),
+                    output_partition: partition_id,
                     path: "some/path".to_string(),
                     num_batches: 1,
                     num_rows: 1,
@@ -650,9 +631,14 @@ mod test {
                     vec![TaskStatus {
                         task_id: task_def.task_id as u32,
                         job_id: "job-1".to_string(),
-                        stage_id: task_def.partition.stage_id as u32,
+                        stage_id: task_def.partitions.stage_id as u32,
                         stage_attempt_num: task_def.stage_attempt_num as u32,
-                        partition_id: task_def.partition.partition_id as u32,
+                        partitions: task_def
+                            .partitions
+                            .partitions
+                            .iter()
+                            .map(|p| *p as u32)
+                            .collect(),
                         launch_time: 0,
                         start_exec_time: 0,
                         end_exec_time: 0,

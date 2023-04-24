@@ -33,7 +33,6 @@ use datafusion::physical_plan::{
     with_new_children_if_necessary, ExecutionPlan, Partitioning,
 };
 
-use datafusion::physical_plan::limit::LocalLimitExec;
 use log::{debug, info};
 
 type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<ShuffleWriterExec>>);
@@ -110,7 +109,8 @@ impl DistributedPlanner {
             let unresolved_shuffle = create_unresolved_shuffle(&shuffle_writer);
             stages.push(shuffle_writer);
             Ok((
-                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
+                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?
+                    .into(),
                 stages,
             ))
         } else if let Some(_sort_preserving_merge) = execution_plan
@@ -126,7 +126,8 @@ impl DistributedPlanner {
             let unresolved_shuffle = create_unresolved_shuffle(&shuffle_writer);
             stages.push(shuffle_writer);
             Ok((
-                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
+                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?
+                    .into(),
                 stages,
             ))
         } else if let Some(repart) =
@@ -157,7 +158,7 @@ impl DistributedPlanner {
             )))
         } else {
             Ok((
-                with_new_children_if_necessary(execution_plan, children)?,
+                with_new_children_if_necessary(execution_plan, children)?.into(),
                 stages,
             ))
         }
@@ -252,7 +253,7 @@ pub fn remove_unresolved_shuffles(
             new_children.push(remove_unresolved_shuffles(child, partition_locations)?);
         }
     }
-    Ok(with_new_children_if_necessary(stage, new_children)?)
+    Ok(with_new_children_if_necessary(stage, new_children)?.into())
 }
 
 /// Rollback the ShuffleReaderExec to UnresolvedShuffleExec.
@@ -267,7 +268,7 @@ pub fn rollback_resolved_shuffles(
             let partition_locations = &shuffle_reader.partition;
             let output_partition_count = partition_locations.len();
             let input_partition_count = partition_locations[0].len();
-            let stage_id = partition_locations[0][0].partition_id.stage_id;
+            let stage_id = partition_locations[0][0].stage_id;
 
             let unresolved_shuffle = Arc::new(UnresolvedShuffleExec::new(
                 stage_id,
@@ -280,7 +281,7 @@ pub fn rollback_resolved_shuffles(
             new_children.push(rollback_resolved_shuffles(child)?);
         }
     }
-    Ok(with_new_children_if_necessary(stage, new_children)?)
+    Ok(with_new_children_if_necessary(stage, new_children)?.into())
 }
 
 fn create_shuffle_writer(
@@ -289,26 +290,14 @@ fn create_shuffle_writer(
     plan: Arc<dyn ExecutionPlan>,
     partitioning: Option<Partitioning>,
 ) -> Result<Arc<ShuffleWriterExec>> {
-    if let Some(local_limit_exec) = plan.as_any().downcast_ref::<LocalLimitExec>() {
-        // This doesn't really capture all cases where we would want to do this but should work for the
-        // most basic case we care about.
-        Ok(Arc::new(ShuffleWriterExec::try_new_with_limit(
-            job_id.to_owned(),
-            stage_id,
-            plan.clone(),
-            "".to_owned(), // executor will decide on the work_dir path
-            partitioning,
-            Some(local_limit_exec.fetch()),
-        )?))
-    } else {
-        Ok(Arc::new(ShuffleWriterExec::try_new(
-            job_id.to_owned(),
-            stage_id,
-            plan,
-            "".to_owned(), // executor will decide on the work_dir path
-            partitioning,
-        )?))
-    }
+    Ok(Arc::new(ShuffleWriterExec::try_new(
+        job_id.to_owned(),
+        stage_id,
+        vec![], // partitions will be assigned to each task when it is scheduled
+        plan,
+        "".to_owned(), // executor will decide on the work_dir path
+        partitioning,
+    )?))
 }
 
 #[cfg(test)]

@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::config::Extensions;
+use datafusion::config::{ConfigOptions, Extensions};
 use datafusion::physical_plan::ExecutionPlan;
 
 use ballista_core::serde::protobuf::{
@@ -28,9 +28,10 @@ use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
 use crate::{as_task_status, TaskExecutionTimes};
 use ballista_core::error::BallistaError;
-use ballista_core::serde::scheduler::{ExecutorSpecification, PartitionId};
+use ballista_core::serde::scheduler::ExecutorSpecification;
 use ballista_core::serde::BallistaCodec;
 use datafusion::execution::context::TaskContext;
+use datafusion::prelude::SessionConfig;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_hash_partitioning;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -157,25 +158,29 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     extensions: Extensions,
 ) -> Result<(), BallistaError> {
     let task_id = task.task_id;
-    let task_attempt_num = task.task_attempt_num;
     let job_id = task.job_id;
     let stage_id = task.stage_id;
     let stage_attempt_num = task.stage_attempt_num;
     let task_launch_time = task.launch_time;
-    let partition_id = task.partition_id;
+    let partitions: Vec<usize> = task.partitions.iter().map(|p| *p as usize).collect();
     let start_exec_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64;
-    let task_identity = format!(
-        "TID {task_id} {job_id}/{stage_id}.{stage_attempt_num}/{partition_id}.{task_attempt_num}"
-    );
+    let task_identity =
+        format!("TID {task_id} {job_id}/{stage_id}.{stage_attempt_num}/{partitions:?}");
     info!("Received task {}", task_identity);
 
     let mut task_props = HashMap::new();
     for kv_pair in task.props {
         task_props.insert(kv_pair.key, kv_pair.value);
     }
+
+    let mut config = ConfigOptions::new().with_extensions(extensions);
+    for (k, v) in task_props {
+        config.set(&k, &v)?;
+    }
+    let session_config = SessionConfig::from(config);
 
     let mut task_scalar_functions = HashMap::new();
     let mut task_aggregate_functions = HashMap::new();
@@ -188,15 +193,14 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     }
     let runtime = executor.runtime.clone();
     let session_id = task.session_id.clone();
-    let task_context = Arc::new(TaskContext::try_new(
-        task_identity.clone(),
+    let task_context = Arc::new(TaskContext::new(
+        Some(task_identity.clone()),
         session_id,
-        task_props,
+        session_config,
         task_scalar_functions,
         task_aggregate_functions,
         runtime.clone(),
-        extensions,
-    )?);
+    ));
 
     let plan: Arc<dyn ExecutionPlan> =
         U::try_decode(task.plan.as_slice()).and_then(|proto| {
@@ -220,16 +224,15 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         &executor.work_dir,
     )?;
     dedicated_executor.spawn(async move {
+        let partitions = partitions;
+
         use std::panic::AssertUnwindSafe;
-        let part = PartitionId {
-            job_id: job_id.clone(),
-            stage_id: stage_id as usize,
-            partition_id: partition_id as usize,
-        };
 
         let execution_result = match AssertUnwindSafe(executor.execute_query_stage(
+            &job_id,
+            stage_id as usize,
             task_id as usize,
-            part.clone(),
+            &partitions,
             query_stage_exec.clone(),
             task_context,
             shuffle_output_partitioning,
@@ -269,9 +272,11 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         let _ = task_status_sender.send(as_task_status(
             execution_result,
             executor.metadata.id.clone(),
+            job_id,
+            stage_id as usize,
             task_id as usize,
+            partitions,
             stage_attempt_num as usize,
-            part,
             operator_metrics,
             task_execution_times,
         ));

@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#[allow(dead_code)]
-mod oneshot;
-#[allow(dead_code)]
-pub(crate) mod subscriber;
+mod task_group;
+
+pub use task_group::OptimizeTaskGroup;

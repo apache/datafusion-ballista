@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::state::executor_manager::ExecutorReservation;
+use std::fmt::{Debug, Formatter};
 
 use datafusion::logical_expr::LogicalPlan;
 
@@ -65,4 +66,31 @@ pub enum QueryStageSchedulerEvent {
     ReservationOffering(Vec<ExecutorReservation>),
     ExecutorLost(String, Option<String>),
     CancelTasks(Vec<RunningTaskInfo>),
+    Tick,
+}
+
+impl Debug for QueryStageSchedulerEvent {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QueryStageSchedulerEvent::JobQueued { .. } => write!(f, "JobQueued"),
+            QueryStageSchedulerEvent::JobSubmitted { .. } => write!(f, "JobSubmitted"),
+            QueryStageSchedulerEvent::JobPlanningFailed { .. } => {
+                write!(f, "JobPlanningFailed")
+            }
+            QueryStageSchedulerEvent::JobFinished { .. } => write!(f, "JobFinished"),
+            QueryStageSchedulerEvent::JobRunningFailed { .. } => {
+                write!(f, "JobRunningFailed")
+            }
+            QueryStageSchedulerEvent::JobUpdated(_) => write!(f, "JobUpdated"),
+            QueryStageSchedulerEvent::JobCancel(_) => write!(f, "JobCancel"),
+            QueryStageSchedulerEvent::JobDataClean(_) => write!(f, "JobDataClean"),
+            QueryStageSchedulerEvent::TaskUpdating(_, _) => write!(f, "TaskUpdating"),
+            QueryStageSchedulerEvent::ReservationOffering(_) => {
+                write!(f, "ReservationOffering")
+            }
+            QueryStageSchedulerEvent::ExecutorLost(_, _) => write!(f, "ExecutorLost"),
+            QueryStageSchedulerEvent::CancelTasks(_) => write!(f, "CancelTasks"),
+            QueryStageSchedulerEvent::Tick => write!(f, "Tick"),
+        }
+    }
 }

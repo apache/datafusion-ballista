@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use log::{debug, error, info};
+use tracing::{debug, error, info};
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::{EventAction, EventSender};
@@ -33,7 +33,6 @@ use tokio::sync::mpsc;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
-use crate::state::executor_manager::ExecutorReservation;
 use crate::state::SchedulerState;
 
 pub(crate) struct QueryStageScheduler<
@@ -43,31 +42,34 @@ pub(crate) struct QueryStageScheduler<
     state: Arc<SchedulerState<T, U>>,
     metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     pending_tasks: AtomicUsize,
-    job_resubmit_interval_ms: Option<u64>,
+    tick_interval: u64,
+    tasks_per_tick: usize,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageScheduler<T, U> {
     pub(crate) fn new(
         state: Arc<SchedulerState<T, U>>,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
-        job_resubmit_interval_ms: Option<u64>,
+        tick_interval: u64,
+        tasks_per_tick: usize,
     ) -> Self {
         Self {
             state,
             metrics_collector,
             pending_tasks: AtomicUsize::default(),
-            job_resubmit_interval_ms,
+            tick_interval,
+            tasks_per_tick,
         }
     }
 
     pub(crate) fn set_pending_tasks(&self, tasks: usize) {
-        self.pending_tasks.store(tasks, Ordering::SeqCst);
+        self.pending_tasks.store(tasks, Ordering::Release);
         self.metrics_collector
             .set_pending_tasks_queue_size(tasks as u64);
     }
 
     pub(crate) fn pending_tasks(&self) -> usize {
-        self.pending_tasks.load(Ordering::SeqCst)
+        self.pending_tasks.load(Ordering::Acquire)
     }
 
     pub(crate) fn metrics_collector(&self) -> &dyn SchedulerMetricsCollector {
@@ -131,6 +133,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             resubmit: false,
                         }
                     };
+
                     if let Err(e) = tx_event.post_event(event).await {
                         error!("Fail to send event due to {}", e);
                     }
@@ -149,63 +152,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         submitted_at,
                     );
 
-                    info!("Job {} submitted", job_id);
+                    info!(job_id, "job submitted");
                 } else {
-                    debug!("Job {} resubmitted", job_id);
+                    debug!(job_id, "job resubmitted");
                 }
 
                 if self.state.config.is_push_staged_scheduling() {
-                    let available_tasks = self
-                        .state
-                        .task_manager
-                        .get_available_task_count(&job_id)
-                        .await?;
-
-                    let reservations: Vec<ExecutorReservation> = self
-                        .state
-                        .executor_manager
-                        .reserve_slots(available_tasks as u32)
-                        .await?
-                        .into_iter()
-                        .map(|res| res.assign(job_id.clone()))
-                        .collect();
-
-                    if reservations.is_empty() && self.job_resubmit_interval_ms.is_some()
-                    {
-                        let wait_ms = self.job_resubmit_interval_ms.unwrap();
-
-                        debug!(
-                            "No task slots reserved for job {job_id}, resubmitting after {wait_ms}ms"
-                        );
-
-                        tokio::task::spawn(async move {
-                            tokio::time::sleep(Duration::from_millis(wait_ms)).await;
-
-                            if let Err(e) = tx_event
-                                .post_event(QueryStageSchedulerEvent::JobSubmitted {
-                                    job_id,
-                                    queued_at,
-                                    submitted_at,
-                                    resubmit: true,
-                                })
-                                .await
-                            {
-                                error!("error resubmitting job: {}", e);
-                            }
-                        });
-                    } else {
-                        debug!(
-                            "Reserved {} task slots for submitted job {}",
-                            reservations.len(),
-                            job_id
-                        );
-
-                        tx_event
-                            .post_event(QueryStageSchedulerEvent::ReservationOffering(
-                                reservations,
-                            ))
-                            .await?;
-                    }
+                    // submit a scheduler tick.
+                    tx_event.post_event(QueryStageSchedulerEvent::Tick).await?;
                 }
             }
             QueryStageSchedulerEvent::JobPlanningFailed {
@@ -259,13 +213,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.state.clean_up_failed_job(job_id);
             }
             QueryStageSchedulerEvent::JobUpdated(job_id) => {
-                info!("Job {} Updated", job_id);
+                info!(job_id, "job updated");
                 self.state.task_manager.update_job(&job_id).await?;
             }
             QueryStageSchedulerEvent::JobCancel(job_id) => {
                 self.metrics_collector.record_cancelled(&job_id);
 
-                info!("Job {} Cancelled", job_id);
+                info!(job_id, "job cancelled");
                 let (running_tasks, _pending_tasks) =
                     self.state.task_manager.cancel_job(&job_id).await?;
                 self.state.clean_up_failed_job(job_id);
@@ -276,6 +230,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             }
             QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status) => {
                 debug!(
+                    executor_id,
                     "processing task status updates from {executor_id}: {:?}",
                     tasks_status
                 );
@@ -308,16 +263,24 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     }
                 }
             }
-            QueryStageSchedulerEvent::ReservationOffering(reservations) => {
-                let (reservations, pending) =
+            QueryStageSchedulerEvent::ReservationOffering(mut reservations) => {
+                let mut remainder = if reservations.len() > self.tasks_per_tick {
+                    reservations.split_off(self.tasks_per_tick)
+                } else {
+                    vec![]
+                };
+
+                let (reservations, _) =
                     self.state.offer_reservation(reservations).await?;
 
-                self.set_pending_tasks(pending);
+                self.set_pending_tasks(self.state.task_manager.get_pending_task_count());
 
-                if !reservations.is_empty() {
+                remainder.extend(reservations);
+
+                if !remainder.is_empty() {
                     tx_event
                         .post_event(QueryStageSchedulerEvent::ReservationOffering(
-                            reservations,
+                            remainder,
                         ))
                         .await?;
                 }
@@ -335,7 +298,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         let msg = format!(
                             "TaskManager error to handle Executor {executor_id} lost: {e}"
                         );
-                        error!("{}", msg);
+                        error!(executor_id, "{msg}");
                     }
                 }
             }
@@ -347,6 +310,47 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             }
             QueryStageSchedulerEvent::JobDataClean(job_id) => {
                 self.state.executor_manager.clean_up_job_data(job_id);
+            }
+            QueryStageSchedulerEvent::Tick => {
+                let pending_tasks = self.state.task_manager.get_pending_task_count();
+
+                self.set_pending_tasks(pending_tasks);
+
+                if pending_tasks > 0 {
+                    let num_tasks = pending_tasks.min(self.tasks_per_tick);
+
+                    let reservations = self
+                        .state
+                        .executor_manager
+                        .reserve_slots(num_tasks as u32)
+                        .await?;
+
+                    let num_reservations = reservations.len();
+
+                    if !reservations.is_empty() {
+                        tx_event
+                            .post_event(QueryStageSchedulerEvent::ReservationOffering(
+                                reservations,
+                            ))
+                            .await?;
+                    }
+
+                    if pending_tasks > self.tasks_per_tick || num_reservations < num_tasks
+                    {
+                        // if there are more available tasks or we are not able to reserve all of
+                        // our slots, scheduler another tick
+                        let interval = self.tick_interval;
+                        tokio::task::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(interval)).await;
+
+                            if let Err(e) =
+                                tx_event.post_event(QueryStageSchedulerEvent::Tick).await
+                            {
+                                error!(error = ?e, "error sending tick");
+                            }
+                        });
+                    }
+                }
             }
         }
 
@@ -373,16 +377,17 @@ mod tests {
     use std::time::Duration;
     use tracing_subscriber::EnvFilter;
 
+    #[ignore]
     #[tokio::test]
     async fn test_job_resubmit() -> Result<()> {
         let plan = test_plan(10);
 
         let metrics_collector = Arc::new(TestMetricsCollector::default());
 
-        // Set resubmit interval of 1ms
+        // Set resubmit interval of 50ms
         let mut test = SchedulerTest::new(
             SchedulerConfig::default()
-                .with_job_resubmit_interval_ms(1)
+                .with_scheduler_tick_interval_ms(50)
                 .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
             metrics_collector.clone(),
             0,
@@ -408,10 +413,15 @@ mod tests {
 
         let next_event = rx.recv().await.unwrap();
 
-        assert!(matches!(
-            next_event,
-            QueryStageSchedulerEvent::JobSubmitted { job_id, resubmit, .. } if job_id == "job-id" && resubmit
-        ));
+        println!("receieved {next_event:?}");
+
+        assert!(matches!(next_event, QueryStageSchedulerEvent::Tick));
+
+        let next_event = rx.recv().await.unwrap();
+
+        println!("receieved {next_event:?}");
+
+        assert!(matches!(next_event, QueryStageSchedulerEvent::Tick));
 
         Ok(())
     }

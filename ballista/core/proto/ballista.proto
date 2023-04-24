@@ -34,7 +34,13 @@ message BallistaPhysicalPlanNode {
     ShuffleWriterExecNode shuffle_writer = 1;
     ShuffleReaderExecNode shuffle_reader = 2;
     UnresolvedShuffleExecNode unresolved_shuffle = 3;
+    CoalesceTaskExecNode coalesce_tasks = 4;
   }
+}
+
+message CoalesceTaskExecNode {
+  datafusion.PhysicalPlanNode input = 1;
+  repeated uint32 partitions = 2;
 }
 
 message ShuffleWriterExecNode {
@@ -42,6 +48,7 @@ message ShuffleWriterExecNode {
   // in the TaskDefinition that wraps this plan
   string job_id = 1;
   uint32 stage_id = 2;
+  repeated uint32 partitions = 5;
   datafusion.PhysicalPlanNode input = 3;
   datafusion.PhysicalHashRepartition output_partitioning = 4;
 }
@@ -209,26 +216,15 @@ message FetchPartition {
 }
 
 message PartitionLocation {
+  string job_id = 6;
+  uint32 stage_id = 7;
   // partition_id of the map stage who produces the shuffle.
-  uint32 map_partition_id = 1;
+  repeated uint32 map_partitions = 1;
   // partition_id of the shuffle, a composition of(job_id + map_stage_id + partition_id).
-  PartitionId partition_id = 2;
+  uint32 output_partition = 2;
   ExecutorMetadata executor_meta = 3;
   PartitionStats partition_stats = 4;
   string path = 5;
-}
-
-// Unique identifier for a materialized partition of data
-message PartitionId {
-  string job_id = 1;
-  uint32 stage_id = 2;
-  uint32 partition_id = 4;
-}
-
-message TaskId {
-  uint32 task_id = 1;
-  uint32 task_attempt_num = 2;
-  uint32 partition_id = 3;
 }
 
 message PartitionStats {
@@ -390,7 +386,7 @@ message ExecutionError {
 message FetchPartitionError {
   string executor_id = 1;
   uint32 map_stage_id = 2;
-  uint32 map_partition_id = 3;
+  repeated uint32 map_partitions = 3;
 }
 
 message IOError {
@@ -406,7 +402,8 @@ message TaskKilled {
 }
 
 message ShuffleWritePartition {
-  uint64 partition_id = 1;
+  repeated uint32 partitions = 1;
+  uint32 output_partition = 6;
   string path = 2;
   uint64 num_batches = 3;
   uint64 num_rows = 4;
@@ -418,7 +415,7 @@ message TaskStatus {
   string job_id = 2;
   uint32 stage_id = 3;
   uint32 stage_attempt_num = 4;
-  uint32 partition_id = 5;
+  repeated uint32 partitions = 5;
   uint64 launch_time = 6;
   uint64 start_exec_time = 7;
   uint64 end_exec_time = 8;
@@ -439,31 +436,16 @@ message PollWorkParams {
 
 message TaskDefinition {
   uint32 task_id = 1;
-  uint32 task_attempt_num = 2;
   string job_id = 3;
   uint32 stage_id = 4;
   uint32 stage_attempt_num = 5;
-  uint32 partition_id = 6;
+  repeated uint32 partitions = 6;
   bytes plan = 7;
   // Output partition for shuffle writer
   datafusion.PhysicalHashRepartition output_partitioning = 8;
   string session_id = 9;
   uint64 launch_time = 10;
   repeated KeyValuePair props = 11;
-}
-
-// A set of tasks in the same stage
-message MultiTaskDefinition {
-  repeated TaskId task_ids = 1;
-  string job_id = 2;
-  uint32 stage_id = 3;
-  uint32 stage_attempt_num = 4;
-  bytes plan = 5;
-  // Output partition for shuffle writer
-  datafusion.PhysicalHashRepartition output_partitioning = 6;
-  string session_id = 7;
-  uint64 launch_time = 8;
-  repeated KeyValuePair props = 9;
 }
 
 message SessionSettings {
@@ -629,18 +611,7 @@ message LaunchTaskParams {
   string scheduler_id = 2;
 }
 
-message LaunchMultiTaskParams {
-  // Allow to launch a task set to an executor at once
-  repeated MultiTaskDefinition multi_tasks = 1;
-  string scheduler_id = 2;
-}
-
 message LaunchTaskResult {
-  bool success = 1;
-  // TODO when part of the task set are scheduled successfully
-}
-
-message LaunchMultiTaskResult {
   bool success = 1;
   // TODO when part of the task set are scheduled successfully
 }
@@ -664,7 +635,6 @@ message RunningTaskInfo {
   uint32 task_id = 1;
   string job_id = 2;
   uint32 stage_id = 3;
-  uint32 partition_id = 4;;
 }
 
 service SchedulerGrpc {
@@ -695,8 +665,6 @@ service SchedulerGrpc {
 
 service ExecutorGrpc {
   rpc LaunchTask (LaunchTaskParams) returns (LaunchTaskResult) {}
-
-  rpc LaunchMultiTask (LaunchMultiTaskParams) returns (LaunchMultiTaskResult) {}
 
   rpc StopExecutor (StopExecutorParams) returns (StopExecutorResult) {}
 

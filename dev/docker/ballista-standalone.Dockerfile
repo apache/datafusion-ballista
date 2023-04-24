@@ -42,7 +42,7 @@ RUN mkdir -p /data && \
 ENV DATAFUSION_CATALOG_LOCATION=/data
 ENV DATAFUSION_CATALOG_TYPE=csv
 
-COPY ballista/scheduler/ui/build /var/www/html
+#COPY ballista/scheduler/ui/build /var/www/html
 COPY dev/docker/nginx.conf /etc/nginx/sites-enabled/default
 
 # Expose Ballista Scheduler web UI port

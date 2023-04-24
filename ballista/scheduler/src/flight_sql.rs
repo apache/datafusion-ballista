@@ -262,23 +262,19 @@ impl FlightSqlServiceImpl {
                 None => (exec_host.clone(), exec_port),
             };
 
-            let fetch = if let Some(ref id) = loc.partition_id {
-                let fetch = protobuf::FetchPartition {
-                    job_id: id.job_id.clone(),
-                    stage_id: id.stage_id,
-                    partition_id: id.partition_id,
+            let fetch = protobuf::Action {
+                action_type: Some(FetchPartition(protobuf::FetchPartition {
+                    job_id: loc.job_id.clone(),
+                    stage_id: loc.stage_id,
+                    partition_id: loc.output_partition,
                     path: loc.path.clone(),
                     // Use executor ip:port for routing to flight result
                     host: exec_host.clone(),
                     port: exec_port,
-                };
-                protobuf::Action {
-                    action_type: Some(FetchPartition(fetch)),
-                    settings: vec![],
-                }
-            } else {
-                Err(Status::internal("Error getting partition ID".to_string()))?
+                })),
+                settings: vec![],
             };
+
             if let Some(ref stats) = loc.partition_stats {
                 *num_rows += stats.num_rows;
                 *num_bytes += stats.num_bytes;

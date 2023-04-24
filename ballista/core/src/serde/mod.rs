@@ -40,7 +40,7 @@ use std::sync::Arc;
 use std::{convert::TryInto, io::Cursor};
 
 use crate::execution_plans::{
-    ShuffleReaderExec, ShuffleWriterExec, UnresolvedShuffleExec,
+    CoalesceTasksExec, ShuffleReaderExec, ShuffleWriterExec, UnresolvedShuffleExec,
 };
 use crate::serde::protobuf::ballista_physical_plan_node::PhysicalPlanType;
 use crate::serde::scheduler::PartitionLocation;
@@ -151,6 +151,11 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 Ok(Arc::new(ShuffleWriterExec::try_new(
                     shuffle_writer.job_id.clone(),
                     shuffle_writer.stage_id as usize,
+                    shuffle_writer
+                        .partitions
+                        .iter()
+                        .map(|p| *p as usize)
+                        .collect(),
                     input,
                     "".to_string(), // this is intentional but hacky - the executor will fill this in
                     shuffle_output_partitioning,
@@ -189,6 +194,16 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         as usize,
                 }))
             }
+            PhysicalPlanType::CoalesceTasks(coalesce_task) => {
+                let partitions = coalesce_task
+                    .partitions
+                    .iter()
+                    .map(|p| *p as usize)
+                    .collect();
+                let input = inputs[0].clone();
+
+                Ok(Arc::new(CoalesceTasksExec::new(input, partitions)))
+            }
         }
     }
 
@@ -223,6 +238,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     protobuf::ShuffleWriterExecNode {
                         job_id: exec.job_id().to_string(),
                         stage_id: exec.stage_id() as u32,
+                        partitions: exec.partitions().iter().map(|p| *p as u32).collect(),
                         input: None,
                         output_partitioning,
                     },
@@ -278,6 +294,23 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     },
                 )),
             };
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode unresolved shuffle execution plan: {e:?}"
+                ))
+            })?;
+
+            Ok(())
+        } else if let Some(exec) = node.as_any().downcast_ref::<CoalesceTasksExec>() {
+            let proto = protobuf::BallistaPhysicalPlanNode {
+                physical_plan_type: Some(PhysicalPlanType::CoalesceTasks(
+                    protobuf::CoalesceTaskExecNode {
+                        partitions: exec.partitions().iter().map(|p| *p as u32).collect(),
+                        input: None,
+                    },
+                )),
+            };
+
             proto.encode(buf).map_err(|e| {
                 DataFusionError::Internal(format!(
                     "failed to encode unresolved shuffle execution plan: {e:?}"
