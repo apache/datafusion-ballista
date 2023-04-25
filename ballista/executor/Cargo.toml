@@ -24,7 +24,7 @@ homepage = "https://github.com/apache/arrow-ballista"
 repository = "https://github.com/apache/arrow-ballista"
 readme = "README.md"
 authors = ["Apache Arrow <dev@arrow.apache.org>"]
-edition = "2018"
+edition = "2021"
 
 [package.metadata.configure_me.bin]
 executor = "executor_config_spec.toml"
@@ -43,7 +43,7 @@ arrow-flight = { workspace = true }
 async-trait = "0.1.41"
 ballista-core = { path = "../core", version = "0.11.0", features = ["s3"] }
 chrono = { version = "0.4", default-features = false }
-configure_me = "0.4.0"
+configure_me = { workspace = true }
 dashmap = "5.4.0"
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
@@ -62,7 +62,7 @@ tokio = { version = "1.0", features = [
     "signal",
 ] }
 tokio-stream = { version = "0.1", features = ["net"] }
-tonic = "0.8"
+tonic = { workspace = true }
 tracing = "0.1.36"
 tracing-appender = "0.2.2"
 tracing-subscriber = { version = "0.3.15", features = [
@@ -75,7 +75,7 @@ uuid = { version = "1.0", features = ["v4"] }
 [dev-dependencies]
 
 [build-dependencies]
-configure_me_codegen = "=0.4.0"
+configure_me_codegen = { workspace = true }
 
 # use libc on unix like platforms to set worker priority in DedicatedExecutor
 [target."cfg(unix)".dependencies.libc]

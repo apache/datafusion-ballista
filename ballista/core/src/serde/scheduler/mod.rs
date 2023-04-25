@@ -135,7 +135,7 @@ impl PartitionStats {
     pub fn arrow_struct_repr(self) -> Field {
         Field::new(
             "partition_stats",
-            DataType::Struct(self.arrow_struct_fields()),
+            DataType::Struct(self.arrow_struct_fields().into()),
             false,
         )
     }

@@ -623,7 +623,7 @@ mod tests {
                         .map(|t| ListingTableUrl::parse(t).unwrap())
                         .collect();
                     let config = ListingTableConfig::new_with_multi_paths(table_paths)
-                        .with_schema(Arc::new(Schema::new(vec![])))
+                        .with_schema(Arc::new(Schema::empty()))
                         .with_listing_options(error_options);
 
                     let error_table = ListingTable::try_new(config).unwrap();
