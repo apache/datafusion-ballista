@@ -114,29 +114,29 @@ impl SchedulerMetricsCollector for NoopMetricsCollector {
 
     fn record_tasks_started(
         &self,
-        job_id: &str,
-        num_tasks: usize,
-        launched_at: u64,
-        started_at: u64,
+        _job_id: &str,
+        _num_tasks: usize,
+        _launched_at: u64,
+        _started_at: u64,
     ) {
     }
 
     fn record_tasks_failed(
         &self,
-        job_id: &str,
-        num_tasks: usize,
-        launched_at: u64,
-        started_at: u64,
+        _job_id: &str,
+        _num_tasks: usize,
+        _launched_at: u64,
+        _started_at: u64,
     ) {
     }
 
     fn record_tasks_completed(
         &self,
-        job_id: &str,
-        num_tasks: usize,
-        launched_at: u64,
-        started_at: u64,
-        ended_at: u64,
+        _job_id: &str,
+        _num_tasks: usize,
+        _launched_at: u64,
+        _started_at: u64,
+        _ended_at: u64,
     ) {
     }
 

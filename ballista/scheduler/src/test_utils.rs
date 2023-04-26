@@ -757,6 +757,36 @@ impl SchedulerMetricsCollector for TestMetricsCollector {
     fn gather_metrics(&self) -> Result<Option<(Vec<u8>, String)>> {
         Ok(None)
     }
+
+    fn record_tasks_started(
+        &self,
+        _job_id: &str,
+        _num_partitions: usize,
+        _launched_at: u64,
+        _started_at: u64,
+    ) {
+    }
+
+    fn record_tasks_failed(
+        &self,
+        _job_id: &str,
+        _num_partitions: usize,
+        _launched_at: u64,
+        _started_at: u64,
+    ) {
+    }
+
+    fn record_tasks_completed(
+        &self,
+        _job_id: &str,
+        _num_partitions: usize,
+        _launched_at: u64,
+        _started_at: u64,
+        _ended_at: u64,
+    ) {
+    }
+
+    fn record_tasks_cancelled(&self, _job_id: &str, _num_partitions: usize) {}
 }
 
 pub fn assert_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
