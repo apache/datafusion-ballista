@@ -140,7 +140,7 @@ impl SchedulerMetricsCollector for NoopMetricsCollector {
     ) {
     }
 
-    fn record_tasks_cancelled(&self, job_id: &str, num_tasks: usize) {}
+    fn record_tasks_cancelled(&self, _job_id: &str, num_tasks: usize) {}
 }
 
 /// Return a reference to the systems default metrics collector.

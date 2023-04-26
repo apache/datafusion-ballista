@@ -47,6 +47,11 @@ pub struct PrometheusMetricsCollector {
     submitted: Counter,
     pending_queue_size: Gauge,
     running_tasks: Gauge,
+    tasks_running: Gauge,
+    tasks_completed: Counter,
+    tasks_failed: Counter,
+    tasks_cancelled: Counter,
+    tasks_started: Counter,
 }
 
 impl PrometheusMetricsCollector {
@@ -121,12 +126,48 @@ impl PrometheusMetricsCollector {
             BallistaError::Internal(format!("Error registering metric: {e:?}"))
         })?;
 
-        let running_tasks = register_gauge_with_registry!(
+        let tasks_running = register_gauge_with_registry!(
             "tasks_running",
             "Gauge of running tasks",
             registry
         )
         .map_err(|e| {
+            BallistaError::Internal(format!("Error registering metric: {e:?}"))
+        })?;
+
+        let tasks_completed = register_counter_with_registry!(
+            "tasks_completed_total",
+            "Counter of completed tasks",
+            registry
+        )
+        .map_err(|e: prometheus::Error| {
+            BallistaError::Internal(format!("Error registering metric: {e:?}"))
+        })?;
+
+        let tasks_failed = register_counter_with_registry!(
+            "tasks_failed_total",
+            "Counter of failed tasks",
+            registry
+        )
+        .map_err(|e: prometheus::Error| {
+            BallistaError::Internal(format!("Error registering metric: {e:?}"))
+        })?;
+
+        let tasks_cancelled = register_counter_with_registry!(
+            "tasks_cancelled_total",
+            "Counter of cancelled tasks",
+            registry
+        )
+        .map_err(|e: prometheus::Error| {
+            BallistaError::Internal(format!("Error registering metric: {e:?}"))
+        })?;
+
+        let tasks_started = register_counter_with_registry!(
+            "tasks_started_total",
+            "Counter of started tasks",
+            registry
+        )
+        .map_err(|e: prometheus::Error| {
             BallistaError::Internal(format!("Error registering metric: {e:?}"))
         })?;
 
@@ -138,7 +179,11 @@ impl PrometheusMetricsCollector {
             completed,
             submitted,
             pending_queue_size,
-            running_tasks,
+            tasks_running,
+            tasks_completed,
+            tasks_failed,
+            tasks_cancelled,
+            tasks_started,
         })
     }
 
@@ -197,7 +242,8 @@ impl SchedulerMetricsCollector for PrometheusMetricsCollector {
         _launched_at: u64,
         _started_at: u64,
     ) {
-        self.running_tasks.add(num_partitions as f64)
+        self.running_tasks.add(num_partitions as f64);
+        self.tasks_started.inc_by(num_partitions as f64);
     }
 
     fn record_tasks_failed(
@@ -207,7 +253,8 @@ impl SchedulerMetricsCollector for PrometheusMetricsCollector {
         _launched_at: u64,
         _started_at: u64,
     ) {
-        self.running_tasks.sub(num_partitions as f64)
+        self.running_tasks.sub(num_partitions as f64);
+        self.tasks_failed.inc_by(num_partitions as f64);
     }
 
     fn record_tasks_completed(
@@ -218,10 +265,12 @@ impl SchedulerMetricsCollector for PrometheusMetricsCollector {
         _started_at: u64,
         _ended_at: u64,
     ) {
-        self.running_tasks.sub(num_partitions as f64)
+        self.running_tasks.sub(num_partitions as f64);
+        self.tasks_completed.inc_by(num_partitions as f64);
     }
 
     fn record_tasks_cancelled(&self, _job_id: &str, num_partitions: usize) {
-        self.running_tasks.sub(num_partitions as f64)
+        self.running_tasks.sub(num_partitions as f64);
+        self.tasks_cancelled.inc_by(num_partitions as f64);
     }
 }
