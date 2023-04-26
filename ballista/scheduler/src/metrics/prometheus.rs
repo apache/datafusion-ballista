@@ -46,6 +46,7 @@ pub struct PrometheusMetricsCollector {
     completed: Counter,
     submitted: Counter,
     pending_queue_size: Gauge,
+    running_tasks: Gauge,
 }
 
 impl PrometheusMetricsCollector {
@@ -102,18 +103,28 @@ impl PrometheusMetricsCollector {
             BallistaError::Internal(format!("Error registering metric: {e:?}"))
         })?;
 
-        let submitted = register_counter_with_registry!(
-            "job_submitted_total",
-            "Counter of submitted jobs",
+        let submitted: prometheus::core::GenericCounter<prometheus::core::AtomicF64> =
+            register_counter_with_registry!(
+                "job_submitted_total",
+                "Counter of submitted jobs",
+                registry
+            )
+            .map_err(|e| {
+                BallistaError::Internal(format!("Error registering metric: {e:?}"))
+            })?;
+
+        let pending_queue_size = register_gauge_with_registry!(
+            "pending_task_queue_size",
+            "Number of pending tasks",
             registry
         )
         .map_err(|e| {
             BallistaError::Internal(format!("Error registering metric: {e:?}"))
         })?;
 
-        let pending_queue_size = register_gauge_with_registry!(
-            "pending_task_queue_size",
-            "Number of pending tasks",
+        let running_tasks = register_gauge_with_registry!(
+            "tasks_running",
+            "Gauge of running tasks",
             registry
         )
         .map_err(|e| {
@@ -128,6 +139,7 @@ impl PrometheusMetricsCollector {
             completed,
             submitted,
             pending_queue_size,
+            running_tasks,
         })
     }
 
@@ -177,5 +189,40 @@ impl SchedulerMetricsCollector for PrometheusMetricsCollector {
         })?;
 
         Ok(Some((buffer, encoder.format_type().to_owned())))
+    }
+
+    fn record_tasks_started(
+        &self,
+        _job_id: &str,
+        num_partitions: usize,
+        _launched_at: u64,
+        _started_at: u64,
+    ) {
+        self.running_tasks.add(num_partitions as f64)
+    }
+
+    fn record_tasks_failed(
+        &self,
+        _job_id: &str,
+        num_partitions: usize,
+        _launched_at: u64,
+        _started_at: u64,
+    ) {
+        self.running_tasks.sub(num_partitions as f64)
+    }
+
+    fn record_tasks_completed(
+        &self,
+        _job_id: &str,
+        num_partitions: usize,
+        _launched_at: u64,
+        _started_at: u64,
+        _ended_at: u64,
+    ) {
+        self.running_tasks.sub(num_partitions as f64)
+    }
+
+    fn record_tasks_cancelled(&self, _job_id: &str, num_partitions: usize) {
+        self.running_tasks.sub(num_partitions as f64)
     }
 }

@@ -54,6 +54,46 @@ pub trait SchedulerMetricsCollector: Send + Sync {
     /// Gather current metric set that should be returned when calling the scheduler's metrics API
     /// Should return a tuple containing the content of the metric set and the content type (e.g. `application/json`, `text/plain`, etc)
     fn gather_metrics(&self) -> Result<Option<(Vec<u8>, String)>>;
+
+    /// Record that job with `job_id` has completed successfully. This should only
+    /// be invoked on successful job completion.
+    /// When invoked should specify the timestamp in milliseconds when the job was originally
+    /// queued and the timestamp in milliseconds when it was completed
+    fn record_tasks_started(
+        &self,
+        job_id: &str,
+        num_partitions: usize,
+        launched_at: u64,
+        started_at: u64,
+    );
+
+    /// Record that a task with `job_id` has failed.
+    /// When invoked should specify the timestamp in milliseconds when the job was originally
+    /// queued and the timestamp in milliseconds when it failed.
+    fn record_tasks_failed(
+        &self,
+        job_id: &str,
+        num_partitions: usize,
+        launched_at: u64,
+        started_at: u64,
+    );
+
+    /// Record that a task with `job_id` has completed.
+    /// When invoked should specify the timestamp in milliseconds when the job was originally
+    /// queued and the timestamp in milliseconds when it completed.
+    fn record_tasks_completed(
+        &self,
+        job_id: &str,
+        num_partitions: usize,
+        launched_at: u64,
+        started_at: u64,
+        ended_at: u64,
+    );
+
+    /// Record that a task with `job_id` has completed.
+    /// When invoked should specify the timestamp in milliseconds when the job was originally
+    /// queued and the timestamp in milliseconds when it completed.
+    fn record_tasks_cancelled(&self, job_id: &str, num_partitions: usize);
 }
 
 /// Implementation of `SchedulerMetricsCollector` that ignores all events. This can be used as
@@ -71,6 +111,36 @@ impl SchedulerMetricsCollector for NoopMetricsCollector {
     fn gather_metrics(&self) -> Result<Option<(Vec<u8>, String)>> {
         Ok(None)
     }
+
+    fn record_tasks_started(
+        &self,
+        job_id: &str,
+        num_tasks: usize,
+        launched_at: u64,
+        started_at: u64,
+    ) {
+    }
+
+    fn record_tasks_failed(
+        &self,
+        job_id: &str,
+        num_tasks: usize,
+        launched_at: u64,
+        started_at: u64,
+    ) {
+    }
+
+    fn record_tasks_completed(
+        &self,
+        job_id: &str,
+        num_tasks: usize,
+        launched_at: u64,
+        started_at: u64,
+        ended_at: u64,
+    ) {
+    }
+
+    fn record_tasks_cancelled(&self, job_id: &str, num_tasks: usize) {}
 }
 
 /// Return a reference to the systems default metrics collector.

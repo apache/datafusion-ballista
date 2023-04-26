@@ -20,6 +20,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+
+use ballista_core::serde::protobuf::task_status::Status::{Failed, Running, Successful};
 use tracing::{debug, error, info};
 
 use crate::metrics::SchedulerMetricsCollector;
@@ -218,8 +220,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.metrics_collector.record_cancelled(&job_id);
 
                 info!(job_id, "job cancelled");
-                let (running_tasks, _pending_tasks) =
+                let (running_tasks, pending_tasks) =
                     self.state.task_manager.cancel_job(&job_id).await?;
+
+                // TODO tasks with multiple partitions here?
+                self.metrics_collector
+                    .record_tasks_cancelled(&job_id, running_tasks.len() + pending_tasks);
+
                 self.state.clean_up_failed_job(job_id);
 
                 tx_event
@@ -232,6 +239,36 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     "processing task status updates from {executor_id}: {:?}",
                     tasks_status
                 );
+
+                for st in &tasks_status {
+                    if let Some(status) = &st.status {
+                        let num_partitions = st.partitions.len();
+
+                        match status {
+                            Running(_) => self.metrics_collector.record_tasks_started(
+                                &st.job_id,
+                                num_partitions,
+                                st.launch_time,
+                                st.start_exec_time,
+                            ),
+                            Failed(_) => self.metrics_collector.record_tasks_failed(
+                                &st.job_id,
+                                num_partitions,
+                                st.launch_time,
+                                st.start_exec_time,
+                            ),
+                            Successful(_) => {
+                                self.metrics_collector.record_tasks_completed(
+                                    &st.job_id,
+                                    num_partitions,
+                                    st.launch_time,
+                                    st.start_exec_time,
+                                    st.end_exec_time,
+                                )
+                            }
+                        }
+                    }
+                }
 
                 let num_status = tasks_status.len();
                 match self
