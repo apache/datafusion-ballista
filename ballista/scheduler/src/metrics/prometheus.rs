@@ -103,15 +103,14 @@ impl PrometheusMetricsCollector {
             BallistaError::Internal(format!("Error registering metric: {e:?}"))
         })?;
 
-        let submitted: prometheus::core::GenericCounter<prometheus::core::AtomicF64> =
-            register_counter_with_registry!(
-                "job_submitted_total",
-                "Counter of submitted jobs",
-                registry
-            )
-            .map_err(|e| {
-                BallistaError::Internal(format!("Error registering metric: {e:?}"))
-            })?;
+        let submitted = register_counter_with_registry!(
+            "job_submitted_total",
+            "Counter of submitted jobs",
+            registry
+        )
+        .map_err(|e| {
+            BallistaError::Internal(format!("Error registering metric: {e:?}"))
+        })?;
 
         let pending_queue_size = register_gauge_with_registry!(
             "pending_task_queue_size",
