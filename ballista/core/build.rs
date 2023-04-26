@@ -41,6 +41,7 @@ fn main() -> Result<(), String> {
         println!("cargo:rerun-if-changed=proto/ballista.proto");
         tonic_build::configure()
             .extern_path(".datafusion", "::datafusion_proto::protobuf")
+            .protoc_arg("--experimental_allow_proto3_optional")
             .compile(&["proto/ballista.proto"], &["proto"])
             .map_err(|e| format!("protobuf compilation failed: {e}"))?;
         let generated_source_path = out.join("ballista.protobuf.rs");

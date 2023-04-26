@@ -407,11 +407,21 @@ impl ExecutionGraph {
                                                 failed_task.error
                                             );
                                             error!("{}", error_msg);
-                                            failed_stages.insert(stage_id, error_msg);
+                                            failed_stages.insert(
+                                                stage_id,
+                                                Arc::new(BallistaError::Internal(
+                                                    error_msg,
+                                                )),
+                                            );
                                         }
                                     }
                                     Some(FailedReason::ExecutionError(_)) => {
-                                        failed_stages.insert(stage_id, failed_task.error);
+                                        failed_stages.insert(
+                                            stage_id,
+                                            Arc::new(BallistaError::Internal(
+                                                failed_task.error,
+                                            )),
+                                        );
                                     }
                                     Some(_) => {
                                         if failed_task.retryable
@@ -433,7 +443,12 @@ impl ExecutionGraph {
                         stage_id, max_task_failures, failed_task.error
                     );
                                                 error!("{}", error_msg);
-                                                failed_stages.insert(stage_id, error_msg);
+                                                failed_stages.insert(
+                                                    stage_id,
+                                                    Arc::new(BallistaError::Internal(
+                                                        error_msg,
+                                                    )),
+                                                );
                                             }
                                         } else if failed_task.retryable {
                                             // TODO add new struct to track all the failed task infos
@@ -447,7 +462,10 @@ impl ExecutionGraph {
                                         let error_msg = format!(
                                             "Task {partitions:?} in Stage {stage_id} failed with unknown failure reasons, fail the stage");
                                         error!("{}", error_msg);
-                                        failed_stages.insert(stage_id, error_msg);
+                                        failed_stages.insert(
+                                            stage_id,
+                                            Arc::new(BallistaError::Internal(error_msg)),
+                                        );
                                     }
                                 }
                             } else if let Some(task_status::Status::Successful(
@@ -524,7 +542,12 @@ impl ExecutionGraph {
                                 match failed_reason {
                                     Some(FailedReason::ExecutionError(_)) => {
                                         should_ignore = false;
-                                        failed_stages.insert(stage_id, failed_task.error);
+                                        failed_stages.insert(
+                                            stage_id,
+                                            Arc::new(BallistaError::Internal(
+                                                failed_task.error,
+                                            )),
+                                        );
                                     }
                                     Some(FailedReason::FetchPartitionError(
                                         fetch_partiton_error,
@@ -714,12 +737,13 @@ impl ExecutionGraph {
 
         if !updated_stages.failed_stages.is_empty() {
             info!("Job {} is failed", job_id);
-            self.fail_job(job_err_msg.clone());
+            let error = Arc::new(BallistaError::Internal(job_err_msg));
+            self.fail_job(error.clone());
             events.push(QueryStageSchedulerEvent::JobRunningFailed {
                 job_id,
-                fail_message: job_err_msg,
                 queued_at: self.queued_at,
                 failed_at: timestamp_millis(),
+                error,
             });
         } else if self.is_successful() {
             // If this ExecutionGraph is successful, finish it
@@ -1222,13 +1246,13 @@ impl ExecutionGraph {
     }
 
     /// fail job with error message
-    pub fn fail_job(&mut self, error: String) {
+    pub fn fail_job(&mut self, job_failure: Arc<BallistaError>) {
         self.end_time = timestamp_millis();
         self.status = JobStatus {
             job_id: self.job_id.clone(),
             job_name: self.job_name.clone(),
             status: Some(Status::Failed(FailedJob {
-                error,
+                error: Some(job_failure.as_ref().into()),
                 queued_at: self.queued_at,
                 started_at: self.start_time,
                 ended_at: self.end_time,
@@ -2280,7 +2304,7 @@ mod test {
         assert!(!agg_graph.is_successful(), "Expect to fail the agg plan");
 
         let failure_reason = format!("{:?}", agg_graph.status);
-        assert!(failure_reason.contains("Job failed due to stage 2 failed: Stage 2 has failed 4 times, most recent failure reason"));
+        assert!(failure_reason.contains("Job failed due to stage 2 failed: Internal Ballista error: Stage 2 has failed 4 times, most recent failure reason"));
         assert!(failure_reason.contains("FetchPartitionError"));
 
         Ok(())

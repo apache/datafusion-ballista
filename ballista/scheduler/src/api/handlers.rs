@@ -123,7 +123,7 @@ pub(crate) async fn get_jobs<T: AsLogicalPlan, U: AsExecutionPlan>(
             let job_status = match &status.status {
                 Some(Status::Queued(_)) => "Queued".to_string(),
                 Some(Status::Running(_)) => "Running".to_string(),
-                Some(Status::Failed(error)) => format!("Failed: {}", error.error),
+                Some(Status::Failed(error)) => format!("Failed: {:?}", error.error),
                 Some(Status::Successful(completed)) => {
                     let num_rows = completed
                         .partition_location

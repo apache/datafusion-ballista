@@ -20,11 +20,11 @@ syntax = "proto3";
 
 package ballista.protobuf;
 
-option java_multiple_files = true;
-option java_package = "org.apache.arrow.ballista.protobuf";
-option java_outer_classname = "BallistaProto";
-
 import "datafusion.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "BallistaProto";
+option java_package = "org.apache.arrow.ballista.protobuf";
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Ballista Physical Plan
@@ -107,7 +107,7 @@ message UnResolvedStage {
   uint32 stage_id = 1;
   datafusion.PhysicalHashRepartition output_partitioning = 2;
   repeated uint32 output_links = 3;
-  repeated  GraphStageInput inputs = 4;
+  repeated GraphStageInput inputs = 4;
   bytes plan = 5;
   uint32 stage_attempt_num = 6;
   repeated string last_attempt_failure_reasons = 7;
@@ -118,7 +118,7 @@ message ResolvedStage {
   uint32 partitions = 2;
   datafusion.PhysicalHashRepartition output_partitioning = 3;
   repeated uint32 output_links = 4;
-  repeated  GraphStageInput inputs = 5;
+  repeated GraphStageInput inputs = 5;
   bytes plan = 6;
   uint32 stage_attempt_num = 7;
   repeated string last_attempt_failure_reasons = 8;
@@ -129,7 +129,7 @@ message SuccessfulStage {
   uint32 partitions = 2;
   datafusion.PhysicalHashRepartition output_partitioning = 3;
   repeated uint32 output_links = 4;
-  repeated  GraphStageInput inputs = 5;
+  repeated GraphStageInput inputs = 5;
   bytes plan = 6;
   repeated TaskInfo task_infos = 7;
   repeated OperatorMetricsSet stage_metrics = 8;
@@ -185,7 +185,6 @@ message KeyValuePair {
 }
 
 message Action {
-
   oneof ActionType {
     // Fetch a partition from an executor
     FetchPartition fetch_partition = 3;
@@ -245,7 +244,6 @@ message OperatorMetricsSet {
   repeated OperatorMetric metrics = 1;
 }
 
-
 message NamedCount {
   string name = 1;
   uint64 value = 2;
@@ -284,7 +282,6 @@ message ExecutorMetadata {
   uint32 grpc_port = 4;
   ExecutorSpecification specification = 5;
 }
-
 
 // Used by grpc
 message ExecutorRegistration {
@@ -337,7 +334,7 @@ message ExecutorResource {
 message AvailableTaskSlots {
   string executor_id = 1;
   uint32 slots = 2;
-    }
+}
 
 message ExecutorTaskSlots {
   repeated AvailableTaskSlots task_slots = 1;
@@ -380,8 +377,7 @@ message SuccessfulTask {
   repeated ShuffleWritePartition partitions = 2;
 }
 
-message ExecutionError {
-}
+message ExecutionError {}
 
 message FetchPartitionError {
   string executor_id = 1;
@@ -389,17 +385,13 @@ message FetchPartitionError {
   repeated uint32 map_partitions = 3;
 }
 
-message IOError {
-}
+message IOError {}
 
-message ExecutorLost {
-}
+message ExecutorLost {}
 
-message ResultLost {
-}
+message ResultLost {}
 
-message TaskKilled {
-}
+message TaskKilled {}
 
 message ShuffleWritePartition {
   repeated uint32 partitions = 1;
@@ -490,8 +482,7 @@ message StopExecutorParams {
   bool force = 3;
 }
 
-message StopExecutorResult {
-}
+message StopExecutorResult {}
 
 message ExecutorStoppedParams {
   string executor_id = 1;
@@ -499,8 +490,7 @@ message ExecutorStoppedParams {
   string reason = 2;
 }
 
-message ExecutorStoppedResult {
-}
+message ExecutorStoppedResult {}
 
 message UpdateTaskStatusParams {
   string executor_id = 1;
@@ -555,10 +545,306 @@ message RunningJob {
 }
 
 message FailedJob {
-  string error = 1;
+  reserved 1;
   uint64 queued_at = 2;
   uint64 started_at = 3;
   uint64 ended_at = 4;
+  message NotImplemented {
+    string message = 1;
+  }
+  message General {
+    string message = 1;
+  }
+  message Internal {
+    string message = 1;
+  }
+  message ArrowError {
+    oneof error {
+      NotYetImplemented not_yet_implemented = 1;
+      ExternalError exteranl_error = 2;
+      CastError cast_error = 3;
+      MemoryError memory_error = 4;
+      ParquetError parquet_error = 5;
+      SchemaError schema_error = 6;
+      ComputeError compute_error = 7;
+      DivideByZero divide_by_zero = 8;
+      CsvError csv_error = 9;
+      JsonError json_error = 10;
+      IoError io_error = 11;
+      InvalidArgumentError invalid_argument_error = 12;
+      CDataInterface c_data_interface = 13;
+      DictionaryKeyOverflowError dictionary_key_overflow_error = 14;
+      RunEndIndexOverflowError run_end_index_overflow_error = 15;
+      ParseError parse_error = 16;
+      SqlError sql_error = 17;
+    }
+    message NotYetImplemented {
+      string message = 1;
+    }
+    message ExternalError {
+      string message = 1;
+    }
+    message CastError {
+      string message = 1;
+    }
+    message MemoryError {
+      string message = 1;
+    }
+    message ParseError {
+      string message = 1;
+    }
+    message SchemaError {
+      string message = 1;
+    }
+    message ComputeError {
+      string message = 1;
+    }
+    message DivideByZero {}
+    message CsvError {
+      string message = 1;
+    }
+    message JsonError {
+      string message = 1;
+    }
+    message IoError {
+      string message = 1;
+    }
+    message InvalidArgumentError {
+      string message = 1;
+    }
+    message ParquetError {
+      string message = 1;
+    }
+    message CDataInterface {
+      string message = 1;
+    }
+    message DictionaryKeyOverflowError {}
+    message RunEndIndexOverflowError {}
+  }
+  message ParserError {
+    oneof error {
+      TokenizerError tokenizer_error = 1;
+      ParserError parser_error = 2;
+      RecursionLimitExceeded recursion_limit_exceeded = 3;
+    }
+    message TokenizerError {
+      string message = 1;
+    }
+    message ParserError {
+      string message = 1;
+    }
+    message RecursionLimitExceeded {}
+  }
+  message DatafusionError {
+    oneof error {
+      ArrowError arrow_error = 1;
+      ParquetError parquet_error = 2;
+      AvroError avro_error = 3;
+      ObjectStore object_store = 4;
+      IoError io_error = 5;
+      SqlError sql_error = 6;
+      NotImplemented not_implemented = 7;
+      Internal internal = 8;
+      Plan plan = 9;
+      SchemaError schema_error = 10;
+      Execution execution = 11;
+      ResourcesExhausted resources_exhausted = 12;
+      External external = 13;
+      JITError jit_error = 14;
+      Context context = 15;
+      Substrait substrair = 16;
+      ParserError parser_error = 17;
+    }
+    message ParquetError {
+      oneof error {
+        General general = 1;
+        NotYetImplemented not_yet_implemented = 2;
+        EOF eof = 3;
+        ArrowError arrow_error = 4;
+        IndexOutOfBound index_out_of_bound = 5;
+        External external = 6;
+      }
+      message General {
+        string message = 1;
+      }
+      message NotYetImplemented {
+        string message = 1;
+      }
+      message EOF {
+        string message = 1;
+      }
+      message ArrowError {
+        string message = 1;
+      }
+      message IndexOutOfBound {
+        uint32 index = 1;
+        uint32 bound = 2;
+      }
+      message External {
+        string message = 1;
+      }
+    }
+    message SchemaError {
+      oneof error {
+        AmbiguousReference ambiguous_reference = 1;
+        DuplicateQualifiedField duplicate_qualified_field = 2;
+        DuplicateUnqualifiedField duplicate_unqualified_field = 3;
+        FieldNotFound field_not_found = 4;
+      }
+      message AmbiguousReference {
+        optional string qualifier = 1;
+        string name = 2;
+      }
+      message DuplicateQualifiedField {
+        string qualifier = 1;
+        string name = 2;
+      }
+      message DuplicateUnqualifiedField {
+        string name = 1;
+      }
+      message FieldNotFound {
+        string field = 1;
+        repeated string valid_fields = 2;
+      }
+    }
+    message AvroError {
+      string message = 1;
+    }
+    message ObjectStore {
+      oneof error {
+        Generic generic = 1;
+        NotFound not_found = 2;
+        InvalidPath invalid_path = 3;
+        JoinError join_error = 4;
+        NotSupported not_supported = 5;
+        AlreadyExists already_exists = 6;
+        NotImplemented not_implemented = 7;
+        UnknownConfigurationKey unknown_configurationKey = 8;
+      }
+      message Generic {
+        string store = 1;
+        string source = 2;
+      }
+      message NotFound {
+        string path = 1;
+        string source = 2;
+      }
+      message InvalidPath {
+        string source = 1;
+      }
+      message JoinError {
+        string source = 1;
+      }
+      message NotSupported {
+        string source = 1;
+      }
+      message AlreadyExists {
+        string path = 1;
+        string source = 2;
+      }
+      message NotImplemented {}
+      message UnknownConfigurationKey {
+        string store = 1;
+        string key = 2;
+      }
+    }
+    message IoError {
+      string message = 1;
+    }
+    message NotImplemented {
+      string message = 1;
+    }
+    message Internal {
+      string message = 1;
+    }
+    message Plan {
+      string message = 1;
+    }
+    message Execution {
+      string message = 1;
+    }
+    message ResourcesExhausted {
+      string message = 1;
+    }
+    message External {
+      string message = 1;
+    }
+    message JITError {
+      string message = 1;
+    }
+    message Context {
+      string ctx = 1;
+      DatafusionError error = 2;
+    }
+    message Substrait {
+      string message = 1;
+    }
+  }
+  message SqlError {
+    ParserError error = 1;
+  }
+  message IoError {
+    string message = 1;
+  }
+  message TonicError {
+    string message = 1;
+  }
+  message GrpcError {
+    string message = 1;
+    Code code = 2;
+    enum Code {
+      Ok = 0;
+      CANCELLED = 1;
+      UNKNOWN = 2;
+      InvalidArgument = 3;
+      DEADLINEEXCEEDED = 4;
+      NOTFOUND = 5;
+      ALREADYEXISTS = 6;
+      PERMISSIONDENIED = 7;
+      RESOURCEEXHAUSTED = 8;
+      FAILEDPRECONDITION = 9;
+      ABORTED = 10;
+      OUTOFRANGE = 11;
+      UNIMPLEMENTED = 12;
+      INTERNAL = 13;
+      UNAVAILABLE = 14;
+      DATALOSS = 15;
+      UNAUTHENTICATED = 16;
+    }
+  }
+
+  message GrpcConnectionError {
+    string message = 1;
+  }
+  message TokioError {
+    string message = 1;
+  }
+  message GrpcActionError {
+    string message = 1;
+  }
+  message FetchFailed {
+    string executor_id = 1;
+    uint32 map_stage_id = 2;
+    repeated uint32 map_partition_id = 3;
+    string message = 4;
+  }
+  message Cancelled {}
+  oneof error {
+    NotImplemented not_implemented = 5;
+    General general = 6;
+    Internal internal = 7;
+    ArrowError arrow_error = 8;
+    DatafusionError datafusion_error = 9;
+    SqlError sql_error = 10;
+    IoError io_error = 11;
+    TonicError tonic_error = 12;
+    GrpcError grpc_error = 13;
+    GrpcConnectionError grpc_connection_error = 14;
+    TokioError tokio_error = 15;
+    GrpcActionError grpc_active_error = 16;
+    FetchFailed fetch_failed = 17;
+    Cancelled cancelled = 18;
+  }
 }
 
 message JobStatus {
@@ -602,8 +888,7 @@ message CleanJobDataParams {
   string job_id = 1;
 }
 
-message CleanJobDataResult {
-}
+message CleanJobDataResult {}
 
 message LaunchTaskParams {
   // Allow to launch a task set to an executor at once
@@ -628,8 +913,7 @@ message RemoveJobDataParams {
   string job_id = 1;
 }
 
-message RemoveJobDataResult {
-}
+message RemoveJobDataResult {}
 
 message RunningTaskInfo {
   uint32 task_id = 1;
@@ -639,36 +923,36 @@ message RunningTaskInfo {
 
 service SchedulerGrpc {
   // Executors must poll the scheduler for heartbeat and to receive tasks
-  rpc PollWork (PollWorkParams) returns (PollWorkResult) {}
+  rpc PollWork(PollWorkParams) returns (PollWorkResult) {}
 
   rpc RegisterExecutor(RegisterExecutorParams) returns (RegisterExecutorResult) {}
 
   // Push-based task scheduler will only leverage this interface
   // rather than the PollWork interface to report executor states
-  rpc HeartBeatFromExecutor (HeartBeatParams) returns (HeartBeatResult) {}
+  rpc HeartBeatFromExecutor(HeartBeatParams) returns (HeartBeatResult) {}
 
-  rpc UpdateTaskStatus (UpdateTaskStatusParams) returns (UpdateTaskStatusResult) {}
+  rpc UpdateTaskStatus(UpdateTaskStatusParams) returns (UpdateTaskStatusResult) {}
 
-  rpc GetFileMetadata (GetFileMetadataParams) returns (GetFileMetadataResult) {}
+  rpc GetFileMetadata(GetFileMetadataParams) returns (GetFileMetadataResult) {}
 
-  rpc ExecuteQuery (ExecuteQueryParams) returns (ExecuteQueryResult) {}
+  rpc ExecuteQuery(ExecuteQueryParams) returns (ExecuteQueryResult) {}
 
-  rpc GetJobStatus (GetJobStatusParams) returns (GetJobStatusResult) {}
+  rpc GetJobStatus(GetJobStatusParams) returns (GetJobStatusResult) {}
 
   // Used by Executor to tell Scheduler it is stopped.
-  rpc ExecutorStopped (ExecutorStoppedParams) returns (ExecutorStoppedResult) {}
+  rpc ExecutorStopped(ExecutorStoppedParams) returns (ExecutorStoppedResult) {}
 
-  rpc CancelJob (CancelJobParams) returns (CancelJobResult) {}
+  rpc CancelJob(CancelJobParams) returns (CancelJobResult) {}
 
-  rpc CleanJobData (CleanJobDataParams) returns (CleanJobDataResult) {}
+  rpc CleanJobData(CleanJobDataParams) returns (CleanJobDataResult) {}
 }
 
 service ExecutorGrpc {
   rpc LaunchTask (LaunchTaskParams) returns (LaunchTaskResult) {}
 
-  rpc StopExecutor (StopExecutorParams) returns (StopExecutorResult) {}
+  rpc StopExecutor(StopExecutorParams) returns (StopExecutorResult) {}
 
-  rpc CancelTasks (CancelTasksParams) returns (CancelTasksResult) {}
+  rpc CancelTasks(CancelTasksParams) returns (CancelTasksResult) {}
 
-  rpc RemoveJobData (RemoveJobDataParams) returns (RemoveJobDataResult) {}
+  rpc RemoveJobData(RemoveJobDataParams) returns (RemoveJobDataResult) {}
 }

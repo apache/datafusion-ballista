@@ -218,7 +218,7 @@ impl FlightSqlServiceImpl {
             job_status::Status::Failed(e) => {
                 warn!("Error executing plan: {:?}", e);
                 Err(Status::internal(format!(
-                    "Error executing plan: {}",
+                    "Error executing plan: {:?}",
                     e.error
                 )))?
             }

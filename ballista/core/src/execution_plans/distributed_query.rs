@@ -285,7 +285,7 @@ async fn execute_query(
                 prev_status = status;
             }
             Some(job_status::Status::Failed(err)) => {
-                let msg = format!("Job {} failed: {}", job_id, err.error);
+                let msg = format!("Job {} failed: {:?}", job_id, err.error);
                 error!("{}", msg);
                 break Err(DataFusionError::Execution(msg));
             }

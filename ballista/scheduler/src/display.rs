@@ -25,8 +25,8 @@ use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{
     accept, DisplayFormatType, ExecutionPlan, ExecutionPlanVisitor,
 };
-use log::{error, info};
 use std::fmt;
+use tracing::{info, warn};
 
 pub fn print_stage_metrics(
     job_id: &str,
@@ -47,14 +47,14 @@ pub fn print_stage_metrics(
         );
 
         info!(
-            "=== [{}/{}] Stage finished, physical plan with metrics ===\n{}\n",
             job_id,
             stage_id,
+            "=== Stage finished, physical plan with metrics ===\n{}\n",
             DisplayableBallistaExecutionPlan::new(plan, &plan_metrics).indent()
         );
     } else {
-        error!("Fail to combine stage metrics to plan for stage [{}/{}],  plan metrics array size {} does not equal
-                to the stage metrics array size {}", job_id, stage_id, plan_metrics.len(), stage_metrics.len());
+        warn!(job_id, stage_id, "Fail to combine stage metrics to plan,  plan metrics array size {} does not equal
+                to the stage metrics array size {}", plan_metrics.len(), stage_metrics.len());
     }
 }
 

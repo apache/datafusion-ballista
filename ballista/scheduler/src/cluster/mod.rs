@@ -47,7 +47,7 @@ use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::Stream;
 use log::info;
 use std::collections::{HashMap, HashSet};
-use std::fmt;
+use std::fmt::{self};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -312,7 +312,6 @@ pub enum JobStateEvent {
 /// Stream of `JobStateEvent`. This stream should contain all `JobStateEvent`s received
 /// by any schedulers with a shared `ClusterState`
 pub type JobStateEventStream = Pin<Box<dyn Stream<Item = JobStateEvent> + Send>>;
-
 /// A trait that contains the necessary methods for persisting state related to executing jobs
 #[tonic::async_trait]
 pub trait JobState: Send + Sync {
@@ -349,7 +348,11 @@ pub trait JobState: Send + Sync {
 
     /// Mark a job which has not been submitted as failed. This should be called if a job fails
     /// during planning (and does not yet have an `ExecutionGraph`)
-    async fn fail_unscheduled_job(&self, job_id: &str, reason: String) -> Result<()>;
+    async fn fail_unscheduled_job(
+        &self,
+        job_id: &str,
+        reason: Arc<BallistaError>,
+    ) -> Result<()>;
 
     /// Delete a job from the global state
     async fn remove_job(&self, job_id: &str) -> Result<()>;

@@ -950,14 +950,702 @@ pub struct RunningJob {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FailedJob {
-    #[prost(string, tag = "1")]
-    pub error: ::prost::alloc::string::String,
     #[prost(uint64, tag = "2")]
     pub queued_at: u64,
     #[prost(uint64, tag = "3")]
     pub started_at: u64,
     #[prost(uint64, tag = "4")]
     pub ended_at: u64,
+    #[prost(
+        oneof = "failed_job::Error",
+        tags = "5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18"
+    )]
+    pub error: ::core::option::Option<failed_job::Error>,
+}
+/// Nested message and enum types in `FailedJob`.
+pub mod failed_job {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct NotImplemented {
+        #[prost(string, tag = "1")]
+        pub message: ::prost::alloc::string::String,
+    }
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct General {
+        #[prost(string, tag = "1")]
+        pub message: ::prost::alloc::string::String,
+    }
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct Internal {
+        #[prost(string, tag = "1")]
+        pub message: ::prost::alloc::string::String,
+    }
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct ArrowError {
+        #[prost(
+            oneof = "arrow_error::Error",
+            tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17"
+        )]
+        pub error: ::core::option::Option<arrow_error::Error>,
+    }
+    /// Nested message and enum types in `ArrowError`.
+    pub mod arrow_error {
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct NotYetImplemented {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct ExternalError {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct CastError {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct MemoryError {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct ParseError {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct SchemaError {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct ComputeError {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct DivideByZero {}
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct CsvError {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct JsonError {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct IoError {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct InvalidArgumentError {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct ParquetError {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct CDataInterface {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct DictionaryKeyOverflowError {}
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct RunEndIndexOverflowError {}
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Oneof)]
+        pub enum Error {
+            #[prost(message, tag = "1")]
+            NotYetImplemented(NotYetImplemented),
+            #[prost(message, tag = "2")]
+            ExteranlError(ExternalError),
+            #[prost(message, tag = "3")]
+            CastError(CastError),
+            #[prost(message, tag = "4")]
+            MemoryError(MemoryError),
+            #[prost(message, tag = "5")]
+            ParquetError(ParquetError),
+            #[prost(message, tag = "6")]
+            SchemaError(SchemaError),
+            #[prost(message, tag = "7")]
+            ComputeError(ComputeError),
+            #[prost(message, tag = "8")]
+            DivideByZero(DivideByZero),
+            #[prost(message, tag = "9")]
+            CsvError(CsvError),
+            #[prost(message, tag = "10")]
+            JsonError(JsonError),
+            #[prost(message, tag = "11")]
+            IoError(IoError),
+            #[prost(message, tag = "12")]
+            InvalidArgumentError(InvalidArgumentError),
+            #[prost(message, tag = "13")]
+            CDataInterface(CDataInterface),
+            #[prost(message, tag = "14")]
+            DictionaryKeyOverflowError(DictionaryKeyOverflowError),
+            #[prost(message, tag = "15")]
+            RunEndIndexOverflowError(RunEndIndexOverflowError),
+            #[prost(message, tag = "16")]
+            ParseError(ParseError),
+            #[prost(message, tag = "17")]
+            SqlError(super::SqlError),
+        }
+    }
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct ParserError {
+        #[prost(oneof = "parser_error::Error", tags = "1, 2, 3")]
+        pub error: ::core::option::Option<parser_error::Error>,
+    }
+    /// Nested message and enum types in `ParserError`.
+    pub mod parser_error {
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct TokenizerError {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct ParserError {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct RecursionLimitExceeded {}
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Oneof)]
+        pub enum Error {
+            #[prost(message, tag = "1")]
+            TokenizerError(TokenizerError),
+            #[prost(message, tag = "2")]
+            ParserError(ParserError),
+            #[prost(message, tag = "3")]
+            RecursionLimitExceeded(RecursionLimitExceeded),
+        }
+    }
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct DatafusionError {
+        #[prost(
+            oneof = "datafusion_error::Error",
+            tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17"
+        )]
+        pub error: ::core::option::Option<datafusion_error::Error>,
+    }
+    /// Nested message and enum types in `DatafusionError`.
+    pub mod datafusion_error {
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct ParquetError {
+            #[prost(oneof = "parquet_error::Error", tags = "1, 2, 3, 4, 5, 6")]
+            pub error: ::core::option::Option<parquet_error::Error>,
+        }
+        /// Nested message and enum types in `ParquetError`.
+        pub mod parquet_error {
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct General {
+                #[prost(string, tag = "1")]
+                pub message: ::prost::alloc::string::String,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct NotYetImplemented {
+                #[prost(string, tag = "1")]
+                pub message: ::prost::alloc::string::String,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct Eof {
+                #[prost(string, tag = "1")]
+                pub message: ::prost::alloc::string::String,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct ArrowError {
+                #[prost(string, tag = "1")]
+                pub message: ::prost::alloc::string::String,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct IndexOutOfBound {
+                #[prost(uint32, tag = "1")]
+                pub index: u32,
+                #[prost(uint32, tag = "2")]
+                pub bound: u32,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct External {
+                #[prost(string, tag = "1")]
+                pub message: ::prost::alloc::string::String,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Oneof)]
+            pub enum Error {
+                #[prost(message, tag = "1")]
+                General(General),
+                #[prost(message, tag = "2")]
+                NotYetImplemented(NotYetImplemented),
+                #[prost(message, tag = "3")]
+                Eof(Eof),
+                #[prost(message, tag = "4")]
+                ArrowError(ArrowError),
+                #[prost(message, tag = "5")]
+                IndexOutOfBound(IndexOutOfBound),
+                #[prost(message, tag = "6")]
+                External(External),
+            }
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct SchemaError {
+            #[prost(oneof = "schema_error::Error", tags = "1, 2, 3, 4")]
+            pub error: ::core::option::Option<schema_error::Error>,
+        }
+        /// Nested message and enum types in `SchemaError`.
+        pub mod schema_error {
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct AmbiguousReference {
+                #[prost(string, optional, tag = "1")]
+                pub qualifier: ::core::option::Option<::prost::alloc::string::String>,
+                #[prost(string, tag = "2")]
+                pub name: ::prost::alloc::string::String,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct DuplicateQualifiedField {
+                #[prost(string, tag = "1")]
+                pub qualifier: ::prost::alloc::string::String,
+                #[prost(string, tag = "2")]
+                pub name: ::prost::alloc::string::String,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct DuplicateUnqualifiedField {
+                #[prost(string, tag = "1")]
+                pub name: ::prost::alloc::string::String,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct FieldNotFound {
+                #[prost(string, tag = "1")]
+                pub field: ::prost::alloc::string::String,
+                #[prost(string, repeated, tag = "2")]
+                pub valid_fields: ::prost::alloc::vec::Vec<
+                    ::prost::alloc::string::String,
+                >,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Oneof)]
+            pub enum Error {
+                #[prost(message, tag = "1")]
+                AmbiguousReference(AmbiguousReference),
+                #[prost(message, tag = "2")]
+                DuplicateQualifiedField(DuplicateQualifiedField),
+                #[prost(message, tag = "3")]
+                DuplicateUnqualifiedField(DuplicateUnqualifiedField),
+                #[prost(message, tag = "4")]
+                FieldNotFound(FieldNotFound),
+            }
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct AvroError {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct ObjectStore {
+            #[prost(oneof = "object_store::Error", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
+            pub error: ::core::option::Option<object_store::Error>,
+        }
+        /// Nested message and enum types in `ObjectStore`.
+        pub mod object_store {
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct Generic {
+                #[prost(string, tag = "1")]
+                pub store: ::prost::alloc::string::String,
+                #[prost(string, tag = "2")]
+                pub source: ::prost::alloc::string::String,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct NotFound {
+                #[prost(string, tag = "1")]
+                pub path: ::prost::alloc::string::String,
+                #[prost(string, tag = "2")]
+                pub source: ::prost::alloc::string::String,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct InvalidPath {
+                #[prost(string, tag = "1")]
+                pub source: ::prost::alloc::string::String,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct JoinError {
+                #[prost(string, tag = "1")]
+                pub source: ::prost::alloc::string::String,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct NotSupported {
+                #[prost(string, tag = "1")]
+                pub source: ::prost::alloc::string::String,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct AlreadyExists {
+                #[prost(string, tag = "1")]
+                pub path: ::prost::alloc::string::String,
+                #[prost(string, tag = "2")]
+                pub source: ::prost::alloc::string::String,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct NotImplemented {}
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct UnknownConfigurationKey {
+                #[prost(string, tag = "1")]
+                pub store: ::prost::alloc::string::String,
+                #[prost(string, tag = "2")]
+                pub key: ::prost::alloc::string::String,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Oneof)]
+            pub enum Error {
+                #[prost(message, tag = "1")]
+                Generic(Generic),
+                #[prost(message, tag = "2")]
+                NotFound(NotFound),
+                #[prost(message, tag = "3")]
+                InvalidPath(InvalidPath),
+                #[prost(message, tag = "4")]
+                JoinError(JoinError),
+                #[prost(message, tag = "5")]
+                NotSupported(NotSupported),
+                #[prost(message, tag = "6")]
+                AlreadyExists(AlreadyExists),
+                #[prost(message, tag = "7")]
+                NotImplemented(NotImplemented),
+                #[prost(message, tag = "8")]
+                UnknownConfigurationKey(UnknownConfigurationKey),
+            }
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct IoError {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct NotImplemented {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct Internal {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct Plan {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct Execution {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct ResourcesExhausted {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct External {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct JitError {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct Context {
+            #[prost(string, tag = "1")]
+            pub ctx: ::prost::alloc::string::String,
+            #[prost(message, optional, boxed, tag = "2")]
+            pub error: ::core::option::Option<
+                ::prost::alloc::boxed::Box<super::DatafusionError>,
+            >,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Message)]
+        pub struct Substrait {
+            #[prost(string, tag = "1")]
+            pub message: ::prost::alloc::string::String,
+        }
+        #[allow(clippy::derive_partial_eq_without_eq)]
+        #[derive(Clone, PartialEq, ::prost::Oneof)]
+        pub enum Error {
+            #[prost(message, tag = "1")]
+            ArrowError(super::ArrowError),
+            #[prost(message, tag = "2")]
+            ParquetError(ParquetError),
+            #[prost(message, tag = "3")]
+            AvroError(AvroError),
+            #[prost(message, tag = "4")]
+            ObjectStore(ObjectStore),
+            #[prost(message, tag = "5")]
+            IoError(IoError),
+            #[prost(message, tag = "6")]
+            SqlError(super::SqlError),
+            #[prost(message, tag = "7")]
+            NotImplemented(NotImplemented),
+            #[prost(message, tag = "8")]
+            Internal(Internal),
+            #[prost(message, tag = "9")]
+            Plan(Plan),
+            #[prost(message, tag = "10")]
+            SchemaError(SchemaError),
+            #[prost(message, tag = "11")]
+            Execution(Execution),
+            #[prost(message, tag = "12")]
+            ResourcesExhausted(ResourcesExhausted),
+            #[prost(message, tag = "13")]
+            External(External),
+            #[prost(message, tag = "14")]
+            JitError(JitError),
+            #[prost(message, tag = "15")]
+            Context(::prost::alloc::boxed::Box<Context>),
+            #[prost(message, tag = "16")]
+            Substrair(Substrait),
+            #[prost(message, tag = "17")]
+            ParserError(super::ParserError),
+        }
+    }
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct SqlError {
+        #[prost(message, optional, tag = "1")]
+        pub error: ::core::option::Option<ParserError>,
+    }
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct IoError {
+        #[prost(string, tag = "1")]
+        pub message: ::prost::alloc::string::String,
+    }
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct TonicError {
+        #[prost(string, tag = "1")]
+        pub message: ::prost::alloc::string::String,
+    }
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct GrpcError {
+        #[prost(string, tag = "1")]
+        pub message: ::prost::alloc::string::String,
+        #[prost(enumeration = "grpc_error::Code", tag = "2")]
+        pub code: i32,
+    }
+    /// Nested message and enum types in `GrpcError`.
+    pub mod grpc_error {
+        #[derive(
+            Clone,
+            Copy,
+            Debug,
+            PartialEq,
+            Eq,
+            Hash,
+            PartialOrd,
+            Ord,
+            ::prost::Enumeration
+        )]
+        #[repr(i32)]
+        pub enum Code {
+            Ok = 0,
+            Cancelled = 1,
+            Unknown = 2,
+            InvalidArgument = 3,
+            Deadlineexceeded = 4,
+            Notfound = 5,
+            Alreadyexists = 6,
+            Permissiondenied = 7,
+            Resourceexhausted = 8,
+            Failedprecondition = 9,
+            Aborted = 10,
+            Outofrange = 11,
+            Unimplemented = 12,
+            Internal = 13,
+            Unavailable = 14,
+            Dataloss = 15,
+            Unauthenticated = 16,
+        }
+        impl Code {
+            /// String value of the enum field names used in the ProtoBuf definition.
+            ///
+            /// The values are not transformed in any way and thus are considered stable
+            /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+            pub fn as_str_name(&self) -> &'static str {
+                match self {
+                    Code::Ok => "Ok",
+                    Code::Cancelled => "CANCELLED",
+                    Code::Unknown => "UNKNOWN",
+                    Code::InvalidArgument => "InvalidArgument",
+                    Code::Deadlineexceeded => "DEADLINEEXCEEDED",
+                    Code::Notfound => "NOTFOUND",
+                    Code::Alreadyexists => "ALREADYEXISTS",
+                    Code::Permissiondenied => "PERMISSIONDENIED",
+                    Code::Resourceexhausted => "RESOURCEEXHAUSTED",
+                    Code::Failedprecondition => "FAILEDPRECONDITION",
+                    Code::Aborted => "ABORTED",
+                    Code::Outofrange => "OUTOFRANGE",
+                    Code::Unimplemented => "UNIMPLEMENTED",
+                    Code::Internal => "INTERNAL",
+                    Code::Unavailable => "UNAVAILABLE",
+                    Code::Dataloss => "DATALOSS",
+                    Code::Unauthenticated => "UNAUTHENTICATED",
+                }
+            }
+            /// Creates an enum from field names used in the ProtoBuf definition.
+            pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+                match value {
+                    "Ok" => Some(Self::Ok),
+                    "CANCELLED" => Some(Self::Cancelled),
+                    "UNKNOWN" => Some(Self::Unknown),
+                    "InvalidArgument" => Some(Self::InvalidArgument),
+                    "DEADLINEEXCEEDED" => Some(Self::Deadlineexceeded),
+                    "NOTFOUND" => Some(Self::Notfound),
+                    "ALREADYEXISTS" => Some(Self::Alreadyexists),
+                    "PERMISSIONDENIED" => Some(Self::Permissiondenied),
+                    "RESOURCEEXHAUSTED" => Some(Self::Resourceexhausted),
+                    "FAILEDPRECONDITION" => Some(Self::Failedprecondition),
+                    "ABORTED" => Some(Self::Aborted),
+                    "OUTOFRANGE" => Some(Self::Outofrange),
+                    "UNIMPLEMENTED" => Some(Self::Unimplemented),
+                    "INTERNAL" => Some(Self::Internal),
+                    "UNAVAILABLE" => Some(Self::Unavailable),
+                    "DATALOSS" => Some(Self::Dataloss),
+                    "UNAUTHENTICATED" => Some(Self::Unauthenticated),
+                    _ => None,
+                }
+            }
+        }
+    }
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct GrpcConnectionError {
+        #[prost(string, tag = "1")]
+        pub message: ::prost::alloc::string::String,
+    }
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct TokioError {
+        #[prost(string, tag = "1")]
+        pub message: ::prost::alloc::string::String,
+    }
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct GrpcActionError {
+        #[prost(string, tag = "1")]
+        pub message: ::prost::alloc::string::String,
+    }
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct FetchFailed {
+        #[prost(string, tag = "1")]
+        pub executor_id: ::prost::alloc::string::String,
+        #[prost(uint32, tag = "2")]
+        pub map_stage_id: u32,
+        #[prost(uint32, repeated, tag = "3")]
+        pub map_partition_id: ::prost::alloc::vec::Vec<u32>,
+        #[prost(string, tag = "4")]
+        pub message: ::prost::alloc::string::String,
+    }
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct Cancelled {}
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Error {
+        #[prost(message, tag = "5")]
+        NotImplemented(NotImplemented),
+        #[prost(message, tag = "6")]
+        General(General),
+        #[prost(message, tag = "7")]
+        Internal(Internal),
+        #[prost(message, tag = "8")]
+        ArrowError(ArrowError),
+        #[prost(message, tag = "9")]
+        DatafusionError(DatafusionError),
+        #[prost(message, tag = "10")]
+        SqlError(SqlError),
+        #[prost(message, tag = "11")]
+        IoError(IoError),
+        #[prost(message, tag = "12")]
+        TonicError(TonicError),
+        #[prost(message, tag = "13")]
+        GrpcError(GrpcError),
+        #[prost(message, tag = "14")]
+        GrpcConnectionError(GrpcConnectionError),
+        #[prost(message, tag = "15")]
+        TokioError(TokioError),
+        #[prost(message, tag = "16")]
+        GrpcActiveError(GrpcActionError),
+        #[prost(message, tag = "17")]
+        FetchFailed(FetchFailed),
+        #[prost(message, tag = "18")]
+        Cancelled(Cancelled),
+    }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

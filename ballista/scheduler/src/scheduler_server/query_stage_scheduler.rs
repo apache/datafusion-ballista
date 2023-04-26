@@ -22,11 +22,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tracing::{debug, error, info};
 
-use ballista_core::error::{BallistaError, Result};
-use ballista_core::event_loop::{EventAction, EventSender};
-
 use crate::metrics::SchedulerMetricsCollector;
 use crate::scheduler_server::timestamp_millis;
+use ballista_core::error::{BallistaError, Result};
+use ballista_core::event_loop::{EventAction, EventSender};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use tokio::sync::mpsc;
@@ -124,6 +123,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             fail_message,
                             queued_at,
                             failed_at: timestamp_millis(),
+                            error: Arc::new(e),
                         }
                     } else {
                         QueryStageSchedulerEvent::JobSubmitted {
@@ -167,14 +167,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 fail_message,
                 queued_at,
                 failed_at,
+                error,
             } => {
                 self.metrics_collector
                     .record_failed(&job_id, queued_at, failed_at);
 
-                error!("Job {} failed: {}", job_id, fail_message);
+                error!("Job {} failed: {:?}", job_id, fail_message);
                 self.state
                     .task_manager
-                    .fail_unscheduled_job(&job_id, fail_message)
+                    .fail_unscheduled_job(&job_id, error)
                     .await?;
             }
             QueryStageSchedulerEvent::JobFinished {
@@ -191,19 +192,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             }
             QueryStageSchedulerEvent::JobRunningFailed {
                 job_id,
-                fail_message,
                 queued_at,
                 failed_at,
+                error,
             } => {
                 self.metrics_collector
                     .record_failed(&job_id, queued_at, failed_at);
 
                 error!("Job {} running failed", job_id);
-                let (running_tasks, _pending_tasks) = self
-                    .state
-                    .task_manager
-                    .abort_job(&job_id, fail_message)
-                    .await?;
+                let (running_tasks, _pending_tasks) =
+                    self.state.task_manager.abort_job(&job_id, error).await?;
 
                 if !running_tasks.is_empty() {
                     tx_event

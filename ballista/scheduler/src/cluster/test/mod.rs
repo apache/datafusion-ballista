@@ -430,7 +430,10 @@ impl<S: JobState> JobStateTest<S> {
 
     pub async fn fail_planning(self, job_id: &str) -> Result<Self> {
         self.state
-            .fail_unscheduled_job(job_id, "failed planning".to_string())
+            .fail_unscheduled_job(
+                job_id,
+                Arc::new(BallistaError::Internal("failed planning".to_string())),
+            )
             .await?;
         Ok(self)
     }
