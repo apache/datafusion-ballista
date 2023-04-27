@@ -116,6 +116,6 @@ impl QueryStageExecutor for DefaultQueryStageExec {
     }
 
     fn collect_plan_metrics(&self) -> Vec<MetricsSet> {
-        utils::collect_plan_metrics(self.shuffle_writer.children()[0].as_ref())
+        utils::collect_plan_metrics(&self.shuffle_writer)
     }
 }
