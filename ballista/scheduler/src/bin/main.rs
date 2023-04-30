@@ -23,7 +23,6 @@ use anyhow::Result;
 
 use ballista_core::print_version;
 use ballista_scheduler::scheduler_process::start_server;
-use itertools::Itertools;
 
 use crate::config::{Config, ResultExt};
 use ballista_core::config::LogRotationPolicy;
@@ -111,7 +110,7 @@ async fn main() -> Result<()> {
             opt.etcd_urls
                 .split_whitespace()
                 .map(|s| s.to_string())
-                .collect_vec(),
+                .collect(),
         ),
         ClusterStorage::Sled => {
             if opt.sled_dir.is_empty() {
