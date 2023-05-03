@@ -28,7 +28,7 @@ use datafusion::physical_plan::{
 };
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
-use log::{error, info, warn};
+use tracing::{error, info, warn};
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
@@ -472,8 +472,12 @@ impl ExecutionGraph {
                                 successful_task,
                             )) = task_status.status
                             {
-                                // update task metrics for successfu task
-                                running_stage.update_task_metrics(operator_metrics)?;
+                                // update task metrics for successful task
+                                if let Err(err) =
+                                    running_stage.update_task_metrics(operator_metrics)
+                                {
+                                    error!(job_id = self.job_id, stage_id = running_stage.stage_id, error = %err, "Error updating task metrics");
+                                }
 
                                 locations.append(&mut partition_to_location(
                                     &job_id,

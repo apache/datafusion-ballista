@@ -28,7 +28,7 @@ use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use datafusion::physical_plan::{ExecutionPlan, Metric, Partitioning};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
-use log::{debug, warn};
+use tracing::{debug, warn};
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::failed_task::FailedReason;
