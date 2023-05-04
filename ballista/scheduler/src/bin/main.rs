@@ -21,15 +21,14 @@ use std::{env, io};
 
 use anyhow::Result;
 
-use ballista_core::print_version;
-use ballista_scheduler::scheduler_process::start_server;
-
 use crate::config::{Config, ResultExt};
 use ballista_core::config::LogRotationPolicy;
+use ballista_core::print_version;
 use ballista_scheduler::cluster::BallistaCluster;
-use ballista_scheduler::config::{ClusterStorageConfig, SchedulerConfig};
-use tracing_subscriber::EnvFilter;
 use ballista_scheduler::cluster::ClusterStorage;
+use ballista_scheduler::config::{ClusterStorageConfig, SchedulerConfig};
+use ballista_scheduler::scheduler_process::start_server;
+use tracing_subscriber::EnvFilter;
 
 #[macro_use]
 extern crate configure_me;
