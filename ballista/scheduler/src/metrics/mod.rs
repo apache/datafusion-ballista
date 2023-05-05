@@ -47,6 +47,12 @@ pub trait SchedulerMetricsCollector: Send + Sync {
     /// Record that job with `job_id` was cancelled.
     fn record_cancelled(&self, job_id: &str);
 
+    /// Record that an event of type `event_type` was processed in `processing_time_ms`
+    fn record_process_event(&self, event_type: &str, processing_time_ms: u64);
+
+    /// Record that an event of type `event_type` encountered an error during processing
+    fn record_event_failed(&self, event_type: &str);
+
     /// Set the current number of pending tasks in scheduler. A pending task is a task that is available
     /// to schedule on an executor but cannot be scheduled because no resources are available.
     fn set_pending_tasks_queue_size(&self, value: u64);
@@ -66,8 +72,9 @@ impl SchedulerMetricsCollector for NoopMetricsCollector {
     fn record_completed(&self, _job_id: &str, _queued_at: u64, _completed_att: u64) {}
     fn record_failed(&self, _job_id: &str, _queued_at: u64, _failed_at: u64) {}
     fn record_cancelled(&self, _job_id: &str) {}
+    fn record_process_event(&self, _event_type: &str, _processing_time_ms: u64) {}
+    fn record_event_failed(&self, _event_type: &str) {}
     fn set_pending_tasks_queue_size(&self, _value: u64) {}
-
     fn gather_metrics(&self) -> Result<Option<(Vec<u8>, String)>> {
         Ok(None)
     }

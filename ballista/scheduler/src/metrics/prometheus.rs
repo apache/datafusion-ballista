@@ -20,8 +20,10 @@ use ballista_core::error::{BallistaError, Result};
 
 use once_cell::sync::OnceCell;
 use prometheus::{
-    register_counter_with_registry, register_gauge_with_registry,
-    register_histogram_with_registry, Counter, Gauge, Histogram, Registry,
+    register_counter_vec_with_registry, register_counter_with_registry,
+    register_gauge_with_registry, register_histogram_vec_with_registry,
+    register_histogram_with_registry, Counter, CounterVec, Gauge, Histogram,
+    HistogramVec, Registry,
 };
 use prometheus::{Encoder, TextEncoder};
 use std::sync::Arc;
@@ -41,6 +43,8 @@ static COLLECTOR: OnceCell<Arc<dyn SchedulerMetricsCollector>> = OnceCell::new()
 pub struct PrometheusMetricsCollector {
     execution_time: Histogram,
     planning_time: Histogram,
+    event_times: HistogramVec,
+    failed_events: CounterVec,
     failed: Counter,
     cancelled: Counter,
     completed: Counter,
@@ -69,6 +73,27 @@ impl PrometheusMetricsCollector {
                 1.0_f64, 5.0_f64, 25.0_f64, 100.0_f64, 200.0_f64, 300_f64, 400_f64,
                 500_f64, 1_000_f64, 2_000_f64, 3_000_f64
             ],
+            registry
+        )
+        .map_err(|e| {
+            BallistaError::Internal(format!("Error registering metric: {e:?}"))
+        })?;
+
+        let event_times = register_histogram_vec_with_registry!(
+            "event_processing_time_ms",
+            "Histogram of scheduler event processing time in milliseconds",
+            &["event_type"],
+            vec![1_f64, 5_f64, 25_f64, 50_f64, 100_f64, 250_f64, 500_f64, 1_000_f64],
+            registry
+        )
+        .map_err(|e| {
+            BallistaError::Internal(format!("Error registering metric: {e:?}"))
+        })?;
+
+        let failed_events = register_counter_vec_with_registry!(
+            "event_processing_failed_total",
+            "Counter of scheduler events which encountered an error",
+            &["event_type"],
             registry
         )
         .map_err(|e| {
@@ -123,6 +148,8 @@ impl PrometheusMetricsCollector {
         Ok(Self {
             execution_time,
             planning_time,
+            event_times,
+            failed_events,
             failed,
             cancelled,
             completed,
@@ -161,6 +188,16 @@ impl SchedulerMetricsCollector for PrometheusMetricsCollector {
 
     fn record_cancelled(&self, _job_id: &str) {
         self.cancelled.inc();
+    }
+
+    fn record_process_event(&self, event_type: &str, processing_time_ms: u64) {
+        self.event_times
+            .with_label_values(&[event_type])
+            .observe(processing_time_ms as f64)
+    }
+
+    fn record_event_failed(&self, event_type: &str) {
+        self.failed_events.with_label_values(&[event_type]).inc();
     }
 
     fn set_pending_tasks_queue_size(&self, value: u64) {

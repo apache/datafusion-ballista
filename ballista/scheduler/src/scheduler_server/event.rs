@@ -70,6 +70,26 @@ pub enum QueryStageSchedulerEvent {
     Tick,
 }
 
+impl QueryStageSchedulerEvent {
+    pub fn event_type(&self) -> &'static str {
+        match self {
+            QueryStageSchedulerEvent::JobQueued { .. } => "JobQueued",
+            QueryStageSchedulerEvent::JobSubmitted { .. } => "JobSubmitted",
+            QueryStageSchedulerEvent::JobPlanningFailed { .. } => "JobPlanningFailed",
+            QueryStageSchedulerEvent::JobFinished { .. } => "JobFinished",
+            QueryStageSchedulerEvent::JobRunningFailed { .. } => "JobRunningFailed",
+            QueryStageSchedulerEvent::JobUpdated(_) => "JobUpdated",
+            QueryStageSchedulerEvent::JobCancel(_) => "JobCancel",
+            QueryStageSchedulerEvent::JobDataClean(_) => "JobDataClean",
+            QueryStageSchedulerEvent::TaskUpdating(_, _) => "TaskUpdating",
+            QueryStageSchedulerEvent::ReservationOffering(_) => "ReservationOffering",
+            QueryStageSchedulerEvent::ExecutorLost(_, _) => "ExecutorLost",
+            QueryStageSchedulerEvent::CancelTasks(_) => "CancelTasks",
+            QueryStageSchedulerEvent::Tick => "Tick",
+        }
+    }
+}
+
 impl Debug for QueryStageSchedulerEvent {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {

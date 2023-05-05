@@ -752,6 +752,10 @@ impl SchedulerMetricsCollector for TestMetricsCollector {
         guard.push(MetricEvent::Cancelled(job_id.to_owned()));
     }
 
+    fn record_process_event(&self, _event_type: &str, _processing_time_ms: u64) {}
+
+    fn record_event_failed(&self, _event_type: &str) {}
+
     fn set_pending_tasks_queue_size(&self, _value: u64) {}
 
     fn gather_metrics(&self) -> Result<Option<(Vec<u8>, String)>> {

@@ -17,7 +17,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use tracing::{debug, error, info};
@@ -74,27 +74,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
     pub(crate) fn metrics_collector(&self) -> &dyn SchedulerMetricsCollector {
         self.metrics_collector.as_ref()
     }
-}
 
-#[async_trait]
-impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
-    EventAction<QueryStageSchedulerEvent> for QueryStageScheduler<T, U>
-{
-    fn on_start(&self) {
-        info!("Starting QueryStageScheduler");
-    }
-
-    fn on_stop(&self) {
-        info!("Stopping QueryStageScheduler")
-    }
-
-    async fn on_receive(
+    async fn process_event(
         &self,
         event: QueryStageSchedulerEvent,
-        tx_event: &mpsc::Sender<QueryStageSchedulerEvent>,
-        _rx_event: &mpsc::Receiver<QueryStageSchedulerEvent>,
+        tx_event: EventSender<QueryStageSchedulerEvent>,
     ) -> Result<()> {
-        let tx_event = EventSender::new(tx_event.clone());
         match event {
             QueryStageSchedulerEvent::JobQueued {
                 job_id,
@@ -353,6 +338,45 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         }
 
         Ok(())
+    }
+}
+
+#[async_trait]
+impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
+    EventAction<QueryStageSchedulerEvent> for QueryStageScheduler<T, U>
+{
+    fn on_start(&self) {
+        info!("Starting QueryStageScheduler");
+    }
+
+    fn on_stop(&self) {
+        info!("Stopping QueryStageScheduler")
+    }
+
+    async fn on_receive(
+        &self,
+        event: QueryStageSchedulerEvent,
+        tx_event: &mpsc::Sender<QueryStageSchedulerEvent>,
+        _rx_event: &mpsc::Receiver<QueryStageSchedulerEvent>,
+    ) -> Result<()> {
+        let tx_event = EventSender::new(tx_event.clone());
+
+        let start = Instant::now();
+        let event_type = event.event_type();
+
+        match self.process_event(event, tx_event).await {
+            Ok(_) => {
+                self.metrics_collector
+                    .record_process_event(event_type, start.elapsed().as_millis() as u64);
+                Ok(())
+            }
+            Err(e) => {
+                self.metrics_collector
+                    .record_process_event(event_type, start.elapsed().as_millis() as u64);
+                self.metrics_collector.record_event_failed(event_type);
+                Err(e)
+            }
+        }
     }
 
     fn on_error(&self, error: BallistaError) {
