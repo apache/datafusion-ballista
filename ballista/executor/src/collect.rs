@@ -23,7 +23,6 @@ use std::task::{Context, Poll};
 use std::{any::Any, pin::Pin};
 
 use datafusion::arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
-use datafusion::error::DataFusionError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 use datafusion::physical_plan::{
@@ -84,8 +83,7 @@ impl ExecutionPlan for CollectExec {
 
         let streams = (0..num_partitions)
             .map(|i| self.plan.execute(i, context.clone()))
-            .collect::<Result<Vec<_>>>()
-            .map_err(|e| DataFusionError::Execution(format!("BallistaError: {e:?}")))?;
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(Box::pin(MergedRecordBatchStream {
             schema: self.schema(),

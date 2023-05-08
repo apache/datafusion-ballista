@@ -702,7 +702,6 @@ impl ExecutionGraph {
     ) -> Result<Vec<QueryStageSchedulerEvent>> {
         let job_id = self.job_id().to_owned();
         let mut has_resolved = false;
-        let mut job_err_msg = "".to_owned();
 
         for stage_id in updated_stages.resolved_stages {
             self.resolve_stage(stage_id)?;
@@ -711,12 +710,6 @@ impl ExecutionGraph {
 
         for stage_id in updated_stages.successful_stages {
             self.succeed_stage(stage_id);
-        }
-
-        // Fail the stage and also abort the job
-        for (stage_id, err_msg) in &updated_stages.failed_stages {
-            job_err_msg =
-                format!("Job failed due to stage {stage_id} failed: {err_msg}\n");
         }
 
         let mut events = vec![];
@@ -741,7 +734,21 @@ impl ExecutionGraph {
 
         if !updated_stages.failed_stages.is_empty() {
             info!("Job {} is failed", job_id);
-            let error = Arc::new(BallistaError::Internal(job_err_msg));
+            let error = match updated_stages.failed_stages.iter().last() {
+                Some((stage_id, err)) => {
+                    info!(
+                        "Job {} failed due to stage {} failed: {}\n",
+                        job_id,
+                        stage_id,
+                        err.to_string()
+                    );
+                    err.clone()
+                }
+                _ => {
+                    info!("Job {} is failed", job_id);
+                    Arc::new(BallistaError::Internal("Unknown error".to_string()))
+                }
+            };
             self.fail_job(error.clone());
             events.push(QueryStageSchedulerEvent::JobRunningFailed {
                 job_id,
@@ -2308,7 +2315,8 @@ mod test {
         assert!(!agg_graph.is_successful(), "Expect to fail the agg plan");
 
         let failure_reason = format!("{:?}", agg_graph.status);
-        assert!(failure_reason.contains("Job failed due to stage 2 failed: Internal Ballista error: Stage 2 has failed 4 times, most recent failure reason"));
+        assert!(failure_reason
+            .contains("Stage 2 has failed 4 times, most recent failure reason"));
         assert!(failure_reason.contains("FetchPartitionError"));
 
         Ok(())
@@ -2811,7 +2819,6 @@ mod test {
         assert!(!agg_graph.is_successful(), "Expect to fail the agg plan");
 
         let failure_reason = format!("{:?}", agg_graph.status);
-        assert!(failure_reason.contains("Job failed due to stage 2 failed"));
         assert!(failure_reason.contains("ExecutionError"));
 
         Ok(())
