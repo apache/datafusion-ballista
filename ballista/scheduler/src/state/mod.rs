@@ -38,6 +38,7 @@ use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::BallistaCodec;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -311,14 +312,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         executor_stage_assignments
     }
 
-    pub(crate) async fn submit_job(
+    pub(crate) async fn plan_job(
         &self,
         job_id: &str,
-        job_name: &str,
         session_ctx: Arc<SessionContext>,
         plan: &LogicalPlan,
-        queued_at: u64,
-    ) -> Result<()> {
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         let start = Instant::now();
 
         if log::max_level() >= log::Level::Debug {
@@ -373,15 +372,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             DisplayableExecutionPlan::new(plan.as_ref()).indent()
         );
 
-        self.task_manager
-            .submit_job(job_id, job_name, &session_ctx.session_id(), plan, queued_at)
-            .await?;
-
         let elapsed = start.elapsed();
 
         info!("Planned job {} in {:?}", job_id, elapsed);
 
-        Ok(())
+        Ok(plan)
     }
 
     /// Spawn a delayed future to clean up job data on both Scheduler and Executors

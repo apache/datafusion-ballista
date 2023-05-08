@@ -440,12 +440,19 @@ mod test {
             .queue_job(job_id, "", timestamp_millis())
             .await?;
 
-        // Submit job
-        scheduler
+        // Plan job
+        let plan = scheduler
             .state
-            .submit_job(job_id, "", ctx, &plan, 0)
+            .plan_job(job_id, ctx.clone(), &plan)
             .await
             .expect("submitting plan");
+
+        //Submit job plan
+        scheduler
+            .state
+            .task_manager
+            .submit_job(job_id, "", &ctx.session_id(), plan, 0)
+            .await?;
 
         // Refresh the ExecutionGraph
         while let Some(graph) = scheduler
