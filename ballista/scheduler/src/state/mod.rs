@@ -20,7 +20,7 @@ use datafusion::common::DataFusionError;
 use datafusion::datasource::listing::{ListingTable, ListingTableUrl};
 use datafusion::datasource::source_as_provider;
 use std::any::type_name;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -34,6 +34,7 @@ use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
 use crate::state::execution_graph::TaskDescription;
 use ballista_core::error::{BallistaError, Result};
+use ballista_core::event_loop::EventSender;
 use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::BallistaCodec;
 use datafusion::logical_expr::LogicalPlan;
@@ -162,27 +163,89 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         &self,
         executor_id: &str,
         tasks_status: Vec<TaskStatus>,
-    ) -> Result<(Vec<QueryStageSchedulerEvent>, Vec<ExecutorReservation>)> {
+        tx_event: EventSender<QueryStageSchedulerEvent>,
+    ) -> Result<()> {
         let executor = self
             .executor_manager
             .get_executor_metadata(executor_id)
             .await?;
 
-        // each task can consume multiple slots, so ensure here that we count each task partition
-        let total_num_tasks = tasks_status
-            .iter()
-            .map(|status| status.partitions.len())
-            .sum::<usize>();
-        let reservations = (0..total_num_tasks)
-            .map(|_| ExecutorReservation::new_free(executor_id.to_owned()))
-            .collect();
+        if self.config.is_push_staged_scheduling() {
+            // each task can consume multiple slots, so ensure here that we count each task partition
+            let total_num_tasks = tasks_status
+                .iter()
+                .map(|status| status.partitions.len())
+                .sum::<usize>();
+            let reservations = (0..total_num_tasks)
+                .map(|_| ExecutorReservation::new_free(executor_id.to_owned()))
+                .collect();
 
-        let events = self
-            .task_manager
-            .update_task_statuses(&executor, tasks_status)
+            tx_event
+                .post_event(QueryStageSchedulerEvent::ReservationOffering(reservations));
+        }
+
+        self.task_manager
+            .update_task_statuses(&executor, tasks_status, tx_event)
             .await?;
 
-        Ok((events, reservations))
+        Ok(())
+    }
+
+    pub(crate) fn reserve(
+        &self,
+        n: u32,
+        executors: HashSet<String>,
+        tx_event: EventSender<QueryStageSchedulerEvent>,
+    ) {
+        let executor_manager = self.executor_manager.clone();
+        tokio::spawn(async move {
+            match executor_manager
+                .reserve_slots_on_executors(n, executors)
+                .await
+            {
+                Ok(res) if !res.is_empty() => {
+                    tx_event
+                        .post_event(QueryStageSchedulerEvent::ReservationOffering(res));
+                }
+                Ok(_) => debug!("no tasks slots reserved, scheduling another Tick"),
+                Err(e) => error!("error reserving task slots: {e:?}"),
+            }
+        });
+    }
+
+    fn launch_tasks_async(
+        &self,
+        executor_id: String,
+        tasks: Vec<TaskDescription>,
+        tx_event: EventSender<QueryStageSchedulerEvent>,
+    ) {
+        let task_manager = self.task_manager.clone();
+        let executor_manager = self.executor_manager.clone();
+
+        tokio::spawn(async move {
+            let num_tasks: usize =
+                tasks.iter().map(|t| t.partitions.partitions.len()).sum();
+
+            let result = async {
+                let metadata =
+                    executor_manager.get_executor_metadata(&executor_id).await?;
+
+                task_manager
+                    .launch_tasks(&metadata, tasks, &executor_manager)
+                    .await
+            };
+
+            if let Err(e) = result.await {
+                error!("failed to launch new task: {:?}", e);
+
+                let reservations =
+                    vec![ExecutorReservation::new_free(executor_id); num_tasks];
+
+                tx_event.post_event(QueryStageSchedulerEvent::ReservationOffering(
+                    reservations,
+                ));
+            }
+        });
     }
 
     /// Process reservations which are offered. The basic process is
@@ -197,101 +260,42 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
     pub(crate) async fn offer_reservation(
         &self,
         reservations: Vec<ExecutorReservation>,
-    ) -> Result<(Vec<ExecutorReservation>, usize)> {
-        let (free_list, pending_tasks) = match self
-            .task_manager
-            .fill_reservations(&reservations)
-            .await
-        {
-            Ok((assignments, mut unassigned_reservations, pending_tasks)) => {
-                // Put tasks to the same executor together
-                let mut executor_stage_assignments: HashMap<
-                    String,
-                    Vec<TaskDescription>,
-                > = HashMap::new();
-                for (executor_id, task) in assignments.into_iter() {
-                    let tasks = executor_stage_assignments
-                        .entry(executor_id)
-                        .or_insert_with(Vec::new);
-                    tasks.push(task);
+        tx_event: EventSender<QueryStageSchedulerEvent>,
+    ) -> Result<()> {
+        let (free_list, _) =
+            match self.task_manager.fill_reservations(&reservations).await {
+                Ok((assignments, unassigned_reservations, pending_tasks)) => {
+                    // Put tasks to the same executor together
+                    let mut executor_stage_assignments: HashMap<
+                        String,
+                        Vec<TaskDescription>,
+                    > = HashMap::new();
+                    for (executor_id, task) in assignments.into_iter() {
+                        let tasks = executor_stage_assignments
+                            .entry(executor_id)
+                            .or_insert_with(Vec::new);
+                        tasks.push(task);
+                    }
+
+                    // let mut join_handles = vec![];
+                    for (executor_id, tasks) in executor_stage_assignments.into_iter() {
+                        self.launch_tasks_async(executor_id, tasks, tx_event.clone());
+                    }
+
+                    (unassigned_reservations, pending_tasks)
                 }
-
-                let mut join_handles = vec![];
-                for (executor_id, tasks) in executor_stage_assignments.into_iter() {
-                    // Total number of tasks to be launched for one executor
-                    let n_tasks: usize = tasks.len();
-
-                    let task_manager = self.task_manager.clone();
-                    let executor_manager = self.executor_manager.clone();
-                    let join_handle = tokio::spawn(async move {
-                        let success = match executor_manager
-                            .get_executor_metadata(&executor_id)
-                            .await
-                        {
-                            Ok(executor) => {
-                                if let Err(e) = task_manager
-                                    .launch_tasks(&executor, tasks, &executor_manager)
-                                    .await
-                                {
-                                    error!("Failed to launch new task: {:?}", e);
-                                    false
-                                } else {
-                                    true
-                                }
-                            }
-                            Err(e) => {
-                                error!("Failed to launch new task, could not get executor metadata: {:?}", e);
-                                false
-                            }
-                        };
-                        if success {
-                            vec![]
-                        } else {
-                            vec![
-                                ExecutorReservation::new_free(executor_id.clone(),);
-                                n_tasks
-                            ]
-                        }
-                    });
-                    join_handles.push(join_handle);
+                Err(e) => {
+                    error!("Error filling reservations: {:?}", e);
+                    (reservations, 0)
                 }
+            };
 
-                let unassigned_executor_reservations =
-                    futures::future::join_all(join_handles)
-                        .await
-                        .into_iter()
-                        .collect::<std::result::Result<
-                        Vec<Vec<ExecutorReservation>>,
-                        tokio::task::JoinError,
-                    >>()?;
-                unassigned_reservations.append(
-                    &mut unassigned_executor_reservations
-                        .into_iter()
-                        .flatten()
-                        .collect::<Vec<ExecutorReservation>>(),
-                );
-                (unassigned_reservations, pending_tasks)
-            }
-            Err(e) => {
-                error!("Error filling reservations: {:?}", e);
-                (reservations, 0)
-            }
-        };
-
-        let mut new_reservations = vec![];
         if !free_list.is_empty() {
             // If any reserved slots remain, return them to the pool
             self.executor_manager.cancel_reservations(free_list).await?;
-        } else if pending_tasks > 0 {
-            // If there are pending tasks available, try and schedule them
-            let pending_reservations = self
-                .executor_manager
-                .reserve_slots(pending_tasks as u32)
-                .await?;
-            new_reservations.extend(pending_reservations);
         }
 
-        Ok((new_reservations, pending_tasks))
+        Ok(())
     }
 
     pub(crate) async fn submit_job(
@@ -395,9 +399,6 @@ mod test {
     use crate::state::SchedulerState;
     use ballista_core::config::{BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS};
     use ballista_core::error::Result;
-    use ballista_core::serde::protobuf::{
-        task_status, ShuffleWritePartition, SuccessfulTask, TaskStatus,
-    };
     use ballista_core::serde::scheduler::{
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
     };
@@ -408,6 +409,7 @@ mod test {
 
     use crate::scheduler_server::timestamp_millis;
     use crate::test_utils::{test_cluster_context, BlackholeTaskLauncher};
+    use ballista_core::event_loop::EventSender;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::logical_expr::{col, sum};
     use datafusion::physical_plan::ExecutionPlan;
@@ -428,19 +430,22 @@ mod test {
                 BallistaCodec::default(),
             ));
 
+        let (tx, _rx) = flume::unbounded();
+        let tx_event = EventSender::new(tx);
+
         let executors = test_executors(1, 4);
 
         let (executor_metadata, executor_data) = executors[0].clone();
 
         let reservations = state
             .executor_manager
-            .register_executor(executor_metadata, executor_data, true)
+            .register_executor(executor_metadata, executor_data, true, false)
             .await?;
 
-        let (result, assigned) = state.offer_reservation(reservations).await?;
+        state.offer_reservation(reservations, tx_event).await?;
 
-        assert_eq!(assigned, 0);
-        assert!(result.is_empty());
+        // assert_eq!(assigned, 0);
+        // assert!(result.is_empty());
 
         // All reservations should have been cancelled so we should be able to reserve them now
         let reservations = state.executor_manager.reserve_slots(4).await?;
@@ -537,138 +542,15 @@ mod test {
 
         let reservations = state
             .executor_manager
-            .register_executor(executor_metadata, executor_data, true)
+            .register_executor(executor_metadata, executor_data, true, false)
             .await?;
 
-        let (result, pending) = state.offer_reservation(reservations).await?;
+        let (tx, _rx) = flume::unbounded();
+        let tx_event = EventSender::new(tx);
 
-        assert_eq!(pending, 0);
-        assert!(result.is_empty());
+        state.offer_reservation(reservations, tx_event).await?;
 
         // All task slots should be assigned so we should not be able to reserve more tasks
-        let reservations = state.executor_manager.reserve_slots(4).await?;
-
-        assert_eq!(reservations.len(), 0);
-
-        Ok(())
-    }
-
-    // We should generate a new event for tasks that are still pending
-    #[tokio::test]
-    async fn test_offer_resubmit_pending() -> Result<()> {
-        let config = BallistaConfig::builder()
-            .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4")
-            .build()?;
-
-        let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
-            Arc::new(SchedulerState::new_with_task_launcher(
-                test_cluster_context(),
-                BallistaCodec::default(),
-                TEST_SCHEDULER_NAME.into(),
-                SchedulerConfig::default(),
-                Arc::new(BlackholeTaskLauncher::default()),
-            ));
-
-        let session_ctx = state
-            .session_manager
-            .create_session(&config, Extensions::default())
-            .await?;
-
-        let plan = test_graph(session_ctx.clone()).await;
-
-        // Create a job
-        state
-            .task_manager
-            .queue_job("job-1", "", timestamp_millis())
-            .await?;
-        state
-            .task_manager
-            .submit_job(
-                "job-1",
-                "",
-                session_ctx.session_id().as_str(),
-                plan.clone(),
-                0,
-            )
-            .await?;
-
-        let executors = test_executors(1, 4);
-
-        let (executor_metadata, executor_data) = executors[0].clone();
-
-        // Complete the first stage. So we should now have 4 pending tasks for this job stage 2
-        {
-            let plan_graph = state
-                .task_manager
-                .get_active_execution_graph("job-1")
-                .unwrap();
-            let task_def = plan_graph
-                .write()
-                .await
-                .pop_next_task(&executor_data.executor_id, 1)?
-                .unwrap();
-
-            let mut partitions: Vec<ShuffleWritePartition> = vec![];
-            for partition_id in 0..4 {
-                partitions.push(ShuffleWritePartition {
-                    partitions: task_def
-                        .partitions
-                        .partitions
-                        .iter()
-                        .map(|p| *p as u32)
-                        .collect(),
-                    output_partition: partition_id,
-                    path: "some/path".to_string(),
-                    num_batches: 1,
-                    num_rows: 1,
-                    num_bytes: 1,
-                })
-            }
-            state
-                .task_manager
-                .update_task_statuses(
-                    &executor_metadata,
-                    vec![TaskStatus {
-                        task_id: task_def.task_id as u32,
-                        job_id: "job-1".to_string(),
-                        stage_id: task_def.partitions.stage_id as u32,
-                        stage_attempt_num: task_def.stage_attempt_num as u32,
-                        partitions: task_def
-                            .partitions
-                            .partitions
-                            .iter()
-                            .map(|p| *p as u32)
-                            .collect(),
-                        launch_time: 0,
-                        start_exec_time: 0,
-                        end_exec_time: 0,
-                        metrics: vec![],
-                        status: Some(task_status::Status::Successful(SuccessfulTask {
-                            executor_id: executor_data.executor_id.clone(),
-                            partitions,
-                        })),
-                    }],
-                )
-                .await?;
-        }
-
-        state
-            .executor_manager
-            .register_executor(executor_metadata, executor_data, false)
-            .await?;
-
-        let reservations = state.executor_manager.reserve_slots(1).await?;
-
-        assert_eq!(reservations.len(), 1);
-
-        // Offer the reservation. It should be filled with one of the 4 pending tasks. The other 3 should
-        // be reserved for the other 3 tasks, emitting another offer event
-        let (reservations, pending) = state.offer_reservation(reservations).await?;
-
-        assert_eq!(pending, 3);
-        assert_eq!(reservations.len(), 3);
-
-        // Remaining 3 task slots should be reserved for pending tasks
         let reservations = state.executor_manager.reserve_slots(4).await?;
 
         assert_eq!(reservations.len(), 0);

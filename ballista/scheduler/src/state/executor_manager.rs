@@ -111,6 +111,16 @@ impl ExecutorManager {
         Ok(())
     }
 
+    pub async fn reserve_slots_on_executors(
+        &self,
+        n: u32,
+        executors: HashSet<String>,
+    ) -> Result<Vec<ExecutorReservation>> {
+        self.cluster_state
+            .reserve_slots(n, self.task_distribution, Some(executors))
+            .await
+    }
+
     /// Reserve up to n executor task slots. Once reserved these slots will not be available
     /// for scheduling.
     /// This operation is atomic, so if this method return an Err, no slots have been reserved.
@@ -295,13 +305,16 @@ impl ExecutorManager {
         metadata: ExecutorMetadata,
         specification: ExecutorData,
         reserve: bool,
+        test_connection: bool,
     ) -> Result<Vec<ExecutorReservation>> {
         debug!(
             "registering executor {} with {} task slots",
             metadata.id, specification.total_task_slots
         );
 
-        self.test_scheduler_connectivity(&metadata).await?;
+        if test_connection {
+            self.test_scheduler_connectivity(&metadata).await?;
+        }
 
         if !reserve {
             self.cluster_state
@@ -500,7 +513,7 @@ mod test {
 
         for (executor_metadata, executor_data) in executors {
             executor_manager
-                .register_executor(executor_metadata, executor_data, false)
+                .register_executor(executor_metadata, executor_data, false, false)
                 .await?;
         }
 
@@ -548,7 +561,7 @@ mod test {
 
         for (executor_metadata, executor_data) in executors {
             executor_manager
-                .register_executor(executor_metadata, executor_data, false)
+                .register_executor(executor_metadata, executor_data, false, false)
                 .await?;
         }
 
@@ -602,7 +615,7 @@ mod test {
 
         for (executor_metadata, executor_data) in executors {
             executor_manager
-                .register_executor(executor_metadata, executor_data, false)
+                .register_executor(executor_metadata, executor_data, false, false)
                 .await?;
         }
 
@@ -651,7 +664,7 @@ mod test {
 
         for (executor_metadata, executor_data) in executors {
             let reservations = executor_manager
-                .register_executor(executor_metadata, executor_data, true)
+                .register_executor(executor_metadata, executor_data, true, false)
                 .await?;
 
             assert_eq!(reservations.len(), 4);
@@ -686,7 +699,7 @@ mod test {
 
         for (executor_metadata, executor_data) in executors {
             let _ = executor_manager
-                .register_executor(executor_metadata, executor_data, false)
+                .register_executor(executor_metadata, executor_data, false, false)
                 .await?;
         }
 

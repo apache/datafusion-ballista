@@ -20,7 +20,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use log::{error, info};
-use tokio::sync::mpsc;
 
 use crate::error::{BallistaError, Result};
 
@@ -33,8 +32,8 @@ pub trait EventAction<E>: Send + Sync {
     async fn on_receive(
         &self,
         event: E,
-        tx_event: &mpsc::Sender<E>,
-        rx_event: &mpsc::Receiver<E>,
+        tx_event: &flume::Sender<E>,
+        rx_event: &flume::Receiver<E>,
     ) -> Result<()>;
 
     fn on_error(&self, error: BallistaError);
@@ -46,7 +45,7 @@ pub struct EventLoop<E> {
     pub buffer_size: usize,
     stopped: Arc<AtomicBool>,
     action: Arc<dyn EventAction<E>>,
-    tx_event: Option<mpsc::Sender<E>>,
+    tx_event: Option<flume::Sender<E>>,
 }
 
 impl<E: Send + 'static> EventLoop<E> {
@@ -64,7 +63,7 @@ impl<E: Send + 'static> EventLoop<E> {
         }
     }
 
-    fn run(&self, mut rx_event: mpsc::Receiver<E>) {
+    fn run(&self, rx_event: flume::Receiver<E>) {
         assert!(
             self.tx_event.is_some(),
             "The event sender should be initialized first!"
@@ -76,7 +75,7 @@ impl<E: Send + 'static> EventLoop<E> {
         tokio::spawn(async move {
             info!("Starting the event loop {}", name);
             while !stopped.load(Ordering::SeqCst) {
-                if let Some(event) = rx_event.recv().await {
+                if let Ok(event) = rx_event.recv_async().await {
                     if let Err(e) = action.on_receive(event, &tx_event, &rx_event).await {
                         error!("Fail to process event due to {}", e);
                         action.on_error(e);
@@ -99,7 +98,7 @@ impl<E: Send + 'static> EventLoop<E> {
         }
         self.action.on_start();
 
-        let (tx_event, rx_event) = mpsc::channel::<E>(self.buffer_size);
+        let (tx_event, rx_event) = flume::unbounded::<E>();
         self.tx_event = Some(tx_event);
         self.run(rx_event);
 
@@ -125,18 +124,17 @@ impl<E: Send + 'static> EventLoop<E> {
 
 #[derive(Clone)]
 pub struct EventSender<E> {
-    tx_event: mpsc::Sender<E>,
+    tx_event: flume::Sender<E>,
 }
 
 impl<E> EventSender<E> {
-    pub fn new(tx_event: mpsc::Sender<E>) -> Self {
+    pub fn new(tx_event: flume::Sender<E>) -> Self {
         Self { tx_event }
     }
 
-    pub async fn post_event(&self, event: E) -> Result<()> {
-        self.tx_event
-            .send(event)
-            .await
-            .map_err(|e| BallistaError::General(format!("Fail to send event due to {e}")))
+    pub fn post_event(&self, event: E) {
+        if let Err(e) = self.tx_event.send(event) {
+            error!("error sending event: {e:?}")
+        }
     }
 }

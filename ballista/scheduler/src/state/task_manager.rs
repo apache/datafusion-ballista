@@ -56,6 +56,7 @@ use tracing::{debug, error, info, warn};
 use tokio::sync::{watch, RwLock, RwLockWriteGuard};
 
 use crate::scheduler_server::timestamp_millis;
+use ballista_core::event_loop::EventSender;
 use ballista_core::physical_optimizer::OptimizeTaskGroup;
 use tracing::trace;
 
@@ -500,7 +501,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         &self,
         executor: &ExecutorMetadata,
         task_status: Vec<TaskStatus>,
-    ) -> Result<Vec<QueryStageSchedulerEvent>> {
+        tx_event: EventSender<QueryStageSchedulerEvent>,
+    ) -> Result<()> {
         let mut job_updates: HashMap<String, Vec<TaskStatus>> = HashMap::new();
         for status in task_status {
             trace!("Task Update\n{:?}", status);
@@ -509,7 +511,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             job_task_statuses.push(status);
         }
 
-        let mut events: Vec<QueryStageSchedulerEvent> = vec![];
         for (job_id, statuses) in job_updates {
             let num_tasks = statuses.len();
             debug!("Updating {} tasks in job {}", num_tasks, job_id);
@@ -530,11 +531,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             };
 
             for event in job_events {
-                events.push(event);
+                tx_event.post_event(event);
             }
         }
 
-        Ok(events)
+        Ok(())
     }
 
     /// Take a list of executor reservations and fill them with tasks that are ready

@@ -17,7 +17,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use tracing::{debug, error, info};
@@ -28,7 +28,6 @@ use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::{EventAction, EventSender};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
-use tokio::sync::mpsc;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
@@ -41,7 +40,6 @@ pub(crate) struct QueryStageScheduler<
     state: Arc<SchedulerState<T, U>>,
     metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     pending_tasks: AtomicUsize,
-    tick_interval: u64,
     tasks_per_tick: usize,
 }
 
@@ -49,14 +47,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
     pub(crate) fn new(
         state: Arc<SchedulerState<T, U>>,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
-        tick_interval: u64,
         tasks_per_tick: usize,
     ) -> Self {
         Self {
             state,
             metrics_collector,
             pending_tasks: AtomicUsize::default(),
-            tick_interval,
             tasks_per_tick,
         }
     }
@@ -119,9 +115,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                         }
                     };
 
-                    if let Err(e) = tx_event.post_event(event).await {
-                        error!("Fail to send event due to {}", e);
-                    }
+                    tx_event.post_event(event);
                 });
             }
             QueryStageSchedulerEvent::JobSubmitted {
@@ -144,7 +138,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
 
                 if self.state.config.is_push_staged_scheduling() {
                     // submit a scheduler tick.
-                    tx_event.post_event(QueryStageSchedulerEvent::Tick).await?;
+                    tx_event.post_event(QueryStageSchedulerEvent::Tick);
                 }
             }
             QueryStageSchedulerEvent::JobPlanningFailed {
@@ -190,8 +184,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
 
                 if !running_tasks.is_empty() {
                     tx_event
-                        .post_event(QueryStageSchedulerEvent::CancelTasks(running_tasks))
-                        .await?;
+                        .post_event(QueryStageSchedulerEvent::CancelTasks(running_tasks));
                 }
                 self.state.clean_up_failed_job(job_id);
             }
@@ -207,9 +200,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                     self.state.task_manager.cancel_job(&job_id).await?;
                 self.state.clean_up_failed_job(job_id);
 
-                tx_event
-                    .post_event(QueryStageSchedulerEvent::CancelTasks(running_tasks))
-                    .await?;
+                tx_event.post_event(QueryStageSchedulerEvent::CancelTasks(running_tasks));
             }
             QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status) => {
                 debug!(
@@ -219,53 +210,35 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                 );
 
                 let num_status = tasks_status.len();
-                match self
+                if let Err(e) = self
                     .state
-                    .update_task_statuses(&executor_id, tasks_status)
+                    .update_task_statuses(&executor_id, tasks_status, tx_event)
                     .await
                 {
-                    Ok((stage_events, offers)) => {
-                        if self.state.config.is_push_staged_scheduling() {
-                            tx_event
-                                .post_event(
-                                    QueryStageSchedulerEvent::ReservationOffering(offers),
-                                )
-                                .await?;
-                        }
-
-                        for stage_event in stage_events {
-                            tx_event.post_event(stage_event).await?;
-                        }
-                    }
-                    Err(e) => {
-                        error!(
-                            "Failed to update {} task statuses for Executor {}: {:?}",
-                            num_status, executor_id, e
-                        );
-                        // TODO error handling
-                    }
+                    error!(
+                        "Failed to update {} task statuses for Executor {}: {:?}",
+                        num_status, executor_id, e
+                    );
+                    // TODO error handling
                 }
             }
             QueryStageSchedulerEvent::ReservationOffering(mut reservations) => {
-                let mut remainder = if reservations.len() > self.tasks_per_tick {
-                    reservations.split_off(self.tasks_per_tick)
-                } else {
-                    vec![]
-                };
+                if self.state.config.is_push_staged_scheduling() {
+                    if reservations.len() > self.tasks_per_tick {
+                        tx_event.post_event(
+                            QueryStageSchedulerEvent::ReservationOffering(
+                                reservations.split_off(self.tasks_per_tick),
+                            ),
+                        );
+                    }
 
-                let (reservations, _) =
-                    self.state.offer_reservation(reservations).await?;
-
-                self.set_pending_tasks(self.state.task_manager.get_pending_task_count());
-
-                remainder.extend(reservations);
-
-                if !remainder.is_empty() {
-                    tx_event
-                        .post_event(QueryStageSchedulerEvent::ReservationOffering(
-                            remainder,
-                        ))
+                    self.state
+                        .offer_reservation(reservations, tx_event.clone())
                         .await?;
+
+                    let pending = self.state.task_manager.get_pending_task_count();
+
+                    self.set_pending_tasks(pending);
                 }
             }
             QueryStageSchedulerEvent::ExecutorLost(executor_id, _) => {
@@ -273,8 +246,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                     Ok(tasks) => {
                         if !tasks.is_empty() {
                             tx_event
-                                .post_event(QueryStageSchedulerEvent::CancelTasks(tasks))
-                                .await?;
+                                .post_event(QueryStageSchedulerEvent::CancelTasks(tasks));
                         }
                     }
                     Err(e) => {
@@ -302,37 +274,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                 if pending_tasks > 0 {
                     let num_tasks = pending_tasks.min(self.tasks_per_tick);
 
-                    let reservations = self
+                    let live_executors = self
                         .state
                         .executor_manager
-                        .reserve_slots(num_tasks as u32)
-                        .await?;
+                        .get_alive_executors_within_one_minute();
 
-                    let num_reservations = reservations.len();
-
-                    if !reservations.is_empty() {
-                        tx_event
-                            .post_event(QueryStageSchedulerEvent::ReservationOffering(
-                                reservations,
-                            ))
-                            .await?;
-                    }
-
-                    if pending_tasks > self.tasks_per_tick || num_reservations < num_tasks
-                    {
-                        // if there are more available tasks or we are not able to reserve all of
-                        // our slots, scheduler another tick
-                        let interval = self.tick_interval;
-                        tokio::task::spawn(async move {
-                            tokio::time::sleep(Duration::from_millis(interval)).await;
-
-                            if let Err(e) =
-                                tx_event.post_event(QueryStageSchedulerEvent::Tick).await
-                            {
-                                error!(error = ?e, "error sending tick");
-                            }
-                        });
-                    }
+                    self.state.reserve(
+                        num_tasks as u32,
+                        live_executors,
+                        tx_event.clone(),
+                    );
                 }
             }
         }
@@ -356,8 +307,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     async fn on_receive(
         &self,
         event: QueryStageSchedulerEvent,
-        tx_event: &mpsc::Sender<QueryStageSchedulerEvent>,
-        _rx_event: &mpsc::Receiver<QueryStageSchedulerEvent>,
+        tx_event: &flume::Sender<QueryStageSchedulerEvent>,
+        _rx_event: &flume::Receiver<QueryStageSchedulerEvent>,
     ) -> Result<()> {
         let tx_event = EventSender::new(tx_event.clone());
 
@@ -422,7 +373,7 @@ mod tests {
 
         let query_stage_scheduler = test.query_stage_scheduler();
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<QueryStageSchedulerEvent>(10);
+        let (tx, rx) = flume::unbounded::<QueryStageSchedulerEvent>();
 
         let event = QueryStageSchedulerEvent::JobSubmitted {
             job_id: "job-id".to_string(),
@@ -433,13 +384,13 @@ mod tests {
 
         query_stage_scheduler.on_receive(event, &tx, &rx).await?;
 
-        let next_event = rx.recv().await.unwrap();
+        let next_event = rx.recv_async().await.unwrap();
 
         println!("receieved {next_event:?}");
 
         assert!(matches!(next_event, QueryStageSchedulerEvent::Tick));
 
-        let next_event = rx.recv().await.unwrap();
+        let next_event = rx.recv_async().await.unwrap();
 
         println!("receieved {next_event:?}");
 

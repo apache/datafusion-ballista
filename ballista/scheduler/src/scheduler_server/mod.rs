@@ -89,9 +89,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
             state.clone(),
             metrics_collector,
-            config.scheduler_tick_interval_ms,
             config.tasks_per_tick as usize,
         ));
+
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
             config.event_loop_buffer_size as usize,
@@ -127,7 +127,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
             state.clone(),
             metrics_collector,
-            config.scheduler_tick_interval_ms,
             config.tasks_per_tick as usize,
         ));
         let query_stage_event_loop = EventLoop::new(
@@ -151,6 +150,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         self.query_stage_event_loop.start()?;
         self.expire_dead_executors()?;
 
+        let tx_event = self.query_stage_event_loop.get_sender()?;
+        let tick_interval = self.state.config.scheduler_tick_interval_ms;
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(tick_interval)).await;
+                tx_event.post_event(QueryStageSchedulerEvent::Tick);
+            }
+        });
+
         Ok(())
     }
 
@@ -167,6 +175,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         self.query_stage_scheduler.metrics_collector()
     }
 
+    #[cfg(test)]
+    pub(crate) fn get_event_sender(
+        &self,
+    ) -> Result<EventSender<QueryStageSchedulerEvent>> {
+        self.query_stage_event_loop.get_sender()
+    }
+
     pub async fn submit_job(
         &self,
         job_id: &str,
@@ -174,16 +189,17 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         ctx: Arc<SessionContext>,
         plan: &LogicalPlan,
     ) -> Result<()> {
-        self.query_stage_event_loop
-            .get_sender()?
-            .post_event(QueryStageSchedulerEvent::JobQueued {
+        self.query_stage_event_loop.get_sender()?.post_event(
+            QueryStageSchedulerEvent::JobQueued {
                 job_id: job_id.to_owned(),
                 job_name: job_name.to_owned(),
                 session_ctx: ctx,
                 plan: Box::new(plan.clone()),
                 queued_at: timestamp_millis(),
-            })
-            .await
+            },
+        );
+
+        Ok(())
     }
 
     pub async fn get_execution_graph(
@@ -213,13 +229,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             warn!("{}", error_msg);
             return Ok(());
         }
-        self.query_stage_event_loop
-            .get_sender()?
-            .post_event(QueryStageSchedulerEvent::TaskUpdating(
-                executor_id.to_owned(),
-                tasks_status,
-            ))
-            .await
+        self.query_stage_event_loop.get_sender()?.post_event(
+            QueryStageSchedulerEvent::TaskUpdating(executor_id.to_owned(), tasks_status),
+        );
+
+        Ok(())
     }
 
     pub(crate) async fn offer_reservation(
@@ -228,8 +242,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     ) -> Result<()> {
         self.query_stage_event_loop
             .get_sender()?
-            .post_event(QueryStageSchedulerEvent::ReservationOffering(reservations))
-            .await
+            .post_event(QueryStageSchedulerEvent::ReservationOffering(reservations));
+
+        Ok(())
     }
 
     /// Spawn an async task which periodically check the active executors' status and
@@ -337,12 +352,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                 error!("error removing executor {executor_id}: {e:?}");
             }
 
-            if let Err(e) = event_sender
-                .post_event(QueryStageSchedulerEvent::ExecutorLost(executor_id, reason))
-                .await
-            {
-                error!("error sending ExecutorLost event: {e:?}");
-            }
+            event_sender
+                .post_event(QueryStageSchedulerEvent::ExecutorLost(executor_id, reason));
         });
     }
 
@@ -357,7 +368,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         let reservations = self
             .state
             .executor_manager
-            .register_executor(metadata, executor_data, false)
+            .register_executor(metadata, executor_data, false, true)
             .await?;
 
         // If we are using push-based scheduling then reserve this executors slots and send
@@ -442,12 +453,14 @@ mod test {
 
         let scheduler = test_scheduler(TaskSchedulingPolicy::PullStaged).await?;
 
+        let tx_event = scheduler.get_event_sender()?;
+
         let executors = test_executors(task_slots);
         for (executor_metadata, executor_data) in executors {
             scheduler
                 .state
                 .executor_manager
-                .register_executor(executor_metadata, executor_data, false)
+                .register_executor(executor_metadata, executor_data, false, false)
                 .await?;
         }
 
@@ -533,7 +546,11 @@ mod test {
 
                 scheduler
                     .state
-                    .update_task_statuses("executor-1", vec![task_status])
+                    .update_task_statuses(
+                        "executor-1",
+                        vec![task_status],
+                        tx_event.clone(),
+                    )
                     .await?;
             } else {
                 break;

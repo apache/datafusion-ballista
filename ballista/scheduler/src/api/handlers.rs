@@ -183,9 +183,7 @@ pub(crate) async fn cancel_job<T: AsLogicalPlan, U: AsExecutionPlan>(
         .query_stage_event_loop
         .get_sender()
         .map_err(|_| warp::reject())?
-        .post_event(QueryStageSchedulerEvent::JobCancel(job_id))
-        .await
-        .map_err(|_| warp::reject())?;
+        .post_event(QueryStageSchedulerEvent::JobCancel(job_id));
 
     Ok(warp::reply::json(&CancelJobResponse { cancelled: true }))
 }

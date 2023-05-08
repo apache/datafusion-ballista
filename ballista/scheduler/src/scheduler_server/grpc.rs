@@ -518,13 +518,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 error!("{}", msg);
                 Status::internal(msg)
             })?
-            .post_event(QueryStageSchedulerEvent::JobCancel(job_id))
-            .await
-            .map_err(|e| {
-                let msg = format!("Post to query stage event loop error due to {e:?}");
-                error!("{}", msg);
-                Status::internal(msg)
-            })?;
+            .post_event(QueryStageSchedulerEvent::JobCancel(job_id));
+
         Ok(Response::new(CancelJobResult { cancelled: true }))
     }
 
@@ -542,13 +537,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 error!("{}", msg);
                 Status::internal(msg)
             })?
-            .post_event(QueryStageSchedulerEvent::JobDataClean(job_id))
-            .await
-            .map_err(|e| {
-                let msg = format!("Post to query stage event loop error due to {e:?}");
-                error!("{}", msg);
-                Status::internal(msg)
-            })?;
+            .post_event(QueryStageSchedulerEvent::JobDataClean(job_id));
+
         Ok(Response::new(CleanJobDataResult {}))
     }
 }
