@@ -22,6 +22,7 @@ use datafusion::logical_expr::LogicalPlan;
 
 use crate::state::execution_graph::RunningTaskInfo;
 use ballista_core::serde::protobuf::TaskStatus;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use std::sync::Arc;
 
@@ -36,9 +37,12 @@ pub enum QueryStageSchedulerEvent {
     },
     JobSubmitted {
         job_id: String,
+        job_name: String,
+        session_id: String,
         queued_at: u64,
         submitted_at: u64,
         resubmit: bool,
+        plan: Arc<dyn ExecutionPlan>,
     },
     // For a job which failed during planning
     JobPlanningFailed {
@@ -76,8 +80,10 @@ impl Debug for QueryStageSchedulerEvent {
             } => {
                 write!(f, "JobQueued : job_id={job_id}, job_name={job_name}.")
             }
-            QueryStageSchedulerEvent::JobSubmitted { job_id, .. } => {
-                write!(f, "JobSubmitted : job_id={job_id}.")
+            QueryStageSchedulerEvent::JobSubmitted {
+                job_id, resubmit, ..
+            } => {
+                write!(f, "JobSubmitted : job_id={job_id}, resubmit={resubmit}.")
             }
             QueryStageSchedulerEvent::JobPlanningFailed {
                 job_id,
