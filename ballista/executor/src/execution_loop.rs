@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use async_trait::async_trait;
+use ballista_core::serde::protobuf::task_status::Status;
 use datafusion::config::{ConfigOptions, Extensions};
 use datafusion::physical_plan::ExecutionPlan;
 
@@ -24,8 +26,12 @@ use ballista_core::serde::protobuf::{
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+use crate::circuit_breaker::client::{
+    CircuitBreakerClient, CircuitBreakerMetadataExtension,
+};
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
+use crate::scheduler_client_registry::SchedulerClientRegistry;
 use crate::{as_task_status, TaskExecutionTimes};
 use ballista_core::error::BallistaError;
 use ballista_core::serde::scheduler::ExecutorSpecification;
@@ -70,6 +76,13 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     let dedicated_executor =
         DedicatedExecutor::new("task_runner", executor_specification.task_slots as usize);
 
+    let circuit_breaker_client = Arc::new(CircuitBreakerClient::new(
+        Duration::from_secs(1),
+        Arc::new(SingleSchedulerClient {
+            scheduler: scheduler.clone(),
+        }),
+    ));
+
     loop {
         // Wait for task slots to be available before asking for new work
         let permit = available_task_slots.acquire().await.unwrap();
@@ -80,8 +93,11 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         // to avoid going in sleep mode between polling
         let mut active_job = false;
 
-        let task_status: Vec<TaskStatus> =
-            sample_tasks_status(&mut task_status_receiver).await;
+        let task_status: Vec<TaskStatus> = sample_tasks_status(
+            &mut task_status_receiver,
+            circuit_breaker_client.clone(),
+        )
+        .await?;
 
         let poll_work_result: anyhow::Result<
             tonic::Response<PollWorkResult>,
@@ -106,14 +122,33 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     let permit =
                         available_task_slots.clone().acquire_owned().await.unwrap();
 
+                    let task_id = &task.task_id;
+                    let job_id = &task.job_id;
+                    let stage_id = &task.stage_id;
+                    let stage_attempt_num = &task.stage_attempt_num;
+                    let partitions = &task.partitions;
+
+                    let task_identity = create_task_identity(
+                        task_id,
+                        job_id,
+                        stage_id,
+                        stage_attempt_num,
+                        partitions,
+                    );
+
+                    circuit_breaker_client
+                        .register_scheduler(task_identity.clone(), "".to_owned())?;
+
                     match run_received_task(
                         executor.clone(),
                         permit,
                         task_status_sender,
                         task,
+                        task_identity,
                         &codec,
                         &dedicated_executor,
                         default_extensions.clone(),
+                        circuit_breaker_client.clone(),
                     )
                     .await
                     {
@@ -148,18 +183,32 @@ pub(crate) fn any_to_string(any: &Box<dyn Any + Send>) -> String {
     }
 }
 
+fn create_task_identity(
+    task_id: &u32,
+    job_id: &str,
+    stage_id: &u32,
+    stage_attempt_num: &u32,
+    partitions: &Vec<u32>,
+) -> String {
+    format!("TID {task_id} {job_id}/{stage_id}.{stage_attempt_num}/{partitions:?}")
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     executor: Arc<Executor>,
     permit: OwnedSemaphorePermit,
     task_status_sender: Sender<TaskStatus>,
     task: TaskDefinition,
+    task_identity: String,
     codec: &BallistaCodec<T, U>,
     dedicated_executor: &DedicatedExecutor,
     extensions: Extensions,
+    circuit_breaker_client: Arc<CircuitBreakerClient>,
 ) -> Result<(), BallistaError> {
     let task_id = task.task_id;
     let job_id = task.job_id;
     let stage_id = task.stage_id;
+    let attempt = task.stage_attempt_num;
     let stage_attempt_num = task.stage_attempt_num;
     let task_launch_time = task.launch_time;
     let partitions: Vec<usize> = task.partitions.iter().map(|p| *p as usize).collect();
@@ -167,8 +216,6 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64;
-    let task_identity =
-        format!("TID {task_id} {job_id}/{stage_id}.{stage_attempt_num}/{partitions:?}");
     info!("Received task {}", task_identity);
 
     let mut task_props = HashMap::new();
@@ -180,7 +227,16 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     for (k, v) in task_props {
         config.set(&k, &v)?;
     }
-    let session_config = SessionConfig::from(config);
+
+    let circuit_breaker_metadata = CircuitBreakerMetadataExtension {
+        job_id: job_id.clone(),
+        stage_id,
+        attempt_number: attempt,
+    };
+
+    let session_config = SessionConfig::from(config)
+        .with_extension(circuit_breaker_client)
+        .with_extension(Arc::new(circuit_breaker_metadata));
 
     let mut task_scalar_functions = HashMap::new();
     let mut task_aggregate_functions = HashMap::new();
@@ -290,12 +346,32 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
 
 async fn sample_tasks_status(
     task_status_receiver: &mut Receiver<TaskStatus>,
-) -> Vec<TaskStatus> {
+    circuit_breaker_client: Arc<CircuitBreakerClient>,
+) -> Result<Vec<TaskStatus>, BallistaError> {
     let mut task_status: Vec<TaskStatus> = vec![];
 
     loop {
-        match task_status_receiver.try_recv() {
+        let recv = task_status_receiver.try_recv();
+
+        match recv {
             anyhow::Result::Ok(status) => {
+                // If there is a status and it is not running
+                if status
+                    .status
+                    .iter()
+                    .any(|s| !matches!(s, Status::Running(_)))
+                {
+                    let task_identity = create_task_identity(
+                        &status.task_id,
+                        &status.job_id,
+                        &status.stage_id,
+                        &status.stage_attempt_num,
+                        &status.partitions,
+                    );
+
+                    circuit_breaker_client.deregister_scheduler(task_identity)?;
+                }
+
                 task_status.push(status);
             }
             Err(TryRecvError::Empty) => {
@@ -307,5 +383,26 @@ async fn sample_tasks_status(
         }
     }
 
-    task_status
+    Ok(task_status)
+}
+
+struct SingleSchedulerClient {
+    scheduler: SchedulerGrpcClient<Channel>,
+}
+
+#[async_trait]
+impl SchedulerClientRegistry for SingleSchedulerClient {
+    async fn get_scheduler_client(
+        &self,
+        _scheduler_id: &str,
+    ) -> Result<Option<SchedulerGrpcClient<Channel>>, BallistaError> {
+        Ok(Some(self.scheduler.clone()))
+    }
+    async fn insert_scheduler_client(
+        &self,
+        _scheduler_id: &str,
+        _client: SchedulerGrpcClient<Channel>,
+    ) {
+        panic!("Tried to insert scheduler into SingleSchedulerClient")
+    }
 }

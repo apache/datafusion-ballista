@@ -26,6 +26,7 @@ use std::time::Instant;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
+use crate::circuit_breaker::controller::CircuitBreakerController;
 use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::{TaskLauncher, TaskManager};
@@ -93,6 +94,7 @@ pub struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPl
     pub session_manager: SessionManager,
     pub codec: BallistaCodec<T, U>,
     pub config: SchedulerConfig,
+    pub circuit_breaker: Arc<CircuitBreakerController>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T, U> {
@@ -128,6 +130,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             session_manager: SessionManager::new(cluster.job_state()),
             codec,
             config,
+            circuit_breaker: Arc::new(CircuitBreakerController::default()),
         }
     }
 
@@ -152,6 +155,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             session_manager: SessionManager::new(cluster.job_state()),
             codec,
             config,
+            circuit_breaker: Arc::new(CircuitBreakerController::default()),
         }
     }
 
@@ -315,6 +319,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             debug!("Optimized plan: {}", optimized_plan.display_indent());
         }
 
+        self.circuit_breaker.create(job_id);
+
         plan.apply(&mut |plan| {
             if let LogicalPlan::TableScan(scan) = plan {
                 let provider = source_as_provider(&scan.source)?;
@@ -373,6 +379,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
     /// Spawn a delayed future to clean up job data on both Scheduler and Executors
     pub(crate) fn clean_up_successful_job(&self, job_id: String) {
+        self.circuit_breaker.delete(&job_id);
         self.executor_manager.clean_up_job_data_delayed(
             job_id.clone(),
             self.config.finished_job_data_clean_up_interval_seconds,
@@ -385,6 +392,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
     /// Spawn a delayed future to clean up job data on both Scheduler and Executors
     pub(crate) fn clean_up_failed_job(&self, job_id: String) {
+        self.circuit_breaker.delete(&job_id);
         self.executor_manager.clean_up_job_data(job_id.clone());
         self.task_manager.clean_up_job_delayed(
             job_id,

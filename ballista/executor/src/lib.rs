@@ -17,6 +17,7 @@
 
 #![doc = include_str!("../README.md")]
 
+pub mod circuit_breaker;
 pub mod collect;
 pub mod execution_engine;
 pub mod execution_loop;
@@ -29,6 +30,7 @@ pub mod shutdown;
 pub mod terminate;
 
 mod cpu_bound_executor;
+mod scheduler_client_registry;
 mod standalone;
 
 pub use standalone::new_standalone_executor;

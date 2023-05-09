@@ -29,7 +29,7 @@ use futures::future::try_join_all;
 
 use crate::cluster::JobState;
 use ballista_core::serde::protobuf::{
-    self, JobStatus, KeyValuePair, TaskDefinition, TaskStatus,
+    self, job_status, JobStatus, KeyValuePair, SuccessfulJob, TaskDefinition, TaskStatus,
 };
 use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
 use ballista_core::serde::scheduler::ExecutorMetadata;
@@ -608,12 +608,31 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     /// Mark a job to success. This will create a key under the CompletedJobs keyspace
     /// and remove the job from ActiveJobs
-    pub(crate) async fn succeed_job(&self, job_id: &str) -> Result<()> {
+    pub(crate) async fn succeed_job(
+        &self,
+        job_id: &str,
+        circuit_breaker_tripped: bool,
+    ) -> Result<()> {
         debug!("Moving job {} from Active to Success", job_id);
 
         if let Some(graph) = self.remove_active_execution_graph(job_id) {
-            let graph = graph.read().await.clone();
-            if graph.is_successful() {
+            let mut graph = graph.write().await.clone();
+            graph.circuit_breaker_tripped = circuit_breaker_tripped;
+
+            if let Some(job_status::Status::Successful(status)) = graph.status().status {
+                // update circuit breaker tripped flag
+                let updated_status = SuccessfulJob {
+                    circuit_breaker_tripped,
+                    ..status
+                };
+
+                let updated_job_status = JobStatus {
+                    status: Some(job_status::Status::Successful(updated_status)),
+                    ..graph.status()
+                };
+
+                graph.update_status(updated_job_status);
+
                 self.state.save_job(job_id, &graph).await?;
             } else {
                 error!("Job {} has not finished and cannot be completed", job_id);

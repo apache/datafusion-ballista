@@ -43,7 +43,7 @@ use ballista_core::serde::protobuf::{
 
 use ballista_core::serde::scheduler::TaskDefinition;
 use ballista_core::serde::BallistaCodec;
-use ballista_core::utils::{create_grpc_client_connection, create_grpc_server};
+use ballista_core::utils::create_grpc_server;
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::prelude::SessionConfig;
@@ -54,13 +54,17 @@ use datafusion_proto::{
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
 
+use crate::circuit_breaker::client::{
+    CircuitBreakerClient, CircuitBreakerMetadataExtension,
+};
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::execution_engine::QueryStageExecutor;
 use crate::executor::Executor;
+use crate::scheduler_client_registry::SchedulerClientRegistry;
 use crate::shutdown::ShutdownNotifier;
 use crate::{as_task_status, TaskExecutionTimes};
 
-type ServerHandle = JoinHandle<Result<(), BallistaError>>;
+pub type ServerHandle = JoinHandle<Result<(), BallistaError>>;
 type SchedulerClients = Arc<DashMap<String, SchedulerGrpcClient<Channel>>>;
 
 /// Wrap TaskDefinition with its curator scheduler id for task update to its specific curator scheduler later
@@ -186,6 +190,7 @@ pub struct ExecutorServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPl
     scheduler_to_register: SchedulerGrpcClient<Channel>,
     schedulers: SchedulerClients,
     default_extensions: Extensions,
+    circuit_breaker_client: Arc<CircuitBreakerClient>,
 }
 
 #[derive(Clone)]
@@ -212,6 +217,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         codec: BallistaCodec<T, U>,
         default_extensions: Extensions,
     ) -> Self {
+        let schedulers: SchedulerClients = Arc::new(DashMap::new());
+
+        let circuit_breaker_client = Arc::new(CircuitBreakerClient::new(
+            Duration::from_secs(1),
+            schedulers,
+        ));
+
         Self {
             _start_time: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -223,6 +235,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             scheduler_to_register,
             schedulers: Default::default(),
             default_extensions,
+            circuit_breaker_client,
         }
     }
 
@@ -230,22 +243,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         &self,
         scheduler_id: &str,
     ) -> Result<SchedulerGrpcClient<Channel>, BallistaError> {
-        let scheduler = self.schedulers.get(scheduler_id).map(|value| value.clone());
-        // If channel does not exist, create a new one
-        if let Some(scheduler) = scheduler {
-            Ok(scheduler)
-        } else {
-            let scheduler_url = format!("http://{scheduler_id}");
-            let connection = create_grpc_client_connection(scheduler_url).await?;
-            let scheduler = SchedulerGrpcClient::new(connection);
-
-            {
-                self.schedulers
-                    .insert(scheduler_id.to_owned(), scheduler.clone());
-            }
-
-            Ok(scheduler)
-        }
+        self.schedulers
+            .get_or_create_scheduler_client(scheduler_id)
+            .await
     }
 
     /// 1. First Heartbeat to its registration scheduler, if successful then return; else go next.
@@ -315,7 +315,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         for (k, v) in task_props {
             config.set(&k, &v)?;
         }
-        let session_config = SessionConfig::from(config);
+
+        let job_id = task.job_id;
+        let stage_id = task.stage_id;
+        let attempt = task.stage_attempt_num;
+
+        let circuit_breaker_metadata = CircuitBreakerMetadataExtension {
+            job_id: job_id.clone(),
+            stage_id: stage_id as u32,
+            attempt_number: attempt as u32,
+        };
+
+        let session_config = SessionConfig::from(config)
+            .with_extension(self.circuit_breaker_client.clone())
+            .with_extension(Arc::new(circuit_breaker_metadata));
 
         let mut task_scalar_functions = HashMap::new();
         let mut task_aggregate_functions = HashMap::new();
@@ -328,7 +341,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
         let task_context = Arc::new(TaskContext::new(
             Some(task_identity),
-            task.session_id.clone(),
+            task.session_id,
             session_config,
             task_scalar_functions,
             task_aggregate_functions,
@@ -344,8 +357,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         })?;
 
         Ok(self.executor.execution_engine.create_query_stage_exec(
-            task.job_id,
-            task.stage_id,
+            job_id,
+            stage_id,
             plan,
             &self.executor.work_dir,
         )?)
@@ -371,7 +384,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         for (k, v) in task_props {
             config.set(&k, &v)?;
         }
-        let session_config = SessionConfig::from(config);
+        let session_config = SessionConfig::from(config)
+            .with_extension(self.circuit_breaker_client.clone());
+
+        self.circuit_breaker_client
+            .register_scheduler(task_identity.to_owned(), scheduler_id.clone())?;
 
         let mut task_scalar_functions = HashMap::new();
         let mut task_aggregate_functions = HashMap::new();
@@ -451,6 +468,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             Some(operator_metrics),
             task_execution_times,
         );
+
+        self.circuit_breaker_client
+            .deregister_scheduler(task_identity.to_owned())?;
 
         let task_status_sender = self.executor_env.tx_task_status.clone();
         task_status_sender

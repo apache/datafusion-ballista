@@ -23,7 +23,8 @@ use std::convert::TryInto;
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
-    CancelJobParams, CancelJobResult, CleanJobDataParams, CleanJobDataResult,
+    CancelJobParams, CancelJobResult, CircuitBreakerCommand, CircuitBreakerUpdateRequest,
+    CircuitBreakerUpdateResponse, CleanJobDataParams, CleanJobDataResult,
     ExecuteQueryParams, ExecuteQueryResult, ExecutorHeartbeat, ExecutorStoppedParams,
     ExecutorStoppedResult, GetFileMetadataParams, GetFileMetadataResult,
     GetJobStatusParams, GetJobStatusResult, HeartBeatParams, HeartBeatResult,
@@ -540,6 +541,31 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             .post_event(QueryStageSchedulerEvent::JobDataClean(job_id));
 
         Ok(Response::new(CleanJobDataResult {}))
+    }
+
+    async fn send_circuit_breaker_update(
+        &self,
+        request: Request<CircuitBreakerUpdateRequest>,
+    ) -> Result<Response<CircuitBreakerUpdateResponse>, Status> {
+        let CircuitBreakerUpdateRequest { updates } = request.into_inner();
+
+        let mut commands = vec![];
+
+        for update in updates {
+            if let Some(key) = update.key {
+                let circuit_breaker = self
+                    .state
+                    .circuit_breaker
+                    .update(key.clone(), update.percent)
+                    .map_err(Status::internal)?;
+
+                if circuit_breaker {
+                    commands.push(CircuitBreakerCommand { key: Some(key) });
+                }
+            }
+        }
+
+        Ok(Response::new(CircuitBreakerUpdateResponse { commands }))
     }
 }
 

@@ -19,19 +19,27 @@ use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
 use crate::metrics::default_metrics_collector;
 use crate::scheduler_server::SchedulerServer;
-use ballista_core::serde::BallistaCodec;
+use ballista_core::serde::{BallistaCodec, BallistaPhysicalExtensionCodec};
 use ballista_core::utils::{create_grpc_server, default_session_builder};
 use ballista_core::{
     error::Result, serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer,
     BALLISTA_VERSION,
 };
+use datafusion_proto::logical_plan::{
+    DefaultLogicalExtensionCodec, LogicalExtensionCodec,
+};
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::protobuf::LogicalPlanNode;
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use log::info;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 
-pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
+pub async fn new_standalone_scheduler_with_codec(
+    physical_codec: Arc<dyn PhysicalExtensionCodec>,
+    logical_codec: Arc<dyn LogicalExtensionCodec>,
+) -> Result<SocketAddr> {
     let metrics_collector = default_metrics_collector()?;
 
     let cluster = BallistaCluster::new_memory("standalone", default_session_builder);
@@ -40,7 +48,7 @@ pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
         SchedulerServer::new(
             "localhost:50050".to_owned(),
             cluster,
-            BallistaCodec::default(),
+            BallistaCodec::new(logical_codec, physical_codec),
             SchedulerConfig::default(),
             metrics_collector,
         );
@@ -63,4 +71,12 @@ pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
     );
 
     Ok(addr)
+}
+
+pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
+    new_standalone_scheduler_with_codec(
+        Arc::new(BallistaPhysicalExtensionCodec {}),
+        Arc::new(DefaultLogicalExtensionCodec {}),
+    )
+    .await
 }

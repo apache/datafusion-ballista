@@ -1,0 +1,37 @@
+[package]
+name = "ballista-tests"
+description = "Ballista Distributed Compute - Tests"
+license = "Apache-2.0"
+version = "0.11.0"
+homepage = "https://github.com/apache/arrow-ballista"
+repository = "https://github.com/apache/arrow-ballista"
+readme = "README.md"
+authors = ["Apache Arrow <dev@arrow.apache.org>"]
+edition = "2018"
+
+[dependencies]
+ballista-executor = { path = "../executor", version = "0.11.0" }
+ballista-scheduler = { path = "../scheduler", version = "0.11.0" }
+ballista-core = { path = "../core", version = "0.11.0" }
+ballista = { path = "../client", version = "0.11.0" }
+
+tokio = { version = "1.0", features = ["full"] }
+lazy_static = "1.4"
+anyhow = "1"
+datafusion.workspace = true
+async-trait = "0.1.41"
+futures = "0.3"
+datafusion-proto.workspace = true
+tonic = "0.8"
+prost = "0.11"
+prost-types = "0.11"
+env_logger = "0.10"
+
+[build-dependencies]
+rustc_version = "0.4.0"
+tonic-build = { version = "0.8", default-features = false, features = [
+    "transport",
+    "prost",
+] }
+prost-build = { version = "0.11" }
+anyhow = "1"

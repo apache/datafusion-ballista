@@ -1,0 +1,10 @@
+proto_outdir = "../src/proto"
+
+[[dependencies]]
+target = "github.com/googleapis/api-common-protos"
+protocol = "ssh"
+
+[[dependencies]]
+target = "github.com/protocolbuffers/protobuf/src"
+protocol = "ssh"
+revision = "v3.21.12"

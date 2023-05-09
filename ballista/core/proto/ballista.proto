@@ -87,6 +87,7 @@ message ExecutionGraph {
   uint64 start_time = 11;
   uint64 end_time = 12;
   uint64 queued_at = 13;
+  bool circuit_breaker_tripped = 14;
 }
 
 message StageAttempts {
@@ -531,6 +532,7 @@ message SuccessfulJob {
   uint64 queued_at = 2;
   uint64 started_at = 3;
   uint64 ended_at = 4;
+  bool circuit_breaker_tripped = 5;
 }
 
 message QueuedJob {
@@ -921,6 +923,32 @@ message RunningTaskInfo {
   uint32 stage_id = 3;
 }
 
+message CircuitBreakerKey {
+  string job_id = 1;
+  uint32 stage_id = 2;
+  uint32 attempt_num = 3;
+  uint32 partition = 4;
+  string node_id = 5;
+  string task_id = 6;
+}
+
+message CircuitBreakerUpdateRequest {
+  repeated CircuitBreakerUpdate updates = 1;
+}
+
+message CircuitBreakerUpdate {
+  CircuitBreakerKey key = 1;
+  double percent = 2;
+}
+
+message CircuitBreakerUpdateResponse {
+  repeated CircuitBreakerCommand commands = 1;
+}
+
+message CircuitBreakerCommand {
+  CircuitBreakerKey key = 1;
+}
+
 service SchedulerGrpc {
   // Executors must poll the scheduler for heartbeat and to receive tasks
   rpc PollWork(PollWorkParams) returns (PollWorkResult) {}
@@ -945,6 +973,8 @@ service SchedulerGrpc {
   rpc CancelJob(CancelJobParams) returns (CancelJobResult) {}
 
   rpc CleanJobData(CleanJobDataParams) returns (CleanJobDataResult) {}
+
+  rpc SendCircuitBreakerUpdate(CircuitBreakerUpdateRequest) returns (CircuitBreakerUpdateResponse) {}
 }
 
 service ExecutorGrpc {

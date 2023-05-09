@@ -130,6 +130,7 @@ pub struct ExecutionGraph {
     /// Failed stage attempts, record the failed stage attempts to limit the retry times.
     /// Map from Stage ID -> Set<Stage_ATTPMPT_NUM>
     failed_stage_attempts: HashMap<usize, HashSet<usize>>,
+    pub(crate) circuit_breaker_tripped: bool,
 }
 
 #[derive(Clone)]
@@ -183,6 +184,7 @@ impl ExecutionGraph {
             output_locations: vec![],
             task_id_gen: 0,
             failed_stage_attempts: HashMap::new(),
+            circuit_breaker_tripped: false,
         })
     }
 
@@ -1287,6 +1289,7 @@ impl ExecutionGraph {
             .collect::<Result<Vec<_>>>()?;
 
         self.end_time = timestamp_millis();
+
         self.status = JobStatus {
             job_id: self.job_id.clone(),
             job_name: self.job_name.clone(),
@@ -1296,6 +1299,7 @@ impl ExecutionGraph {
                 queued_at: self.queued_at,
                 started_at: self.start_time,
                 ended_at: self.end_time,
+                circuit_breaker_tripped: self.circuit_breaker_tripped,
             })),
         };
 
@@ -1385,6 +1389,7 @@ impl ExecutionGraph {
             output_locations,
             task_id_gen: proto.task_id_gen as usize,
             failed_stage_attempts,
+            circuit_breaker_tripped: proto.circuit_breaker_tripped,
         })
     }
 
@@ -1461,6 +1466,7 @@ impl ExecutionGraph {
             scheduler_id: graph.scheduler_id.unwrap_or_default(),
             task_id_gen: graph.task_id_gen as u32,
             failed_attempts,
+            circuit_breaker_tripped: graph.circuit_breaker_tripped,
         })
     }
 }
@@ -1473,8 +1479,8 @@ impl Debug for ExecutionGraph {
             .map(|stage| format!("{stage:?}"))
             .collect::<Vec<String>>()
             .join("");
-        write!(f, "ExecutionGraph[job_id={}, session_id={}, available_tasks={}, is_successful={}]\n{}",
-               self.job_id, self.session_id, self.available_tasks(), self.is_successful(), stages)
+        write!(f, "ExecutionGraph[job_id={}, session_id={}, available_tasks={}, is_successful={}, circuit_breaker_tripped={}]\n{}",
+               self.job_id, self.session_id, self.available_tasks(), self.is_successful(), self.circuit_breaker_tripped, stages)
     }
 }
 

@@ -1,0 +1,6 @@
+syntax = "proto3";
+
+message TestTable {
+	uint64 parallelism = 1;
+	uint64 global_limit = 2;
+}
