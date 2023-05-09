@@ -384,8 +384,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         for (k, v) in task_props {
             config.set(&k, &v)?;
         }
+
+        let job_id = task.job_id;
+        let stage_id = task.stage_id;
+        let attempt = task.stage_attempt_num;
+
+        let circuit_breaker_metadata = CircuitBreakerMetadataExtension {
+            job_id: job_id.clone(),
+            stage_id: stage_id as u32,
+            attempt_number: attempt as u32,
+        };
+
         let session_config = SessionConfig::from(config)
-            .with_extension(self.circuit_breaker_client.clone());
+            .with_extension(self.circuit_breaker_client.clone())
+            .with_extension(Arc::new(circuit_breaker_metadata));
 
         self.circuit_breaker_client
             .register_scheduler(task_identity.to_owned(), scheduler_id.clone())?;
@@ -418,9 +430,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         )?;
 
         let task_id = task.task_id;
-        let job_id = task.job_id;
-        let stage_id = task.stage_id;
-        let stage_attempt_num = task.stage_attempt_num;
         let partitions = task.partitions;
 
         info!("Start to execute shuffle write for task {}", task_identity);
@@ -464,7 +473,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             stage_id,
             task_id,
             partitions,
-            stage_attempt_num,
+            attempt,
             Some(operator_metrics),
             task_execution_times,
         );
