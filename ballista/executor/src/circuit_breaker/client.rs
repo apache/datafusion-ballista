@@ -89,9 +89,15 @@ struct CircuitBreakerRegistration {
 }
 
 #[derive(Debug)]
+struct CircuitBreakerDeregistration {
+    key: CircuitBreakerKey,
+}
+
+#[derive(Debug)]
 enum ClientUpdate {
     Create(CircuitBreakerRegistration),
     Update(CircuitBreakerUpdate),
+    Delete(CircuitBreakerDeregistration),
     SchedulerRegistration(SchedulerRegistration),
     SchedulerDeregistration(SchedulerDeregistration),
 }
@@ -123,6 +129,13 @@ impl CircuitBreakerClient {
         };
 
         let update = ClientUpdate::Create(registration);
+        self.update_sender.try_send(update).map_err(|e| e.into())
+    }
+
+    pub fn deregister(&self, key: CircuitBreakerKey) -> Result<(), Error> {
+        let deregistration = CircuitBreakerDeregistration { key };
+
+        let update = ClientUpdate::Delete(deregistration);
         self.update_sender.try_send(update).map_err(|e| e.into())
     }
 
@@ -184,6 +197,7 @@ impl CircuitBreakerClient {
         while let Some(combined_received) = updates_stream.next().await {
             let mut updates = Vec::new();
             let mut scheduler_deregistrations = Vec::new();
+            let mut deregistrations = Vec::new();
 
             for update in combined_received {
                 match update {
@@ -193,6 +207,9 @@ impl CircuitBreakerClient {
                         };
 
                         state_per_task.insert(register.key, state);
+                    }
+                    ClientUpdate::Delete(deregistration) => {
+                        deregistrations.push(deregistration);
                     }
                     ClientUpdate::Update(update) => {
                         updates.push(update);
@@ -284,6 +301,10 @@ impl CircuitBreakerClient {
 
             for deregistration in scheduler_deregistrations {
                 scheduler_ids.remove(&deregistration.task_id);
+            }
+
+            for deregistration in deregistrations {
+                state_per_task.remove(&deregistration.key);
             }
         }
     }

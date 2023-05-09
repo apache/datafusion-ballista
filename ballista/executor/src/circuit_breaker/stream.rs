@@ -3,12 +3,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use anyhow::Error;
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::RecordBatch;
 use datafusion::error::Result;
 use datafusion::physical_plan::RecordBatchStream;
 use futures::{Stream, StreamExt};
-use tracing::warn;
+use tracing::{error, warn};
 
 use super::client::{CircuitBreakerClient, CircuitBreakerKey};
 
@@ -27,10 +28,12 @@ impl CircuitBreakerStream {
         inner: Pin<Box<dyn RecordBatchStream + Send>>,
         calculate: Arc<dyn Fn(&RecordBatch) -> f64 + Sync + Send>,
         key: CircuitBreakerKey,
-        circuit_breaker: Arc<AtomicBool>,
         client: Arc<CircuitBreakerClient>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, Error> {
+        let circuit_breaker = Arc::new(AtomicBool::new(false));
+        client.register(key.clone(), circuit_breaker.clone())?;
+
+        Ok(Self {
             inner,
             calculate,
             key,
@@ -38,6 +41,14 @@ impl CircuitBreakerStream {
             is_lagging: false,
             circuit_breaker,
             client,
+        })
+    }
+}
+
+impl Drop for CircuitBreakerStream {
+    fn drop(&mut self) {
+        if let Err(e) = self.client.deregister(self.key.clone()) {
+            error!("Failed to deregister circuit breaker: {:?}", e);
         }
     }
 }

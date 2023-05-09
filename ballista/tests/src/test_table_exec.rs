@@ -22,7 +22,6 @@ use futures::Stream;
 use std::any::Any;
 use std::convert::TryFrom;
 use std::pin::Pin;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
@@ -112,8 +111,6 @@ impl ExecutionPlan for TestTableExec {
         {
             let boxed: Pin<Box<dyn RecordBatchStream + Send>> = Box::pin(stream);
 
-            let circuit_breaker = Arc::new(AtomicBool::new(false));
-
             let key = CircuitBreakerKey {
                 task_id: task_id.clone(),
                 partition: partition as u32,
@@ -123,23 +120,15 @@ impl ExecutionPlan for TestTableExec {
                 node_id: "test_table_exec".to_owned(),
             };
 
-            client
-                .register(key.clone(), circuit_breaker.clone())
-                .map_err(|e| DataFusionError::Execution(e.to_string()))?;
-
             let limit = self.global_limit.clone();
 
             let calc = move |f: &RecordBatch| f.num_rows() as f64 / limit as f64;
 
             let arc = Arc::new(calc);
 
-            let limited_stream = CircuitBreakerStream::new(
-                boxed,
-                arc,
-                key,
-                circuit_breaker,
-                client.clone(),
-            );
+            let limited_stream =
+                CircuitBreakerStream::new(boxed, arc, key, client.clone())
+                    .map_err(|e| DataFusionError::Execution(e.to_string()))?;
 
             return Ok(Box::pin(limited_stream));
         }
