@@ -49,10 +49,12 @@ datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 futures = "0.3"
 hyper = "0.14.4"
+lazy_static = "1.4.0"
 log = "0.4"
 mimalloc = { version = "0.1", default-features = false, optional = true }
 num_cpus = "1.13.0"
 parking_lot = "0.12"
+prometheus = { version = "0.13", features = ["process"] }
 tempfile = "3"
 tokio = { version = "1.0", features = [
     "macros",

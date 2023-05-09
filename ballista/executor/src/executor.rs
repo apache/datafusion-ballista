@@ -32,9 +32,40 @@ use datafusion::physical_plan::udaf::AggregateUDF;
 use datafusion::physical_plan::udf::ScalarUDF;
 use datafusion::physical_plan::Partitioning;
 use futures::future::AbortHandle;
+use lazy_static::lazy_static;
+use prometheus::{
+    register_histogram, register_int_gauge, Histogram, HistogramTimer, IntGauge,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::watch;
+
+lazy_static! {
+    static ref ACTIVE_TASKS: IntGauge =
+        register_int_gauge!("active_task_count", "Number of currently active tasks")
+            .unwrap();
+    static ref TASK_DURATION: Histogram = register_histogram!(
+        "task_duration_seconds",
+        "Histogram of executor task duration in seconds",
+        vec![0.5_f64, 1_f64, 5_f64, 30_f64, 60_f64, 120_f64, 180_f64, 240_f64, 300_f64],
+    )
+    .unwrap();
+}
+
+struct ActiveTaskMetricGuard(usize, HistogramTimer);
+
+impl ActiveTaskMetricGuard {
+    fn new(partitions: usize) -> Self {
+        ACTIVE_TASKS.add(partitions as i64);
+        Self(partitions, TASK_DURATION.start_timer())
+    }
+}
+
+impl Drop for ActiveTaskMetricGuard {
+    fn drop(&mut self) {
+        ACTIVE_TASKS.sub(self.0 as i64);
+    }
+}
 
 /// Map from (Job ID, task ID) -> AbortHandle for running task
 type AbortHandles = Arc<DashMap<(String, usize), AbortHandle>>;
@@ -141,6 +172,8 @@ impl Executor {
         task_ctx: Arc<TaskContext>,
         _shuffle_output_partitioning: Option<Partitioning>,
     ) -> Result<Vec<protobuf::ShuffleWritePartition>, BallistaError> {
+        let _metric_guard = ActiveTaskMetricGuard::new(partitions.len());
+
         let (task, abort_handle) = futures::future::abortable(
             query_stage_exec.execute_query_stage(partitions.to_vec(), task_ctx),
         );

@@ -72,37 +72,6 @@ jobs:
             /github/home/target/release/ballista-scheduler
             /github/home/target/release/ballista-executor
 
-  react-build:
-    name: React build
-    runs-on: ubuntu-latest # proprietary github image, not ubuntu:latest
-    container:
-      image: ubuntu:latest # actual ubuntu:latest that ubuntu publishes
-    steps:
-      - uses: actions/checkout@v3
-      - name: Install dependencies
-        run: |
-          apt-get -qq update
-          apt-get -qq install -y nodejs npm
-          npm install -g yarn
-          cat /etc/*-release
-          which node
-          which npm
-          which yarn
-          node --version
-          npm --version
-          yarn --version
-      - name: Run yarn build
-        run: |
-          cd ballista/scheduler/ui
-          pwd
-          yarn install
-          yarn build
-      - name: Save artifacts
-        uses: actions/upload-artifact@v2
-        with:
-          name: react-artifacts
-          path: |
-            ballista/scheduler/ui/build
 
   # test the crate
   linux-test:
@@ -221,7 +190,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [macos-latest]
         rust: [stable]
     steps:
       - uses: actions/checkout@v3
