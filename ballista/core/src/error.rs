@@ -19,19 +19,19 @@
 
 use std::{
     error::Error,
-    fmt::{Display, Formatter},
+    fmt::{self, Display, Formatter},
     io, result,
 };
 
 use crate::serde::protobuf::{
-    failed_job::{
+    execution_error::{
         self, arrow_error,
         datafusion_error::{self, parquet_error, schema_error},
         General, Internal, NotImplemented,
     },
     failed_task::FailedReason,
+    ExecutionError, FailedTask, FetchPartitionError, IoError,
 };
-use crate::serde::protobuf::{ExecutionError, FailedTask, FetchPartitionError, IoError};
 use datafusion::arrow::error::ArrowError;
 use datafusion::error::DataFusionError;
 use itertools::Itertools;
@@ -151,38 +151,38 @@ impl From<futures::future::Aborted> for BallistaError {
     }
 }
 
-impl From<&ParserError> for failed_job::parser_error::Error {
+impl From<&ParserError> for execution_error::parser_error::Error {
     fn from(value: &ParserError) -> Self {
         match value {
             parser::ParserError::TokenizerError(message) => {
-                failed_job::parser_error::Error::TokenizerError(
-                    failed_job::parser_error::TokenizerError {
+                execution_error::parser_error::Error::TokenizerError(
+                    execution_error::parser_error::TokenizerError {
                         message: message.clone(),
                     },
                 )
             }
             parser::ParserError::ParserError(message) => {
-                failed_job::parser_error::Error::ParserError(
-                    failed_job::parser_error::ParserError {
+                execution_error::parser_error::Error::ParserError(
+                    execution_error::parser_error::ParserError {
                         message: message.clone(),
                     },
                 )
             }
             parser::ParserError::RecursionLimitExceeded => {
-                failed_job::parser_error::Error::RecursionLimitExceeded(
-                    failed_job::parser_error::RecursionLimitExceeded {},
+                execution_error::parser_error::Error::RecursionLimitExceeded(
+                    execution_error::parser_error::RecursionLimitExceeded {},
                 )
             }
         }
     }
 }
 
-impl From<&DataFusionError> for failed_job::datafusion_error::Error {
+impl From<&DataFusionError> for execution_error::datafusion_error::Error {
     fn from(value: &DataFusionError) -> Self {
         match value {
             DataFusionError::ArrowError(error) => {
                     datafusion_error::Error::ArrowError(
-                            failed_job::ArrowError {
+                            execution_error::ArrowError {
                                 error: Some(error.into()),
                             },
                         )
@@ -190,7 +190,7 @@ impl From<&DataFusionError> for failed_job::datafusion_error::Error {
             DataFusionError::ParquetError(err) => match err {
                 datafusion::parquet::errors::ParquetError::General(message) => {
                     datafusion_error::Error::ParquetError(
-                            failed_job::datafusion_error::ParquetError {
+                            execution_error::datafusion_error::ParquetError {
                                 error: Some(parquet_error::Error::General(
                                     parquet_error::General { message: message.clone() },
                                 )),
@@ -199,7 +199,7 @@ impl From<&DataFusionError> for failed_job::datafusion_error::Error {
                 }
                 datafusion::parquet::errors::ParquetError::NYI(message) => {
                     datafusion_error::Error::ParquetError(
-                            failed_job::datafusion_error::ParquetError {
+                            execution_error::datafusion_error::ParquetError {
                                 error: Some(parquet_error::Error::NotYetImplemented(
                                     parquet_error::NotYetImplemented { message: message.clone() },
                                 )),
@@ -208,7 +208,7 @@ impl From<&DataFusionError> for failed_job::datafusion_error::Error {
                 }
                 datafusion::parquet::errors::ParquetError::EOF(message) => {
                     datafusion_error::Error::ParquetError(
-                            failed_job::datafusion_error::ParquetError {
+                            execution_error::datafusion_error::ParquetError {
                                 error: Some(parquet_error::Error::Eof(
                                     parquet_error::Eof { message: message.clone() },
                                 )),
@@ -217,7 +217,7 @@ impl From<&DataFusionError> for failed_job::datafusion_error::Error {
                 }
                 datafusion::parquet::errors::ParquetError::ArrowError(message) => {
                     datafusion_error::Error::ParquetError(
-                            failed_job::datafusion_error::ParquetError {
+                            execution_error::datafusion_error::ParquetError {
                                 error: Some(parquet_error::Error::ArrowError(
                                     parquet_error::ArrowError { message: message.clone() },
                                 )),
@@ -229,7 +229,7 @@ impl From<&DataFusionError> for failed_job::datafusion_error::Error {
                     bound,
                 ) => {
                     datafusion_error::Error::ParquetError(
-                            failed_job::datafusion_error::ParquetError {
+                            execution_error::datafusion_error::ParquetError {
                                 error: Some(parquet_error::Error::IndexOutOfBound(
                                     parquet_error::IndexOutOfBound {
                                         index: *index as u32,
@@ -241,7 +241,7 @@ impl From<&DataFusionError> for failed_job::datafusion_error::Error {
                 }
                 datafusion::parquet::errors::ParquetError::External(message) => {
                     datafusion_error::Error::ParquetError(
-                        failed_job::datafusion_error::ParquetError {
+                        execution_error::datafusion_error::ParquetError {
                             error: Some(parquet_error::Error::External(
                                 parquet_error::External { message: message.to_string() },
                             )),
@@ -252,9 +252,9 @@ impl From<&DataFusionError> for failed_job::datafusion_error::Error {
             DataFusionError::ObjectStore(err) => match err {
                 object_store::Error::Generic { store, source } => {
                     datafusion_error::Error::ObjectStore(
-                            failed_job::datafusion_error::ObjectStore {
-                                error: Some(failed_job::datafusion_error::object_store::Error::Generic(
-                                    failed_job::datafusion_error::object_store::Generic {
+                            execution_error::datafusion_error::ObjectStore {
+                                error: Some(execution_error::datafusion_error::object_store::Error::Generic(
+                                    execution_error::datafusion_error::object_store::Generic {
                                         store: store.to_string(),
                                         source: source.to_string(),
                                     },
@@ -263,9 +263,9 @@ impl From<&DataFusionError> for failed_job::datafusion_error::Error {
                         )
                 }
                 object_store::Error::NotFound { path, source } => datafusion_error::Error::ObjectStore(
-                        failed_job::datafusion_error::ObjectStore {
-                            error: Some(failed_job::datafusion_error::object_store::Error::NotFound(
-                                failed_job::datafusion_error::object_store::NotFound {
+                        execution_error::datafusion_error::ObjectStore {
+                            error: Some(execution_error::datafusion_error::object_store::Error::NotFound(
+                                execution_error::datafusion_error::object_store::NotFound {
                                     path: path.clone(),
                                     source: source.to_string(),
                                 },
@@ -273,36 +273,36 @@ impl From<&DataFusionError> for failed_job::datafusion_error::Error {
                         },
                     ),
                 object_store::Error::InvalidPath { source } => datafusion_error::Error::ObjectStore(
-                        failed_job::datafusion_error::ObjectStore {
-                            error: Some(failed_job::datafusion_error::object_store::Error::InvalidPath(
-                                failed_job::datafusion_error::object_store::InvalidPath {
+                        execution_error::datafusion_error::ObjectStore {
+                            error: Some(execution_error::datafusion_error::object_store::Error::InvalidPath(
+                                execution_error::datafusion_error::object_store::InvalidPath {
                                     source: source.to_string(),
                                 },
                             )),
                         },
                     ),
                 object_store::Error::JoinError { source } => datafusion_error::Error::ObjectStore(
-                        failed_job::datafusion_error::ObjectStore {
-                            error: Some(failed_job::datafusion_error::object_store::Error::JoinError(
-                                failed_job::datafusion_error::object_store::JoinError {
+                        execution_error::datafusion_error::ObjectStore {
+                            error: Some(execution_error::datafusion_error::object_store::Error::JoinError(
+                                execution_error::datafusion_error::object_store::JoinError {
                                     source: source.to_string(),
                                 },
                             )),
                         },
                     ),
                 object_store::Error::NotSupported { source } => datafusion_error::Error::ObjectStore(
-                        failed_job::datafusion_error::ObjectStore {
-                            error: Some(failed_job::datafusion_error::object_store::Error::NotSupported(
-                                failed_job::datafusion_error::object_store::NotSupported{
+                        execution_error::datafusion_error::ObjectStore {
+                            error: Some(execution_error::datafusion_error::object_store::Error::NotSupported(
+                                execution_error::datafusion_error::object_store::NotSupported{
                                     source: source.to_string(),
                                 },
                             )),
                         },
                     ),
                 object_store::Error::AlreadyExists { path, source } => datafusion_error::Error::ObjectStore(
-                        failed_job::datafusion_error::ObjectStore {
-                            error: Some(failed_job::datafusion_error::object_store::Error::AlreadyExists(
-                                failed_job::datafusion_error::object_store::AlreadyExists {
+                        execution_error::datafusion_error::ObjectStore {
+                            error: Some(execution_error::datafusion_error::object_store::Error::AlreadyExists(
+                                execution_error::datafusion_error::object_store::AlreadyExists {
                                     path: path.clone(),
                                     source: source.to_string(),
                                 },
@@ -310,17 +310,17 @@ impl From<&DataFusionError> for failed_job::datafusion_error::Error {
                         },
                     ),
                 object_store::Error::NotImplemented => datafusion_error::Error::ObjectStore(
-                        failed_job::datafusion_error::ObjectStore {
-                            error: Some(failed_job::datafusion_error::object_store::Error::NotImplemented(
-                                failed_job::datafusion_error::object_store::NotImplemented {
+                        execution_error::datafusion_error::ObjectStore {
+                            error: Some(execution_error::datafusion_error::object_store::Error::NotImplemented(
+                                execution_error::datafusion_error::object_store::NotImplemented {
                                 },
                             )),
                         },
                     ),
                 object_store::Error::UnknownConfigurationKey { store, key } => datafusion_error::Error::ObjectStore(
-                        failed_job::datafusion_error::ObjectStore {
-                            error: Some(failed_job::datafusion_error::object_store::Error::UnknownConfigurationKey(
-                                failed_job::datafusion_error::object_store::UnknownConfigurationKey {
+                        execution_error::datafusion_error::ObjectStore {
+                            error: Some(execution_error::datafusion_error::object_store::Error::UnknownConfigurationKey(
+                                execution_error::datafusion_error::object_store::UnknownConfigurationKey {
                                     store: store.to_string(), key: key.clone()
                                 },
                             )),
@@ -328,34 +328,34 @@ impl From<&DataFusionError> for failed_job::datafusion_error::Error {
                     )
             },
             DataFusionError::IoError(err) => datafusion_error::Error::IoError(
-                    failed_job::datafusion_error::IoError {
+                    execution_error::datafusion_error::IoError {
                         message: err.to_string()
                     },
                 ),
             DataFusionError::SQL(error) => {
                 datafusion_error::Error::ParserError(
-                        failed_job::ParserError { error: Some(error.into())},
+                        execution_error::ParserError { error: Some(error.into())},
                     )
             },
             DataFusionError::NotImplemented(message) => datafusion_error::Error::NotImplemented(
-                    failed_job::datafusion_error::NotImplemented {
+                    execution_error::datafusion_error::NotImplemented {
                         message: message.clone()
                     },
                 ),
             DataFusionError::Internal(message) => datafusion_error::Error::Internal(
-                    failed_job::datafusion_error::Internal {
+                    execution_error::datafusion_error::Internal {
                         message: message.clone()
                     },
                 ),
             DataFusionError::Plan(message) => datafusion_error::Error::Plan(
-                    failed_job::datafusion_error::Plan {
+                    execution_error::datafusion_error::Plan {
                         message: message.clone()
                     },
                 ),
             DataFusionError::SchemaError(err) => match err {
                 datafusion::common::SchemaError::AmbiguousReference { field } => {
                     datafusion_error::Error::SchemaError(
-                            failed_job::datafusion_error::SchemaError {
+                            execution_error::datafusion_error::SchemaError {
                                 error: Some(schema_error::Error::AmbiguousReference(
                                     schema_error::AmbiguousReference {
                                         qualifier: field.relation.as_ref().map(|r| r.to_string()),
@@ -367,7 +367,7 @@ impl From<&DataFusionError> for failed_job::datafusion_error::Error {
                 },
                 datafusion::common::SchemaError::DuplicateQualifiedField { qualifier, name } => {
                     datafusion_error::Error::SchemaError(
-                            failed_job::datafusion_error::SchemaError {
+                            execution_error::datafusion_error::SchemaError {
                                 error: Some(schema_error::Error::DuplicateQualifiedField(
                                     schema_error::DuplicateQualifiedField {
                                         qualifier: qualifier.as_ref().to_string(),
@@ -379,7 +379,7 @@ impl From<&DataFusionError> for failed_job::datafusion_error::Error {
                 },
                 datafusion::common::SchemaError::DuplicateUnqualifiedField { name } => {
                     datafusion_error::Error::SchemaError(
-                            failed_job::datafusion_error::SchemaError {
+                            execution_error::datafusion_error::SchemaError {
                                 error: Some(schema_error::Error::DuplicateUnqualifiedField(
                                     schema_error::DuplicateUnqualifiedField {
                                         name: name.clone()
@@ -390,7 +390,7 @@ impl From<&DataFusionError> for failed_job::datafusion_error::Error {
                 },
                 datafusion::common::SchemaError::FieldNotFound { field, valid_fields } => {
                     datafusion_error::Error::SchemaError(
-                            failed_job::datafusion_error::SchemaError {
+                            execution_error::datafusion_error::SchemaError {
                                 error: Some(schema_error::Error::FieldNotFound(
                                     schema_error::FieldNotFound {
                                         field: field.flat_name(),
@@ -402,25 +402,25 @@ impl From<&DataFusionError> for failed_job::datafusion_error::Error {
                 },
             },
             DataFusionError::Execution(message) => datafusion_error::Error::Execution(
-                    failed_job::datafusion_error::Execution {
+                    execution_error::datafusion_error::Execution {
                         message: message.clone()
                     },
                 ),
             DataFusionError::ResourcesExhausted(message) => datafusion_error::Error::ResourcesExhausted(
-                    failed_job::datafusion_error::ResourcesExhausted {
+                    execution_error::datafusion_error::ResourcesExhausted {
                         message: message.clone()
                     },
                 ),
             DataFusionError::External(message) => datafusion_error::Error::External(
-                    failed_job::datafusion_error::External {
+                    execution_error::datafusion_error::External {
                         message: message.to_string()
                     },
                 ),
             DataFusionError::Context(ctx, error) => datafusion_error::Error::Context(
-                    Box::new(failed_job::datafusion_error::Context {
+                    Box::new(execution_error::datafusion_error::Context {
                         ctx: ctx.clone(),
                         error: Some(Box::new(
-                            failed_job::DatafusionError { error: Some(error.as_ref().into()) }
+                            execution_error::DatafusionError { error: Some(error.as_ref().into()) }
                         )),
                     })
                 ),
@@ -429,7 +429,7 @@ impl From<&DataFusionError> for failed_job::datafusion_error::Error {
     }
 }
 
-impl From<&ArrowError> for failed_job::arrow_error::Error {
+impl From<&ArrowError> for execution_error::arrow_error::Error {
     fn from(value: &ArrowError) -> Self {
         match value {
             ArrowError::NotYetImplemented(message) => {
@@ -516,74 +516,82 @@ impl From<&ArrowError> for failed_job::arrow_error::Error {
     }
 }
 
-impl From<&BallistaError> for failed_job::Error {
+impl From<&BallistaError> for execution_error::Error {
     fn from(value: &BallistaError) -> Self {
         match value {
             BallistaError::NotImplemented(message) => {
-                failed_job::Error::NotImplemented(NotImplemented {
+                execution_error::Error::NotImplemented(NotImplemented {
                     message: message.clone(),
                 })
             }
-            BallistaError::General(message) => failed_job::Error::General(General {
+            BallistaError::General(message) => execution_error::Error::General(General {
                 message: message.clone(),
             }),
-            BallistaError::Internal(message) => failed_job::Error::Internal(Internal {
-                message: message.clone(),
-            }),
+            BallistaError::Internal(message) => {
+                execution_error::Error::Internal(Internal {
+                    message: message.clone(),
+                })
+            }
             BallistaError::ArrowError(error) => {
-                failed_job::Error::ArrowError(failed_job::ArrowError {
+                execution_error::Error::ArrowError(execution_error::ArrowError {
                     error: Some(error.into()),
                 })
             }
             BallistaError::DataFusionError(error) => {
-                failed_job::Error::DatafusionError(failed_job::DatafusionError {
-                    error: Some(error.into()),
-                })
+                execution_error::Error::DatafusionError(
+                    execution_error::DatafusionError {
+                        error: Some(error.into()),
+                    },
+                )
             }
             BallistaError::SqlError(error) => {
-                failed_job::Error::SqlError(failed_job::SqlError {
-                    error: Some(failed_job::ParserError {
+                execution_error::Error::SqlError(execution_error::SqlError {
+                    error: Some(execution_error::ParserError {
                         error: Some(error.into()),
                     }),
                 })
             }
             BallistaError::IoError(error) => {
-                failed_job::Error::IoError(failed_job::IoError {
+                execution_error::Error::IoError(execution_error::IoError {
                     message: error.to_string(),
                 })
             }
             BallistaError::TonicError(error) => {
-                failed_job::Error::TonicError(failed_job::TonicError {
+                execution_error::Error::TonicError(execution_error::TonicError {
                     message: error.to_string(),
                 })
             }
             BallistaError::GrpcError(status) => {
-                failed_job::Error::GrpcError(failed_job::GrpcError {
+                execution_error::Error::GrpcError(execution_error::GrpcError {
                     message: status.message().to_string(),
                     code: status.code() as i32,
                 })
             }
             BallistaError::GrpcConnectionError(message) => {
-                failed_job::Error::GrpcConnectionError(failed_job::GrpcConnectionError {
-                    message: message.clone(),
-                })
+                execution_error::Error::GrpcConnectionError(
+                    execution_error::GrpcConnectionError {
+                        message: message.clone(),
+                    },
+                )
             }
             BallistaError::TokioError(error) => {
-                failed_job::Error::TokioError(failed_job::TokioError {
+                execution_error::Error::TokioError(execution_error::TokioError {
                     message: error.to_string(),
                 })
             }
             BallistaError::GrpcActionError(message) => {
-                failed_job::Error::GrpcActiveError(failed_job::GrpcActionError {
-                    message: message.to_string(),
-                })
+                execution_error::Error::GrpcActiveError(
+                    execution_error::GrpcActionError {
+                        message: message.to_string(),
+                    },
+                )
             }
             BallistaError::FetchFailed(
                 executor_id,
                 map_stage_id,
                 map_partition_id,
                 message,
-            ) => failed_job::Error::FetchFailed(failed_job::FetchFailed {
+            ) => execution_error::Error::FetchFailed(execution_error::FetchFailed {
                 executor_id: executor_id.clone(),
                 map_stage_id: *map_stage_id as u32,
                 map_partition_id: map_partition_id
@@ -593,7 +601,7 @@ impl From<&BallistaError> for failed_job::Error {
                 message: message.clone(),
             }),
             BallistaError::Cancelled => {
-                failed_job::Error::Cancelled(failed_job::Cancelled {})
+                execution_error::Error::Cancelled(execution_error::Cancelled {})
             }
         }
     }
@@ -636,6 +644,304 @@ impl Display for BallistaError {
     }
 }
 
+impl Display for execution_error::datafusion_error::ParquetError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.error.as_ref() {
+                Some(t) => match t {
+                    execution_error::datafusion_error::parquet_error::Error::General(error) => {
+                        write!(f, "DatafusionError/ParquetError/General: {}", error.message)
+                    }
+                    execution_error::datafusion_error::parquet_error::Error::NotYetImplemented(
+                        error,
+                    ) => {
+                        write!(f,
+                            "DatafusionError/ParquetError/NotYetImplemented: {}",
+                            error.message
+                        )
+                    }
+                    execution_error::datafusion_error::parquet_error::Error::Eof(error) => {
+                        write!(f,"DatafusionError/ParquetError/Eof: {}", error.message)
+                    }
+                    execution_error::datafusion_error::parquet_error::Error::ArrowError(error) => {
+                        write!(f,"DatafusionError/ParquetError/ArrowError: {}", error.message)
+                    }
+                    execution_error::datafusion_error::parquet_error::Error::IndexOutOfBound(
+                        error,
+                    ) => write!(f,
+                        "DatafusionError/ParquetError/IndexOutOfBound [index: {}, bound: {}]",
+                        error.index, error.bound
+                    ),
+                    execution_error::datafusion_error::parquet_error::Error::External(error) => {
+                        write!(f,"DatafusionError/ParquetError/External: {}", error.message)
+                    }
+                },
+                None => write!(f, "DatafusionError/ParquetError no detailed error provided"),
+            }
+    }
+}
+
+impl Display for execution_error::datafusion_error::SchemaError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.error.as_ref() {
+                Some(t) => match t {
+                    execution_error::datafusion_error::schema_error::Error::AmbiguousReference(error) => write!(f,"DatafusionError/SchemaError/AmbiguousReference [name: {}, qualifier: {:?}]", error.name, error.qualifier),
+                    execution_error::datafusion_error::schema_error::Error::DuplicateQualifiedField(error) => write!(f,"DatafusionError/SchemaError/DuplicateQualifiedField [name: {}, qualifier: {:?}]", error.name, error.qualifier),
+                    execution_error::datafusion_error::schema_error::Error::DuplicateUnqualifiedField(error) => write!(f,"DatafusionError/SchemaError/DuplicateUnqualifiedField: {}", error.name),
+                    execution_error::datafusion_error::schema_error::Error::FieldNotFound(error) => write!(f,"DatafusionError/SchemaError/FieldNotFound [field: {}, valid_fields: {:?}]", error.field, error.valid_fields),
+            },
+                None => write!(f, "DatafusionError/SchemaError no detailed error provided"),
+            }
+    }
+}
+
+impl Display for execution_error::datafusion_error::ObjectStore {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.error.as_ref() {
+                Some(t) => match t {
+                    execution_error::datafusion_error::object_store::Error::Generic(error) => write!(f,
+                        "DatafusionError/ObjectStoreError/Generic [store: {}, source: {}]",
+                        error.store, error.source
+                    ),
+                    execution_error::datafusion_error::object_store::Error::NotFound(error) => write!(f,
+                        "DatafusionError/ObjectStoreError/NotFound [path: {}, source: {}]",
+                        error.path, error.source
+                    ),
+                    execution_error::datafusion_error::object_store::Error::InvalidPath(error) => write!(f,
+                        "DatafusionError/ObjectStoreError/InvalidPath: {}",
+                        error.source
+                    ),
+                    execution_error::datafusion_error::object_store::Error::JoinError(error) => write!(f,
+                        "DatafusionError/ObjectStoreError/JoinError: {}",
+                        error.source
+                    ),
+                    execution_error::datafusion_error::object_store::Error::NotSupported(error) => write!(f,
+                        "DatafusionError/ObjectStoreError/NotSupported: {}",
+                        error.source
+                    ),
+                    execution_error::datafusion_error::object_store::Error::AlreadyExists(error) => write!(f,
+                        "DatafusionError/ObjectStoreError/AlreadyExists [path: {}, source: {}]",
+                        error.path, error.source
+                    ),
+                    execution_error::datafusion_error::object_store::Error::NotImplemented(_) => {
+                        write!(f, "DatafusionError/ObjectStoreError/NotImplemented")
+                    }
+                    execution_error::datafusion_error::object_store::Error::UnknownConfigurationKey(error) => {
+                        write!(f,
+                            "DatafusionError/ObjectStoreError/UnknownConfigurationKey [key: {}, store: {}]",
+                            error.key, error.store
+                        )
+                    }
+                },
+                None => write!(f, "DatafusionError/ObjectStoreError no detailed error provided"),
+    }
+    }
+}
+
+impl Display for execution_error::ArrowError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.error.as_ref() {
+            Some(e) => match e {
+                execution_error::arrow_error::Error::NotYetImplemented(error) => {
+                    write!(f, "NotYetImplemented: {}", error.message)
+                }
+                execution_error::arrow_error::Error::ExteranlError(error) => {
+                    write!(f, "ExteranlError: {}", error.message)
+                }
+                execution_error::arrow_error::Error::CastError(error) => {
+                    write!(f, "CastError: {}", error.message)
+                }
+                execution_error::arrow_error::Error::MemoryError(error) => {
+                    write!(f, "MemoryError: {}", error.message)
+                }
+                execution_error::arrow_error::Error::ParquetError(error) => {
+                    write!(f, "ParquetError: {}", error.message)
+                }
+                execution_error::arrow_error::Error::SchemaError(error) => {
+                    write!(f, "SchemaError: {}", error.message)
+                }
+                execution_error::arrow_error::Error::ComputeError(error) => {
+                    write!(f, "ComputeError: {}", error.message)
+                }
+                execution_error::arrow_error::Error::DivideByZero(_) => {
+                    write!(f, "DivideByZero")
+                }
+                execution_error::arrow_error::Error::CsvError(error) => {
+                    write!(f, "CsvError: {}", error.message)
+                }
+                execution_error::arrow_error::Error::JsonError(error) => {
+                    write!(f, "JsonError: {}", error.message)
+                }
+                execution_error::arrow_error::Error::IoError(error) => {
+                    write!(f, "IoError: {}", error.message)
+                }
+                execution_error::arrow_error::Error::InvalidArgumentError(error) => {
+                    write!(f, "InvalidArgumentError: {}", error.message)
+                }
+                execution_error::arrow_error::Error::CDataInterface(error) => {
+                    write!(f, "CDataInterface: {}", error.message)
+                }
+                execution_error::arrow_error::Error::DictionaryKeyOverflowError(_) => {
+                    write!(f, "DictionaryKeyOverflowError")
+                }
+                execution_error::arrow_error::Error::RunEndIndexOverflowError(_) => {
+                    write!(f, "RunEndIndexOverflowError")
+                }
+                execution_error::arrow_error::Error::ParseError(error) => {
+                    write!(f, "ParseError: {}", error.message)
+                }
+                execution_error::arrow_error::Error::SqlError(error) => {
+                    write!(f, "SqlError/{}", error)
+                }
+            },
+            None => write!(f, "Unknown"),
+        }
+    }
+}
+
+impl Display for execution_error::DatafusionError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.error.as_ref() {
+            Some(e) => match e {
+                execution_error::datafusion_error::Error::ArrowError(arrow_error) => {
+                    write!(f, "DatafusionError/ArrowError/{}", arrow_error)
+                }
+                execution_error::datafusion_error::Error::ParquetError(parquet_error) => {
+                    write!(f, "{}", parquet_error)
+                }
+                execution_error::datafusion_error::Error::AvroError(error) => {
+                    write!(f, "DatafusionError/AvroError: {}", error.message)
+                }
+                execution_error::datafusion_error::Error::ObjectStore(
+                    object_store_error,
+                ) => {
+                    write!(f, "{}", object_store_error)
+                }
+                execution_error::datafusion_error::Error::IoError(error) => {
+                    write!(f, "DatafusionError/IoError: {}", error.message)
+                }
+                execution_error::datafusion_error::Error::SqlError(error) => {
+                    write!(f, "DatafusionError/{}", error)
+                }
+                execution_error::datafusion_error::Error::NotImplemented(error) => {
+                    write!(f, "DatafusionError/NotImplemented: {}", error.message)
+                }
+                execution_error::datafusion_error::Error::Internal(error) => {
+                    write!(f, "DatafusionError/Internal: {}", error.message)
+                }
+                execution_error::datafusion_error::Error::Plan(error) => {
+                    write!(f, "DatafusionError/Plan: {}", error.message)
+                }
+                execution_error::datafusion_error::Error::SchemaError(schema_error) => {
+                    write!(f, "{}", schema_error)
+                }
+                execution_error::datafusion_error::Error::Execution(error) => {
+                    write!(f, "DatafusionError/Execution: {}", error.message)
+                }
+                execution_error::datafusion_error::Error::ResourcesExhausted(error) => {
+                    write!(f, "DatafusionError/ResourcesExhausted: {}", error.message)
+                }
+                execution_error::datafusion_error::Error::External(error) => {
+                    write!(f, "DatafusionError/External: {}", error.message)
+                }
+                execution_error::datafusion_error::Error::JitError(error) => {
+                    write!(f, "DatafusionError/JitError: {}", error.message)
+                }
+                execution_error::datafusion_error::Error::Context(error) => write!(
+                    f,
+                    "DatafusionError/Context [ctx: {}, error: {}]",
+                    error.ctx,
+                    error
+                        .error
+                        .as_ref()
+                        .map_or_else(String::default, |e| e.to_string())
+                ),
+                execution_error::datafusion_error::Error::Substrair(error) => {
+                    write!(f, "DatafusionError/Substrair: {}", error.message)
+                }
+                execution_error::datafusion_error::Error::ParserError(error) => {
+                    write!(f, "DatafusionError/{}", error)
+                }
+            },
+            _ => write!(f, "DatafusionError no detailed error provided"),
+        }
+    }
+}
+
+impl Display for execution_error::ParserError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.error.as_ref() {
+            Some(e) => match e {
+                execution_error::parser_error::Error::TokenizerError(error) => {
+                    write!(f, "TokenizerError: {}", error.message)
+                }
+                execution_error::parser_error::Error::ParserError(error) => {
+                    write!(f, "ParserError: {}", error.message)
+                }
+                execution_error::parser_error::Error::RecursionLimitExceeded(_) => {
+                    write!(f, "RecursionLimitExceeded")
+                }
+            },
+            None => write!(f, "No detailed error provided"),
+        }
+    }
+}
+
+impl Display for execution_error::SqlError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.error.as_ref() {
+            Some(e) => write!(f, "ParserError/{}", e),
+            _ => write!(f, "No detailed error provided"),
+        }
+    }
+}
+
+impl Display for execution_error::Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            execution_error::Error::NotImplemented(error) => {
+                write!(f, "NotImplemented: {}", error.message)
+            }
+            execution_error::Error::General(error) => {
+                write!(f, "General: {}", error.message)
+            }
+            execution_error::Error::Internal(error) => {
+                write!(f, "Internal: {}", error.message)
+            }
+            execution_error::Error::ArrowError(arrow_error) => {
+                write!(f, "ArrowError/{}", arrow_error)
+            }
+            execution_error::Error::DatafusionError(error) => {
+                write!(f, "{}", error)
+            }
+            execution_error::Error::SqlError(error) => {
+                write!(f, "SqlError/{}", error)
+            }
+            execution_error::Error::IoError(error) => {
+                write!(f, "IoError: {}", error.message)
+            }
+            execution_error::Error::TonicError(error) => {
+                write!(f, "TonicError: {}", error.message)
+            }
+            execution_error::Error::GrpcError(error) => {
+                write!(f, "GrpcError: {}", error.message)
+            }
+            execution_error::Error::GrpcConnectionError(error) => {
+                write!(f, "GrpcConnectionError: {}", error.message)
+            }
+            execution_error::Error::TokioError(error) => {
+                write!(f, "TokioError: {}", error.message)
+            }
+            execution_error::Error::GrpcActiveError(error) => {
+                write!(f, "GrpcActiveError: {}", error.message)
+            }
+            execution_error::Error::FetchFailed(error) => {
+                write!(f, "FetchFailed: {}", error.message)
+            }
+            execution_error::Error::Cancelled(_) => write!(f, "Cancelled"),
+        }
+    }
+}
+
 impl From<BallistaError> for FailedTask {
     fn from(e: BallistaError) -> Self {
         match e {
@@ -646,7 +952,6 @@ impl From<BallistaError> for FailedTask {
                 desc,
             ) => {
                 FailedTask {
-                    error: desc,
                     // fetch partition error is considered to be non-retryable
                     retryable: false,
                     count_to_failures: false,
@@ -658,33 +963,27 @@ impl From<BallistaError> for FailedTask {
                                 .into_iter()
                                 .map(|p| p as u32)
                                 .collect(),
+                            message: desc,
                         },
                     )),
                 }
             }
             BallistaError::IoError(io) => {
                 FailedTask {
-                    error: format!("Task failed due to Ballista IO error: {io:?}"),
                     // IO error is considered to be temporary and retryable
                     retryable: true,
                     count_to_failures: true,
-                    failed_reason: Some(FailedReason::IoError(IoError {})),
-                }
-            }
-            BallistaError::DataFusionError(DataFusionError::IoError(io)) => {
-                FailedTask {
-                    error: format!("Task failed due to DataFusion IO error: {io:?}"),
-                    // IO error is considered to be temporary and retryable
-                    retryable: true,
-                    count_to_failures: true,
-                    failed_reason: Some(FailedReason::IoError(IoError {})),
+                    failed_reason: Some(FailedReason::IoError(IoError {
+                        message: io.to_string(),
+                    })),
                 }
             }
             other => FailedTask {
-                error: format!("Task failed due to runtime execution error: {other:?}"),
                 retryable: false,
                 count_to_failures: false,
-                failed_reason: Some(FailedReason::ExecutionError(ExecutionError {})),
+                failed_reason: Some(FailedReason::ExecutionError(ExecutionError {
+                    error: Some((&other).into()),
+                })),
             },
         }
     }

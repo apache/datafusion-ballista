@@ -29,7 +29,7 @@ use futures::future::try_join_all;
 
 use crate::cluster::JobState;
 use ballista_core::serde::protobuf::{
-    self, JobStatus, KeyValuePair, TaskDefinition, TaskStatus,
+    self, execution_error, JobStatus, KeyValuePair, TaskDefinition, TaskStatus,
 };
 use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
 use ballista_core::serde::scheduler::ExecutorMetadata;
@@ -359,7 +359,7 @@ impl JobInfoCache {
 pub struct UpdatedStages {
     pub resolved_stages: HashSet<usize>,
     pub successful_stages: HashSet<usize>,
-    pub failed_stages: HashMap<usize, Arc<BallistaError>>,
+    pub failed_stages: HashMap<usize, Arc<execution_error::Error>>,
     pub rollback_running_stages: HashMap<usize, HashSet<String>>,
     pub resubmit_successful_stages: HashSet<usize>,
 }
@@ -632,7 +632,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     ) -> Result<(Vec<RunningTaskInfo>, usize)> {
         self.abort_job(
             job_id,
-            Arc::new(BallistaError::Internal("Cancelled".to_string())),
+            Arc::new(execution_error::Error::Cancelled(
+                execution_error::Cancelled {},
+            )),
         )
         .await
     }
@@ -641,7 +643,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     pub(crate) async fn abort_job(
         &self,
         job_id: &str,
-        failure_reason: Arc<BallistaError>,
+        reason: Arc<execution_error::Error>,
     ) -> Result<(Vec<RunningTaskInfo>, usize)> {
         let (tasks_to_cancel, pending_tasks) = if let Some(job) =
             self.active_job_queue.get_job(job_id)
@@ -657,7 +659,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 job_id
             );
 
-            guard.fail_job(failure_reason);
+            guard.fail_job(reason);
 
             self.state.save_job(job_id, &guard).await?;
 

@@ -618,11 +618,10 @@ mod test {
                     end_exec_time: timestamp,
                     metrics: vec![],
                     status: Some(task_status::Status::Failed(FailedTask {
-                        error: "ERROR".to_string(),
                         retryable: false,
                         count_to_failures: false,
                         failed_reason: Some(failed_task::FailedReason::ExecutionError(
-                            ExecutionError {},
+                            ExecutionError { error: None },
                         )),
                     })),
                 }

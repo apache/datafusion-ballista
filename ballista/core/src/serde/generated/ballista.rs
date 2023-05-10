@@ -618,8 +618,6 @@ pub struct RunningTask {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FailedTask {
-    #[prost(string, tag = "1")]
-    pub error: ::prost::alloc::string::String,
     #[prost(bool, tag = "2")]
     pub retryable: bool,
     /// Whether this task failure should be counted to the maximum number of times the task is allowed to retry
@@ -660,9 +658,6 @@ pub struct SuccessfulTask {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ExecutionError {}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FetchPartitionError {
     #[prost(string, tag = "1")]
     pub executor_id: ::prost::alloc::string::String,
@@ -670,16 +665,24 @@ pub struct FetchPartitionError {
     pub map_stage_id: u32,
     #[prost(uint32, repeated, tag = "3")]
     pub map_partitions: ::prost::alloc::vec::Vec<u32>,
+    #[prost(string, tag = "4")]
+    pub message: ::prost::alloc::string::String,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct IoError {}
+pub struct IoError {
+    #[prost(string, tag = "1")]
+    pub message: ::prost::alloc::string::String,
+}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorLost {}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ResultLost {}
+pub struct ResultLost {
+    #[prost(string, tag = "1")]
+    pub message: ::prost::alloc::string::String,
+}
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskKilled {}
@@ -949,21 +952,15 @@ pub struct RunningJob {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct FailedJob {
-    #[prost(uint64, tag = "2")]
-    pub queued_at: u64,
-    #[prost(uint64, tag = "3")]
-    pub started_at: u64,
-    #[prost(uint64, tag = "4")]
-    pub ended_at: u64,
+pub struct ExecutionError {
     #[prost(
-        oneof = "failed_job::Error",
+        oneof = "execution_error::Error",
         tags = "5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18"
     )]
-    pub error: ::core::option::Option<failed_job::Error>,
+    pub error: ::core::option::Option<execution_error::Error>,
 }
-/// Nested message and enum types in `FailedJob`.
-pub mod failed_job {
+/// Nested message and enum types in `ExecutionError`.
+pub mod execution_error {
     #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct NotImplemented {
@@ -1646,6 +1643,18 @@ pub mod failed_job {
         #[prost(message, tag = "18")]
         Cancelled(Cancelled),
     }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FailedJob {
+    #[prost(uint64, tag = "2")]
+    pub queued_at: u64,
+    #[prost(uint64, tag = "3")]
+    pub started_at: u64,
+    #[prost(uint64, tag = "4")]
+    pub ended_at: u64,
+    #[prost(message, optional, tag = "5")]
+    pub error: ::core::option::Option<ExecutionError>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -30,8 +30,8 @@ use ballista_core::config::BallistaConfig;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    self, AvailableTaskSlots, ExecutorHeartbeat, ExecutorTaskSlots, FailedJob,
-    KeyValuePair, QueuedJob,
+    self, AvailableTaskSlots, ExecutionError, ExecutorHeartbeat, ExecutorTaskSlots,
+    FailedJob, KeyValuePair, QueuedJob,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::serde::BallistaCodec;
@@ -620,7 +620,9 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 job_id: job_id.clone(),
                 job_name,
                 status: Some(Status::Failed(FailedJob {
-                    error: Some(reason.as_ref().into()),
+                    error: Some(ExecutionError {
+                        error: Some(reason.as_ref().into()),
+                    }),
                     queued_at,
                     started_at: 0,
                     ended_at: 0,

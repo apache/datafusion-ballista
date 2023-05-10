@@ -355,7 +355,7 @@ message RunningTask {
 }
 
 message FailedTask {
-  string error = 1;
+  reserved 1;
   bool retryable = 2;
   // Whether this task failure should be counted to the maximum number of times the task is allowed to retry
   bool count_to_failures = 3;
@@ -376,20 +376,22 @@ message SuccessfulTask {
   // so we might want to think about some refactoring of the task definitions
   repeated ShuffleWritePartition partitions = 2;
 }
-
-message ExecutionError {}
-
 message FetchPartitionError {
   string executor_id = 1;
   uint32 map_stage_id = 2;
   repeated uint32 map_partitions = 3;
+  string message = 4;
 }
 
-message IOError {}
+message IOError {
+  string message = 1;
+}
 
 message ExecutorLost {}
 
-message ResultLost {}
+message ResultLost {
+  string message = 1;
+}
 
 message TaskKilled {}
 
@@ -544,11 +546,7 @@ message RunningJob {
   string scheduler = 3;
 }
 
-message FailedJob {
-  reserved 1;
-  uint64 queued_at = 2;
-  uint64 started_at = 3;
-  uint64 ended_at = 4;
+message ExecutionError {
   message NotImplemented {
     string message = 1;
   }
@@ -846,6 +844,13 @@ message FailedJob {
     Cancelled cancelled = 18;
   }
 }
+message FailedJob {
+  reserved 1;
+  uint64 queued_at = 2;
+  uint64 started_at = 3;
+  uint64 ended_at = 4;
+  ExecutionError error = 5;
+}
 
 message JobStatus {
   string job_id = 5;
@@ -948,7 +953,7 @@ service SchedulerGrpc {
 }
 
 service ExecutorGrpc {
-  rpc LaunchTask (LaunchTaskParams) returns (LaunchTaskResult) {}
+  rpc LaunchTask(LaunchTaskParams) returns (LaunchTaskResult) {}
 
   rpc StopExecutor(StopExecutorParams) returns (StopExecutorResult) {}
 

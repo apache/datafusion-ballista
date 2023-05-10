@@ -21,7 +21,10 @@ use std::fmt::{Debug, Formatter};
 use datafusion::logical_expr::LogicalPlan;
 
 use crate::state::execution_graph::RunningTaskInfo;
-use ballista_core::{error::BallistaError, serde::protobuf::TaskStatus};
+use ballista_core::{
+    error::BallistaError,
+    serde::protobuf::{execution_error, TaskStatus},
+};
 use datafusion::prelude::SessionContext;
 use std::sync::Arc;
 
@@ -58,7 +61,7 @@ pub enum QueryStageSchedulerEvent {
         job_id: String,
         queued_at: u64,
         failed_at: u64,
-        error: Arc<BallistaError>,
+        error: Arc<execution_error::Error>,
     },
     JobUpdated(String),
     JobCancel(String),
