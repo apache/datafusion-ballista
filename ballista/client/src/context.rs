@@ -38,7 +38,9 @@ use datafusion::catalog::TableReference;
 use datafusion::dataframe::DataFrame;
 use datafusion::datasource::{source_as_provider, TableProvider};
 use datafusion::error::{DataFusionError, Result};
-use datafusion::logical_expr::{CreateExternalTable, LogicalPlan, TableScan};
+use datafusion::logical_expr::{
+    CreateExternalTable, DdlStatement, LogicalPlan, TableScan,
+};
 use datafusion::prelude::{
     AvroReadOptions, CsvReadOptions, NdJsonReadOptions, ParquetReadOptions,
     SessionConfig, SessionContext,
@@ -389,17 +391,19 @@ impl BallistaContext {
         let plan = ctx.state().create_logical_plan(sql).await?;
 
         match plan {
-            LogicalPlan::CreateExternalTable(CreateExternalTable {
-                ref schema,
-                ref name,
-                ref location,
-                ref file_type,
-                ref has_header,
-                ref delimiter,
-                ref table_partition_cols,
-                ref if_not_exists,
-                ..
-            }) => {
+            LogicalPlan::Ddl(DdlStatement::CreateExternalTable(
+                CreateExternalTable {
+                    ref schema,
+                    ref name,
+                    ref location,
+                    ref file_type,
+                    ref has_header,
+                    ref delimiter,
+                    ref table_partition_cols,
+                    ref if_not_exists,
+                    ..
+                },
+            )) => {
                 let table_exists = ctx.table_exist(name)?;
                 let schema: SchemaRef = Arc::new(schema.as_ref().to_owned().into());
                 let table_partition_cols = table_partition_cols
