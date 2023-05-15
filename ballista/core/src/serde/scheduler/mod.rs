@@ -23,7 +23,6 @@ use datafusion::arrow::array::{
 use datafusion::arrow::datatypes::{DataType, Field};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::Partitioning;
-use datafusion_proto::protobuf as datafusion_protobuf;
 use serde::Serialize;
 
 use crate::error::BallistaError;
@@ -281,7 +280,6 @@ pub struct TaskDefinition {
     pub stage_attempt_num: usize,
     pub partition_id: usize,
     pub plan: Vec<u8>,
-    pub output_partitioning: Option<datafusion_protobuf::PhysicalHashRepartition>,
     pub session_id: String,
     pub launch_time: u64,
     pub props: HashMap<String, String>,

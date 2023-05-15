@@ -263,7 +263,6 @@ impl Into<protobuf::TaskDefinition> for TaskDefinition {
             stage_attempt_num: self.stage_attempt_num as u32,
             partition_id: self.partition_id as u32,
             plan: self.plan,
-            output_partitioning: self.output_partitioning,
             session_id: self.session_id,
             launch_time: self.launch_time,
             props,

@@ -33,7 +33,6 @@ use ballista_core::serde::scheduler::{ExecutorSpecification, PartitionId};
 use ballista_core::serde::BallistaCodec;
 use datafusion::execution::context::TaskContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
-use datafusion_proto::physical_plan::from_proto::parse_protobuf_hash_partitioning;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::FutureExt;
 use log::{debug, error, info, warn};
@@ -209,12 +208,6 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             )
         })?;
 
-    let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
-        task.output_partitioning.as_ref(),
-        task_context.as_ref(),
-        plan.schema().as_ref(),
-    )?;
-
     let query_stage_exec = executor.execution_engine.create_query_stage_exec(
         job_id.clone(),
         stage_id as usize,
@@ -234,7 +227,6 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             part.clone(),
             query_stage_exec.clone(),
             task_context,
-            shuffle_output_partitioning,
         ))
         .catch_unwind()
         .await

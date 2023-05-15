@@ -270,13 +270,7 @@ pub fn default_task_runner() -> impl TaskRunner {
     TaskRunnerFn::new(|executor_id: String, task: MultiTaskDefinition| {
         let mut statuses = vec![];
 
-        let partitions =
-            if let Some(output_partitioning) = task.output_partitioning.as_ref() {
-                output_partitioning.partition_count as usize
-            } else {
-                1
-            };
-
+        let partitions = 1;
         let partitions: Vec<ShuffleWritePartition> = (0..partitions)
             .map(|i| ShuffleWritePartition {
                 partition_id: i as u64,
