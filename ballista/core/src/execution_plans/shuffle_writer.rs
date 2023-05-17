@@ -29,6 +29,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::error::BallistaError;
 use crate::utils;
 
 use crate::serde::protobuf::ShuffleWritePartition;
@@ -208,7 +209,10 @@ impl ShuffleWriterExec {
                         &write_metrics.write_time,
                     )
                     .await
-                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+                    .map_err(|e| match e {
+                        BallistaError::DataFusionError(err) => err,
+                        other => DataFusionError::Execution(format!("{other:?}")),
+                    })?;
 
                     write_metrics
                         .input_rows

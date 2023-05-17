@@ -75,8 +75,9 @@ impl LogicalExtensionCodec for TestLogicalCodec {
 
             return Ok(());
         }
-        return Err(DataFusionError::Internal(
+
+        Err(DataFusionError::Internal(
             "Failed to encode table provider, only TestTable allowed".to_owned(),
-        ));
+        ))
     }
 }

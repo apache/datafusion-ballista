@@ -112,7 +112,7 @@ impl ExecutionPlan for TestTableExec {
             let boxed: Pin<Box<dyn RecordBatchStream + Send>> = Box::pin(stream);
 
             let key = CircuitBreakerKey {
-                task_id: task_id.clone(),
+                task_id,
                 partition: partition as u32,
                 job_id: metadata.job_id.clone(),
                 stage_id: metadata.stage_id,
@@ -120,15 +120,14 @@ impl ExecutionPlan for TestTableExec {
                 node_id: "test_table_exec".to_owned(),
             };
 
-            let limit = self.global_limit.clone();
+            let limit = self.global_limit;
 
             let calc = move |f: &RecordBatch| f.num_rows() as f64 / limit as f64;
 
             let arc = Arc::new(calc);
 
-            let limited_stream =
-                CircuitBreakerStream::new(boxed, arc, key, client.clone())
-                    .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+            let limited_stream = CircuitBreakerStream::new(boxed, arc, key, client)
+                .map_err(|e| DataFusionError::Execution(e.to_string()))?;
 
             return Ok(Box::pin(limited_stream));
         }

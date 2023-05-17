@@ -951,7 +951,6 @@ impl SuccessfulStage {
     /// Returns the number of running tasks that were reset
     pub fn reset_tasks(&mut self, executor: &str) -> usize {
         let mut reset = 0;
-        let failure_reason = format!("Task failure due to Executor {executor} lost");
         for task in self.task_infos.iter_mut() {
             match task {
                 TaskInfo {
@@ -971,10 +970,13 @@ impl SuccessfulStage {
                         end_exec_time: 0,
                         finish_time: 0,
                         task_status: task_status::Status::Failed(FailedTask {
-                            error: failure_reason.clone(),
                             retryable: true,
                             count_to_failures: false,
-                            failed_reason: Some(FailedReason::ResultLost(ResultLost {})),
+                            failed_reason: Some(FailedReason::ResultLost(ResultLost {
+                                message: format!(
+                                    "Task failure due to Executor {executor} lost"
+                                ),
+                            })),
                         }),
                     };
                     reset += 1;

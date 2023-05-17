@@ -25,8 +25,8 @@ use async_trait::async_trait;
 use ballista_core::config::BallistaConfig;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::{
-    executor_status, AvailableTaskSlots, ExecutorHeartbeat, ExecutorStatus,
-    ExecutorTaskSlots, FailedJob, QueuedJob,
+    executor_status, AvailableTaskSlots, ExecutionError, ExecutorHeartbeat,
+    ExecutorStatus, ExecutorTaskSlots, FailedJob, QueuedJob,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use dashmap::DashMap;
@@ -460,7 +460,9 @@ impl JobState for InMemoryJobState {
                         job_id,
                         job_name,
                         status: Some(Status::Failed(FailedJob {
-                            error: Some(reason.as_ref().into()),
+                            error: Some(ExecutionError {
+                                error: Some(reason.as_ref().into()),
+                            }),
                             queued_at,
                             started_at: 0,
                             ended_at: timestamp_millis(),

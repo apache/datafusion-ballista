@@ -38,7 +38,9 @@ use ballista_core::serde::protobuf::{
     self, execution_graph_stage::StageType, FailedTask, JobStatus, ResultLost,
     RunningJob, SuccessfulJob, TaskStatus,
 };
-use ballista_core::serde::protobuf::{job_status, FailedJob, ShuffleWritePartition};
+use ballista_core::serde::protobuf::{
+    execution_error, job_status, ExecutionError, FailedJob, ShuffleWritePartition,
+};
 use ballista_core::serde::protobuf::{task_status, RunningTask};
 use ballista_core::serde::scheduler::{
     ExecutorMetadata, PartitionLocation, PartitionStats,
@@ -312,7 +314,8 @@ impl ExecutionGraph {
 
         let mut resolved_stages = HashSet::new();
         let mut successful_stages = HashSet::new();
-        let mut failed_stages = HashMap::new();
+        let mut failed_stages: HashMap<usize, Arc<execution_error::Error>> =
+            HashMap::new();
         let mut rollback_running_stages = HashMap::new();
         let mut resubmit_successful_stages: HashMap<usize, HashSet<usize>> =
             HashMap::new();
@@ -349,9 +352,7 @@ impl ExecutionGraph {
                             if let Some(task_status::Status::Failed(failed_task)) =
                                 task_status.status
                             {
-                                let failed_reason = failed_task.failed_reason;
-
-                                match failed_reason {
+                                match failed_task.failed_reason.as_ref() {
                                     Some(FailedReason::FetchPartitionError(
                                         fetch_partiton_error,
                                     )) => {
@@ -365,7 +366,7 @@ impl ExecutionGraph {
                                                 as usize;
 
                                             let executor_id =
-                                                fetch_partiton_error.executor_id;
+                                                fetch_partiton_error.executor_id.clone();
 
                                             if !failed_stages.is_empty() {
                                                 let error_msg = format!(
@@ -406,24 +407,41 @@ impl ExecutionGraph {
                                             most recent failure reason: {:?}",
                                                 stage_id,
                                                 max_stage_failures,
-                                                failed_task.error
+                                                failed_task.failed_reason
                                             );
                                             error!("{}", error_msg);
                                             failed_stages.insert(
                                                 stage_id,
-                                                Arc::new(BallistaError::Internal(
-                                                    error_msg,
-                                                )),
+                                                Arc::new(
+                                                    execution_error::Error::Internal(
+                                                        execution_error::Internal {
+                                                            message: error_msg,
+                                                        },
+                                                    ),
+                                                ),
                                             );
                                         }
                                     }
-                                    Some(FailedReason::ExecutionError(_)) => {
-                                        failed_stages.insert(
-                                            stage_id,
-                                            Arc::new(BallistaError::Internal(
-                                                failed_task.error,
-                                            )),
-                                        );
+                                    Some(FailedReason::ExecutionError(
+                                        ExecutionError { error },
+                                    )) => {
+                                        if let Some(err) = error {
+                                            failed_stages
+                                                .insert(stage_id, Arc::new(err.clone()));
+                                        } else {
+                                            failed_stages.insert(
+                                                stage_id,
+                                                Arc::new(
+                                                    execution_error::Error::Internal(
+                                                        execution_error::Internal {
+                                                            message:
+                                                                "Unknown execution error"
+                                                                    .to_string(),
+                                                        },
+                                                    ),
+                                                ),
+                                            );
+                                        }
                                     }
                                     Some(_) => {
                                         if failed_task.retryable
@@ -442,14 +460,18 @@ impl ExecutionGraph {
                                             } else {
                                                 let error_msg = format!(
                         "Stage {} had {} task failures, fail the stage, most recent failure reason: {:?}",
-                        stage_id, max_task_failures, failed_task.error
+                        stage_id, max_task_failures, failed_task.failed_reason
                     );
                                                 error!("{}", error_msg);
                                                 failed_stages.insert(
                                                     stage_id,
-                                                    Arc::new(BallistaError::Internal(
-                                                        error_msg,
-                                                    )),
+                                                    Arc::new(
+                                                        execution_error::Error::Internal(
+                                                            execution_error::Internal {
+                                                                message: error_msg,
+                                                            },
+                                                        ),
+                                                    ),
                                                 );
                                             }
                                         } else if failed_task.retryable {
@@ -466,7 +488,11 @@ impl ExecutionGraph {
                                         error!("{}", error_msg);
                                         failed_stages.insert(
                                             stage_id,
-                                            Arc::new(BallistaError::Internal(error_msg)),
+                                            Arc::new(execution_error::Error::Internal(
+                                                execution_error::Internal {
+                                                    message: error_msg,
+                                                },
+                                            )),
                                         );
                                     }
                                 }
@@ -546,14 +572,27 @@ impl ExecutionGraph {
                             {
                                 let failed_reason = failed_task.failed_reason;
                                 match failed_reason {
-                                    Some(FailedReason::ExecutionError(_)) => {
+                                    Some(FailedReason::ExecutionError(
+                                        ExecutionError { error },
+                                    )) => {
                                         should_ignore = false;
-                                        failed_stages.insert(
-                                            stage_id,
-                                            Arc::new(BallistaError::Internal(
-                                                failed_task.error,
-                                            )),
-                                        );
+
+                                        if let Some(err) = error {
+                                            failed_stages.insert(stage_id, Arc::new(err));
+                                        } else {
+                                            failed_stages.insert(
+                                                stage_id,
+                                                Arc::new(
+                                                    execution_error::Error::Internal(
+                                                        execution_error::Internal {
+                                                            message:
+                                                                "Unknown execution error"
+                                                                    .to_string(),
+                                                        },
+                                                    ),
+                                                ),
+                                            );
+                                        }
                                     }
                                     Some(FailedReason::FetchPartitionError(
                                         fetch_partiton_error,
@@ -640,10 +679,11 @@ impl ExecutionGraph {
                         let task_info = &mut success_stage.task_infos[*partition];
                         // Update the task info to failed
                         task_info.task_status = task_status::Status::Failed(FailedTask {
-                            error: "FetchPartitionError in parent stage".to_owned(),
                             retryable: true,
                             count_to_failures: false,
-                            failed_reason: Some(FailedReason::ResultLost(ResultLost {})),
+                            failed_reason: Some(FailedReason::ResultLost(ResultLost {
+                                message: "FetchPartitionError in parent stage".to_owned(),
+                            })),
                         });
                     }
                 } else {
@@ -742,13 +782,17 @@ impl ExecutionGraph {
                         "Job {} failed due to stage {} failed: {}\n",
                         job_id,
                         stage_id,
-                        err.to_string()
+                        err.as_ref().to_string()
                     );
                     err.clone()
                 }
                 _ => {
                     info!("Job {} is failed", job_id);
-                    Arc::new(BallistaError::Internal("Unknown error".to_string()))
+                    Arc::new(execution_error::Error::Internal(
+                        execution_error::Internal {
+                            message: "Unknown error".to_string(),
+                        },
+                    ))
                 }
             };
             self.fail_job(error.clone());
@@ -1259,13 +1303,15 @@ impl ExecutionGraph {
     }
 
     /// fail job with error message
-    pub fn fail_job(&mut self, job_failure: Arc<BallistaError>) {
+    pub fn fail_job(&mut self, reason: Arc<execution_error::Error>) {
         self.end_time = timestamp_millis();
         self.status = JobStatus {
             job_id: self.job_id.clone(),
             job_name: self.job_name.clone(),
             status: Some(Status::Failed(FailedJob {
-                error: Some(job_failure.as_ref().into()),
+                error: Some(ExecutionError {
+                    error: Some(reason.as_ref().clone()),
+                }),
                 queued_at: self.queued_at,
                 started_at: self.start_time,
                 ended_at: self.end_time,
@@ -1933,7 +1979,6 @@ mod test {
         let task_status2 = mock_failed_task(
             task2,
             FailedTask {
-                error: "Killed".to_string(),
                 retryable: false,
                 count_to_failures: false,
                 failed_reason: Some(failed_task::FailedReason::TaskKilled(TaskKilled {})),
@@ -1981,10 +2026,11 @@ mod test {
         let task_status2 = mock_failed_task(
             task2.clone(),
             FailedTask {
-                error: "IOError".to_string(),
                 retryable: true,
                 count_to_failures: true,
-                failed_reason: Some(failed_task::FailedReason::IoError(IoError {})),
+                failed_reason: Some(failed_task::FailedReason::IoError(IoError {
+                    message: "IOError".to_string(),
+                })),
             },
         );
 
@@ -2007,11 +2053,12 @@ mod test {
                 let task_status = mock_failed_task(
                     task2_attempt.clone(),
                     FailedTask {
-                        error: "IOError".to_string(),
                         retryable: true,
                         count_to_failures: true,
                         failed_reason: Some(failed_task::FailedReason::IoError(
-                            IoError {},
+                            IoError {
+                                message: "IOError".to_string(),
+                            },
                         )),
                     },
                 );
@@ -2102,11 +2149,10 @@ mod test {
         let task_status = mock_failed_task(
             task.unwrap(),
             FailedTask {
-                error: "ExecutionError".to_string(),
                 retryable: false,
                 count_to_failures: false,
                 failed_reason: Some(failed_task::FailedReason::ExecutionError(
-                    ExecutionError {},
+                    ExecutionError { error: None },
                 )),
             },
         );
@@ -2145,7 +2191,6 @@ mod test {
         let task_status2 = mock_failed_task(
             task2,
             FailedTask {
-                error: "FetchPartitionError".to_string(),
                 retryable: false,
                 count_to_failures: false,
                 failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
@@ -2153,6 +2198,7 @@ mod test {
                         executor_id: executor1.id.clone(),
                         map_stage_id: 1,
                         map_partitions: vec![0],
+                        message: "FetchPartitionError".to_string(),
                     },
                 )),
             },
@@ -2226,7 +2272,6 @@ mod test {
                 let task_status = mock_failed_task(
                     task,
                     FailedTask {
-                        error: "FetchPartitionError".to_string(),
                         retryable: false,
                         count_to_failures: false,
                         failed_reason: Some(
@@ -2235,6 +2280,7 @@ mod test {
                                     executor_id: executor2.id.clone(),
                                     map_stage_id: 2,
                                     map_partitions: vec![part],
+                                    message: "FetchPartitionError".to_string(),
                                 },
                             ),
                         ),
@@ -2276,7 +2322,6 @@ mod test {
                 let task_status1 = mock_failed_task(
                     task1.clone(),
                     FailedTask {
-                        error: "FetchPartitionError".to_string(),
                         retryable: false,
                         count_to_failures: false,
                         failed_reason: Some(
@@ -2285,6 +2330,7 @@ mod test {
                                     executor_id: executor1.id.clone(),
                                     map_stage_id: 1,
                                     map_partitions: vec![0],
+                                    message: "FetchPartitionError".to_string(),
                                 },
                             ),
                         ),
@@ -2382,7 +2428,6 @@ mod test {
         let task_status_1 = mock_failed_task(
             task_1,
             FailedTask {
-                error: "FetchPartitionError".to_string(),
                 retryable: false,
                 count_to_failures: false,
                 failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
@@ -2390,6 +2435,7 @@ mod test {
                         executor_id: executor2.id.clone(),
                         map_stage_id: 2,
                         map_partitions: vec![0],
+                        message: "FetchPartitionError".to_string(),
                     },
                 )),
             },
@@ -2406,7 +2452,6 @@ mod test {
         let task_status_2 = mock_failed_task(
             task_2,
             FailedTask {
-                error: "FetchPartitionError".to_string(),
                 retryable: false,
                 count_to_failures: false,
                 failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
@@ -2414,6 +2459,7 @@ mod test {
                         executor_id: executor2.id.clone(),
                         map_stage_id: 2,
                         map_partitions: vec![0],
+                        message: "FetchPartitionError".to_string(),
                     },
                 )),
             },
@@ -2429,7 +2475,6 @@ mod test {
         let task_status_3 = mock_failed_task(
             task_3,
             FailedTask {
-                error: "FetchPartitionError".to_string(),
                 retryable: false,
                 count_to_failures: false,
                 failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
@@ -2437,6 +2482,7 @@ mod test {
                         executor_id: executor1.id.clone(),
                         map_stage_id: 2,
                         map_partitions: vec![0],
+                        message: "FetchPartitionError".to_string(),
                     },
                 )),
             },
@@ -2463,7 +2509,6 @@ mod test {
         let task_status_4 = mock_failed_task(
             task_4,
             FailedTask {
-                error: "FetchPartitionError".to_string(),
                 retryable: false,
                 count_to_failures: false,
                 failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
@@ -2471,6 +2516,7 @@ mod test {
                         executor_id: executor1.id.clone(),
                         map_stage_id: 2,
                         map_partitions: vec![1],
+                        message: "FetchPartitionError".to_string(),
                     },
                 )),
             },
@@ -2497,7 +2543,6 @@ mod test {
         let task_status_5 = mock_failed_task(
             task_5,
             FailedTask {
-                error: "FetchPartitionError".to_string(),
                 retryable: false,
                 count_to_failures: false,
                 failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
@@ -2505,6 +2550,7 @@ mod test {
                         executor_id: executor3.id.clone(),
                         map_stage_id: 2,
                         map_partitions: vec![1],
+                        message: "FetchPartitionError".to_string(),
                     },
                 )),
             },
@@ -2575,7 +2621,6 @@ mod test {
         let task_status_1 = mock_failed_task(
             task_1.clone(),
             FailedTask {
-                error: "FetchPartitionError".to_string(),
                 retryable: false,
                 count_to_failures: false,
                 failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
@@ -2588,6 +2633,7 @@ mod test {
                             .iter()
                             .map(|p| *p as u32)
                             .collect(),
+                        message: "FetchPartitionError".to_string(),
                     },
                 )),
             },
@@ -2612,7 +2658,6 @@ mod test {
         let task_status_2 = mock_failed_task(
             task_2,
             FailedTask {
-                error: "FetchPartitionError".to_string(),
                 retryable: false,
                 count_to_failures: false,
                 failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
@@ -2620,6 +2665,7 @@ mod test {
                         executor_id: executor1.id.clone(),
                         map_stage_id: 2,
                         map_partitions: vec![1],
+                        message: "FetchPartitionError".to_string(),
                     },
                 )),
             },
@@ -2678,7 +2724,6 @@ mod test {
             let task_status1 = mock_failed_task(
                 task1.clone(),
                 FailedTask {
-                    error: "FetchPartitionError".to_string(),
                     retryable: false,
                     count_to_failures: false,
                     failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
@@ -2691,6 +2736,7 @@ mod test {
                                 .iter()
                                 .map(|p| *p as u32)
                                 .collect(),
+                            message: "FetchPartitionError".to_string(),
                         },
                     )),
                 },
@@ -2710,7 +2756,6 @@ mod test {
             let task_status1 = mock_failed_task(
                 task1.clone(),
                 FailedTask {
-                    error: "FetchPartitionError".to_string(),
                     retryable: false,
                     count_to_failures: false,
                     failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
@@ -2723,6 +2768,7 @@ mod test {
                                 .iter()
                                 .map(|p| *p as u32)
                                 .collect(),
+                            message: "FetchPartitionError".to_string(),
                         },
                     )),
                 },
@@ -2776,7 +2822,6 @@ mod test {
         let task_status2 = mock_failed_task(
             task2.clone(),
             FailedTask {
-                error: "FetchPartitionError".to_string(),
                 retryable: false,
                 count_to_failures: false,
                 failed_reason: Some(failed_task::FailedReason::FetchPartitionError(
@@ -2789,6 +2834,7 @@ mod test {
                             .iter()
                             .map(|p| *p as u32)
                             .collect(),
+                        message: "FetchPartitionError".to_string(),
                     },
                 )),
             },
@@ -2799,11 +2845,10 @@ mod test {
         let task_status3 = mock_failed_task(
             task3,
             FailedTask {
-                error: "ExecutionError".to_string(),
                 retryable: false,
                 count_to_failures: false,
                 failed_reason: Some(failed_task::FailedReason::ExecutionError(
-                    ExecutionError {},
+                    ExecutionError { error: None },
                 )),
             },
         );

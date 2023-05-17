@@ -17,6 +17,7 @@
 
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
+use crate::error::BallistaError;
 use crate::serde::protobuf::execute_query_params::OptionalSessionId;
 use crate::serde::protobuf::{
     execute_query_params::Query, job_status, scheduler_grpc_client::SchedulerGrpcClient,
@@ -46,6 +47,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
+use tonic::transport::Channel;
 
 /// This operator sends a logical plan to a Ballista scheduler for execution and
 /// polls the scheduler until the query is complete and then fetches the resulting
@@ -235,7 +237,8 @@ async fn execute_query(
         .await
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
-    let mut scheduler = SchedulerGrpcClient::new(connection);
+    let mut scheduler: SchedulerGrpcClient<Channel> =
+        SchedulerGrpcClient::new(connection);
 
     let query_result = scheduler
         .execute_query(query)
@@ -312,9 +315,13 @@ async fn fetch_partition(
 
     let host = metadata.host.as_str();
     let port = metadata.port as u16;
-    let mut ballista_client = BallistaClient::try_new(host, port)
-        .await
-        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+    let mut ballista_client =
+        BallistaClient::try_new(host, port)
+            .await
+            .map_err(|e| match e {
+                BallistaError::DataFusionError(err) => err,
+                _ => DataFusionError::Execution(format!("{:?}", e)),
+            })?;
 
     let map_partitions = location
         .map_partitions
