@@ -764,11 +764,6 @@ pub struct TaskDefinition {
     pub partition_id: u32,
     #[prost(bytes = "vec", tag = "7")]
     pub plan: ::prost::alloc::vec::Vec<u8>,
-    /// Output partition for shuffle writer
-    #[prost(message, optional, tag = "8")]
-    pub output_partitioning: ::core::option::Option<
-        ::datafusion_proto::protobuf::PhysicalHashRepartition,
-    >,
     #[prost(string, tag = "9")]
     pub session_id: ::prost::alloc::string::String,
     #[prost(uint64, tag = "10")]
@@ -790,11 +785,6 @@ pub struct MultiTaskDefinition {
     pub stage_attempt_num: u32,
     #[prost(bytes = "vec", tag = "5")]
     pub plan: ::prost::alloc::vec::Vec<u8>,
-    /// Output partition for shuffle writer
-    #[prost(message, optional, tag = "6")]
-    pub output_partitioning: ::core::option::Option<
-        ::datafusion_proto::protobuf::PhysicalHashRepartition,
-    >,
     #[prost(string, tag = "7")]
     pub session_id: ::prost::alloc::string::String,
     #[prost(uint64, tag = "8")]

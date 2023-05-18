@@ -30,7 +30,6 @@ use datafusion::execution::context::TaskContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::udaf::AggregateUDF;
 use datafusion::physical_plan::udf::ScalarUDF;
-use datafusion::physical_plan::Partitioning;
 use futures::future::AbortHandle;
 use std::collections::HashMap;
 use std::future::Future;
@@ -122,7 +121,6 @@ impl Executor {
         partition: PartitionId,
         query_stage_exec: Arc<dyn QueryStageExecutor>,
         task_ctx: Arc<TaskContext>,
-        _shuffle_output_partitioning: Option<Partitioning>,
     ) -> Result<Vec<protobuf::ShuffleWritePartition>, BallistaError> {
         let (task, abort_handle) = futures::future::abortable(
             query_stage_exec.execute_query_stage(partition.partition_id, task_ctx),
@@ -318,13 +316,7 @@ mod test {
                 partition_id: 0,
             };
             let task_result = executor_clone
-                .execute_query_stage(
-                    1,
-                    part,
-                    Arc::new(query_stage_exec),
-                    ctx.task_ctx(),
-                    None,
-                )
+                .execute_query_stage(1, part, Arc::new(query_stage_exec), ctx.task_ctx())
                 .await;
             sender.send(task_result).expect("sending result");
         });

@@ -445,8 +445,6 @@ message TaskDefinition {
   uint32 stage_attempt_num = 5;
   uint32 partition_id = 6;
   bytes plan = 7;
-  // Output partition for shuffle writer
-  datafusion.PhysicalHashRepartition output_partitioning = 8;
   string session_id = 9;
   uint64 launch_time = 10;
   repeated KeyValuePair props = 11;
@@ -459,8 +457,6 @@ message MultiTaskDefinition {
   uint32 stage_id = 3;
   uint32 stage_attempt_num = 4;
   bytes plan = 5;
-  // Output partition for shuffle writer
-  datafusion.PhysicalHashRepartition output_partitioning = 6;
   string session_id = 7;
   uint64 launch_time = 8;
   repeated KeyValuePair props = 9;
