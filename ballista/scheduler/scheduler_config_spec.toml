@@ -51,7 +51,6 @@ doc = "etcd urls for use when discovery mode is `etcd`. Default: localhost:2379"
 default = "std::string::String::from(\"localhost:2379\")"
 
 [[param]]
-abbr = "h"
 name = "bind_host"
 type = "String"
 default = "std::string::String::from(\"0.0.0.0\")"

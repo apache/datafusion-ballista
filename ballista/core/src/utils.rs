@@ -32,7 +32,7 @@ use datafusion::execution::context::{
     QueryPlanner, SessionConfig, SessionContext, SessionState,
 };
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
-use datafusion::logical_expr::LogicalPlan;
+use datafusion::logical_expr::{DdlStatement, LogicalPlan};
 use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
@@ -415,7 +415,7 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
         session_state: &SessionState,
     ) -> std::result::Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         match logical_plan {
-            LogicalPlan::CreateExternalTable(_) => {
+            LogicalPlan::Ddl(DdlStatement::CreateExternalTable(_)) => {
                 // table state is managed locally in the BallistaContext, not in the scheduler
                 Ok(Arc::new(EmptyExec::new(false, Arc::new(Schema::empty()))))
             }
