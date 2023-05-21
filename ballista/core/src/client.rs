@@ -48,7 +48,7 @@ use prost::Message;
 use tonic::Streaming;
 
 // 16 MiB
-const MAX_MESSAGE_SIZE: usize = 17179869184;
+const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 
 /// Client for interacting with Ballista executors.
 #[derive(Clone)]
