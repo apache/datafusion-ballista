@@ -47,6 +47,9 @@ use log::debug;
 use prost::Message;
 use tonic::Streaming;
 
+// 16 MiB
+const MAX_MESSAGE_SIZE: usize = 17179869184;
+
 /// Client for interacting with Ballista executors.
 #[derive(Clone)]
 pub struct BallistaClient {
@@ -67,7 +70,10 @@ impl BallistaClient {
                     "Error connecting to Ballista scheduler or executor at {addr}: {e:?}"
                 ))
                 })?;
-        let flight_client = FlightServiceClient::new(connection);
+        let flight_client = FlightServiceClient::new(connection)
+            .max_decoding_message_size(MAX_MESSAGE_SIZE)
+            .max_encoding_message_size(MAX_MESSAGE_SIZE);
+
         debug!("BallistaClient connected OK");
 
         Ok(Self { flight_client })
