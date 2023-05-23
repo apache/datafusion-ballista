@@ -504,7 +504,7 @@ impl ExecutionGraph {
                                 if let Err(err) =
                                     running_stage.update_task_metrics(operator_metrics)
                                 {
-                                    error!(job_id = self.job_id, stage_id = running_stage.stage_id, error = %err, "Error updating task metrics");
+                                    warn!(job_id = self.job_id, stage_id = running_stage.stage_id, error = %err, "Error updating task metrics");
                                 }
 
                                 locations.append(&mut partition_to_location(

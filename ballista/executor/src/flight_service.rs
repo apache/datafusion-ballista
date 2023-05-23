@@ -21,12 +21,12 @@ use std::convert::TryFrom;
 use std::fs::File;
 use std::pin::Pin;
 
-use arrow_flight::SchemaAsIpc;
 use ballista_core::error::BallistaError;
 use ballista_core::serde::decode_protobuf;
 use ballista_core::serde::scheduler::Action as BallistaAction;
 
-use arrow::ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
+use arrow_flight::encode::FlightDataEncoderBuilder;
+use arrow_flight::error::FlightError;
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty,
     FlightData, FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse,
@@ -35,20 +35,18 @@ use arrow_flight::{
 use datafusion::arrow::{
     error::ArrowError, ipc::reader::FileReader, record_batch::RecordBatch,
 };
-use futures::{Stream, StreamExt};
-use log::{debug, info, warn};
+use futures::{Stream, StreamExt, TryStreamExt};
 use std::io::{Read, Seek};
 use tokio::sync::mpsc::channel;
-use tokio::{
-    sync::mpsc::{Receiver, Sender},
-    task,
-};
+use tokio::{sync::mpsc::Sender, task};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataValue;
 use tonic::{Request, Response, Status, Streaming};
+use tracing::{debug, info, warn};
 
-type FlightDataSender = Sender<Result<FlightData, Status>>;
-type FlightDataReceiver = Receiver<Result<FlightData, Status>>;
+// TODO this is currently configured in two different places
+// 4 MiB
+const MAX_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
 /// Service implementing the Apache Arrow Flight Protocol
 #[derive(Clone)]
@@ -67,7 +65,7 @@ impl Default for BallistaFlightService {
 }
 
 type BoxedFlightStream<T> =
-    Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + Sync + 'static>>;
+    Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'static>>;
 
 #[tonic::async_trait]
 impl FlightService for BallistaFlightService {
@@ -100,20 +98,24 @@ impl FlightService for BallistaFlightService {
                     .map_err(|e| from_ballista_err(&e))?;
                 let reader =
                     FileReader::try_new(file, None).map_err(|e| from_arrow_err(&e))?;
+                let schema = reader.schema();
 
-                let (tx, rx): (FlightDataSender, FlightDataReceiver) = channel(2);
+                let (tx, rx) = channel(2);
 
-                let file_path = path.to_owned();
-                // Arrow IPC reader does not implement Sync + Send so we need to use a channel
-                // to communicate
                 task::spawn(async move {
-                    if let Err(e) = stream_flight_data(file_path, reader, tx).await {
+                    if let Err(e) = read_partition(reader, tx).await {
                         warn!("Error streaming results: {:?}", e);
                     }
                 });
 
+                let flight_data_stream = FlightDataEncoderBuilder::new()
+                    .with_max_flight_data_size(MAX_MESSAGE_SIZE)
+                    .with_schema(schema)
+                    .build(ReceiverStream::new(rx))
+                    .map_err(|err| Status::from_error(Box::new(err)));
+
                 Ok(Response::new(
-                    Box::pin(ReceiverStream::new(rx)) as Self::DoGetStream
+                    Box::pin(flight_data_stream) as Self::DoGetStream
                 ))
             }
         }
@@ -148,11 +150,12 @@ impl FlightService for BallistaFlightService {
         let output = futures::stream::iter(vec![result]);
         let str = format!("Bearer {token}");
         let mut resp: Response<
-            Pin<Box<dyn Stream<Item = Result<_, Status>> + Sync + Send>>,
+            Pin<Box<dyn Stream<Item = Result<_, Status>> + Send + 'static>>,
         > = Response::new(Box::pin(output));
         let md = MetadataValue::try_from(str)
             .map_err(|_| Status::invalid_argument("authorization not parsable"))?;
         resp.metadata_mut().insert("authorization", md);
+
         Ok(resp)
     }
 
@@ -202,71 +205,26 @@ impl FlightService for BallistaFlightService {
     }
 }
 
-/// Convert a single RecordBatch into an iterator of FlightData (containing
-/// dictionaries and batches)
-fn create_flight_iter(
-    batch: &RecordBatch,
-    options: &IpcWriteOptions,
-) -> Box<dyn Iterator<Item = Result<FlightData, Status>>> {
-    let data_gen = IpcDataGenerator::default();
-    let mut dictionary_tracker = DictionaryTracker::new(false);
-    let res = data_gen.encoded_batch(batch, &mut dictionary_tracker, options);
-    match res {
-        Ok((dicts, batch)) => {
-            let flights = dicts
-                .into_iter()
-                .chain(std::iter::once(batch))
-                .map(|x| x.into());
-            Box::new(flights.map(Ok))
-        }
-        Err(e) => Box::new(std::iter::once(Err(from_arrow_err(&e)))),
-    }
-}
-
-async fn stream_flight_data<T>(
-    file_path: String,
+async fn read_partition<T>(
     reader: FileReader<T>,
-    tx: FlightDataSender,
-) -> Result<(), Status>
+    tx: Sender<Result<RecordBatch, FlightError>>,
+) -> Result<(), FlightError>
 where
     T: Read + Seek,
 {
-    let options = arrow::ipc::writer::IpcWriteOptions::default();
-    let schema_flight_data = SchemaAsIpc::new(reader.schema().as_ref(), &options).into();
-    send_response(&tx, Ok(schema_flight_data)).await?;
-
-    let mut row_count = 0;
     for batch in reader {
-        if let Ok(x) = &batch {
-            row_count += x.num_rows();
-        }
-        let batch_flight_data: Vec<_> = batch
-            .map(|b| create_flight_iter(&b, &options).collect())
-            .map_err(|e| from_arrow_err(&e))?;
-        for batch in batch_flight_data.into_iter() {
-            send_response(&tx, batch).await?;
-        }
+        tx.send(batch.map_err(|err| err.into()))
+            .await
+            .map_err(|err| FlightError::ExternalError(Box::new(err)))?;
     }
-    debug!(
-        "FetchPartition streamed {} rows for file {}",
-        row_count, file_path
-    );
-    Ok(())
-}
 
-async fn send_response(
-    tx: &FlightDataSender,
-    data: Result<FlightData, Status>,
-) -> Result<(), Status> {
-    tx.send(data)
-        .await
-        .map_err(|e| Status::internal(format!("{e:?}")))
+    Ok(())
 }
 
 fn from_arrow_err(e: &ArrowError) -> Status {
     Status::internal(format!("ArrowError: {e:?}"))
 }
 
-fn from_ballista_err(e: &ballista_core::error::BallistaError) -> Status {
+fn from_ballista_err(e: &BallistaError) -> Status {
     Status::internal(format!("Ballista Error: {e:?}"))
 }

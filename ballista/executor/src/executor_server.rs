@@ -65,6 +65,10 @@ use crate::scheduler_client_registry::SchedulerClientRegistry;
 use crate::shutdown::ShutdownNotifier;
 use crate::{as_task_status, TaskExecutionTimes};
 
+// Set the max gRPC message size to 64 MiB. This is quite large
+// but we have to send execution plans over gRPC and they can be large.
+const MAX_GRPC_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
+
 pub type ServerHandle = JoinHandle<Result<(), BallistaError>>;
 type SchedulerClients = Arc<DashMap<String, SchedulerGrpcClient<Channel>>>;
 
@@ -119,7 +123,10 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
             "Ballista v{} Rust Executor Grpc Server listening on {:?}",
             BALLISTA_VERSION, addr
         );
-        let server = ExecutorGrpcServer::new(executor_server.clone());
+
+        let server = ExecutorGrpcServer::new(executor_server.clone())
+            .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE);
+
         let mut grpc_shutdown = shutdown_noti.subscribe_for_shutdown();
         tokio::spawn(async move {
             let shutdown_signal = grpc_shutdown.recv();

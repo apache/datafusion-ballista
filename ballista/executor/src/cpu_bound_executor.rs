@@ -20,10 +20,10 @@
 //! This module contains a dedicated thread pool for running "cpu
 //! intensive" workloads as query plans
 
-use log::warn;
 use parking_lot::Mutex;
 use std::{pin::Pin, sync::Arc};
 use tokio::sync::oneshot::Receiver;
+use tracing::{debug, warn};
 
 use futures::Future;
 
@@ -146,7 +146,7 @@ impl DedicatedExecutor {
         let job = Box::pin(async move {
             let task_output = task.await;
             if tx.send(task_output).is_err() {
-                warn!("Spawned task output ignored: receiver dropped");
+                debug!("Spawned task output ignored: receiver dropped");
             }
         });
 
