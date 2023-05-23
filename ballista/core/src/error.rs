@@ -37,7 +37,7 @@ use datafusion::error::DataFusionError;
 use itertools::Itertools;
 use sqlparser::parser::{self, ParserError};
 
-pub type Result<T> = result::Result<T, BallistaError>;
+pub type Result<T, E = BallistaError> = result::Result<T, E>;
 
 /// Ballista error
 #[derive(Debug)]

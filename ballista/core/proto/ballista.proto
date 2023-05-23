@@ -954,6 +954,14 @@ message CircuitBreakerCommand {
   CircuitBreakerKey key = 1;
 }
 
+message SchedulerLostParams {
+  string scheduler_id = 1;
+  string executor_id = 2;
+  repeated TaskStatus task_status = 3;
+}
+
+message SchedulerLostResponse {}
+
 service SchedulerGrpc {
   // Executors must poll the scheduler for heartbeat and to receive tasks
   rpc PollWork(PollWorkParams) returns (PollWorkResult) {}
@@ -980,6 +988,9 @@ service SchedulerGrpc {
   rpc CleanJobData(CleanJobDataParams) returns (CleanJobDataResult) {}
 
   rpc SendCircuitBreakerUpdate(CircuitBreakerUpdateRequest) returns (CircuitBreakerUpdateResponse) {}
+
+  // Used when an executor fails to update task status with a curator scheduler for tasks
+  rpc SchedulerLost(SchedulerLostParams) returns (SchedulerLostResponse) {}
 }
 
 service ExecutorGrpc {

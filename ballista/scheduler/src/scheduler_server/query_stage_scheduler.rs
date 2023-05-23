@@ -30,6 +30,7 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use crate::state::executor_manager::ExecutorReservation;
 
 use crate::state::SchedulerState;
 
@@ -226,6 +227,33 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                         num_status, executor_id, e
                     );
                     // TODO error handling
+                }
+            }
+            QueryStageSchedulerEvent::SchedulerLost(
+                scheduler_id,
+                executor_id,
+                task_status,
+            ) => {
+                if self.state.config.is_push_staged_scheduling() {
+                    let num_slots = task_status
+                        .into_iter()
+                        .map(|status| status.partitions.len())
+                        .sum::<usize>();
+
+                    let reservations = (0..num_slots)
+                        .map(|_| ExecutorReservation::new_free(executor_id.clone()))
+                        .collect();
+                    info!(
+                        num_slots,
+                        executor_id,
+                        scheduler_id,
+                        "returning task slots for lost scheduler"
+                    );
+
+                    // for now, just return the slots to the pool
+                    tx_event.post_event(QueryStageSchedulerEvent::ReservationOffering(
+                        reservations,
+                    ));
                 }
             }
             QueryStageSchedulerEvent::ReservationOffering(mut reservations) => {

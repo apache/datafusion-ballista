@@ -67,6 +67,7 @@ pub enum QueryStageSchedulerEvent {
     JobCancel(String),
     JobDataClean(String),
     TaskUpdating(String, Vec<TaskStatus>),
+    SchedulerLost(String, String, Vec<TaskStatus>),
     ReservationOffering(Vec<ExecutorReservation>),
     ExecutorLost(String, Option<String>),
     CancelTasks(Vec<RunningTaskInfo>),
@@ -85,6 +86,7 @@ impl QueryStageSchedulerEvent {
             QueryStageSchedulerEvent::JobCancel(_) => "JobCancel",
             QueryStageSchedulerEvent::JobDataClean(_) => "JobDataClean",
             QueryStageSchedulerEvent::TaskUpdating(_, _) => "TaskUpdating",
+            QueryStageSchedulerEvent::SchedulerLost(_, _, _) => "SchedulerLost",
             QueryStageSchedulerEvent::ReservationOffering(_) => "ReservationOffering",
             QueryStageSchedulerEvent::ExecutorLost(_, _) => "ExecutorLost",
             QueryStageSchedulerEvent::CancelTasks(_) => "CancelTasks",
@@ -109,6 +111,9 @@ impl Debug for QueryStageSchedulerEvent {
             QueryStageSchedulerEvent::JobCancel(_) => write!(f, "JobCancel"),
             QueryStageSchedulerEvent::JobDataClean(_) => write!(f, "JobDataClean"),
             QueryStageSchedulerEvent::TaskUpdating(_, _) => write!(f, "TaskUpdating"),
+            QueryStageSchedulerEvent::SchedulerLost(_, _, _) => {
+                write!(f, "SchedulerLost")
+            }
             QueryStageSchedulerEvent::ReservationOffering(_) => {
                 write!(f, "ReservationOffering")
             }

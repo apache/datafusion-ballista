@@ -29,7 +29,8 @@ use ballista_core::serde::protobuf::{
     ExecutorStoppedResult, GetFileMetadataParams, GetFileMetadataResult,
     GetJobStatusParams, GetJobStatusResult, HeartBeatParams, HeartBeatResult,
     PollWorkParams, PollWorkResult, RegisterExecutorParams, RegisterExecutorResult,
-    UpdateTaskStatusParams, UpdateTaskStatusResult,
+    SchedulerLostParams, SchedulerLostResponse, UpdateTaskStatusParams,
+    UpdateTaskStatusResult,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 
@@ -566,6 +567,33 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         }
 
         Ok(Response::new(CircuitBreakerUpdateResponse { commands }))
+    }
+
+    async fn scheduler_lost(
+        &self,
+        request: Request<SchedulerLostParams>,
+    ) -> Result<Response<SchedulerLostResponse>, Status> {
+        let SchedulerLostParams {
+            scheduler_id,
+            executor_id,
+            task_status,
+        } = request.into_inner();
+        info!("Received scheduler lost request for scheduler {scheduler_id} from executor {executor_id}");
+
+        self.query_stage_event_loop
+            .get_sender()
+            .map_err(|e| {
+                let msg = format!("Get query stage event loop error due to {e:?}");
+                error!("{}", msg);
+                Status::internal(msg)
+            })?
+            .post_event(QueryStageSchedulerEvent::SchedulerLost(
+                scheduler_id,
+                executor_id,
+                task_status,
+            ));
+
+        Ok(Response::new(SchedulerLostResponse {}))
     }
 }
 

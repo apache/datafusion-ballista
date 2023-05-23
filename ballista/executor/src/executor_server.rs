@@ -26,9 +26,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
-use log::{debug, error, info, warn};
 use tonic::transport::Channel;
-use tonic::{Request, Response, Status};
+use tonic::{Code, Request, Response, Status};
+use tracing::{debug, error, info, warn};
 
 use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf::{
@@ -37,8 +37,8 @@ use ballista_core::serde::protobuf::{
     scheduler_grpc_client::SchedulerGrpcClient,
     CancelTasksParams, CancelTasksResult, ExecutorMetric, ExecutorStatus,
     HeartBeatParams, LaunchTaskParams, LaunchTaskResult, RegisterExecutorParams,
-    RemoveJobDataParams, RemoveJobDataResult, StopExecutorParams, StopExecutorResult,
-    TaskStatus, UpdateTaskStatusParams,
+    RemoveJobDataParams, RemoveJobDataResult, SchedulerLostParams, StopExecutorParams,
+    StopExecutorResult, TaskStatus, UpdateTaskStatusParams,
 };
 
 use ballista_core::serde::scheduler::TaskDefinition;
@@ -51,6 +51,7 @@ use datafusion_proto::{
     logical_plan::AsLogicalPlan,
     physical_plan::{from_proto::parse_protobuf_hash_partitioning, AsExecutionPlan},
 };
+use lazy_static::lazy_static;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
 
@@ -553,9 +554,97 @@ fn task_identity(task: &TaskDefinition) -> String {
     )
 }
 
+lazy_static! {
+    static ref STATUS_RETRY_POLICY: Vec<Duration> = vec![Duration::from_millis(10); 3];
+}
+
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T, U> {
     fn new(executor_server: Arc<ExecutorServer<T, U>>) -> Self {
         Self { executor_server }
+    }
+
+    async fn send_status_update(
+        scheduler: &mut SchedulerGrpcClient<Channel>,
+        executor_id: &str,
+        status: Vec<TaskStatus>,
+    ) -> Result<(), Status> {
+        let mut retries = STATUS_RETRY_POLICY.iter();
+
+        loop {
+            if let Err(e) = scheduler
+                .update_task_status(UpdateTaskStatusParams {
+                    executor_id: executor_id.to_owned(),
+                    task_status: status.clone(),
+                })
+                .await
+            {
+                warn!("failed to update task status: {e:?}");
+                if let Some(interval) = retries.next() {
+                    if matches!(
+                        e.code(),
+                        Code::Unknown
+                            | Code::Unavailable
+                            | Code::Internal
+                            | Code::Aborted
+                    ) {
+                        // we can retry, sleep for specified interval and retry
+                        tokio::time::sleep(*interval).await;
+                    } else {
+                        // error is not retryable, return error
+                        return Err(e);
+                    }
+                } else {
+                    // retries are exhausted, return error
+                    return Err(e);
+                }
+            } else {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn send_scheduler_lost(
+        scheduler: &mut SchedulerGrpcClient<Channel>,
+        executor_id: &str,
+        scheduler_id: &str,
+        status: Vec<TaskStatus>,
+    ) -> Result<(), Status> {
+        let mut retries = STATUS_RETRY_POLICY.iter();
+
+        loop {
+            if let Err(e) = scheduler
+                .scheduler_lost(SchedulerLostParams {
+                    executor_id: executor_id.to_owned(),
+                    scheduler_id: scheduler_id.to_owned(),
+                    task_status: status.clone(),
+                })
+                .await
+            {
+                warn!(
+                    "failed to send scheduler lost for scheduler {scheduler_id}: {e:?}"
+                );
+                if let Some(interval) = retries.next() {
+                    if matches!(
+                        e.code(),
+                        Code::Unknown
+                            | Code::Unavailable
+                            | Code::Internal
+                            | Code::Aborted
+                    ) {
+                        // we can retry, sleep for specified interval and retry
+                        tokio::time::sleep(*interval).await;
+                    } else {
+                        // error is not retryable, return error
+                        return Err(e);
+                    }
+                } else {
+                    // retries are exhausted, return error
+                    return Err(e);
+                }
+            } else {
+                return Ok(());
+            }
+        }
     }
 
     fn start(
@@ -622,28 +711,62 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                 for (scheduler_id, tasks_status) in curator_task_status_map.into_iter() {
                     match executor_server.get_scheduler_client(&scheduler_id).await {
                         Ok(mut scheduler) => {
-                            if let Err(e) = scheduler
-                                .update_task_status(UpdateTaskStatusParams {
-                                    executor_id: executor_server
-                                        .executor
-                                        .metadata
-                                        .id
-                                        .clone(),
-                                    task_status: tasks_status.clone(),
-                                })
-                                .await
+                            let executor_id = &executor_server.executor.metadata.id;
+                            if let Err(e) = TaskRunnerPool::<T, U>::send_status_update(
+                                &mut scheduler,
+                                executor_id,
+                                tasks_status.clone(),
+                            )
+                            .await
                             {
+                                let task_ids = tasks_status.iter().map(|status| {
+                                    format!(
+                                        "{}/{}/{:?}",
+                                        status.job_id, status.stage_id, status.partitions
+                                    )
+                                });
                                 error!(
-                                    "Fail to update tasks {:?} due to {:?}",
-                                    tasks_status, e
+                                    executor_id,
+                                    error = %e,
+                                    ?task_ids,
+                                    "failed to update task status",
                                 );
+
+                                let mut scheduler =
+                                    executor_server.scheduler_to_register.clone();
+
+                                if let Err(e) = Self::send_scheduler_lost(
+                                    &mut scheduler,
+                                    &executor_server.executor.metadata.id,
+                                    &scheduler_id,
+                                    tasks_status,
+                                )
+                                .await
+                                {
+                                    error!(scheduler_id, error = %e, "failed to send scheduler lost");
+                                }
                             }
                         }
                         Err(e) => {
                             error!(
-                                "Fail to connect to scheduler {} due to {:?}",
-                                scheduler_id, e
+                                scheduler_id,
+                                error = %e,
+                                "failed to get scheduler client",
                             );
+
+                            let mut scheduler =
+                                executor_server.scheduler_to_register.clone();
+
+                            if let Err(e) = Self::send_scheduler_lost(
+                                &mut scheduler,
+                                &executor_server.executor.metadata.id,
+                                &scheduler_id,
+                                tasks_status,
+                            )
+                            .await
+                            {
+                                error!(scheduler_id, error = %e, "failed to send scheduler lost");
+                            }
                         }
                     }
                 }
