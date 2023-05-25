@@ -78,6 +78,7 @@ pub async fn new_standalone_executor<
         RuntimeConfig::new().with_temp_file_path(work_dir.clone()),
     );
 
+    let executor_id = executor_meta.id.clone();
     let executor = Arc::new(Executor::new(
         executor_meta,
         &work_dir,
@@ -87,7 +88,7 @@ pub async fn new_standalone_executor<
         None,
     ));
 
-    let service = BallistaFlightService::new();
+    let service = BallistaFlightService::new(executor_id);
     let server = FlightServiceServer::new(service);
     tokio::spawn(
         create_grpc_server()

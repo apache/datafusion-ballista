@@ -42,7 +42,7 @@ use tokio::{sync::mpsc::Sender, task};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataValue;
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 // TODO this is currently configured in two different places
 // 4 MiB
@@ -50,17 +50,15 @@ const MAX_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
 /// Service implementing the Apache Arrow Flight Protocol
 #[derive(Clone)]
-pub struct BallistaFlightService {}
-
-impl BallistaFlightService {
-    pub fn new() -> Self {
-        Self {}
-    }
+pub struct BallistaFlightService {
+    executor_id: String,
 }
 
-impl Default for BallistaFlightService {
-    fn default() -> Self {
-        Self::new()
+impl BallistaFlightService {
+    pub fn new(executor_id: impl Into<String>) -> Self {
+        Self {
+            executor_id: executor_id.into(),
+        }
     }
 }
 
@@ -88,7 +86,10 @@ impl FlightService for BallistaFlightService {
 
         match &action {
             BallistaAction::FetchPartition { path, .. } => {
-                debug!("FetchPartition reading {}", path);
+                info!(
+                    executor_id = self.executor_id,
+                    path, "fetching shuffle partition"
+                );
                 let file = File::open(path)
                     .map_err(|e| {
                         BallistaError::General(format!(
@@ -102,9 +103,10 @@ impl FlightService for BallistaFlightService {
 
                 let (tx, rx) = channel(2);
 
+                let executor_id = self.executor_id.clone();
                 task::spawn(async move {
                     if let Err(e) = read_partition(reader, tx).await {
-                        warn!("Error streaming results: {:?}", e);
+                        warn!(executor_id, error = %e, "error streaming shuffle partition");
                     }
                 });
 

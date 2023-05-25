@@ -28,13 +28,13 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use datafusion::config::Extensions;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use log::{error, info, warn};
 use tempfile::TempDir;
 use tokio::fs::DirEntry;
 use tokio::signal;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::{fs, time};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
@@ -304,6 +304,7 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
         }
     };
     service_handlers.push(tokio::spawn(flight_server_run(
+        executor_id.clone(),
         addr,
         shutdown_noti.subscribe_for_shutdown(),
     )));
@@ -365,7 +366,7 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
             })
             .await
         {
-            error!("error sending heartbeat with fenced status: {:?}", error);
+            error!(executor_id, %error, "error sending heartbeat with fenced status");
         }
 
         // TODO we probably don't need a separate rpc call for this....
@@ -407,15 +408,19 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
 
 // Arrow flight service
 async fn flight_server_run(
+    executor_id: String,
     addr: SocketAddr,
     mut grpc_shutdown: Shutdown,
 ) -> Result<(), BallistaError> {
-    let service = BallistaFlightService::new();
-    let server = FlightServiceServer::new(service);
     info!(
-        "Ballista v{} Rust Executor Flight Server listening on {:?}",
-        BALLISTA_VERSION, addr
+        executor_id,
+        version = BALLISTA_VERSION,
+        address = %addr,
+        "starting flight server",
     );
+
+    let service = BallistaFlightService::new(&executor_id);
+    let server = FlightServiceServer::new(service);
 
     let shutdown_signal = grpc_shutdown.recv();
     let server_future = create_grpc_server()
@@ -423,7 +428,7 @@ async fn flight_server_run(
         .serve_with_shutdown(addr, shutdown_signal);
 
     server_future.await.map_err(|e| {
-        error!("Tonic error, Could not start Executor Flight Server.");
+        error!(executor_id, error = %e, "failed to start flight server");
         BallistaError::TonicError(e)
     })
 }
@@ -444,7 +449,7 @@ async fn check_services(
                 Err(e) => return Err(BallistaError::TokioError(e)),
             },
             None => {
-                info!("service handlers are all done with their work!");
+                info!("all service handles complete");
                 return Ok(());
             }
         }
@@ -464,27 +469,28 @@ async fn clean_shuffle_data_loop(work_dir: &str, seconds: u64) -> Result<()> {
                 match satisfy_dir_ttl(child, seconds).await {
                     Err(e) => {
                         error!(
-                            "Fail to check ttl for the directory {:?} due to {:?}",
-                            child_path, e
+                            directory = %child_path.to_string_lossy(),
+                            error = %e,
+                            "failed to check TTL for shuffle data directory",
                         )
                     }
                     Ok(false) => to_deleted.push(child_path),
                     Ok(_) => {}
                 }
             } else {
-                warn!("{:?} under the working directory is a not a directory and will be ignored when doing cleanup", child_path)
+                warn!(directory = %child_path.to_string_lossy(), "not a directory and will be ignored when doing cleanup")
             }
         } else {
-            error!("Fail to get metadata for file {:?}", child.path())
+            error!(path = %child.path().display(), "failed to get metadata for file")
         }
     }
     info!(
-        "The directories {:?} that have not been modified for {:?} seconds so that they will be deleted",
+        "directories {:?} that have not been modified for {:?} seconds so that they will be deleted",
         to_deleted, seconds
     );
     for del in to_deleted {
         if let Err(e) = fs::remove_dir_all(&del).await {
-            error!("Fail to remove the directory {:?} due to {}", del, e);
+            error!(directory = %del.to_string_lossy(), error = %e, "failed to remove directory");
         }
     }
     Ok(())
@@ -501,14 +507,14 @@ async fn clean_all_shuffle_data(work_dir: &str) -> Result<()> {
                 to_deleted.push(child.path().into_os_string())
             }
         } else {
-            error!("Can not get metadata from file: {:?}", child)
+            error!(path = %child.path().display(), "failed to get metadata for file")
         }
     }
 
-    info!("The work_dir {:?} will be deleted", &to_deleted);
+    info!("deleting work directories {to_deleted:?}");
     for del in to_deleted {
         if let Err(e) = fs::remove_dir_all(&del).await {
-            error!("Fail to remove the directory {:?} due to {}", del, e);
+            error!(directory = %del.to_string_lossy(), error = %e, "failed to remove directory");
         }
     }
     Ok(())

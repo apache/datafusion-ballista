@@ -39,6 +39,7 @@ use prometheus::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::watch;
+use tracing::info;
 
 lazy_static! {
     static ref ACTIVE_TASKS: IntGauge =
@@ -172,6 +173,11 @@ impl Executor {
         task_ctx: Arc<TaskContext>,
         _shuffle_output_partitioning: Option<Partitioning>,
     ) -> Result<Vec<protobuf::ShuffleWritePartition>, BallistaError> {
+        info!(
+            executor_id = self.metadata.id,
+            job_id, stage_id, task_id, "executing query stage"
+        );
+
         let _metric_guard = ActiveTaskMetricGuard::new(partitions.len());
 
         let (task, abort_handle) = futures::future::abortable(
@@ -201,8 +207,12 @@ impl Executor {
         &self,
         task_id: usize,
         job_id: String,
-        _stage_id: usize,
+        stage_id: usize,
     ) -> Result<bool, BallistaError> {
+        info!(
+            executor_id = self.metadata.id,
+            task_id, job_id, stage_id, "cancelling task"
+        );
         if let Some((_, handle)) = self.remove_handle(job_id, task_id) {
             handle.abort();
             Ok(true)

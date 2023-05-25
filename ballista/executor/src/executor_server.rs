@@ -120,8 +120,10 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
         let addr = addr.parse().unwrap();
 
         info!(
-            "Ballista v{} Rust Executor Grpc Server listening on {:?}",
-            BALLISTA_VERSION, addr
+            executor_id = executor_meta.id,
+            socket_address = %addr,
+            version = BALLISTA_VERSION,
+            "starting executor server",
         );
 
         let server = ExecutorGrpcServer::new(executor_server.clone())
@@ -134,7 +136,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
                 .add_service(server)
                 .serve_with_shutdown(addr, shutdown_signal);
             grpc_server_future.await.map_err(|e| {
-                error!("Tonic error, Could not start Executor Grpc Server.");
+                error!(error = %e, "failed to start executor gRPC server");
                 BallistaError::TonicError(e)
             })
         })
@@ -145,10 +147,10 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     let executor_server = Arc::new(executor_server);
     match register_executor(&mut scheduler, executor.clone()).await {
         Ok(_) => {
-            info!("Executor registration succeed");
+            info!("executor registration succeed");
         }
         Err(error) => {
-            error!("Executor registration failed due to: {}", error);
+            error!(error = %error, "executor registration failed");
             // abort the Executor Grpc Future
             server.abort();
             return Err(error);
@@ -184,7 +186,7 @@ async fn register_executor(
         Ok(())
     } else {
         Err(BallistaError::General(
-            "Executor registration failed!!!".to_owned(),
+            "executor registration failed".to_owned(),
         ))
     }
 }
@@ -260,6 +262,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
     /// 2. Heartbeat to schedulers which has launching tasks to this executor until one succeeds
     async fn heartbeat(&self) {
         let status = if TERMINATING.load(Ordering::Acquire) {
+            info!(
+                executor_id = self.executor.metadata.id,
+                "sending heartbeat with TERMINATING status"
+            );
             executor_status::Status::Terminating(String::default())
         } else {
             executor_status::Status::Active(String::default())
@@ -283,8 +289,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             }
             Err(e) => {
                 warn!(
-                    "Fail to update heartbeat to its registration scheduler due to {:?}",
-                    e
+                        executor_id = self.executor.metadata.id,
+                        error = %e,
+                        "failed to send heartbeat to registration scheduler"
                 );
             }
         };
@@ -302,29 +309,29 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                 }
                 Err(e) => {
                     warn!(
-                        "Fail to update heartbeat to scheduler {} due to {:?}",
-                        scheduler_id, e
+                        scheduler_id,
+                        error = %e,
+                        "failed to send heartbeat to scheduler"
                     );
                 }
             }
         }
     }
 
-    async fn decode_task(
+    async fn decode_task_inner(
         &self,
-        curator_task: TaskDefinition,
+        curator_task: &TaskDefinition,
         plan: &[u8],
     ) -> Result<Arc<dyn QueryStageExecutor>, BallistaError> {
         let task = curator_task;
-        let task_identity = task_identity(&task);
-        let task_props = task.props;
+        let task_identity = task_identity(task);
         let mut config =
             ConfigOptions::new().with_extensions(self.default_extensions.clone());
-        for (k, v) in task_props {
-            config.set(&k, &v)?;
+        for (k, v) in &task.props {
+            config.set(k, v)?;
         }
 
-        let job_id = task.job_id;
+        let job_id = task.job_id.clone();
         let stage_id = task.stage_id;
         let attempt = task.stage_attempt_num;
 
@@ -349,7 +356,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
         let task_context = Arc::new(TaskContext::new(
             Some(task_identity),
-            task.session_id,
+            task.session_id.clone(),
             session_config,
             task_scalar_functions,
             task_aggregate_functions,
@@ -372,18 +379,78 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         )?)
     }
 
-    async fn run_task(
+    async fn decode_task(
         &self,
+        scheduler_id: String,
+        curator_task: TaskDefinition,
+        plan: &[u8],
+    ) -> Result<Arc<dyn QueryStageExecutor>, BallistaError> {
+        match self.decode_task_inner(&curator_task, plan).await {
+            Ok(exec) => Ok(exec),
+            Err(err) => {
+                let start_exec_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+
+                let task_status_sender = self.executor_env.tx_task_status.clone();
+
+                let job_id = curator_task.job_id.clone();
+                let stage_id = curator_task.stage_id;
+                let task_id = curator_task.task_id;
+                let partitions = curator_task.partitions.clone();
+                let attempt = curator_task.stage_attempt_num;
+                let launch_time = curator_task.launch_time;
+
+                error!(job_id, stage_id, task_id, scheduler_id, executor_id = self.executor.metadata.id, error = %err, "failed decode task");
+                let task_status = as_task_status(
+                    Err(BallistaError::Internal(format!(
+                        "failed to decode task: {err}"
+                    ))),
+                    self.executor.metadata.id.clone(),
+                    job_id.clone(),
+                    stage_id,
+                    task_id,
+                    partitions,
+                    attempt,
+                    None,
+                    TaskExecutionTimes {
+                        launch_time,
+                        start_exec_time,
+                        end_exec_time: start_exec_time,
+                    },
+                );
+
+                if let Err(_e) = task_status_sender
+                    .send(CuratorTaskStatus {
+                        scheduler_id,
+                        task_status: vec![task_status],
+                    })
+                    .await
+                {
+                    error!(
+                        executor_id = self.executor.metadata.id,
+                        job_id,
+                        stage_id,
+                        task_id,
+                        "failed to send task status, channel closed"
+                    );
+                }
+
+                Err(err)
+            }
+        }
+    }
+
+    async fn run_task_inner(
+        &self,
+        start_exec_time: u64,
         task_identity: &str,
         scheduler_id: String,
         curator_task: TaskDefinition,
         query_stage_exec: Arc<dyn QueryStageExecutor>,
-    ) -> Result<(), BallistaError> {
-        let start_exec_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-        info!("Start to run task {}", task_identity);
+    ) -> Result<TaskStatus, BallistaError> {
+        info!(task_identity, scheduler_id, "running task");
         let task = curator_task;
         let task_props = task.props;
 
@@ -407,8 +474,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             .with_extension(self.circuit_breaker_client.clone())
             .with_extension(Arc::new(circuit_breaker_metadata));
 
-        self.circuit_breaker_client
-            .register_scheduler(task_identity.to_owned(), scheduler_id.clone())?;
+        if let Err(e) = self
+            .circuit_breaker_client
+            .register_scheduler(task_identity.to_owned(), scheduler_id.clone())
+        {
+            error!(executor_id = self.executor.metadata.id,task_identity, scheduler_id, error = %e, "failed to register circuit breaker");
+        }
 
         let mut task_scalar_functions = HashMap::new();
         let mut task_aggregate_functions = HashMap::new();
@@ -440,7 +511,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let task_id = task.task_id;
         let partitions = task.partitions;
 
-        info!("Start to execute shuffle write for task {}", task_identity);
+        info!(
+            executor_id = self.executor.metadata.id,
+            task_identity, "executing shuffle write"
+        );
 
         let execution_result = self
             .executor
@@ -454,14 +528,26 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                 shuffle_output_partitioning,
             )
             .await;
-        info!("Done with task {}", task_identity);
+
+        info!(
+            executor_id = self.executor.metadata.id,
+            task_identity, "completed task"
+        );
         debug!("Statistics: {:?}", execution_result);
 
         let plan_metrics = query_stage_exec.collect_plan_metrics();
-        let operator_metrics = plan_metrics
+        let operator_metrics = match plan_metrics
             .into_iter()
             .map(|m| m.try_into())
-            .collect::<Result<Vec<_>, BallistaError>>()?;
+            .collect::<Result<Vec<_>, BallistaError>>()
+        {
+            Ok(metrics) => metrics,
+            Err(e) => {
+                error!(executor_id = self.executor.metadata.id, error = %e, "error serializing task metrics");
+                vec![]
+            }
+        };
+
         let executor_id = &self.executor.metadata.id;
 
         let end_exec_time = SystemTime::now()
@@ -474,7 +560,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             end_exec_time,
         };
 
-        let task_status = as_task_status(
+        Ok(as_task_status(
             execution_result,
             executor_id.clone(),
             job_id,
@@ -484,20 +570,99 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             attempt,
             Some(operator_metrics),
             task_execution_times,
-        );
+        ))
+    }
 
-        self.circuit_breaker_client
-            .deregister_scheduler(task_identity.to_owned())?;
+    async fn run_task(
+        &self,
+        task_identity: &str,
+        scheduler_id: String,
+        curator_task: TaskDefinition,
+        query_stage_exec: Arc<dyn QueryStageExecutor>,
+    ) {
+        let start_exec_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
 
         let task_status_sender = self.executor_env.tx_task_status.clone();
-        task_status_sender
-            .send(CuratorTaskStatus {
-                scheduler_id,
-                task_status: vec![task_status],
-            })
+
+        let job_id = curator_task.job_id.clone();
+        let stage_id = curator_task.stage_id;
+        let task_id = curator_task.task_id;
+        let partitions = curator_task.partitions.clone();
+        let attempt = curator_task.stage_attempt_num;
+        let launch_time = curator_task.launch_time;
+
+        match self
+            .run_task_inner(
+                start_exec_time,
+                task_identity,
+                scheduler_id.clone(),
+                curator_task,
+                query_stage_exec,
+            )
             .await
-            .unwrap();
-        Ok(())
+        {
+            Ok(task_status) => {
+                if let Err(_e) = task_status_sender
+                    .send(CuratorTaskStatus {
+                        scheduler_id,
+                        task_status: vec![task_status],
+                    })
+                    .await
+                {
+                    error!(
+                        executor_id = self.executor.metadata.id,
+                        task_identity,
+                        job_id,
+                        stage_id,
+                        task_id,
+                        "failed to send task status, channel closed"
+                    );
+                }
+            }
+            Err(err) => {
+                let executor_id = self.executor.metadata.id.clone();
+
+                error!(task_identity, job_id, stage_id, task_id, executor_id, scheduler_id, error = %err, "failed to run task");
+                let task_status = as_task_status(
+                    Err(err),
+                    executor_id,
+                    job_id.clone(),
+                    stage_id,
+                    task_id,
+                    partitions,
+                    attempt,
+                    None,
+                    TaskExecutionTimes {
+                        launch_time,
+                        start_exec_time,
+                        end_exec_time: SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64,
+                    },
+                );
+
+                if let Err(_e) = task_status_sender
+                    .send(CuratorTaskStatus {
+                        scheduler_id,
+                        task_status: vec![task_status],
+                    })
+                    .await
+                {
+                    error!(
+                        executor_id = self.executor.metadata.id,
+                        task_identity,
+                        job_id,
+                        stage_id,
+                        task_id,
+                        "failed to send task status, channel closed"
+                    );
+                }
+            }
+        }
     }
 
     // TODO populate with real metrics
@@ -525,14 +690,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> Heartbeater<T, U>
         let mut heartbeat_shutdown = shutdown_noti.subscribe_for_shutdown();
         let heartbeat_complete = shutdown_noti.shutdown_complete_tx.clone();
         tokio::spawn(async move {
-            info!("Starting heartbeater to send heartbeat the scheduler periodically");
+            let executor_id = &executor_server.executor.metadata.id;
+            info!(executor_id, "starting executor heartbeat");
             // As long as the shutdown notification has not been received
             while !heartbeat_shutdown.is_shutdown() {
                 executor_server.heartbeat().await;
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_millis(60000)) => {},
                     _ = heartbeat_shutdown.recv() => {
-                        info!("Stop heartbeater");
+                        info!(executor_id, "stopping executor heartbeat");
                         drop(heartbeat_complete);
                         return;
                     }
@@ -585,7 +751,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                 })
                 .await
             {
-                warn!("failed to update task status: {e:?}");
+                warn!(executor_id, error = %e, "failed to update task status");
                 if let Some(interval) = retries.next() {
                     if matches!(
                         e.code(),
@@ -628,7 +794,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                 .await
             {
                 warn!(
-                    "failed to send scheduler lost for scheduler {scheduler_id}: {e:?}"
+                    executor_id, scheduler_id, error = %e, "failed to send scheduler lost"
                 );
                 if let Some(interval) = retries.next() {
                     if matches!(
@@ -665,7 +831,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
         let mut tasks_status_shutdown = shutdown_noti.subscribe_for_shutdown();
         let tasks_status_complete = shutdown_noti.shutdown_complete_tx.clone();
         tokio::spawn(async move {
-            info!("Starting the task status reporter");
+            let executor_id = &executor_server.executor.metadata.id;
+            info!(executor_id, "starting task status reporter");
             // As long as the shutdown notification has not been received
             while !tasks_status_shutdown.is_shutdown() {
                 let mut curator_task_status_map: HashMap<String, Vec<TaskStatus>> =
@@ -674,7 +841,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                 let maybe_task_status: Option<CuratorTaskStatus> = tokio::select! {
                      task_status = rx_task_status.recv() => task_status,
                     _ = tasks_status_shutdown.recv() => {
-                        info!("Stop task status reporting loop");
+                        info!(executor_id, "stopping task status reporter");
                         drop(tasks_status_complete);
                         return;
                     }
@@ -688,7 +855,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                     task_status_vec.extend(task_status.task_status);
                     fetched_task_num += 1;
                 } else {
-                    info!("Channel is closed and will exit the task status report loop.");
+                    info!(
+                        executor_id,
+                        "channel is closed, exiting task status report loop."
+                    );
                     drop(tasks_status_complete);
                     return;
                 }
@@ -704,11 +874,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                             task_status_vec.extend(task_status.task_status);
                         }
                         Err(TryRecvError::Empty) => {
-                            info!("Fetched {} tasks status to report", fetched_task_num);
+                            info!(
+                                executor_id,
+                                tasks = fetched_task_num,
+                                "received task statuses to report",
+                            );
                             break;
                         }
                         Err(TryRecvError::Disconnected) => {
-                            info!("Channel is closed and will exit the task status report loop");
+                            info!(
+                                executor_id,
+                                "channel is closed, exiting task status report loop"
+                            );
                             drop(tasks_status_complete);
                             return;
                         }
@@ -750,12 +927,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                                 )
                                 .await
                                 {
-                                    error!(scheduler_id, error = %e, "failed to send scheduler lost");
+                                    error!(executor_id, scheduler_id, error = %e, "failed to send scheduler lost");
                                 }
                             }
                         }
                         Err(e) => {
                             error!(
+                                executor_id,
                                 scheduler_id,
                                 error = %e,
                                 "failed to get scheduler client",
@@ -772,7 +950,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                             )
                             .await
                             {
-                                error!(scheduler_id, error = %e, "failed to send scheduler lost");
+                                error!(executor_id, scheduler_id, error = %e, "failed to send scheduler lost");
                             }
                         }
                     }
@@ -785,7 +963,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
         let mut task_runner_shutdown = shutdown_noti.subscribe_for_shutdown();
         let task_runner_complete = shutdown_noti.shutdown_complete_tx.clone();
         tokio::spawn(async move {
-            info!("Starting the task runner pool");
+            let executor_id = &executor_server.executor.metadata.id;
+            info!(executor_id, "starting task runner pool");
 
             // Use a dedicated executor for CPU bound tasks so that the main tokio
             // executor can still answer requests even when under load
@@ -799,7 +978,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                 let maybe_task: Option<CuratorTaskDefinition> = tokio::select! {
                      task = rx_task.recv() => task,
                     _ = task_runner_shutdown.recv() => {
-                        info!("Stop the task runner pool");
+                        info!(executor_id, "stopping task runner pool");
                         drop(task_runner_complete);
                         return;
                     }
@@ -808,10 +987,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                     let server = executor_server.clone();
                     let plan = task.plan;
                     let curator_task = task.tasks[0].clone();
+                    let scheduler_id = task.scheduler_id.clone();
+
                     let out: tokio::sync::oneshot::Receiver<
                         Result<Arc<dyn QueryStageExecutor>, BallistaError>,
                     > = dedicated_executor.spawn(async move {
-                        server.decode_task(curator_task, &plan).await
+                        server.decode_task(scheduler_id, curator_task, &plan).await
                     });
 
                     let plan = out.await;
@@ -820,21 +1001,24 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                         Ok(Ok(plan)) => plan,
                         Ok(Err(e)) => {
                             error!(
-                                "Failed to decode the plan of task {:?} due to {:?}",
-                                task_identity(&task.tasks[0]),
-                                e
+                                executor_id,
+                                task_identity = task_identity(&task.tasks[0]),
+                                error = %e,
+                                "failed to decode task",
                             );
-                            return;
+                            continue;
                         }
                         Err(e) => {
                             error!(
-                                "Failed to receive error plan of task {:?} due to {:?}",
-                                task_identity(&task.tasks[0]),
-                                e
+                                executor_id,
+                                task_identity = task_identity(&task.tasks[0]),
+                                error = %e,
+                                "failed to receive decoded task",
                             );
-                            return;
+                            continue;
                         }
                     };
+
                     let scheduler_id = task.scheduler_id.clone();
 
                     for curator_task in task.tasks {
@@ -842,7 +1026,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                         let scheduler_id = scheduler_id.clone();
 
                         let task_identity = task_identity(&curator_task);
-                        info!("Received task {:?}", &task_identity);
+                        info!(executor_id, task_identity, "received task");
 
                         let server = executor_server.clone();
                         dedicated_executor.spawn(async move {
@@ -854,16 +1038,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                                     plan,
                                 )
                                 .await
-                                .unwrap_or_else(|e| {
-                                    error!(
-                                        "Fail to run the task {:?} due to {:?}",
-                                        task_identity, e
-                                    );
-                                });
                         });
                     }
                 } else {
-                    info!("Channel is closed and will exit the task receive loop");
+                    info!(
+                        executor_id,
+                        "channel is closed and will exit the task receive loop"
+                    );
                     drop(task_runner_complete);
                     return;
                 }
@@ -890,14 +1071,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                 .try_into()
                 .map_err(|e| Status::invalid_argument(format!("{e}")))?;
 
-            task_sender
+            if task_sender
                 .send(CuratorTaskDefinition {
                     scheduler_id: scheduler_id.clone(),
                     plan,
                     tasks: vec![task_def],
                 })
                 .await
-                .unwrap();
+                .is_err()
+            {
+                warn!(
+                    scheduler_id,
+                    executor_id = self.executor.metadata.id,
+                    "task from scheduler rejected, executor is shutting down"
+                );
+                return Err(Status::aborted("executor is shutting down"));
+            }
         }
         Ok(Response::new(LaunchTaskResult { success: true }))
     }
@@ -909,16 +1098,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         let stop_request = request.into_inner();
         if stop_request.executor_id != self.executor.metadata.id {
             warn!(
-                "The executor id {} in request is different from {}. The stop request will be ignored",
-                stop_request.executor_id, self.executor.metadata.id
+                request_executor_id = stop_request.executor_id,
+                executor_id = self.executor.metadata.id,
+                "received executor invalid executor ID in stop request, ignoring",
             );
             return Ok(Response::new(StopExecutorResult {}));
         }
         let stop_reason = stop_request.reason;
         let force = stop_request.force;
         info!(
-            "Receive stop executor request, reason: {:?}, force {:?}",
-            stop_reason, force
+            stop_reason,
+            force,
+            executor_id = self.executor.metadata.id,
+            "receive stop executor request",
         );
         let stop_sender = self.executor_env.tx_stop.clone();
         stop_sender.send(force).await.unwrap();
@@ -930,7 +1122,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         request: Request<CancelTasksParams>,
     ) -> Result<Response<CancelTasksResult>, Status> {
         let task_infos = request.into_inner().task_infos;
-        info!("Cancelling tasks for {:?}", task_infos);
+        info!(
+            executor_id = self.executor.metadata.id,
+            num_tasks = task_infos.len(),
+            "received cancel tasks request"
+        );
 
         let mut cancelled = true;
 
@@ -940,7 +1136,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                 .cancel_task(task.task_id as usize, task.job_id, task.stage_id as usize)
                 .await
             {
-                error!("Error cancelling task: {:?}", e);
+                error!(executor_id = self.executor.metadata.id, error = %e, "error cancelling tasks");
                 cancelled = false;
             }
         }
@@ -958,24 +1154,27 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         let mut path = work_dir.clone();
         path.push(&job_id);
 
+        info!(executor_id = self.executor.metadata.id, job_id, path = %path.display(), "removing job data");
+
         // Verify it's an existing directory
         if !path.is_dir() {
             return if !path.exists() {
                 Ok(Response::new(RemoveJobDataResult {}))
             } else {
                 Err(Status::invalid_argument(format!(
-                    "Path {path:?} is not for a directory!!!"
+                    "path {} is not a directory",
+                    path.display()
                 )))
             };
         }
 
         if !is_subdirectory(path.as_path(), work_dir.as_path()) {
             return Err(Status::invalid_argument(format!(
-                "Path {path:?} is not a subdirectory of {work_dir:?}!!!"
+                "path {} is not in the work directory {}",
+                path.display(),
+                work_dir.display()
             )));
         }
-
-        info!("Remove data for job {:?}", job_id);
 
         std::fs::remove_dir_all(&path)?;
 
