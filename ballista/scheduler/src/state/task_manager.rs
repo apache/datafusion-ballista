@@ -152,13 +152,13 @@ pub trait TaskLauncher<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     fn prepare_task_definition(
         &self,
         ctx: Arc<SessionContext>,
-        task: TaskDescription,
+        task: &TaskDescription,
     ) -> Result<TaskDefinition>;
 
     async fn launch_tasks(
         &self,
         executor: &ExecutorMetadata,
-        tasks: Vec<TaskDescription>,
+        tasks: &[TaskDescription],
         executor_manager: &ExecutorManager,
     ) -> Result<()>;
 }
@@ -190,7 +190,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskLauncher<T, U
     fn prepare_task_definition(
         &self,
         ctx: Arc<SessionContext>,
-        task: TaskDescription,
+        task: &TaskDescription,
     ) -> Result<TaskDefinition> {
         let job_id = task.partitions.job_id.clone();
         let stage_id = task.partitions.stage_id;
@@ -233,7 +233,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskLauncher<T, U
                 .collect(),
             plan,
             output_partitioning,
-            session_id: task.session_id,
+            session_id: task.session_id.clone(),
             launch_time: timestamp_millis(),
             props,
         })
@@ -242,7 +242,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskLauncher<T, U
     async fn launch_tasks(
         &self,
         executor: &ExecutorMetadata,
-        tasks: Vec<TaskDescription>,
+        tasks: &[TaskDescription],
         executor_manager: &ExecutorManager,
     ) -> Result<()> {
         if log::max_level() >= log::Level::Info {
@@ -263,26 +263,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskLauncher<T, U
             );
         }
 
-        let tasks = tasks.into_iter().map(|task_def| async {
+        let tasks = tasks.iter().map(|task_def| async {
             let ctx = self.state.get_session(&task_def.session_id).await?;
             self.prepare_task_definition(ctx, task_def)
         });
 
-        let tasks: Result<Vec<TaskDefinition>> = try_join_all(tasks).await;
+        let tasks: Vec<TaskDefinition> = try_join_all(tasks).await?;
 
         let mut client = executor_manager.get_client(&executor.id).await?;
         client
             .launch_task(protobuf::LaunchTaskParams {
-                tasks: tasks?,
+                tasks,
                 scheduler_id: self.scheduler_id.clone(),
             })
-            .await
-            .map_err(|e| {
-                BallistaError::Internal(format!(
-                    "Failed to connect to executor {}: {:?}",
-                    executor.id, e
-                ))
-            })?;
+            .await?;
 
         Ok(())
     }
@@ -436,7 +430,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             plan,
             queued_at,
         )?;
-        info!("Submitting execution graph: {:?}", graph);
+        info!(
+            job_id,
+            job_name, session_id, "submitting execution graph: {:?}", graph
+        );
 
         self.state.submit_job(job_id.to_string(), &graph).await?;
 
@@ -514,7 +511,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
         for (job_id, statuses) in job_updates {
             let num_tasks = statuses.len();
-            debug!("Updating {} tasks in job {}", num_tasks, job_id);
+            debug!(job_id, num_tasks, "updating task statuses");
 
             let job_events = if let Some(job) = self.active_job_queue.get_job(&job_id) {
                 let mut graph = job.graph_mut().await;
@@ -527,7 +524,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 )?
             } else {
                 // TODO Deal with curator changed case
-                error!("Fail to find job {} in the active cache and it may not be curated by this scheduler", job_id);
+                warn!(job_id, "job not found in active job cache");
                 vec![]
             };
 
@@ -614,7 +611,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         job_id: &str,
         circuit_breaker_tripped: bool,
     ) -> Result<()> {
-        debug!("Moving job {} from Active to Success", job_id);
+        debug!(job_id, "completing job");
 
         if let Some(graph) = self.remove_active_execution_graph(job_id) {
             let mut graph = graph.write().await.clone();
@@ -636,11 +633,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
                 self.state.save_job(job_id, &graph).await?;
             } else {
-                error!("Job {} has not finished and cannot be completed", job_id);
+                error!(job_id, "cannot complete job, not finished");
                 return Ok(());
             }
         } else {
-            warn!("Fail to find job {} in the cache", job_id);
+            warn!(job_id, "cannot not complete job, not found in active cache");
         }
 
         Ok(())
@@ -666,33 +663,35 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         job_id: &str,
         reason: Arc<execution_error::Error>,
     ) -> Result<(Vec<RunningTaskInfo>, usize)> {
-        let (tasks_to_cancel, pending_tasks) = if let Some(job) =
-            self.active_job_queue.get_job(job_id)
-        {
-            let mut guard = job.graph_mut().await;
+        let (tasks_to_cancel, pending_tasks) =
+            if let Some(job) = self.active_job_queue.get_job(job_id) {
+                let mut guard = job.graph_mut().await;
 
-            let pending_tasks = guard.available_tasks();
-            let running_tasks = guard.running_tasks();
+                let pending_tasks = guard.available_tasks();
+                let running_tasks = guard.running_tasks();
 
-            info!(
-                "Cancelling {} running tasks for job {}",
-                running_tasks.len(),
-                job_id
-            );
+                info!(
+                    job_id,
+                    tasks = running_tasks.len(),
+                    "cancelling running tasks"
+                );
 
-            guard.fail_job(reason);
+                guard.fail_job(reason);
 
-            self.state.save_job(job_id, &guard).await?;
+                self.state.save_job(job_id, &guard).await?;
 
-            // After state is saved, remove job from active cache
-            let _ = self.remove_active_execution_graph(job_id);
+                // After state is saved, remove job from active cache
+                let _ = self.remove_active_execution_graph(job_id);
 
-            (running_tasks, pending_tasks)
-        } else {
-            // TODO listen the job state update event and fix task cancelling
-            warn!("Fail to find job {} in the cache, unable to cancel tasks for job, fail the job state only.", job_id);
-            (vec![], 0)
-        };
+                (running_tasks, pending_tasks)
+            } else {
+                // TODO listen the job state update event and fix task cancelling
+                warn!(
+                    job_id,
+                    "cannot cancel tasks for job, not found in active cache"
+                );
+                (vec![], 0)
+            };
 
         Ok((tasks_to_cancel, pending_tasks))
     }
@@ -708,7 +707,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     pub async fn update_job(&self, job_id: &str) -> Result<usize> {
-        debug!("Update active job {job_id}");
+        debug!(job_id, "updating job");
         if let Some(job) = self.active_job_queue.get_job(job_id) {
             let mut graph = job.graph_mut().await;
 
@@ -716,7 +715,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
             graph.revive();
 
-            debug!("Saving job with status {:?}", graph.status());
+            debug!(job_id, "saving job with status {:?}", graph.status());
 
             self.state.save_job(job_id, &graph).await?;
 
@@ -724,7 +723,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
             Ok(new_tasks)
         } else {
-            warn!("Fail to find job {} in the cache", job_id);
+            warn!(job_id, "cannot update, not found in active cache");
 
             Ok(0)
         }
@@ -758,7 +757,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let available_tasks = graph.read().await.available_tasks();
             Ok(available_tasks)
         } else {
-            warn!("Fail to find job {} in the cache", job_id);
+            warn!(
+                job_id,
+                "cannot get available task count for job, not found in active cache"
+            );
             Ok(0)
         }
     }
@@ -768,14 +770,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         task: TaskDescription,
     ) -> Result<TaskDefinition> {
         let ctx = self.state.get_session(&task.session_id).await?;
-        self.launcher.prepare_task_definition(ctx, task)
+        self.launcher.prepare_task_definition(ctx, &task)
     }
 
     /// Launch the given tasks on the specified executor
     pub(crate) async fn launch_tasks(
         &self,
         executor: &ExecutorMetadata,
-        tasks: Vec<TaskDescription>,
+        tasks: &[TaskDescription],
         executor_manager: &ExecutorManager,
     ) -> Result<()> {
         self.launcher
@@ -823,7 +825,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Clean up a failed job in FailedJobs Keyspace by delayed clean_up_interval seconds
     pub(crate) fn clean_up_job_delayed(&self, job_id: String, clean_up_interval: u64) {
         if clean_up_interval == 0 {
-            info!("The interval is 0 and the clean up for the failed job state {} will not triggered", job_id);
+            info!(job_id, "clean_up_interval was 0, ignoring");
             return;
         }
 
@@ -832,7 +834,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let job_id = job_id;
             tokio::time::sleep(Duration::from_secs(clean_up_interval)).await;
             if let Err(err) = state.remove_job(&job_id).await {
-                error!("Failed to delete job {job_id}: {err:?}");
+                error!(job_id, error = %err, "failed to remove job");
             }
         });
     }

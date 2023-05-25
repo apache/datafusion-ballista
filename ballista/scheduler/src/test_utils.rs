@@ -62,6 +62,7 @@ use ballista_core::utils::default_session_builder;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use itertools::Itertools;
 use parking_lot::Mutex;
+use rand::{thread_rng, Rng};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 
 pub const TPCH_TABLES: &[&str] = &[
@@ -334,7 +335,7 @@ impl TaskLauncher<LogicalPlanNode, PhysicalPlanNode> for BlackholeTaskLauncher {
     fn prepare_task_definition(
         &self,
         _ctx: Arc<SessionContext>,
-        _task: TaskDescription,
+        _task: &TaskDescription,
     ) -> Result<TaskDefinition> {
         Err(BallistaError::NotImplemented(String::default()))
     }
@@ -342,7 +343,7 @@ impl TaskLauncher<LogicalPlanNode, PhysicalPlanNode> for BlackholeTaskLauncher {
     async fn launch_tasks(
         &self,
         _executor: &ExecutorMetadata,
-        _tasks: Vec<TaskDescription>,
+        _tasks: &[TaskDescription],
         _executor_manager: &ExecutorManager,
     ) -> Result<()> {
         Ok(())
@@ -352,6 +353,7 @@ impl TaskLauncher<LogicalPlanNode, PhysicalPlanNode> for BlackholeTaskLauncher {
 pub struct VirtualTaskLauncher {
     sender: Sender<(String, Vec<TaskStatus>)>,
     executors: HashMap<String, VirtualExecutor>,
+    flaky: bool,
 }
 
 #[async_trait::async_trait]
@@ -359,7 +361,7 @@ impl TaskLauncher<LogicalPlanNode, PhysicalPlanNode> for VirtualTaskLauncher {
     fn prepare_task_definition(
         &self,
         _ctx: Arc<SessionContext>,
-        _task: TaskDescription,
+        _task: &TaskDescription,
     ) -> Result<TaskDefinition> {
         Err(BallistaError::NotImplemented(String::default()))
     }
@@ -367,9 +369,18 @@ impl TaskLauncher<LogicalPlanNode, PhysicalPlanNode> for VirtualTaskLauncher {
     async fn launch_tasks(
         &self,
         executor: &ExecutorMetadata,
-        tasks: Vec<TaskDescription>,
+        tasks: &[TaskDescription],
         _executor_manager: &ExecutorManager,
     ) -> Result<()> {
+        if self.flaky {
+            let mut rng = thread_rng();
+
+            // should fail half the time
+            if rng.gen_bool(0.5) {
+                return Err(BallistaError::Internal("executor flaked".to_string()));
+            }
+        }
+
         let virtual_executor = self.executors.get(&executor.id).ok_or_else(|| {
             BallistaError::Internal(format!(
                 "No virtual executor with ID {} found",
@@ -378,8 +389,8 @@ impl TaskLauncher<LogicalPlanNode, PhysicalPlanNode> for VirtualTaskLauncher {
         })?;
 
         let status = tasks
-            .into_iter()
-            .map(|t| virtual_executor.run_task(t))
+            .iter()
+            .map(|t| virtual_executor.run_task(t.clone()))
             .collect();
 
         self.sender
@@ -404,6 +415,7 @@ impl SchedulerTest {
         num_executors: usize,
         task_slots_per_executor: usize,
         runner: Option<Arc<dyn TaskRunner>>,
+        flaky: bool,
     ) -> Result<Self> {
         let cluster = BallistaCluster::new_from_config(&config).await?;
 
@@ -437,6 +449,7 @@ impl SchedulerTest {
         let launcher = VirtualTaskLauncher {
             sender: status_sender,
             executors: executors.clone(),
+            flaky,
         };
 
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =

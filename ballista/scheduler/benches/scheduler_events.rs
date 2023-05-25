@@ -127,7 +127,7 @@ impl TaskLauncher<LogicalPlanNode, PhysicalPlanNode> for Launcher {
     fn prepare_task_definition(
         &self,
         _ctx: Arc<SessionContext>,
-        _task: TaskDescription,
+        _task: &TaskDescription,
     ) -> Result<TaskDefinition> {
         unimplemented!("why are you being called!")
     }
@@ -135,7 +135,7 @@ impl TaskLauncher<LogicalPlanNode, PhysicalPlanNode> for Launcher {
     async fn launch_tasks(
         &self,
         executor: &ExecutorMetadata,
-        tasks: Vec<TaskDescription>,
+        tasks: &[TaskDescription],
         _executor_manager: &ExecutorManager,
     ) -> Result<()> {
         // Simulate a delay required to call the executor RPC

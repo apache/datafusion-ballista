@@ -33,18 +33,20 @@ use crate::state::task_manager::{TaskLauncher, TaskManager};
 
 use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
+use crate::scheduler_server::timestamp_millis;
 use crate::state::execution_graph::TaskDescription;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventSender;
-use ballista_core::serde::protobuf::TaskStatus;
+use ballista_core::serde::protobuf::failed_task::FailedReason;
+use ballista_core::serde::protobuf::{task_status, FailedTask, IoError, TaskStatus};
 use ballista_core::serde::BallistaCodec;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
-use log::{debug, error, info};
 use prost::Message;
+use tracing::{debug, error, info, warn};
 
 pub mod execution_graph;
 pub mod execution_graph_dot;
@@ -212,7 +214,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                         .post_event(QueryStageSchedulerEvent::ReservationOffering(res));
                 }
                 Ok(_) => debug!("no tasks slots reserved, scheduling another Tick"),
-                Err(e) => error!("error reserving task slots: {e:?}"),
+                Err(e) => error!(error = %e, "error reserving task slots"),
             }
         });
     }
@@ -235,18 +237,66 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                     executor_manager.get_executor_metadata(&executor_id).await?;
 
                 task_manager
-                    .launch_tasks(&metadata, tasks, &executor_manager)
+                    .launch_tasks(&metadata, &tasks, &executor_manager)
                     .await
             };
 
             if let Err(e) = result.await {
-                error!("failed to launch new task: {:?}", e);
+                error!(error = %e, "failed to launch new task");
 
+                // offer the executor reservations to be filled with new tasks
                 let reservations =
-                    vec![ExecutorReservation::new_free(executor_id); num_tasks];
+                    vec![ExecutorReservation::new_free(executor_id.clone()); num_tasks];
 
                 tx_event.post_event(QueryStageSchedulerEvent::ReservationOffering(
                     reservations,
+                ));
+
+                // send a failed status for all tasks that failed to launch so they can
+                // be re-scheduled
+                let status = tasks
+                    .into_iter()
+                    .map(|task| {
+                        warn!(
+                            job_id = task.partitions.job_id,
+                            stage_id = task.partitions.stage_id,
+                            partitions = ?task.partitions.partitions,
+                            error = %e,
+                            task_id = task.task_id,
+                            executor_id,
+                            "failed to launch task"
+                        );
+
+                        TaskStatus {
+                            task_id: task.task_id as u32,
+                            job_id: task.partitions.job_id,
+                            stage_id: task.partitions.stage_id as u32,
+                            stage_attempt_num: task.stage_attempt_num as u32,
+                            partitions: task
+                                .partitions
+                                .partitions
+                                .into_iter()
+                                .map(|p| p as u32)
+                                .collect(),
+                            launch_time: timestamp_millis(),
+                            start_exec_time: timestamp_millis(),
+                            end_exec_time: timestamp_millis(),
+                            metrics: vec![],
+                            status: Some(task_status::Status::Failed(FailedTask {
+                                retryable: true,
+                                count_to_failures: false,
+                                failed_reason: Some(FailedReason::IoError(IoError {
+                                    message: "failed to launch task on executor"
+                                        .to_string(),
+                                })),
+                            })),
+                        }
+                    })
+                    .collect();
+
+                tx_event.post_event(QueryStageSchedulerEvent::TaskUpdating(
+                    executor_id,
+                    status,
                 ));
             }
         });
@@ -289,7 +339,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                     (unassigned_reservations, pending_tasks)
                 }
                 Err(e) => {
-                    error!("Error filling reservations: {:?}", e);
+                    error!(error = %e, "error offering reservations");
                     (reservations, 0)
                 }
             };
@@ -372,7 +422,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
         let elapsed = start.elapsed();
 
-        info!("Planned job {} in {:?}", job_id, elapsed);
+        info!(job_id, ?elapsed, "planned job");
 
         Ok(())
     }

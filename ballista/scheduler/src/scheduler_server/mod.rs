@@ -417,7 +417,7 @@ mod test {
     use datafusion::config::Extensions;
     use datafusion::logical_expr::{col, sum, LogicalPlan};
 
-    use datafusion::test_util::scan_empty;
+    use datafusion::test_util::scan_empty_with_partitions;
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
 
@@ -588,6 +588,7 @@ mod test {
             4,
             1,
             None,
+            false,
         )
         .await?;
 
@@ -654,10 +655,11 @@ mod test {
             4,
             1,
             Some(runner),
+            false,
         )
         .await?;
 
-        let status = test.run("job", "", &plan).await.expect("running plan");
+        let status = test.run("job", "", &plan).await?;
 
         assert!(
             matches!(
@@ -689,6 +691,7 @@ mod test {
             4,
             1,
             None,
+            false,
         )
         .await?;
 
@@ -718,6 +721,42 @@ mod test {
 
         assert_no_submitted_event("job", &metrics_collector);
         assert_failed_event("job", &metrics_collector);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_task_launch_failure() -> Result<()> {
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector.clone(),
+            4,
+            1,
+            None,
+            true,
+        )
+        .await?;
+
+        let plan = test_plan();
+
+        // This should fail when we try and create the physical plan
+        let status = test.run("job", "", &plan).await?;
+
+        assert!(
+            matches!(
+                status,
+                JobStatus {
+                    status: Some(job_status::Status::Successful(_)),
+                    ..
+                }
+            ),
+            "{}",
+            "Expected job status to be Success but it was {status:?}"
+        );
+
+        assert_completed_event("job", &metrics_collector);
 
         Ok(())
     }
@@ -783,7 +822,7 @@ mod test {
             Field::new("gmv", DataType::UInt64, false),
         ]);
 
-        scan_empty(None, &schema, Some(vec![0, 1]))
+        scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 10)
             .unwrap()
             .aggregate(vec![col("id")], vec![sum(col("gmv"))])
             .unwrap()

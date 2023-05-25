@@ -39,8 +39,8 @@ use datafusion::datasource::file_format::FileFormat;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::TryStreamExt;
-use log::{debug, error, info, trace, warn};
 use object_store::{local::LocalFileSystem, path::Path, ObjectStore};
+use tracing::{debug, error, info, trace, warn};
 
 use std::ops::Deref;
 use std::sync::Arc;
@@ -415,11 +415,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             self.submit_job(&job_id, &job_name, session_ctx, &plan)
                 .await
                 .map_err(|e| {
-                    let msg =
-                        format!("Failed to send JobQueued event for {job_id}: {e:?}");
-                    error!("{}", msg);
-
-                    Status::internal(msg)
+                    error!(job_id, error = %e, "failed to submit JobQueued event");
+                    Status::internal(format!(
+                        "Failed to send JobQueued event for {job_id}: {e:?}"
+                    ))
                 })?;
 
             Ok(Response::new(ExecuteQueryResult { job_id, session_id }))
@@ -464,13 +463,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         request: Request<GetJobStatusParams>,
     ) -> Result<Response<GetJobStatusResult>, Status> {
         let job_id = request.into_inner().job_id;
-        trace!("Received get_job_status request for job {}", job_id);
+        trace!(job_id, "received get_job_status request");
         match self.state.task_manager.get_job_status(&job_id).await {
             Ok(status) => Ok(Response::new(GetJobStatusResult { status })),
             Err(e) => {
-                let msg = format!("Error getting status for job {job_id}: {e:?}");
-                error!("{}", msg);
-                Err(Status::internal(msg))
+                error!(job_id, error = %e, "error getting job status");
+                Err(Status::internal(format!(
+                    "Error getting status for job {job_id}: {e:?}"
+                )))
             }
         }
     }
@@ -483,16 +483,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             executor_id,
             reason,
         } = request.into_inner();
-        info!(
-            "Received executor stopped request from Executor {} with reason '{}'",
-            executor_id, reason
-        );
+        info!(executor_id, reason, "received executor stopped request",);
 
         let executor_manager = self.state.executor_manager.clone();
         let event_sender = self.query_stage_event_loop.get_sender().map_err(|e| {
-            let msg = format!("Get query stage event loop error due to {e:?}");
-            error!("{}", msg);
-            Status::internal(msg)
+            error!(error = %e, "failed to get query stage event loop");
+            Status::internal(format!("Get query stage event loop error due to {e:?}"))
         })?;
 
         Self::remove_executor(
@@ -511,14 +507,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         request: Request<CancelJobParams>,
     ) -> Result<Response<CancelJobResult>, Status> {
         let job_id = request.into_inner().job_id;
-        info!("Received cancellation request for job {}", job_id);
+        info!(job_id, "received cancellation request for job");
 
         self.query_stage_event_loop
             .get_sender()
             .map_err(|e| {
-                let msg = format!("Get query stage event loop error due to {e:?}");
-                error!("{}", msg);
-                Status::internal(msg)
+                error!(error = %e, "failed to get query stage event loop");
+                Status::internal(format!("Get query stage event loop error due to {e:?}"))
             })?
             .post_event(QueryStageSchedulerEvent::JobCancel(job_id));
 
@@ -530,14 +525,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         request: Request<CleanJobDataParams>,
     ) -> Result<Response<CleanJobDataResult>, Status> {
         let job_id = request.into_inner().job_id;
-        info!("Received clean data request for job {}", job_id);
+        info!(job_id, "received clean data request for job");
 
         self.query_stage_event_loop
             .get_sender()
             .map_err(|e| {
-                let msg = format!("Get query stage event loop error due to {e:?}");
-                error!("{}", msg);
-                Status::internal(msg)
+                error!(error = %e, "failed to get query stage event loop");
+                Status::internal(format!("Get query stage event loop error due to {e:?}"))
             })?
             .post_event(QueryStageSchedulerEvent::JobDataClean(job_id));
 
@@ -578,14 +572,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             executor_id,
             task_status,
         } = request.into_inner();
-        info!("Received scheduler lost request for scheduler {scheduler_id} from executor {executor_id}");
+        info!(scheduler_id, executor_id, "received scheduler lost request");
 
         self.query_stage_event_loop
             .get_sender()
             .map_err(|e| {
-                let msg = format!("Get query stage event loop error due to {e:?}");
-                error!("{}", msg);
-                Status::internal(msg)
+                error!(error = %e, "failed to get query stage event loop");
+                Status::internal(format!("Get query stage event loop error due to {e:?}"))
             })?
             .post_event(QueryStageSchedulerEvent::SchedulerLost(
                 scheduler_id,

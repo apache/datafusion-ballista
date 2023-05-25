@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use ballista_core::serde::protobuf::CircuitBreakerKey;
-use log::warn;
 use parking_lot::RwLock;
 use tracing::info;
+use tracing::warn;
 
 pub struct CircuitBreakerController {
     job_states: RwLock<HashMap<String, JobState>>,
@@ -64,7 +64,7 @@ impl CircuitBreakerController {
     }
 
     pub fn create(&self, job_id: &str) {
-        info!("Creating circuit breaker for job {}", job_id);
+        info!(job_id, "creating circuit breaker");
 
         let mut job_states = self.job_states.write();
 
@@ -77,7 +77,7 @@ impl CircuitBreakerController {
     }
 
     pub fn delete(&self, job_id: &str) {
-        info!("Deleting circuit breaker for job {}", job_id);
+        info!(job_id, "deleting circuit breaker");
         let mut job_states = self.job_states.write();
         job_states.remove(job_id);
     }
@@ -89,8 +89,8 @@ impl CircuitBreakerController {
             Some(state) => &mut state.stage_states,
             None => {
                 warn!(
-                    "Received circuit breaker update for unregisterd job {}",
-                    key.job_id
+                    job_id = key.job_id,
+                    "received circuit breaker update for unregisterd job",
                 );
                 return Ok(false);
             }
@@ -122,7 +122,11 @@ impl CircuitBreakerController {
             partition_states.values().map(|s| s.percent).sum::<f64>() >= 1.0;
 
         if should_trip {
-            info!("Sending circuit breaker signal to task {}", key.task_id);
+            info!(
+                job_id = key.job_id,
+                task_id = key.task_id,
+                "sending circuit breaker signal to task"
+            );
         }
 
         Ok(should_trip)

@@ -85,7 +85,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                 plan,
                 queued_at,
             } => {
-                info!("Job {} queued with name {:?}", job_id, job_name);
+                info!(job_id, job_name, "job queued");
 
                 self.state
                     .task_manager
@@ -98,8 +98,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                         .submit_job(&job_id, &job_name, session_ctx, &plan, queued_at)
                         .await
                     {
+                        error!(job_id, error = %e, "error planning job");
                         let fail_message = format!("Error planning job {job_id}: {e:?}");
-                        error!("{}", &fail_message);
                         QueryStageSchedulerEvent::JobPlanningFailed {
                             job_id,
                             fail_message,
@@ -152,7 +152,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                 self.metrics_collector
                     .record_failed(&job_id, queued_at, failed_at);
 
-                error!("Job {} failed: {:?}", job_id, fail_message);
+                error!(job_id, fail_message,%error,"job planning failed");
                 self.state
                     .task_manager
                     .fail_unscheduled_job(&job_id, error)
@@ -166,7 +166,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                 self.metrics_collector
                     .record_completed(&job_id, queued_at, completed_at);
 
-                info!("Job {} success", job_id);
+                info!(job_id, "job_finished");
 
                 // self.state.circuit_breaker.
                 let is_tripped = self.state.circuit_breaker.is_tripped_for(&job_id);
@@ -185,7 +185,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                 self.metrics_collector
                     .record_failed(&job_id, queued_at, failed_at);
 
-                error!("Job {} running failed", job_id);
+                error!(job_id, "job running failed");
                 let (running_tasks, _pending_tasks) =
                     self.state.task_manager.abort_job(&job_id, error).await?;
 
@@ -223,8 +223,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                     .await
                 {
                     error!(
-                        "Failed to update {} task statuses for Executor {}: {:?}",
-                        num_status, executor_id, e
+                        executor_id,
+                        num_status,
+                        error = %e,
+                        "failed to update task status",
                     );
                     // TODO error handling
                 }
@@ -284,10 +286,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                         }
                     }
                     Err(e) => {
-                        let msg = format!(
-                            "TaskManager error to handle Executor {executor_id} lost: {e}"
-                        );
-                        error!(executor_id, "{msg}");
+                        error!(executor_id, error = %e, "error handling ExecutorLost event");
                     }
                 }
             }
@@ -400,6 +399,7 @@ mod tests {
             0,
             0,
             None,
+            false,
         )
         .await?;
 
@@ -450,6 +450,7 @@ mod tests {
             1,
             1,
             None,
+            false,
         )
         .await?;
 
@@ -499,6 +500,7 @@ mod tests {
             1,
             1,
             None,
+            false,
         )
         .await?;
 
