@@ -108,7 +108,7 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
             }
         };
         tracing_subscriber::fmt()
-            .with_ansi(true)
+            .with_ansi(false)
             .with_thread_names(opt.print_thread_info)
             .with_thread_ids(opt.print_thread_info)
             .with_writer(log_file)
@@ -117,7 +117,7 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
     } else {
         // Console layer
         tracing_subscriber::fmt()
-            .with_ansi(true)
+            .with_ansi(false)
             .with_thread_names(opt.print_thread_info)
             .with_thread_ids(opt.print_thread_info)
             .with_writer(io::stdout)
