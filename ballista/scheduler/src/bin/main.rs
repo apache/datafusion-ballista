@@ -138,6 +138,7 @@ async fn main() -> Result<()> {
         executor_termination_grace_period: opt.executor_termination_grace_period,
         scheduler_event_expected_processing_duration: opt
             .scheduler_event_expected_processing_duration,
+        grpc_server_max_decoding_message_size: opt.grpc_server_max_decoding_message_size,
     };
 
     let cluster = BallistaCluster::new_from_config(&config).await?;
