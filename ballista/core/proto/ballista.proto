@@ -499,6 +499,8 @@ message UpdateTaskStatusParams {
   string executor_id = 1;
   // All tasks must be reported until they reach the failed or completed state
   repeated TaskStatus task_status = 2;
+  // flag to indicate whether executor reporting status is terminating
+  bool executor_terminating = 3;
 }
 
 message UpdateTaskStatusResult {

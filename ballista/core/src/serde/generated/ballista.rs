@@ -867,6 +867,9 @@ pub struct UpdateTaskStatusParams {
     /// All tasks must be reported until they reach the failed or completed state
     #[prost(message, repeated, tag = "2")]
     pub task_status: ::prost::alloc::vec::Vec<TaskStatus>,
+    /// flag to indicate whether executor reporting status is terminating
+    #[prost(bool, tag = "3")]
+    pub executor_terminating: bool,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

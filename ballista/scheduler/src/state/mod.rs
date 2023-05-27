@@ -176,20 +176,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             .get_executor_metadata(executor_id)
             .await?;
 
-        if self.config.is_push_staged_scheduling() {
-            // each task can consume multiple slots, so ensure here that we count each task partition
-            let total_num_tasks = tasks_status
-                .iter()
-                .map(|status| status.partitions.len())
-                .sum::<usize>();
-            let reservations = (0..total_num_tasks)
-                .map(|_| ExecutorReservation::new_free(executor_id.to_owned()))
-                .collect();
-
-            tx_event
-                .post_event(QueryStageSchedulerEvent::ReservationOffering(reservations));
-        }
-
         self.task_manager
             .update_task_statuses(&executor, tasks_status, tx_event)
             .await?;
@@ -248,9 +234,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 let reservations =
                     vec![ExecutorReservation::new_free(executor_id.clone()); num_tasks];
 
-                tx_event.post_event(QueryStageSchedulerEvent::ReservationOffering(
-                    reservations,
-                ));
+                // cancel executor reservations. we cancel instead of offering the reservations back to the
+                // event loop because the executor may be in `TERMINATING` state in which case the executor
+                // manager will know what to do
+                let num_reservations = reservations.len();
+                if let Err(e) = executor_manager.cancel_reservations(reservations).await {
+                    error!(executor_id, num_reservations, error = %e, "error cancelling reservations after task launch failure");
+                }
 
                 // send a failed status for all tasks that failed to launch so they can
                 // be re-scheduled
@@ -297,6 +287,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 tx_event.post_event(QueryStageSchedulerEvent::TaskUpdating(
                     executor_id,
                     status,
+                    false,
                 ));
             }
         });

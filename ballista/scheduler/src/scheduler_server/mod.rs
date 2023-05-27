@@ -35,7 +35,7 @@ use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
 use crate::state::session_manager::SessionManager;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
-use log::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
@@ -218,19 +218,25 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         &self,
         executor_id: &str,
         tasks_status: Vec<TaskStatus>,
+        offer: bool,
     ) -> Result<()> {
         // We might receive buggy task updates from dead executors.
         if self.state.config.is_push_staged_scheduling()
             && self.state.executor_manager.is_dead_executor(executor_id)
         {
-            let error_msg = format!(
-                "Receive buggy tasks status from dead Executor {executor_id}, task status update ignored."
+            warn!(
+                executor_id,
+                "ignoring task status update from dead executor"
             );
-            warn!("{}", error_msg);
             return Ok(());
         }
+
         self.query_stage_event_loop.get_sender()?.post_event(
-            QueryStageSchedulerEvent::TaskUpdating(executor_id.to_owned(), tasks_status),
+            QueryStageSchedulerEvent::TaskUpdating(
+                executor_id.to_owned(),
+                tasks_status,
+                offer,
+            ),
         );
 
         Ok(())
@@ -273,16 +279,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                     );
 
                     let stop_reason = if terminating {
+                        info!(executor_id, termination_grace_period, "removing TERMINATING executor after termination grace period");
                         format!(
                         "TERMINATING executor {executor_id} heartbeat timed out after {termination_grace_period}s"
-                    )
+                        )
                     } else {
+                        warn!(
+                            executor_id,
+                            timeout = DEFAULT_EXECUTOR_TIMEOUT_SECONDS,
+                            "removing ACTIVE executor"
+                        );
                         format!(
                             "ACTIVE executor {executor_id} heartbeat timed out after {DEFAULT_EXECUTOR_TIMEOUT_SECONDS}s",
                         )
                     };
-
-                    warn!("{stop_reason}");
 
                     // If executor is expired, remove it immediately
                     Self::remove_executor(
@@ -308,17 +318,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                                         .await
                                     {
                                         Err(error) => {
-                                            warn!(
-                                            "Failed to send stop_executor rpc due to, {}",
-                                            error
-                                        );
+                                            warn!(%error,"failed to send stop_executor rpc");
                                         }
                                         Ok(_value) => {}
                                     }
                                 });
                             }
                             Err(_) => {
-                                warn!("Executor is already dead, failed to connect to Executor {}", executor_id);
+                                warn!(executor_id, "executor is already dead");
                             }
                         }
                     }

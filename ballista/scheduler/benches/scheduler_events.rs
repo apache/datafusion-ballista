@@ -351,7 +351,7 @@ async fn setup_env(
     tokio::spawn(async move {
         while let Some((executor_id, status)) = status_rx.recv().await {
             server_clone
-                .update_task_status(&executor_id, vec![status])
+                .update_task_status(&executor_id, vec![status], true)
                 .await
                 .unwrap();
         }

@@ -748,6 +748,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                 .update_task_status(UpdateTaskStatusParams {
                     executor_id: executor_id.to_owned(),
                     task_status: status.clone(),
+                    executor_terminating: TERMINATING.load(Ordering::Acquire),
                 })
                 .await
             {
@@ -916,18 +917,20 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                                     "failed to update task status",
                                 );
 
-                                let mut scheduler =
-                                    executor_server.scheduler_to_register.clone();
+                                if !TERMINATING.load(Ordering::Acquire) {
+                                    let mut scheduler =
+                                        executor_server.scheduler_to_register.clone();
 
-                                if let Err(e) = Self::send_scheduler_lost(
-                                    &mut scheduler,
-                                    &executor_server.executor.metadata.id,
-                                    &scheduler_id,
-                                    tasks_status,
-                                )
-                                .await
-                                {
-                                    error!(executor_id, scheduler_id, error = %e, "failed to send scheduler lost");
+                                    if let Err(e) = Self::send_scheduler_lost(
+                                        &mut scheduler,
+                                        &executor_server.executor.metadata.id,
+                                        &scheduler_id,
+                                        tasks_status,
+                                    )
+                                    .await
+                                    {
+                                        error!(executor_id, scheduler_id, error = %e, "failed to send scheduler lost");
+                                    }
                                 }
                             }
                         }

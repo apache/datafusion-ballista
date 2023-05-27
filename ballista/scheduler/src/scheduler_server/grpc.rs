@@ -98,14 +98,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     Status::internal(msg)
                 })?;
 
-            self.update_task_status(&metadata.id, task_status)
+            self.update_task_status(&metadata.id, task_status, false)
                 .await
                 .map_err(|e| {
                     let msg = format!(
-                        "Fail to update tasks status from executor {:?} due to {:?}",
+                        "Failed to update tasks status from executor {:?} due to {:?}",
                         &metadata.id, e
                     );
-                    error!("{}", msg);
+                    error!(executor_id = metadata.id, error = %e, "failed to update task status from executor");
                     Status::internal(msg)
                 })?;
 
@@ -194,7 +194,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             .get_executor_metadata(&executor_id)
             .await
         {
-            warn!("Fail to get executor metadata: {}", e);
+            warn!(executor_id, error = %e, "failed to get executor metadata");
             if let Some(metadata) = metadata {
                 let metadata = ExecutorMetadata {
                     id: metadata.id,
@@ -210,8 +210,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 };
 
                 self.do_register_executor(metadata).await.map_err(|e| {
-                    let msg = format!("Fail to do executor registration due to: {e}");
-                    error!("{}", msg);
+                    let msg = format!("failed to register executor: {e}");
+                    error!(executor_id, error = %e, "failed to register executor");
                     Status::internal(msg)
                 })?;
             } else {
@@ -250,21 +250,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let UpdateTaskStatusParams {
             executor_id,
             task_status,
+            executor_terminating,
         } = request.into_inner();
 
-        debug!(
-            "Received task status update request for executor {:?}",
-            executor_id
-        );
+        debug!(executor_id, "received task status update",);
 
-        self.update_task_status(&executor_id, task_status)
+        self.update_task_status(&executor_id, task_status, !executor_terminating)
             .await
             .map_err(|e| {
                 let msg = format!(
-                    "Fail to update tasks status from executor {:?} due to {:?}",
-                    &executor_id, e
+                    "failed to update tasks status from executor {executor_id}: {e:?}",
                 );
-                error!("{}", msg);
+                error!(executor_id, error = %e, "failed to apply task status update");
                 Status::internal(msg)
             })?;
 
@@ -287,7 +284,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let file_format: Arc<dyn FileFormat> = match file_type.as_str() {
             "parquet" => Ok(Arc::new(ParquetFormat::default())),
             // TODO implement for CSV
-            _ => Err(tonic::Status::unimplemented(
+            _ => Err(Status::unimplemented(
                 "get_file_metadata unsupported file type",
             )),
         }?;

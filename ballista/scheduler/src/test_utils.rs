@@ -539,11 +539,29 @@ impl SchedulerTest {
         Ok(())
     }
 
+    pub async fn tick_with_offer(&mut self, offer: bool) -> Result<()> {
+        if let Some(receiver) = self.status_receiver.as_mut() {
+            if let Some((executor_id, status)) = receiver.recv().await {
+                self.scheduler
+                    .update_task_status(&executor_id, status, offer)
+                    .await?;
+            } else {
+                return Err(BallistaError::Internal("Task sender dropped".to_owned()));
+            }
+        } else {
+            return Err(BallistaError::Internal(
+                "Status receiver was None".to_owned(),
+            ));
+        }
+
+        Ok(())
+    }
+
     pub async fn tick(&mut self) -> Result<()> {
         if let Some(receiver) = self.status_receiver.as_mut() {
             if let Some((executor_id, status)) = receiver.recv().await {
                 self.scheduler
-                    .update_task_status(&executor_id, status)
+                    .update_task_status(&executor_id, status, true)
                     .await?;
             } else {
                 return Err(BallistaError::Internal("Task sender dropped".to_owned()));
@@ -592,8 +610,6 @@ impl SchedulerTest {
                     _ => {
                         if time >= timeout_ms {
                             break Ok(status.unwrap());
-                        } else {
-                            continue;
                         }
                     }
                 }
@@ -657,7 +673,7 @@ impl SchedulerTest {
         tokio::spawn(async move {
             while let Some((executor_id, status)) = receiver.recv().await {
                 scheduler_clone
-                    .update_task_status(&executor_id, status)
+                    .update_task_status(&executor_id, status, true)
                     .await
                     .unwrap();
             }

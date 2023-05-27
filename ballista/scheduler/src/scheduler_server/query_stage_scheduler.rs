@@ -209,12 +209,33 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
 
                 tx_event.post_event(QueryStageSchedulerEvent::CancelTasks(running_tasks));
             }
-            QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status) => {
+            QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status, offer) => {
                 debug!(
                     executor_id,
-                    "processing task status updates from {executor_id}: {:?}",
-                    tasks_status
+                    "processing task status updates: {:?}", tasks_status
                 );
+
+                // if we are using push-bases scheduling and the offer flag is set then
+                // offer the task slots for scheduling
+                if offer {
+                    // each task can consume multiple slots, so ensure here that we count each task partition
+                    let total_num_tasks = tasks_status
+                        .iter()
+                        .map(|status| status.partitions.len())
+                        .sum::<usize>();
+                    let reservations = (0..total_num_tasks)
+                        .map(|_| ExecutorReservation::new_free(executor_id.to_owned()))
+                        .collect();
+
+                    tx_event.post_event(QueryStageSchedulerEvent::ReservationOffering(
+                        reservations,
+                    ));
+                } else {
+                    info!(
+                        executor_id,
+                        "not re-offering task slots for task status update"
+                    )
+                }
 
                 let num_status = tasks_status.len();
                 if let Err(e) = self
@@ -376,12 +397,13 @@ mod tests {
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
     use ballista_core::event_loop::EventAction;
+    use ballista_core::serde::protobuf::job_status::Status;
+    use ballista_core::serde::protobuf::JobStatus;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::logical_expr::{col, sum, LogicalPlan};
     use datafusion::test_util::scan_empty_with_partitions;
     use std::sync::Arc;
     use std::time::Duration;
-    use tracing_subscriber::EnvFilter;
 
     #[ignore]
     #[tokio::test]
@@ -420,13 +442,13 @@ mod tests {
 
         let next_event = rx.recv_async().await.unwrap();
 
-        println!("receieved {next_event:?}");
+        println!("received {next_event:?}");
 
         assert!(matches!(next_event, QueryStageSchedulerEvent::Tick));
 
         let next_event = rx.recv_async().await.unwrap();
 
-        println!("receieved {next_event:?}");
+        println!("received {next_event:?}");
 
         assert!(matches!(next_event, QueryStageSchedulerEvent::Tick));
 
@@ -434,11 +456,71 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_pending_task_metric() -> Result<()> {
-        tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::from_default_env())
-            .init();
+    async fn test_update_status_no_offer() -> Result<()> {
+        let plan = test_plan(10);
 
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector.clone(),
+            2,
+            1,
+            None,
+            false,
+        )
+        .await?;
+
+        test.submit("job-1", "", &plan).await?;
+
+        // First stage has 10 tasks, two of which should be scheduled immediately
+        expect_pending_tasks(&test, 8).await;
+
+        // Tick without re-offering the task slot
+        test.tick_with_offer(false).await?;
+
+        // // Since we didn't re-offer, all 9 pending tasks should still be pending
+        expect_pending_tasks(&test, 8).await;
+
+        test.tick().await?;
+
+        // New task should be scheduled on remaining executor which re-offered reservations
+        expect_pending_tasks(&test, 7).await;
+
+        // Complete the 8 remaining tasks in the first stage
+        for _ in 0..7 {
+            test.tick().await?;
+        }
+
+        // The second stage should be resolved so we should have a new pending task
+        expect_pending_tasks(&test, 1).await;
+
+        // complete the final task
+        test.tick().await?;
+
+        expect_pending_tasks(&test, 0).await;
+
+        // complete the final task by ticking twice
+        test.tick().await?;
+        test.tick().await?;
+
+        // Job should be finished now
+        let final_status = test.await_completion_timeout("job-1", 5_000).await?;
+
+        assert!(matches!(
+            final_status,
+            JobStatus {
+                status: Some(Status::Successful(_)),
+                ..
+            }
+        ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_pending_task_metric() -> Result<()> {
         let plan = test_plan(10);
 
         let metrics_collector = Arc::new(TestMetricsCollector::default());
@@ -477,11 +559,19 @@ mod tests {
 
         expect_pending_tasks(&test, 0).await;
 
-        // complete the final task
+        // complete the final task by ticking twice
         test.tick().await?;
 
         // Job should be finished now
-        let _ = test.await_completion_timeout("job-1", 5_000).await?;
+        let final_status = test.await_completion_timeout("job-1", 5_000).await?;
+
+        assert!(matches!(
+            final_status,
+            JobStatus {
+                status: Some(Status::Successful(_)),
+                ..
+            }
+        ));
 
         Ok(())
     }
