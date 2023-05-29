@@ -536,6 +536,31 @@ message ExecuteQueryParams {
   repeated KeyValuePair settings = 4;
 }
 
+message CreateSessionParams {
+  repeated KeyValuePair settings = 1;
+}
+
+message CreateSessionResult {
+  string session_id = 1;
+}
+
+message UpdateSessionParams {
+  string session_id = 1;
+  repeated KeyValuePair settings = 2;
+}
+
+message UpdateSessionResult {
+  bool success = 1;
+}
+
+message RemoveSessionParams {
+  string session_id = 1;
+}
+
+message RemoveSessionResult {
+  bool success = 1;
+}
+
 message ExecuteSqlParams {
   string sql = 1;
 }
@@ -675,6 +700,12 @@ service SchedulerGrpc {
   rpc UpdateTaskStatus (UpdateTaskStatusParams) returns (UpdateTaskStatusResult) {}
 
   rpc GetFileMetadata (GetFileMetadataParams) returns (GetFileMetadataResult) {}
+
+  rpc CreateSession (CreateSessionParams) returns (CreateSessionResult) {}
+
+  rpc UpdateSession (UpdateSessionParams) returns (UpdateSessionResult) {}
+
+  rpc RemoveSession (RemoveSessionParams) returns (RemoveSessionResult) {}
 
   rpc ExecuteQuery (ExecuteQueryParams) returns (ExecuteQueryResult) {}
 

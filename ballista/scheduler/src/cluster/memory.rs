@@ -407,6 +407,13 @@ impl JobState for InMemoryJobState {
         Ok(session)
     }
 
+    async fn remove_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<Arc<SessionContext>>> {
+        Ok(self.sessions.remove(session_id).map(|(_key, value)| value))
+    }
+
     async fn job_state_events(&self) -> Result<JobStateEventStream> {
         Ok(Box::pin(self.job_event_sender.subscribe()))
     }
