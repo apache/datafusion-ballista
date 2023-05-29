@@ -77,14 +77,20 @@ jobs:
     runs-on: ubuntu-latest # proprietary github image, not ubuntu:latest
     container:
       image: ubuntu:latest # actual ubuntu:latest that ubuntu publishes
+      env:
+        DEBIAN_FRONTEND: "noninteractive"
     steps:
       - uses: actions/checkout@v3
       - name: Install dependencies
         run: |
-          apt-get -qq update
-          apt-get -qq install -y nodejs npm
-          npm install -g yarn
           cat /etc/*-release
+          apt-get -qq update
+          apt-get -qq upgrade
+          apt-get -qq install -y curl
+          curl -fsSL https://deb.nodesource.com/setup_18.x | bash
+          apt-get -qq update
+          apt-get -qq install -y nodejs
+          npm install -g yarn
           which node
           which npm
           which yarn
