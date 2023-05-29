@@ -34,7 +34,7 @@ name = "ballista-scheduler"
 path = "src/bin/main.rs"
 
 [features]
-default = ["etcd", "sled", "prometheus-metrics", "flight-sql"]
+default = ["etcd", "sled", "flight-sql"]
 etcd = ["etcd-client"]
 flight-sql = []
 prometheus-metrics = ["prometheus", "once_cell"]

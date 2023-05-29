@@ -18,6 +18,7 @@
 #[cfg(feature = "prometheus")]
 pub mod prometheus;
 
+#[cfg(feature = "prometheus")]
 use crate::metrics::prometheus::PrometheusMetricsCollector;
 use ballista_core::error::Result;
 use std::sync::Arc;
