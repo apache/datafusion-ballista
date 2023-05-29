@@ -84,10 +84,11 @@ jobs:
       - name: Install dependencies
         run: |
           apt-get -qq update
+          apt-get -qq upgrade
           apt-get -qq install -y curl
           curl -fsSL https://deb.nodesource.com/setup_18.x | bash
           apt-get -qq update
-          apt-get -qq install -y nodejs npm
+          apt-get -qq install -y nodejs
           npm install -g yarn
           cat /etc/*-release
           which node
