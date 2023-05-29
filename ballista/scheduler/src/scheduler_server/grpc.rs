@@ -23,13 +23,14 @@ use std::convert::TryInto;
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
-    CancelJobParams, CancelJobResult, CleanJobDataParams, CleanJobDataResult,
-    CreateSessionParams, CreateSessionResult, ExecuteQueryParams, ExecuteQueryResult,
-    ExecutorHeartbeat, ExecutorStoppedParams, ExecutorStoppedResult,
-    GetFileMetadataParams, GetFileMetadataResult, GetJobStatusParams, GetJobStatusResult,
-    HeartBeatParams, HeartBeatResult, PollWorkParams, PollWorkResult,
-    RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
-    RemoveSessionResult, UpdateSessionParams, UpdateSessionResult,
+    execute_query_failure_result, execute_query_result, CancelJobParams, CancelJobResult,
+    CleanJobDataParams, CleanJobDataResult, CreateSessionParams, CreateSessionResult,
+    ExecuteQueryFailureResult, ExecuteQueryParams, ExecuteQueryResult,
+    ExecuteQuerySuccessResult, ExecutorHeartbeat, ExecutorStoppedParams,
+    ExecutorStoppedResult, GetFileMetadataParams, GetFileMetadataResult,
+    GetJobStatusParams, GetJobStatusResult, HeartBeatParams, HeartBeatResult,
+    PollWorkParams, PollWorkResult, RegisterExecutorParams, RegisterExecutorResult,
+    RemoveSessionParams, RemoveSessionResult, UpdateSessionParams, UpdateSessionResult,
     UpdateTaskStatusParams, UpdateTaskStatusResult,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
@@ -410,27 +411,31 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let query_params = request.into_inner();
         if let ExecuteQueryParams {
             query: Some(query),
-            settings,
             optional_session_id,
+            settings,
         } = query_params
         {
             let mut query_settings = HashMap::new();
             for kv_pair in settings {
                 query_settings.insert(kv_pair.key, kv_pair.value);
             }
+
             let (session_id, session_ctx) = match optional_session_id {
                 Some(OptionalSessionId::SessionId(session_id)) => {
-                    let ctx = self
-                        .state
-                        .session_manager
-                        .get_session(&session_id)
-                        .await
-                        .map_err(|e| {
-                            Status::internal(format!(
-                                "Failed to load SessionContext for session ID {session_id}: {e:?}"
-                            ))
-                        })?;
-                    (session_id, ctx)
+                    match self.state.session_manager.get_session(&session_id).await {
+                        Ok(ctx) => (session_id, ctx),
+                        Err(e) => {
+                            let msg = format!("Failed to load SessionContext for session ID {session_id}: {e}");
+                            error!("{}", msg);
+                            return Ok(Response::new(ExecuteQueryResult {
+                                result: Some(execute_query_result::Result::Failure(
+                                    ExecuteQueryFailureResult {
+                                        failure: Some(execute_query_failure_result::Failure::SessionNotFound(msg)),
+                                    },
+                                )),
+                            }));
+                        }
+                    }
                 }
                 _ => {
                     // Create default config
@@ -455,27 +460,48 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             };
 
             let plan = match query {
-                Query::LogicalPlan(message) => T::try_decode(message.as_slice())
-                    .and_then(|m| {
+                Query::LogicalPlan(message) => {
+                    match T::try_decode(message.as_slice()).and_then(|m| {
                         m.try_into_logical_plan(
                             session_ctx.deref(),
                             self.state.codec.logical_extension_codec(),
                         )
-                    })
-                    .map_err(|e| {
-                        let msg = format!("Could not parse logical plan protobuf: {e}");
-                        error!("{}", msg);
-                        Status::internal(msg)
-                    })?,
-                Query::Sql(sql) => session_ctx
-                    .sql(&sql)
-                    .await
-                    .and_then(|df| df.into_optimized_plan())
-                    .map_err(|e| {
-                        let msg = format!("Error parsing SQL: {e}");
-                        error!("{}", msg);
-                        Status::internal(msg)
-                    })?,
+                    }) {
+                        Ok(plan) => plan,
+                        Err(e) => {
+                            let msg =
+                                format!("Could not parse logical plan protobuf: {e}");
+                            error!("{}", msg);
+                            return Ok(Response::new(ExecuteQueryResult {
+                                result: Some(execute_query_result::Result::Failure(
+                                    ExecuteQueryFailureResult {
+                                        failure: Some(execute_query_failure_result::Failure::PlanParsingFailure(msg)),
+                                    },
+                                )),
+                            }));
+                        }
+                    }
+                }
+                Query::Sql(sql) => {
+                    match session_ctx
+                        .sql(&sql)
+                        .await
+                        .and_then(|df| df.into_optimized_plan())
+                    {
+                        Ok(plan) => plan,
+                        Err(e) => {
+                            let msg = format!("Error parsing SQL: {e}");
+                            error!("{}", msg);
+                            return Ok(Response::new(ExecuteQueryResult {
+                                result: Some(execute_query_result::Result::Failure(
+                                    ExecuteQueryFailureResult {
+                                        failure: Some(execute_query_failure_result::Failure::PlanParsingFailure(msg)),
+                                    },
+                                )),
+                            }));
+                        }
+                    }
+                }
             };
 
             debug!("Received plan for execution: {:?}", plan);
@@ -496,7 +522,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     Status::internal(msg)
                 })?;
 
-            Ok(Response::new(ExecuteQueryResult { job_id, session_id }))
+            Ok(Response::new(ExecuteQueryResult {
+                result: Some(execute_query_result::Result::Success(
+                    ExecuteQuerySuccessResult { job_id, session_id },
+                )),
+            }))
         } else {
             Err(Status::internal("Error parsing request"))
         }

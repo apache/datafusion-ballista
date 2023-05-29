@@ -961,10 +961,46 @@ pub struct ExecuteSqlParams {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteQueryResult {
+    #[prost(oneof = "execute_query_result::Result", tags = "1, 2")]
+    pub result: ::core::option::Option<execute_query_result::Result>,
+}
+/// Nested message and enum types in `ExecuteQueryResult`.
+pub mod execute_query_result {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        Success(super::ExecuteQuerySuccessResult),
+        #[prost(message, tag = "2")]
+        Failure(super::ExecuteQueryFailureResult),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecuteQuerySuccessResult {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub session_id: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecuteQueryFailureResult {
+    #[prost(oneof = "execute_query_failure_result::Failure", tags = "1, 2, 3")]
+    pub failure: ::core::option::Option<execute_query_failure_result::Failure>,
+}
+/// Nested message and enum types in `ExecuteQueryFailureResult`.
+pub mod execute_query_failure_result {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Failure {
+        #[prost(string, tag = "1")]
+        SessionNotFound(::prost::alloc::string::String),
+        #[prost(string, tag = "2")]
+        PlanParsingFailure(::prost::alloc::string::String),
+        #[prost(string, tag = "3")]
+        SqlParsingFailure(::prost::alloc::string::String),
+    }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

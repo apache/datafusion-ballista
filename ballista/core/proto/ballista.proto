@@ -566,8 +566,23 @@ message ExecuteSqlParams {
 }
 
 message ExecuteQueryResult {
+  oneof result {
+    ExecuteQuerySuccessResult success = 1;
+    ExecuteQueryFailureResult failure = 2;
+  }
+}
+
+message ExecuteQuerySuccessResult {
   string job_id = 1;
   string session_id = 2;
+}
+
+message ExecuteQueryFailureResult {
+  oneof failure {
+    string session_not_found = 1;
+    string plan_parsing_failure = 2;
+    string sql_parsing_failure = 3;
+  }
 }
 
 message GetJobStatusParams {
