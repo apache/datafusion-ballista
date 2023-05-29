@@ -186,11 +186,18 @@ impl From<&DataFusionError> for datafusion_error::Error {
                 },
             ),
             DataFusionError::ArrowError(error) => {
-                    datafusion_error::Error::ArrowError(
-                            execution_error::ArrowError {
-                                error: Some(error.into()),
-                            },
-                        )
+                match error {
+                    ArrowError::ExternalError(err) => datafusion_error::Error::External(
+                        datafusion_error::External {
+                            message: err.to_string()
+                        },
+                    ),
+                    other_error => datafusion_error::Error::ArrowError(
+                        execution_error::ArrowError {
+                            error: Some(other_error.into()),
+                        },
+                    )
+                }
             },
             DataFusionError::ParquetError(err) => match err {
                 datafusion::parquet::errors::ParquetError::General(message) => {
