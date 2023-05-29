@@ -125,3 +125,9 @@ name = "log_rotation_policy"
 type = "ballista_core::config::LogRotationPolicy"
 doc = "Tracing log rotation policy, possible values: minutely, hourly, daily, never. Default: daily"
 default = "ballista_core::config::LogRotationPolicy::Daily"
+
+[[param]]
+name = "grpc_server_max_decoding_message_size"
+type = "u32"
+default = "16777216"
+doc = "The maximum size of a decoded message at the grpc server side. Default: 16MB"

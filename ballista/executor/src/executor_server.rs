@@ -54,6 +54,7 @@ use tokio::task::JoinHandle;
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::execution_engine::QueryStageExecutor;
 use crate::executor::Executor;
+use crate::executor_process::ExecutorProcessConfig;
 use crate::shutdown::ShutdownNotifier;
 use crate::{as_task_status, TaskExecutionTimes};
 
@@ -77,7 +78,7 @@ struct CuratorTaskStatus {
 
 pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     mut scheduler: SchedulerGrpcClient<Channel>,
-    bind_host: String,
+    config: Arc<ExecutorProcessConfig>,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
     stop_send: mpsc::Sender<bool>,
@@ -102,14 +103,17 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     // 1. Start executor grpc service
     let server = {
         let executor_meta = executor.metadata.clone();
-        let addr = format!("{}:{}", bind_host, executor_meta.grpc_port);
+        let addr = format!("{}:{}", config.bind_host, executor_meta.grpc_port);
         let addr = addr.parse().unwrap();
 
         info!(
             "Ballista v{} Rust Executor Grpc Server listening on {:?}",
             BALLISTA_VERSION, addr
         );
-        let server = ExecutorGrpcServer::new(executor_server.clone());
+        let server = ExecutorGrpcServer::new(executor_server.clone())
+            .max_decoding_message_size(
+                config.grpc_server_max_decoding_message_size as usize,
+            );
         let mut grpc_shutdown = shutdown_noti.subscribe_for_shutdown();
         tokio::spawn(async move {
             let shutdown_signal = grpc_shutdown.recv();

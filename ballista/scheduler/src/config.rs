@@ -54,6 +54,8 @@ pub struct SchedulerConfig {
     pub executor_termination_grace_period: u64,
     /// The maximum expected processing time of a scheduler event (microseconds). Zero means disable.
     pub scheduler_event_expected_processing_duration: u64,
+    /// The maximum size of a decoded message at the grpc server side.
+    pub grpc_server_max_decoding_message_size: u32,
 }
 
 impl Default for SchedulerConfig {
@@ -72,6 +74,7 @@ impl Default for SchedulerConfig {
             job_resubmit_interval_ms: None,
             executor_termination_grace_period: 0,
             scheduler_event_expected_processing_duration: 0,
+            grpc_server_max_decoding_message_size: 16777216,
         }
     }
 }
@@ -151,6 +154,11 @@ impl SchedulerConfig {
 
     pub fn with_remove_executor_wait_secs(mut self, value: u64) -> Self {
         self.executor_termination_grace_period = value;
+        self
+    }
+
+    pub fn with_grpc_server_max_decoding_message_size(mut self, value: u32) -> Self {
+        self.grpc_server_max_decoding_message_size = value;
         self
     }
 }
