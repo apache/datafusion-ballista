@@ -425,7 +425,7 @@ impl SchedulerTest {
                 "localhost:50050".to_owned(),
                 cluster,
                 BallistaCodec::default(),
-                config,
+                Arc::new(config),
                 metrics_collector,
                 Arc::new(launcher),
             );

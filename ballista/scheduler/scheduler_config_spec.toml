@@ -158,3 +158,15 @@ name = "grpc_server_max_decoding_message_size"
 type = "u32"
 default = "16777216"
 doc = "The maximum size of a decoded message at the grpc server side. Default: 16MB"
+
+[[param]]
+name = "executor_timeout_seconds"
+type = "u64"
+doc = "The executor timeout in seconds. It should be longer than executor's heartbeat intervals. Only after missing two or tree consecutive heartbeats from a executor, the executor is mark to be dead"
+default = "180"
+
+[[param]]
+name = "expire_dead_executor_interval_seconds"
+type = "u64"
+doc = "The interval to check expired or dead executors"
+default = "15"

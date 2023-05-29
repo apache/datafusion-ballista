@@ -79,6 +79,7 @@ async fn main() -> Result<()> {
         job_data_ttl_seconds: opt.job_data_ttl_seconds,
         job_data_clean_up_interval_seconds: opt.job_data_clean_up_interval_seconds,
         grpc_server_max_decoding_message_size: opt.grpc_server_max_decoding_message_size,
+        executor_heartbeat_interval_seconds: opt.executor_heartbeat_interval_seconds,
         execution_engine: None,
     };
 
