@@ -76,13 +76,9 @@ tokio = { version = "1.0", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"], optional = true }
 tonic = { workspace = true }
 tower = { version = "0.4" }
-tracing = "0.1.36"
-tracing-appender = "0.2.2"
-tracing-subscriber = { version = "0.3.15", features = [
-    "fmt",
-    "env-filter",
-    "ansi",
-] }
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
 uuid = { version = "1.0", features = ["v4"] }
 warp = "0.3"
 
