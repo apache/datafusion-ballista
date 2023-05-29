@@ -83,6 +83,7 @@ jobs:
       - uses: actions/checkout@v3
       - name: Install dependencies
         run: |
+          cat /etc/*-release
           apt-get -qq update
           apt-get -qq upgrade
           apt-get -qq install -y curl
@@ -90,7 +91,6 @@ jobs:
           apt-get -qq update
           apt-get -qq install -y nodejs
           npm install -g yarn
-          cat /etc/*-release
           which node
           which npm
           which yarn
