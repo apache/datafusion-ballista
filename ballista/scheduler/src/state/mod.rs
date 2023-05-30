@@ -49,7 +49,6 @@ pub mod execution_graph;
 pub mod execution_graph_dot;
 pub mod executor_manager;
 pub mod session_manager;
-pub mod session_registry;
 pub mod task_manager;
 
 pub fn decode_protobuf<T: Message + Default>(bytes: &[u8]) -> Result<T> {
