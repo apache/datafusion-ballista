@@ -141,6 +141,16 @@ impl BallistaConfig {
                     .parse::<usize>()
                     .map_err(|e| format!("{e:?}"))?;
             }
+            DataType::UInt32 => {
+                val.to_string()
+                    .parse::<usize>()
+                    .map_err(|e| format!("{e:?}"))?;
+            }
+            DataType::UInt64 => {
+                val.to_string()
+                    .parse::<usize>()
+                    .map_err(|e| format!("{e:?}"))?;
+            }
             DataType::Boolean => {
                 val.to_string()
                     .parse::<bool>()
