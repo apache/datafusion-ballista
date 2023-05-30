@@ -61,7 +61,7 @@ use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs::File, pin::Pin};
 use tonic::codegen::StdError;
 use tonic::transport::{Channel, Error, Server};
@@ -471,4 +471,15 @@ pub fn collect_plan_metrics(plan: &dyn ExecutionPlan) -> Vec<MetricsSet> {
             .for_each(|e| metrics_array.push(e))
     });
     metrics_array
+}
+
+/// Given an interval in seconds, get the time in seconds before now
+pub fn get_time_before(interval_seconds: u64) -> u64 {
+    let now_epoch_ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards");
+    now_epoch_ts
+        .checked_sub(Duration::from_secs(interval_seconds))
+        .unwrap_or_else(|| Duration::from_secs(0))
+        .as_secs()
 }

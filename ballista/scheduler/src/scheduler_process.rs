@@ -23,6 +23,7 @@ use hyper::{server::conn::AddrStream, service::make_service_fn, Server};
 use log::info;
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tonic::transport::server::Connected;
 use tower::Service;
 
@@ -44,7 +45,7 @@ use crate::scheduler_server::SchedulerServer;
 pub async fn start_server(
     cluster: BallistaCluster,
     addr: SocketAddr,
-    config: SchedulerConfig,
+    config: Arc<SchedulerConfig>,
 ) -> Result<()> {
     info!(
         "Ballista v{} Scheduler listening on {:?}",

@@ -145,7 +145,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     // 3. Start Heartbeater loop
     {
         let heartbeater = Heartbeater::new(executor_server.clone());
-        heartbeater.start(shutdown_noti);
+        heartbeater.start(shutdown_noti, config.executor_heartbeat_interval_seconds);
     }
 
     // 4. Start TaskRunnerPool loop
@@ -471,7 +471,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> Heartbeater<T, U>
         Self { executor_server }
     }
 
-    fn start(&self, shutdown_noti: &ShutdownNotifier) {
+    fn start(
+        &self,
+        shutdown_noti: &ShutdownNotifier,
+        executor_heartbeat_interval_seconds: u64,
+    ) {
         let executor_server = self.executor_server.clone();
         let mut heartbeat_shutdown = shutdown_noti.subscribe_for_shutdown();
         let heartbeat_complete = shutdown_noti.shutdown_complete_tx.clone();
@@ -481,7 +485,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> Heartbeater<T, U>
             while !heartbeat_shutdown.is_shutdown() {
                 executor_server.heartbeat().await;
                 tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_millis(60000)) => {},
+                    _ = tokio::time::sleep(Duration::from_secs(executor_heartbeat_interval_seconds)) => {},
                     _ = heartbeat_shutdown.recv() => {
                         info!("Stop heartbeater");
                         drop(heartbeat_complete);

@@ -25,6 +25,7 @@ use log::{debug, error, info, warn};
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::{EventAction, EventSender};
 
+use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
 use crate::scheduler_server::timestamp_millis;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -44,23 +45,20 @@ pub(crate) struct QueryStageScheduler<
     state: Arc<SchedulerState<T, U>>,
     metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     pending_tasks: AtomicUsize,
-    job_resubmit_interval_ms: Option<u64>,
-    event_expected_processing_duration: u64,
+    config: Arc<SchedulerConfig>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageScheduler<T, U> {
     pub(crate) fn new(
         state: Arc<SchedulerState<T, U>>,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
-        job_resubmit_interval_ms: Option<u64>,
-        event_expected_processing_duration: u64,
+        config: Arc<SchedulerConfig>,
     ) -> Self {
         Self {
             state,
             metrics_collector,
             pending_tasks: AtomicUsize::default(),
-            job_resubmit_interval_ms,
-            event_expected_processing_duration,
+            config,
         }
     }
 
@@ -98,7 +96,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         _rx_event: &mpsc::Receiver<QueryStageSchedulerEvent>,
     ) -> Result<()> {
         let mut time_recorder = None;
-        if self.event_expected_processing_duration > 0 {
+        if self.config.scheduler_event_expected_processing_duration > 0 {
             time_recorder = Some((Instant::now(), event.clone()));
         };
         let tx_event = EventSender::new(tx_event.clone());
@@ -193,9 +191,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .map(|res| res.assign(job_id.clone()))
                         .collect();
 
-                    if reservations.is_empty() && self.job_resubmit_interval_ms.is_some()
+                    if reservations.is_empty()
+                        && self.config.job_resubmit_interval_ms.is_some()
                     {
-                        let wait_ms = self.job_resubmit_interval_ms.unwrap();
+                        let wait_ms = self.config.job_resubmit_interval_ms.unwrap();
 
                         debug!(
                             "No task slots reserved for job {job_id}, resubmitting after {wait_ms}ms"
@@ -377,8 +376,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         }
         if let Some((start, ec)) = time_recorder {
             let duration = start.elapsed();
-            if duration.ge(&core::time::Duration::from_micros(
-                self.event_expected_processing_duration,
+            if duration.ge(&Duration::from_micros(
+                self.config.scheduler_event_expected_processing_duration,
             )) {
                 warn!(
                     "[METRICS] {:?} event cost {:?} us!",

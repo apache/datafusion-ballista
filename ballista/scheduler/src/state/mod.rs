@@ -91,33 +91,20 @@ pub struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPl
     pub task_manager: TaskManager<T, U>,
     pub session_manager: SessionManager,
     pub codec: BallistaCodec<T, U>,
-    pub config: SchedulerConfig,
+    pub config: Arc<SchedulerConfig>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T, U> {
-    #[cfg(test)]
-    pub fn new_with_default_scheduler_name(
-        cluster: BallistaCluster,
-        codec: BallistaCodec<T, U>,
-    ) -> Self {
-        SchedulerState::new(
-            cluster,
-            codec,
-            "localhost:50050".to_owned(),
-            SchedulerConfig::default(),
-        )
-    }
-
     pub fn new(
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
-        config: SchedulerConfig,
+        config: Arc<SchedulerConfig>,
     ) -> Self {
         Self {
             executor_manager: ExecutorManager::new(
                 cluster.cluster_state(),
-                config.task_distribution,
+                config.clone(),
             ),
             task_manager: TaskManager::new(
                 cluster.job_state(),
@@ -130,18 +117,27 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         }
     }
 
+    #[cfg(test)]
+    pub fn new_with_default_scheduler_name(
+        cluster: BallistaCluster,
+        codec: BallistaCodec<T, U>,
+    ) -> Self {
+        let config = Arc::new(SchedulerConfig::default());
+        SchedulerState::new(cluster, codec, "localhost:50050".to_owned(), config)
+    }
+
     #[allow(dead_code)]
     pub(crate) fn new_with_task_launcher(
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
-        config: SchedulerConfig,
+        config: Arc<SchedulerConfig>,
         dispatcher: Arc<dyn TaskLauncher>,
     ) -> Self {
         Self {
             executor_manager: ExecutorManager::new(
                 cluster.cluster_state(),
-                config.task_distribution,
+                config.clone(),
             ),
             task_manager: TaskManager::with_launcher(
                 cluster.job_state(),
@@ -469,12 +465,13 @@ mod test {
             .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4")
             .build()?;
 
+        let scheduler_config = SchedulerConfig::default();
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::new_with_task_launcher(
                 test_cluster_context(),
                 BallistaCodec::default(),
                 TEST_SCHEDULER_NAME.into(),
-                SchedulerConfig::default(),
+                Arc::new(scheduler_config),
                 Arc::new(BlackholeTaskLauncher::default()),
             ));
 
@@ -569,12 +566,13 @@ mod test {
             .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4")
             .build()?;
 
+        let scheduler_config = SchedulerConfig::default();
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::new_with_task_launcher(
                 test_cluster_context(),
                 BallistaCodec::default(),
                 TEST_SCHEDULER_NAME.into(),
-                SchedulerConfig::default(),
+                Arc::new(scheduler_config),
                 Arc::new(BlackholeTaskLauncher::default()),
             ));
 

@@ -497,7 +497,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             event_sender,
             &executor_id,
             Some(reason),
-            self.executor_termination_grace_period,
+            self.config.executor_termination_grace_period,
         );
 
         Ok(Response::new(ExecutorStoppedResult {}))
@@ -554,7 +554,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
 #[cfg(all(test, feature = "sled"))]
 mod test {
-
+    use std::sync::Arc;
     use std::time::Duration;
 
     use datafusion_proto::protobuf::LogicalPlanNode;
@@ -572,7 +572,6 @@ mod test {
     use ballista_core::serde::scheduler::ExecutorSpecification;
     use ballista_core::serde::BallistaCodec;
 
-    use crate::state::executor_manager::DEFAULT_EXECUTOR_TIMEOUT_SECONDS;
     use crate::state::SchedulerState;
     use crate::test_utils::await_condition;
     use crate::test_utils::test_cluster_context;
@@ -583,12 +582,13 @@ mod test {
     async fn test_poll_work() -> Result<(), BallistaError> {
         let cluster = test_cluster_context();
 
+        let config = SchedulerConfig::default();
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
                 cluster.clone(),
                 BallistaCodec::default(),
-                SchedulerConfig::default(),
+                Arc::new(config),
                 default_metrics_collector().unwrap(),
             );
         scheduler.init().await?;
@@ -669,12 +669,13 @@ mod test {
     async fn test_stop_executor() -> Result<(), BallistaError> {
         let cluster = test_cluster_context();
 
+        let config = SchedulerConfig::default().with_remove_executor_wait_secs(0);
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
                 cluster.clone(),
                 BallistaCodec::default(),
-                SchedulerConfig::default().with_remove_executor_wait_secs(0),
+                Arc::new(config),
                 default_metrics_collector().unwrap(),
             );
         scheduler.init().await?;
@@ -740,14 +741,10 @@ mod test {
         // executor should be marked to dead
         assert!(is_stopped, "Executor not marked dead after 50ms");
 
-        let active_executors = state
-            .executor_manager
-            .get_alive_executors_within_one_minute();
+        let active_executors = state.executor_manager.get_alive_executors();
         assert!(active_executors.is_empty());
 
-        let expired_executors = state
-            .executor_manager
-            .get_expired_executors(scheduler.executor_termination_grace_period);
+        let expired_executors = state.executor_manager.get_expired_executors();
         assert!(expired_executors.is_empty());
 
         Ok(())
@@ -757,12 +754,13 @@ mod test {
     async fn test_register_executor_in_heartbeat_service() -> Result<(), BallistaError> {
         let cluster = test_cluster_context();
 
+        let config = SchedulerConfig::default();
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
                 cluster,
                 BallistaCodec::default(),
-                SchedulerConfig::default(),
+                Arc::new(config),
                 default_metrics_collector().unwrap(),
             );
         scheduler.init().await?;
@@ -809,12 +807,13 @@ mod test {
     async fn test_expired_executor() -> Result<(), BallistaError> {
         let cluster = test_cluster_context();
 
+        let config = SchedulerConfig::default();
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
                 cluster.clone(),
                 BallistaCodec::default(),
-                SchedulerConfig::default(),
+                Arc::new(config),
                 default_metrics_collector().unwrap(),
             );
         scheduler.init().await?;
@@ -869,26 +868,23 @@ mod test {
             .expect("Received error response")
             .into_inner();
 
-        let active_executors = state
-            .executor_manager
-            .get_alive_executors_within_one_minute();
+        let active_executors = state.executor_manager.get_alive_executors();
         assert_eq!(active_executors.len(), 1);
 
-        let expired_executors = state
-            .executor_manager
-            .get_expired_executors(scheduler.executor_termination_grace_period);
+        let expired_executors = state.executor_manager.get_expired_executors();
         assert!(expired_executors.is_empty());
 
         // simulate the heartbeat timeout
-        tokio::time::sleep(Duration::from_secs(DEFAULT_EXECUTOR_TIMEOUT_SECONDS)).await;
+        tokio::time::sleep(Duration::from_secs(
+            scheduler.config.executor_timeout_seconds,
+        ))
+        .await;
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // executor should be marked to dead
         assert!(state.executor_manager.is_dead_executor("abc"));
 
-        let active_executors = state
-            .executor_manager
-            .get_alive_executors_within_one_minute();
+        let active_executors = state.executor_manager.get_alive_executors();
         assert!(active_executors.is_empty());
         Ok(())
     }

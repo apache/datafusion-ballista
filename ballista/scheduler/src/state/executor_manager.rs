@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 #[cfg(not(test))]
 use ballista_core::error::BallistaError;
@@ -23,7 +23,7 @@ use ballista_core::error::Result;
 use ballista_core::serde::protobuf;
 
 use crate::cluster::ClusterState;
-use crate::config::TaskDistribution;
+use crate::config::SchedulerConfig;
 
 use crate::state::execution_graph::RunningTaskInfo;
 use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
@@ -31,7 +31,7 @@ use ballista_core::serde::protobuf::{
     executor_status, CancelTasksParams, ExecutorHeartbeat, RemoveJobDataParams,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
-use ballista_core::utils::create_grpc_client_connection;
+use ballista_core::utils::{create_grpc_client_connection, get_time_before};
 use dashmap::DashMap;
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
@@ -76,31 +76,21 @@ impl ExecutorReservation {
     }
 }
 
-// TODO move to configuration file
-/// Default executor timeout in seconds, it should be longer than executor's heartbeat intervals.
-/// Only after missing two or tree consecutive heartbeats from a executor, the executor is mark
-/// to be dead.
-pub const DEFAULT_EXECUTOR_TIMEOUT_SECONDS: u64 = 180;
-
-// TODO move to configuration file
-/// Interval check for expired or dead executors
-pub const EXPIRE_DEAD_EXECUTOR_INTERVAL_SECS: u64 = 15;
-
 #[derive(Clone)]
 pub struct ExecutorManager {
-    task_distribution: TaskDistribution,
     cluster_state: Arc<dyn ClusterState>,
+    config: Arc<SchedulerConfig>,
     clients: ExecutorClients,
 }
 
 impl ExecutorManager {
     pub(crate) fn new(
         cluster_state: Arc<dyn ClusterState>,
-        task_distribution: TaskDistribution,
+        config: Arc<SchedulerConfig>,
     ) -> Self {
         Self {
-            task_distribution,
             cluster_state,
+            config,
             clients: Default::default(),
         }
     }
@@ -115,12 +105,12 @@ impl ExecutorManager {
     /// for scheduling.
     /// This operation is atomic, so if this method return an Err, no slots have been reserved.
     pub async fn reserve_slots(&self, n: u32) -> Result<Vec<ExecutorReservation>> {
-        let alive_executors = self.get_alive_executors_within_one_minute();
+        let alive_executors = self.get_alive_executors();
 
         debug!("Alive executors: {alive_executors:?}");
 
         self.cluster_state
-            .reserve_slots(n, self.task_distribution, Some(alive_executors))
+            .reserve_slots(n, self.config.task_distribution, Some(alive_executors))
             .await
     }
 
@@ -205,7 +195,7 @@ impl ExecutorManager {
 
     /// Send rpc to Executors to clean up the job data
     async fn clean_up_job_data_inner(&self, job_id: String) {
-        let alive_executors = self.get_alive_executors_within_one_minute();
+        let alive_executors = self.get_alive_executors();
         for executor in alive_executors {
             let job_id_clone = job_id.to_owned();
             if let Ok(mut client) = self.get_client(&executor).await {
@@ -391,10 +381,9 @@ impl ExecutorManager {
 
     /// Retrieve the set of all executor IDs where the executor has been observed in the last
     /// `last_seen_ts_threshold` seconds.
-    pub(crate) fn get_alive_executors(
-        &self,
-        last_seen_ts_threshold: u64,
-    ) -> HashSet<String> {
+    pub(crate) fn get_alive_executors(&self) -> HashSet<String> {
+        let last_seen_ts_threshold =
+            get_time_before(self.config.executor_timeout_seconds);
         self.cluster_state
             .executor_heartbeats()
             .iter()
@@ -414,24 +403,13 @@ impl ExecutorManager {
     }
 
     /// Return a list of expired executors
-    pub(crate) fn get_expired_executors(
-        &self,
-        termination_grace_period: u64,
-    ) -> Vec<ExecutorHeartbeat> {
-        let now_epoch_ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards");
+    pub(crate) fn get_expired_executors(&self) -> Vec<ExecutorHeartbeat> {
         // Threshold for last heartbeat from Active executor before marking dead
-        let last_seen_threshold = now_epoch_ts
-            .checked_sub(Duration::from_secs(DEFAULT_EXECUTOR_TIMEOUT_SECONDS))
-            .unwrap_or_else(|| Duration::from_secs(0))
-            .as_secs();
+        let last_seen_threshold = get_time_before(self.config.executor_timeout_seconds);
 
         // Threshold for last heartbeat for Fenced executor before marking dead
-        let termination_wait_threshold = now_epoch_ts
-            .checked_sub(Duration::from_secs(termination_grace_period))
-            .unwrap_or_else(|| Duration::from_secs(0))
-            .as_secs();
+        let termination_wait_threshold =
+            get_time_before(self.config.executor_termination_grace_period);
 
         self.cluster_state
             .executor_heartbeats()
@@ -455,22 +433,12 @@ impl ExecutorManager {
             })
             .collect::<Vec<_>>()
     }
-
-    pub(crate) fn get_alive_executors_within_one_minute(&self) -> HashSet<String> {
-        let now_epoch_ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards");
-        let last_seen_threshold = now_epoch_ts
-            .checked_sub(Duration::from_secs(60))
-            .unwrap_or_else(|| Duration::from_secs(0));
-        self.get_alive_executors(last_seen_threshold.as_secs())
-    }
 }
 
 #[cfg(test)]
 mod test {
-
-    use crate::config::TaskDistribution;
+    use crate::config::{SchedulerConfig, TaskDistribution};
+    use std::sync::Arc;
 
     use crate::scheduler_server::timestamp_secs;
     use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
@@ -495,8 +463,9 @@ mod test {
     ) -> Result<()> {
         let cluster = test_cluster_context();
 
+        let config = SchedulerConfig::default().with_task_distribution(task_distribution);
         let executor_manager =
-            ExecutorManager::new(cluster.cluster_state(), task_distribution);
+            ExecutorManager::new(cluster.cluster_state(), Arc::new(config));
 
         let executors = test_executors(10, 4);
 
@@ -543,8 +512,9 @@ mod test {
     ) -> Result<()> {
         let cluster = test_cluster_context();
 
+        let config = SchedulerConfig::default().with_task_distribution(task_distribution);
         let executor_manager =
-            ExecutorManager::new(cluster.cluster_state(), task_distribution);
+            ExecutorManager::new(cluster.cluster_state(), Arc::new(config));
 
         let executors = test_executors(10, 4);
 
@@ -598,9 +568,10 @@ mod test {
 
         let executors = test_executors(10, 4);
 
+        let config = SchedulerConfig::default().with_task_distribution(task_distribution);
         let cluster = test_cluster_context();
         let executor_manager =
-            ExecutorManager::new(cluster.cluster_state(), task_distribution);
+            ExecutorManager::new(cluster.cluster_state(), Arc::new(config));
 
         for (executor_metadata, executor_data) in executors {
             executor_manager
@@ -646,8 +617,9 @@ mod test {
     ) -> Result<()> {
         let cluster = test_cluster_context();
 
+        let config = SchedulerConfig::default().with_task_distribution(task_distribution);
         let executor_manager =
-            ExecutorManager::new(cluster.cluster_state(), task_distribution);
+            ExecutorManager::new(cluster.cluster_state(), Arc::new(config));
 
         let executors = test_executors(10, 4);
 
@@ -680,8 +652,9 @@ mod test {
     ) -> Result<()> {
         let cluster = test_cluster_context();
 
+        let config = SchedulerConfig::default().with_task_distribution(task_distribution);
         let executor_manager =
-            ExecutorManager::new(cluster.cluster_state(), task_distribution);
+            ExecutorManager::new(cluster.cluster_state(), Arc::new(config));
 
         // Setup two executors initially
         let executors = test_executors(2, 4);

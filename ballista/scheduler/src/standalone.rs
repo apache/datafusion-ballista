@@ -29,6 +29,7 @@ use datafusion_proto::protobuf::LogicalPlanNode;
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use log::info;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 
 pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
@@ -46,7 +47,7 @@ pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
             "localhost:50050".to_owned(),
             cluster,
             BallistaCodec::default(),
-            SchedulerConfig::default(),
+            Arc::new(SchedulerConfig::default()),
             metrics_collector,
         );
 
