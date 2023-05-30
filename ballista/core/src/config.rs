@@ -29,6 +29,7 @@ use datafusion::arrow::datatypes::DataType;
 
 pub const BALLISTA_JOB_NAME: &str = "ballista.job.name";
 pub const BALLISTA_DEFAULT_SHUFFLE_PARTITIONS: &str = "ballista.shuffle.partitions";
+pub const BALLISTA_HASH_JOIN_SINGLE_PARTITION_THRESHOLD: &str = "ballista.optimizer.hash_join_single_partition_threshold";
 pub const BALLISTA_DEFAULT_BATCH_SIZE: &str = "ballista.batch.size";
 pub const BALLISTA_REPARTITION_JOINS: &str = "ballista.repartition.joins";
 pub const BALLISTA_REPARTITION_AGGREGATIONS: &str = "ballista.repartition.aggregations";
@@ -183,6 +184,9 @@ impl BallistaConfig {
             ConfigEntry::new(BALLISTA_WITH_INFORMATION_SCHEMA.to_string(),
                              "Sets whether enable information_schema".to_string(),
                              DataType::Boolean, Some("false".to_string())),
+            ConfigEntry::new(BALLISTA_HASH_JOIN_SINGLE_PARTITION_THRESHOLD.to_string(),
+                "Sets threshold in bytes for collecting the smaller side of the hash join in memory".to_string(),
+                DataType::UInt64, Some((1024 * 1024 * 10).to_string())),
             ConfigEntry::new(BALLISTA_COLLECT_STATISTICS.to_string(),
                 "Configuration for collecting statistics during scan".to_string(),
                 DataType::Boolean, Some("false".to_string())
@@ -211,6 +215,10 @@ impl BallistaConfig {
 
     pub fn default_batch_size(&self) -> usize {
         self.get_usize_setting(BALLISTA_DEFAULT_BATCH_SIZE)
+    }
+
+    pub fn hash_join_single_partition_threshold(&self) -> usize {
+        self.get_usize_setting(BALLISTA_HASH_JOIN_SINGLE_PARTITION_THRESHOLD)
     }
 
     pub fn repartition_joins(&self) -> bool {
