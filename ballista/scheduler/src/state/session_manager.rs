@@ -33,6 +33,13 @@ impl SessionManager {
         Self { state }
     }
 
+    pub async fn remove_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<Arc<SessionContext>>> {
+        self.state.remove_session(session_id).await
+    }
+
     pub async fn update_session(
         &self,
         session_id: &str,

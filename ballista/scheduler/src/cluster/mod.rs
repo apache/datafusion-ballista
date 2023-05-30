@@ -369,6 +369,11 @@ pub trait JobState: Send + Sync {
         session_id: &str,
         config: &BallistaConfig,
     ) -> Result<Arc<SessionContext>>;
+
+    async fn remove_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<Arc<SessionContext>>>;
 }
 
 pub(crate) fn reserve_slots_bias(

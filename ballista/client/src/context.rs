@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use ballista_core::config::BallistaConfig;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
-use ballista_core::serde::protobuf::{ExecuteQueryParams, KeyValuePair};
+use ballista_core::serde::protobuf::{CreateSessionParams, KeyValuePair};
 use ballista_core::utils::{
     create_df_ctx_with_ballista_query_planner, create_grpc_client_connection,
 };
@@ -103,8 +103,7 @@ impl BallistaContext {
         let mut scheduler = SchedulerGrpcClient::new(connection);
 
         let remote_session_id = scheduler
-            .execute_query(ExecuteQueryParams {
-                query: None,
+            .create_session(CreateSessionParams {
                 settings: config
                     .settings()
                     .iter()
@@ -113,7 +112,6 @@ impl BallistaContext {
                         value: v.to_owned(),
                     })
                     .collect::<Vec<_>>(),
-                optional_session_id: None,
             })
             .await
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
@@ -162,8 +160,7 @@ impl BallistaContext {
         };
 
         let remote_session_id = scheduler
-            .execute_query(ExecuteQueryParams {
-                query: None,
+            .create_session(CreateSessionParams {
                 settings: config
                     .settings()
                     .iter()
@@ -172,7 +169,6 @@ impl BallistaContext {
                         value: v.to_owned(),
                     })
                     .collect::<Vec<_>>(),
-                optional_session_id: None,
             })
             .await
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
