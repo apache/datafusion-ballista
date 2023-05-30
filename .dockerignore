@@ -11,4 +11,5 @@ target/
 **/data
 !target/release/ballista-scheduler
 !target/release/ballista-executor
+!target/release/ballista-cli
 !target/release/tpch

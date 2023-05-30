@@ -26,7 +26,7 @@ fn main() -> Result<(), String> {
     println!("cargo:rerun-if-env-changed=FORCE_REBUILD");
 
     let version = rustc_version::version().unwrap();
-    println!("cargo:rustc-env=RUSTC_VERSION={}", version);
+    println!("cargo:rustc-env=RUSTC_VERSION={version}");
 
     // TODO: undo when resolved: https://github.com/intellij-rust/intellij-rust/issues/9402
     #[cfg(feature = "docsrs")]
@@ -42,7 +42,7 @@ fn main() -> Result<(), String> {
         tonic_build::configure()
             .extern_path(".datafusion", "::datafusion_proto::protobuf")
             .compile(&["proto/ballista.proto"], &["proto"])
-            .map_err(|e| format!("protobuf compilation failed: {}", e))?;
+            .map_err(|e| format!("protobuf compilation failed: {e}"))?;
         let generated_source_path = out.join("ballista.protobuf.rs");
         let code = std::fs::read_to_string(generated_source_path).unwrap();
         let mut file = std::fs::OpenOptions::new()

@@ -34,17 +34,18 @@ use arrow_flight::{flight_service_client::FlightServiceClient, FlightData};
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::{
     datatypes::{Schema, SchemaRef},
-    error::{ArrowError, Result as ArrowResult},
+    error::ArrowError,
     record_batch::RecordBatch,
 };
+use datafusion::error::DataFusionError;
 
 use crate::serde::protobuf;
 use crate::utils::create_grpc_client_connection;
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 use futures::{Stream, StreamExt};
-use log::debug;
+use log::{debug, warn};
 use prost::Message;
-use tonic::Streaming;
+use tonic::{Code, Streaming};
 
 /// Client for interacting with Ballista executors.
 #[derive(Clone)]
@@ -52,20 +53,23 @@ pub struct BallistaClient {
     flight_client: FlightServiceClient<tonic::transport::channel::Channel>,
 }
 
+//TODO make this configurable
+const IO_RETRIES_TIMES: u8 = 3;
+const IO_RETRY_WAIT_TIME_MS: u64 = 3000;
+
 impl BallistaClient {
     /// Create a new BallistaClient to connect to the executor listening on the specified
     /// host and port
     pub async fn try_new(host: &str, port: u16) -> Result<Self> {
-        let addr = format!("http://{}:{}", host, port);
+        let addr = format!("http://{host}:{port}");
         debug!("BallistaClient connecting to {}", addr);
         let connection =
             create_grpc_client_connection(addr.clone())
                 .await
                 .map_err(|e| {
                     BallistaError::GrpcConnectionError(format!(
-                        "Error connecting to Ballista scheduler or executor at {}: {:?}",
-                        addr, e
-                    ))
+                    "Error connecting to Ballista scheduler or executor at {addr}: {e:?}"
+                ))
                 })?;
         let flight_client = FlightServiceClient::new(connection);
         debug!("BallistaClient connected OK");
@@ -115,34 +119,71 @@ impl BallistaClient {
 
         serialized_action
             .encode(&mut buf)
-            .map_err(|e| BallistaError::GrpcActionError(format!("{:?}", e)))?;
+            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
 
-        let request = tonic::Request::new(Ticket { ticket: buf });
-
-        let mut stream = self
-            .flight_client
-            .do_get(request)
-            .await
-            .map_err(|e| BallistaError::GrpcActionError(format!("{:?}", e)))?
-            .into_inner();
-
-        // the schema should be the first message returned, else client should error
-        match stream
-            .message()
-            .await
-            .map_err(|e| BallistaError::GrpcActionError(format!("{:?}", e)))?
-        {
-            Some(flight_data) => {
-                // convert FlightData to a stream
-                let schema = Arc::new(Schema::try_from(&flight_data)?);
-
-                // all the remaining stream messages should be dictionary and record batches
-                Ok(Box::pin(FlightDataStream::new(stream, schema)))
+        for i in 0..IO_RETRIES_TIMES {
+            if i > 0 {
+                warn!(
+                    "Remote shuffle read fail, retry {} times, sleep {} ms.",
+                    i, IO_RETRY_WAIT_TIME_MS
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    IO_RETRY_WAIT_TIME_MS,
+                ))
+                .await;
             }
-            None => Err(BallistaError::GrpcActionError(
-                "Did not receive schema batch from flight server".to_string(),
-            )),
+
+            let request = tonic::Request::new(Ticket {
+                ticket: buf.clone().into(),
+            });
+            let result = self.flight_client.do_get(request).await;
+
+            let res = match result {
+                Ok(res) => res,
+                Err(ref err) => {
+                    // IO related error like connection timeout, reset... will warp with Code::Unknown
+                    // This means IO related error will retry.
+                    if i == IO_RETRIES_TIMES - 1 || err.code() != Code::Unknown {
+                        return BallistaError::GrpcActionError(format!(
+                            "{:?}",
+                            result.unwrap_err()
+                        ))
+                        .into();
+                    }
+                    // retry request
+                    continue;
+                }
+            };
+
+            let mut stream = res.into_inner();
+            match stream.message().await {
+                Ok(res) => {
+                    return match res {
+                        Some(flight_data) => {
+                            // convert FlightData to a stream
+                            let schema = Arc::new(Schema::try_from(&flight_data)?);
+
+                            // all the remaining stream messages should be dictionary and record batches
+                            Ok(Box::pin(FlightDataStream::new(stream, schema)))
+                        }
+                        None => Err(BallistaError::GrpcActionError(
+                            "Did not receive schema batch from flight server".to_string(),
+                        )),
+                    };
+                }
+                Err(e) => {
+                    if i == IO_RETRIES_TIMES - 1 || e.code() != Code::Unknown {
+                        return BallistaError::GrpcActionError(format!(
+                            "{:?}",
+                            e.to_string()
+                        ))
+                        .into();
+                    }
+                    continue;
+                }
+            }
         }
+        unreachable!("Did not receive schema batch from flight server");
     }
 }
 
@@ -163,7 +204,7 @@ impl FlightDataStream {
 }
 
 impl Stream for FlightDataStream {
-    type Item = ArrowResult<RecordBatch>;
+    type Item = datafusion::error::Result<RecordBatch>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -172,13 +213,14 @@ impl Stream for FlightDataStream {
         self.stream.poll_next_unpin(cx).map(|x| match x {
             Some(flight_data_chunk_result) => {
                 let converted_chunk = flight_data_chunk_result
-                    .map_err(|e| ArrowError::from_external_error(Box::new(e)))
+                    .map_err(|e| ArrowError::from_external_error(Box::new(e)).into())
                     .and_then(|flight_data_chunk| {
                         flight_data_to_arrow_batch(
                             &flight_data_chunk,
                             self.schema.clone(),
                             &self.dictionaries_by_id,
                         )
+                        .map_err(DataFusionError::ArrowError)
                     });
                 Some(converted_chunk)
             }

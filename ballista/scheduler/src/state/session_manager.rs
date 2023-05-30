@@ -16,32 +16,28 @@
 // under the License.
 
 use crate::scheduler_server::SessionBuilder;
-use crate::state::backend::{Keyspace, StateBackendClient};
-use crate::state::{decode_protobuf, encode_protobuf};
 use ballista_core::config::BallistaConfig;
 use ballista_core::error::Result;
-use ballista_core::serde::protobuf::{self, KeyValuePair};
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::{prelude::{SessionConfig, SessionContext}, scalar::ScalarValue};
 
-use datafusion::common::ScalarValue;
-use log::warn;
+use crate::cluster::JobState;
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct SessionManager {
-    state: Arc<dyn StateBackendClient>,
-    session_builder: SessionBuilder,
+    state: Arc<dyn JobState>,
 }
 
 impl SessionManager {
-    pub fn new(
-        state: Arc<dyn StateBackendClient>,
-        session_builder: SessionBuilder,
-    ) -> Self {
-        Self {
-            state,
-            session_builder,
-        }
+    pub fn new(state: Arc<dyn JobState>) -> Self {
+        Self { state }
+    }
+
+    pub async fn remove_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<Arc<SessionContext>>> {
+        self.state.remove_session(session_id).await
     }
 
     pub async fn update_session(
@@ -49,64 +45,18 @@ impl SessionManager {
         session_id: &str,
         config: &BallistaConfig,
     ) -> Result<Arc<SessionContext>> {
-        let mut settings: Vec<KeyValuePair> = vec![];
-
-        for (key, value) in config.settings() {
-            settings.push(KeyValuePair {
-                key: key.clone(),
-                value: value.clone(),
-            })
-        }
-
-        let value = encode_protobuf(&protobuf::SessionSettings { configs: settings })?;
-        self.state
-            .put(Keyspace::Sessions, session_id.to_owned(), value)
-            .await?;
-
-        Ok(create_datafusion_context(config, self.session_builder))
+        self.state.update_session(session_id, config).await
     }
 
     pub async fn create_session(
         &self,
         config: &BallistaConfig,
     ) -> Result<Arc<SessionContext>> {
-        let mut settings: Vec<KeyValuePair> = vec![];
-
-        for (key, value) in config.settings() {
-            settings.push(KeyValuePair {
-                key: key.clone(),
-                value: value.clone(),
-            })
-        }
-
-        let mut config_builder = BallistaConfig::builder();
-        for kv_pair in &settings {
-            config_builder = config_builder.set(&kv_pair.key, &kv_pair.value);
-        }
-        let config = config_builder.build()?;
-
-        let ctx = create_datafusion_context(&config, self.session_builder);
-
-        let value = encode_protobuf(&protobuf::SessionSettings { configs: settings })?;
-        self.state
-            .put(Keyspace::Sessions, ctx.session_id(), value)
-            .await?;
-
-        Ok(ctx)
+        self.state.create_session(config).await
     }
 
     pub async fn get_session(&self, session_id: &str) -> Result<Arc<SessionContext>> {
-        let value = self.state.get(Keyspace::Sessions, session_id).await?;
-
-        let settings: protobuf::SessionSettings = decode_protobuf(&value)?;
-
-        let mut config_builder = BallistaConfig::builder();
-        for kv_pair in &settings.configs {
-            config_builder = config_builder.set(&kv_pair.key, &kv_pair.value);
-        }
-        let config = config_builder.build()?;
-
-        Ok(create_datafusion_context(&config, self.session_builder))
+        self.state.get_session(session_id).await
     }
 }
 
@@ -115,16 +65,17 @@ pub fn create_datafusion_context(
     ballista_config: &BallistaConfig,
     session_builder: SessionBuilder,
 ) -> Arc<SessionContext> {
-    let config = SessionConfig::new()
+    let config =
+        SessionConfig::from_string_hash_map(ballista_config.settings().clone()).unwrap();
+    let config = config
         .with_target_partitions(ballista_config.default_shuffle_partitions())
         .with_batch_size(ballista_config.default_batch_size())
         .with_repartition_joins(ballista_config.repartition_joins())
         .with_repartition_aggregations(ballista_config.repartition_aggregations())
         .with_repartition_windows(ballista_config.repartition_windows())
         .with_collect_statistics(ballista_config.collect_statistics())
-        .with_parquet_pruning(ballista_config.parquet_pruning());
-    let config = propagate_ballista_configs(config, ballista_config);
-
+        .with_parquet_pruning(ballista_config.parquet_pruning())
+        .set_bool("datafusion.optimizer.enable_round_robin_repartition", false);
     let session_state = session_builder(config);
     Arc::new(SessionContext::with_state(session_state))
 }

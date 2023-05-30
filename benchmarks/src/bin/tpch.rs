@@ -62,6 +62,7 @@ use std::{
     time::{Instant, SystemTime},
 };
 use structopt::StructOpt;
+use tokio::task::JoinHandle;
 
 #[cfg(feature = "snmalloc")]
 #[global_allocator]
@@ -283,7 +284,7 @@ async fn main() -> Result<()> {
 
 #[allow(clippy::await_holding_lock)]
 async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordBatch>> {
-    println!("Running benchmarks with the following options: {:?}", opt);
+    println!("Running benchmarks with the following options: {opt:?}");
     let mut benchmark_run = BenchmarkRun::new(opt.query);
     let config = SessionConfig::new()
         .with_target_partitions(opt.partitions)
@@ -293,7 +294,7 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
     // register tables
     for table in TABLES {
         let table_provider = {
-            let mut session_state = ctx.state.write();
+            let mut session_state = ctx.state();
             get_table(
                 &mut session_state,
                 opt.path.to_str().unwrap(),
@@ -304,7 +305,7 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
             .await?
         };
         if opt.mem_table {
-            println!("Loading table '{}' into memory", table);
+            println!("Loading table '{table}' into memory");
             let start = Instant::now();
             let memtable =
                 MemTable::load(table_provider, Some(opt.partitions), &ctx.state())
@@ -325,7 +326,7 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
     let mut result: Vec<RecordBatch> = Vec::with_capacity(1);
     for i in 0..opt.iterations {
         let start = Instant::now();
-        let plans = create_logical_plans(&ctx, opt.query)?;
+        let plans = create_logical_plans(&ctx, opt.query).await?;
         for plan in plans {
             result = execute_query(&ctx, &plan, opt.debug).await?;
         }
@@ -350,7 +351,7 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
 }
 
 async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
-    println!("Running benchmarks with the following options: {:?}", opt);
+    println!("Running benchmarks with the following options: {opt:?}");
     let mut benchmark_run = BenchmarkRun::new(opt.query);
 
     let config = BallistaConfig::builder()
@@ -365,12 +366,12 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
         .set(BALLISTA_DEFAULT_BATCH_SIZE, &format!("{}", opt.batch_size))
         .set(BALLISTA_COLLECT_STATISTICS, "true")
         .build()
-        .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
     let ctx =
         BallistaContext::remote(opt.host.unwrap().as_str(), opt.port.unwrap(), &config)
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
     // register tables with Ballista context
     let path = opt.path.to_str().unwrap();
@@ -393,16 +394,16 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
             let df = ctx
                 .sql(sql)
                 .await
-                .map_err(|e| DataFusionError::Plan(format!("{:?}", e)))
+                .map_err(|e| DataFusionError::Plan(format!("{e:?}")))
                 .unwrap();
-            let plan = df.to_logical_plan()?;
+            let plan = df.clone().into_optimized_plan()?;
             if opt.debug {
-                println!("=== Optimized logical plan ===\n{:?}\n", plan);
+                println!("=== Optimized logical plan ===\n{plan:?}\n");
             }
             batches = df
                 .collect()
                 .await
-                .map_err(|e| DataFusionError::Plan(format!("{:?}", e)))
+                .map_err(|e| DataFusionError::Plan(format!("{e:?}")))
                 .unwrap();
         }
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
@@ -451,10 +452,7 @@ fn write_summary_json(benchmark_run: &mut BenchmarkRun, path: &Path) -> Result<(
 }
 
 async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
-    println!(
-        "Running loadtest_ballista with the following options: {:?}",
-        opt
-    );
+    println!("Running loadtest_ballista with the following options: {opt:?}");
 
     let config = BallistaConfig::builder()
         .set(
@@ -463,7 +461,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
         )
         .set(BALLISTA_DEFAULT_BATCH_SIZE, &format!("{}", opt.batch_size))
         .build()
-        .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
     let concurrency = opt.concurrency;
     let request_amount = opt.requests;
@@ -477,7 +475,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
                 &config,
             )
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?,
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?,
         );
     }
 
@@ -525,12 +523,12 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
                 let df = client
                     .sql(&sql)
                     .await
-                    .map_err(|e| DataFusionError::Plan(format!("{:?}", e)))
+                    .map_err(|e| DataFusionError::Plan(format!("{e:?}")))
                     .unwrap();
                 let batches = df
                     .collect()
                     .await
-                    .map_err(|e| DataFusionError::Plan(format!("{:?}", e)))
+                    .map_err(|e| DataFusionError::Plan(format!("{e:?}")))
                     .unwrap();
                 let elapsed = start.elapsed().as_secs_f64() * 1000.0;
                 println!(
@@ -547,7 +545,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
     join_all(futures).await;
     let elapsed = total.elapsed().as_secs_f64() * 1000.0;
     println!("###############################");
-    println!("load test  took {:.1} ms", elapsed);
+    println!("load test  took {elapsed:.1} ms");
     Ok(())
 }
 
@@ -556,7 +554,7 @@ fn get_query_sql_by_path(query: usize, mut sql_path: String) -> Result<String> {
         sql_path.pop();
     }
     if query > 0 && query < 23 {
-        let filename = format!("{}/q{}.sql", sql_path, query);
+        let filename = format!("{sql_path}/q{query}.sql");
         Ok(fs::read_to_string(filename).expect("failed to read query"))
     } else {
         Err(DataFusionError::Plan(
@@ -584,13 +582,12 @@ async fn register_tables(
                     .file_extension(".tbl");
                 if debug {
                     println!(
-                        "Registering table '{}' using TBL files at path {}",
-                        table, path
+                        "Registering table '{table}' using TBL files at path {path}"
                     );
                 }
                 ctx.register_csv(table, &path, options)
                     .await
-                    .map_err(|e| DataFusionError::Plan(format!("{:?}", e)))?;
+                    .map_err(|e| DataFusionError::Plan(format!("{e:?}")))?;
             }
             "csv" => {
                 let path = find_path(path, table, "csv")?;
@@ -598,30 +595,27 @@ async fn register_tables(
                 let options = CsvReadOptions::new().schema(&schema).has_header(true);
                 if debug {
                     println!(
-                        "Registering table '{}' using CSV files at path {}",
-                        table, path
+                        "Registering table '{table}' using CSV files at path {path}"
                     );
                 }
                 ctx.register_csv(table, &path, options)
                     .await
-                    .map_err(|e| DataFusionError::Plan(format!("{:?}", e)))?;
+                    .map_err(|e| DataFusionError::Plan(format!("{e:?}")))?;
             }
             "parquet" => {
                 let path = find_path(path, table, "parquet")?;
                 if debug {
                     println!(
-                        "Registering table '{}' using Parquet files at path {}",
-                        table, path
+                        "Registering table '{table}' using Parquet files at path {path}"
                     );
                 }
                 ctx.register_parquet(table, &path, ParquetReadOptions::default())
                     .await
-                    .map_err(|e| DataFusionError::Plan(format!("{:?}", e)))?;
+                    .map_err(|e| DataFusionError::Plan(format!("{e:?}")))?;
             }
             other => {
                 return Err(DataFusionError::Plan(format!(
-                    "Invalid file format '{}'",
-                    other
+                    "Invalid file format '{other}'"
                 )))
             }
         }
@@ -630,16 +624,15 @@ async fn register_tables(
 }
 
 fn find_path(path: &str, table: &str, ext: &str) -> Result<String> {
-    let path1 = format!("{}/{}.{}", path, table, ext);
-    let path2 = format!("{}/{}", path, table);
+    let path1 = format!("{path}/{table}.{ext}");
+    let path2 = format!("{path}/{table}");
     if Path::new(&path1).exists() {
         Ok(path1)
     } else if Path::new(&path2).exists() {
         Ok(path2)
     } else {
         Err(DataFusionError::Plan(format!(
-            "Could not find {} files at {} or {}",
-            ext, path1, path2
+            "Could not find {ext} files at {path1} or {path2}"
         )))
     }
 }
@@ -648,8 +641,8 @@ fn find_path(path: &str, table: &str, ext: &str) -> Result<String> {
 fn get_query_sql(query: usize) -> Result<Vec<String>> {
     if query > 0 && query < 23 {
         let possibilities = vec![
-            format!("queries/q{}.sql", query),
-            format!("benchmarks/queries/q{}.sql", query),
+            format!("queries/q{query}.sql"),
+            format!("benchmarks/queries/q{query}.sql"),
         ];
         let mut errors = vec![];
         for filename in possibilities {
@@ -662,12 +655,11 @@ fn get_query_sql(query: usize) -> Result<Vec<String>> {
                         .map(|s| s.to_string())
                         .collect())
                 }
-                Err(e) => errors.push(format!("{}: {}", filename, e)),
+                Err(e) => errors.push(format!("{filename}: {e}")),
             };
         }
         Err(DataFusionError::Plan(format!(
-            "invalid query. Could not find query: {:?}",
-            errors
+            "invalid query. Could not find query: {errors:?}"
         )))
     } else {
         Err(DataFusionError::Plan(
@@ -677,11 +669,29 @@ fn get_query_sql(query: usize) -> Result<Vec<String>> {
 }
 
 /// Create a logical plan for each query in the specified query file
-fn create_logical_plans(ctx: &SessionContext, query: usize) -> Result<Vec<LogicalPlan>> {
-    let sql = get_query_sql(query)?;
-    sql.iter()
-        .map(|sql| ctx.create_logical_plan(sql.as_str()))
-        .collect::<Result<Vec<_>>>()
+async fn create_logical_plans(
+    ctx: &SessionContext,
+    query: usize,
+) -> Result<Vec<LogicalPlan>> {
+    let session_state = ctx.state();
+    let sqls = get_query_sql(query)?;
+    let join_handles = sqls
+        .into_iter()
+        .map(|sql| {
+            let session_state = session_state.clone();
+            tokio::spawn(
+                async move { session_state.create_logical_plan(sql.as_str()).await },
+            )
+        })
+        .collect::<Vec<JoinHandle<Result<LogicalPlan>>>>();
+    futures::future::join_all(join_handles)
+        .await
+        .into_iter()
+        .collect::<std::result::Result<Vec<Result<LogicalPlan>>, tokio::task::JoinError>>(
+        )
+        .map_err(|e| DataFusionError::Internal(format!("{e:?}")))?
+        .into_iter()
+        .collect()
 }
 
 async fn execute_query(
@@ -690,13 +700,14 @@ async fn execute_query(
     debug: bool,
 ) -> Result<Vec<RecordBatch>> {
     if debug {
-        println!("=== Logical plan ===\n{:?}\n", plan);
+        println!("=== Logical plan ===\n{plan:?}\n");
     }
-    let plan = ctx.optimize(plan)?;
+    let session_state = ctx.state();
+    let plan = session_state.optimize(plan)?;
     if debug {
-        println!("=== Optimized logical plan ===\n{:?}\n", plan);
+        println!("=== Optimized logical plan ===\n{plan:?}\n");
     }
-    let physical_plan = ctx.create_physical_plan(&plan).await?;
+    let physical_plan = session_state.create_physical_plan(&plan).await?;
     if debug {
         println!(
             "=== Physical plan ===\n{}\n",
@@ -731,6 +742,7 @@ async fn convert_tbl(opt: ConvertOpt) -> Result<()> {
 
         let config = SessionConfig::new().with_batch_size(opt.batch_size);
         let ctx = SessionContext::with_config(config);
+        let session_state = ctx.state();
 
         // build plan to read the TBL file
         let mut csv = ctx.read_csv(&input_path, options).await?;
@@ -741,9 +753,9 @@ async fn convert_tbl(opt: ConvertOpt) -> Result<()> {
         }
 
         // create the physical plan
-        let csv = csv.to_logical_plan()?;
-        let csv = ctx.optimize(&csv)?;
-        let csv = ctx.create_physical_plan(&csv).await?;
+        let csv = csv.into_optimized_plan()?;
+        let csv = session_state.optimize(&csv)?;
+        let csv = session_state.create_physical_plan(&csv).await?;
 
         let output_path = output_root_path.join(table);
         let output_path = output_path.to_str().unwrap().to_owned();
@@ -758,15 +770,14 @@ async fn convert_tbl(opt: ConvertOpt) -> Result<()> {
                 let compression = match opt.compression.as_str() {
                     "none" => Compression::UNCOMPRESSED,
                     "snappy" => Compression::SNAPPY,
-                    "brotli" => Compression::BROTLI,
-                    "gzip" => Compression::GZIP,
+                    "brotli" => Compression::BROTLI(Default::default()),
+                    "gzip" => Compression::GZIP(Default::default()),
                     "lz4" => Compression::LZ4,
                     "lz0" => Compression::LZO,
-                    "zstd" => Compression::ZSTD,
+                    "zstd" => Compression::ZSTD(Default::default()),
                     other => {
                         return Err(DataFusionError::NotImplemented(format!(
-                            "Invalid compression format: {}",
-                            other
+                            "Invalid compression format: {other}"
                         )))
                     }
                 };
@@ -777,8 +788,7 @@ async fn convert_tbl(opt: ConvertOpt) -> Result<()> {
             }
             other => {
                 return Err(DataFusionError::NotImplemented(format!(
-                    "Invalid output format: {}",
-                    other
+                    "Invalid output format: {other}"
                 )))
             }
         }
@@ -799,7 +809,7 @@ async fn get_table(
         match table_format {
             // dbgen creates .tbl ('|' delimited) files without header
             "tbl" => {
-                let path = format!("{}/{}.tbl", path, table);
+                let path = format!("{path}/{table}.tbl");
 
                 let format = CsvFormat::default()
                     .with_delimiter(b'|')
@@ -808,7 +818,7 @@ async fn get_table(
                 (Arc::new(format), path, ".tbl")
             }
             "csv" => {
-                let path = format!("{}/{}", path, table);
+                let path = format!("{path}/{table}");
                 let format = CsvFormat::default()
                     .with_delimiter(b',')
                     .with_has_header(true);
@@ -816,9 +826,8 @@ async fn get_table(
                 (Arc::new(format), path, DEFAULT_CSV_EXTENSION)
             }
             "parquet" => {
-                let path = format!("{}/{}", path, table);
-                let format = ParquetFormat::new(ctx.config_options())
-                    .with_enable_pruning(Some(true));
+                let path = format!("{path}/{table}");
+                let format = ParquetFormat::default().with_enable_pruning(Some(true));
 
                 (Arc::new(format), path, DEFAULT_PARQUET_EXTENSION)
             }
@@ -835,6 +844,7 @@ async fn get_table(
         collect_stat: true,
         table_partition_cols: vec![],
         file_sort_order: None,
+        infinite_source: false,
     };
 
     let url = ListingTableUrl::parse(path)?;
@@ -972,10 +982,7 @@ impl BenchmarkRun {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .expect("current time is later than UNIX_EPOCH")
                 .as_secs(),
-            arguments: std::env::args()
-                .skip(1)
-                .into_iter()
-                .collect::<Vec<String>>(),
+            arguments: std::env::args().skip(1).collect::<Vec<String>>(),
             query,
             iterations: vec![],
         }
@@ -1015,8 +1022,8 @@ async fn get_expected_results(n: usize, path: &str) -> Result<Vec<RecordBatch>> 
         .schema(&schema)
         .delimiter(b'|')
         .file_extension(".out");
-    let answer_path = format!("{}/answers/q{}.out", path, n);
-    println!("Looking for expected results at {}", answer_path);
+    let answer_path = format!("{path}/answers/q{n}.out");
+    println!("Looking for expected results at {answer_path}");
     let df = ctx.read_csv(&answer_path, options).await?;
     let df = df.select(
         get_answer_schema(n)
@@ -1503,7 +1510,7 @@ mod tests {
             ctx.register_table(table, Arc::new(provider))?;
         }
 
-        let plans = create_logical_plans(&ctx, n)?;
+        let plans = create_logical_plans(&ctx, n).await?;
         for plan in plans {
             execute_query(&ctx, &plan, false).await?;
         }
@@ -1539,124 +1546,201 @@ mod tests {
 
         Ok(())
     }
+}
 
-    mod ballista_round_trip {
-        use super::*;
-        use ballista_core::serde::{protobuf, AsExecutionPlan, BallistaCodec};
-        use datafusion::datasource::listing::ListingTableUrl;
-        use datafusion::physical_plan::ExecutionPlan;
-        use datafusion_proto::logical_plan::AsLogicalPlan;
-        use std::ops::Deref;
+#[cfg(test)]
+#[cfg(feature = "ci")]
+mod ballista_round_trip {
+    use super::*;
+    use ballista_core::serde::BallistaCodec;
+    use datafusion::datasource::listing::ListingTableUrl;
+    use datafusion::execution::options::ReadOptions;
+    use datafusion::physical_plan::ExecutionPlan;
+    use datafusion_proto::logical_plan::AsLogicalPlan;
+    use datafusion_proto::physical_plan::AsExecutionPlan;
+    use std::env;
+    use std::ops::Deref;
 
-        async fn round_trip_query(n: usize) -> Result<()> {
-            let config = SessionConfig::new()
-                .with_target_partitions(1)
-                .with_batch_size(10);
-            let ctx = SessionContext::with_config(config);
-            let codec: BallistaCodec<
-                datafusion_proto::protobuf::LogicalPlanNode,
-                protobuf::PhysicalPlanNode,
-            > = BallistaCodec::default();
+    async fn round_trip_logical_plan(n: usize) -> Result<()> {
+        let config = SessionConfig::new()
+            .with_target_partitions(1)
+            .with_batch_size(10);
+        let ctx = SessionContext::with_config(config);
+        let session_state = ctx.state();
+        let codec: BallistaCodec<
+            datafusion_proto::protobuf::LogicalPlanNode,
+            datafusion_proto::protobuf::PhysicalPlanNode,
+        > = BallistaCodec::default();
 
-            // set tpch_data_path to dummy value and skip physical plan serde test when TPCH_DATA
-            // is not set.
-            let tpch_data_path =
-                env::var("TPCH_DATA").unwrap_or_else(|_| "./".to_string());
-            let path = ListingTableUrl::parse(tpch_data_path)?;
+        // set tpch_data_path to dummy value and skip physical plan serde test when TPCH_DATA
+        // is not set.
+        let tpch_data_path = env::var("TPCH_DATA").unwrap_or_else(|_| "./".to_string());
+        let path = ListingTableUrl::parse(tpch_data_path)?;
 
-            for &table in TABLES {
-                let schema = get_schema(table);
-                let options = CsvReadOptions::new()
-                    .schema(&schema)
-                    .delimiter(b'|')
-                    .has_header(false)
-                    .file_extension(".tbl");
-                let listing_options = options.to_listing_options(1);
-                let config = ListingTableConfig::new(path.clone())
-                    .with_listing_options(listing_options)
-                    .with_schema(Arc::new(schema));
-                let provider = ListingTable::try_new(config)?;
-                ctx.register_table(table, Arc::new(provider))?;
-            }
-
-            // test logical plan round trip
-            let plans = create_logical_plans(&ctx, n)?;
-            for plan in plans {
-                // test optimized logical plan round trip
-                let plan = ctx.optimize(&plan)?;
-                let proto: datafusion_proto::protobuf::LogicalPlanNode =
-                    datafusion_proto::protobuf::LogicalPlanNode::try_from_logical_plan(
-                        &plan,
-                        codec.logical_extension_codec(),
-                    )
-                    .unwrap();
-                let round_trip: LogicalPlan = proto
-                    .try_into_logical_plan(&ctx, codec.logical_extension_codec())
-                    .unwrap();
-                assert_eq!(
-                    format!("{:?}", plan),
-                    format!("{:?}", round_trip),
-                    "optimized logical plan round trip failed"
-                );
-
-                // test physical plan roundtrip
-                if env::var("TPCH_DATA").is_ok() {
-                    let physical_plan = ctx.create_physical_plan(&plan).await?;
-                    let proto: protobuf::PhysicalPlanNode =
-                        protobuf::PhysicalPlanNode::try_from_physical_plan(
-                            physical_plan.clone(),
-                            codec.physical_extension_codec(),
-                        )
-                        .unwrap();
-                    let runtime = ctx.runtime_env();
-                    let round_trip: Arc<dyn ExecutionPlan> = proto
-                        .try_into_physical_plan(
-                            &ctx,
-                            runtime.deref(),
-                            codec.physical_extension_codec(),
-                        )
-                        .unwrap();
-                    assert_eq!(
-                        format!("{:?}", physical_plan),
-                        format!("{:?}", round_trip),
-                        "physical plan round trip failed"
-                    );
-                }
-            }
-
-            Ok(())
+        for &table in TABLES {
+            let schema = get_schema(table);
+            let options = CsvReadOptions::new()
+                .schema(&schema)
+                .delimiter(b'|')
+                .has_header(false)
+                .file_extension(".tbl");
+            let cfg = SessionConfig::new();
+            let listing_options = options.to_listing_options(&cfg);
+            let config = ListingTableConfig::new(path.clone())
+                .with_listing_options(listing_options)
+                .with_schema(Arc::new(schema));
+            let provider = ListingTable::try_new(config)?;
+            ctx.register_table(table, Arc::new(provider))?;
         }
 
-        macro_rules! test_round_trip {
-            ($tn:ident, $query:expr) => {
-                #[tokio::test]
-                async fn $tn() -> Result<()> {
-                    round_trip_query($query).await
-                }
-            };
+        // test logical plan round trip
+        let plans = create_logical_plans(&ctx, n).await?;
+        for plan in plans {
+            // test optimized logical plan round trip
+            let plan = session_state.optimize(&plan)?;
+            let proto: datafusion_proto::protobuf::LogicalPlanNode =
+                datafusion_proto::protobuf::LogicalPlanNode::try_from_logical_plan(
+                    &plan,
+                    codec.logical_extension_codec(),
+                )
+                .unwrap();
+            let round_trip: LogicalPlan = proto
+                .try_into_logical_plan(&ctx, codec.logical_extension_codec())
+                .unwrap();
+            assert_eq!(
+                format!("{plan:?}"),
+                format!("{round_trip:?}"),
+                "optimized logical plan round trip failed"
+            );
         }
 
-        test_round_trip!(q1, 1);
-        test_round_trip!(q2, 2);
-        test_round_trip!(q3, 3);
-        test_round_trip!(q4, 4);
-        test_round_trip!(q5, 5);
-        test_round_trip!(q6, 6);
-        test_round_trip!(q7, 7);
-        test_round_trip!(q8, 8);
-        test_round_trip!(q9, 9);
-        test_round_trip!(q10, 10);
-        test_round_trip!(q11, 11);
-        test_round_trip!(q12, 12);
-        test_round_trip!(q13, 13);
-        test_round_trip!(q14, 14);
-        // test_round_trip!(q15, 15); https://github.com/apache/arrow-ballista/issues/330
-        // test_round_trip!(q16, 16); https://github.com/apache/arrow-ballista/issues/330
-        test_round_trip!(q17, 17);
-        test_round_trip!(q18, 18);
-        test_round_trip!(q19, 19);
-        test_round_trip!(q20, 20);
-        test_round_trip!(q21, 21);
-        // test_round_trip!(q22, 22); https://github.com/apache/arrow-ballista/issues/330
+        Ok(())
     }
+
+    async fn round_trip_physical_plan(n: usize) -> Result<()> {
+        let config = SessionConfig::new()
+            .with_target_partitions(1)
+            .with_batch_size(10);
+        let ctx = SessionContext::with_config(config);
+        let session_state = ctx.state();
+        let codec: BallistaCodec<
+            datafusion_proto::protobuf::LogicalPlanNode,
+            datafusion_proto::protobuf::PhysicalPlanNode,
+        > = BallistaCodec::default();
+
+        // set tpch_data_path to dummy value and skip physical plan serde test when TPCH_DATA
+        // is not set.
+        let tpch_data_path = env::var("TPCH_DATA").unwrap_or_else(|_| "./".to_string());
+        let path = ListingTableUrl::parse(tpch_data_path)?;
+
+        for &table in TABLES {
+            let schema = get_schema(table);
+            let options = CsvReadOptions::new()
+                .schema(&schema)
+                .delimiter(b'|')
+                .has_header(false)
+                .file_extension(".tbl");
+            let cfg = SessionConfig::new();
+            let listing_options = options.to_listing_options(&cfg);
+            let config = ListingTableConfig::new(path.clone())
+                .with_listing_options(listing_options)
+                .with_schema(Arc::new(schema));
+            let provider = ListingTable::try_new(config)?;
+            ctx.register_table(table, Arc::new(provider))?;
+        }
+
+        // test logical plan round trip
+        let plans = create_logical_plans(&ctx, n).await?;
+        for plan in plans {
+            let plan = session_state.optimize(&plan)?;
+
+            // test physical plan roundtrip
+            let physical_plan = session_state.create_physical_plan(&plan).await?;
+            let proto: datafusion_proto::protobuf::PhysicalPlanNode =
+                datafusion_proto::protobuf::PhysicalPlanNode::try_from_physical_plan(
+                    physical_plan.clone(),
+                    codec.physical_extension_codec(),
+                )
+                .unwrap();
+            let runtime = ctx.runtime_env();
+            let round_trip: Arc<dyn ExecutionPlan> = proto
+                .try_into_physical_plan(
+                    &ctx,
+                    runtime.deref(),
+                    codec.physical_extension_codec(),
+                )
+                .unwrap();
+            assert_eq!(
+                format!("{}", displayable(physical_plan.as_ref()).indent()),
+                format!("{}", displayable(round_trip.as_ref()).indent()),
+                "physical plan round trip failed"
+            );
+        }
+
+        Ok(())
+    }
+
+    macro_rules! test_round_trip_logical {
+        ($tn:ident, $query:expr) => {
+            #[tokio::test]
+            async fn $tn() -> Result<()> {
+                round_trip_logical_plan($query).await
+            }
+        };
+    }
+
+    test_round_trip_logical!(q1, 1);
+    test_round_trip_logical!(q2, 2);
+    test_round_trip_logical!(q3, 3);
+    test_round_trip_logical!(q4, 4);
+    test_round_trip_logical!(q5, 5);
+    test_round_trip_logical!(q6, 6);
+    test_round_trip_logical!(q7, 7);
+    test_round_trip_logical!(q8, 8);
+    test_round_trip_logical!(q9, 9);
+    test_round_trip_logical!(q10, 10);
+    test_round_trip_logical!(q11, 11);
+    test_round_trip_logical!(q12, 12);
+    test_round_trip_logical!(q13, 13);
+    test_round_trip_logical!(q14, 14);
+    //test_round_trip_logical!(q15, 15); // https://github.com/apache/arrow-ballista/issues/330
+    test_round_trip_logical!(q16, 16);
+    test_round_trip_logical!(q17, 17);
+    test_round_trip_logical!(q18, 18);
+    test_round_trip_logical!(q19, 19);
+    test_round_trip_logical!(q20, 20);
+    test_round_trip_logical!(q21, 21);
+    test_round_trip_logical!(q22, 22);
+
+    macro_rules! test_round_trip_physical {
+        ($tn:ident, $query:expr) => {
+            #[tokio::test]
+            async fn $tn() -> Result<()> {
+                round_trip_physical_plan($query).await
+            }
+        };
+    }
+
+    test_round_trip_physical!(physical_round_trip_q1, 1);
+    test_round_trip_physical!(physical_round_trip_q2, 2);
+    test_round_trip_physical!(physical_round_trip_q3, 3);
+    test_round_trip_physical!(physical_round_trip_q4, 4);
+    test_round_trip_physical!(physical_round_trip_q5, 5);
+    test_round_trip_physical!(physical_round_trip_q6, 6);
+    test_round_trip_physical!(physical_round_trip_q7, 7);
+    test_round_trip_physical!(physical_round_trip_q8, 8);
+    test_round_trip_physical!(physical_round_trip_q9, 9);
+    test_round_trip_physical!(physical_round_trip_q10, 10);
+    test_round_trip_physical!(physical_round_trip_q11, 11);
+    test_round_trip_physical!(physical_round_trip_q12, 12);
+    test_round_trip_physical!(physical_round_trip_q13, 13);
+    test_round_trip_physical!(physical_round_trip_q14, 14);
+    // test_round_trip_physical!(physical_round_trip_q15, 15); // https://github.com/apache/arrow-ballista/issues/330
+    test_round_trip_physical!(physical_round_trip_q16, 16);
+    test_round_trip_physical!(physical_round_trip_q17, 17);
+    test_round_trip_physical!(physical_round_trip_q18, 18);
+    test_round_trip_physical!(physical_round_trip_q19, 19);
+    test_round_trip_physical!(physical_round_trip_q20, 20);
+    test_round_trip_physical!(physical_round_trip_q21, 21);
+    test_round_trip_physical!(physical_round_trip_q22, 22);
 }

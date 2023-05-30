@@ -15,10 +15,10 @@ use crate::scheduler_server::SchedulerServer;
 use crate::state::execution_graph::ExecutionStage;
 use crate::state::execution_graph_dot::ExecutionGraphDot;
 use ballista_core::serde::protobuf::job_status::Status;
-use ballista_core::serde::AsExecutionPlan;
 use ballista_core::BALLISTA_VERSION;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet, Time};
 use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 use graphviz_rust::cmd::{CommandArg, Format};
 use graphviz_rust::exec;
 use graphviz_rust::printer::PrinterContext;
@@ -209,6 +209,7 @@ pub(crate) async fn get_query_stages<T: AsLogicalPlan, U: AsExecutionPlan>(
     {
         Ok(warp::reply::json(&QueryStagesResponse {
             stages: graph
+                .as_ref()
                 .stages()
                 .iter()
                 .map(|(id, stage)| {
@@ -303,7 +304,7 @@ pub(crate) async fn get_job_dot_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
         .await
         .map_err(|_| warp::reject())?
     {
-        ExecutionGraphDot::generate(graph).map_err(|_| warp::reject())
+        ExecutionGraphDot::generate(graph.as_ref()).map_err(|_| warp::reject())
     } else {
         Ok("Not Found".to_string())
     }
@@ -322,7 +323,7 @@ pub(crate) async fn get_query_stage_dot_graph<T: AsLogicalPlan, U: AsExecutionPl
         .await
         .map_err(|_| warp::reject())?
     {
-        ExecutionGraphDot::generate_for_query_stage(graph, stage_id)
+        ExecutionGraphDot::generate_for_query_stage(graph.as_ref(), stage_id)
             .map_err(|_| warp::reject())
     } else {
         Ok("Not Found".to_string())

@@ -29,7 +29,7 @@ use crate::client::BallistaClient;
 use crate::serde::scheduler::{PartitionLocation, PartitionStats};
 
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::error::{ArrowError, Result as ArrowResult};
+use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::reader::FileReader;
 use datafusion::arrow::record_batch::RecordBatch;
 
@@ -96,10 +96,6 @@ impl ExecutionPlan for ShuffleReaderExec {
 
     fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
         None
-    }
-
-    fn relies_on_input_order(&self) -> bool {
-        false
     }
 
     fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
@@ -212,14 +208,14 @@ impl LocalShuffleStream {
 }
 
 impl Stream for LocalShuffleStream {
-    type Item = ArrowResult<RecordBatch>;
+    type Item = Result<RecordBatch>;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
         _: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         if let Some(batch) = self.reader.next() {
-            return Poll::Ready(Some(batch));
+            return Poll::Ready(Some(batch.map_err(|e| e.into())));
         }
         Poll::Ready(None)
     }
@@ -407,16 +403,10 @@ fn fetch_partition_local_inner(
     path: &str,
 ) -> result::Result<FileReader<File>, BallistaError> {
     let file = File::open(path).map_err(|e| {
-        BallistaError::General(format!(
-            "Failed to open partition file at {}: {:?}",
-            path, e
-        ))
+        BallistaError::General(format!("Failed to open partition file at {path}: {e:?}"))
     })?;
     FileReader::try_new(file, None).map_err(|e| {
-        BallistaError::General(format!(
-            "Failed to new arrow FileReader at {}: {:?}",
-            path, e
-        ))
+        BallistaError::General(format!("Failed to new arrow FileReader at {path}: {e:?}"))
     })
 }
 
@@ -589,7 +579,7 @@ mod tests {
 
         let batches = utils::collect_stream(&mut stream)
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))
             .unwrap();
 
         let path = batches[0].columns()[1]
@@ -606,7 +596,7 @@ mod tests {
 
         let result = utils::collect_stream(&mut stream)
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))
             .unwrap();
 
         assert_eq!(result.len(), 2);
@@ -647,7 +637,6 @@ mod tests {
 
     fn get_test_partition_locations(n: usize, path: String) -> Vec<PartitionLocation> {
         (0..n)
-            .into_iter()
             .map(|partition_id| PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
@@ -656,7 +645,7 @@ mod tests {
                     partition_id,
                 },
                 executor_meta: ExecutorMetadata {
-                    id: format!("exec{}", partition_id),
+                    id: format!("exec{partition_id}"),
                     host: "localhost".to_string(),
                     port: 50051,
                     grpc_port: 50052,

@@ -21,7 +21,7 @@
 
 ## Web User Interface
 
-The scheduler provides a web user interface that allows queries to be monitored.
+The scheduler provides a web user interface that allows queries to be monitored. Details on how to start the ui is present [here](https://github.com/apache/arrow-ballista/tree/main/ballista/scheduler/ui)
 
 ![Ballista Scheduler Web UI](./images/ballista-web-ui.png)
 

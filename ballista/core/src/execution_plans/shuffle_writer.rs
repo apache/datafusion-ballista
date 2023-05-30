@@ -159,7 +159,7 @@ impl ShuffleWriterExec {
             match output_partitioning {
                 None => {
                     let timer = write_metrics.write_time.timer();
-                    path.push(&format!("{}", input_partition));
+                    path.push(&format!("{input_partition}"));
                     std::fs::create_dir_all(&path)?;
                     path.push("data.arrow");
                     let path = path.to_str().unwrap();
@@ -172,7 +172,7 @@ impl ShuffleWriterExec {
                         &write_metrics.write_time,
                     )
                     .await
-                    .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
                     write_metrics
                         .input_rows
@@ -219,10 +219,7 @@ impl ShuffleWriterExec {
                         partitioner.partition(
                             input_batch,
                             |output_partition, output_batch| {
-                                // write non-empty batch out
-
-                                // TODO optimize so we don't write or fetch empty partitions
-                                // if output_batch.num_rows() > 0 {
+                                // partition func in datafusion make sure not write empty output_batch.
                                 let timer = write_metrics.write_time.timer();
                                 match &mut writers[output_partition] {
                                     Some(w) => {
@@ -230,12 +227,11 @@ impl ShuffleWriterExec {
                                     }
                                     None => {
                                         let mut path = path.clone();
-                                        path.push(&format!("{}", output_partition));
+                                        path.push(&format!("{output_partition}"));
                                         std::fs::create_dir_all(&path)?;
 
                                         path.push(format!(
-                                            "data-{}.arrow",
-                                            input_partition
+                                            "data-{input_partition}.arrow"
                                         ));
                                         debug!("Writing results to {:?}", path);
 
@@ -311,10 +307,6 @@ impl ExecutionPlan for ShuffleWriterExec {
 
     fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
         None
-    }
-
-    fn relies_on_input_order(&self) -> bool {
-        false
     }
 
     fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
@@ -461,7 +453,7 @@ mod tests {
         let mut stream = query_stage.execute(0, task_ctx)?;
         let batches = utils::collect_stream(&mut stream)
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
         assert_eq!(1, batches.len());
         let batch = &batches[0];
         assert_eq!(3, batch.num_columns());
@@ -518,7 +510,7 @@ mod tests {
         let mut stream = query_stage.execute(0, task_ctx)?;
         let batches = utils::collect_stream(&mut stream)
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
         assert_eq!(1, batches.len());
         let batch = &batches[0];
         assert_eq!(3, batch.num_columns());

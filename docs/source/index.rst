@@ -71,4 +71,4 @@ Table of content
 
    community/communication
    Issue tracker <https://github.com/apache/arrow-ballista/issues>
-   Code of conduct <https://github.com/apache/arrow-ballista/blob/master/CODE_OF_CONDUCT.md>
+   Code of conduct <https://github.com/apache/arrow-ballista/blob/main/CODE_OF_CONDUCT.md>

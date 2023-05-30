@@ -18,15 +18,17 @@
 //! Distributed execution context.
 
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::execution::context::DataFilePaths;
 use log::info;
 use parking_lot::Mutex;
 use sqlparser::ast::Statement;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use ballista_core::config::BallistaConfig;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
-use ballista_core::serde::protobuf::{ExecuteQueryParams, KeyValuePair};
+use ballista_core::serde::protobuf::{CreateSessionParams, KeyValuePair};
 use ballista_core::utils::{
     create_df_ctx_with_ballista_query_planner, create_grpc_client_connection,
 };
@@ -36,9 +38,12 @@ use datafusion::catalog::TableReference;
 use datafusion::dataframe::DataFrame;
 use datafusion::datasource::{source_as_provider, TableProvider};
 use datafusion::error::{DataFusionError, Result};
-use datafusion::logical_expr::{CreateExternalTable, LogicalPlan, TableScan};
+use datafusion::logical_expr::{
+    CreateExternalTable, DdlStatement, LogicalPlan, TableScan,
+};
 use datafusion::prelude::{
-    AvroReadOptions, CsvReadOptions, ParquetReadOptions, SessionConfig, SessionContext,
+    AvroReadOptions, CsvReadOptions, NdJsonReadOptions, ParquetReadOptions,
+    SessionConfig, SessionContext,
 };
 use datafusion::sql::parser::{DFParser, Statement as DFStatement};
 
@@ -94,12 +99,11 @@ impl BallistaContext {
         );
         let connection = create_grpc_client_connection(scheduler_url.clone())
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
         let mut scheduler = SchedulerGrpcClient::new(connection);
 
         let remote_session_id = scheduler
-            .execute_query(ExecuteQueryParams {
-                query: None,
+            .create_session(CreateSessionParams {
                 settings: config
                     .settings()
                     .iter()
@@ -108,10 +112,9 @@ impl BallistaContext {
                         value: v.to_owned(),
                     })
                     .collect::<Vec<_>>(),
-                optional_session_id: None,
             })
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
             .into_inner()
             .session_id;
 
@@ -139,8 +142,8 @@ impl BallistaContext {
         config: &BallistaConfig,
         concurrent_tasks: usize,
     ) -> ballista_core::error::Result<Self> {
-        use ballista_core::serde::protobuf::PhysicalPlanNode;
         use ballista_core::serde::BallistaCodec;
+        use datafusion_proto::protobuf::PhysicalPlanNode;
 
         log::info!("Running in local mode. Scheduler will be run in-proc");
 
@@ -157,8 +160,7 @@ impl BallistaContext {
         };
 
         let remote_session_id = scheduler
-            .execute_query(ExecuteQueryParams {
-                query: None,
+            .create_session(CreateSessionParams {
                 settings: config
                     .settings()
                     .iter()
@@ -167,10 +169,9 @@ impl BallistaContext {
                         value: v.to_owned(),
                     })
                     .collect::<Vec<_>>(),
-                optional_session_id: None,
             })
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
             .into_inner()
             .session_id;
 
@@ -206,36 +207,47 @@ impl BallistaContext {
         })
     }
 
+    /// Create a DataFrame representing an Json table scan
+    /// TODO fetch schema from scheduler instead of resolving locally
+    pub async fn read_json<P: DataFilePaths>(
+        &self,
+        paths: P,
+        options: NdJsonReadOptions<'_>,
+    ) -> Result<DataFrame> {
+        let df = self.context.read_json(paths, options).await?;
+        Ok(df)
+    }
+
     /// Create a DataFrame representing an Avro table scan
     /// TODO fetch schema from scheduler instead of resolving locally
-    pub async fn read_avro(
+    pub async fn read_avro<P: DataFilePaths>(
         &self,
-        path: &str,
+        paths: P,
         options: AvroReadOptions<'_>,
-    ) -> Result<Arc<DataFrame>> {
-        let df = self.context.read_avro(path, options).await?;
+    ) -> Result<DataFrame> {
+        let df = self.context.read_avro(paths, options).await?;
         Ok(df)
     }
 
     /// Create a DataFrame representing a Parquet table scan
     /// TODO fetch schema from scheduler instead of resolving locally
-    pub async fn read_parquet(
+    pub async fn read_parquet<P: DataFilePaths>(
         &self,
-        path: &str,
+        paths: P,
         options: ParquetReadOptions<'_>,
-    ) -> Result<Arc<DataFrame>> {
-        let df = self.context.read_parquet(path, options).await?;
+    ) -> Result<DataFrame> {
+        let df = self.context.read_parquet(paths, options).await?;
         Ok(df)
     }
 
     /// Create a DataFrame representing a CSV table scan
     /// TODO fetch schema from scheduler instead of resolving locally
-    pub async fn read_csv(
+    pub async fn read_csv<P: DataFilePaths>(
         &self,
-        path: &str,
+        paths: P,
         options: CsvReadOptions<'_>,
-    ) -> Result<Arc<DataFrame>> {
-        let df = self.context.read_csv(path, options).await?;
+    ) -> Result<DataFrame> {
+        let df = self.context.read_csv(paths, options).await?;
         Ok(df)
     }
 
@@ -260,9 +272,9 @@ impl BallistaContext {
             .read_csv(path, options)
             .await
             .map_err(|e| {
-                DataFusionError::Context(format!("Can't read CSV: {}", path), Box::new(e))
+                DataFusionError::Context(format!("Can't read CSV: {path}"), Box::new(e))
             })?
-            .to_logical_plan()?;
+            .into_optimized_plan()?;
         match plan {
             LogicalPlan::TableScan(TableScan { source, .. }) => {
                 self.register_table(name, source_as_provider(&source)?)
@@ -277,7 +289,11 @@ impl BallistaContext {
         path: &str,
         options: ParquetReadOptions<'_>,
     ) -> Result<()> {
-        match self.read_parquet(path, options).await?.to_logical_plan()? {
+        match self
+            .read_parquet(path, options)
+            .await?
+            .into_optimized_plan()?
+        {
             LogicalPlan::TableScan(TableScan { source, .. }) => {
                 self.register_table(name, source_as_provider(&source)?)
             }
@@ -291,7 +307,7 @@ impl BallistaContext {
         path: &str,
         options: AvroReadOptions<'_>,
     ) -> Result<()> {
-        match self.read_avro(path, options).await?.to_logical_plan()? {
+        match self.read_avro(path, options).await?.into_optimized_plan()? {
             LogicalPlan::TableScan(TableScan { source, .. }) => {
                 self.register_table(name, source_as_provider(&source)?)
             }
@@ -319,6 +335,9 @@ impl BallistaContext {
                 Statement::ShowColumns { .. } => {
                     is_show_variable = true;
                 }
+                Statement::ShowTables { .. } => {
+                    is_show_variable = true;
+                }
                 _ => {
                     is_show_variable = false;
                 }
@@ -332,7 +351,7 @@ impl BallistaContext {
     ///
     /// This method is `async` because queries of type `CREATE EXTERNAL TABLE`
     /// might require the schema to be inferred.
-    pub async fn sql(&self, sql: &str) -> Result<Arc<DataFrame>> {
+    pub async fn sql(&self, sql: &str) -> Result<DataFrame> {
         let mut ctx = self.context.clone();
 
         let is_show = self.is_show_statement(sql).await?;
@@ -351,31 +370,37 @@ impl BallistaContext {
             let state = self.state.lock();
             for (name, prov) in &state.tables {
                 // ctx is shared between queries, check table exists or not before register
-                let table_ref = TableReference::Bare { table: name };
+                let table_ref = TableReference::Bare {
+                    table: Cow::Borrowed(name),
+                };
                 if !ctx.table_exist(table_ref)? {
                     ctx.register_table(
-                        TableReference::Bare { table: name },
+                        TableReference::Bare {
+                            table: Cow::Borrowed(name),
+                        },
                         Arc::clone(prov),
                     )?;
                 }
             }
         }
 
-        let plan = ctx.create_logical_plan(sql)?;
+        let plan = ctx.state().create_logical_plan(sql).await?;
 
         match plan {
-            LogicalPlan::CreateExternalTable(CreateExternalTable {
-                ref schema,
-                ref name,
-                ref location,
-                ref file_type,
-                ref has_header,
-                ref delimiter,
-                ref table_partition_cols,
-                ref if_not_exists,
-                ..
-            }) => {
-                let table_exists = ctx.table_exist(name.as_str())?;
+            LogicalPlan::Ddl(DdlStatement::CreateExternalTable(
+                CreateExternalTable {
+                    ref schema,
+                    ref name,
+                    ref location,
+                    ref file_type,
+                    ref has_header,
+                    ref delimiter,
+                    ref table_partition_cols,
+                    ref if_not_exists,
+                    ..
+                },
+            )) => {
+                let table_exists = ctx.table_exist(name)?;
                 let schema: SchemaRef = Arc::new(schema.as_ref().to_owned().into());
                 let table_partition_cols = table_partition_cols
                     .iter()
@@ -397,40 +422,36 @@ impl BallistaContext {
                             if !schema.fields().is_empty() {
                                 options = options.schema(&schema);
                             }
-                            self.register_csv(name, location, options).await?;
-                            Ok(Arc::new(DataFrame::new(ctx.state.clone(), &plan)))
+                            self.register_csv(name.table(), location, options).await?;
+                            Ok(DataFrame::new(ctx.state(), plan))
                         }
                         "parquet" => {
                             self.register_parquet(
-                                name,
+                                name.table(),
                                 location,
                                 ParquetReadOptions::default()
                                     .table_partition_cols(table_partition_cols),
                             )
                             .await?;
-                            Ok(Arc::new(DataFrame::new(ctx.state.clone(), &plan)))
+                            Ok(DataFrame::new(ctx.state(), plan))
                         }
                         "avro" => {
                             self.register_avro(
-                                name,
+                                name.table(),
                                 location,
                                 AvroReadOptions::default()
                                     .table_partition_cols(table_partition_cols),
                             )
                             .await?;
-                            Ok(Arc::new(DataFrame::new(ctx.state.clone(), &plan)))
+                            Ok(DataFrame::new(ctx.state(), plan))
                         }
                         _ => Err(DataFusionError::NotImplemented(format!(
-                            "Unsupported file type {:?}.",
-                            file_type
+                            "Unsupported file type {file_type:?}."
                         ))),
                     },
-                    (true, true) => {
-                        Ok(Arc::new(DataFrame::new(ctx.state.clone(), &plan)))
-                    }
+                    (true, true) => Ok(DataFrame::new(ctx.state(), plan)),
                     (false, true) => Err(DataFusionError::Execution(format!(
-                        "Table '{:?}' already exists",
-                        name
+                        "Table '{name:?}' already exists"
                     ))),
                 }
             }
@@ -593,6 +614,7 @@ mod tests {
                         collect_stat: x.collect_stat,
                         target_partitions: x.target_partitions,
                         file_sort_order: None,
+                        infinite_source: false,
                     };
 
                     let table_paths = listing_table
@@ -601,7 +623,7 @@ mod tests {
                         .map(|t| ListingTableUrl::parse(t).unwrap())
                         .collect();
                     let config = ListingTableConfig::new_with_multi_paths(table_paths)
-                        .with_schema(Arc::new(Schema::new(vec![])))
+                        .with_schema(Arc::new(Schema::empty()))
                         .with_listing_options(error_options);
 
                     let error_table = ListingTable::try_new(config).unwrap();

@@ -26,27 +26,29 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::error::BallistaError;
-use crate::serde::protobuf;
-use crate::serde::protobuf::action::ActionType;
-use crate::serde::protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
 use crate::serde::scheduler::{
     Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, PartitionId,
     PartitionLocation, PartitionStats, TaskDefinition,
 };
+
+use crate::serde::protobuf;
+use protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
 
 impl TryInto<Action> for protobuf::Action {
     type Error = BallistaError;
 
     fn try_into(self) -> Result<Action, Self::Error> {
         match self.action_type {
-            Some(ActionType::FetchPartition(fetch)) => Ok(Action::FetchPartition {
-                job_id: fetch.job_id,
-                stage_id: fetch.stage_id as usize,
-                partition_id: fetch.partition_id as usize,
-                path: fetch.path,
-                host: fetch.host,
-                port: fetch.port as u16,
-            }),
+            Some(protobuf::action::ActionType::FetchPartition(fetch)) => {
+                Ok(Action::FetchPartition {
+                    job_id: fetch.job_id,
+                    stage_id: fetch.stage_id as usize,
+                    partition_id: fetch.partition_id as usize,
+                    path: fetch.path,
+                    host: fetch.host,
+                    port: fetch.port as u16,
+                })
+            }
             _ => Err(BallistaError::General(
                 "scheduler::from_proto(Action) invalid or missing action".to_owned(),
             )),
@@ -267,42 +269,43 @@ impl Into<ExecutorData> for protobuf::ExecutorData {
     }
 }
 
-impl TryInto<TaskDefinition> for protobuf::TaskDefinition {
+impl TryInto<(TaskDefinition, Vec<u8>)> for protobuf::TaskDefinition {
     type Error = BallistaError;
 
-    fn try_into(self) -> Result<TaskDefinition, Self::Error> {
+    fn try_into(self) -> Result<(TaskDefinition, Vec<u8>), Self::Error> {
         let mut props = HashMap::new();
         for kv_pair in self.props {
             props.insert(kv_pair.key, kv_pair.value);
         }
 
-        Ok(TaskDefinition {
-            task_id: self.task_id as usize,
-            task_attempt_num: self.task_attempt_num as usize,
-            job_id: self.job_id,
-            stage_id: self.stage_id as usize,
-            stage_attempt_num: self.stage_attempt_num as usize,
-            partition_id: self.partition_id as usize,
-            plan: self.plan,
-            output_partitioning: self.output_partitioning,
-            session_id: self.session_id,
-            launch_time: self.launch_time,
-            props,
-        })
+        Ok((
+            TaskDefinition {
+                task_id: self.task_id as usize,
+                task_attempt_num: self.task_attempt_num as usize,
+                job_id: self.job_id,
+                stage_id: self.stage_id as usize,
+                stage_attempt_num: self.stage_attempt_num as usize,
+                partition_id: self.partition_id as usize,
+                plan: vec![],
+                session_id: self.session_id,
+                launch_time: self.launch_time,
+                props,
+            },
+            self.plan,
+        ))
     }
 }
 
-impl TryInto<Vec<TaskDefinition>> for protobuf::MultiTaskDefinition {
+impl TryInto<(Vec<TaskDefinition>, Vec<u8>)> for protobuf::MultiTaskDefinition {
     type Error = BallistaError;
 
-    fn try_into(self) -> Result<Vec<TaskDefinition>, Self::Error> {
+    fn try_into(self) -> Result<(Vec<TaskDefinition>, Vec<u8>), Self::Error> {
         let mut props = HashMap::new();
         for kv_pair in self.props {
             props.insert(kv_pair.key, kv_pair.value);
         }
 
         let plan = self.plan;
-        let output_partitioning = self.output_partitioning;
         let session_id = self.session_id;
         let job_id = self.job_id;
         let stage_id = self.stage_id as usize;
@@ -310,21 +313,23 @@ impl TryInto<Vec<TaskDefinition>> for protobuf::MultiTaskDefinition {
         let launch_time = self.launch_time;
         let task_ids = self.task_ids;
 
-        Ok(task_ids
-            .iter()
-            .map(|task_id| TaskDefinition {
-                task_id: task_id.task_id as usize,
-                task_attempt_num: task_id.task_attempt_num as usize,
-                job_id: job_id.clone(),
-                stage_id,
-                stage_attempt_num,
-                partition_id: task_id.partition_id as usize,
-                plan: plan.clone(),
-                output_partitioning: output_partitioning.clone(),
-                session_id: session_id.clone(),
-                launch_time,
-                props: props.clone(),
-            })
-            .collect())
+        Ok((
+            task_ids
+                .iter()
+                .map(|task_id| TaskDefinition {
+                    task_id: task_id.task_id as usize,
+                    task_attempt_num: task_id.task_attempt_num as usize,
+                    job_id: job_id.clone(),
+                    stage_id,
+                    stage_attempt_num,
+                    partition_id: task_id.partition_id as usize,
+                    plan: vec![],
+                    session_id: session_id.clone(),
+                    launch_time,
+                    props: props.clone(),
+                })
+                .collect(),
+            plan,
+        ))
     }
 }

@@ -31,10 +31,10 @@ doc = "Route for proxying flight results via scheduler. Should be of the form 'I
 
 [[param]]
 abbr = "b"
-name = "config_backend"
-type = "ballista_scheduler::state::backend::StateBackend"
-doc = "The configuration backend for the scheduler, possible values: etcd, memory, sled. Default: sled"
-default = "ballista_scheduler::state::backend::StateBackend::Sled"
+name = "cluster_backend"
+type = "ballista_scheduler::cluster::ClusterStorage"
+doc = "The configuration backend for the scheduler cluster state, possible values: etcd, memory, sled. Default: sled"
+default = "ballista_scheduler::cluster::ClusterStorage::Sled"
 
 [[param]]
 abbr = "n"
@@ -51,7 +51,6 @@ doc = "etcd urls for use when discovery mode is `etcd`. Default: localhost:2379"
 default = "std::string::String::from(\"localhost:2379\")"
 
 [[param]]
-abbr = "h"
 name = "bind_host"
 type = "String"
 default = "std::string::String::from(\"0.0.0.0\")"
@@ -96,10 +95,10 @@ default = "3600"
 doc = "Delayed interval for cleaning up finished job state. Default: 3600"
 
 [[param]]
-name = "executor_slots_policy"
-type = "ballista_scheduler::config::SlotsPolicy"
-doc = "The executor slots policy for the scheduler, possible values: bias, round-robin, round-robin-local. Default: bias"
-default = "ballista_scheduler::config::SlotsPolicy::Bias"
+name = "task_distribution"
+type = "ballista_scheduler::config::TaskDistribution"
+doc = "The policy of distributing tasks to available executor slots, possible values: bias, round-robin. Default: bias"
+default = "ballista_scheduler::config::TaskDistribution::Bias"
 
 [[param]]
 name = "plugin_dir"
@@ -135,3 +134,39 @@ name = "log_rotation_policy"
 type = "ballista_core::config::LogRotationPolicy"
 doc = "Tracing log rotation policy, possible values: minutely, hourly, daily, never. Default: daily"
 default = "ballista_core::config::LogRotationPolicy::Daily"
+
+[[param]]
+name = "job_resubmit_interval_ms"
+type = "u64"
+default = "0"
+doc = "If job is not able to be scheduled on submission, wait for this interval and resubmit. Default value of 0 indicates that job should not be resubmitted"
+
+[[param]]
+name = "executor_termination_grace_period"
+type = "u64"
+default = "30"
+doc = "Time in seconds an executor should be considered lost after it enters terminating status"
+
+[[param]]
+name = "scheduler_event_expected_processing_duration"
+type = "u64"
+default = "0"
+doc = "The maximum expected processing time of a scheduler event (microseconds). Zero means disable."
+
+[[param]]
+name = "grpc_server_max_decoding_message_size"
+type = "u32"
+default = "16777216"
+doc = "The maximum size of a decoded message at the grpc server side. Default: 16MB"
+
+[[param]]
+name = "executor_timeout_seconds"
+type = "u64"
+doc = "The executor timeout in seconds. It should be longer than executor's heartbeat intervals. Only after missing two or tree consecutive heartbeats from a executor, the executor is mark to be dead"
+default = "180"
+
+[[param]]
+name = "expire_dead_executor_interval_seconds"
+type = "u64"
+doc = "The interval to check expired or dead executors"
+default = "15"

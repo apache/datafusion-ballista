@@ -22,7 +22,6 @@ use std::iter::FromIterator;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use datafusion::physical_optimizer::aggregate_statistics::AggregateStatistics;
 use datafusion::physical_optimizer::join_selection::JoinSelection;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
@@ -33,7 +32,6 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::{debug, warn};
 
 use ballista_core::error::{BallistaError, Result};
-use ballista_core::serde::physical_plan::from_proto::parse_protobuf_hash_partitioning;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::{
     self, task_info, FailedTask, GraphStageInput, OperatorMetricsSet, ResultLost,
@@ -42,7 +40,9 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::protobuf::{task_status, RunningTask};
 use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
 use ballista_core::serde::scheduler::PartitionLocation;
-use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
+use ballista_core::serde::BallistaCodec;
+use datafusion_proto::physical_plan::from_proto::parse_protobuf_hash_partitioning;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 
 use crate::display::DisplayableBallistaExecutionPlan;
 
@@ -365,12 +365,7 @@ impl UnresolvedStage {
 
         // Optimize plan based on new resolved statistics
         let optimize_join = JoinSelection::new();
-        let optimize_aggregate = AggregateStatistics::new();
-
-        let cfg: SessionConfig = SessionConfig::new();
-
-        let plan: Arc<dyn ExecutionPlan> = optimize_join.optimize(plan, &cfg)?;
-        let plan: Arc<dyn ExecutionPlan> = optimize_aggregate.optimize(plan, &cfg)?;
+        let plan = optimize_join.optimize(plan, SessionConfig::default().options())?;
 
         Ok(ResolvedStage::new(
             self.stage_id,
@@ -790,7 +785,12 @@ impl RunningStage {
         partition: usize,
         metrics: Vec<OperatorMetricsSet>,
     ) -> Result<()> {
-        if let Some(combined_metrics) = &mut self.stage_metrics {
+        // For some cases, task metrics not set, especially for testings.
+        if metrics.is_empty() {
+            return Ok(());
+        }
+
+        let new_metrics_set = if let Some(combined_metrics) = &mut self.stage_metrics {
             if metrics.len() != combined_metrics.len() {
                 return Err(BallistaError::Internal(format!("Error updating task metrics to stage {}, task metrics array size {} does not equal \
                 with the stage metrics array size {} for task {}", self.stage_id, metrics.len(), combined_metrics.len(), partition)));
@@ -805,23 +805,21 @@ impl RunningStage {
                 })
                 .collect::<Result<Vec<_>>>()?;
 
-            let new_metrics_set = combined_metrics
+            combined_metrics
                 .iter_mut()
                 .zip(metrics_values_array)
                 .map(|(first, second)| {
                     Self::combine_metrics_set(first, second, partition)
                 })
-                .collect();
-            self.stage_metrics = Some(new_metrics_set)
+                .collect()
         } else {
-            let new_metrics_set = metrics
+            metrics
                 .into_iter()
                 .map(|ms| ms.try_into())
-                .collect::<Result<Vec<_>>>()?;
-            if !new_metrics_set.is_empty() {
-                self.stage_metrics = Some(new_metrics_set)
-            }
-        }
+                .collect::<Result<Vec<_>>>()?
+        };
+        self.stage_metrics = Some(new_metrics_set);
+
         Ok(())
     }
 
@@ -939,6 +937,11 @@ impl SuccessfulStage {
                 _ => task_infos.push(None),
             }
         }
+        let stage_metrics = if self.stage_metrics.is_empty() {
+            None
+        } else {
+            Some(self.stage_metrics.clone())
+        };
         RunningStage {
             stage_id: self.stage_id,
             stage_attempt_num: self.stage_attempt_num + 1,
@@ -950,7 +953,7 @@ impl SuccessfulStage {
             task_infos,
             // It is Ok to forget the previous task failure attempts
             task_failure_numbers: vec![0; self.partitions],
-            stage_metrics: Some(self.stage_metrics.clone()),
+            stage_metrics,
         }
     }
 
@@ -958,7 +961,7 @@ impl SuccessfulStage {
     /// Returns the number of running tasks that were reset
     pub fn reset_tasks(&mut self, executor: &str) -> usize {
         let mut reset = 0;
-        let failure_reason = format!("Task failure due to Executor {} lost", executor);
+        let failure_reason = format!("Task failure due to Executor {executor} lost");
         for task in self.task_infos.iter_mut() {
             match task {
                 TaskInfo {

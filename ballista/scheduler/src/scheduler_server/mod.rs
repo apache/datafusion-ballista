@@ -21,24 +21,24 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ballista_core::error::Result;
 use ballista_core::event_loop::{EventLoop, EventSender};
 use ballista_core::serde::protobuf::{StopExecutorParams, TaskStatus};
-use ballista_core::serde::{AsExecutionPlan, BallistaCodec};
-use ballista_core::utils::default_session_builder;
+use ballista_core::serde::BallistaCodec;
 
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 
+use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
+use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use log::{error, warn};
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
-use crate::state::backend::StateBackendClient;
-use crate::state::executor_manager::{
-    ExecutorManager, ExecutorReservation, DEFAULT_EXECUTOR_TIMEOUT_SECONDS,
-};
+
+use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 
 use crate::state::task_manager::TaskLauncher;
 use crate::state::SchedulerState;
@@ -52,7 +52,7 @@ pub mod externalscaler {
 pub mod event;
 mod external_scaler;
 mod grpc;
-mod query_stage_scheduler;
+pub(crate) mod query_stage_scheduler;
 
 pub(crate) type SessionBuilder = fn(SessionConfig) -> SessionState;
 
@@ -60,28 +60,31 @@ pub(crate) type SessionBuilder = fn(SessionConfig) -> SessionState;
 pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
     pub scheduler_name: String,
     pub start_time: u128,
-    pub(crate) state: Arc<SchedulerState<T, U>>,
+    pub state: Arc<SchedulerState<T, U>>,
     pub(crate) query_stage_event_loop: EventLoop<QueryStageSchedulerEvent>,
     query_stage_scheduler: Arc<QueryStageScheduler<T, U>>,
+    config: Arc<SchedulerConfig>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
     pub fn new(
         scheduler_name: String,
-        config_backend: Arc<dyn StateBackendClient>,
+        cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
-        config: SchedulerConfig,
+        config: Arc<SchedulerConfig>,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     ) -> Self {
         let state = Arc::new(SchedulerState::new(
-            config_backend,
-            default_session_builder,
+            cluster,
             codec,
             scheduler_name.clone(),
             config.clone(),
         ));
-        let query_stage_scheduler =
-            Arc::new(QueryStageScheduler::new(state.clone(), metrics_collector));
+        let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
+            state.clone(),
+            metrics_collector,
+            config.clone(),
+        ));
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
             config.event_loop_buffer_size as usize,
@@ -94,28 +97,31 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             state,
             query_stage_event_loop,
             query_stage_scheduler,
+            config,
         }
     }
 
     #[allow(dead_code)]
-    pub(crate) fn with_task_launcher(
+    pub fn new_with_task_launcher(
         scheduler_name: String,
-        config_backend: Arc<dyn StateBackendClient>,
+        cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
-        config: SchedulerConfig,
+        config: Arc<SchedulerConfig>,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
         task_launcher: Arc<dyn TaskLauncher>,
     ) -> Self {
-        let state = Arc::new(SchedulerState::with_task_launcher(
-            config_backend,
-            default_session_builder,
+        let state = Arc::new(SchedulerState::new_with_task_launcher(
+            cluster,
             codec,
             scheduler_name.clone(),
             config.clone(),
             task_launcher,
         ));
-        let query_stage_scheduler =
-            Arc::new(QueryStageScheduler::new(state.clone(), metrics_collector));
+        let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
+            state.clone(),
+            metrics_collector,
+            config.clone(),
+        ));
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
             config.event_loop_buffer_size as usize,
@@ -128,6 +134,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             state,
             query_stage_event_loop,
             query_stage_scheduler,
+            config,
         }
     }
 
@@ -137,6 +144,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         self.expire_dead_executors()?;
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn query_stage_scheduler(&self) -> Arc<QueryStageScheduler<T, U>> {
+        self.query_stage_scheduler.clone()
     }
 
     pub(crate) fn pending_tasks(&self) -> usize {
@@ -174,10 +186,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         tasks_status: Vec<TaskStatus>,
     ) -> Result<()> {
         // We might receive buggy task updates from dead executors.
-        if self.state.executor_manager.is_dead_executor(executor_id) {
+        if self.state.config.is_push_staged_scheduling()
+            && self.state.executor_manager.is_dead_executor(executor_id)
+        {
             let error_msg = format!(
-                "Receive buggy tasks status from dead Executor {}, task status update ignored.",
-                executor_id
+                "Receive buggy tasks status from dead Executor {executor_id}, task status update ignored."
             );
             warn!("{}", error_msg);
             return Ok(());
@@ -212,78 +225,127 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                 for expired in expired_executors {
                     let executor_id = expired.executor_id.clone();
                     let executor_manager = state.executor_manager.clone();
-                    let stop_reason = format!(
-                        "Executor {} heartbeat timed out after {}s",
-                        executor_id.clone(),
-                        DEFAULT_EXECUTOR_TIMEOUT_SECONDS
-                    );
-                    warn!("{}", stop_reason.clone());
+
                     let sender_clone = event_sender.clone();
+
+                    let terminating = matches!(
+                        expired
+                            .status
+                            .as_ref()
+                            .and_then(|status| status.status.as_ref()),
+                        Some(ballista_core::serde::protobuf::executor_status::Status::Terminating(_))
+                    );
+
+                    let stop_reason = if terminating {
+                        format!(
+                        "TERMINATING executor {executor_id} heartbeat timed out after {}s", state.config.executor_termination_grace_period,
+                    )
+                    } else {
+                        format!(
+                            "ACTIVE executor {executor_id} heartbeat timed out after {}s",
+                            state.config.executor_timeout_seconds,
+                        )
+                    };
+
+                    warn!("{stop_reason}");
+
+                    // If executor is expired, remove it immediately
                     Self::remove_executor(
                         executor_manager,
                         sender_clone,
                         &executor_id,
                         Some(stop_reason.clone()),
-                    )
-                    .await
-                    .unwrap_or_else(|e| {
-                        let msg = format!(
-                            "Error to remove Executor in Scheduler due to {:?}",
-                            e
-                        );
-                        error!("{}", msg);
-                    });
+                        0,
+                    );
 
-                    match state.executor_manager.get_client(&executor_id).await {
-                        Ok(mut client) => {
-                            tokio::task::spawn(async move {
-                                match client
-                                    .stop_executor(StopExecutorParams {
-                                        executor_id,
-                                        reason: stop_reason,
-                                        force: true,
-                                    })
-                                    .await
-                                {
-                                    Err(error) => {
-                                        warn!(
+                    // If executor is not already terminating then stop it. If it is terminating then it should already be shutting
+                    // down and we do not need to do anything here.
+                    if !terminating {
+                        match state.executor_manager.get_client(&executor_id).await {
+                            Ok(mut client) => {
+                                tokio::task::spawn(async move {
+                                    match client
+                                        .stop_executor(StopExecutorParams {
+                                            executor_id,
+                                            reason: stop_reason,
+                                            force: true,
+                                        })
+                                        .await
+                                    {
+                                        Err(error) => {
+                                            warn!(
                                             "Failed to send stop_executor rpc due to, {}",
                                             error
                                         );
+                                        }
+                                        Ok(_value) => {}
                                     }
-                                    Ok(_value) => {}
-                                }
-                            });
-                        }
-                        Err(_) => {
-                            warn!("Executor is already dead, failed to connect to Executor {}", executor_id);
+                                });
+                            }
+                            Err(_) => {
+                                warn!("Executor is already dead, failed to connect to Executor {}", executor_id);
+                            }
                         }
                     }
                 }
-                tokio::time::sleep(Duration::from_secs(DEFAULT_EXECUTOR_TIMEOUT_SECONDS))
-                    .await;
+                tokio::time::sleep(Duration::from_secs(
+                    state.config.expire_dead_executor_interval_seconds,
+                ))
+                .await;
             }
         });
         Ok(())
     }
 
-    pub(crate) async fn remove_executor(
+    pub(crate) fn remove_executor(
         executor_manager: ExecutorManager,
         event_sender: EventSender<QueryStageSchedulerEvent>,
         executor_id: &str,
         reason: Option<String>,
-    ) -> Result<()> {
-        // Update the executor manager immediately here
-        executor_manager
-            .remove_executor(executor_id, reason.clone())
+        wait_secs: u64,
+    ) {
+        let executor_id = executor_id.to_owned();
+        tokio::spawn(async move {
+            // Wait for `wait_secs` before removing executor
+            tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+
+            // Update the executor manager immediately here
+            if let Err(e) = executor_manager
+                .remove_executor(&executor_id, reason.clone())
+                .await
+            {
+                error!("error removing executor {executor_id}: {e:?}");
+            }
+
+            if let Err(e) = event_sender
+                .post_event(QueryStageSchedulerEvent::ExecutorLost(executor_id, reason))
+                .await
+            {
+                error!("error sending ExecutorLost event: {e:?}");
+            }
+        });
+    }
+
+    async fn do_register_executor(&self, metadata: ExecutorMetadata) -> Result<()> {
+        let executor_data = ExecutorData {
+            executor_id: metadata.id.clone(),
+            total_task_slots: metadata.specification.task_slots,
+            available_task_slots: metadata.specification.task_slots,
+        };
+
+        // Save the executor to state
+        let reservations = self
+            .state
+            .executor_manager
+            .register_executor(metadata, executor_data, false)
             .await?;
 
-        event_sender
-            .post_event(QueryStageSchedulerEvent::ExecutorLost(
-                executor_id.to_owned(),
-                reason,
-            ))
-            .await?;
+        // If we are using push-based scheduling then reserve this executors slots and send
+        // them for scheduling tasks.
+        if self.state.config.is_push_staged_scheduling() {
+            self.offer_reservation(reservations).await?;
+        }
+
         Ok(())
     }
 }
@@ -311,6 +373,7 @@ mod test {
 
     use datafusion::test_util::scan_empty;
     use datafusion_proto::protobuf::LogicalPlanNode;
+    use datafusion_proto::protobuf::PhysicalPlanNode;
 
     use ballista_core::config::{
         BallistaConfig, TaskSchedulingPolicy, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
@@ -321,8 +384,8 @@ mod test {
 
     use ballista_core::serde::protobuf::{
         failed_task, job_status, task_status, ExecutionError, FailedTask, JobStatus,
-        MultiTaskDefinition, PhysicalPlanNode, ShuffleWritePartition, SuccessfulJob,
-        SuccessfulTask, TaskId, TaskStatus,
+        MultiTaskDefinition, ShuffleWritePartition, SuccessfulJob, SuccessfulTask,
+        TaskId, TaskStatus,
     };
     use ballista_core::serde::scheduler::{
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
@@ -330,12 +393,11 @@ mod test {
     use ballista_core::serde::BallistaCodec;
 
     use crate::scheduler_server::{timestamp_millis, SchedulerServer};
-    use crate::state::backend::sled::SledClient;
 
     use crate::test_utils::{
         assert_completed_event, assert_failed_event, assert_no_submitted_event,
-        assert_submitted_event, ExplodingTableProvider, SchedulerTest, TaskRunnerFn,
-        TestMetricsCollector,
+        assert_submitted_event, test_cluster_context, ExplodingTableProvider,
+        SchedulerTest, TaskRunnerFn, TestMetricsCollector,
     };
 
     #[tokio::test]
@@ -364,19 +426,32 @@ mod test {
 
         let job_id = "job";
 
-        // Submit job
+        // Enqueue job
         scheduler
             .state
-            .submit_job(job_id, "", ctx, &plan, 0)
+            .task_manager
+            .queue_job(job_id, "", timestamp_millis())
+            .await?;
+
+        // Plan job
+        let plan = scheduler
+            .state
+            .plan_job(job_id, ctx.clone(), &plan)
             .await
             .expect("submitting plan");
+
+        //Submit job plan
+        scheduler
+            .state
+            .task_manager
+            .submit_job(job_id, "", &ctx.session_id(), plan, 0)
+            .await?;
 
         // Refresh the ExecutionGraph
         while let Some(graph) = scheduler
             .state
             .task_manager
             .get_active_execution_graph(job_id)
-            .await
         {
             let task = {
                 let mut graph = graph.write().await;
@@ -430,7 +505,6 @@ mod test {
             .state
             .task_manager
             .get_active_execution_graph(job_id)
-            .await
             .expect("Fail to find graph in the cache");
 
         let final_graph = final_graph.read().await;
@@ -466,6 +540,7 @@ mod test {
         match status.status {
             Some(job_status::Status::Successful(SuccessfulJob {
                 partition_location,
+                ..
             })) => {
                 assert_eq!(partition_location.len(), 4);
             }
@@ -541,11 +616,12 @@ mod test {
             matches!(
                 status,
                 JobStatus {
-                    status: Some(job_status::Status::Failed(_))
+                    status: Some(job_status::Status::Failed(_)),
+                    ..
                 }
             ),
-            "Expected job status to be failed but it was {:?}",
-            status
+            "{}",
+            "Expected job status to be failed but it was {status:?}"
         );
 
         assert_submitted_event("job", &metrics_collector);
@@ -573,7 +649,10 @@ mod test {
 
         ctx.register_table("explode", Arc::new(ExplodingTableProvider))?;
 
-        let plan = ctx.sql("SELECT * FROM explode").await?.to_logical_plan()?;
+        let plan = ctx
+            .sql("SELECT * FROM explode")
+            .await?
+            .into_optimized_plan()?;
 
         // This should fail when we try and create the physical plan
         let status = test.run("job", "", &plan).await?;
@@ -582,11 +661,12 @@ mod test {
             matches!(
                 status,
                 JobStatus {
-                    status: Some(job_status::Status::Failed(_))
+                    status: Some(job_status::Status::Failed(_)),
+                    ..
                 }
             ),
-            "Expected job status to be failed but it was {:?}",
-            status
+            "{}",
+            "Expected job status to be failed but it was {status:?}"
         );
 
         assert_no_submitted_event("job", &metrics_collector);
@@ -598,13 +678,15 @@ mod test {
     async fn test_scheduler(
         scheduling_policy: TaskSchedulingPolicy,
     ) -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
-        let state_storage = Arc::new(SledClient::try_new_temporary()?);
+        let cluster = test_cluster_context();
+
+        let config = SchedulerConfig::default().with_scheduler_policy(scheduling_policy);
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
-                state_storage.clone(),
+                cluster,
                 BallistaCodec::default(),
-                SchedulerConfig::default().with_scheduler_policy(scheduling_policy),
+                Arc::new(config),
                 Arc::new(TestMetricsCollector::default()),
             );
         scheduler.init().await?;
@@ -667,7 +749,7 @@ mod test {
         BallistaConfig::builder()
             .set(
                 BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
-                format!("{}", partitions).as_str(),
+                format!("{partitions}").as_str(),
             )
             .build()
             .expect("creating BallistaConfig")

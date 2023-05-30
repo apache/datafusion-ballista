@@ -26,7 +26,6 @@ use datafusion::physical_plan::Partitioning;
 use serde::Serialize;
 
 use crate::error::BallistaError;
-use crate::serde::protobuf::PhysicalHashRepartition;
 
 pub mod from_proto;
 pub mod to_proto;
@@ -135,7 +134,7 @@ impl PartitionStats {
     pub fn arrow_struct_repr(self) -> Field {
         Field::new(
             "partition_stats",
-            DataType::Struct(self.arrow_struct_fields()),
+            DataType::Struct(self.arrow_struct_fields().into()),
             false,
         )
     }
@@ -281,7 +280,6 @@ pub struct TaskDefinition {
     pub stage_attempt_num: usize,
     pub partition_id: usize,
     pub plan: Vec<u8>,
-    pub output_partitioning: Option<PhysicalHashRepartition>,
     pub session_id: String,
     pub launch_time: u64,
     pub props: HashMap<String, String>,
