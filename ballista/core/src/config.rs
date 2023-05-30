@@ -34,6 +34,8 @@ pub const BALLISTA_REPARTITION_JOINS: &str = "ballista.repartition.joins";
 pub const BALLISTA_REPARTITION_AGGREGATIONS: &str = "ballista.repartition.aggregations";
 pub const BALLISTA_REPARTITION_WINDOWS: &str = "ballista.repartition.windows";
 pub const BALLISTA_PARQUET_PRUNING: &str = "ballista.parquet.pruning";
+pub const BALLISTA_COLLECT_STATISTICS: &str = "ballista.collect_statistics";
+
 pub const BALLISTA_WITH_INFORMATION_SCHEMA: &str = "ballista.with_information_schema";
 /// give a plugin files dir, and then the dynamic library files in this dir will be load when scheduler state init.
 pub const BALLISTA_PLUGIN_DIR: &str = "ballista.plugin_dir";
@@ -182,6 +184,10 @@ impl BallistaConfig {
             ConfigEntry::new(BALLISTA_WITH_INFORMATION_SCHEMA.to_string(),
                              "Sets whether enable information_schema".to_string(),
                              DataType::Boolean, Some("false".to_string())),
+            ConfigEntry::new(BALLISTA_COLLECT_STATISTICS.to_string(),
+                "Configuration for collecting statistics during scan".to_string(),
+                DataType::Boolean, Some("true".to_string())
+            ),
             ConfigEntry::new(BALLISTA_PLUGIN_DIR.to_string(),
                              "Sets the plugin dir".to_string(),
                              DataType::Utf8, Some("".to_string())),
@@ -222,6 +228,10 @@ impl BallistaConfig {
 
     pub fn parquet_pruning(&self) -> bool {
         self.get_bool_setting(BALLISTA_PARQUET_PRUNING)
+    }
+
+    pub fn collect_statistics(&self) -> bool {
+        self.get_bool_setting(BALLISTA_COLLECT_STATISTICS)
     }
 
     pub fn default_with_information_schema(&self) -> bool {

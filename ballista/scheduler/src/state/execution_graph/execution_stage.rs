@@ -22,6 +22,7 @@ use std::iter::FromIterator;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use datafusion::physical_optimizer::aggregate_statistics::AggregateStatistics;
 use datafusion::physical_optimizer::join_selection::JoinSelection;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
@@ -362,9 +363,14 @@ impl UnresolvedStage {
             &input_locations,
         )?;
 
-        // Optimize join order based on new resolved statistics
+        // Optimize plan based on new resolved statistics
         let optimize_join = JoinSelection::new();
-        let plan = optimize_join.optimize(plan, &SessionConfig::new())?;
+        let optimize_aggregate = AggregateStatistics::new();
+
+        let cfg: SessionConfig = SessionConfig::new();
+
+        let plan: Arc<dyn ExecutionPlan> = optimize_join.optimize(plan, &cfg)?;
+        let plan: Arc<dyn ExecutionPlan> = optimize_aggregate.optimize(plan, &cfg)?;
 
         Ok(ResolvedStage::new(
             self.stage_id,

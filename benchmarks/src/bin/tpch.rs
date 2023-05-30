@@ -20,7 +20,7 @@
 use ballista::context::BallistaContext;
 use ballista::prelude::{
     BallistaConfig, BALLISTA_DEFAULT_BATCH_SIZE, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
-    BALLISTA_JOB_NAME,
+    BALLISTA_JOB_NAME, BALLISTA_COLLECT_STATISTICS,
 };
 use datafusion::arrow::array::*;
 use datafusion::arrow::util::display::array_value_to_string;
@@ -363,6 +363,7 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
             &format!("Query derived from TPC-H q{}", opt.query),
         )
         .set(BALLISTA_DEFAULT_BATCH_SIZE, &format!("{}", opt.batch_size))
+        .set(BALLISTA_COLLECT_STATISTICS, "true")
         .build()
         .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
 

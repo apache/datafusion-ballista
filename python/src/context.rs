@@ -72,6 +72,7 @@ impl PySessionContext {
         repartition_windows: bool,
         parquet_pruning: bool,
         target_partitions: Option<usize>,
+        collect_statistics: bool,
         // TODO: config_options
     ) -> Self {
         let cfg = SessionConfig::new()
@@ -81,6 +82,7 @@ impl PySessionContext {
             .with_repartition_joins(repartition_joins)
             .with_repartition_aggregations(repartition_aggregations)
             .with_repartition_windows(repartition_windows)
+            .with_collect_statistics(collect_statistics)
             .with_parquet_pruning(parquet_pruning);
 
         let cfg_full = match target_partitions {

@@ -121,6 +121,7 @@ pub fn create_datafusion_context(
         .with_repartition_joins(ballista_config.repartition_joins())
         .with_repartition_aggregations(ballista_config.repartition_aggregations())
         .with_repartition_windows(ballista_config.repartition_windows())
+        .with_collect_statistics(ballista_config.collect_statistics())
         .with_parquet_pruning(ballista_config.parquet_pruning());
     let config = propagate_ballista_configs(config, ballista_config);
 
@@ -142,6 +143,7 @@ pub fn update_datafusion_context(
             .with_repartition_joins(ballista_config.repartition_joins())
             .with_repartition_aggregations(ballista_config.repartition_aggregations())
             .with_repartition_windows(ballista_config.repartition_windows())
+            .with_collect_statistics(ballista_config.collect_statistics())
             .with_parquet_pruning(ballista_config.parquet_pruning());
         let config = propagate_ballista_configs(config, ballista_config);
         mut_state.config = config;
