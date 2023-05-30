@@ -29,7 +29,8 @@ use datafusion::arrow::datatypes::DataType;
 
 pub const BALLISTA_JOB_NAME: &str = "ballista.job.name";
 pub const BALLISTA_DEFAULT_SHUFFLE_PARTITIONS: &str = "ballista.shuffle.partitions";
-pub const BALLISTA_HASH_JOIN_SINGLE_PARTITION_THRESHOLD: &str = "ballista.optimizer.hash_join_single_partition_threshold";
+pub const BALLISTA_HASH_JOIN_SINGLE_PARTITION_THRESHOLD: &str =
+    "ballista.optimizer.hash_join_single_partition_threshold";
 pub const BALLISTA_DEFAULT_BATCH_SIZE: &str = "ballista.batch.size";
 pub const BALLISTA_REPARTITION_JOINS: &str = "ballista.repartition.joins";
 pub const BALLISTA_REPARTITION_AGGREGATIONS: &str = "ballista.repartition.aggregations";
