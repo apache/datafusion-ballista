@@ -109,6 +109,18 @@ impl From<DataFusionError> for BallistaError {
     }
 }
 
+impl From<BallistaError> for DataFusionError {
+    fn from(value: BallistaError) -> Self {
+        match value {
+            BallistaError::DataFusionError(err) => err,
+            BallistaError::ArrowError(ArrowError::ExternalError(err)) => {
+                DataFusionError::External(err)
+            }
+            _ => DataFusionError::Execution(format!("{value:?}")),
+        }
+    }
+}
+
 impl From<io::Error> for BallistaError {
     fn from(e: io::Error) -> Self {
         BallistaError::IoError(e)

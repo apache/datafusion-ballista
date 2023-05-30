@@ -17,7 +17,6 @@
 
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
-use crate::error::BallistaError;
 use crate::serde::protobuf::execute_query_params::OptionalSessionId;
 use crate::serde::protobuf::{
     execute_query_params::Query, job_status, scheduler_grpc_client::SchedulerGrpcClient,
@@ -315,13 +314,9 @@ async fn fetch_partition(
 
     let host = metadata.host.as_str();
     let port = metadata.port as u16;
-    let mut ballista_client =
-        BallistaClient::try_new(host, port)
-            .await
-            .map_err(|e| match e {
-                BallistaError::DataFusionError(err) => err,
-                _ => DataFusionError::Execution(format!("{:?}", e)),
-            })?;
+    let mut ballista_client = BallistaClient::try_new(host, port)
+        .await
+        .map_err(DataFusionError::from)?;
 
     let map_partitions = location
         .map_partitions

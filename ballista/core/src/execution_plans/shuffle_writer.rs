@@ -22,15 +22,13 @@
 
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 
+use crate::utils;
 use std::any::Any;
 use std::future::Future;
 use std::iter::Iterator;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-
-use crate::error::BallistaError;
-use crate::utils;
 
 use crate::serde::protobuf::ShuffleWritePartition;
 use crate::serde::scheduler::PartitionStats;
@@ -209,10 +207,7 @@ impl ShuffleWriterExec {
                         &write_metrics.write_time,
                     )
                     .await
-                    .map_err(|e| match e {
-                        BallistaError::DataFusionError(err) => err,
-                        other => DataFusionError::Execution(format!("{other:?}")),
-                    })?;
+                    .map_err(DataFusionError::from)?;
 
                     write_metrics
                         .input_rows
