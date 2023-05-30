@@ -186,7 +186,7 @@ impl BallistaConfig {
                              DataType::Boolean, Some("false".to_string())),
             ConfigEntry::new(BALLISTA_COLLECT_STATISTICS.to_string(),
                 "Configuration for collecting statistics during scan".to_string(),
-                DataType::Boolean, Some("true".to_string())
+                DataType::Boolean, Some("false".to_string())
             ),
             ConfigEntry::new(BALLISTA_PLUGIN_DIR.to_string(),
                              "Sets the plugin dir".to_string(),

@@ -58,6 +58,7 @@ impl PySessionContext {
         repartition_joins = "true",
         repartition_aggregations = "true",
         repartition_windows = "true",
+        collect_statistics = "true",
         parquet_pruning = "true",
         target_partitions = "None"
     )]
