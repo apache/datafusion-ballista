@@ -196,7 +196,7 @@ impl BallistaConfig {
                              DataType::Boolean, Some("false".to_string())),
             ConfigEntry::new(BALLISTA_HASH_JOIN_SINGLE_PARTITION_THRESHOLD.to_string(),
                 "Sets threshold in bytes for collecting the smaller side of the hash join in memory".to_string(),
-                DataType::UInt64, Some((1024 * 1024 * 10).to_string())),
+                DataType::UInt64, Some((1024 * 1024).to_string())),
             ConfigEntry::new(BALLISTA_COLLECT_STATISTICS.to_string(),
                 "Configuration for collecting statistics during scan".to_string(),
                 DataType::Boolean, Some("false".to_string())
