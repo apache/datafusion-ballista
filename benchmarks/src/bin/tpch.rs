@@ -1452,7 +1452,6 @@ mod tests {
         run_query(14).await
     }
 
-    #[ignore] // https://github.com/apache/arrow-datafusion/issues/166
     #[tokio::test]
     async fn run_q15() -> Result<()> {
         run_query(15).await
@@ -1703,7 +1702,7 @@ mod ballista_round_trip {
     test_round_trip_logical!(q12, 12);
     test_round_trip_logical!(q13, 13);
     test_round_trip_logical!(q14, 14);
-    //test_round_trip_logical!(q15, 15); // https://github.com/apache/arrow-ballista/issues/330
+    test_round_trip_logical!(q15, 15);
     test_round_trip_logical!(q16, 16);
     test_round_trip_logical!(q17, 17);
     test_round_trip_logical!(q18, 18);
