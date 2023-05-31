@@ -93,7 +93,7 @@ impl ExecutionPlan for TestTableExec {
             batch: record_batch,
             schema: self.schema(),
             last_sent: 0,
-            delay_ms: 100,
+            delay_ms: 1000,
         };
 
         let client_opt = context

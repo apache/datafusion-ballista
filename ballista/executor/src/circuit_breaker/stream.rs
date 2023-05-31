@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -9,7 +10,7 @@ use arrow::record_batch::RecordBatch;
 use datafusion::error::Result;
 use datafusion::physical_plan::RecordBatchStream;
 use futures::{Stream, StreamExt};
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use super::client::{CircuitBreakerClient, CircuitBreakerKey};
 
@@ -73,6 +74,12 @@ impl Stream for CircuitBreakerStream {
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<RecordBatch>>> {
         if self.circuit_breaker.load(Ordering::Acquire) {
+            info!(key = ?self.key, "Stopping CircuitBreakerStream early (limit reached globally)");
+            return Poll::Ready(None);
+        }
+
+        if self.percent >= 1.0 {
+            warn!(key = ?self.key, "Stopping CircuitBreakerStream early (limit reached locally)");
             return Poll::Ready(None);
         }
 

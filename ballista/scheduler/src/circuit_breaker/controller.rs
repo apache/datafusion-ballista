@@ -2,8 +2,7 @@ use std::collections::HashMap;
 
 use ballista_core::serde::protobuf::CircuitBreakerKey;
 use parking_lot::RwLock;
-use tracing::info;
-use tracing::warn;
+use tracing::{debug, info};
 
 pub struct CircuitBreakerController {
     job_states: RwLock<HashMap<String, JobState>>,
@@ -88,7 +87,7 @@ impl CircuitBreakerController {
         let stage_states = match job_states.get_mut(&key.job_id) {
             Some(state) => &mut state.stage_states,
             None => {
-                warn!(
+                debug!(
                     job_id = key.job_id,
                     "received circuit breaker update for unregisterd job",
                 );

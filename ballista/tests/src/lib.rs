@@ -70,7 +70,7 @@ mod tests {
     async fn test_global_limit() {
         env_logger::init();
 
-        let row_limit = 20;
+        let row_limit = 100;
 
         let logical_codec = Arc::new(TestLogicalCodec::new());
         let physical_codec = Arc::new(TestPhysicalCodec::new());
