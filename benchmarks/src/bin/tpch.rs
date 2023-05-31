@@ -62,7 +62,6 @@ use std::{
     time::{Instant, SystemTime},
 };
 use structopt::StructOpt;
-use tokio::task::JoinHandle;
 
 #[cfg(feature = "snmalloc")]
 #[global_allocator]
@@ -679,19 +678,17 @@ async fn create_logical_plans(
         .into_iter()
         .map(|sql| {
             let session_state = session_state.clone();
-            tokio::spawn(
-                async move { session_state.create_logical_plan(sql.as_str()).await },
-            )
-        })
-        .collect::<Vec<JoinHandle<Result<LogicalPlan>>>>();
+            async move { 
+                let plan = session_state.create_logical_plan(sql.as_str()).await?; 
+                ctx.execute_logical_plan(plan.clone()).await?;
+                Ok(plan)
+            }
+        });
     futures::future::join_all(join_handles)
         .await
         .into_iter()
-        .collect::<std::result::Result<Vec<Result<LogicalPlan>>, tokio::task::JoinError>>(
-        )
-        .map_err(|e| DataFusionError::Internal(format!("{e:?}")))?
-        .into_iter()
-        .collect()
+        .collect::<Result<Vec<LogicalPlan>>>()
+        .map_err(|e| DataFusionError::Internal(format!("{e:?}")))
 }
 
 async fn execute_query(
@@ -1548,7 +1545,6 @@ mod tests {
 }
 
 #[cfg(test)]
-#[cfg(feature = "ci")]
 mod ballista_round_trip {
     use super::*;
     use ballista_core::serde::BallistaCodec;
