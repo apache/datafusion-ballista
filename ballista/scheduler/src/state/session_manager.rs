@@ -75,7 +75,12 @@ pub fn create_datafusion_context(
         .with_repartition_joins(ballista_config.repartition_joins())
         .with_repartition_aggregations(ballista_config.repartition_aggregations())
         .with_repartition_windows(ballista_config.repartition_windows())
-        .with_parquet_pruning(ballista_config.parquet_pruning());
+        .with_parquet_pruning(ballista_config.parquet_pruning())
+        .set_usize(
+            "datafusion.optimizer.hash_join_single_partition_threshold",
+            ballista_config.hash_join_single_partition_threshold(),
+        )
+        .set_bool("datafusion.optimizer.enable_round_robin_repartition", false);
     let mut config = propagate_ballista_configs(config, ballista_config);
     config.options_mut().extensions = extensions;
 

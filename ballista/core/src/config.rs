@@ -29,11 +29,15 @@ use datafusion::arrow::datatypes::DataType;
 
 pub const BALLISTA_JOB_NAME: &str = "ballista.job.name";
 pub const BALLISTA_DEFAULT_SHUFFLE_PARTITIONS: &str = "ballista.shuffle.partitions";
+pub const BALLISTA_HASH_JOIN_SINGLE_PARTITION_THRESHOLD: &str =
+    "ballista.optimizer.hash_join_single_partition_threshold";
 pub const BALLISTA_DEFAULT_BATCH_SIZE: &str = "ballista.batch.size";
 pub const BALLISTA_REPARTITION_JOINS: &str = "ballista.repartition.joins";
 pub const BALLISTA_REPARTITION_AGGREGATIONS: &str = "ballista.repartition.aggregations";
 pub const BALLISTA_REPARTITION_WINDOWS: &str = "ballista.repartition.windows";
 pub const BALLISTA_PARQUET_PRUNING: &str = "ballista.parquet.pruning";
+pub const BALLISTA_COLLECT_STATISTICS: &str = "ballista.collect_statistics";
+
 pub const BALLISTA_WITH_INFORMATION_SCHEMA: &str = "ballista.with_information_schema";
 /// give a plugin files dir, and then the dynamic library files in this dir will be load when scheduler state init.
 pub const BALLISTA_PLUGIN_DIR: &str = "ballista.plugin_dir";
@@ -138,6 +142,16 @@ impl BallistaConfig {
                     .parse::<usize>()
                     .map_err(|e| format!("{e:?}"))?;
             }
+            DataType::UInt32 => {
+                val.to_string()
+                    .parse::<usize>()
+                    .map_err(|e| format!("{e:?}"))?;
+            }
+            DataType::UInt64 => {
+                val.to_string()
+                    .parse::<usize>()
+                    .map_err(|e| format!("{e:?}"))?;
+            }
             DataType::Boolean => {
                 val.to_string()
                     .parse::<bool>()
@@ -181,6 +195,13 @@ impl BallistaConfig {
             ConfigEntry::new(BALLISTA_WITH_INFORMATION_SCHEMA.to_string(),
                              "Sets whether enable information_schema".to_string(),
                              DataType::Boolean, Some("false".to_string())),
+            ConfigEntry::new(BALLISTA_HASH_JOIN_SINGLE_PARTITION_THRESHOLD.to_string(),
+                "Sets threshold in bytes for collecting the smaller side of the hash join in memory".to_string(),
+                DataType::UInt64, Some((1024 * 1024).to_string())),
+            ConfigEntry::new(BALLISTA_COLLECT_STATISTICS.to_string(),
+                "Configuration for collecting statistics during scan".to_string(),
+                DataType::Boolean, Some("false".to_string())
+            ),
             ConfigEntry::new(BALLISTA_PLUGIN_DIR.to_string(),
                              "Sets the plugin dir".to_string(),
                              DataType::Utf8, Some("".to_string())),
@@ -207,6 +228,10 @@ impl BallistaConfig {
         self.get_usize_setting(BALLISTA_DEFAULT_BATCH_SIZE)
     }
 
+    pub fn hash_join_single_partition_threshold(&self) -> usize {
+        self.get_usize_setting(BALLISTA_HASH_JOIN_SINGLE_PARTITION_THRESHOLD)
+    }
+
     pub fn repartition_joins(&self) -> bool {
         self.get_bool_setting(BALLISTA_REPARTITION_JOINS)
     }
@@ -221,6 +246,10 @@ impl BallistaConfig {
 
     pub fn parquet_pruning(&self) -> bool {
         self.get_bool_setting(BALLISTA_PARQUET_PRUNING)
+    }
+
+    pub fn collect_statistics(&self) -> bool {
+        self.get_bool_setting(BALLISTA_COLLECT_STATISTICS)
     }
 
     pub fn default_with_information_schema(&self) -> bool {
