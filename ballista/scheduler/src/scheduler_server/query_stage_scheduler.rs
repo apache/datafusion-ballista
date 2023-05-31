@@ -168,12 +168,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
 
                 info!(job_id, "job_finished");
 
-                // self.state.circuit_breaker.
-                let is_tripped = self.state.circuit_breaker.is_tripped_for(&job_id);
-                self.state
-                    .task_manager
-                    .succeed_job(&job_id, is_tripped)
-                    .await?;
+                self.state.task_manager.succeed_job(&job_id).await?;
                 self.state.clean_up_successful_job(job_id);
             }
             QueryStageSchedulerEvent::JobRunningFailed {
@@ -339,6 +334,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                         tx_event.clone(),
                     );
                 }
+            }
+            QueryStageSchedulerEvent::CircuitBreakerTripped(job_id) => {
+                self.state
+                    .task_manager
+                    .mark_circuit_breaker_tripped(job_id)
+                    .await;
             }
         }
 

@@ -29,8 +29,7 @@ use futures::future::try_join_all;
 
 use crate::cluster::JobState;
 use ballista_core::serde::protobuf::{
-    self, execution_error, job_status, JobStatus, KeyValuePair, SuccessfulJob,
-    TaskDefinition, TaskStatus,
+    self, execution_error, JobStatus, KeyValuePair, TaskDefinition, TaskStatus,
 };
 use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
 use ballista_core::serde::scheduler::ExecutorMetadata;
@@ -606,31 +605,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     /// Mark a job to success. This will create a key under the CompletedJobs keyspace
     /// and remove the job from ActiveJobs
-    pub(crate) async fn succeed_job(
-        &self,
-        job_id: &str,
-        circuit_breaker_tripped: bool,
-    ) -> Result<()> {
+    pub(crate) async fn succeed_job(&self, job_id: &str) -> Result<()> {
         debug!(job_id, "completing job");
 
         if let Some(graph) = self.remove_active_execution_graph(job_id) {
-            let mut graph = graph.write().await.clone();
-            graph.circuit_breaker_tripped = circuit_breaker_tripped;
+            let graph = graph.read().await.clone();
 
-            if let Some(job_status::Status::Successful(status)) = graph.status().status {
-                // update circuit breaker tripped flag
-                let updated_status = SuccessfulJob {
-                    circuit_breaker_tripped,
-                    ..status
-                };
-
-                let updated_job_status = JobStatus {
-                    status: Some(job_status::Status::Successful(updated_status)),
-                    ..graph.status()
-                };
-
-                graph.update_status(updated_job_status);
-
+            if graph.is_successful() {
                 self.state.save_job(job_id, &graph).await?;
             } else {
                 error!(job_id, "cannot complete job, not finished");
@@ -850,6 +831,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             if check_drained.changed().await.is_err() {
                 break;
             };
+        }
+    }
+
+    pub async fn mark_circuit_breaker_tripped(&self, job_id: String) {
+        if let Some(job) = self.active_job_queue.get_job(&job_id) {
+            let mut graph = job.graph_mut().await;
+            graph.circuit_breaker_tripped = true;
         }
     }
 }

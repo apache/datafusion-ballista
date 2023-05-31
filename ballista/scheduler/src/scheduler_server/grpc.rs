@@ -552,6 +552,24 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     .map_err(Status::internal)?;
 
                 if circuit_breaker {
+                    info!(
+                        job_id = key.job_id,
+                        task_id = key.task_id,
+                        "sending circuit breaker signal to task"
+                    );
+
+                    self.query_stage_event_loop
+                        .get_sender()
+                        .map_err(|e| {
+                            error!(error = %e, "failed to get query stage event loop");
+                            Status::internal(format!(
+                                "Get query stage event loop error due to {e:?}"
+                            ))
+                        })?
+                        .post_event(QueryStageSchedulerEvent::CircuitBreakerTripped(
+                            key.job_id.clone(),
+                        ));
+
                     commands.push(CircuitBreakerCommand { key: Some(key) });
                 }
             }
