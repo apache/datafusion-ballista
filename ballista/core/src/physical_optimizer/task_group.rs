@@ -23,6 +23,7 @@ use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec;
+use datafusion::physical_plan::joins::HashJoinExec;
 use datafusion::physical_plan::limit::LocalLimitExec;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::union::UnionExec;
@@ -80,7 +81,8 @@ impl OptimizeTaskGroup {
             }
 
             Ok(Transformed::Yes(new_plan))
-        } else if node.as_any().is::<UnionExec>()
+        } else if (node.as_any().is::<UnionExec>()
+            || is_hash_join_no_partitioning(node.as_ref()))
             && children
                 .iter()
                 .all(|child| child.as_any().is::<CoalesceTasksExec>())
@@ -98,6 +100,18 @@ impl OptimizeTaskGroup {
             Ok(Transformed::No(node))
         }
     }
+}
+
+fn is_hash_join_no_partitioning(node: &dyn ExecutionPlan) -> bool {
+    // only push down hash join if the input is unpartitioned
+    // (so parent nodes won't rely on the output partitioning)
+    if let Some(hash_join) = node.as_any().downcast_ref::<HashJoinExec>() {
+        return matches!(
+            hash_join.output_partitioning(),
+            datafusion::physical_plan::Partitioning::UnknownPartitioning(_)
+        );
+    }
+    false
 }
 
 impl PhysicalOptimizerRule for OptimizeTaskGroup {
