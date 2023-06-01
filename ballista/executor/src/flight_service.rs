@@ -38,6 +38,7 @@ use datafusion::arrow::{
 use futures::{Stream, StreamExt, TryStreamExt};
 use std::io::{Read, Seek};
 use tokio::sync::mpsc::channel;
+use tokio::sync::mpsc::error::SendError;
 use tokio::{sync::mpsc::Sender, task};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataValue;
@@ -217,9 +218,16 @@ where
     for batch in reader {
         tx.send(batch.map_err(|err| err.into()))
             .await
-            .map_err(|err| FlightError::ExternalError(Box::new(err)))?;
+            .map_err(|err| {
+                if let SendError(Err(err)) = err {
+                    err
+                } else {
+                    FlightError::Tonic(Status::internal(
+                        "Can't send a batch, channel is full",
+                    ))
+                }
+            })?
     }
-
     Ok(())
 }
 
