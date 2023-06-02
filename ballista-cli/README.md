@@ -19,7 +19,7 @@
 
 # Ballista Command-line Interface
 
-[Ballista](df) is a distributed query execution framework, written in Rust, that uses Apache Arrow as its in-memory format.
+[Ballista][ballista] is a distributed query execution framework, written in Rust, that uses Apache Arrow as its in-memory format.
 
 The Ballista CLI allows SQL queries to be executed by an in-process DataFusion context, or by a distributed
 Ballista context.
@@ -72,7 +72,7 @@ Ballista CLI v0.6.0
 If you want to execute the SQL in ballista by `ballista-cli`, you must build/compile `ballista-cli` first.
 
 ```bash
-cd arrow-datafusion/ballista-cli
+cd arrow-ballista/ballista-cli
 cargo build
 ```
 
@@ -82,4 +82,4 @@ The Ballista CLI can connect to a Ballista scheduler for query execution.
 ballista-cli --host localhost --port 50050
 ```
 
-[df]: https://crates.io/crates/datafusion
+[ballista]: https://crates.io/crates/ballista

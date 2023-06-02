@@ -35,7 +35,7 @@ USAGE:
     ballista-cli [OPTIONS]
 
 OPTIONS:
-    -c, --batch-size <BATCH_SIZE>    The batch size of each query, or use DataFusion default
+    -c, --batch-size <BATCH_SIZE>    The batch size of each query, or use Ballista default
     -f, --file <FILE>...             Execute commands from file(s), then exit
         --format <FORMAT>            [default: table] [possible values: csv, tsv, table, json,
                                      nd-json]
@@ -44,7 +44,7 @@ OPTIONS:
     -p, --data-path <DATA_PATH>      Path to your data, default to current directory
         --port <PORT>                Ballista scheduler port
     -q, --quiet                      Reduce printing other than the results and work quietly
-    -r, --rc <RC>...                 Run the provided files on startup instead of ~/.datafusionrc
+    -r, --rc <RC>...                 Run the provided files on startup instead of ~/.ballistarc
     -V, --version                    Print version information
 ```
 
@@ -61,7 +61,7 @@ $ echo "1,2" > data.csv
 The CLI can connect to a Ballista scheduler for query execution.
 
 ```bash
-datafusion-cli --host localhost --port 50050
+ballista-cli --host localhost --port 50050
 ```
 
 ## Run Ballista CLI in Standalone Mode
