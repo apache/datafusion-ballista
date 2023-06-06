@@ -152,7 +152,9 @@ impl BallistaObjectStoreRegistry {
 
         #[cfg(feature = "gcs")]
         {
-            if url.to_string().starts_with("gs://") {
+            if url.to_string().starts_with("gs://")
+                || url.to_string().starts_with("gcs://")
+            {
                 if let Some(bucket_name) = url.host_str() {
                     let store = Arc::new(
                         GoogleCloudStorageBuilder::from_env()
