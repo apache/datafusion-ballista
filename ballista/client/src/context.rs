@@ -811,7 +811,7 @@ mod tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+-------------------------+",
-            "| APPROXDISTINCT(test.id) |",
+            "| APPROX_DISTINCT(test.id) |",
             "+-------------------------+",
             "| 8                       |",
             "+-------------------------+",
