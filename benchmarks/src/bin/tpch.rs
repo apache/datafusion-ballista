@@ -52,7 +52,6 @@ use datafusion::{
 use futures::future::join_all;
 use rand::prelude::*;
 use serde::Serialize;
-use tokio::task::JoinHandle;
 use std::ops::Div;
 use std::{
     fs::{self, File},
@@ -63,6 +62,7 @@ use std::{
     time::{Instant, SystemTime},
 };
 use structopt::StructOpt;
+use tokio::task::JoinHandle;
 
 #[cfg(feature = "snmalloc")]
 #[global_allocator]
