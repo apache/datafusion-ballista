@@ -674,16 +674,14 @@ async fn create_logical_plans(
 ) -> Result<Vec<LogicalPlan>> {
     let session_state = ctx.state();
     let sqls = get_query_sql(query)?;
-    let join_handles = sqls
-        .into_iter()
-        .map(|sql| {
-            let session_state = session_state.clone();
-            async move { 
-                let plan = session_state.create_logical_plan(sql.as_str()).await?; 
-                ctx.execute_logical_plan(plan.clone()).await?;
-                Ok(plan)
-            }
-        });
+    let join_handles = sqls.into_iter().map(|sql| {
+        let session_state = session_state.clone();
+        async move {
+            let plan = session_state.create_logical_plan(sql.as_str()).await?;
+            ctx.execute_logical_plan(plan.clone()).await?;
+            Ok(plan)
+        }
+    });
     futures::future::join_all(join_handles)
         .await
         .into_iter()
