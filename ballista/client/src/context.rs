@@ -613,7 +613,7 @@ mod tests {
                         table_partition_cols: x.table_partition_cols.clone(),
                         collect_stat: x.collect_stat,
                         target_partitions: x.target_partitions,
-                        file_sort_order: None,
+                        file_sort_order: vec![],
                         infinite_source: false,
                     };
 

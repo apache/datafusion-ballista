@@ -840,7 +840,7 @@ async fn get_table(
         target_partitions,
         collect_stat: true,
         table_partition_cols: vec![],
-        file_sort_order: None,
+        file_sort_order: vec![],
         infinite_source: false,
     };
 
