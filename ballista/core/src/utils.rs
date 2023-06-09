@@ -56,6 +56,8 @@ use log::error;
 use object_store::aws::AmazonS3Builder;
 #[cfg(feature = "azure")]
 use object_store::azure::MicrosoftAzureBuilder;
+#[cfg(feature = "gcs")]
+use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::ObjectStore;
 use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
@@ -141,6 +143,22 @@ impl BallistaObjectStoreRegistry {
                     let store = Arc::new(
                         MicrosoftAzureBuilder::from_env()
                             .with_container_name(bucket_name)
+                            .build()?,
+                    );
+                    return Ok(store);
+                }
+            }
+        }
+
+        #[cfg(feature = "gcs")]
+        {
+            if url.to_string().starts_with("gs://")
+                || url.to_string().starts_with("gcs://")
+            {
+                if let Some(bucket_name) = url.host_str() {
+                    let store = Arc::new(
+                        GoogleCloudStorageBuilder::from_env()
+                            .with_bucket_name(bucket_name)
                             .build()?,
                     );
                     return Ok(store);
