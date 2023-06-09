@@ -17,6 +17,7 @@
 
 //! Benchmark derived from TPC-H. This is not an official TPC-H benchmark.
 
+use arrow_schema::SchemaBuilder;
 use ballista::context::BallistaContext;
 use ballista::prelude::{
     BallistaConfig, BALLISTA_COLLECT_STATISTICS, BALLISTA_DEFAULT_BATCH_SIZE,
@@ -574,7 +575,7 @@ async fn register_tables(
             // dbgen creates .tbl ('|' delimited) files without header
             "tbl" => {
                 let path = find_path(path, table, "tbl")?;
-                let schema = get_schema(table);
+                let schema = get_tbl_tpch_table_schema(table);
                 let options = CsvReadOptions::new()
                     .schema(&schema)
                     .delimiter(b'|')
@@ -843,7 +844,7 @@ async fn get_table(
         target_partitions,
         collect_stat: true,
         table_partition_cols: vec![],
-        file_sort_order: None,
+        file_sort_order: vec![],
         infinite_source: false,
     };
 
@@ -954,6 +955,13 @@ fn get_schema(table: &str) -> Schema {
     }
 }
 
+/// The `.tbl` file contains a trailing column
+pub fn get_tbl_tpch_table_schema(table: &str) -> Schema {
+    let mut schema = SchemaBuilder::from(get_schema(table).fields);
+    schema.push(Field::new("__placeholder", DataType::Utf8, false));
+    schema.finish()
+}
+
 #[derive(Debug, Serialize)]
 struct BenchmarkRun {
     /// Benchmark crate version
@@ -1030,13 +1038,26 @@ async fn get_expected_results(n: usize, path: &str) -> Result<Vec<RecordBatch>> 
             .fields()
             .iter()
             .map(|field| {
-                Expr::Alias(
-                    Box::new(Expr::Cast(Cast {
-                        expr: Box::new(trim(col(Field::name(field)))),
-                        data_type: Field::data_type(field).to_owned(),
-                    })),
-                    Field::name(field).to_string(),
-                )
+                match Field::data_type(field) {
+                    DataType::Decimal128(_, _) => {
+                        // there's no support for casting from Utf8 to Decimal, so
+                        // we'll cast from Utf8 to Float64 to Decimal for Decimal types
+                        let inner_cast = Box::new(Expr::Cast(Cast::new(
+                            Box::new(trim(col(Field::name(field)))),
+                            DataType::Float64,
+                        )));
+                        Expr::Cast(Cast::new(
+                            inner_cast,
+                            Field::data_type(field).to_owned(),
+                        ))
+                        .alias(Field::name(field))
+                    }
+                    _ => Expr::Cast(Cast::new(
+                        Box::new(trim(col(Field::name(field)))),
+                        Field::data_type(field).to_owned(),
+                    ))
+                    .alias(Field::name(field)),
+                }
             })
             .collect::<Vec<Expr>>(),
     )?;
@@ -1079,13 +1100,13 @@ fn get_answer_schema(n: usize) -> Schema {
         1 => Schema::new(vec![
             Field::new("l_returnflag", DataType::Utf8, true),
             Field::new("l_linestatus", DataType::Utf8, true),
-            Field::new("sum_qty", DataType::Float64, true),
-            Field::new("sum_base_price", DataType::Float64, true),
-            Field::new("sum_disc_price", DataType::Float64, true),
-            Field::new("sum_charge", DataType::Float64, true),
-            Field::new("avg_qty", DataType::Float64, true),
-            Field::new("avg_price", DataType::Decimal128(19, 6), false), //TODO should be precision 2
-            Field::new("avg_disc", DataType::Float64, true),
+            Field::new("sum_qty", DataType::Decimal128(15, 2), true),
+            Field::new("sum_base_price", DataType::Decimal128(15, 2), true),
+            Field::new("sum_disc_price", DataType::Decimal128(15, 2), true),
+            Field::new("sum_charge", DataType::Decimal128(15, 2), true),
+            Field::new("avg_qty", DataType::Decimal128(15, 2), true),
+            Field::new("avg_price", DataType::Decimal128(15, 2), true),
+            Field::new("avg_disc", DataType::Decimal128(15, 2), true),
             Field::new("count_order", DataType::Int64, true),
         ]),
 
@@ -1093,7 +1114,7 @@ fn get_answer_schema(n: usize) -> Schema {
             Field::new("s_acctbal", DataType::Decimal128(15, 2), true),
             Field::new("s_name", DataType::Utf8, true),
             Field::new("n_name", DataType::Utf8, true),
-            Field::new("p_partkey", DataType::Int32, true),
+            Field::new("p_partkey", DataType::Int64, true),
             Field::new("p_mfgr", DataType::Utf8, true),
             Field::new("s_address", DataType::Utf8, true),
             Field::new("s_phone", DataType::Utf8, true),
@@ -1101,8 +1122,8 @@ fn get_answer_schema(n: usize) -> Schema {
         ]),
 
         3 => Schema::new(vec![
-            Field::new("l_orderkey", DataType::Int32, true),
-            Field::new("revenue", DataType::Decimal128(19, 6), true), //TODO should be precision 2
+            Field::new("l_orderkey", DataType::Int64, true),
+            Field::new("revenue", DataType::Decimal128(15, 2), true),
             Field::new("o_orderdate", DataType::Date32, true),
             Field::new("o_shippriority", DataType::Int32, true),
         ]),
@@ -1114,37 +1135,37 @@ fn get_answer_schema(n: usize) -> Schema {
 
         5 => Schema::new(vec![
             Field::new("n_name", DataType::Utf8, true),
-            Field::new("revenue", DataType::Decimal128(38, 4), true), //TODO should be precision 2
+            Field::new("revenue", DataType::Decimal128(15, 2), true),
         ]),
 
         6 => Schema::new(vec![Field::new(
             "revenue",
-            DataType::Decimal128(25, 2),
+            DataType::Decimal128(15, 2),
             true,
         )]),
 
         7 => Schema::new(vec![
             Field::new("supp_nation", DataType::Utf8, true),
             Field::new("cust_nation", DataType::Utf8, true),
-            Field::new("l_year", DataType::Int32, true),
-            Field::new("revenue", DataType::Decimal128(38, 4), true), //TODO should be precision 2
+            Field::new("l_year", DataType::Float64, true),
+            Field::new("revenue", DataType::Decimal128(15, 2), true),
         ]),
 
         8 => Schema::new(vec![
-            Field::new("o_year", DataType::Int32, true),
-            Field::new("mkt_share", DataType::Decimal128(38, 4), true), //TODO should be precision 2
+            Field::new("o_year", DataType::Float64, true),
+            Field::new("mkt_share", DataType::Decimal128(15, 2), true),
         ]),
 
         9 => Schema::new(vec![
             Field::new("nation", DataType::Utf8, true),
-            Field::new("o_year", DataType::Int32, true),
-            Field::new("sum_profit", DataType::Decimal128(38, 4), true), //TODO should be precision 2
+            Field::new("o_year", DataType::Float64, true),
+            Field::new("sum_profit", DataType::Decimal128(15, 2), true),
         ]),
 
         10 => Schema::new(vec![
-            Field::new("c_custkey", DataType::Int32, true),
+            Field::new("c_custkey", DataType::Int64, true),
             Field::new("c_name", DataType::Utf8, true),
-            Field::new("revenue", DataType::Decimal128(38, 4), true), //TODO should be precision 2
+            Field::new("revenue", DataType::Decimal128(15, 2), true),
             Field::new("c_acctbal", DataType::Decimal128(15, 2), true),
             Field::new("n_name", DataType::Utf8, true),
             Field::new("c_address", DataType::Utf8, true),
@@ -1153,8 +1174,8 @@ fn get_answer_schema(n: usize) -> Schema {
         ]),
 
         11 => Schema::new(vec![
-            Field::new("ps_partkey", DataType::Int32, true),
-            Field::new("value", DataType::Decimal128(36, 2), true),
+            Field::new("ps_partkey", DataType::Int64, true),
+            Field::new("value", DataType::Decimal128(15, 2), true),
         ]),
 
         12 => Schema::new(vec![
@@ -1168,22 +1189,24 @@ fn get_answer_schema(n: usize) -> Schema {
             Field::new("custdist", DataType::Int64, true),
         ]),
 
-        14 => Schema::new(vec![
-            Field::new("promo_revenue", DataType::Decimal128(38, 38), true), //TODO should be precision 2
-        ]),
+        14 => Schema::new(vec![Field::new("promo_revenue", DataType::Float64, true)]),
 
-        15 => Schema::new(vec![Field::new("promo_revenue", DataType::Float64, true)]),
+        15 => Schema::new(vec![
+            Field::new("s_suppkey", DataType::Int64, true),
+            Field::new("s_name", DataType::Utf8, true),
+            Field::new("s_address", DataType::Utf8, true),
+            Field::new("s_phone", DataType::Utf8, true),
+            Field::new("total_revenue", DataType::Decimal128(15, 2), true),
+        ]),
 
         16 => Schema::new(vec![
             Field::new("p_brand", DataType::Utf8, true),
             Field::new("p_type", DataType::Utf8, true),
-            Field::new("c_phone", DataType::Int32, true),
-            Field::new("c_comment", DataType::Int32, true),
+            Field::new("p_size", DataType::Int32, true),
+            Field::new("supplier_cnt", DataType::Int64, true),
         ]),
 
-        17 => Schema::new(vec![
-            Field::new("avg_yearly", DataType::Decimal128(38, 3), true), //TODO should be precision 2
-        ]),
+        17 => Schema::new(vec![Field::new("avg_yearly", DataType::Float64, true)]),
 
         18 => Schema::new(vec![
             Field::new("c_name", DataType::Utf8, true),
@@ -1191,12 +1214,14 @@ fn get_answer_schema(n: usize) -> Schema {
             Field::new("o_orderkey", DataType::Int64, true),
             Field::new("o_orderdate", DataType::Date32, true),
             Field::new("o_totalprice", DataType::Decimal128(15, 2), true),
-            Field::new("sum_l_quantity", DataType::Decimal128(25, 2), true),
+            Field::new("sum_l_quantity", DataType::Decimal128(15, 2), true),
         ]),
 
-        19 => Schema::new(vec![
-            Field::new("revenue", DataType::Decimal128(38, 4), true), //TODO should be precision 2
-        ]),
+        19 => Schema::new(vec![Field::new(
+            "revenue",
+            DataType::Decimal128(15, 2),
+            true,
+        )]),
 
         20 => Schema::new(vec![
             Field::new("s_name", DataType::Utf8, true),
@@ -1211,7 +1236,7 @@ fn get_answer_schema(n: usize) -> Schema {
         22 => Schema::new(vec![
             Field::new("cntrycode", DataType::Utf8, true),
             Field::new("numcust", DataType::Int64, true),
-            Field::new("totacctbal", DataType::Decimal128(25, 2), true),
+            Field::new("totacctbal", DataType::Decimal128(15, 2), true),
         ]),
 
         _ => unimplemented!(),
@@ -1452,7 +1477,7 @@ mod tests {
         run_query(14).await
     }
 
-    #[ignore] // https://github.com/apache/arrow-datafusion/issues/166
+    #[ignore] // TODO: support multiline queries
     #[tokio::test]
     async fn run_q15() -> Result<()> {
         run_query(15).await
