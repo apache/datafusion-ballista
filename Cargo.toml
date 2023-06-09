@@ -20,7 +20,7 @@ members = ["ballista-cli", "ballista/client", "ballista/core", "ballista/executo
 
 [workspace.dependencies]
 arrow = { version = "40.0.0" }
-arrow-flight = { version = "40.0.0", features = ["flight-sql-experimental"] }
+arrow-flight = { version = "41.0.0", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "40.0.0", default-features = false }
 configure_me = { version = "0.4.0" }
 configure_me_codegen = { version = "0.4.4" }
