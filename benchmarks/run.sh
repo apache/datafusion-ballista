@@ -24,7 +24,7 @@ set -x
 # regression checks for queries that return the correct results
 # TODO add all queries once https://github.com/apache/arrow-datafusion/issues/3478 is implemented and once
 # queries return decimal results with the correct precision
-for query in 4 12 13
+for query in 1 2 3 4 12 13
 do
   /root/tpch benchmark ballista --host ballista-scheduler --port 50050 --query $query --path /data --format tbl --iterations 1 --debug --expected /data
 done
