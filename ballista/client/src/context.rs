@@ -613,7 +613,7 @@ mod tests {
                         table_partition_cols: x.table_partition_cols.clone(),
                         collect_stat: x.collect_stat,
                         target_partitions: x.target_partitions,
-                        file_sort_order: None,
+                        file_sort_order: vec![],
                         infinite_source: false,
                     };
 
@@ -810,11 +810,11 @@ mod tests {
             .unwrap();
         let res = df.collect().await.unwrap();
         let expected = vec![
-            "+-------------------------+",
-            "| APPROXDISTINCT(test.id) |",
-            "+-------------------------+",
-            "| 8                       |",
-            "+-------------------------+",
+            "+--------------------------+",
+            "| APPROX_DISTINCT(test.id) |",
+            "+--------------------------+",
+            "| 8                        |",
+            "+--------------------------+",
         ];
         assert_result_eq(expected, &res);
 
@@ -825,7 +825,7 @@ mod tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+--------------------------+",
-            "| ARRAYAGG(test.id)        |",
+            "| ARRAY_AGG(test.id)       |",
             "+--------------------------+",
             "| [4, 5, 6, 7, 2, 3, 0, 1] |",
             "+--------------------------+",
@@ -849,11 +849,11 @@ mod tests {
             .unwrap();
         let res = df.collect().await.unwrap();
         let expected = vec![
-            "+----------------------+",
-            "| VARIANCEPOP(test.id) |",
-            "+----------------------+",
-            "| 5.250000000000001    |",
-            "+----------------------+",
+            "+-----------------------+",
+            "| VARIANCE_POP(test.id) |",
+            "+-----------------------+",
+            "| 5.250000000000001     |",
+            "+-----------------------+",
         ];
         assert_result_eq(expected, &res);
 
@@ -933,11 +933,11 @@ mod tests {
             .unwrap();
         let res = df.collect().await.unwrap();
         let expected = vec![
-            "+---------------------------------------------------------------+",
-            "| APPROXPERCENTILECONTWITHWEIGHT(test.id,Int64(2),Float64(0.5)) |",
-            "+---------------------------------------------------------------+",
-            "| 1                                                             |",
-            "+---------------------------------------------------------------+",
+            "+-------------------------------------------------------------------+",
+            "| APPROX_PERCENTILE_CONT_WITH_WEIGHT(test.id,Int64(2),Float64(0.5)) |",
+            "+-------------------------------------------------------------------+",
+            "| 1                                                                 |",
+            "+-------------------------------------------------------------------+",
         ];
         assert_result_eq(expected, &res);
 
@@ -947,11 +947,11 @@ mod tests {
             .unwrap();
         let res = df.collect().await.unwrap();
         let expected = vec![
-            "+----------------------------------------------------+",
-            "| APPROXPERCENTILECONT(test.double_col,Float64(0.5)) |",
-            "+----------------------------------------------------+",
-            "| 7.574999999999999                                  |",
-            "+----------------------------------------------------+",
+            "+------------------------------------------------------+",
+            "| APPROX_PERCENTILE_CONT(test.double_col,Float64(0.5)) |",
+            "+------------------------------------------------------+",
+            "| 7.574999999999999                                    |",
+            "+------------------------------------------------------+",
         ];
 
         assert_result_eq(expected, &res);
