@@ -1038,13 +1038,26 @@ async fn get_expected_results(n: usize, path: &str) -> Result<Vec<RecordBatch>> 
             .fields()
             .iter()
             .map(|field| {
-                Expr::Alias(
-                    Box::new(Expr::Cast(Cast {
-                        expr: Box::new(trim(col(Field::name(field)))),
-                        data_type: Field::data_type(field).to_owned(),
-                    })),
-                    Field::name(field).to_string(),
-                )
+                match Field::data_type(field) {
+                    DataType::Decimal128(_, _) => {
+                        // there's no support for casting from Utf8 to Decimal, so
+                        // we'll cast from Utf8 to Float64 to Decimal for Decimal types
+                        let inner_cast = Box::new(Expr::Cast(Cast::new(
+                            Box::new(trim(col(Field::name(field)))),
+                            DataType::Float64,
+                        )));
+                        Expr::Cast(Cast::new(
+                            inner_cast,
+                            Field::data_type(field).to_owned(),
+                        ))
+                        .alias(Field::name(field))
+                    }
+                    _ => Expr::Cast(Cast::new(
+                        Box::new(trim(col(Field::name(field)))),
+                        Field::data_type(field).to_owned(),
+                    ))
+                    .alias(Field::name(field)),
+                }
             })
             .collect::<Vec<Expr>>(),
     )?;
@@ -1561,6 +1574,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[cfg(feature = "ci")]
 mod ballista_round_trip {
     use super::*;
     use ballista_core::serde::BallistaCodec;
