@@ -34,6 +34,7 @@ simd = ["datafusion/simd"]
 snmalloc = ["snmalloc-rs"]
 
 [dependencies]
+arrow-schema = { workspace = true }
 ballista = { path = "../ballista/client", version = "0.11.0" }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
