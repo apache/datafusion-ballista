@@ -17,6 +17,7 @@
 
 //! Benchmark derived from TPC-H. This is not an official TPC-H benchmark.
 
+use arrow_schema::SchemaBuilder;
 use ballista::context::BallistaContext;
 use ballista::prelude::{
     BallistaConfig, BALLISTA_COLLECT_STATISTICS, BALLISTA_DEFAULT_BATCH_SIZE,
@@ -574,7 +575,7 @@ async fn register_tables(
             // dbgen creates .tbl ('|' delimited) files without header
             "tbl" => {
                 let path = find_path(path, table, "tbl")?;
-                let schema = get_schema(table);
+                let schema = get_tbl_tpch_table_schema(table);
                 let options = CsvReadOptions::new()
                     .schema(&schema)
                     .delimiter(b'|')
@@ -952,6 +953,13 @@ fn get_schema(table: &str) -> Schema {
 
         _ => unimplemented!(),
     }
+}
+
+/// The `.tbl` file contains a trailing column
+pub fn get_tbl_tpch_table_schema(table: &str) -> Schema {
+    let mut schema = SchemaBuilder::from(get_schema(table).fields);
+    schema.push(Field::new("__placeholder", DataType::Utf8, false));
+    schema.finish()
 }
 
 #[derive(Debug, Serialize)]
