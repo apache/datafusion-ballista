@@ -17,10 +17,11 @@
 
 //! Benchmark derived from TPC-H. This is not an official TPC-H benchmark.
 
+use arrow_schema::SchemaBuilder;
 use ballista::context::BallistaContext;
 use ballista::prelude::{
-    BallistaConfig, BALLISTA_DEFAULT_BATCH_SIZE, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
-    BALLISTA_JOB_NAME,
+    BallistaConfig, BALLISTA_COLLECT_STATISTICS, BALLISTA_DEFAULT_BATCH_SIZE,
+    BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, BALLISTA_JOB_NAME,
 };
 use datafusion::arrow::array::*;
 use datafusion::arrow::util::display::array_value_to_string;
@@ -364,6 +365,7 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
             &format!("Query derived from TPC-H q{}", opt.query),
         )
         .set(BALLISTA_DEFAULT_BATCH_SIZE, &format!("{}", opt.batch_size))
+        .set(BALLISTA_COLLECT_STATISTICS, "true")
         .build()
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
@@ -573,7 +575,7 @@ async fn register_tables(
             // dbgen creates .tbl ('|' delimited) files without header
             "tbl" => {
                 let path = find_path(path, table, "tbl")?;
-                let schema = get_schema(table);
+                let schema = get_tbl_tpch_table_schema(table);
                 let options = CsvReadOptions::new()
                     .schema(&schema)
                     .delimiter(b'|')
@@ -769,11 +771,11 @@ async fn convert_tbl(opt: ConvertOpt) -> Result<()> {
                 let compression = match opt.compression.as_str() {
                     "none" => Compression::UNCOMPRESSED,
                     "snappy" => Compression::SNAPPY,
-                    "brotli" => Compression::BROTLI,
-                    "gzip" => Compression::GZIP,
+                    "brotli" => Compression::BROTLI(Default::default()),
+                    "gzip" => Compression::GZIP(Default::default()),
                     "lz4" => Compression::LZ4,
                     "lz0" => Compression::LZO,
-                    "zstd" => Compression::ZSTD,
+                    "zstd" => Compression::ZSTD(Default::default()),
                     other => {
                         return Err(DataFusionError::NotImplemented(format!(
                             "Invalid compression format: {other}"
@@ -842,7 +844,7 @@ async fn get_table(
         target_partitions,
         collect_stat: true,
         table_partition_cols: vec![],
-        file_sort_order: None,
+        file_sort_order: vec![],
         infinite_source: false,
     };
 
@@ -953,6 +955,13 @@ fn get_schema(table: &str) -> Schema {
     }
 }
 
+/// The `.tbl` file contains a trailing column
+pub fn get_tbl_tpch_table_schema(table: &str) -> Schema {
+    let mut schema = SchemaBuilder::from(get_schema(table).fields);
+    schema.push(Field::new("__placeholder", DataType::Utf8, false));
+    schema.finish()
+}
+
 #[derive(Debug, Serialize)]
 struct BenchmarkRun {
     /// Benchmark crate version
@@ -1029,13 +1038,26 @@ async fn get_expected_results(n: usize, path: &str) -> Result<Vec<RecordBatch>> 
             .fields()
             .iter()
             .map(|field| {
-                Expr::Alias(
-                    Box::new(Expr::Cast(Cast {
-                        expr: Box::new(trim(col(Field::name(field)))),
-                        data_type: Field::data_type(field).to_owned(),
-                    })),
-                    Field::name(field).to_string(),
-                )
+                match Field::data_type(field) {
+                    DataType::Decimal128(_, _) => {
+                        // there's no support for casting from Utf8 to Decimal, so
+                        // we'll cast from Utf8 to Float64 to Decimal for Decimal types
+                        let inner_cast = Box::new(Expr::Cast(Cast::new(
+                            Box::new(trim(col(Field::name(field)))),
+                            DataType::Float64,
+                        )));
+                        Expr::Cast(Cast::new(
+                            inner_cast,
+                            Field::data_type(field).to_owned(),
+                        ))
+                        .alias(Field::name(field))
+                    }
+                    _ => Expr::Cast(Cast::new(
+                        Box::new(trim(col(Field::name(field)))),
+                        Field::data_type(field).to_owned(),
+                    ))
+                    .alias(Field::name(field)),
+                }
             })
             .collect::<Vec<Expr>>(),
     )?;
@@ -1078,13 +1100,13 @@ fn get_answer_schema(n: usize) -> Schema {
         1 => Schema::new(vec![
             Field::new("l_returnflag", DataType::Utf8, true),
             Field::new("l_linestatus", DataType::Utf8, true),
-            Field::new("sum_qty", DataType::Float64, true),
-            Field::new("sum_base_price", DataType::Float64, true),
-            Field::new("sum_disc_price", DataType::Float64, true),
-            Field::new("sum_charge", DataType::Float64, true),
-            Field::new("avg_qty", DataType::Float64, true),
-            Field::new("avg_price", DataType::Decimal128(19, 6), false), //TODO should be precision 2
-            Field::new("avg_disc", DataType::Float64, true),
+            Field::new("sum_qty", DataType::Decimal128(15, 2), true),
+            Field::new("sum_base_price", DataType::Decimal128(15, 2), true),
+            Field::new("sum_disc_price", DataType::Decimal128(15, 2), true),
+            Field::new("sum_charge", DataType::Decimal128(15, 2), true),
+            Field::new("avg_qty", DataType::Decimal128(15, 2), true),
+            Field::new("avg_price", DataType::Decimal128(15, 2), true),
+            Field::new("avg_disc", DataType::Decimal128(15, 2), true),
             Field::new("count_order", DataType::Int64, true),
         ]),
 
@@ -1092,7 +1114,7 @@ fn get_answer_schema(n: usize) -> Schema {
             Field::new("s_acctbal", DataType::Decimal128(15, 2), true),
             Field::new("s_name", DataType::Utf8, true),
             Field::new("n_name", DataType::Utf8, true),
-            Field::new("p_partkey", DataType::Int32, true),
+            Field::new("p_partkey", DataType::Int64, true),
             Field::new("p_mfgr", DataType::Utf8, true),
             Field::new("s_address", DataType::Utf8, true),
             Field::new("s_phone", DataType::Utf8, true),
@@ -1100,8 +1122,8 @@ fn get_answer_schema(n: usize) -> Schema {
         ]),
 
         3 => Schema::new(vec![
-            Field::new("l_orderkey", DataType::Int32, true),
-            Field::new("revenue", DataType::Decimal128(19, 6), true), //TODO should be precision 2
+            Field::new("l_orderkey", DataType::Int64, true),
+            Field::new("revenue", DataType::Decimal128(15, 2), true),
             Field::new("o_orderdate", DataType::Date32, true),
             Field::new("o_shippriority", DataType::Int32, true),
         ]),
@@ -1113,37 +1135,37 @@ fn get_answer_schema(n: usize) -> Schema {
 
         5 => Schema::new(vec![
             Field::new("n_name", DataType::Utf8, true),
-            Field::new("revenue", DataType::Decimal128(38, 4), true), //TODO should be precision 2
+            Field::new("revenue", DataType::Decimal128(15, 2), true),
         ]),
 
         6 => Schema::new(vec![Field::new(
             "revenue",
-            DataType::Decimal128(25, 2),
+            DataType::Decimal128(15, 2),
             true,
         )]),
 
         7 => Schema::new(vec![
             Field::new("supp_nation", DataType::Utf8, true),
             Field::new("cust_nation", DataType::Utf8, true),
-            Field::new("l_year", DataType::Int32, true),
-            Field::new("revenue", DataType::Decimal128(38, 4), true), //TODO should be precision 2
+            Field::new("l_year", DataType::Float64, true),
+            Field::new("revenue", DataType::Decimal128(15, 2), true),
         ]),
 
         8 => Schema::new(vec![
-            Field::new("o_year", DataType::Int32, true),
-            Field::new("mkt_share", DataType::Decimal128(38, 4), true), //TODO should be precision 2
+            Field::new("o_year", DataType::Float64, true),
+            Field::new("mkt_share", DataType::Decimal128(15, 2), true),
         ]),
 
         9 => Schema::new(vec![
             Field::new("nation", DataType::Utf8, true),
-            Field::new("o_year", DataType::Int32, true),
-            Field::new("sum_profit", DataType::Decimal128(38, 4), true), //TODO should be precision 2
+            Field::new("o_year", DataType::Float64, true),
+            Field::new("sum_profit", DataType::Decimal128(15, 2), true),
         ]),
 
         10 => Schema::new(vec![
-            Field::new("c_custkey", DataType::Int32, true),
+            Field::new("c_custkey", DataType::Int64, true),
             Field::new("c_name", DataType::Utf8, true),
-            Field::new("revenue", DataType::Decimal128(38, 4), true), //TODO should be precision 2
+            Field::new("revenue", DataType::Decimal128(15, 2), true),
             Field::new("c_acctbal", DataType::Decimal128(15, 2), true),
             Field::new("n_name", DataType::Utf8, true),
             Field::new("c_address", DataType::Utf8, true),
@@ -1152,8 +1174,8 @@ fn get_answer_schema(n: usize) -> Schema {
         ]),
 
         11 => Schema::new(vec![
-            Field::new("ps_partkey", DataType::Int32, true),
-            Field::new("value", DataType::Decimal128(36, 2), true),
+            Field::new("ps_partkey", DataType::Int64, true),
+            Field::new("value", DataType::Decimal128(15, 2), true),
         ]),
 
         12 => Schema::new(vec![
@@ -1167,22 +1189,24 @@ fn get_answer_schema(n: usize) -> Schema {
             Field::new("custdist", DataType::Int64, true),
         ]),
 
-        14 => Schema::new(vec![
-            Field::new("promo_revenue", DataType::Decimal128(38, 38), true), //TODO should be precision 2
-        ]),
+        14 => Schema::new(vec![Field::new("promo_revenue", DataType::Float64, true)]),
 
-        15 => Schema::new(vec![Field::new("promo_revenue", DataType::Float64, true)]),
+        15 => Schema::new(vec![
+            Field::new("s_suppkey", DataType::Int64, true),
+            Field::new("s_name", DataType::Utf8, true),
+            Field::new("s_address", DataType::Utf8, true),
+            Field::new("s_phone", DataType::Utf8, true),
+            Field::new("total_revenue", DataType::Decimal128(15, 2), true),
+        ]),
 
         16 => Schema::new(vec![
             Field::new("p_brand", DataType::Utf8, true),
             Field::new("p_type", DataType::Utf8, true),
-            Field::new("c_phone", DataType::Int32, true),
-            Field::new("c_comment", DataType::Int32, true),
+            Field::new("p_size", DataType::Int32, true),
+            Field::new("supplier_cnt", DataType::Int64, true),
         ]),
 
-        17 => Schema::new(vec![
-            Field::new("avg_yearly", DataType::Decimal128(38, 3), true), //TODO should be precision 2
-        ]),
+        17 => Schema::new(vec![Field::new("avg_yearly", DataType::Float64, true)]),
 
         18 => Schema::new(vec![
             Field::new("c_name", DataType::Utf8, true),
@@ -1190,12 +1214,14 @@ fn get_answer_schema(n: usize) -> Schema {
             Field::new("o_orderkey", DataType::Int64, true),
             Field::new("o_orderdate", DataType::Date32, true),
             Field::new("o_totalprice", DataType::Decimal128(15, 2), true),
-            Field::new("sum_l_quantity", DataType::Decimal128(25, 2), true),
+            Field::new("sum_l_quantity", DataType::Decimal128(15, 2), true),
         ]),
 
-        19 => Schema::new(vec![
-            Field::new("revenue", DataType::Decimal128(38, 4), true), //TODO should be precision 2
-        ]),
+        19 => Schema::new(vec![Field::new(
+            "revenue",
+            DataType::Decimal128(15, 2),
+            true,
+        )]),
 
         20 => Schema::new(vec![
             Field::new("s_name", DataType::Utf8, true),
@@ -1210,7 +1236,7 @@ fn get_answer_schema(n: usize) -> Schema {
         22 => Schema::new(vec![
             Field::new("cntrycode", DataType::Utf8, true),
             Field::new("numcust", DataType::Int64, true),
-            Field::new("totacctbal", DataType::Decimal128(25, 2), true),
+            Field::new("totacctbal", DataType::Decimal128(15, 2), true),
         ]),
 
         _ => unimplemented!(),
@@ -1451,7 +1477,7 @@ mod tests {
         run_query(14).await
     }
 
-    #[ignore] // https://github.com/apache/arrow-datafusion/issues/166
+    #[ignore] // TODO: support multiline queries
     #[tokio::test]
     async fn run_q15() -> Result<()> {
         run_query(15).await
@@ -1545,200 +1571,201 @@ mod tests {
 
         Ok(())
     }
+}
 
-    mod ballista_round_trip {
-        use super::*;
-        use ballista_core::serde::BallistaCodec;
-        use datafusion::datasource::listing::ListingTableUrl;
-        use datafusion::execution::options::ReadOptions;
-        use datafusion::physical_plan::ExecutionPlan;
-        use datafusion_proto::logical_plan::AsLogicalPlan;
-        use datafusion_proto::physical_plan::AsExecutionPlan;
-        use std::ops::Deref;
+#[cfg(test)]
+#[cfg(feature = "ci")]
+mod ballista_round_trip {
+    use super::*;
+    use ballista_core::serde::BallistaCodec;
+    use datafusion::datasource::listing::ListingTableUrl;
+    use datafusion::execution::options::ReadOptions;
+    use datafusion::physical_plan::ExecutionPlan;
+    use datafusion_proto::logical_plan::AsLogicalPlan;
+    use datafusion_proto::physical_plan::AsExecutionPlan;
+    use std::env;
+    use std::ops::Deref;
 
-        async fn round_trip_logical_plan(n: usize) -> Result<()> {
-            let config = SessionConfig::new()
-                .with_target_partitions(1)
-                .with_batch_size(10);
-            let ctx = SessionContext::with_config(config);
-            let session_state = ctx.state();
-            let codec: BallistaCodec<
-                datafusion_proto::protobuf::LogicalPlanNode,
-                datafusion_proto::protobuf::PhysicalPlanNode,
-            > = BallistaCodec::default();
+    async fn round_trip_logical_plan(n: usize) -> Result<()> {
+        let config = SessionConfig::new()
+            .with_target_partitions(1)
+            .with_batch_size(10);
+        let ctx = SessionContext::with_config(config);
+        let session_state = ctx.state();
+        let codec: BallistaCodec<
+            datafusion_proto::protobuf::LogicalPlanNode,
+            datafusion_proto::protobuf::PhysicalPlanNode,
+        > = BallistaCodec::default();
 
-            // set tpch_data_path to dummy value and skip physical plan serde test when TPCH_DATA
-            // is not set.
-            let tpch_data_path =
-                env::var("TPCH_DATA").unwrap_or_else(|_| "./".to_string());
-            let path = ListingTableUrl::parse(tpch_data_path)?;
+        // set tpch_data_path to dummy value and skip physical plan serde test when TPCH_DATA
+        // is not set.
+        let tpch_data_path = env::var("TPCH_DATA").unwrap_or_else(|_| "./".to_string());
+        let path = ListingTableUrl::parse(tpch_data_path)?;
 
-            for &table in TABLES {
-                let schema = get_schema(table);
-                let options = CsvReadOptions::new()
-                    .schema(&schema)
-                    .delimiter(b'|')
-                    .has_header(false)
-                    .file_extension(".tbl");
-                let cfg = SessionConfig::new();
-                let listing_options = options.to_listing_options(&cfg);
-                let config = ListingTableConfig::new(path.clone())
-                    .with_listing_options(listing_options)
-                    .with_schema(Arc::new(schema));
-                let provider = ListingTable::try_new(config)?;
-                ctx.register_table(table, Arc::new(provider))?;
-            }
-
-            // test logical plan round trip
-            let plans = create_logical_plans(&ctx, n).await?;
-            for plan in plans {
-                // test optimized logical plan round trip
-                let plan = session_state.optimize(&plan)?;
-                let proto: datafusion_proto::protobuf::LogicalPlanNode =
-                    datafusion_proto::protobuf::LogicalPlanNode::try_from_logical_plan(
-                        &plan,
-                        codec.logical_extension_codec(),
-                    )
-                    .unwrap();
-                let round_trip: LogicalPlan = proto
-                    .try_into_logical_plan(&ctx, codec.logical_extension_codec())
-                    .unwrap();
-                assert_eq!(
-                    format!("{plan:?}"),
-                    format!("{round_trip:?}"),
-                    "optimized logical plan round trip failed"
-                );
-            }
-
-            Ok(())
+        for &table in TABLES {
+            let schema = get_schema(table);
+            let options = CsvReadOptions::new()
+                .schema(&schema)
+                .delimiter(b'|')
+                .has_header(false)
+                .file_extension(".tbl");
+            let cfg = SessionConfig::new();
+            let listing_options = options.to_listing_options(&cfg);
+            let config = ListingTableConfig::new(path.clone())
+                .with_listing_options(listing_options)
+                .with_schema(Arc::new(schema));
+            let provider = ListingTable::try_new(config)?;
+            ctx.register_table(table, Arc::new(provider))?;
         }
 
-        async fn round_trip_physical_plan(n: usize) -> Result<()> {
-            let config = SessionConfig::new()
-                .with_target_partitions(1)
-                .with_batch_size(10);
-            let ctx = SessionContext::with_config(config);
-            let session_state = ctx.state();
-            let codec: BallistaCodec<
-                datafusion_proto::protobuf::LogicalPlanNode,
-                datafusion_proto::protobuf::PhysicalPlanNode,
-            > = BallistaCodec::default();
-
-            // set tpch_data_path to dummy value and skip physical plan serde test when TPCH_DATA
-            // is not set.
-            let tpch_data_path =
-                env::var("TPCH_DATA").unwrap_or_else(|_| "./".to_string());
-            let path = ListingTableUrl::parse(tpch_data_path)?;
-
-            for &table in TABLES {
-                let schema = get_schema(table);
-                let options = CsvReadOptions::new()
-                    .schema(&schema)
-                    .delimiter(b'|')
-                    .has_header(false)
-                    .file_extension(".tbl");
-                let cfg = SessionConfig::new();
-                let listing_options = options.to_listing_options(&cfg);
-                let config = ListingTableConfig::new(path.clone())
-                    .with_listing_options(listing_options)
-                    .with_schema(Arc::new(schema));
-                let provider = ListingTable::try_new(config)?;
-                ctx.register_table(table, Arc::new(provider))?;
-            }
-
-            // test logical plan round trip
-            let plans = create_logical_plans(&ctx, n).await?;
-            for plan in plans {
-                let plan = session_state.optimize(&plan)?;
-
-                // test physical plan roundtrip
-                let physical_plan = session_state.create_physical_plan(&plan).await?;
-                let proto: datafusion_proto::protobuf::PhysicalPlanNode =
-                    datafusion_proto::protobuf::PhysicalPlanNode::try_from_physical_plan(
-                        physical_plan.clone(),
-                        codec.physical_extension_codec(),
-                    )
-                    .unwrap();
-                let runtime = ctx.runtime_env();
-                let round_trip: Arc<dyn ExecutionPlan> = proto
-                    .try_into_physical_plan(
-                        &ctx,
-                        runtime.deref(),
-                        codec.physical_extension_codec(),
-                    )
-                    .unwrap();
-                assert_eq!(
-                    format!("{}", displayable(physical_plan.as_ref()).indent()),
-                    format!("{}", displayable(round_trip.as_ref()).indent()),
-                    "physical plan round trip failed"
-                );
-            }
-
-            Ok(())
+        // test logical plan round trip
+        let plans = create_logical_plans(&ctx, n).await?;
+        for plan in plans {
+            // test optimized logical plan round trip
+            let plan = session_state.optimize(&plan)?;
+            let proto: datafusion_proto::protobuf::LogicalPlanNode =
+                datafusion_proto::protobuf::LogicalPlanNode::try_from_logical_plan(
+                    &plan,
+                    codec.logical_extension_codec(),
+                )
+                .unwrap();
+            let round_trip: LogicalPlan = proto
+                .try_into_logical_plan(&ctx, codec.logical_extension_codec())
+                .unwrap();
+            assert_eq!(
+                format!("{plan:?}"),
+                format!("{round_trip:?}"),
+                "optimized logical plan round trip failed"
+            );
         }
 
-        macro_rules! test_round_trip_logical {
-            ($tn:ident, $query:expr) => {
-                #[tokio::test]
-                async fn $tn() -> Result<()> {
-                    round_trip_logical_plan($query).await
-                }
-            };
-        }
-
-        test_round_trip_logical!(q1, 1);
-        test_round_trip_logical!(q2, 2);
-        test_round_trip_logical!(q3, 3);
-        test_round_trip_logical!(q4, 4);
-        test_round_trip_logical!(q5, 5);
-        test_round_trip_logical!(q6, 6);
-        test_round_trip_logical!(q7, 7);
-        test_round_trip_logical!(q8, 8);
-        test_round_trip_logical!(q9, 9);
-        test_round_trip_logical!(q10, 10);
-        test_round_trip_logical!(q11, 11);
-        test_round_trip_logical!(q12, 12);
-        test_round_trip_logical!(q13, 13);
-        test_round_trip_logical!(q14, 14);
-        //test_round_trip_logical!(q15, 15); // https://github.com/apache/arrow-ballista/issues/330
-        test_round_trip_logical!(q16, 16);
-        test_round_trip_logical!(q17, 17);
-        test_round_trip_logical!(q18, 18);
-        test_round_trip_logical!(q19, 19);
-        test_round_trip_logical!(q20, 20);
-        test_round_trip_logical!(q21, 21);
-        test_round_trip_logical!(q22, 22);
-
-        macro_rules! test_round_trip_physical {
-            ($tn:ident, $query:expr) => {
-                #[tokio::test]
-                async fn $tn() -> Result<()> {
-                    round_trip_physical_plan($query).await
-                }
-            };
-        }
-
-        test_round_trip_physical!(physical_round_trip_q1, 1);
-        test_round_trip_physical!(physical_round_trip_q2, 2);
-        test_round_trip_physical!(physical_round_trip_q3, 3);
-        test_round_trip_physical!(physical_round_trip_q4, 4);
-        test_round_trip_physical!(physical_round_trip_q5, 5);
-        test_round_trip_physical!(physical_round_trip_q6, 6);
-        test_round_trip_physical!(physical_round_trip_q7, 7);
-        test_round_trip_physical!(physical_round_trip_q8, 8);
-        test_round_trip_physical!(physical_round_trip_q9, 9);
-        test_round_trip_physical!(physical_round_trip_q10, 10);
-        test_round_trip_physical!(physical_round_trip_q11, 11);
-        test_round_trip_physical!(physical_round_trip_q12, 12);
-        test_round_trip_physical!(physical_round_trip_q13, 13);
-        test_round_trip_physical!(physical_round_trip_q14, 14);
-        // test_round_trip_physical!(physical_round_trip_q15, 15); // https://github.com/apache/arrow-ballista/issues/330
-        test_round_trip_physical!(physical_round_trip_q16, 16);
-        test_round_trip_physical!(physical_round_trip_q17, 17);
-        test_round_trip_physical!(physical_round_trip_q18, 18);
-        test_round_trip_physical!(physical_round_trip_q19, 19);
-        test_round_trip_physical!(physical_round_trip_q20, 20);
-        test_round_trip_physical!(physical_round_trip_q21, 21);
-        test_round_trip_physical!(physical_round_trip_q22, 22);
+        Ok(())
     }
+
+    async fn round_trip_physical_plan(n: usize) -> Result<()> {
+        let config = SessionConfig::new()
+            .with_target_partitions(1)
+            .with_batch_size(10);
+        let ctx = SessionContext::with_config(config);
+        let session_state = ctx.state();
+        let codec: BallistaCodec<
+            datafusion_proto::protobuf::LogicalPlanNode,
+            datafusion_proto::protobuf::PhysicalPlanNode,
+        > = BallistaCodec::default();
+
+        // set tpch_data_path to dummy value and skip physical plan serde test when TPCH_DATA
+        // is not set.
+        let tpch_data_path = env::var("TPCH_DATA").unwrap_or_else(|_| "./".to_string());
+        let path = ListingTableUrl::parse(tpch_data_path)?;
+
+        for &table in TABLES {
+            let schema = get_schema(table);
+            let options = CsvReadOptions::new()
+                .schema(&schema)
+                .delimiter(b'|')
+                .has_header(false)
+                .file_extension(".tbl");
+            let cfg = SessionConfig::new();
+            let listing_options = options.to_listing_options(&cfg);
+            let config = ListingTableConfig::new(path.clone())
+                .with_listing_options(listing_options)
+                .with_schema(Arc::new(schema));
+            let provider = ListingTable::try_new(config)?;
+            ctx.register_table(table, Arc::new(provider))?;
+        }
+
+        // test logical plan round trip
+        let plans = create_logical_plans(&ctx, n).await?;
+        for plan in plans {
+            let plan = session_state.optimize(&plan)?;
+
+            // test physical plan roundtrip
+            let physical_plan = session_state.create_physical_plan(&plan).await?;
+            let proto: datafusion_proto::protobuf::PhysicalPlanNode =
+                datafusion_proto::protobuf::PhysicalPlanNode::try_from_physical_plan(
+                    physical_plan.clone(),
+                    codec.physical_extension_codec(),
+                )
+                .unwrap();
+            let runtime = ctx.runtime_env();
+            let round_trip: Arc<dyn ExecutionPlan> = proto
+                .try_into_physical_plan(
+                    &ctx,
+                    runtime.deref(),
+                    codec.physical_extension_codec(),
+                )
+                .unwrap();
+            assert_eq!(
+                format!("{}", displayable(physical_plan.as_ref()).indent()),
+                format!("{}", displayable(round_trip.as_ref()).indent()),
+                "physical plan round trip failed"
+            );
+        }
+
+        Ok(())
+    }
+
+    macro_rules! test_round_trip_logical {
+        ($tn:ident, $query:expr) => {
+            #[tokio::test]
+            async fn $tn() -> Result<()> {
+                round_trip_logical_plan($query).await
+            }
+        };
+    }
+
+    test_round_trip_logical!(q1, 1);
+    test_round_trip_logical!(q2, 2);
+    test_round_trip_logical!(q3, 3);
+    test_round_trip_logical!(q4, 4);
+    test_round_trip_logical!(q5, 5);
+    test_round_trip_logical!(q6, 6);
+    test_round_trip_logical!(q7, 7);
+    test_round_trip_logical!(q8, 8);
+    test_round_trip_logical!(q9, 9);
+    test_round_trip_logical!(q10, 10);
+    test_round_trip_logical!(q11, 11);
+    test_round_trip_logical!(q12, 12);
+    test_round_trip_logical!(q13, 13);
+    test_round_trip_logical!(q14, 14);
+    //test_round_trip_logical!(q15, 15); // https://github.com/apache/arrow-ballista/issues/330
+    test_round_trip_logical!(q16, 16);
+    test_round_trip_logical!(q17, 17);
+    test_round_trip_logical!(q18, 18);
+    test_round_trip_logical!(q19, 19);
+    test_round_trip_logical!(q20, 20);
+    test_round_trip_logical!(q21, 21);
+    test_round_trip_logical!(q22, 22);
+
+    macro_rules! test_round_trip_physical {
+        ($tn:ident, $query:expr) => {
+            #[tokio::test]
+            async fn $tn() -> Result<()> {
+                round_trip_physical_plan($query).await
+            }
+        };
+    }
+
+    test_round_trip_physical!(physical_round_trip_q1, 1);
+    test_round_trip_physical!(physical_round_trip_q2, 2);
+    test_round_trip_physical!(physical_round_trip_q3, 3);
+    test_round_trip_physical!(physical_round_trip_q4, 4);
+    test_round_trip_physical!(physical_round_trip_q5, 5);
+    test_round_trip_physical!(physical_round_trip_q6, 6);
+    test_round_trip_physical!(physical_round_trip_q7, 7);
+    test_round_trip_physical!(physical_round_trip_q8, 8);
+    test_round_trip_physical!(physical_round_trip_q9, 9);
+    test_round_trip_physical!(physical_round_trip_q10, 10);
+    test_round_trip_physical!(physical_round_trip_q11, 11);
+    test_round_trip_physical!(physical_round_trip_q12, 12);
+    test_round_trip_physical!(physical_round_trip_q13, 13);
+    test_round_trip_physical!(physical_round_trip_q14, 14);
+    // test_round_trip_physical!(physical_round_trip_q15, 15); // https://github.com/apache/arrow-ballista/issues/330
+    test_round_trip_physical!(physical_round_trip_q16, 16);
+    test_round_trip_physical!(physical_round_trip_q17, 17);
+    test_round_trip_physical!(physical_round_trip_q18, 18);
+    test_round_trip_physical!(physical_round_trip_q19, 19);
+    test_round_trip_physical!(physical_round_trip_q20, 20);
+    test_round_trip_physical!(physical_round_trip_q21, 21);
+    test_round_trip_physical!(physical_round_trip_q22, 22);
 }

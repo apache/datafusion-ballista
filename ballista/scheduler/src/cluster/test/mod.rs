@@ -22,11 +22,10 @@ use crate::state::executor_manager::ExecutorReservation;
 use crate::test_utils::{await_condition, mock_completed_task, mock_executor};
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::job_status::Status;
-use ballista_core::serde::protobuf::{executor_status, ExecutorHeartbeat, JobStatus};
+use ballista_core::serde::protobuf::{executor_status, JobStatus};
 use ballista_core::serde::scheduler::{
     ExecutorData, ExecutorMetadata, ExecutorSpecification,
 };
-use dashmap::DashMap;
 use futures::StreamExt;
 use itertools::Itertools;
 use std::collections::HashSet;
@@ -36,27 +35,14 @@ use tokio::sync::RwLock;
 
 pub struct ClusterStateTest<S: ClusterState> {
     state: Arc<S>,
-    received_heartbeats: Arc<DashMap<String, ExecutorHeartbeat>>,
     reservations: Vec<ExecutorReservation>,
     total_task_slots: u32,
 }
 
 impl<S: ClusterState> ClusterStateTest<S> {
     pub async fn new(state: S) -> Result<Self> {
-        let received_heartbeats = Arc::new(DashMap::new());
-
-        let mut heartbeat_stream = state.executor_heartbeat_stream().await?;
-        let received_heartbeat_clone = received_heartbeats.clone();
-
-        tokio::spawn(async move {
-            while let Some(heartbeat) = heartbeat_stream.next().await {
-                received_heartbeat_clone.insert(heartbeat.executor_id.clone(), heartbeat);
-            }
-        });
-
         Ok(Self {
             state: Arc::new(state),
-            received_heartbeats,
             reservations: vec![],
             total_task_slots: 0,
         })
@@ -115,17 +101,19 @@ impl<S: ClusterState> ClusterStateTest<S> {
 
         // Heratbeat stream is async so wait up to 500ms for it to show up
         await_condition(Duration::from_millis(50), 10, || {
-            let found_heartbeat =
-                self.received_heartbeats.get(executor_id).map(|heartbeat| {
+            let found_heartbeat = self.state.get_executor_heartbeat(executor_id).map_or(
+                false,
+                |heartbeat| {
                     matches!(
                         heartbeat.status,
                         Some(ballista_core::serde::generated::ballista::ExecutorStatus {
                             status: Some(executor_status::Status::Active(_))
                         })
                     )
-                });
+                },
+            );
 
-            futures::future::ready(Ok(found_heartbeat.unwrap_or_default()))
+            futures::future::ready(Ok(found_heartbeat))
         })
         .await?;
 
@@ -135,17 +123,19 @@ impl<S: ClusterState> ClusterStateTest<S> {
     pub async fn assert_dead_executor(self, executor_id: &str) -> Result<Self> {
         // Heratbeat stream is async so wait up to 500ms for it to show up
         await_condition(Duration::from_millis(50), 10, || {
-            let found_heartbeat =
-                self.received_heartbeats.get(executor_id).map(|heartbeat| {
+            let found_heartbeat = self.state.get_executor_heartbeat(executor_id).map_or(
+                true,
+                |heartbeat| {
                     matches!(
                         heartbeat.status,
                         Some(ballista_core::serde::generated::ballista::ExecutorStatus {
                             status: Some(executor_status::Status::Dead(_))
                         })
                     )
-                });
+                },
+            );
 
-            futures::future::ready(Ok(found_heartbeat.unwrap_or_default()))
+            futures::future::ready(Ok(found_heartbeat))
         })
         .await?;
 

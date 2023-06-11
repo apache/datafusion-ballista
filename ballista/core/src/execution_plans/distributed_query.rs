@@ -19,9 +19,9 @@ use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
 use crate::serde::protobuf::execute_query_params::OptionalSessionId;
 use crate::serde::protobuf::{
-    execute_query_params::Query, job_status, scheduler_grpc_client::SchedulerGrpcClient,
-    ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
-    PartitionLocation,
+    execute_query_params::Query, execute_query_result, job_status,
+    scheduler_grpc_client::SchedulerGrpcClient, ExecuteQueryParams, GetJobStatusParams,
+    GetJobStatusResult, PartitionLocation,
 };
 use crate::utils::create_grpc_client_connection;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -175,15 +175,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
 
         let query = ExecuteQueryParams {
             query: Some(Query::LogicalPlan(buf)),
-            settings: self
-                .config
-                .settings()
-                .iter()
-                .map(|(k, v)| KeyValuePair {
-                    key: k.to_owned(),
-                    value: v.to_owned(),
-                })
-                .collect::<Vec<_>>(),
+            settings: vec![],
             optional_session_id: Some(OptionalSessionId::SessionId(
                 self.session_id.clone(),
             )),
@@ -241,6 +233,15 @@ async fn execute_query(
         .await
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
         .into_inner();
+
+    let query_result = match query_result.result.unwrap() {
+        execute_query_result::Result::Success(success_result) => success_result,
+        execute_query_result::Result::Failure(failure_result) => {
+            return Err(DataFusionError::Execution(format!(
+                "Fail to execute query due to {failure_result:?}"
+            )));
+        }
+    };
 
     assert_eq!(
         session_id, query_result.session_id,

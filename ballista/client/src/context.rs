@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use ballista_core::config::BallistaConfig;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
-use ballista_core::serde::protobuf::{ExecuteQueryParams, KeyValuePair};
+use ballista_core::serde::protobuf::{CreateSessionParams, KeyValuePair};
 use ballista_core::utils::{
     create_df_ctx_with_ballista_query_planner, create_grpc_client_connection,
 };
@@ -38,7 +38,9 @@ use datafusion::catalog::TableReference;
 use datafusion::dataframe::DataFrame;
 use datafusion::datasource::{source_as_provider, TableProvider};
 use datafusion::error::{DataFusionError, Result};
-use datafusion::logical_expr::{CreateExternalTable, LogicalPlan, TableScan};
+use datafusion::logical_expr::{
+    CreateExternalTable, DdlStatement, LogicalPlan, TableScan,
+};
 use datafusion::prelude::{
     AvroReadOptions, CsvReadOptions, NdJsonReadOptions, ParquetReadOptions,
     SessionConfig, SessionContext,
@@ -101,8 +103,7 @@ impl BallistaContext {
         let mut scheduler = SchedulerGrpcClient::new(connection);
 
         let remote_session_id = scheduler
-            .execute_query(ExecuteQueryParams {
-                query: None,
+            .create_session(CreateSessionParams {
                 settings: config
                     .settings()
                     .iter()
@@ -111,7 +112,6 @@ impl BallistaContext {
                         value: v.to_owned(),
                     })
                     .collect::<Vec<_>>(),
-                optional_session_id: None,
             })
             .await
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
@@ -160,8 +160,7 @@ impl BallistaContext {
         };
 
         let remote_session_id = scheduler
-            .execute_query(ExecuteQueryParams {
-                query: None,
+            .create_session(CreateSessionParams {
                 settings: config
                     .settings()
                     .iter()
@@ -170,7 +169,6 @@ impl BallistaContext {
                         value: v.to_owned(),
                     })
                     .collect::<Vec<_>>(),
-                optional_session_id: None,
             })
             .await
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
@@ -337,6 +335,9 @@ impl BallistaContext {
                 Statement::ShowColumns { .. } => {
                     is_show_variable = true;
                 }
+                Statement::ShowTables { .. } => {
+                    is_show_variable = true;
+                }
                 _ => {
                     is_show_variable = false;
                 }
@@ -386,18 +387,20 @@ impl BallistaContext {
         let plan = ctx.state().create_logical_plan(sql).await?;
 
         match plan {
-            LogicalPlan::CreateExternalTable(CreateExternalTable {
-                ref schema,
-                ref name,
-                ref location,
-                ref file_type,
-                ref has_header,
-                ref delimiter,
-                ref table_partition_cols,
-                ref if_not_exists,
-                ..
-            }) => {
-                let table_exists = ctx.table_exist(name.as_table_reference())?;
+            LogicalPlan::Ddl(DdlStatement::CreateExternalTable(
+                CreateExternalTable {
+                    ref schema,
+                    ref name,
+                    ref location,
+                    ref file_type,
+                    ref has_header,
+                    ref delimiter,
+                    ref table_partition_cols,
+                    ref if_not_exists,
+                    ..
+                },
+            )) => {
+                let table_exists = ctx.table_exist(name)?;
                 let schema: SchemaRef = Arc::new(schema.as_ref().to_owned().into());
                 let table_partition_cols = table_partition_cols
                     .iter()
@@ -419,17 +422,12 @@ impl BallistaContext {
                             if !schema.fields().is_empty() {
                                 options = options.schema(&schema);
                             }
-                            self.register_csv(
-                                name.as_table_reference().table(),
-                                location,
-                                options,
-                            )
-                            .await?;
+                            self.register_csv(name.table(), location, options).await?;
                             Ok(DataFrame::new(ctx.state(), plan))
                         }
                         "parquet" => {
                             self.register_parquet(
-                                name.as_table_reference().table(),
+                                name.table(),
                                 location,
                                 ParquetReadOptions::default()
                                     .table_partition_cols(table_partition_cols),
@@ -439,7 +437,7 @@ impl BallistaContext {
                         }
                         "avro" => {
                             self.register_avro(
-                                name.as_table_reference().table(),
+                                name.table(),
                                 location,
                                 AvroReadOptions::default()
                                     .table_partition_cols(table_partition_cols),
@@ -615,7 +613,7 @@ mod tests {
                         table_partition_cols: x.table_partition_cols.clone(),
                         collect_stat: x.collect_stat,
                         target_partitions: x.target_partitions,
-                        file_sort_order: None,
+                        file_sort_order: vec![],
                         infinite_source: false,
                     };
 
@@ -625,7 +623,7 @@ mod tests {
                         .map(|t| ListingTableUrl::parse(t).unwrap())
                         .collect();
                     let config = ListingTableConfig::new_with_multi_paths(table_paths)
-                        .with_schema(Arc::new(Schema::new(vec![])))
+                        .with_schema(Arc::new(Schema::empty()))
                         .with_listing_options(error_options);
 
                     let error_table = ListingTable::try_new(config).unwrap();
@@ -812,11 +810,11 @@ mod tests {
             .unwrap();
         let res = df.collect().await.unwrap();
         let expected = vec![
-            "+-------------------------+",
-            "| APPROXDISTINCT(test.id) |",
-            "+-------------------------+",
-            "| 8                       |",
-            "+-------------------------+",
+            "+--------------------------+",
+            "| APPROX_DISTINCT(test.id) |",
+            "+--------------------------+",
+            "| 8                        |",
+            "+--------------------------+",
         ];
         assert_result_eq(expected, &res);
 
@@ -827,7 +825,7 @@ mod tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+--------------------------+",
-            "| ARRAYAGG(test.id)        |",
+            "| ARRAY_AGG(test.id)       |",
             "+--------------------------+",
             "| [4, 5, 6, 7, 2, 3, 0, 1] |",
             "+--------------------------+",
@@ -851,11 +849,11 @@ mod tests {
             .unwrap();
         let res = df.collect().await.unwrap();
         let expected = vec![
-            "+----------------------+",
-            "| VARIANCEPOP(test.id) |",
-            "+----------------------+",
-            "| 5.250000000000001    |",
-            "+----------------------+",
+            "+-----------------------+",
+            "| VARIANCE_POP(test.id) |",
+            "+-----------------------+",
+            "| 5.250000000000001     |",
+            "+-----------------------+",
         ];
         assert_result_eq(expected, &res);
 
@@ -935,11 +933,11 @@ mod tests {
             .unwrap();
         let res = df.collect().await.unwrap();
         let expected = vec![
-            "+---------------------------------------------------------------+",
-            "| APPROXPERCENTILECONTWITHWEIGHT(test.id,Int64(2),Float64(0.5)) |",
-            "+---------------------------------------------------------------+",
-            "| 1                                                             |",
-            "+---------------------------------------------------------------+",
+            "+-------------------------------------------------------------------+",
+            "| APPROX_PERCENTILE_CONT_WITH_WEIGHT(test.id,Int64(2),Float64(0.5)) |",
+            "+-------------------------------------------------------------------+",
+            "| 1                                                                 |",
+            "+-------------------------------------------------------------------+",
         ];
         assert_result_eq(expected, &res);
 
@@ -949,11 +947,11 @@ mod tests {
             .unwrap();
         let res = df.collect().await.unwrap();
         let expected = vec![
-            "+----------------------------------------------------+",
-            "| APPROXPERCENTILECONT(test.double_col,Float64(0.5)) |",
-            "+----------------------------------------------------+",
-            "| 7.574999999999999                                  |",
-            "+----------------------------------------------------+",
+            "+------------------------------------------------------+",
+            "| APPROX_PERCENTILE_CONT(test.double_col,Float64(0.5)) |",
+            "+------------------------------------------------------+",
+            "| 7.574999999999999                                    |",
+            "+------------------------------------------------------+",
         ];
 
         assert_result_eq(expected, &res);

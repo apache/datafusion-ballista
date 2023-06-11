@@ -90,7 +90,7 @@ pub async fn exec_from_files(
 
 /// run and execute SQL statements and commands against a context with the given print options
 pub async fn exec_from_repl(ctx: &BallistaContext, print_options: &mut PrintOptions) {
-    let mut rl = Editor::<CliHelper>::new().expect("created editor");
+    let mut rl = Editor::new().expect("created editor");
     rl.set_helper(Some(CliHelper::default()));
     rl.load_history(".history").ok();
 
@@ -99,7 +99,7 @@ pub async fn exec_from_repl(ctx: &BallistaContext, print_options: &mut PrintOpti
     loop {
         match rl.readline("❯ ") {
             Ok(line) if line.starts_with('\\') => {
-                rl.add_history_entry(line.trim_end());
+                rl.add_history_entry(line.trim_end()).unwrap();
                 let command = line.split_whitespace().collect::<Vec<_>>().join(" ");
                 if let Ok(cmd) = &command[1..].parse::<Command>() {
                     match cmd {
@@ -133,7 +133,7 @@ pub async fn exec_from_repl(ctx: &BallistaContext, print_options: &mut PrintOpti
                 }
             }
             Ok(line) => {
-                rl.add_history_entry(line.trim_end());
+                rl.add_history_entry(line.trim_end()).unwrap();
                 match exec_and_print(ctx, &print_options, line).await {
                     Ok(_) => {}
                     Err(err) => eprintln!("{err:?}"),

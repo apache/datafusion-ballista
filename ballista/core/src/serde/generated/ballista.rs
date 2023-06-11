@@ -764,11 +764,6 @@ pub struct TaskDefinition {
     pub partition_id: u32,
     #[prost(bytes = "vec", tag = "7")]
     pub plan: ::prost::alloc::vec::Vec<u8>,
-    /// Output partition for shuffle writer
-    #[prost(message, optional, tag = "8")]
-    pub output_partitioning: ::core::option::Option<
-        ::datafusion_proto::protobuf::PhysicalHashRepartition,
-    >,
     #[prost(string, tag = "9")]
     pub session_id: ::prost::alloc::string::String,
     #[prost(uint64, tag = "10")]
@@ -790,11 +785,6 @@ pub struct MultiTaskDefinition {
     pub stage_attempt_num: u32,
     #[prost(bytes = "vec", tag = "5")]
     pub plan: ::prost::alloc::vec::Vec<u8>,
-    /// Output partition for shuffle writer
-    #[prost(message, optional, tag = "6")]
-    pub output_partitioning: ::core::option::Option<
-        ::datafusion_proto::protobuf::PhysicalHashRepartition,
-    >,
     #[prost(string, tag = "7")]
     pub session_id: ::prost::alloc::string::String,
     #[prost(uint64, tag = "8")]
@@ -926,6 +916,44 @@ pub mod execute_query_params {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CreateSessionParams {
+    #[prost(message, repeated, tag = "1")]
+    pub settings: ::prost::alloc::vec::Vec<KeyValuePair>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CreateSessionResult {
+    #[prost(string, tag = "1")]
+    pub session_id: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpdateSessionParams {
+    #[prost(string, tag = "1")]
+    pub session_id: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "2")]
+    pub settings: ::prost::alloc::vec::Vec<KeyValuePair>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UpdateSessionResult {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RemoveSessionParams {
+    #[prost(string, tag = "1")]
+    pub session_id: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RemoveSessionResult {
+    #[prost(bool, tag = "1")]
+    pub success: bool,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteSqlParams {
     #[prost(string, tag = "1")]
     pub sql: ::prost::alloc::string::String,
@@ -933,10 +961,46 @@ pub struct ExecuteSqlParams {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteQueryResult {
+    #[prost(oneof = "execute_query_result::Result", tags = "1, 2")]
+    pub result: ::core::option::Option<execute_query_result::Result>,
+}
+/// Nested message and enum types in `ExecuteQueryResult`.
+pub mod execute_query_result {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        Success(super::ExecuteQuerySuccessResult),
+        #[prost(message, tag = "2")]
+        Failure(super::ExecuteQueryFailureResult),
+    }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecuteQuerySuccessResult {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub session_id: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExecuteQueryFailureResult {
+    #[prost(oneof = "execute_query_failure_result::Failure", tags = "1, 2, 3")]
+    pub failure: ::core::option::Option<execute_query_failure_result::Failure>,
+}
+/// Nested message and enum types in `ExecuteQueryFailureResult`.
+pub mod execute_query_failure_result {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Failure {
+        #[prost(string, tag = "1")]
+        SessionNotFound(::prost::alloc::string::String),
+        #[prost(string, tag = "2")]
+        PlanParsingFailure(::prost::alloc::string::String),
+        #[prost(string, tag = "3")]
+        SqlParsingFailure(::prost::alloc::string::String),
+    }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1135,7 +1199,7 @@ pub mod scheduler_grpc_client {
         /// Attempt to create a new client by connecting to a given endpoint.
         pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
         where
-            D: std::convert::TryInto<tonic::transport::Endpoint>,
+            D: TryInto<tonic::transport::Endpoint>,
             D::Error: Into<StdError>,
         {
             let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
@@ -1191,11 +1255,27 @@ pub mod scheduler_grpc_client {
             self.inner = self.inner.accept_compressed(encoding);
             self
         }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
         /// Executors must poll the scheduler for heartbeat and to receive tasks
         pub async fn poll_work(
             &mut self,
             request: impl tonic::IntoRequest<super::PollWorkParams>,
-        ) -> Result<tonic::Response<super::PollWorkResult>, tonic::Status> {
+        ) -> std::result::Result<tonic::Response<super::PollWorkResult>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -1209,12 +1289,18 @@ pub mod scheduler_grpc_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/PollWork",
             );
-            self.inner.unary(request.into_request(), path, codec).await
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("ballista.protobuf.SchedulerGrpc", "PollWork"));
+            self.inner.unary(req, path, codec).await
         }
         pub async fn register_executor(
             &mut self,
             request: impl tonic::IntoRequest<super::RegisterExecutorParams>,
-        ) -> Result<tonic::Response<super::RegisterExecutorResult>, tonic::Status> {
+        ) -> std::result::Result<
+            tonic::Response<super::RegisterExecutorResult>,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -1228,14 +1314,25 @@ pub mod scheduler_grpc_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/RegisterExecutor",
             );
-            self.inner.unary(request.into_request(), path, codec).await
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "ballista.protobuf.SchedulerGrpc",
+                        "RegisterExecutor",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
         }
         /// Push-based task scheduler will only leverage this interface
         /// rather than the PollWork interface to report executor states
         pub async fn heart_beat_from_executor(
             &mut self,
             request: impl tonic::IntoRequest<super::HeartBeatParams>,
-        ) -> Result<tonic::Response<super::HeartBeatResult>, tonic::Status> {
+        ) -> std::result::Result<
+            tonic::Response<super::HeartBeatResult>,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -1249,12 +1346,23 @@ pub mod scheduler_grpc_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/HeartBeatFromExecutor",
             );
-            self.inner.unary(request.into_request(), path, codec).await
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "ballista.protobuf.SchedulerGrpc",
+                        "HeartBeatFromExecutor",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
         }
         pub async fn update_task_status(
             &mut self,
             request: impl tonic::IntoRequest<super::UpdateTaskStatusParams>,
-        ) -> Result<tonic::Response<super::UpdateTaskStatusResult>, tonic::Status> {
+        ) -> std::result::Result<
+            tonic::Response<super::UpdateTaskStatusResult>,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -1268,12 +1376,23 @@ pub mod scheduler_grpc_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/UpdateTaskStatus",
             );
-            self.inner.unary(request.into_request(), path, codec).await
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "ballista.protobuf.SchedulerGrpc",
+                        "UpdateTaskStatus",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
         }
         pub async fn get_file_metadata(
             &mut self,
             request: impl tonic::IntoRequest<super::GetFileMetadataParams>,
-        ) -> Result<tonic::Response<super::GetFileMetadataResult>, tonic::Status> {
+        ) -> std::result::Result<
+            tonic::Response<super::GetFileMetadataResult>,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -1287,12 +1406,101 @@ pub mod scheduler_grpc_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/GetFileMetadata",
             );
-            self.inner.unary(request.into_request(), path, codec).await
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("ballista.protobuf.SchedulerGrpc", "GetFileMetadata"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn create_session(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CreateSessionParams>,
+        ) -> std::result::Result<
+            tonic::Response<super::CreateSessionResult>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/ballista.protobuf.SchedulerGrpc/CreateSession",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("ballista.protobuf.SchedulerGrpc", "CreateSession"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn update_session(
+            &mut self,
+            request: impl tonic::IntoRequest<super::UpdateSessionParams>,
+        ) -> std::result::Result<
+            tonic::Response<super::UpdateSessionResult>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/ballista.protobuf.SchedulerGrpc/UpdateSession",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("ballista.protobuf.SchedulerGrpc", "UpdateSession"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn remove_session(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RemoveSessionParams>,
+        ) -> std::result::Result<
+            tonic::Response<super::RemoveSessionResult>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/ballista.protobuf.SchedulerGrpc/RemoveSession",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("ballista.protobuf.SchedulerGrpc", "RemoveSession"),
+                );
+            self.inner.unary(req, path, codec).await
         }
         pub async fn execute_query(
             &mut self,
             request: impl tonic::IntoRequest<super::ExecuteQueryParams>,
-        ) -> Result<tonic::Response<super::ExecuteQueryResult>, tonic::Status> {
+        ) -> std::result::Result<
+            tonic::Response<super::ExecuteQueryResult>,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -1306,12 +1514,20 @@ pub mod scheduler_grpc_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/ExecuteQuery",
             );
-            self.inner.unary(request.into_request(), path, codec).await
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("ballista.protobuf.SchedulerGrpc", "ExecuteQuery"),
+                );
+            self.inner.unary(req, path, codec).await
         }
         pub async fn get_job_status(
             &mut self,
             request: impl tonic::IntoRequest<super::GetJobStatusParams>,
-        ) -> Result<tonic::Response<super::GetJobStatusResult>, tonic::Status> {
+        ) -> std::result::Result<
+            tonic::Response<super::GetJobStatusResult>,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -1325,13 +1541,21 @@ pub mod scheduler_grpc_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/GetJobStatus",
             );
-            self.inner.unary(request.into_request(), path, codec).await
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("ballista.protobuf.SchedulerGrpc", "GetJobStatus"),
+                );
+            self.inner.unary(req, path, codec).await
         }
         /// Used by Executor to tell Scheduler it is stopped.
         pub async fn executor_stopped(
             &mut self,
             request: impl tonic::IntoRequest<super::ExecutorStoppedParams>,
-        ) -> Result<tonic::Response<super::ExecutorStoppedResult>, tonic::Status> {
+        ) -> std::result::Result<
+            tonic::Response<super::ExecutorStoppedResult>,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -1345,12 +1569,20 @@ pub mod scheduler_grpc_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/ExecutorStopped",
             );
-            self.inner.unary(request.into_request(), path, codec).await
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("ballista.protobuf.SchedulerGrpc", "ExecutorStopped"),
+                );
+            self.inner.unary(req, path, codec).await
         }
         pub async fn cancel_job(
             &mut self,
             request: impl tonic::IntoRequest<super::CancelJobParams>,
-        ) -> Result<tonic::Response<super::CancelJobResult>, tonic::Status> {
+        ) -> std::result::Result<
+            tonic::Response<super::CancelJobResult>,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -1364,12 +1596,18 @@ pub mod scheduler_grpc_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/CancelJob",
             );
-            self.inner.unary(request.into_request(), path, codec).await
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("ballista.protobuf.SchedulerGrpc", "CancelJob"));
+            self.inner.unary(req, path, codec).await
         }
         pub async fn clean_job_data(
             &mut self,
             request: impl tonic::IntoRequest<super::CleanJobDataParams>,
-        ) -> Result<tonic::Response<super::CleanJobDataResult>, tonic::Status> {
+        ) -> std::result::Result<
+            tonic::Response<super::CleanJobDataResult>,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -1383,7 +1621,12 @@ pub mod scheduler_grpc_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/CleanJobData",
             );
-            self.inner.unary(request.into_request(), path, codec).await
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("ballista.protobuf.SchedulerGrpc", "CleanJobData"),
+                );
+            self.inner.unary(req, path, codec).await
         }
     }
 }
@@ -1400,7 +1643,7 @@ pub mod executor_grpc_client {
         /// Attempt to create a new client by connecting to a given endpoint.
         pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
         where
-            D: std::convert::TryInto<tonic::transport::Endpoint>,
+            D: TryInto<tonic::transport::Endpoint>,
             D::Error: Into<StdError>,
         {
             let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
@@ -1456,10 +1699,29 @@ pub mod executor_grpc_client {
             self.inner = self.inner.accept_compressed(encoding);
             self
         }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
         pub async fn launch_task(
             &mut self,
             request: impl tonic::IntoRequest<super::LaunchTaskParams>,
-        ) -> Result<tonic::Response<super::LaunchTaskResult>, tonic::Status> {
+        ) -> std::result::Result<
+            tonic::Response<super::LaunchTaskResult>,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -1473,12 +1735,18 @@ pub mod executor_grpc_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.ExecutorGrpc/LaunchTask",
             );
-            self.inner.unary(request.into_request(), path, codec).await
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("ballista.protobuf.ExecutorGrpc", "LaunchTask"));
+            self.inner.unary(req, path, codec).await
         }
         pub async fn launch_multi_task(
             &mut self,
             request: impl tonic::IntoRequest<super::LaunchMultiTaskParams>,
-        ) -> Result<tonic::Response<super::LaunchMultiTaskResult>, tonic::Status> {
+        ) -> std::result::Result<
+            tonic::Response<super::LaunchMultiTaskResult>,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -1492,12 +1760,20 @@ pub mod executor_grpc_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.ExecutorGrpc/LaunchMultiTask",
             );
-            self.inner.unary(request.into_request(), path, codec).await
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("ballista.protobuf.ExecutorGrpc", "LaunchMultiTask"),
+                );
+            self.inner.unary(req, path, codec).await
         }
         pub async fn stop_executor(
             &mut self,
             request: impl tonic::IntoRequest<super::StopExecutorParams>,
-        ) -> Result<tonic::Response<super::StopExecutorResult>, tonic::Status> {
+        ) -> std::result::Result<
+            tonic::Response<super::StopExecutorResult>,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -1511,12 +1787,20 @@ pub mod executor_grpc_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.ExecutorGrpc/StopExecutor",
             );
-            self.inner.unary(request.into_request(), path, codec).await
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("ballista.protobuf.ExecutorGrpc", "StopExecutor"),
+                );
+            self.inner.unary(req, path, codec).await
         }
         pub async fn cancel_tasks(
             &mut self,
             request: impl tonic::IntoRequest<super::CancelTasksParams>,
-        ) -> Result<tonic::Response<super::CancelTasksResult>, tonic::Status> {
+        ) -> std::result::Result<
+            tonic::Response<super::CancelTasksResult>,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -1530,12 +1814,20 @@ pub mod executor_grpc_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.ExecutorGrpc/CancelTasks",
             );
-            self.inner.unary(request.into_request(), path, codec).await
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("ballista.protobuf.ExecutorGrpc", "CancelTasks"),
+                );
+            self.inner.unary(req, path, codec).await
         }
         pub async fn remove_job_data(
             &mut self,
             request: impl tonic::IntoRequest<super::RemoveJobDataParams>,
-        ) -> Result<tonic::Response<super::RemoveJobDataResult>, tonic::Status> {
+        ) -> std::result::Result<
+            tonic::Response<super::RemoveJobDataResult>,
+            tonic::Status,
+        > {
             self.inner
                 .ready()
                 .await
@@ -1549,7 +1841,12 @@ pub mod executor_grpc_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.ExecutorGrpc/RemoveJobData",
             );
-            self.inner.unary(request.into_request(), path, codec).await
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("ballista.protobuf.ExecutorGrpc", "RemoveJobData"),
+                );
+            self.inner.unary(req, path, codec).await
         }
     }
 }
@@ -1564,52 +1861,96 @@ pub mod scheduler_grpc_server {
         async fn poll_work(
             &self,
             request: tonic::Request<super::PollWorkParams>,
-        ) -> Result<tonic::Response<super::PollWorkResult>, tonic::Status>;
+        ) -> std::result::Result<tonic::Response<super::PollWorkResult>, tonic::Status>;
         async fn register_executor(
             &self,
             request: tonic::Request<super::RegisterExecutorParams>,
-        ) -> Result<tonic::Response<super::RegisterExecutorResult>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::RegisterExecutorResult>,
+            tonic::Status,
+        >;
         /// Push-based task scheduler will only leverage this interface
         /// rather than the PollWork interface to report executor states
         async fn heart_beat_from_executor(
             &self,
             request: tonic::Request<super::HeartBeatParams>,
-        ) -> Result<tonic::Response<super::HeartBeatResult>, tonic::Status>;
+        ) -> std::result::Result<tonic::Response<super::HeartBeatResult>, tonic::Status>;
         async fn update_task_status(
             &self,
             request: tonic::Request<super::UpdateTaskStatusParams>,
-        ) -> Result<tonic::Response<super::UpdateTaskStatusResult>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::UpdateTaskStatusResult>,
+            tonic::Status,
+        >;
         async fn get_file_metadata(
             &self,
             request: tonic::Request<super::GetFileMetadataParams>,
-        ) -> Result<tonic::Response<super::GetFileMetadataResult>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::GetFileMetadataResult>,
+            tonic::Status,
+        >;
+        async fn create_session(
+            &self,
+            request: tonic::Request<super::CreateSessionParams>,
+        ) -> std::result::Result<
+            tonic::Response<super::CreateSessionResult>,
+            tonic::Status,
+        >;
+        async fn update_session(
+            &self,
+            request: tonic::Request<super::UpdateSessionParams>,
+        ) -> std::result::Result<
+            tonic::Response<super::UpdateSessionResult>,
+            tonic::Status,
+        >;
+        async fn remove_session(
+            &self,
+            request: tonic::Request<super::RemoveSessionParams>,
+        ) -> std::result::Result<
+            tonic::Response<super::RemoveSessionResult>,
+            tonic::Status,
+        >;
         async fn execute_query(
             &self,
             request: tonic::Request<super::ExecuteQueryParams>,
-        ) -> Result<tonic::Response<super::ExecuteQueryResult>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::ExecuteQueryResult>,
+            tonic::Status,
+        >;
         async fn get_job_status(
             &self,
             request: tonic::Request<super::GetJobStatusParams>,
-        ) -> Result<tonic::Response<super::GetJobStatusResult>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::GetJobStatusResult>,
+            tonic::Status,
+        >;
         /// Used by Executor to tell Scheduler it is stopped.
         async fn executor_stopped(
             &self,
             request: tonic::Request<super::ExecutorStoppedParams>,
-        ) -> Result<tonic::Response<super::ExecutorStoppedResult>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::ExecutorStoppedResult>,
+            tonic::Status,
+        >;
         async fn cancel_job(
             &self,
             request: tonic::Request<super::CancelJobParams>,
-        ) -> Result<tonic::Response<super::CancelJobResult>, tonic::Status>;
+        ) -> std::result::Result<tonic::Response<super::CancelJobResult>, tonic::Status>;
         async fn clean_job_data(
             &self,
             request: tonic::Request<super::CleanJobDataParams>,
-        ) -> Result<tonic::Response<super::CleanJobDataResult>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::CleanJobDataResult>,
+            tonic::Status,
+        >;
     }
     #[derive(Debug)]
     pub struct SchedulerGrpcServer<T: SchedulerGrpc> {
         inner: _Inner<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
+        max_decoding_message_size: Option<usize>,
+        max_encoding_message_size: Option<usize>,
     }
     struct _Inner<T>(Arc<T>);
     impl<T: SchedulerGrpc> SchedulerGrpcServer<T> {
@@ -1622,6 +1963,8 @@ pub mod scheduler_grpc_server {
                 inner,
                 accept_compression_encodings: Default::default(),
                 send_compression_encodings: Default::default(),
+                max_decoding_message_size: None,
+                max_encoding_message_size: None,
             }
         }
         pub fn with_interceptor<F>(
@@ -1645,6 +1988,22 @@ pub mod scheduler_grpc_server {
             self.send_compression_encodings.enable(encoding);
             self
         }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.max_decoding_message_size = Some(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.max_encoding_message_size = Some(limit);
+            self
+        }
     }
     impl<T, B> tonic::codegen::Service<http::Request<B>> for SchedulerGrpcServer<T>
     where
@@ -1658,7 +2017,7 @@ pub mod scheduler_grpc_server {
         fn poll_ready(
             &mut self,
             _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
+        ) -> Poll<std::result::Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
@@ -1680,13 +2039,15 @@ pub mod scheduler_grpc_server {
                             &mut self,
                             request: tonic::Request<super::PollWorkParams>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move { (*inner).poll_work(request).await };
                             Box::pin(fut)
                         }
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -1696,6 +2057,10 @@ pub mod scheduler_grpc_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -1718,7 +2083,7 @@ pub mod scheduler_grpc_server {
                             &mut self,
                             request: tonic::Request<super::RegisterExecutorParams>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 (*inner).register_executor(request).await
                             };
@@ -1727,6 +2092,8 @@ pub mod scheduler_grpc_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -1736,6 +2103,10 @@ pub mod scheduler_grpc_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -1758,7 +2129,7 @@ pub mod scheduler_grpc_server {
                             &mut self,
                             request: tonic::Request<super::HeartBeatParams>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 (*inner).heart_beat_from_executor(request).await
                             };
@@ -1767,6 +2138,8 @@ pub mod scheduler_grpc_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -1776,6 +2149,10 @@ pub mod scheduler_grpc_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -1798,7 +2175,7 @@ pub mod scheduler_grpc_server {
                             &mut self,
                             request: tonic::Request<super::UpdateTaskStatusParams>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 (*inner).update_task_status(request).await
                             };
@@ -1807,6 +2184,8 @@ pub mod scheduler_grpc_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -1816,6 +2195,10 @@ pub mod scheduler_grpc_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -1838,7 +2221,7 @@ pub mod scheduler_grpc_server {
                             &mut self,
                             request: tonic::Request<super::GetFileMetadataParams>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 (*inner).get_file_metadata(request).await
                             };
@@ -1847,6 +2230,8 @@ pub mod scheduler_grpc_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -1856,6 +2241,148 @@ pub mod scheduler_grpc_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/ballista.protobuf.SchedulerGrpc/CreateSession" => {
+                    #[allow(non_camel_case_types)]
+                    struct CreateSessionSvc<T: SchedulerGrpc>(pub Arc<T>);
+                    impl<
+                        T: SchedulerGrpc,
+                    > tonic::server::UnaryService<super::CreateSessionParams>
+                    for CreateSessionSvc<T> {
+                        type Response = super::CreateSessionResult;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::CreateSessionParams>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                (*inner).create_session(request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = CreateSessionSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/ballista.protobuf.SchedulerGrpc/UpdateSession" => {
+                    #[allow(non_camel_case_types)]
+                    struct UpdateSessionSvc<T: SchedulerGrpc>(pub Arc<T>);
+                    impl<
+                        T: SchedulerGrpc,
+                    > tonic::server::UnaryService<super::UpdateSessionParams>
+                    for UpdateSessionSvc<T> {
+                        type Response = super::UpdateSessionResult;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::UpdateSessionParams>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                (*inner).update_session(request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = UpdateSessionSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/ballista.protobuf.SchedulerGrpc/RemoveSession" => {
+                    #[allow(non_camel_case_types)]
+                    struct RemoveSessionSvc<T: SchedulerGrpc>(pub Arc<T>);
+                    impl<
+                        T: SchedulerGrpc,
+                    > tonic::server::UnaryService<super::RemoveSessionParams>
+                    for RemoveSessionSvc<T> {
+                        type Response = super::RemoveSessionResult;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::RemoveSessionParams>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                (*inner).remove_session(request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = RemoveSessionSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -1878,7 +2405,7 @@ pub mod scheduler_grpc_server {
                             &mut self,
                             request: tonic::Request<super::ExecuteQueryParams>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 (*inner).execute_query(request).await
                             };
@@ -1887,6 +2414,8 @@ pub mod scheduler_grpc_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -1896,6 +2425,10 @@ pub mod scheduler_grpc_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -1918,7 +2451,7 @@ pub mod scheduler_grpc_server {
                             &mut self,
                             request: tonic::Request<super::GetJobStatusParams>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 (*inner).get_job_status(request).await
                             };
@@ -1927,6 +2460,8 @@ pub mod scheduler_grpc_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -1936,6 +2471,10 @@ pub mod scheduler_grpc_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -1958,7 +2497,7 @@ pub mod scheduler_grpc_server {
                             &mut self,
                             request: tonic::Request<super::ExecutorStoppedParams>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 (*inner).executor_stopped(request).await
                             };
@@ -1967,6 +2506,8 @@ pub mod scheduler_grpc_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -1976,6 +2517,10 @@ pub mod scheduler_grpc_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -1998,13 +2543,15 @@ pub mod scheduler_grpc_server {
                             &mut self,
                             request: tonic::Request<super::CancelJobParams>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move { (*inner).cancel_job(request).await };
                             Box::pin(fut)
                         }
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -2014,6 +2561,10 @@ pub mod scheduler_grpc_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -2036,7 +2587,7 @@ pub mod scheduler_grpc_server {
                             &mut self,
                             request: tonic::Request<super::CleanJobDataParams>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 (*inner).clean_job_data(request).await
                             };
@@ -2045,6 +2596,8 @@ pub mod scheduler_grpc_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -2054,6 +2607,10 @@ pub mod scheduler_grpc_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -2082,12 +2639,14 @@ pub mod scheduler_grpc_server {
                 inner,
                 accept_compression_encodings: self.accept_compression_encodings,
                 send_compression_encodings: self.send_compression_encodings,
+                max_decoding_message_size: self.max_decoding_message_size,
+                max_encoding_message_size: self.max_encoding_message_size,
             }
         }
     }
     impl<T: SchedulerGrpc> Clone for _Inner<T> {
         fn clone(&self) -> Self {
-            Self(self.0.clone())
+            Self(Arc::clone(&self.0))
         }
     }
     impl<T: std::fmt::Debug> std::fmt::Debug for _Inner<T> {
@@ -2109,29 +2668,46 @@ pub mod executor_grpc_server {
         async fn launch_task(
             &self,
             request: tonic::Request<super::LaunchTaskParams>,
-        ) -> Result<tonic::Response<super::LaunchTaskResult>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::LaunchTaskResult>,
+            tonic::Status,
+        >;
         async fn launch_multi_task(
             &self,
             request: tonic::Request<super::LaunchMultiTaskParams>,
-        ) -> Result<tonic::Response<super::LaunchMultiTaskResult>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::LaunchMultiTaskResult>,
+            tonic::Status,
+        >;
         async fn stop_executor(
             &self,
             request: tonic::Request<super::StopExecutorParams>,
-        ) -> Result<tonic::Response<super::StopExecutorResult>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::StopExecutorResult>,
+            tonic::Status,
+        >;
         async fn cancel_tasks(
             &self,
             request: tonic::Request<super::CancelTasksParams>,
-        ) -> Result<tonic::Response<super::CancelTasksResult>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::CancelTasksResult>,
+            tonic::Status,
+        >;
         async fn remove_job_data(
             &self,
             request: tonic::Request<super::RemoveJobDataParams>,
-        ) -> Result<tonic::Response<super::RemoveJobDataResult>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::RemoveJobDataResult>,
+            tonic::Status,
+        >;
     }
     #[derive(Debug)]
     pub struct ExecutorGrpcServer<T: ExecutorGrpc> {
         inner: _Inner<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
+        max_decoding_message_size: Option<usize>,
+        max_encoding_message_size: Option<usize>,
     }
     struct _Inner<T>(Arc<T>);
     impl<T: ExecutorGrpc> ExecutorGrpcServer<T> {
@@ -2144,6 +2720,8 @@ pub mod executor_grpc_server {
                 inner,
                 accept_compression_encodings: Default::default(),
                 send_compression_encodings: Default::default(),
+                max_decoding_message_size: None,
+                max_encoding_message_size: None,
             }
         }
         pub fn with_interceptor<F>(
@@ -2167,6 +2745,22 @@ pub mod executor_grpc_server {
             self.send_compression_encodings.enable(encoding);
             self
         }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.max_decoding_message_size = Some(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.max_encoding_message_size = Some(limit);
+            self
+        }
     }
     impl<T, B> tonic::codegen::Service<http::Request<B>> for ExecutorGrpcServer<T>
     where
@@ -2180,7 +2774,7 @@ pub mod executor_grpc_server {
         fn poll_ready(
             &mut self,
             _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
+        ) -> Poll<std::result::Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
@@ -2202,13 +2796,15 @@ pub mod executor_grpc_server {
                             &mut self,
                             request: tonic::Request<super::LaunchTaskParams>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move { (*inner).launch_task(request).await };
                             Box::pin(fut)
                         }
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -2218,6 +2814,10 @@ pub mod executor_grpc_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -2240,7 +2840,7 @@ pub mod executor_grpc_server {
                             &mut self,
                             request: tonic::Request<super::LaunchMultiTaskParams>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 (*inner).launch_multi_task(request).await
                             };
@@ -2249,6 +2849,8 @@ pub mod executor_grpc_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -2258,6 +2860,10 @@ pub mod executor_grpc_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -2280,7 +2886,7 @@ pub mod executor_grpc_server {
                             &mut self,
                             request: tonic::Request<super::StopExecutorParams>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 (*inner).stop_executor(request).await
                             };
@@ -2289,6 +2895,8 @@ pub mod executor_grpc_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -2298,6 +2906,10 @@ pub mod executor_grpc_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -2320,7 +2932,7 @@ pub mod executor_grpc_server {
                             &mut self,
                             request: tonic::Request<super::CancelTasksParams>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 (*inner).cancel_tasks(request).await
                             };
@@ -2329,6 +2941,8 @@ pub mod executor_grpc_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -2338,6 +2952,10 @@ pub mod executor_grpc_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -2360,7 +2978,7 @@ pub mod executor_grpc_server {
                             &mut self,
                             request: tonic::Request<super::RemoveJobDataParams>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move {
                                 (*inner).remove_job_data(request).await
                             };
@@ -2369,6 +2987,8 @@ pub mod executor_grpc_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -2378,6 +2998,10 @@ pub mod executor_grpc_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -2406,12 +3030,14 @@ pub mod executor_grpc_server {
                 inner,
                 accept_compression_encodings: self.accept_compression_encodings,
                 send_compression_encodings: self.send_compression_encodings,
+                max_decoding_message_size: self.max_decoding_message_size,
+                max_encoding_message_size: self.max_encoding_message_size,
             }
         }
     }
     impl<T: ExecutorGrpc> Clone for _Inner<T> {
         fn clone(&self) -> Self {
-            Self(self.0.clone())
+            Self(Arc::clone(&self.0))
         }
     }
     impl<T: std::fmt::Debug> std::fmt::Debug for _Inner<T> {

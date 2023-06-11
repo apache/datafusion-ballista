@@ -17,17 +17,21 @@
 
 use ballista_core::config::{BallistaConfig, BALLISTA_JOB_NAME};
 use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
+use std::collections::HashMap;
 use std::convert::TryInto;
 
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
-    executor_status, CancelJobParams, CancelJobResult, CleanJobDataParams,
-    CleanJobDataResult, ExecuteQueryParams, ExecuteQueryResult, ExecutorHeartbeat,
-    ExecutorStatus, ExecutorStoppedParams, ExecutorStoppedResult, GetFileMetadataParams,
-    GetFileMetadataResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
-    HeartBeatResult, PollWorkParams, PollWorkResult, RegisterExecutorParams,
-    RegisterExecutorResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
+    execute_query_failure_result, execute_query_result, CancelJobParams, CancelJobResult,
+    CleanJobDataParams, CleanJobDataResult, CreateSessionParams, CreateSessionResult,
+    ExecuteQueryFailureResult, ExecuteQueryParams, ExecuteQueryResult,
+    ExecuteQuerySuccessResult, ExecutorHeartbeat, ExecutorStoppedParams,
+    ExecutorStoppedResult, GetFileMetadataParams, GetFileMetadataResult,
+    GetJobStatusParams, GetJobStatusResult, HeartBeatParams, HeartBeatResult,
+    PollWorkParams, PollWorkResult, RegisterExecutorParams, RegisterExecutorResult,
+    RemoveSessionParams, RemoveSessionResult, UpdateSessionParams, UpdateSessionResult,
+    UpdateTaskStatusParams, UpdateTaskStatusResult,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 
@@ -47,7 +51,7 @@ use datafusion::prelude::SessionContext;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
-use crate::scheduler_server::{timestamp_secs, SchedulerServer};
+use crate::scheduler_server::SchedulerServer;
 use crate::state::executor_manager::ExecutorReservation;
 
 #[tonic::async_trait]
@@ -72,19 +76,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         } = request.into_inner()
         {
             trace!("Received poll_work request for {:?}", metadata);
-            // We might receive buggy poll work requests from dead executors.
-            if self
-                .state
-                .executor_manager
-                .is_dead_executor(&metadata.id.clone())
-            {
-                let error_msg = format!(
-                    "Receive buggy poll work request from dead Executor {}",
-                    metadata.id.clone()
-                );
-                warn!("{}", error_msg);
-                return Err(Status::internal(error_msg));
-            }
             let metadata = ExecutorMetadata {
                 id: metadata.id,
                 host: metadata
@@ -97,14 +88,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 grpc_port: metadata.grpc_port as u16,
                 specification: metadata.specification.unwrap().into(),
             };
-            let executor_heartbeat = ExecutorHeartbeat {
-                executor_id: metadata.id.clone(),
-                timestamp: timestamp_secs(),
-                metrics: vec![],
-                status: Some(ExecutorStatus {
-                    status: Some(executor_status::Status::Active("".to_string())),
-                }),
-            };
 
             self.state
                 .executor_manager
@@ -112,16 +95,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .await
                 .map_err(|e| {
                     let msg = format!("Could not save executor metadata: {e}");
-                    error!("{}", msg);
-                    Status::internal(msg)
-                })?;
-
-            self.state
-                .executor_manager
-                .save_executor_heartbeat(executor_heartbeat)
-                .await
-                .map_err(|e| {
-                    let msg = format!("Could not save executor heartbeat: {e}");
                     error!("{}", msg);
                     Status::internal(msg)
                 })?;
@@ -355,6 +328,82 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         }))
     }
 
+    async fn create_session(
+        &self,
+        request: Request<CreateSessionParams>,
+    ) -> Result<Response<CreateSessionResult>, Status> {
+        let session_params = request.into_inner();
+        // parse config
+        let mut config_builder = BallistaConfig::builder();
+        for kv_pair in &session_params.settings {
+            config_builder = config_builder.set(&kv_pair.key, &kv_pair.value);
+        }
+        let config = config_builder.build().map_err(|e| {
+            let msg = format!("Could not parse configs: {e}");
+            error!("{}", msg);
+            Status::internal(msg)
+        })?;
+
+        let ctx = self
+            .state
+            .session_manager
+            .create_session(&config)
+            .await
+            .map_err(|e| {
+                Status::internal(format!("Failed to create SessionContext: {e:?}"))
+            })?;
+
+        Ok(Response::new(CreateSessionResult {
+            session_id: ctx.session_id(),
+        }))
+    }
+
+    async fn update_session(
+        &self,
+        request: Request<UpdateSessionParams>,
+    ) -> Result<Response<UpdateSessionResult>, Status> {
+        let session_params = request.into_inner();
+        // parse config
+        let mut config_builder = BallistaConfig::builder();
+        for kv_pair in &session_params.settings {
+            config_builder = config_builder.set(&kv_pair.key, &kv_pair.value);
+        }
+        let config = config_builder.build().map_err(|e| {
+            let msg = format!("Could not parse configs: {e}");
+            error!("{}", msg);
+            Status::internal(msg)
+        })?;
+
+        self.state
+            .session_manager
+            .update_session(&session_params.session_id, &config)
+            .await
+            .map_err(|e| {
+                Status::internal(format!("Failed to create SessionContext: {e:?}"))
+            })?;
+
+        Ok(Response::new(UpdateSessionResult { success: true }))
+    }
+
+    async fn remove_session(
+        &self,
+        request: Request<RemoveSessionParams>,
+    ) -> Result<Response<RemoveSessionResult>, Status> {
+        let session_params = request.into_inner();
+        self.state
+            .session_manager
+            .remove_session(&session_params.session_id)
+            .await
+            .map_err(|e| {
+                Status::internal(format!(
+                    "Failed to remove SessionContext: {e:?} for session {}",
+                    session_params.session_id
+                ))
+            })?;
+
+        Ok(Response::new(RemoveSessionResult { success: true }))
+    }
+
     async fn execute_query(
         &self,
         request: Request<ExecuteQueryParams>,
@@ -362,36 +411,39 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let query_params = request.into_inner();
         if let ExecuteQueryParams {
             query: Some(query),
-            settings,
             optional_session_id,
+            settings,
         } = query_params
         {
-            // parse config
-            let mut config_builder = BallistaConfig::builder();
-            for kv_pair in &settings {
-                config_builder = config_builder.set(&kv_pair.key, &kv_pair.value);
+            let mut query_settings = HashMap::new();
+            for kv_pair in settings {
+                query_settings.insert(kv_pair.key, kv_pair.value);
             }
-            let config = config_builder.build().map_err(|e| {
-                let msg = format!("Could not parse configs: {e}");
-                error!("{}", msg);
-                Status::internal(msg)
-            })?;
 
             let (session_id, session_ctx) = match optional_session_id {
                 Some(OptionalSessionId::SessionId(session_id)) => {
-                    let ctx = self
-                        .state
-                        .session_manager
-                        .update_session(&session_id, &config)
-                        .await
-                        .map_err(|e| {
-                            Status::internal(format!(
-                                "Failed to load SessionContext for session ID {session_id}: {e:?}"
-                            ))
-                        })?;
-                    (session_id, ctx)
+                    match self.state.session_manager.get_session(&session_id).await {
+                        Ok(ctx) => (session_id, ctx),
+                        Err(e) => {
+                            let msg = format!("Failed to load SessionContext for session ID {session_id}: {e}");
+                            error!("{}", msg);
+                            return Ok(Response::new(ExecuteQueryResult {
+                                result: Some(execute_query_result::Result::Failure(
+                                    ExecuteQueryFailureResult {
+                                        failure: Some(execute_query_failure_result::Failure::SessionNotFound(msg)),
+                                    },
+                                )),
+                            }));
+                        }
+                    }
                 }
                 _ => {
+                    // Create default config
+                    let config = BallistaConfig::builder().build().map_err(|e| {
+                        let msg = format!("Could not parse configs: {e}");
+                        error!("{}", msg);
+                        Status::internal(msg)
+                    })?;
                     let ctx = self
                         .state
                         .session_manager
@@ -408,37 +460,57 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             };
 
             let plan = match query {
-                Query::LogicalPlan(message) => T::try_decode(message.as_slice())
-                    .and_then(|m| {
+                Query::LogicalPlan(message) => {
+                    match T::try_decode(message.as_slice()).and_then(|m| {
                         m.try_into_logical_plan(
                             session_ctx.deref(),
                             self.state.codec.logical_extension_codec(),
                         )
-                    })
-                    .map_err(|e| {
-                        let msg = format!("Could not parse logical plan protobuf: {e}");
-                        error!("{}", msg);
-                        Status::internal(msg)
-                    })?,
-                Query::Sql(sql) => session_ctx
-                    .sql(&sql)
-                    .await
-                    .and_then(|df| df.into_optimized_plan())
-                    .map_err(|e| {
-                        let msg = format!("Error parsing SQL: {e}");
-                        error!("{}", msg);
-                        Status::internal(msg)
-                    })?,
+                    }) {
+                        Ok(plan) => plan,
+                        Err(e) => {
+                            let msg =
+                                format!("Could not parse logical plan protobuf: {e}");
+                            error!("{}", msg);
+                            return Ok(Response::new(ExecuteQueryResult {
+                                result: Some(execute_query_result::Result::Failure(
+                                    ExecuteQueryFailureResult {
+                                        failure: Some(execute_query_failure_result::Failure::PlanParsingFailure(msg)),
+                                    },
+                                )),
+                            }));
+                        }
+                    }
+                }
+                Query::Sql(sql) => {
+                    match session_ctx
+                        .sql(&sql)
+                        .await
+                        .and_then(|df| df.into_optimized_plan())
+                    {
+                        Ok(plan) => plan,
+                        Err(e) => {
+                            let msg = format!("Error parsing SQL: {e}");
+                            error!("{}", msg);
+                            return Ok(Response::new(ExecuteQueryResult {
+                                result: Some(execute_query_result::Result::Failure(
+                                    ExecuteQueryFailureResult {
+                                        failure: Some(execute_query_failure_result::Failure::PlanParsingFailure(msg)),
+                                    },
+                                )),
+                            }));
+                        }
+                    }
+                }
             };
 
             debug!("Received plan for execution: {:?}", plan);
 
             let job_id = self.state.task_manager.generate_job_id();
-            let job_name = config
-                .settings()
+            let job_name = query_settings
                 .get(BALLISTA_JOB_NAME)
                 .cloned()
-                .unwrap_or_default();
+                .unwrap_or_else(|| "None".to_string());
 
             self.submit_job(&job_id, &job_name, session_ctx, &plan)
                 .await
@@ -450,37 +522,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     Status::internal(msg)
                 })?;
 
-            Ok(Response::new(ExecuteQueryResult { job_id, session_id }))
-        } else if let ExecuteQueryParams {
-            query: None,
-            settings,
-            optional_session_id: None,
-        } = query_params
-        {
-            // parse config for new session
-            let mut config_builder = BallistaConfig::builder();
-            for kv_pair in &settings {
-                config_builder = config_builder.set(&kv_pair.key, &kv_pair.value);
-            }
-            let config = config_builder.build().map_err(|e| {
-                let msg = format!("Could not parse configs: {e}");
-                error!("{}", msg);
-                Status::internal(msg)
-            })?;
-            let session = self
-                .state
-                .session_manager
-                .create_session(&config)
-                .await
-                .map_err(|e| {
-                    Status::internal(format!(
-                        "Failed to create new SessionContext: {e:?}"
-                    ))
-                })?;
-
             Ok(Response::new(ExecuteQueryResult {
-                job_id: "NA".to_owned(),
-                session_id: session.session_id(),
+                result: Some(execute_query_result::Result::Success(
+                    ExecuteQuerySuccessResult { job_id, session_id },
+                )),
             }))
         } else {
             Err(Status::internal("Error parsing request"))
@@ -528,7 +573,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             event_sender,
             &executor_id,
             Some(reason),
-            self.executor_termination_grace_period,
+            self.config.executor_termination_grace_period,
         );
 
         Ok(Response::new(ExecutorStoppedResult {}))
@@ -585,7 +630,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
 #[cfg(all(test, feature = "sled"))]
 mod test {
-
+    use std::sync::Arc;
     use std::time::Duration;
 
     use datafusion_proto::protobuf::LogicalPlanNode;
@@ -603,7 +648,6 @@ mod test {
     use ballista_core::serde::scheduler::ExecutorSpecification;
     use ballista_core::serde::BallistaCodec;
 
-    use crate::state::executor_manager::DEFAULT_EXECUTOR_TIMEOUT_SECONDS;
     use crate::state::SchedulerState;
     use crate::test_utils::await_condition;
     use crate::test_utils::test_cluster_context;
@@ -614,12 +658,13 @@ mod test {
     async fn test_poll_work() -> Result<(), BallistaError> {
         let cluster = test_cluster_context();
 
+        let config = SchedulerConfig::default();
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
                 cluster.clone(),
                 BallistaCodec::default(),
-                SchedulerConfig::default(),
+                Arc::new(config),
                 default_metrics_collector().unwrap(),
             );
         scheduler.init().await?;
@@ -700,12 +745,13 @@ mod test {
     async fn test_stop_executor() -> Result<(), BallistaError> {
         let cluster = test_cluster_context();
 
+        let config = SchedulerConfig::default().with_remove_executor_wait_secs(0);
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
                 cluster.clone(),
                 BallistaCodec::default(),
-                SchedulerConfig::default().with_remove_executor_wait_secs(0),
+                Arc::new(config),
                 default_metrics_collector().unwrap(),
             );
         scheduler.init().await?;
@@ -771,14 +817,10 @@ mod test {
         // executor should be marked to dead
         assert!(is_stopped, "Executor not marked dead after 50ms");
 
-        let active_executors = state
-            .executor_manager
-            .get_alive_executors_within_one_minute();
+        let active_executors = state.executor_manager.get_alive_executors();
         assert!(active_executors.is_empty());
 
-        let expired_executors = state
-            .executor_manager
-            .get_expired_executors(scheduler.executor_termination_grace_period);
+        let expired_executors = state.executor_manager.get_expired_executors();
         assert!(expired_executors.is_empty());
 
         Ok(())
@@ -788,12 +830,13 @@ mod test {
     async fn test_register_executor_in_heartbeat_service() -> Result<(), BallistaError> {
         let cluster = test_cluster_context();
 
+        let config = SchedulerConfig::default();
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
                 cluster,
                 BallistaCodec::default(),
-                SchedulerConfig::default(),
+                Arc::new(config),
                 default_metrics_collector().unwrap(),
             );
         scheduler.init().await?;
@@ -840,12 +883,13 @@ mod test {
     async fn test_expired_executor() -> Result<(), BallistaError> {
         let cluster = test_cluster_context();
 
+        let config = SchedulerConfig::default();
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
                 cluster.clone(),
                 BallistaCodec::default(),
-                SchedulerConfig::default(),
+                Arc::new(config),
                 default_metrics_collector().unwrap(),
             );
         scheduler.init().await?;
@@ -900,26 +944,23 @@ mod test {
             .expect("Received error response")
             .into_inner();
 
-        let active_executors = state
-            .executor_manager
-            .get_alive_executors_within_one_minute();
+        let active_executors = state.executor_manager.get_alive_executors();
         assert_eq!(active_executors.len(), 1);
 
-        let expired_executors = state
-            .executor_manager
-            .get_expired_executors(scheduler.executor_termination_grace_period);
+        let expired_executors = state.executor_manager.get_expired_executors();
         assert!(expired_executors.is_empty());
 
         // simulate the heartbeat timeout
-        tokio::time::sleep(Duration::from_secs(DEFAULT_EXECUTOR_TIMEOUT_SECONDS)).await;
+        tokio::time::sleep(Duration::from_secs(
+            scheduler.config.executor_timeout_seconds,
+        ))
+        .await;
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // executor should be marked to dead
         assert!(state.executor_manager.is_dead_executor("abc"));
 
-        let active_executors = state
-            .executor_manager
-            .get_alive_executors_within_one_minute();
+        let active_executors = state.executor_manager.get_alive_executors();
         assert!(active_executors.is_empty());
         Ok(())
     }

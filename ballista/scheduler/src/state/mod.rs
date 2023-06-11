@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use datafusion::common::tree_node::{TreeNode, VisitRecursion};
 use datafusion::datasource::listing::{ListingTable, ListingTableUrl};
 use datafusion::datasource::source_as_provider;
-use datafusion::logical_expr::PlanVisitor;
+use datafusion::error::DataFusionError;
 use std::any::type_name;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -37,6 +38,7 @@ use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::BallistaCodec;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -47,7 +49,6 @@ pub mod execution_graph;
 pub mod execution_graph_dot;
 pub mod executor_manager;
 pub mod session_manager;
-pub mod session_registry;
 pub mod task_manager;
 
 pub fn decode_protobuf<T: Message + Default>(bytes: &[u8]) -> Result<T> {
@@ -90,33 +91,20 @@ pub struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPl
     pub task_manager: TaskManager<T, U>,
     pub session_manager: SessionManager,
     pub codec: BallistaCodec<T, U>,
-    pub config: SchedulerConfig,
+    pub config: Arc<SchedulerConfig>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T, U> {
-    #[cfg(test)]
-    pub fn new_with_default_scheduler_name(
-        cluster: BallistaCluster,
-        codec: BallistaCodec<T, U>,
-    ) -> Self {
-        SchedulerState::new(
-            cluster,
-            codec,
-            "localhost:50050".to_owned(),
-            SchedulerConfig::default(),
-        )
-    }
-
     pub fn new(
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
-        config: SchedulerConfig,
+        config: Arc<SchedulerConfig>,
     ) -> Self {
         Self {
             executor_manager: ExecutorManager::new(
                 cluster.cluster_state(),
-                config.executor_slots_policy,
+                config.clone(),
             ),
             task_manager: TaskManager::new(
                 cluster.job_state(),
@@ -129,18 +117,27 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         }
     }
 
+    #[cfg(test)]
+    pub fn new_with_default_scheduler_name(
+        cluster: BallistaCluster,
+        codec: BallistaCodec<T, U>,
+    ) -> Self {
+        let config = Arc::new(SchedulerConfig::default());
+        SchedulerState::new(cluster, codec, "localhost:50050".to_owned(), config)
+    }
+
     #[allow(dead_code)]
     pub(crate) fn new_with_task_launcher(
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
         scheduler_name: String,
-        config: SchedulerConfig,
+        config: Arc<SchedulerConfig>,
         dispatcher: Arc<dyn TaskLauncher>,
     ) -> Self {
         Self {
             executor_manager: ExecutorManager::new(
                 cluster.cluster_state(),
-                config.executor_slots_policy,
+                config.clone(),
             ),
             task_manager: TaskManager::with_launcher(
                 cluster.job_state(),
@@ -194,112 +191,31 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         &self,
         reservations: Vec<ExecutorReservation>,
     ) -> Result<(Vec<ExecutorReservation>, usize)> {
-        let (free_list, pending_tasks) = match self
-            .task_manager
-            .fill_reservations(&reservations)
-            .await
+        let pending_tasks = match self.task_manager.fill_reservations(&reservations).await
         {
-            Ok((assignments, mut unassigned_reservations, pending_tasks)) => {
-                // Put tasks to the same executor together
-                // And put tasks belonging to the same stage together for creating MultiTaskDefinition
-                let mut executor_stage_assignments: HashMap<
-                    String,
-                    HashMap<(String, usize), Vec<TaskDescription>>,
-                > = HashMap::new();
-                for (executor_id, task) in assignments.into_iter() {
-                    let stage_key =
-                        (task.partition.job_id.clone(), task.partition.stage_id);
-                    if let Some(tasks) = executor_stage_assignments.get_mut(&executor_id)
-                    {
-                        if let Some(executor_stage_tasks) = tasks.get_mut(&stage_key) {
-                            executor_stage_tasks.push(task);
-                        } else {
-                            tasks.insert(stage_key, vec![task]);
-                        }
-                    } else {
-                        let mut executor_stage_tasks: HashMap<
-                            (String, usize),
-                            Vec<TaskDescription>,
-                        > = HashMap::new();
-                        executor_stage_tasks.insert(stage_key, vec![task]);
-                        executor_stage_assignments
-                            .insert(executor_id, executor_stage_tasks);
-                    }
-                }
+            Ok((assignments, unassigned_reservations, pending_tasks)) => {
+                let executor_stage_assignments = Self::combine_task(assignments);
 
-                let mut join_handles = vec![];
-                for (executor_id, tasks) in executor_stage_assignments.into_iter() {
-                    let tasks: Vec<Vec<TaskDescription>> = tasks.into_values().collect();
-                    // Total number of tasks to be launched for one executor
-                    let n_tasks: usize =
-                        tasks.iter().map(|stage_tasks| stage_tasks.len()).sum();
-
-                    let task_manager = self.task_manager.clone();
-                    let executor_manager = self.executor_manager.clone();
-                    let join_handle = tokio::spawn(async move {
-                        let success = match executor_manager
-                            .get_executor_metadata(&executor_id)
-                            .await
-                        {
-                            Ok(executor) => {
-                                if let Err(e) = task_manager
-                                    .launch_multi_task(
-                                        &executor,
-                                        tasks,
-                                        &executor_manager,
-                                    )
-                                    .await
-                                {
-                                    error!("Failed to launch new task: {:?}", e);
-                                    false
-                                } else {
-                                    true
-                                }
-                            }
-                            Err(e) => {
-                                error!("Failed to launch new task, could not get executor metadata: {:?}", e);
-                                false
-                            }
-                        };
-                        if success {
-                            vec![]
-                        } else {
-                            vec![
-                                ExecutorReservation::new_free(executor_id.clone(),);
-                                n_tasks
-                            ]
-                        }
-                    });
-                    join_handles.push(join_handle);
-                }
-
-                let unassigned_executor_reservations =
-                    futures::future::join_all(join_handles)
-                        .await
-                        .into_iter()
-                        .collect::<std::result::Result<
-                        Vec<Vec<ExecutorReservation>>,
-                        tokio::task::JoinError,
-                    >>()?;
-                unassigned_reservations.append(
-                    &mut unassigned_executor_reservations
-                        .into_iter()
-                        .flatten()
-                        .collect::<Vec<ExecutorReservation>>(),
+                self.spawn_tasks_and_persist_reservations_back(
+                    executor_stage_assignments,
+                    unassigned_reservations,
                 );
-                (unassigned_reservations, pending_tasks)
+
+                pending_tasks
             }
+            // If error set all reservations back
             Err(e) => {
                 error!("Error filling reservations: {:?}", e);
-                (reservations, 0)
+                self.executor_manager
+                    .cancel_reservations(reservations)
+                    .await?;
+                0
             }
         };
 
         let mut new_reservations = vec![];
-        if !free_list.is_empty() {
-            // If any reserved slots remain, return them to the pool
-            self.executor_manager.cancel_reservations(free_list).await?;
-        } else if pending_tasks > 0 {
+
+        if pending_tasks > 0 {
             // If there are pending tasks available, try and schedule them
             let pending_reservations = self
                 .executor_manager
@@ -311,14 +227,92 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         Ok((new_reservations, pending_tasks))
     }
 
-    pub(crate) async fn submit_job(
+    fn spawn_tasks_and_persist_reservations_back(
+        &self,
+        executor_stage_assignments: HashMap<
+            String,
+            HashMap<(String, usize), Vec<TaskDescription>>,
+        >,
+        mut unassigned_reservations: Vec<ExecutorReservation>,
+    ) {
+        let task_manager = self.task_manager.clone();
+        let executor_manager = self.executor_manager.clone();
+
+        tokio::spawn(async move {
+            for (executor_id, tasks) in executor_stage_assignments.into_iter() {
+                let tasks: Vec<Vec<TaskDescription>> = tasks.into_values().collect();
+                // Total number of tasks to be launched for one executor
+                let n_tasks: usize =
+                    tasks.iter().map(|stage_tasks| stage_tasks.len()).sum();
+
+                match executor_manager.get_executor_metadata(&executor_id).await {
+                    Ok(executor) => {
+                        if let Err(e) = task_manager
+                            .launch_multi_task(&executor, tasks, &executor_manager)
+                            .await
+                        {
+                            error!("Failed to launch new task: {:?}", e);
+                            // set resource back.
+                            unassigned_reservations.append(&mut vec![
+                                    ExecutorReservation::new_free(
+                                        executor_id.clone(),
+                                    );
+                                    n_tasks
+                                ]);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to launch new task, could not get executor metadata: {:?}", e);
+                        // here no need set resource back.
+                    }
+                };
+            }
+            if !unassigned_reservations.is_empty() {
+                // If any reserved slots remain, return them to the pool
+                executor_manager
+                    .cancel_reservations(unassigned_reservations)
+                    .await
+                    .expect("cancel_reservations fail!");
+            }
+        });
+    }
+
+    // Put tasks to the same executor together
+    // And put tasks belonging to the same stage together for creating MultiTaskDefinition
+    // return a map of <executor_id, <stage_key, TaskDesc>>.
+    fn combine_task(
+        assignments: Vec<(String, TaskDescription)>,
+    ) -> HashMap<String, HashMap<(String, usize), Vec<TaskDescription>>> {
+        let mut executor_stage_assignments: HashMap<
+            String,
+            HashMap<(String, usize), Vec<TaskDescription>>,
+        > = HashMap::new();
+        for (executor_id, task) in assignments.into_iter() {
+            let stage_key = (task.partition.job_id.clone(), task.partition.stage_id);
+            if let Some(tasks) = executor_stage_assignments.get_mut(&executor_id) {
+                if let Some(executor_stage_tasks) = tasks.get_mut(&stage_key) {
+                    executor_stage_tasks.push(task);
+                } else {
+                    tasks.insert(stage_key, vec![task]);
+                }
+            } else {
+                let mut executor_stage_tasks: HashMap<
+                    (String, usize),
+                    Vec<TaskDescription>,
+                > = HashMap::new();
+                executor_stage_tasks.insert(stage_key, vec![task]);
+                executor_stage_assignments.insert(executor_id, executor_stage_tasks);
+            }
+        }
+        executor_stage_assignments
+    }
+
+    pub(crate) async fn plan_job(
         &self,
         job_id: &str,
-        job_name: &str,
         session_ctx: Arc<SessionContext>,
         plan: &LogicalPlan,
-        queued_at: u64,
-    ) -> Result<()> {
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         let start = Instant::now();
 
         if log::max_level() >= log::Level::Debug {
@@ -328,53 +322,44 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             debug!("Optimized plan: {}", optimized_plan.display_indent());
         }
 
-        struct VerifyPathsExist {}
-        impl PlanVisitor for VerifyPathsExist {
-            type Error = BallistaError;
-
-            fn pre_visit(
-                &mut self,
-                plan: &LogicalPlan,
-            ) -> std::result::Result<bool, Self::Error> {
-                if let LogicalPlan::TableScan(scan) = plan {
-                    let provider = source_as_provider(&scan.source)?;
-                    if let Some(table) = provider.as_any().downcast_ref::<ListingTable>()
-                    {
-                        let local_paths: Vec<&ListingTableUrl> = table
-                            .table_paths()
-                            .iter()
-                            .filter(|url| url.as_str().starts_with("file:///"))
-                            .collect();
-                        if !local_paths.is_empty() {
-                            // These are local files rather than remote object stores, so we
-                            // need to check that they are accessible on the scheduler (the client
-                            // may not be on the same host, or the data path may not be correctly
-                            // mounted in the container). There could be thousands of files so we
-                            // just check the first one.
-                            let url = &local_paths[0].as_str();
-                            // the unwraps are safe here because we checked that the url starts with file:///
-                            // we need to check both versions here to support Linux & Windows
-                            ListingTableUrl::parse(url.strip_prefix("file://").unwrap())
-                                .or_else(|_| {
-                                    ListingTableUrl::parse(
-                                        url.strip_prefix("file:///").unwrap(),
-                                    )
-                                })
-                                .map_err(|e| {
-                                    BallistaError::General(format!(
+        plan.apply(&mut |plan| {
+            if let LogicalPlan::TableScan(scan) = plan {
+                let provider = source_as_provider(&scan.source)?;
+                if let Some(table) = provider.as_any().downcast_ref::<ListingTable>() {
+                    let local_paths: Vec<&ListingTableUrl> = table
+                        .table_paths()
+                        .iter()
+                        .filter(|url| url.as_str().starts_with("file:///"))
+                        .collect();
+                    if !local_paths.is_empty() {
+                        // These are local files rather than remote object stores, so we
+                        // need to check that they are accessible on the scheduler (the client
+                        // may not be on the same host, or the data path may not be correctly
+                        // mounted in the container). There could be thousands of files so we
+                        // just check the first one.
+                        let url = &local_paths[0].as_str();
+                        // the unwraps are safe here because we checked that the url starts with file:///
+                        // we need to check both versions here to support Linux & Windows
+                        ListingTableUrl::parse(url.strip_prefix("file://").unwrap())
+                            .or_else(|_| {
+                                ListingTableUrl::parse(
+                                    url.strip_prefix("file:///").unwrap(),
+                                )
+                            })
+                            .map_err(|e| {
+                                DataFusionError::External(
+                                    format!(
                                     "logical plan refers to path on local file system \
-                                    that is not accessible in the scheduler: {url}: {e:?}"
-                                ))
-                                })?;
-                        }
+                                that is not accessible in the scheduler: {url}: {e:?}"
+                                )
+                                    .into(),
+                                )
+                            })?;
                     }
                 }
-                Ok(true)
             }
-        }
-
-        let mut verify_paths_exist = VerifyPathsExist {};
-        plan.accept(&mut verify_paths_exist)?;
+            Ok(VisitRecursion::Continue)
+        })?;
 
         let plan = session_ctx.state().create_physical_plan(plan).await?;
         debug!(
@@ -382,15 +367,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             DisplayableExecutionPlan::new(plan.as_ref()).indent()
         );
 
-        self.task_manager
-            .submit_job(job_id, job_name, &session_ctx.session_id(), plan, queued_at)
-            .await?;
-
         let elapsed = start.elapsed();
 
         info!("Planned job {} in {:?}", job_id, elapsed);
 
-        Ok(())
+        Ok(plan)
     }
 
     /// Spawn a delayed future to clean up job data on both Scheduler and Executors
@@ -467,6 +448,8 @@ mod test {
         assert_eq!(assigned, 0);
         assert!(result.is_empty());
 
+        // Need sleep wait for the spawn task work done.
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         // All reservations should have been cancelled so we should be able to reserve them now
         let reservations = state.executor_manager.reserve_slots(4).await?;
 
@@ -482,12 +465,13 @@ mod test {
             .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4")
             .build()?;
 
+        let scheduler_config = SchedulerConfig::default();
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::new_with_task_launcher(
                 test_cluster_context(),
                 BallistaCodec::default(),
                 TEST_SCHEDULER_NAME.into(),
-                SchedulerConfig::default(),
+                Arc::new(scheduler_config),
                 Arc::new(BlackholeTaskLauncher::default()),
             ));
 
@@ -582,12 +566,13 @@ mod test {
             .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4")
             .build()?;
 
+        let scheduler_config = SchedulerConfig::default();
         let state: Arc<SchedulerState<LogicalPlanNode, PhysicalPlanNode>> =
             Arc::new(SchedulerState::new_with_task_launcher(
                 test_cluster_context(),
                 BallistaCodec::default(),
                 TEST_SCHEDULER_NAME.into(),
-                SchedulerConfig::default(),
+                Arc::new(scheduler_config),
                 Arc::new(BlackholeTaskLauncher::default()),
             ));
 

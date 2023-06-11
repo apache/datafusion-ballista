@@ -20,16 +20,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::{EventAction, EventSender};
 
+use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
 use crate::scheduler_server::timestamp_millis;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
@@ -43,20 +45,20 @@ pub(crate) struct QueryStageScheduler<
     state: Arc<SchedulerState<T, U>>,
     metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     pending_tasks: AtomicUsize,
-    job_resubmit_interval_ms: Option<u64>,
+    config: Arc<SchedulerConfig>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageScheduler<T, U> {
     pub(crate) fn new(
         state: Arc<SchedulerState<T, U>>,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
-        job_resubmit_interval_ms: Option<u64>,
+        config: Arc<SchedulerConfig>,
     ) -> Self {
         Self {
             state,
             metrics_collector,
             pending_tasks: AtomicUsize::default(),
-            job_resubmit_interval_ms,
+            config,
         }
     }
 
@@ -93,6 +95,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         tx_event: &mpsc::Sender<QueryStageSchedulerEvent>,
         _rx_event: &mpsc::Receiver<QueryStageSchedulerEvent>,
     ) -> Result<()> {
+        let mut time_recorder = None;
+        if self.config.scheduler_event_expected_processing_duration > 0 {
+            time_recorder = Some((Instant::now(), event.clone()));
+        };
         let tx_event = EventSender::new(tx_event.clone());
         match event {
             QueryStageSchedulerEvent::JobQueued {
@@ -111,26 +117,29 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
                 let state = self.state.clone();
                 tokio::spawn(async move {
-                    let event = if let Err(e) = state
-                        .submit_job(&job_id, &job_name, session_ctx, &plan, queued_at)
-                        .await
-                    {
-                        let fail_message = format!("Error planning job {job_id}: {e:?}");
-                        error!("{}", &fail_message);
-                        QueryStageSchedulerEvent::JobPlanningFailed {
-                            job_id,
-                            fail_message,
-                            queued_at,
-                            failed_at: timestamp_millis(),
-                        }
-                    } else {
-                        QueryStageSchedulerEvent::JobSubmitted {
-                            job_id,
-                            queued_at,
-                            submitted_at: timestamp_millis(),
-                            resubmit: false,
-                        }
-                    };
+                    let event =
+                        match state.plan_job(&job_id, session_ctx.clone(), &plan).await {
+                            Ok(plan) => QueryStageSchedulerEvent::JobSubmitted {
+                                job_id,
+                                job_name,
+                                session_id: session_ctx.session_id(),
+                                queued_at,
+                                submitted_at: timestamp_millis(),
+                                resubmit: false,
+                                plan,
+                            },
+                            Err(error) => {
+                                let fail_message =
+                                    format!("Error planning job {job_id}: {error:?}");
+                                error!("{}", &fail_message);
+                                QueryStageSchedulerEvent::JobPlanningFailed {
+                                    job_id,
+                                    fail_message,
+                                    queued_at,
+                                    failed_at: timestamp_millis(),
+                                }
+                            }
+                        };
                     if let Err(e) = tx_event.post_event(event).await {
                         error!("Fail to send event due to {}", e);
                     }
@@ -138,9 +147,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             }
             QueryStageSchedulerEvent::JobSubmitted {
                 job_id,
+                job_name,
+                session_id,
                 queued_at,
                 submitted_at,
                 resubmit,
+                plan,
             } => {
                 if !resubmit {
                     self.metrics_collector.record_submitted(
@@ -148,7 +160,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         queued_at,
                         submitted_at,
                     );
-
+                    self.state
+                        .task_manager
+                        .submit_job(
+                            job_id.as_str(),
+                            job_name.as_str(),
+                            session_id.as_str(),
+                            plan.clone(),
+                            queued_at,
+                        )
+                        .await?;
                     info!("Job {} submitted", job_id);
                 } else {
                     debug!("Job {} resubmitted", job_id);
@@ -170,9 +191,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         .map(|res| res.assign(job_id.clone()))
                         .collect();
 
-                    if reservations.is_empty() && self.job_resubmit_interval_ms.is_some()
+                    if reservations.is_empty()
+                        && self.config.job_resubmit_interval_ms.is_some()
                     {
-                        let wait_ms = self.job_resubmit_interval_ms.unwrap();
+                        let wait_ms = self.config.job_resubmit_interval_ms.unwrap();
 
                         debug!(
                             "No task slots reserved for job {job_id}, resubmitting after {wait_ms}ms"
@@ -184,9 +206,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             if let Err(e) = tx_event
                                 .post_event(QueryStageSchedulerEvent::JobSubmitted {
                                     job_id,
+                                    job_name,
+                                    session_id,
                                     queued_at,
                                     submitted_at,
                                     resubmit: true,
+                                    plan: plan.clone(),
                                 })
                                 .await
                             {
@@ -349,7 +374,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.state.executor_manager.clean_up_job_data(job_id);
             }
         }
-
+        if let Some((start, ec)) = time_recorder {
+            let duration = start.elapsed();
+            if duration.ge(&Duration::from_micros(
+                self.config.scheduler_event_expected_processing_duration,
+            )) {
+                warn!(
+                    "[METRICS] {:?} event cost {:?} us!",
+                    ec,
+                    duration.as_micros()
+                );
+            }
+        }
         Ok(())
     }
 
@@ -368,6 +404,7 @@ mod tests {
     use ballista_core::event_loop::EventAction;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::logical_expr::{col, sum, LogicalPlan};
+    use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::test_util::scan_empty_with_partitions;
     use std::sync::Arc;
     use std::time::Duration;
@@ -399,15 +436,26 @@ mod tests {
 
         let event = QueryStageSchedulerEvent::JobSubmitted {
             job_id: "job-id".to_string(),
+            job_name: "job-name".to_string(),
+            session_id: "session-id".to_string(),
             queued_at: 0,
             submitted_at: 0,
             resubmit: false,
+            plan: Arc::new(EmptyExec::new(false, Arc::new(test_schema()))),
         };
+
+        // Mock the JobQueued work.
+        query_stage_scheduler
+            .state
+            .task_manager
+            .queue_job("job-id", "job-name", 0)
+            .await?;
 
         query_stage_scheduler.on_receive(event, &tx, &rx).await?;
 
         let next_event = rx.recv().await.unwrap();
 
+        dbg!(next_event.clone());
         assert!(matches!(
             next_event,
             QueryStageSchedulerEvent::JobSubmitted { job_id, resubmit, .. } if job_id == "job-id" && resubmit
@@ -521,10 +569,7 @@ mod tests {
     }
 
     fn test_plan(partitions: usize) -> LogicalPlan {
-        let schema = Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ]);
+        let schema = test_schema();
 
         scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), partitions)
             .unwrap()
@@ -532,5 +577,12 @@ mod tests {
             .unwrap()
             .build()
             .unwrap()
+    }
+
+    fn test_schema() -> Schema {
+        Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("gmv", DataType::UInt64, false),
+        ])
     }
 }

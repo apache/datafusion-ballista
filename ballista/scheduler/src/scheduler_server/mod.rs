@@ -38,10 +38,7 @@ use log::{error, warn};
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
 
-use crate::state::executor_manager::{
-    ExecutorManager, ExecutorReservation, DEFAULT_EXECUTOR_TIMEOUT_SECONDS,
-    EXPIRE_DEAD_EXECUTOR_INTERVAL_SECS,
-};
+use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 
 use crate::state::task_manager::TaskLauncher;
 use crate::state::SchedulerState;
@@ -66,7 +63,7 @@ pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     pub state: Arc<SchedulerState<T, U>>,
     pub(crate) query_stage_event_loop: EventLoop<QueryStageSchedulerEvent>,
     query_stage_scheduler: Arc<QueryStageScheduler<T, U>>,
-    executor_termination_grace_period: u64,
+    config: Arc<SchedulerConfig>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
@@ -74,7 +71,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         scheduler_name: String,
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
-        config: SchedulerConfig,
+        config: Arc<SchedulerConfig>,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
     ) -> Self {
         let state = Arc::new(SchedulerState::new(
@@ -86,7 +83,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
             state.clone(),
             metrics_collector,
-            config.job_resubmit_interval_ms,
+            config.clone(),
         ));
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
@@ -100,7 +97,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             state,
             query_stage_event_loop,
             query_stage_scheduler,
-            executor_termination_grace_period: config.executor_termination_grace_period,
+            config,
         }
     }
 
@@ -109,7 +106,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         scheduler_name: String,
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
-        config: SchedulerConfig,
+        config: Arc<SchedulerConfig>,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
         task_launcher: Arc<dyn TaskLauncher>,
     ) -> Self {
@@ -123,7 +120,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         let query_stage_scheduler = Arc::new(QueryStageScheduler::new(
             state.clone(),
             metrics_collector,
-            config.job_resubmit_interval_ms,
+            config.clone(),
         ));
         let query_stage_event_loop = EventLoop::new(
             "query_stage".to_owned(),
@@ -137,7 +134,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             state,
             query_stage_event_loop,
             query_stage_scheduler,
-            executor_termination_grace_period: config.executor_termination_grace_period,
+            config,
         }
     }
 
@@ -189,7 +186,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         tasks_status: Vec<TaskStatus>,
     ) -> Result<()> {
         // We might receive buggy task updates from dead executors.
-        if self.state.executor_manager.is_dead_executor(executor_id) {
+        if self.state.config.is_push_staged_scheduling()
+            && self.state.executor_manager.is_dead_executor(executor_id)
+        {
             let error_msg = format!(
                 "Receive buggy tasks status from dead Executor {executor_id}, task status update ignored."
             );
@@ -220,12 +219,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     fn expire_dead_executors(&self) -> Result<()> {
         let state = self.state.clone();
         let event_sender = self.query_stage_event_loop.get_sender()?;
-        let termination_grace_period = self.executor_termination_grace_period;
         tokio::task::spawn(async move {
             loop {
-                let expired_executors = state
-                    .executor_manager
-                    .get_expired_executors(termination_grace_period);
+                let expired_executors = state.executor_manager.get_expired_executors();
                 for expired in expired_executors {
                     let executor_id = expired.executor_id.clone();
                     let executor_manager = state.executor_manager.clone();
@@ -242,11 +238,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
 
                     let stop_reason = if terminating {
                         format!(
-                        "TERMINATING executor {executor_id} heartbeat timed out after {termination_grace_period}s"
+                        "TERMINATING executor {executor_id} heartbeat timed out after {}s", state.config.executor_termination_grace_period,
                     )
                     } else {
                         format!(
-                            "ACTIVE executor {executor_id} heartbeat timed out after {DEFAULT_EXECUTOR_TIMEOUT_SECONDS}s",
+                            "ACTIVE executor {executor_id} heartbeat timed out after {}s",
+                            state.config.executor_timeout_seconds,
                         )
                     };
 
@@ -292,7 +289,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                     }
                 }
                 tokio::time::sleep(Duration::from_secs(
-                    EXPIRE_DEAD_EXECUTOR_INTERVAL_SECS,
+                    state.config.expire_dead_executor_interval_seconds,
                 ))
                 .await;
             }
@@ -436,12 +433,19 @@ mod test {
             .queue_job(job_id, "", timestamp_millis())
             .await?;
 
-        // Submit job
-        scheduler
+        // Plan job
+        let plan = scheduler
             .state
-            .submit_job(job_id, "", ctx, &plan, 0)
+            .plan_job(job_id, ctx.clone(), &plan)
             .await
             .expect("submitting plan");
+
+        //Submit job plan
+        scheduler
+            .state
+            .task_manager
+            .submit_job(job_id, "", &ctx.session_id(), plan, 0)
+            .await?;
 
         // Refresh the ExecutionGraph
         while let Some(graph) = scheduler
@@ -676,12 +680,13 @@ mod test {
     ) -> Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
         let cluster = test_cluster_context();
 
+        let config = SchedulerConfig::default().with_scheduler_policy(scheduling_policy);
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
                 cluster,
                 BallistaCodec::default(),
-                SchedulerConfig::default().with_scheduler_policy(scheduling_policy),
+                Arc::new(config),
                 Arc::new(TestMetricsCollector::default()),
             );
         scheduler.init().await?;

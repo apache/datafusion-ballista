@@ -445,8 +445,6 @@ message TaskDefinition {
   uint32 stage_attempt_num = 5;
   uint32 partition_id = 6;
   bytes plan = 7;
-  // Output partition for shuffle writer
-  datafusion.PhysicalHashRepartition output_partitioning = 8;
   string session_id = 9;
   uint64 launch_time = 10;
   repeated KeyValuePair props = 11;
@@ -459,8 +457,6 @@ message MultiTaskDefinition {
   uint32 stage_id = 3;
   uint32 stage_attempt_num = 4;
   bytes plan = 5;
-  // Output partition for shuffle writer
-  datafusion.PhysicalHashRepartition output_partitioning = 6;
   string session_id = 7;
   uint64 launch_time = 8;
   repeated KeyValuePair props = 9;
@@ -540,13 +536,53 @@ message ExecuteQueryParams {
   repeated KeyValuePair settings = 4;
 }
 
+message CreateSessionParams {
+  repeated KeyValuePair settings = 1;
+}
+
+message CreateSessionResult {
+  string session_id = 1;
+}
+
+message UpdateSessionParams {
+  string session_id = 1;
+  repeated KeyValuePair settings = 2;
+}
+
+message UpdateSessionResult {
+  bool success = 1;
+}
+
+message RemoveSessionParams {
+  string session_id = 1;
+}
+
+message RemoveSessionResult {
+  bool success = 1;
+}
+
 message ExecuteSqlParams {
   string sql = 1;
 }
 
 message ExecuteQueryResult {
+  oneof result {
+    ExecuteQuerySuccessResult success = 1;
+    ExecuteQueryFailureResult failure = 2;
+  }
+}
+
+message ExecuteQuerySuccessResult {
   string job_id = 1;
   string session_id = 2;
+}
+
+message ExecuteQueryFailureResult {
+  oneof failure {
+    string session_not_found = 1;
+    string plan_parsing_failure = 2;
+    string sql_parsing_failure = 3;
+  }
 }
 
 message GetJobStatusParams {
@@ -679,6 +715,12 @@ service SchedulerGrpc {
   rpc UpdateTaskStatus (UpdateTaskStatusParams) returns (UpdateTaskStatusResult) {}
 
   rpc GetFileMetadata (GetFileMetadataParams) returns (GetFileMetadataResult) {}
+
+  rpc CreateSession (CreateSessionParams) returns (CreateSessionResult) {}
+
+  rpc UpdateSession (UpdateSessionParams) returns (UpdateSessionResult) {}
+
+  rpc RemoveSession (RemoveSessionParams) returns (RemoveSessionResult) {}
 
   rpc ExecuteQuery (ExecuteQueryParams) returns (ExecuteQueryResult) {}
 
