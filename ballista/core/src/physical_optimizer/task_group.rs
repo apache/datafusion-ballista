@@ -81,23 +81,35 @@ impl OptimizeTaskGroup {
             }
 
             Ok(Transformed::Yes(new_plan))
-        } else if (node.as_any().is::<UnionExec>()
-            || is_hash_join_no_partitioning(node.as_ref()))
-            && children
-                .iter()
-                .all(|child| child.as_any().is::<CoalesceTasksExec>())
-        {
-            let new_children =
-                children.iter().flat_map(|child| child.children()).collect();
-
-            let new_plan: Arc<dyn ExecutionPlan> = Arc::new(CoalesceTasksExec::new(
-                node.clone().with_new_children(new_children)?,
-                self.partitions.clone(),
-            ));
-
-            Ok(Transformed::Yes(new_plan))
         } else {
-            Ok(Transformed::No(node))
+            let all_children_are_coalesce = node
+                .children()
+                .iter()
+                .all(|child| child.as_any().is::<CoalesceTasksExec>());
+
+            if node.as_any().is::<UnionExec>() && !all_children_are_coalesce {
+                return Ok(Transformed::Yes(Arc::new(CoalesceTasksExec::new(
+                    node,
+                    self.partitions.clone(),
+                ))));
+            }
+
+            if (node.as_any().is::<UnionExec>()
+                || is_hash_join_no_partitioning(node.as_ref()))
+                && all_children_are_coalesce
+            {
+                let new_children =
+                    children.iter().flat_map(|child| child.children()).collect();
+
+                let new_plan: Arc<dyn ExecutionPlan> = Arc::new(CoalesceTasksExec::new(
+                    node.clone().with_new_children(new_children)?,
+                    self.partitions.clone(),
+                ));
+
+                Ok(Transformed::Yes(new_plan))
+            } else {
+                Ok(Transformed::No(node))
+            }
         }
     }
 }
@@ -120,7 +132,7 @@ impl PhysicalOptimizerRule for OptimizeTaskGroup {
         plan: Arc<dyn ExecutionPlan>,
         _config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        plan.transform(&|node| self.transform_node(node))
+        plan.transform_up(&|node| self.transform_node(node))
     }
 
     fn name(&self) -> &str {
@@ -146,4 +158,47 @@ fn is_partial_aggregate(plan: &dyn ExecutionPlan) -> bool {
         return *aggregate.mode() == AggregateMode::Partial;
     };
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use datafusion::{
+        arrow::datatypes::Schema,
+        physical_plan::{
+            coalesce_partitions::CoalescePartitionsExec, limit::GlobalLimitExec,
+            union::UnionExec,
+        },
+    };
+
+    use crate::execution_plans::{CoalesceTasksExec, ShuffleReaderExec};
+
+    use super::OptimizeTaskGroup;
+
+    #[test]
+    fn optimize_union_plan() {
+        let optimizer = OptimizeTaskGroup::new(Vec::default());
+        let input = Arc::new(UnionExec::new(vec![
+            Arc::new(GlobalLimitExec::new(
+                Arc::new(CoalescePartitionsExec::new(Arc::new(
+                    ShuffleReaderExec::try_new(Vec::default(), Arc::new(Schema::empty()))
+                        .unwrap(),
+                ))),
+                0,
+                None,
+            )),
+            Arc::new(GlobalLimitExec::new(
+                Arc::new(CoalescePartitionsExec::new(Arc::new(
+                    ShuffleReaderExec::try_new(Vec::default(), Arc::new(Schema::empty()))
+                        .unwrap(),
+                ))),
+                0,
+                None,
+            )),
+        ]));
+
+        let optiized = optimizer.transform_node(input).unwrap().into();
+        assert!(optiized.as_ref().as_any().is::<CoalesceTasksExec>());
+    }
 }
