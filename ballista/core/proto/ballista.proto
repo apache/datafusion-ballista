@@ -55,6 +55,8 @@ message UnresolvedShuffleExecNode {
 message ShuffleReaderExecNode {
   repeated ShuffleReaderPartition partition = 1;
   datafusion.Schema schema = 2;
+  // The stage to read from
+  uint32 stage_id = 3;
 }
 
 message ShuffleReaderPartition {

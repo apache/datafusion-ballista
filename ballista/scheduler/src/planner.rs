@@ -245,6 +245,7 @@ pub fn remove_unresolved_shuffles(
                     .join("\n")
             );
             new_children.push(Arc::new(ShuffleReaderExec::try_new(
+                unresolved_shuffle.stage_id,
                 relevant_locations,
                 unresolved_shuffle.schema().clone(),
             )?))
@@ -264,9 +265,9 @@ pub fn rollback_resolved_shuffles(
     let mut new_children: Vec<Arc<dyn ExecutionPlan>> = vec![];
     for child in stage.children() {
         if let Some(shuffle_reader) = child.as_any().downcast_ref::<ShuffleReaderExec>() {
-            let partition_locations = &shuffle_reader.partition;
-            let output_partition_count = partition_locations.len();
-            let stage_id = partition_locations[0][0].partition_id.stage_id;
+            let output_partition_count =
+                shuffle_reader.output_partitioning().partition_count();
+            let stage_id = shuffle_reader.stage_id;
 
             let unresolved_shuffle = Arc::new(UnresolvedShuffleExec::new(
                 stage_id,
