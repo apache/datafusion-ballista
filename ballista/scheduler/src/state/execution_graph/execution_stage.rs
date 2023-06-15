@@ -32,6 +32,7 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use log::{debug, warn};
 
 use ballista_core::error::{BallistaError, Result};
+use ballista_core::execution_plans::ShuffleWriterExec;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::{
     self, task_info, FailedTask, GraphStageInput, OperatorMetricsSet, ResultLost,
@@ -435,7 +436,7 @@ impl ResolvedStage {
         inputs: HashMap<usize, StageOutput>,
         last_attempt_failure_reasons: HashSet<String>,
     ) -> Self {
-        let partitions = plan.output_partitioning().partition_count();
+        let partitions = get_stage_partitions(plan.clone());
 
         Self {
             stage_id,
@@ -1161,6 +1162,16 @@ impl Debug for FailedStage {
             plan
         )
     }
+}
+
+/// Get the total number of partitions for a stage with plan.
+/// Only for [`ShuffleWriterExec`], the input partition count and the output partition count
+/// will be different. Here, we should use the input partition count.
+fn get_stage_partitions(plan: Arc<dyn ExecutionPlan>) -> usize {
+    plan.as_any()
+        .downcast_ref::<ShuffleWriterExec>()
+        .map(|shuffle_writer| shuffle_writer.input_partition_count())
+        .unwrap_or_else(|| plan.output_partitioning().partition_count())
 }
 
 /// This data structure collects the partition locations for an `ExecutionStage`.

@@ -177,10 +177,7 @@ fn create_unresolved_shuffle(
     Arc::new(UnresolvedShuffleExec::new(
         shuffle_writer.stage_id(),
         shuffle_writer.schema(),
-        shuffle_writer
-            .shuffle_output_partitioning()
-            .map(|p| p.partition_count())
-            .unwrap_or_else(|| shuffle_writer.output_partitioning().partition_count()),
+        shuffle_writer.output_partitioning().partition_count(),
     ))
 }
 
