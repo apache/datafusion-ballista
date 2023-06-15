@@ -1465,7 +1465,6 @@ impl ExecutionStageBuilder {
 
         // Now, create the execution stages
         for stage in stages {
-            let partitioning = stage.shuffle_output_partitioning().cloned();
             let stage_id = stage.stage_id();
             let output_links = self.output_links.remove(&stage_id).unwrap_or_default();
 
@@ -1479,7 +1478,6 @@ impl ExecutionStageBuilder {
                     stage_id,
                     0,
                     stage,
-                    partitioning,
                     output_links,
                     HashMap::new(),
                     HashSet::new(),
@@ -1488,7 +1486,6 @@ impl ExecutionStageBuilder {
                 ExecutionStage::UnResolved(UnresolvedStage::new(
                     stage_id,
                     stage,
-                    partitioning,
                     output_links,
                     child_stages,
                 ))

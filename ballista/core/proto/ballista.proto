@@ -98,7 +98,6 @@ message ExecutionGraphStage {
 
 message UnResolvedStage {
   uint32 stage_id = 1;
-  datafusion.PhysicalHashRepartition output_partitioning = 2;
   repeated uint32 output_links = 3;
   repeated  GraphStageInput inputs = 4;
   bytes plan = 5;
@@ -109,7 +108,6 @@ message UnResolvedStage {
 message ResolvedStage {
   uint32 stage_id = 1;
   uint32 partitions = 2;
-  datafusion.PhysicalHashRepartition output_partitioning = 3;
   repeated uint32 output_links = 4;
   repeated  GraphStageInput inputs = 5;
   bytes plan = 6;
@@ -120,7 +118,6 @@ message ResolvedStage {
 message SuccessfulStage {
   uint32 stage_id = 1;
   uint32 partitions = 2;
-  datafusion.PhysicalHashRepartition output_partitioning = 3;
   repeated uint32 output_links = 4;
   repeated  GraphStageInput inputs = 5;
   bytes plan = 6;
@@ -132,7 +129,6 @@ message SuccessfulStage {
 message FailedStage {
   uint32 stage_id = 1;
   uint32 partitions = 2;
-  datafusion.PhysicalHashRepartition output_partitioning = 3;
   repeated uint32 output_links = 4;
   bytes plan = 5;
   repeated TaskInfo task_infos = 6;
