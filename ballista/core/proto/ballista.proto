@@ -49,7 +49,6 @@ message ShuffleWriterExecNode {
 message UnresolvedShuffleExecNode {
   uint32 stage_id = 1;
   datafusion.Schema schema = 2;
-  uint32 input_partition_count = 3;
   uint32 output_partition_count = 4;
 }
 

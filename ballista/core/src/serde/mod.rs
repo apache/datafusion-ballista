@@ -183,8 +183,6 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 Ok(Arc::new(UnresolvedShuffleExec {
                     stage_id: unresolved_shuffle.stage_id as usize,
                     schema,
-                    input_partition_count: unresolved_shuffle.input_partition_count
-                        as usize,
                     output_partition_count: unresolved_shuffle.output_partition_count
                         as usize,
                 }))
@@ -273,7 +271,6 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     protobuf::UnresolvedShuffleExecNode {
                         stage_id: exec.stage_id as u32,
                         schema: Some(exec.schema().as_ref().try_into()?),
-                        input_partition_count: exec.input_partition_count as u32,
                         output_partition_count: exec.output_partition_count as u32,
                     },
                 )),

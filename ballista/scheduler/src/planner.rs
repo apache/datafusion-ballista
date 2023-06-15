@@ -177,7 +177,6 @@ fn create_unresolved_shuffle(
     Arc::new(UnresolvedShuffleExec::new(
         shuffle_writer.stage_id(),
         shuffle_writer.schema(),
-        shuffle_writer.output_partitioning().partition_count(),
         shuffle_writer
             .shuffle_output_partitioning()
             .map(|p| p.partition_count())
@@ -267,13 +266,11 @@ pub fn rollback_resolved_shuffles(
         if let Some(shuffle_reader) = child.as_any().downcast_ref::<ShuffleReaderExec>() {
             let partition_locations = &shuffle_reader.partition;
             let output_partition_count = partition_locations.len();
-            let input_partition_count = partition_locations[0].len();
             let stage_id = partition_locations[0][0].partition_id.stage_id;
 
             let unresolved_shuffle = Arc::new(UnresolvedShuffleExec::new(
                 stage_id,
                 shuffle_reader.schema(),
-                input_partition_count,
                 output_partition_count,
             ));
             new_children.push(unresolved_shuffle);
@@ -392,7 +389,6 @@ mod test {
         let unresolved_shuffle =
             downcast_exec!(unresolved_shuffle, UnresolvedShuffleExec);
         assert_eq!(unresolved_shuffle.stage_id, 1);
-        assert_eq!(unresolved_shuffle.input_partition_count, 2);
         assert_eq!(unresolved_shuffle.output_partition_count, 2);
 
         // verify stage 2
@@ -402,7 +398,6 @@ mod test {
         let unresolved_shuffle =
             downcast_exec!(unresolved_shuffle, UnresolvedShuffleExec);
         assert_eq!(unresolved_shuffle.stage_id, 2);
-        assert_eq!(unresolved_shuffle.input_partition_count, 2);
         assert_eq!(unresolved_shuffle.output_partition_count, 2);
 
         Ok(())
@@ -555,7 +550,6 @@ order by
         let join_input_1 = join_input_1.children()[0].clone();
         let unresolved_shuffle_reader_1 =
             downcast_exec!(join_input_1, UnresolvedShuffleExec);
-        assert_eq!(unresolved_shuffle_reader_1.input_partition_count, 2); // lineitem
         assert_eq!(unresolved_shuffle_reader_1.output_partition_count, 2);
 
         let join_input_2 = join.children()[1].clone();
@@ -563,7 +557,6 @@ order by
         let join_input_2 = join_input_2.children()[0].clone();
         let unresolved_shuffle_reader_2 =
             downcast_exec!(join_input_2, UnresolvedShuffleExec);
-        assert_eq!(unresolved_shuffle_reader_2.input_partition_count, 1); // orders
         assert_eq!(unresolved_shuffle_reader_2.output_partition_count, 2);
 
         // final partitioned hash aggregate
