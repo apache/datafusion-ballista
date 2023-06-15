@@ -460,10 +460,7 @@ mod test {
             if let Some(task) = task {
                 let mut partitions: Vec<ShuffleWritePartition> = vec![];
 
-                let num_partitions = task
-                    .output_partitioning
-                    .map(|p| p.partition_count())
-                    .unwrap_or(1);
+                let num_partitions = task.get_output_partition_number();
 
                 for partition_id in 0..num_partitions {
                     partitions.push(ShuffleWritePartition {
