@@ -174,7 +174,7 @@ mod tests {
         println!("num_rows2: {}", num_rows2);
 
         assert!(num_rows1 + num_rows2 > row_limit.try_into().unwrap());
-        assert!(num_rows1 + num_rows2 < 1000);
+        assert!(num_rows1 + num_rows2 < row_limit as i64 * 2);
 
         shutdown_not.notify_shutdown.send(()).unwrap();
 

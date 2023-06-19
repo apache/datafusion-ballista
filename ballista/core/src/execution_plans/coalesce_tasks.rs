@@ -18,7 +18,7 @@
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::Result;
-use datafusion::common::{DataFusionError, Statistics};
+use datafusion::common::Statistics;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_expr::PhysicalSortExpr;
 use datafusion::physical_plan::common::AbortOnDropMany;
@@ -97,13 +97,6 @@ impl ExecutionPlan for CoalesceTasksExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        // CoalescePartitionsExec produces a single partition
-        if 0 != partition {
-            return Err(DataFusionError::Internal(format!(
-                "CoalesceTasksExec invalid partition {partition}"
-            )));
-        }
-
         let input_partitions = self.input.output_partitioning().partition_count();
 
         let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
