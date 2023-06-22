@@ -215,6 +215,12 @@ async fn read_partition<T>(
 where
     T: Read + Seek,
 {
+    if tx.is_closed() {
+        return Err(FlightError::Tonic(Status::internal(
+            "Can't send a batch, channel is closed",
+        )));
+    }
+
     for batch in reader {
         tx.send(batch.map_err(|err| err.into()))
             .await
@@ -223,7 +229,7 @@ where
                     err
                 } else {
                     FlightError::Tonic(Status::internal(
-                        "Can't send a batch, channel is full",
+                        "Can't send a batch, something went wrong",
                     ))
                 }
             })?
