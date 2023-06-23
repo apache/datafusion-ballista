@@ -330,8 +330,11 @@ pub trait JobState: Send + Sync {
     /// it should be saved as `JobStatus::Running` with `scheduler` set to the current scheduler
     async fn submit_job(&self, job_id: String, graph: &ExecutionGraph) -> Result<()>;
 
-    /// Return a `Vec` of all active job IDs in the `JobState`
+    /// Return a `HashSet` of all active job IDs in the `JobState`
     async fn get_jobs(&self) -> Result<HashSet<String>>;
+
+    /// Return all jobs along with their status in the `JobState`
+    async fn get_job_statuses(&self) -> Result<Vec<(String, JobStatus)>>;
 
     /// Fetch the job status
     async fn get_job_status(&self, job_id: &str) -> Result<Option<JobStatus>>;

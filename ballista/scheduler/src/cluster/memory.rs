@@ -435,6 +435,14 @@ impl JobState for InMemoryJobState {
             .collect())
     }
 
+    async fn get_job_statuses(&self) -> Result<Vec<(String, JobStatus)>> {
+        Ok(self
+            .completed_jobs
+            .iter()
+            .map(|pair| (pair.key().clone(), pair.value().0.clone()))
+            .collect())
+    }
+
     async fn accept_job(
         &self,
         job_id: &str,

@@ -554,6 +554,14 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         self.store.scan_keys(Keyspace::JobStatus).await
     }
 
+    async fn get_job_statuses(&self) -> Result<Vec<(String, JobStatus)>> {
+        let jobs = self.store.scan(Keyspace::JobStatus, None).await?;
+
+        jobs.into_iter()
+            .map(|(job_id, status)| Ok((job_id, decode_protobuf::<JobStatus>(&status)?)))
+            .collect::<Result<Vec<_>>>()
+    }
+
     async fn get_job_status(&self, job_id: &str) -> Result<Option<JobStatus>> {
         if let Some((job_name, queued_at)) = self.queued_jobs.get(job_id).as_deref() {
             Ok(Some(JobStatus {

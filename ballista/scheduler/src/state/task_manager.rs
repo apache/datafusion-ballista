@@ -29,7 +29,8 @@ use futures::future::try_join_all;
 
 use crate::cluster::JobState;
 use ballista_core::serde::protobuf::{
-    self, execution_error, JobStatus, KeyValuePair, TaskDefinition, TaskStatus,
+    self, execution_error, job_status, JobStatus, KeyValuePair, SuccessfulJob,
+    TaskDefinition, TaskStatus,
 };
 use ballista_core::serde::scheduler::to_proto::hash_partitioning_to_proto;
 use ballista_core::serde::scheduler::ExecutorMetadata;
@@ -724,6 +725,35 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 if !reset.0.is_empty() {
                     updated_graphs.insert(job_id.to_owned(), graph.clone());
                     running_tasks_to_cancel.extend(reset.1);
+                }
+            }
+        }
+
+        // Remove any completed jobs whose output partitions are lost
+        for (job_id, status) in self.state.get_job_statuses().await? {
+            if let JobStatus {
+                status:
+                    Some(job_status::Status::Successful(SuccessfulJob {
+                        partition_location,
+                        ..
+                    })),
+                ..
+            } = status
+            {
+                if partition_location.iter().any(|part| {
+                    part.executor_meta
+                        .as_ref()
+                        .map(|meta| meta.id == executor_id)
+                        .unwrap_or_default()
+                }) {
+                    warn!(
+                        executor_id,
+                        job_id,
+                        "output partition lost for completed job, removing status"
+                    );
+                    if let Err(err) = self.state.remove_job(&job_id).await {
+                        error!(executor_id,job_id,error = %err, "failed to remove job when output partition lost");
+                    }
                 }
             }
         }
