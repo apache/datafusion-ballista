@@ -16,11 +16,8 @@
 // under the License.
 
 use ballista_core::BALLISTA_VERSION;
-use datafusion::config::ConfigOptions;
-use datafusion::prelude::SessionConfig;
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -41,13 +38,17 @@ use ballista_core::serde::protobuf::{
     LaunchTaskResult, RegisterExecutorParams, RemoveJobDataParams, RemoveJobDataResult,
     StopExecutorParams, StopExecutorResult, TaskStatus, UpdateTaskStatusParams,
 };
+use ballista_core::serde::scheduler::from_proto::{
+    get_task_definition, get_task_definition_vec,
+};
 use ballista_core::serde::scheduler::PartitionId;
 use ballista_core::serde::scheduler::TaskDefinition;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{create_grpc_client_connection, create_grpc_server};
 use dashmap::DashMap;
-use datafusion::execution::context::TaskContext;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::config::ConfigOptions;
+use datafusion::execution::TaskContext;
+use datafusion::prelude::SessionConfig;
 use datafusion_proto::{logical_plan::AsLogicalPlan, physical_plan::AsExecutionPlan};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
@@ -308,50 +309,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             .as_millis() as u64;
         info!("Start to run task {}", task_identity);
         let task = curator_task.task;
-        let task_props = task.props;
-        let mut config = ConfigOptions::new();
-        for (k, v) in task_props {
-            config.set(&k, &v)?;
-        }
-        let session_config = SessionConfig::from(config);
-
-        let mut task_scalar_functions = HashMap::new();
-        let mut task_aggregate_functions = HashMap::new();
-        // TODO combine the functions from Executor's functions and TaskDefintion's function resources
-        for scalar_func in self.executor.scalar_functions.clone() {
-            task_scalar_functions.insert(scalar_func.0, scalar_func.1);
-        }
-        for agg_func in self.executor.aggregate_functions.clone() {
-            task_aggregate_functions.insert(agg_func.0, agg_func.1);
-        }
-
-        let session_id = task.session_id;
-        let runtime = self.executor.runtime.clone();
-        let task_context = Arc::new(TaskContext::new(
-            Some(task_identity.clone()),
-            session_id,
-            session_config,
-            task_scalar_functions,
-            task_aggregate_functions,
-            runtime.clone(),
-        ));
-
-        let encoded_plan = task.plan.as_slice();
-
-        let plan: Arc<dyn ExecutionPlan> =
-            U::try_decode(encoded_plan).and_then(|proto| {
-                proto.try_into_physical_plan(
-                    task_context.deref(),
-                    runtime.deref(),
-                    self.codec.physical_extension_codec(),
-                )
-            })?;
 
         let task_id = task.task_id;
         let job_id = task.job_id;
         let stage_id = task.stage_id;
         let stage_attempt_num = task.stage_attempt_num;
         let partition_id = task.partition_id;
+        let plan = task.plan;
+
         let query_stage_exec = self.executor.execution_engine.create_query_stage_exec(
             job_id.clone(),
             stage_id,
@@ -363,6 +328,27 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             job_id: job_id.clone(),
             stage_id,
             partition_id,
+        };
+
+        let task_context = {
+            let task_props = task.props;
+            let mut config = ConfigOptions::new();
+            for (k, v) in task_props.iter() {
+                config.set(k, v)?;
+            }
+            let session_config = SessionConfig::from(config);
+
+            let function_registry = task.function_registry;
+            let runtime = self.executor.runtime.clone();
+
+            Arc::new(TaskContext::new(
+                Some(task_identity.clone()),
+                task.session_id,
+                session_config,
+                function_registry.scalar_functions.clone(),
+                function_registry.aggregate_functions.clone(),
+                runtime,
+            ))
         };
 
         info!("Start to execute shuffle write for task {}", task_identity);
@@ -644,9 +630,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
             task_sender
                 .send(CuratorTaskDefinition {
                     scheduler_id: scheduler_id.clone(),
-                    task: task
-                        .try_into()
-                        .map_err(|e| Status::invalid_argument(format!("{e}")))?,
+                    task: get_task_definition(
+                        task,
+                        self.executor.runtime.clone(),
+                        self.executor.scalar_functions.clone(),
+                        self.executor.aggregate_functions.clone(),
+                        self.codec.clone(),
+                    )
+                    .map_err(|e| Status::invalid_argument(format!("{e}")))?,
                 })
                 .await
                 .unwrap();
@@ -666,9 +657,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         } = request.into_inner();
         let task_sender = self.executor_env.tx_task.clone();
         for multi_task in multi_tasks {
-            let multi_task: Vec<TaskDefinition> = multi_task
-                .try_into()
-                .map_err(|e| Status::invalid_argument(format!("{e}")))?;
+            let multi_task: Vec<TaskDefinition> = get_task_definition_vec(
+                multi_task,
+                self.executor.runtime.clone(),
+                self.executor.scalar_functions.clone(),
+                self.executor.aggregate_functions.clone(),
+                self.codec.clone(),
+            )
+            .map_err(|e| Status::invalid_argument(format!("{e}")))?;
             for task in multi_task {
                 task_sender
                     .send(CuratorTaskDefinition {
