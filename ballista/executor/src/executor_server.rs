@@ -298,11 +298,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         }
     }
 
-    async fn run_task(
-        &self,
-        task_identity: String,
-        curator_task: CuratorTaskDefinition,
-    ) -> Result<(), BallistaError> {
+    /// This method should not return Err. If task fails, a failure task status should be sent
+    /// to the channel to notify the scheduler.
+    async fn run_task(&self, task_identity: String, curator_task: CuratorTaskDefinition) {
         let start_exec_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -317,24 +315,30 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         let partition_id = task.partition_id;
         let plan = task.plan;
 
-        let query_stage_exec = self.executor.execution_engine.create_query_stage_exec(
-            job_id.clone(),
-            stage_id,
-            plan,
-            &self.executor.work_dir,
-        )?;
-
         let part = PartitionId {
             job_id: job_id.clone(),
             stage_id,
             partition_id,
         };
 
+        let query_stage_exec = self
+            .executor
+            .execution_engine
+            .create_query_stage_exec(
+                job_id.clone(),
+                stage_id,
+                plan,
+                &self.executor.work_dir,
+            )
+            .unwrap();
+
         let task_context = {
             let task_props = task.props;
             let mut config = ConfigOptions::new();
             for (k, v) in task_props.iter() {
-                config.set(k, v)?;
+                if let Err(e) = config.set(k, v) {
+                    debug!("Fail to set session config for ({},{}): {:?}", k, v, e);
+                }
             }
             let session_config = SessionConfig::from(config);
 
@@ -366,10 +370,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         debug!("Statistics: {:?}", execution_result);
 
         let plan_metrics = query_stage_exec.collect_plan_metrics();
-        let operator_metrics = plan_metrics
+        let operator_metrics = match plan_metrics
             .into_iter()
             .map(|m| m.try_into())
-            .collect::<Result<Vec<_>, BallistaError>>()?;
+            .collect::<Result<Vec<_>, BallistaError>>()
+        {
+            Ok(metrics) => Some(metrics),
+            Err(_) => None,
+        };
         let executor_id = &self.executor.metadata.id;
 
         let end_exec_time = SystemTime::now()
@@ -388,7 +396,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             task_id,
             stage_attempt_num,
             part,
-            Some(operator_metrics),
+            operator_metrics,
             task_execution_times,
         );
 
@@ -401,7 +409,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             })
             .await
             .unwrap();
-        Ok(())
     }
 
     // TODO populate with real metrics
@@ -593,15 +600,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
 
                     let server = executor_server.clone();
                     dedicated_executor.spawn(async move {
-                        server
-                            .run_task(task_identity.clone(), curator_task)
-                            .await
-                            .unwrap_or_else(|e| {
-                                error!(
-                                    "Fail to run the task {:?} due to {:?}",
-                                    task_identity, e
-                                );
-                            });
+                        server.run_task(task_identity.clone(), curator_task).await;
                     });
                 } else {
                     info!("Channel is closed and will exit the task receive loop");
