@@ -45,8 +45,6 @@ pub struct UnresolvedShuffleExecNode {
     pub stage_id: u32,
     #[prost(message, optional, tag = "2")]
     pub schema: ::core::option::Option<::datafusion_proto::protobuf::Schema>,
-    #[prost(uint32, tag = "3")]
-    pub input_partition_count: u32,
     #[prost(uint32, tag = "4")]
     pub output_partition_count: u32,
 }
@@ -57,6 +55,9 @@ pub struct ShuffleReaderExecNode {
     pub partition: ::prost::alloc::vec::Vec<ShuffleReaderPartition>,
     #[prost(message, optional, tag = "2")]
     pub schema: ::core::option::Option<::datafusion_proto::protobuf::Schema>,
+    /// The stage to read from
+    #[prost(uint32, tag = "3")]
+    pub stage_id: u32,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -132,10 +133,6 @@ pub mod execution_graph_stage {
 pub struct UnResolvedStage {
     #[prost(uint32, tag = "1")]
     pub stage_id: u32,
-    #[prost(message, optional, tag = "2")]
-    pub output_partitioning: ::core::option::Option<
-        ::datafusion_proto::protobuf::PhysicalHashRepartition,
-    >,
     #[prost(uint32, repeated, tag = "3")]
     pub output_links: ::prost::alloc::vec::Vec<u32>,
     #[prost(message, repeated, tag = "4")]
@@ -156,10 +153,6 @@ pub struct ResolvedStage {
     pub stage_id: u32,
     #[prost(uint32, tag = "2")]
     pub partitions: u32,
-    #[prost(message, optional, tag = "3")]
-    pub output_partitioning: ::core::option::Option<
-        ::datafusion_proto::protobuf::PhysicalHashRepartition,
-    >,
     #[prost(uint32, repeated, tag = "4")]
     pub output_links: ::prost::alloc::vec::Vec<u32>,
     #[prost(message, repeated, tag = "5")]
@@ -180,10 +173,6 @@ pub struct SuccessfulStage {
     pub stage_id: u32,
     #[prost(uint32, tag = "2")]
     pub partitions: u32,
-    #[prost(message, optional, tag = "3")]
-    pub output_partitioning: ::core::option::Option<
-        ::datafusion_proto::protobuf::PhysicalHashRepartition,
-    >,
     #[prost(uint32, repeated, tag = "4")]
     pub output_links: ::prost::alloc::vec::Vec<u32>,
     #[prost(message, repeated, tag = "5")]
@@ -204,10 +193,6 @@ pub struct FailedStage {
     pub stage_id: u32,
     #[prost(uint32, tag = "2")]
     pub partitions: u32,
-    #[prost(message, optional, tag = "3")]
-    pub output_partitioning: ::core::option::Option<
-        ::datafusion_proto::protobuf::PhysicalHashRepartition,
-    >,
     #[prost(uint32, repeated, tag = "4")]
     pub output_links: ::prost::alloc::vec::Vec<u32>,
     #[prost(bytes = "vec", tag = "5")]

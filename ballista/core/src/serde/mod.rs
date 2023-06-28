@@ -157,6 +157,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 )?))
             }
             PhysicalPlanType::ShuffleReader(shuffle_reader) => {
+                let stage_id = shuffle_reader.stage_id as usize;
                 let schema = Arc::new(convert_required!(shuffle_reader.schema)?);
                 let partition_location: Vec<Vec<PartitionLocation>> = shuffle_reader
                     .partition
@@ -175,7 +176,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     })
                     .collect::<Result<Vec<_>, DataFusionError>>()?;
                 let shuffle_reader =
-                    ShuffleReaderExec::try_new(partition_location, schema)?;
+                    ShuffleReaderExec::try_new(stage_id, partition_location, schema)?;
                 Ok(Arc::new(shuffle_reader))
             }
             PhysicalPlanType::UnresolvedShuffle(unresolved_shuffle) => {
@@ -183,8 +184,6 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 Ok(Arc::new(UnresolvedShuffleExec {
                     stage_id: unresolved_shuffle.stage_id as usize,
                     schema,
-                    input_partition_count: unresolved_shuffle.input_partition_count
-                        as usize,
                     output_partition_count: unresolved_shuffle.output_partition_count
                         as usize,
                 }))
@@ -237,6 +236,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
 
             Ok(())
         } else if let Some(exec) = node.as_any().downcast_ref::<ShuffleReaderExec>() {
+            let stage_id = exec.stage_id as u32;
             let mut partition = vec![];
             for location in &exec.partition {
                 partition.push(protobuf::ShuffleReaderPartition {
@@ -255,6 +255,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             let proto = protobuf::BallistaPhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::ShuffleReader(
                     protobuf::ShuffleReaderExecNode {
+                        stage_id,
                         partition,
                         schema: Some(exec.schema().as_ref().try_into()?),
                     },
@@ -273,7 +274,6 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     protobuf::UnresolvedShuffleExecNode {
                         stage_id: exec.stage_id as u32,
                         schema: Some(exec.schema().as_ref().try_into()?),
-                        input_partition_count: exec.input_partition_count as u32,
                         output_partition_count: exec.output_partition_count as u32,
                     },
                 )),

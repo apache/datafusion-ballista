@@ -38,9 +38,6 @@ pub struct UnresolvedShuffleExec {
     // The schema this node will have once it is replaced with a ShuffleReaderExec
     pub schema: SchemaRef,
 
-    // The number of shuffle writer partition tasks that will produce the partitions
-    pub input_partition_count: usize,
-
     // The partition count this node will have once it is replaced with a ShuffleReaderExec
     pub output_partition_count: usize,
 }
@@ -50,13 +47,11 @@ impl UnresolvedShuffleExec {
     pub fn new(
         stage_id: usize,
         schema: SchemaRef,
-        input_partition_count: usize,
         output_partition_count: usize,
     ) -> Self {
         Self {
             stage_id,
             schema,
-            input_partition_count,
             output_partition_count,
         }
     }

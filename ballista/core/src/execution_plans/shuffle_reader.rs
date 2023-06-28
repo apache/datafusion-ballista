@@ -58,9 +58,11 @@ use tokio_stream::wrappers::ReceiverStream;
 /// being executed by an executor
 #[derive(Debug, Clone)]
 pub struct ShuffleReaderExec {
+    /// The query stage id to read from
+    pub stage_id: usize,
+    pub(crate) schema: SchemaRef,
     /// Each partition of a shuffle can read data from multiple locations
     pub partition: Vec<Vec<PartitionLocation>>,
-    pub(crate) schema: SchemaRef,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
 }
@@ -68,12 +70,14 @@ pub struct ShuffleReaderExec {
 impl ShuffleReaderExec {
     /// Create a new ShuffleReaderExec
     pub fn try_new(
+        stage_id: usize,
         partition: Vec<Vec<PartitionLocation>>,
         schema: SchemaRef,
     ) -> Result<Self> {
         Ok(Self {
-            partition,
+            stage_id,
             schema,
+            partition,
             metrics: ExecutionPlanMetricsSet::new(),
         })
     }
@@ -513,13 +517,14 @@ mod tests {
         ]);
 
         let job_id = "test_job_1";
+        let input_stage_id = 2;
         let mut partitions: Vec<PartitionLocation> = vec![];
         for partition_id in 0..4 {
             partitions.push(PartitionLocation {
                 map_partition_id: 0,
                 partition_id: PartitionId {
                     job_id: job_id.to_string(),
-                    stage_id: 2,
+                    stage_id: input_stage_id,
                     partition_id,
                 },
                 executor_meta: ExecutorMetadata {
@@ -534,8 +539,11 @@ mod tests {
             })
         }
 
-        let shuffle_reader_exec =
-            ShuffleReaderExec::try_new(vec![partitions], Arc::new(schema))?;
+        let shuffle_reader_exec = ShuffleReaderExec::try_new(
+            input_stage_id,
+            vec![partitions],
+            Arc::new(schema),
+        )?;
         let mut stream = shuffle_reader_exec.execute(0, task_ctx)?;
         let batches = utils::collect_stream(&mut stream).await;
 

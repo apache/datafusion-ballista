@@ -318,7 +318,7 @@ filter_expr={}",
     } else if let Some(exec) = plan.as_any().downcast_ref::<ShuffleWriterExec>() {
         format!(
             "ShuffleWriter [{} partitions]",
-            exec.output_partitioning().partition_count()
+            exec.input_partition_count()
         )
     } else if plan.as_any().downcast_ref::<MemoryExec>().is_some() {
         "MemoryExec".to_string()
