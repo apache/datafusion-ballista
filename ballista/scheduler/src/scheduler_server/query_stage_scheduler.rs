@@ -100,7 +100,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .state
                     .task_manager
                     .queue_job(&job_id, &job_name, queued_at)
-                    .await
                 {
                     error!("Fail to queue job {} due to {:?}", job_id, e);
                     return Ok(());
@@ -345,5 +344,95 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
     fn on_error(&self, error: BallistaError) {
         error!("Error received by QueryStageScheduler: {:?}", error);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::SchedulerConfig;
+    use crate::test_utils::{await_condition, SchedulerTest, TestMetricsCollector};
+    use ballista_core::config::TaskSchedulingPolicy;
+    use ballista_core::error::Result;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::logical_expr::{col, sum, LogicalPlan};
+    use datafusion::test_util::scan_empty_with_partitions;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tracing_subscriber::EnvFilter;
+
+    #[tokio::test]
+    async fn test_pending_job_metric() -> Result<()> {
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .init();
+
+        let plan = test_plan(10);
+
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector.clone(),
+            1,
+            1,
+            None,
+        )
+        .await?;
+
+        let job_id = "job-1";
+
+        test.submit(job_id, "", &plan).await?;
+
+        test.tick().await?;
+
+        let pending_jobs = test.pending_job_number();
+        let expected = 0usize;
+        assert_eq!(
+            expected, pending_jobs,
+            "Expected {} pending jobs but found {}",
+            expected, pending_jobs
+        );
+
+        let running_jobs = test.running_job_number();
+        let expected = 1usize;
+        assert_eq!(
+            expected, running_jobs,
+            "Expected {} running jobs but found {}",
+            expected, running_jobs
+        );
+
+        test.cancel(job_id).await?;
+
+        let expected = 0usize;
+        let success = await_condition(Duration::from_millis(10), 20, || {
+            let running_jobs = test.running_job_number();
+
+            futures::future::ready(Ok(running_jobs == expected))
+        })
+        .await
+        .unwrap();
+        assert!(
+            success,
+            "Expected {} running jobs but found {}",
+            expected,
+            test.running_job_number()
+        );
+
+        Ok(())
+    }
+
+    fn test_plan(partitions: usize) -> LogicalPlan {
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("gmv", DataType::UInt64, false),
+        ]);
+
+        scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), partitions)
+            .unwrap()
+            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
+            .unwrap()
+            .build()
+            .unwrap()
     }
 }

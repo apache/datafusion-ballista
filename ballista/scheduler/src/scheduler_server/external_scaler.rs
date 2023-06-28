@@ -17,13 +17,16 @@
 
 use crate::scheduler_server::externalscaler::{
     external_scaler_server::ExternalScaler, GetMetricSpecResponse, GetMetricsRequest,
-    GetMetricsResponse, IsActiveResponse, ScaledObjectRef,
+    GetMetricsResponse, IsActiveResponse, MetricSpec, MetricValue, ScaledObjectRef,
 };
 use crate::scheduler_server::SchedulerServer;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 
 use tonic::{Request, Response};
+
+const PENDING_JOBS_METRIC_NAME: &str = "pending_jobs";
+const RUNNING_JOBS_METRIC_NAME: &str = "running_jobs";
 
 #[tonic::async_trait]
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExternalScaler
@@ -41,7 +44,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExternalScaler
         _request: Request<ScaledObjectRef>,
     ) -> Result<Response<GetMetricSpecResponse>, tonic::Status> {
         Ok(Response::new(GetMetricSpecResponse {
-            metric_specs: vec![],
+            metric_specs: vec![MetricSpec {
+                metric_name: PENDING_JOBS_METRIC_NAME.to_string(),
+                target_size: 0,
+            }],
         }))
     }
 
@@ -50,7 +56,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExternalScaler
         _request: Request<GetMetricsRequest>,
     ) -> Result<Response<GetMetricsResponse>, tonic::Status> {
         Ok(Response::new(GetMetricsResponse {
-            metric_values: vec![],
+            metric_values: vec![
+                MetricValue {
+                    metric_name: PENDING_JOBS_METRIC_NAME.to_string(),
+                    metric_value: self.pending_job_number() as i64,
+                },
+                MetricValue {
+                    metric_name: RUNNING_JOBS_METRIC_NAME.to_string(),
+                    metric_value: self.running_job_number() as i64,
+                },
+            ],
         }))
     }
 }

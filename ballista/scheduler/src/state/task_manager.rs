@@ -180,13 +180,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Enqueue a job for scheduling
-    pub async fn queue_job(
-        &self,
-        job_id: &str,
-        job_name: &str,
-        queued_at: u64,
-    ) -> Result<()> {
-        self.state.accept_job(job_id, job_name, queued_at).await
+    pub fn queue_job(&self, job_id: &str, job_name: &str, queued_at: u64) -> Result<()> {
+        self.state.accept_job(job_id, job_name, queued_at)
+    }
+
+    /// Get the number of queued jobs. If it's big, then it means the scheduler is too busy.
+    /// In normal case, it's better to be 0.
+    pub fn pending_job_number(&self) -> usize {
+        self.state.pending_job_number()
+    }
+
+    /// Get the number of running jobs.
+    pub fn running_job_number(&self) -> usize {
+        self.active_job_cache.len()
     }
 
     /// Generate an ExecutionGraph for the job and save it to the persistent state.
@@ -365,7 +371,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         failure_reason: String,
     ) -> Result<(Vec<RunningTaskInfo>, usize)> {
         let (tasks_to_cancel, pending_tasks) = if let Some(graph) =
-            self.get_active_execution_graph(job_id)
+            self.remove_active_execution_graph(job_id)
         {
             let mut guard = graph.write().await;
 

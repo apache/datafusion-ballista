@@ -359,16 +359,15 @@ impl JobState for InMemoryJobState {
             .collect())
     }
 
-    async fn accept_job(
-        &self,
-        job_id: &str,
-        job_name: &str,
-        queued_at: u64,
-    ) -> Result<()> {
+    fn accept_job(&self, job_id: &str, job_name: &str, queued_at: u64) -> Result<()> {
         self.queued_jobs
             .insert(job_id.to_string(), (job_name.to_string(), queued_at));
 
         Ok(())
+    }
+
+    fn pending_job_number(&self) -> usize {
+        self.queued_jobs.len()
     }
 
     async fn fail_unscheduled_job(&self, job_id: &str, reason: String) -> Result<()> {

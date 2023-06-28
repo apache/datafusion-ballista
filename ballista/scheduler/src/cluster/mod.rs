@@ -302,12 +302,11 @@ pub trait JobState: Send + Sync {
     /// Accept job into  a scheduler's job queue. This should be called when a job is
     /// received by the scheduler but before it is planned and may or may not be saved
     /// in global state
-    async fn accept_job(
-        &self,
-        job_id: &str,
-        job_name: &str,
-        queued_at: u64,
-    ) -> Result<()>;
+    fn accept_job(&self, job_id: &str, job_name: &str, queued_at: u64) -> Result<()>;
+
+    /// Get the number of queued jobs. If it's big, then it means the scheduler is too busy.
+    /// In normal case, it's better to be 0.
+    fn pending_job_number(&self) -> usize;
 
     /// Submit a new job to the `JobState`. It is assumed that the submitter owns the job.
     /// In local state the job should be save as `JobStatus::Active` and in shared state

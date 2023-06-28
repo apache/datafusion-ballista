@@ -146,6 +146,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         Ok(())
     }
 
+    pub fn pending_job_number(&self) -> usize {
+        self.state.task_manager.pending_job_number()
+    }
+
+    pub fn running_job_number(&self) -> usize {
+        self.state.task_manager.running_job_number()
+    }
+
     pub(crate) fn metrics_collector(&self) -> &dyn SchedulerMetricsCollector {
         self.query_stage_scheduler.metrics_collector()
     }
@@ -395,8 +403,7 @@ mod test {
         scheduler
             .state
             .task_manager
-            .queue_job(job_id, "", timestamp_millis())
-            .await?;
+            .queue_job(job_id, "", timestamp_millis())?;
 
         // Submit job
         scheduler
