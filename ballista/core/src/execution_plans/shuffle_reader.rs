@@ -33,7 +33,7 @@ use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::reader::FileReader;
 use datafusion::arrow::record_batch::RecordBatch;
 
-use datafusion::error::{DataFusionError, Result};
+use datafusion::error::Result;
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::{
@@ -110,9 +110,11 @@ impl ExecutionPlan for ShuffleReaderExec {
         self: Arc<Self>,
         _children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Err(DataFusionError::Plan(
-            "Ballista ShuffleReaderExec does not support with_new_children()".to_owned(),
-        ))
+        Ok(Arc::new(ShuffleReaderExec::try_new(
+            self.stage_id,
+            self.partition.clone(),
+            self.schema.clone(),
+        )?))
     }
 
     fn execute(
@@ -432,6 +434,7 @@ mod tests {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::ipc::writer::FileWriter;
     use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::common::DataFusionError;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::common;
     use datafusion::physical_plan::memory::MemoryExec;
