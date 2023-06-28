@@ -152,4 +152,4 @@ The output should look similar to the following table.
 +-----------------+--------------------------+--------------------------+--------------------------+--------------------------+
 ```
 
-More [examples](https://github.com/apache/arrow-datafusion/tree/master/ballista-examples) can be found in the arrow-datafusion repository.
+More [examples](https://github.com/apache/arrow-ballista/tree/main/examples) can be found in the arrow-ballista repository.
