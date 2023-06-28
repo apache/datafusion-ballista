@@ -15,14 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::state::executor_manager::ExecutorReservation;
 use std::fmt::{Debug, Formatter};
 
 use datafusion::logical_expr::LogicalPlan;
 
 use crate::state::execution_graph::RunningTaskInfo;
 use ballista_core::serde::protobuf::TaskStatus;
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use std::sync::Arc;
 
@@ -37,12 +35,8 @@ pub enum QueryStageSchedulerEvent {
     },
     JobSubmitted {
         job_id: String,
-        job_name: String,
-        session_id: String,
         queued_at: u64,
         submitted_at: u64,
-        resubmit: bool,
-        plan: Arc<dyn ExecutionPlan>,
     },
     // For a job which failed during planning
     JobPlanningFailed {
@@ -67,7 +61,7 @@ pub enum QueryStageSchedulerEvent {
     JobCancel(String),
     JobDataClean(String),
     TaskUpdating(String, Vec<TaskStatus>),
-    ReservationOffering(Vec<ExecutorReservation>),
+    ReviveOffers,
     ExecutorLost(String, Option<String>),
     CancelTasks(Vec<RunningTaskInfo>),
 }
@@ -80,10 +74,8 @@ impl Debug for QueryStageSchedulerEvent {
             } => {
                 write!(f, "JobQueued : job_id={job_id}, job_name={job_name}.")
             }
-            QueryStageSchedulerEvent::JobSubmitted {
-                job_id, resubmit, ..
-            } => {
-                write!(f, "JobSubmitted : job_id={job_id}, resubmit={resubmit}.")
+            QueryStageSchedulerEvent::JobSubmitted { job_id, .. } => {
+                write!(f, "JobSubmitted : job_id={job_id}.")
             }
             QueryStageSchedulerEvent::JobPlanningFailed {
                 job_id,
@@ -129,8 +121,8 @@ impl Debug for QueryStageSchedulerEvent {
             QueryStageSchedulerEvent::TaskUpdating(job_id, status) => {
                 write!(f, "TaskUpdating : job_id={job_id}, status:[{status:?}].")
             }
-            QueryStageSchedulerEvent::ReservationOffering(reservations) => {
-                write!(f, "ReservationOffering : reservations:[{reservations:?}].")
+            QueryStageSchedulerEvent::ReviveOffers => {
+                write!(f, "ReviveOffers.")
             }
             QueryStageSchedulerEvent::ExecutorLost(job_id, reason) => {
                 write!(f, "ExecutorLost : job_id={job_id}, reason:[{reason:?}].")

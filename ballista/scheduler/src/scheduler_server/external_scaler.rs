@@ -17,15 +17,13 @@
 
 use crate::scheduler_server::externalscaler::{
     external_scaler_server::ExternalScaler, GetMetricSpecResponse, GetMetricsRequest,
-    GetMetricsResponse, IsActiveResponse, MetricSpec, MetricValue, ScaledObjectRef,
+    GetMetricsResponse, IsActiveResponse, ScaledObjectRef,
 };
 use crate::scheduler_server::SchedulerServer;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 
 use tonic::{Request, Response};
-
-const INFLIGHT_TASKS_METRIC_NAME: &str = "inflight_tasks";
 
 #[tonic::async_trait]
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExternalScaler
@@ -43,10 +41,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExternalScaler
         _request: Request<ScaledObjectRef>,
     ) -> Result<Response<GetMetricSpecResponse>, tonic::Status> {
         Ok(Response::new(GetMetricSpecResponse {
-            metric_specs: vec![MetricSpec {
-                metric_name: INFLIGHT_TASKS_METRIC_NAME.to_string(),
-                target_size: 1,
-            }],
+            metric_specs: vec![],
         }))
     }
 
@@ -55,10 +50,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExternalScaler
         _request: Request<GetMetricsRequest>,
     ) -> Result<Response<GetMetricsResponse>, tonic::Status> {
         Ok(Response::new(GetMetricsResponse {
-            metric_values: vec![MetricValue {
-                metric_name: INFLIGHT_TASKS_METRIC_NAME.to_string(),
-                metric_value: self.pending_tasks() as i64,
-            }],
+            metric_values: vec![],
         }))
     }
 }
