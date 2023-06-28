@@ -16,10 +16,15 @@
 // under the License.
 
 use chrono::{TimeZone, Utc};
+use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::logical_expr::{AggregateUDF, ScalarUDF};
 use datafusion::physical_plan::metrics::{
     Count, Gauge, MetricValue, MetricsSet, Time, Timestamp,
 };
-use datafusion::physical_plan::Metric;
+use datafusion::physical_plan::{ExecutionPlan, Metric};
+use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
@@ -28,10 +33,10 @@ use std::time::Duration;
 use crate::error::BallistaError;
 use crate::serde::scheduler::{
     Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, PartitionId,
-    PartitionLocation, PartitionStats, TaskDefinition,
+    PartitionLocation, PartitionStats, SimpleFunctionRegistry, TaskDefinition,
 };
 
-use crate::serde::protobuf;
+use crate::serde::{protobuf, BallistaCodec};
 use protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
 
 impl TryInto<Action> for protobuf::Action {
@@ -269,67 +274,138 @@ impl Into<ExecutorData> for protobuf::ExecutorData {
     }
 }
 
-impl TryInto<(TaskDefinition, Vec<u8>)> for protobuf::TaskDefinition {
-    type Error = BallistaError;
-
-    fn try_into(self) -> Result<(TaskDefinition, Vec<u8>), Self::Error> {
-        let mut props = HashMap::new();
-        for kv_pair in self.props {
-            props.insert(kv_pair.key, kv_pair.value);
-        }
-
-        Ok((
-            TaskDefinition {
-                task_id: self.task_id as usize,
-                task_attempt_num: self.task_attempt_num as usize,
-                job_id: self.job_id,
-                stage_id: self.stage_id as usize,
-                stage_attempt_num: self.stage_attempt_num as usize,
-                partition_id: self.partition_id as usize,
-                plan: vec![],
-                session_id: self.session_id,
-                launch_time: self.launch_time,
-                props,
-            },
-            self.plan,
-        ))
+pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
+    task: protobuf::TaskDefinition,
+    runtime: Arc<RuntimeEnv>,
+    scalar_functions: HashMap<String, Arc<ScalarUDF>>,
+    aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
+    codec: BallistaCodec<T, U>,
+) -> Result<TaskDefinition, BallistaError> {
+    let mut props = HashMap::new();
+    for kv_pair in task.props {
+        props.insert(kv_pair.key, kv_pair.value);
     }
+    let props = Arc::new(props);
+
+    let mut task_scalar_functions = HashMap::new();
+    let mut task_aggregate_functions = HashMap::new();
+    // TODO combine the functions from Executor's functions and TaskDefinition's function resources
+    for scalar_func in scalar_functions {
+        task_scalar_functions.insert(scalar_func.0, scalar_func.1);
+    }
+    for agg_func in aggregate_functions {
+        task_aggregate_functions.insert(agg_func.0, agg_func.1);
+    }
+    let function_registry = Arc::new(SimpleFunctionRegistry {
+        scalar_functions: task_scalar_functions,
+        aggregate_functions: task_aggregate_functions,
+    });
+
+    let encoded_plan = task.plan.as_slice();
+    let plan: Arc<dyn ExecutionPlan> = U::try_decode(encoded_plan).and_then(|proto| {
+        proto.try_into_physical_plan(
+            function_registry.as_ref(),
+            runtime.as_ref(),
+            codec.physical_extension_codec(),
+        )
+    })?;
+
+    let job_id = task.job_id;
+    let stage_id = task.stage_id as usize;
+    let partition_id = task.partition_id as usize;
+    let task_attempt_num = task.task_attempt_num as usize;
+    let stage_attempt_num = task.stage_attempt_num as usize;
+    let launch_time = task.launch_time;
+    let task_id = task.task_id as usize;
+    let session_id = task.session_id;
+
+    Ok(TaskDefinition {
+        task_id,
+        task_attempt_num,
+        job_id,
+        stage_id,
+        stage_attempt_num,
+        partition_id,
+        plan,
+        launch_time,
+        session_id,
+        props,
+        function_registry,
+    })
 }
 
-impl TryInto<(Vec<TaskDefinition>, Vec<u8>)> for protobuf::MultiTaskDefinition {
-    type Error = BallistaError;
-
-    fn try_into(self) -> Result<(Vec<TaskDefinition>, Vec<u8>), Self::Error> {
-        let mut props = HashMap::new();
-        for kv_pair in self.props {
-            props.insert(kv_pair.key, kv_pair.value);
-        }
-
-        let plan = self.plan;
-        let session_id = self.session_id;
-        let job_id = self.job_id;
-        let stage_id = self.stage_id as usize;
-        let stage_attempt_num = self.stage_attempt_num as usize;
-        let launch_time = self.launch_time;
-        let task_ids = self.task_ids;
-
-        Ok((
-            task_ids
-                .iter()
-                .map(|task_id| TaskDefinition {
-                    task_id: task_id.task_id as usize,
-                    task_attempt_num: task_id.task_attempt_num as usize,
-                    job_id: job_id.clone(),
-                    stage_id,
-                    stage_attempt_num,
-                    partition_id: task_id.partition_id as usize,
-                    plan: vec![],
-                    session_id: session_id.clone(),
-                    launch_time,
-                    props: props.clone(),
-                })
-                .collect(),
-            plan,
-        ))
+pub fn get_task_definition_vec<
+    T: 'static + AsLogicalPlan,
+    U: 'static + AsExecutionPlan,
+>(
+    multi_task: protobuf::MultiTaskDefinition,
+    runtime: Arc<RuntimeEnv>,
+    scalar_functions: HashMap<String, Arc<ScalarUDF>>,
+    aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
+    codec: BallistaCodec<T, U>,
+) -> Result<Vec<TaskDefinition>, BallistaError> {
+    let mut props = HashMap::new();
+    for kv_pair in multi_task.props {
+        props.insert(kv_pair.key, kv_pair.value);
     }
+    let props = Arc::new(props);
+
+    let mut task_scalar_functions = HashMap::new();
+    let mut task_aggregate_functions = HashMap::new();
+    // TODO combine the functions from Executor's functions and TaskDefinition's function resources
+    for scalar_func in scalar_functions {
+        task_scalar_functions.insert(scalar_func.0, scalar_func.1);
+    }
+    for agg_func in aggregate_functions {
+        task_aggregate_functions.insert(agg_func.0, agg_func.1);
+    }
+    let function_registry = Arc::new(SimpleFunctionRegistry {
+        scalar_functions: task_scalar_functions,
+        aggregate_functions: task_aggregate_functions,
+    });
+
+    let encoded_plan = multi_task.plan.as_slice();
+    let plan: Arc<dyn ExecutionPlan> = U::try_decode(encoded_plan).and_then(|proto| {
+        proto.try_into_physical_plan(
+            function_registry.as_ref(),
+            runtime.as_ref(),
+            codec.physical_extension_codec(),
+        )
+    })?;
+
+    let job_id = multi_task.job_id;
+    let stage_id = multi_task.stage_id as usize;
+    let stage_attempt_num = multi_task.stage_attempt_num as usize;
+    let launch_time = multi_task.launch_time;
+    let task_ids = multi_task.task_ids;
+    let session_id = multi_task.session_id;
+
+    task_ids
+        .iter()
+        .map(|task_id| {
+            Ok(TaskDefinition {
+                task_id: task_id.task_id as usize,
+                task_attempt_num: task_id.task_attempt_num as usize,
+                job_id: job_id.clone(),
+                stage_id,
+                stage_attempt_num,
+                partition_id: task_id.partition_id as usize,
+                plan: reset_metrics_for_execution_plan(plan.clone())?,
+                launch_time,
+                session_id: session_id.clone(),
+                props: props.clone(),
+                function_registry: function_registry.clone(),
+            })
+        })
+        .collect()
+}
+
+fn reset_metrics_for_execution_plan(
+    plan: Arc<dyn ExecutionPlan>,
+) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
+    plan.transform(&|plan| {
+        let children = plan.children().clone();
+        plan.with_new_children(children).map(Transformed::Yes)
+    })
+    .map_err(BallistaError::DataFusionError)
 }

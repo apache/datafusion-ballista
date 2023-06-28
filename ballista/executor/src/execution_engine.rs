@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::datatypes::SchemaRef;
 use async_trait::async_trait;
 use ballista_core::execution_plans::ShuffleWriterExec;
 use ballista_core::serde::protobuf::ShuffleWritePartition;
@@ -52,8 +51,6 @@ pub trait QueryStageExecutor: Sync + Send + Debug {
     ) -> Result<Vec<ShuffleWritePartition>>;
 
     fn collect_plan_metrics(&self) -> Vec<MetricsSet>;
-
-    fn schema(&self) -> SchemaRef;
 }
 
 pub struct DefaultExecutionEngine {}
@@ -109,10 +106,6 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         self.shuffle_writer
             .execute_shuffle_write(input_partition, context)
             .await
-    }
-
-    fn schema(&self) -> SchemaRef {
-        self.shuffle_writer.schema()
     }
 
     fn collect_plan_metrics(&self) -> Vec<MetricsSet> {

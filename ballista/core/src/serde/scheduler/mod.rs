@@ -15,12 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::collections::HashSet;
+use std::fmt::Debug;
 use std::{collections::HashMap, fmt, sync::Arc};
 
 use datafusion::arrow::array::{
     ArrayBuilder, StructArray, StructBuilder, UInt64Array, UInt64Builder,
 };
 use datafusion::arrow::datatypes::{DataType, Field};
+use datafusion::common::DataFusionError;
+use datafusion::execution::FunctionRegistry;
+use datafusion::logical_expr::{AggregateUDF, ScalarUDF};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::Partitioning;
 use serde::Serialize;
@@ -271,7 +276,7 @@ impl ExecutePartitionResult {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct TaskDefinition {
     pub task_id: usize,
     pub task_attempt_num: usize,
@@ -279,8 +284,41 @@ pub struct TaskDefinition {
     pub stage_id: usize,
     pub stage_attempt_num: usize,
     pub partition_id: usize,
-    pub plan: Vec<u8>,
-    pub session_id: String,
+    pub plan: Arc<dyn ExecutionPlan>,
     pub launch_time: u64,
-    pub props: HashMap<String, String>,
+    pub session_id: String,
+    pub props: Arc<HashMap<String, String>>,
+    pub function_registry: Arc<SimpleFunctionRegistry>,
+}
+
+#[derive(Debug)]
+pub struct SimpleFunctionRegistry {
+    pub scalar_functions: HashMap<String, Arc<ScalarUDF>>,
+    pub aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
+}
+
+impl FunctionRegistry for SimpleFunctionRegistry {
+    fn udfs(&self) -> HashSet<String> {
+        self.scalar_functions.keys().cloned().collect()
+    }
+
+    fn udf(&self, name: &str) -> datafusion::common::Result<Arc<ScalarUDF>> {
+        let result = self.scalar_functions.get(name);
+
+        result.cloned().ok_or_else(|| {
+            DataFusionError::Internal(format!(
+                "There is no UDF named \"{name}\" in the TaskContext"
+            ))
+        })
+    }
+
+    fn udaf(&self, name: &str) -> datafusion::common::Result<Arc<AggregateUDF>> {
+        let result = self.aggregate_functions.get(name);
+
+        result.cloned().ok_or_else(|| {
+            DataFusionError::Internal(format!(
+                "There is no UDAF named \"{name}\" in the TaskContext"
+            ))
+        })
+    }
 }
