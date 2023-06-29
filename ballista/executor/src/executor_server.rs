@@ -969,12 +969,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
             let executor_id = &executor_server.executor.metadata.id;
             info!(executor_id, "starting task runner pool");
 
+            let task_threads =
+                num_cpus::get().min(executor_server.executor.concurrent_tasks);
+
             // Use a dedicated executor for CPU bound tasks so that the main tokio
             // executor can still answer requests even when under load
-            let dedicated_executor = DedicatedExecutor::new(
-                "task_runner",
-                executor_server.executor.concurrent_tasks,
-            );
+            let dedicated_executor = DedicatedExecutor::new("task_runner", task_threads);
 
             // As long as the shutdown notification has not been received
             while !task_runner_shutdown.is_shutdown() {
