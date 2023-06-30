@@ -149,6 +149,7 @@ impl ClusterState for InMemoryClusterState {
                         num_replicas,
                         tolerance,
                         active_jobs,
+                        |_, plan| get_scan_files(plan),
                     )
                     .await?;
                 info!(

@@ -277,6 +277,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             num_replicas,
                             tolerance,
                             active_jobs,
+                            |_, plan| get_scan_files(plan),
                         )
                         .await?;
                     info!(
