@@ -47,7 +47,7 @@ use ballista_core::cache_layer::{
 use ballista_core::config::{DataCachePolicy, LogRotationPolicy, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
 #[cfg(not(windows))]
-use ballista_core::object_store_registry::cache::with_cache_layer;
+use ballista_core::object_store_registry::cache::CachedBasedObjectStoreRegistry;
 use ballista_core::object_store_registry::with_object_store_registry;
 use ballista_core::serde::protobuf::executor_resource::Resource;
 use ballista_core::serde::protobuf::executor_status::Status;
@@ -186,9 +186,16 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
     };
 
     let config = RuntimeConfig::new().with_temp_file_path(work_dir.clone());
+    let runtime = {
+        let config = with_object_store_registry(config.clone());
+        Arc::new(RuntimeEnv::new(config).map_err(|_| {
+            BallistaError::Internal("Failed to init Executor RuntimeEnv".to_owned())
+        })?)
+    };
+
     // Set the object store registry
     #[cfg(not(windows))]
-    let config = {
+    let runtime_with_data_cache = {
         let cache_dir = opt.cache_dir.clone();
         let cache_capacity = opt.cache_capacity;
         let cache_io_concurrency = opt.cache_io_concurrency;
@@ -206,17 +213,21 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
                     }
                 });
         if let Some(cache_layer) = cache_layer {
-            with_cache_layer(config, cache_layer)
+            let registry = Arc::new(CachedBasedObjectStoreRegistry::new(
+                runtime.object_store_registry.clone(),
+                cache_layer,
+            ));
+            Some(Arc::new(RuntimeEnv {
+                memory_pool: runtime.memory_pool.clone(),
+                disk_manager: runtime.disk_manager.clone(),
+                object_store_registry: registry,
+            }))
         } else {
-            with_object_store_registry(config)
+            None
         }
     };
     #[cfg(windows)]
-    let config = with_object_store_registry(config);
-
-    let runtime = Arc::new(RuntimeEnv::new(config).map_err(|_| {
-        BallistaError::Internal("Failed to init Executor RuntimeEnv".to_owned())
-    })?);
+    let runtime_with_data_cache = { None };
 
     let metrics_collector = Arc::new(LoggingMetricsCollector::default());
 
@@ -224,6 +235,7 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
         executor_meta,
         &work_dir,
         runtime,
+        runtime_with_data_cache,
         metrics_collector,
         concurrent_tasks,
         opt.execution_engine.clone(),
