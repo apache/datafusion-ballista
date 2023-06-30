@@ -47,6 +47,8 @@ simd = ["datafusion/simd"]
 ahash = { version = "0.8", default-features = false }
 arrow-flight = { workspace = true }
 async-trait = "0.1.41"
+ballista-cache = { path = "../cache", version = "0.11.0" }
+bytes = "1.0"
 chrono = { version = "0.4", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
 datafusion = { workspace = true }

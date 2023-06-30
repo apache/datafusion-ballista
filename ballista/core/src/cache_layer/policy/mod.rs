@@ -15,22 +15,4 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#![doc = include_str!("../README.md")]
-pub const BALLISTA_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-pub fn print_version() {
-    println!("Ballista version: {BALLISTA_VERSION}")
-}
-
-pub mod cache_layer;
-pub mod client;
-pub mod config;
-pub mod error;
-pub mod event_loop;
-pub mod execution_plans;
-/// some plugins
-pub mod plugin;
-pub mod utils;
-
-#[macro_use]
-pub mod serde;
+pub mod file;
