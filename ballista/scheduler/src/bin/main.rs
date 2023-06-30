@@ -27,7 +27,9 @@ use ballista_core::config::LogRotationPolicy;
 use ballista_core::print_version;
 use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::cluster::ClusterStorage;
-use ballista_scheduler::config::{ClusterStorageConfig, SchedulerConfig};
+use ballista_scheduler::config::{
+    ClusterStorageConfig, SchedulerConfig, TaskDistribution, TaskDistributionPolicy,
+};
 use ballista_scheduler::scheduler_process::start_server;
 use tracing_subscriber::EnvFilter;
 
@@ -121,13 +123,26 @@ async fn main() -> Result<()> {
         }
     };
 
+    let task_distribution = match opt.task_distribution {
+        TaskDistribution::Bias => TaskDistributionPolicy::Bias,
+        TaskDistribution::RoundRobin => TaskDistributionPolicy::RoundRobin,
+        TaskDistribution::ConsistentHash => {
+            let num_replicas = opt.consistent_hash_num_replicas as usize;
+            let tolerance = opt.consistent_hash_tolerance as usize;
+            TaskDistributionPolicy::ConsistentHash {
+                num_replicas,
+                tolerance,
+            }
+        }
+    };
+
     let config = SchedulerConfig {
         namespace: opt.namespace,
         external_host: opt.external_host,
         bind_port: opt.bind_port,
         scheduling_policy: opt.scheduler_policy,
         event_loop_buffer_size: opt.event_loop_buffer_size,
-        task_distribution: opt.task_distribution,
+        task_distribution,
         finished_job_data_clean_up_interval_seconds: opt
             .finished_job_data_clean_up_interval_seconds,
         finished_job_state_clean_up_interval_seconds: opt

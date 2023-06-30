@@ -48,7 +48,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::cluster::{bind_task_bias, bind_task_round_robin};
-use crate::config::TaskDistribution;
+use crate::config::TaskDistributionPolicy;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use datafusion::prelude::SessionContext;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -123,11 +123,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             let available_slots = available_slots.iter_mut().collect();
             let active_jobs = self.state.task_manager.get_running_job_cache();
             let schedulable_tasks = match self.state.config.task_distribution {
-                TaskDistribution::Bias => {
+                TaskDistributionPolicy::Bias => {
                     bind_task_bias(available_slots, active_jobs, |_| false).await
                 }
-                TaskDistribution::RoundRobin => {
+                TaskDistributionPolicy::RoundRobin => {
                     bind_task_round_robin(available_slots, active_jobs, |_| false).await
+                }
+                TaskDistributionPolicy::ConsistentHash{..} => {
+                    return Err(Status::unimplemented(
+                        "ConsistentHash TaskDistribution is not feasible for pull-based task scheduling"))
                 }
             };
 

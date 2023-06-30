@@ -37,7 +37,7 @@ pub struct SchedulerConfig {
     /// The event loop buffer size. for a system of high throughput, a larger value like 1000000 is recommended
     pub event_loop_buffer_size: u32,
     /// Policy of distributing tasks to available executor slots. For a cluster with single scheduler, round-robin is recommended
-    pub task_distribution: TaskDistribution,
+    pub task_distribution: TaskDistributionPolicy,
     /// The delayed interval for cleaning up finished job data, mainly the shuffle data, 0 means the cleaning up is disabled
     pub finished_job_data_clean_up_interval_seconds: u64,
     /// The delayed interval for cleaning up finished job state stored in the backend, 0 means the cleaning up is disabled.
@@ -70,7 +70,7 @@ impl Default for SchedulerConfig {
             bind_port: 50050,
             scheduling_policy: TaskSchedulingPolicy::PullStaged,
             event_loop_buffer_size: 10000,
-            task_distribution: TaskDistribution::Bias,
+            task_distribution: TaskDistributionPolicy::Bias,
             finished_job_data_clean_up_interval_seconds: 300,
             finished_job_state_clean_up_interval_seconds: 3600,
             advertise_flight_sql_endpoint: None,
@@ -143,7 +143,7 @@ impl SchedulerConfig {
         self
     }
 
-    pub fn with_task_distribution(mut self, policy: TaskDistribution) -> Self {
+    pub fn with_task_distribution(mut self, policy: TaskDistributionPolicy) -> Self {
         self.task_distribution = policy;
         self
     }
@@ -186,9 +186,14 @@ pub enum TaskDistribution {
     /// Eagerly assign tasks to executor slots. This will assign as many task slots per executor
     /// as are currently available
     Bias,
-    /// Distributed tasks evenly across executors. This will try and iterate through available executors
+    /// Distribute tasks evenly across executors. This will try and iterate through available executors
     /// and assign one task to each executor until all tasks are assigned.
     RoundRobin,
+    /// 1. Firstly, try to bind tasks without scanning source files by [`RoundRobin`] policy.
+    /// 2. Then for a task for scanning source files, firstly calculate a hash value based on input files.
+    /// And then bind it with an execute according to consistent hashing policy.
+    /// 3. If needed, work stealing can be enabled based on the tolerance of the consistent hashing.
+    ConsistentHash,
 }
 
 impl std::str::FromStr for TaskDistribution {
@@ -203,4 +208,22 @@ impl parse_arg::ParseArgFromStr for TaskDistribution {
     fn describe_type<W: fmt::Write>(mut writer: W) -> fmt::Result {
         write!(writer, "The executor slots policy for the scheduler")
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum TaskDistributionPolicy {
+    /// Eagerly assign tasks to executor slots. This will assign as many task slots per executor
+    /// as are currently available
+    Bias,
+    /// Distribute tasks evenly across executors. This will try and iterate through available executors
+    /// and assign one task to each executor until all tasks are assigned.
+    RoundRobin,
+    /// 1. Firstly, try to bind tasks without scanning source files by [`RoundRobin`] policy.
+    /// 2. Then for a task for scanning source files, firstly calculate a hash value based on input files.
+    /// And then bind it with an execute according to consistent hashing policy.
+    /// 3. If needed, work stealing can be enabled based on the tolerance of the consistent hashing.
+    ConsistentHash {
+        num_replicas: usize,
+        tolerance: usize,
+    },
 }
