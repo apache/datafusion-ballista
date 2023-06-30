@@ -20,7 +20,7 @@ use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightSe
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::serde::scheduler::ExecutorSpecification;
 use ballista_core::serde::BallistaCodec;
-use ballista_core::utils::{create_grpc_server, with_object_store_provider};
+use ballista_core::utils::{create_grpc_server, with_object_store_registry};
 use ballista_core::{
     error::Result,
     serde::protobuf::executor_registration::OptionalHost,
@@ -73,7 +73,7 @@ pub async fn new_standalone_executor<
         .unwrap();
     info!("work_dir: {}", work_dir);
 
-    let config = with_object_store_provider(
+    let config = with_object_store_registry(
         RuntimeConfig::new().with_temp_file_path(work_dir.clone()),
     );
 
