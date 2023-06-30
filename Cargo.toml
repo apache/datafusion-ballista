@@ -16,7 +16,16 @@
 # under the License.
 
 [workspace]
-members = ["ballista-cli", "ballista/client", "ballista/core", "ballista/executor", "ballista/scheduler", "benchmarks", "examples"]
+members = [
+    "ballista-cli",
+    "ballista/cache",
+    "ballista/client",
+    "ballista/core",
+    "ballista/executor",
+    "ballista/scheduler",
+    "benchmarks",
+    "examples",
+]
 
 [workspace.dependencies]
 arrow = {version = "43.0.0"}
