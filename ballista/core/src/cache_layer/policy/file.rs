@@ -201,6 +201,7 @@ where
         location: cache_location,
         last_modified: source_meta.last_modified,
         size: cache_meta.size,
+        e_tag: source_meta.e_tag,
     })
 }
 

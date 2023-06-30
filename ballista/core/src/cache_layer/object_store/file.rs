@@ -25,7 +25,9 @@ use bytes::Bytes;
 use futures::stream::BoxStream;
 use log::info;
 use object_store::path::Path;
-use object_store::{Error, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore};
+use object_store::{
+    Error, GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore,
+};
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::Arc;
@@ -123,6 +125,34 @@ where
                 info!("Data for {} has been cached", key);
             });
             self.inner.get(location).await
+        }
+    }
+
+    async fn get_opts(
+        &self,
+        location: &Path,
+        options: GetOptions,
+    ) -> object_store::Result<GetResult> {
+        if let Some(cache_object_mata) =
+            self.cache_layer.cache().get_if_present(location.clone())
+        {
+            info!("Data for {} is cached", location);
+            let cache_location = &cache_object_mata.location;
+            self.cache_layer
+                .cache_store()
+                .get_opts(cache_location, options)
+                .await
+        } else {
+            let io_runtime = self.cache_layer.io_runtime();
+            let cache_layer = self.cache_layer.clone();
+            let key = location.clone();
+            let extra = self.inner.clone();
+            io_runtime.spawn(async move {
+                info!("Going to cache data for {}", key);
+                cache_layer.cache().get(key.clone(), extra).await;
+                info!("Data for {} has been cached", key);
+            });
+            self.inner.get_opts(location, options).await
         }
     }
 

@@ -15,21 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::cache_layer::object_store::file::FileCacheObjectStore;
-use crate::cache_layer::object_store::ObjectStoreWithKey;
-use crate::cache_layer::CacheLayer;
 use crate::config::BallistaConfig;
 use crate::error::{BallistaError, Result};
 use crate::execution_plans::{
     DistributedQueryExec, ShuffleWriterExec, UnresolvedShuffleExec,
 };
+use crate::object_store_registry::with_object_store_registry;
 use crate::serde::scheduler::PartitionStats;
+
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::{ipc::writer::FileWriter, record_batch::RecordBatch};
-use datafusion::datasource::object_store::{
-    DefaultObjectStoreRegistry, ObjectStoreRegistry,
-};
 use datafusion::datasource::physical_plan::{CsvExec, ParquetExec};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::{
@@ -48,20 +44,11 @@ use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{metrics, ExecutionPlan, RecordBatchStream};
-#[cfg(any(feature = "hdfs", feature = "hdfs3"))]
-use datafusion_objectstore_hdfs::object_store::hdfs::HadoopFileSystem;
 use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
 use futures::StreamExt;
 use log::error;
-#[cfg(feature = "s3")]
-use object_store::aws::AmazonS3Builder;
-#[cfg(feature = "azure")]
-use object_store::azure::MicrosoftAzureBuilder;
-#[cfg(feature = "gcs")]
-use object_store::gcp::GoogleCloudStorageBuilder;
-use object_store::ObjectStore;
 use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -70,7 +57,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs::File, pin::Pin};
 use tonic::codegen::StdError;
 use tonic::transport::{Channel, Error, Server};
-use url::Url;
 
 /// Default session builder using the provided configuration
 pub fn default_session_builder(config: SessionConfig) -> SessionState {
@@ -80,177 +66,6 @@ pub fn default_session_builder(config: SessionConfig) -> SessionState {
             RuntimeEnv::new(with_object_store_registry(RuntimeConfig::default()))
                 .unwrap(),
         ),
-    )
-}
-
-/// Get a RuntimeConfig with specific ObjectStoreRegistry
-pub fn with_object_store_registry(config: RuntimeConfig) -> RuntimeConfig {
-    let registry = Arc::new(BallistaObjectStoreRegistry::default());
-    config.with_object_store_registry(registry)
-}
-
-/// Get a RuntimeConfig with CachedBasedObjectStoreRegistry
-pub fn with_cache_layer(config: RuntimeConfig, cache_layer: CacheLayer) -> RuntimeConfig {
-    let registry = Arc::new(BallistaObjectStoreRegistry::default());
-    let registry = Arc::new(CachedBasedObjectStoreRegistry::new(registry, cache_layer));
-    config.with_object_store_registry(registry)
-}
-
-/// An object store detector based on which features are enable for different kinds of object stores
-#[derive(Debug, Default)]
-pub struct BallistaObjectStoreRegistry {
-    inner: DefaultObjectStoreRegistry,
-}
-
-impl BallistaObjectStoreRegistry {
-    pub fn new() -> Self {
-        Default::default()
-    }
-
-    /// Find a suitable object store based on its url and enabled features if possible
-    fn get_feature_store(
-        &self,
-        url: &Url,
-    ) -> datafusion::error::Result<Arc<dyn ObjectStore>> {
-        #[cfg(any(feature = "hdfs", feature = "hdfs3"))]
-        {
-            if let Some(store) = HadoopFileSystem::new(url.as_str()) {
-                return Ok(Arc::new(store));
-            }
-        }
-
-        #[cfg(feature = "s3")]
-        {
-            if url.as_str().starts_with("s3://") {
-                if let Some(bucket_name) = url.host_str() {
-                    let store = Arc::new(
-                        AmazonS3Builder::from_env()
-                            .with_bucket_name(bucket_name)
-                            .build()?,
-                    );
-                    return Ok(store);
-                }
-            // Support Alibaba Cloud OSS
-            // Use S3 compatibility mode to access Alibaba Cloud OSS
-            // The `AWS_ENDPOINT` should have bucket name included
-            } else if url.as_str().starts_with("oss://") {
-                if let Some(bucket_name) = url.host_str() {
-                    let store = Arc::new(
-                        AmazonS3Builder::from_env()
-                            .with_virtual_hosted_style_request(true)
-                            .with_bucket_name(bucket_name)
-                            .build()?,
-                    );
-                    return Ok(store);
-                }
-            }
-        }
-
-        #[cfg(feature = "azure")]
-        {
-            if url.to_string().starts_with("azure://") {
-                if let Some(bucket_name) = url.host_str() {
-                    let store = Arc::new(
-                        MicrosoftAzureBuilder::from_env()
-                            .with_container_name(bucket_name)
-                            .build()?,
-                    );
-                    return Ok(store);
-                }
-            }
-        }
-
-        #[cfg(feature = "gcs")]
-        {
-            if url.to_string().starts_with("gs://")
-                || url.to_string().starts_with("gcs://")
-            {
-                if let Some(bucket_name) = url.host_str() {
-                    let store = Arc::new(
-                        GoogleCloudStorageBuilder::from_env()
-                            .with_bucket_name(bucket_name)
-                            .build()?,
-                    );
-                    return Ok(store);
-                }
-            }
-        }
-
-        Err(DataFusionError::Execution(format!(
-            "No object store available for: {url}"
-        )))
-    }
-}
-
-impl ObjectStoreRegistry for BallistaObjectStoreRegistry {
-    fn register_store(
-        &self,
-        url: &Url,
-        store: Arc<dyn ObjectStore>,
-    ) -> Option<Arc<dyn ObjectStore>> {
-        self.inner.register_store(url, store)
-    }
-
-    fn get_store(&self, url: &Url) -> datafusion::error::Result<Arc<dyn ObjectStore>> {
-        self.inner.get_store(url).or_else(|_| {
-            let store = self.get_feature_store(url)?;
-            self.inner.register_store(url, store.clone());
-
-            Ok(store)
-        })
-    }
-}
-
-/// An object store registry wrapped an existing one with a cache layer.
-///
-/// During [`get_store`], after getting the source [`ObjectStore`], based on the url,
-/// it will firstly be wrapped with a key which will be used as the cache prefix path.
-/// And then it will be wrapped with the [`cache_layer`].
-#[derive(Debug)]
-pub struct CachedBasedObjectStoreRegistry {
-    inner: Arc<dyn ObjectStoreRegistry>,
-    cache_layer: CacheLayer,
-}
-
-impl CachedBasedObjectStoreRegistry {
-    pub fn new(inner: Arc<dyn ObjectStoreRegistry>, cache_layer: CacheLayer) -> Self {
-        Self { inner, cache_layer }
-    }
-}
-
-impl ObjectStoreRegistry for CachedBasedObjectStoreRegistry {
-    fn register_store(
-        &self,
-        url: &Url,
-        store: Arc<dyn ObjectStore>,
-    ) -> Option<Arc<dyn ObjectStore>> {
-        self.inner.register_store(url, store)
-    }
-
-    fn get_store(&self, url: &Url) -> datafusion::common::Result<Arc<dyn ObjectStore>> {
-        let source_object_store = self.inner.get_store(url)?;
-        let object_store_with_key = Arc::new(ObjectStoreWithKey::new(
-            get_url_key(url),
-            source_object_store,
-        ));
-        Ok(match &self.cache_layer {
-            CacheLayer::LocalDiskFile(cache_layer) => Arc::new(
-                FileCacheObjectStore::new(cache_layer.clone(), object_store_with_key),
-            ),
-            CacheLayer::LocalMemoryFile(cache_layer) => Arc::new(
-                FileCacheObjectStore::new(cache_layer.clone(), object_store_with_key),
-            ),
-        })
-    }
-}
-
-/// Get the key of a url for object store cache prefix path.
-/// The credential info will be removed.
-fn get_url_key(url: &Url) -> String {
-    format!(
-        "{}://{}",
-        url.scheme(),
-        &url[url::Position::BeforeHost..url::Position::AfterPort],
     )
 }
 

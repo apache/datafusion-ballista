@@ -21,7 +21,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::BoxStream;
 use object_store::path::Path;
-use object_store::{GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore};
+use object_store::{
+    GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore,
+};
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::Arc;
@@ -79,6 +81,14 @@ impl ObjectStore for ObjectStoreWithKey {
 
     async fn get(&self, location: &Path) -> object_store::Result<GetResult> {
         self.inner.get(location).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &Path,
+        options: GetOptions,
+    ) -> object_store::Result<GetResult> {
+        self.inner.get_opts(location, options).await
     }
 
     async fn get_range(
