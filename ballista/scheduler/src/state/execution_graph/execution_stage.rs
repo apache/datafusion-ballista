@@ -413,7 +413,7 @@ impl UnresolvedStage {
 
 impl Debug for UnresolvedStage {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent();
+        let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent(false);
 
         write!(
             f,
@@ -529,7 +529,7 @@ impl ResolvedStage {
 
 impl Debug for ResolvedStage {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent();
+        let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent(false);
 
         write!(
             f,
@@ -860,7 +860,7 @@ impl RunningStage {
 
 impl Debug for RunningStage {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent();
+        let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent(false);
 
         write!(
             f,
@@ -1147,7 +1147,7 @@ impl FailedStage {
 
 impl Debug for FailedStage {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent();
+        let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent(false);
 
         write!(
             f,

@@ -106,7 +106,7 @@ impl ExecutionPlan for UnresolvedShuffleExec {
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
         match t {
-            DisplayFormatType::Default => {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "UnresolvedShuffleExec")
             }
         }

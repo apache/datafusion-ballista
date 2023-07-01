@@ -19,13 +19,17 @@ use arrow_flight::flight_descriptor::DescriptorType;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::sql::server::FlightSqlService;
 use arrow_flight::sql::{
+    ActionBeginSavepointRequest, ActionBeginSavepointResult,
+    ActionBeginTransactionRequest, ActionBeginTransactionResult,
+    ActionCancelQueryRequest, ActionCancelQueryResult,
     ActionClosePreparedStatementRequest, ActionCreatePreparedStatementRequest,
-    ActionCreatePreparedStatementResult, CommandGetCatalogs, CommandGetCrossReference,
-    CommandGetDbSchemas, CommandGetExportedKeys, CommandGetImportedKeys,
-    CommandGetPrimaryKeys, CommandGetSqlInfo, CommandGetTableTypes, CommandGetTables,
-    CommandGetXdbcTypeInfo, CommandPreparedStatementQuery,
-    CommandPreparedStatementUpdate, CommandStatementQuery, CommandStatementUpdate,
-    SqlInfo, TicketStatementQuery,
+    ActionCreatePreparedStatementResult, ActionCreatePreparedSubstraitPlanRequest,
+    ActionEndSavepointRequest, ActionEndTransactionRequest, CommandGetCatalogs,
+    CommandGetCrossReference, CommandGetDbSchemas, CommandGetExportedKeys,
+    CommandGetImportedKeys, CommandGetPrimaryKeys, CommandGetSqlInfo,
+    CommandGetTableTypes, CommandGetTables, CommandGetXdbcTypeInfo,
+    CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementQuery,
+    CommandStatementSubstraitPlan, CommandStatementUpdate, SqlInfo, TicketStatementQuery,
 };
 use arrow_flight::{
     Action, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest,
@@ -401,6 +405,7 @@ impl FlightSqlServiceImpl {
             endpoint: fieps,
             total_records: num_rows,
             total_bytes: num_bytes,
+            ordered: false,
         };
         Response::new(info)
     }
@@ -895,17 +900,104 @@ impl FlightSqlService for FlightSqlServiceImpl {
         &self,
         handle: ActionClosePreparedStatementRequest,
         _request: Request<Action>,
-    ) {
+    ) -> Result<(), Status> {
         debug!("do_action_close_prepared_statement");
-        let handle = Uuid::from_slice(handle.prepared_statement_handle.as_ref());
-        let handle = if let Ok(handle) = handle {
-            debug!("Closing {}", handle);
-            handle
-        } else {
-            return;
-        };
-        let _ = self.remove_plan(handle);
+        let handle = Uuid::from_slice(handle.prepared_statement_handle.as_ref())
+            .map(|id| {
+                debug!("Closing {}", id);
+                id
+            })
+            .map_err(|e| Status::internal(format!("Failed to parse handle: {e:?}")))?;
+
+        self.remove_plan(handle)
     }
 
+    /// Get a FlightInfo for executing a substrait plan.
+    async fn get_flight_info_substrait_plan(
+        &self,
+        _query: CommandStatementSubstraitPlan,
+        _request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        debug!("get_flight_info_substrait_plan");
+        Err(Status::unimplemented(
+            "Implement get_flight_info_substrait_plan",
+        ))
+    }
+
+    /// Execute a substrait plan
+    async fn do_put_substrait_plan(
+        &self,
+        _query: CommandStatementSubstraitPlan,
+        _request: Request<Streaming<FlightData>>,
+    ) -> Result<i64, Status> {
+        debug!("do_put_substrait_plan");
+        Err(Status::unimplemented("Implement do_put_substrait_plan"))
+    }
+
+    /// Create a prepared substrait plan.
+    async fn do_action_create_prepared_substrait_plan(
+        &self,
+        _query: ActionCreatePreparedSubstraitPlanRequest,
+        _request: Request<Action>,
+    ) -> Result<ActionCreatePreparedStatementResult, Status> {
+        debug!("do_action_create_prepared_substrait_plan");
+        Err(Status::unimplemented(
+            "Implement do_action_create_prepared_substrait_plan",
+        ))
+    }
+
+    /// Begin a transaction
+    async fn do_action_begin_transaction(
+        &self,
+        _query: ActionBeginTransactionRequest,
+        _request: Request<Action>,
+    ) -> Result<ActionBeginTransactionResult, Status> {
+        debug!("do_action_begin_transaction");
+        Err(Status::unimplemented(
+            "Implement do_action_begin_transaction",
+        ))
+    }
+
+    /// End a transaction
+    async fn do_action_end_transaction(
+        &self,
+        _query: ActionEndTransactionRequest,
+        _request: Request<Action>,
+    ) -> Result<(), Status> {
+        debug!("do_action_end_transaction");
+        Err(Status::unimplemented("Implement do_action_end_transaction"))
+    }
+
+    /// Begin a savepoint
+    async fn do_action_begin_savepoint(
+        &self,
+        _query: ActionBeginSavepointRequest,
+        _request: Request<Action>,
+    ) -> Result<ActionBeginSavepointResult, Status> {
+        debug!("do_action_begin_savepoint");
+        Err(Status::unimplemented("Implement do_action_begin_savepoint"))
+    }
+
+    /// End a savepoint
+    async fn do_action_end_savepoint(
+        &self,
+        _query: ActionEndSavepointRequest,
+        _request: Request<Action>,
+    ) -> Result<(), Status> {
+        debug!("do_action_end_savepoint");
+        Err(Status::unimplemented("Implement do_action_end_savepoint"))
+    }
+
+    /// Cancel a query
+    async fn do_action_cancel_query(
+        &self,
+        _query: ActionCancelQueryRequest,
+        _request: Request<Action>,
+    ) -> Result<ActionCancelQueryResult, Status> {
+        debug!("do_action_cancel_query");
+        Err(Status::unimplemented("Implement do_action_cancel_query"))
+    }
+
+    /// Register a new SqlInfo result, making it available when calling GetSqlInfo.
     async fn register_sql_info(&self, _id: i32, _result: &SqlInfo) {}
 }

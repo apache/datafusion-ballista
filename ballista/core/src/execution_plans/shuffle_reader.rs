@@ -160,7 +160,7 @@ impl ExecutionPlan for ShuffleReaderExec {
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
         match t {
-            DisplayFormatType::Default => {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "ShuffleReaderExec: partitions={}", self.partition.len())
             }
         }

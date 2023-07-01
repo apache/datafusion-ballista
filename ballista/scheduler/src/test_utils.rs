@@ -809,7 +809,10 @@ pub async fn test_aggregation_plan(partition: usize) -> ExecutionGraph {
         .await
         .unwrap();
 
-    println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
+    println!(
+        "{}",
+        DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
+    );
 
     ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap()
 }
@@ -841,7 +844,10 @@ pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
         .await
         .unwrap();
 
-    println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
+    println!(
+        "{}",
+        DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
+    );
 
     ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap()
 }
@@ -913,7 +919,10 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
         .await
         .unwrap();
 
-    println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
+    println!(
+        "{}",
+        DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
+    );
 
     let graph =
         ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap();
@@ -942,7 +951,10 @@ pub async fn test_union_all_plan(partition: usize) -> ExecutionGraph {
         .await
         .unwrap();
 
-    println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
+    println!(
+        "{}",
+        DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
+    );
 
     let graph =
         ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap();
@@ -971,7 +983,10 @@ pub async fn test_union_plan(partition: usize) -> ExecutionGraph {
         .await
         .unwrap();
 
-    println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
+    println!(
+        "{}",
+        DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
+    );
 
     let graph =
         ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap();

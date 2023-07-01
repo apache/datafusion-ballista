@@ -28,6 +28,7 @@ use ballista_core::serde::scheduler::PartitionId;
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::logical_expr::WindowUDF;
 use datafusion::physical_plan::udaf::AggregateUDF;
 use datafusion::physical_plan::udf::ScalarUDF;
 use futures::future::AbortHandle;
@@ -68,6 +69,9 @@ pub struct Executor {
     /// Aggregate functions registered in the Executor
     pub aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
 
+    /// Window functions registered in the Executor
+    pub window_functions: HashMap<String, Arc<WindowUDF>>,
+
     /// Runtime environment for Executor
     pub runtime: Arc<RuntimeEnv>,
 
@@ -101,6 +105,7 @@ impl Executor {
             // TODO add logic to dynamically load UDF/UDAFs libs from files
             scalar_functions: HashMap::new(),
             aggregate_functions: HashMap::new(),
+            window_functions: HashMap::new(),
             runtime,
             metrics_collector,
             concurrent_tasks,
