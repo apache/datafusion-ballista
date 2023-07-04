@@ -79,7 +79,7 @@ impl ClusterState for InMemoryClusterState {
             })
             .collect();
         available_slots.sort_by(|a, b| f64::compare(
-            &(a.slots as f64) / &(a.cores as f64), &(b.slots as f64) / &(b.cores as f64)));
+            (a.slots as f64) / (a.cores as f64), (b.slots as f64) / (b.cores as f64)));
 
         let reservations = match distribution {
             TaskDistribution::Bias => reserve_slots_bias(available_slots, num_slots),
@@ -115,7 +115,7 @@ impl ClusterState for InMemoryClusterState {
             .collect();
 
         available_slots.sort_by(|a, b| f64::compare(
-            (&a.slots / &a.cores) as f64, (&b.slots / &b.cores) as f64));
+            (a.slots as f64) / (a.cores as f64), (b.slots as f64) / (b.cores as f64)));
         let reservations = match distribution {
             TaskDistribution::Bias => reserve_slots_bias(available_slots, num_slots),
             TaskDistribution::RoundRobin => {

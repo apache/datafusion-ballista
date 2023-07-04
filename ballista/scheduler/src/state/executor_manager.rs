@@ -661,10 +661,9 @@ mod test {
 
 
         let executors = test_executors(10, 1);
-        let mut i = 0;
         let mut odd_executors = Vec::new();
         let mut even_executors = Vec::new();
-        for (executor_metadata, executor_data) in executors {
+        for (i, (executor_metadata, executor_data)) in executors.into_iter().enumerate() {
             if i % 2 == 0 {
                 // reset this core
                 executor_manager.core = 2;
@@ -673,7 +672,6 @@ mod test {
                 executor_manager.core = 5;
                 odd_executors.push(executor_data.clone().executor_id)
             }
-            i += 1;
             executor_manager
                 .register_executor(executor_metadata, executor_data.clone(), false)
                 .await?;
