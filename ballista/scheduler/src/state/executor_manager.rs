@@ -34,6 +34,7 @@ use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::utils::{create_grpc_client_connection, get_time_before};
 use dashmap::DashMap;
 use log::{debug, error, info, warn};
+use num_cpus;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tonic::transport::Channel;
@@ -81,6 +82,7 @@ pub struct ExecutorManager {
     cluster_state: Arc<dyn ClusterState>,
     config: Arc<SchedulerConfig>,
     clients: ExecutorClients,
+    core: u32,
 }
 
 impl ExecutorManager {
@@ -92,6 +94,7 @@ impl ExecutorManager {
             cluster_state,
             config,
             clients: Default::default(),
+            core: num_cpus::get() as u32,
         }
     }
 
@@ -297,7 +300,7 @@ impl ExecutorManager {
 
         if !reserve {
             self.cluster_state
-                .register_executor(metadata, specification.clone(), reserve)
+                .register_executor(metadata, specification.clone(), reserve, self.core)
                 .await?;
 
             Ok(vec![])
@@ -312,7 +315,7 @@ impl ExecutorManager {
             specification.available_task_slots = 0;
 
             self.cluster_state
-                .register_executor(metadata, specification, reserve)
+                .register_executor(metadata, specification, reserve, self.core)
                 .await?;
 
             Ok(reservations)
@@ -636,6 +639,60 @@ mod test {
 
         assert_eq!(reservations.len(), 0);
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reserve_sort() -> Result<()> {
+        test_reserve_sort_inner(TaskDistribution::Bias).await?;
+        test_reserve_sort_inner(TaskDistribution::RoundRobin).await?;
+
+        Ok(())
+    }
+
+    async fn test_reserve_sort_inner(
+        task_distribution: TaskDistribution,
+    ) -> Result<()> {
+        let cluster = test_cluster_context();
+
+        let config = SchedulerConfig::default().with_task_distribution(task_distribution);
+        let mut executor_manager =
+            ExecutorManager::new(cluster.cluster_state(), Arc::new(config));
+
+
+        let executors = test_executors(10, 1);
+        let mut i = 0;
+        let mut odd_executors = Vec::new();
+        let mut even_executors = Vec::new();
+        for (executor_metadata, executor_data) in executors {
+            if i % 2 == 0 {
+                // reset this core
+                executor_manager.core = 2;
+                even_executors.push(executor_data.clone().executor_id)
+            } else {
+                executor_manager.core = 5;
+                odd_executors.push(executor_data.clone().executor_id)
+            }
+            i += 1;
+            executor_manager
+                .register_executor(executor_metadata, executor_data.clone(), false)
+                .await?;
+        }
+
+        // Reserve the slots
+        let reservations = executor_manager.reserve_slots(5).await?;
+        let mut expected_vec: Vec<String> = Vec::new();
+        for executor in reservations {
+            expected_vec.push(executor.executor_id);
+        }
+        assert_eq!(expected_vec, odd_executors);
+        // Reserve the slots again
+        let reservations = executor_manager.reserve_slots(5).await?;
+        expected_vec.clear();
+        for executor in reservations {
+            expected_vec.push(executor.executor_id);
+        }
+        assert_eq!(expected_vec, even_executors);
         Ok(())
     }
 

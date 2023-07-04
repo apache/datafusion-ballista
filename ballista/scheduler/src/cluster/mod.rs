@@ -241,6 +241,7 @@ pub trait ClusterState: Send + Sync + 'static {
         metadata: ExecutorMetadata,
         spec: ExecutorData,
         reserve: bool,
+        cores: u32
     ) -> Result<Vec<ExecutorReservation>>;
 
     /// Save the executor metadata. This will overwrite existing metadata for the executor ID

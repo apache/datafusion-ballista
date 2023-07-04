@@ -30,6 +30,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use dashmap::DashMap;
+use datafusion::arrow::datatypes::ArrowNativeTypeOp;
 use datafusion::prelude::SessionContext;
 
 use crate::cluster::event::ClusterEventSender;
@@ -77,8 +78,8 @@ impl ClusterState for InMemoryClusterState {
                 .then_some(data)
             })
             .collect();
-
-        available_slots.sort_by(|a, b| Ord::cmp(&b.slots, &a.slots));
+        available_slots.sort_by(|a, b| f64::compare(
+            &(a.slots as f64) / &(a.cores as f64), &(b.slots as f64) / &(b.cores as f64)));
 
         let reservations = match distribution {
             TaskDistribution::Bias => reserve_slots_bias(available_slots, num_slots),
@@ -113,8 +114,8 @@ impl ClusterState for InMemoryClusterState {
             })
             .collect();
 
-        available_slots.sort_by(|a, b| Ord::cmp(&b.slots, &a.slots));
-
+        available_slots.sort_by(|a, b| f64::compare(
+            (&a.slots / &a.cores) as f64, (&b.slots / &b.cores) as f64));
         let reservations = match distribution {
             TaskDistribution::Bias => reserve_slots_bias(available_slots, num_slots),
             TaskDistribution::RoundRobin => {
@@ -159,6 +160,7 @@ impl ClusterState for InMemoryClusterState {
         metadata: ExecutorMetadata,
         mut spec: ExecutorData,
         reserve: bool,
+        cores: u32
     ) -> Result<Vec<ExecutorReservation>> {
         let executor_id = metadata.id.clone();
 
@@ -193,6 +195,7 @@ impl ClusterState for InMemoryClusterState {
             guard.task_slots.push(AvailableTaskSlots {
                 executor_id,
                 slots: 0,
+                cores
             });
 
             Ok(reservations)
@@ -200,6 +203,7 @@ impl ClusterState for InMemoryClusterState {
             guard.task_slots.push(AvailableTaskSlots {
                 executor_id,
                 slots: spec.available_task_slots,
+                cores
             });
 
             Ok(vec![])

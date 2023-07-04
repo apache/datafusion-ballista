@@ -36,6 +36,7 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::serde::BallistaCodec;
 use dashmap::DashMap;
+use datafusion::arrow::datatypes::ArrowNativeTypeOp;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -205,7 +206,8 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 })
                 .collect();
 
-            available_slots.sort_by(|a, b| Ord::cmp(&b.slots, &a.slots));
+            available_slots.sort_by(|a, b| f64::compare(
+                &(a.slots as f64) / &(a.cores as f64), &(b.slots as f64) / &(b.cores as f64)));
 
             let reservations = match distribution {
                 TaskDistribution::Bias => reserve_slots_bias(available_slots, num_slots),
@@ -256,8 +258,8 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 })
                 .collect();
 
-            available_slots.sort_by(|a, b| Ord::cmp(&b.slots, &a.slots));
-
+            available_slots.sort_by(|a, b| f64::compare(
+                &(a.slots as f64) / &(a.cores as f64), &(b.slots as f64) / &(b.cores as f64)));
             let reservations = match distribution {
                 TaskDistribution::Bias => reserve_slots_bias(available_slots, num_slots),
                 TaskDistribution::RoundRobin => {
@@ -320,6 +322,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         metadata: ExecutorMetadata,
         spec: ExecutorData,
         reserve: bool,
+        cores: u32
     ) -> Result<Vec<ExecutorReservation>> {
         let executor_id = metadata.id.clone();
 
@@ -342,6 +345,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             let available_slots = AvailableTaskSlots {
                 executor_id,
                 slots: spec.available_task_slots,
+                cores,
             };
 
             let lock = self.store.lock(Keyspace::Slots, "all").await?;
@@ -383,6 +387,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             let available_slots = AvailableTaskSlots {
                 executor_id,
                 slots: 0,
+                cores,
             };
 
             let lock = self.store.lock(Keyspace::Slots, "all").await?;

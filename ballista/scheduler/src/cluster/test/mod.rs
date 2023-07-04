@@ -52,6 +52,7 @@ impl<S: ClusterState> ClusterStateTest<S> {
         mut self,
         executor_id: &str,
         task_slots: u32,
+        cores: u32,
     ) -> Result<Self> {
         self.state
             .register_executor(
@@ -68,6 +69,7 @@ impl<S: ClusterState> ClusterStateTest<S> {
                     available_task_slots: task_slots,
                 },
                 false,
+                cores
             )
             .await?;
 
@@ -305,7 +307,7 @@ pub async fn test_fuzz_reservations<S: ClusterState>(
 
     for idx in 0..num_executors {
         test = test
-            .register_executor(idx.to_string().as_str(), task_slots_per_executor as u32)
+            .register_executor(idx.to_string().as_str(), task_slots_per_executor as u32, num_cpus::get() as u32)
             .await?;
     }
 
@@ -314,12 +316,13 @@ pub async fn test_fuzz_reservations<S: ClusterState>(
 
 pub async fn test_executor_registration<S: ClusterState>(state: S) -> Result<()> {
     let test = ClusterStateTest::new(state).await?;
+    let cores = num_cpus::get() as u32;
 
-    test.register_executor("1", 10)
+    test.register_executor("1", 10, cores)
         .await?
-        .register_executor("2", 10)
+        .register_executor("2", 10, cores)
         .await?
-        .register_executor("3", 10)
+        .register_executor("3", 10, cores)
         .await?
         .assert_live_executor("1", 10)
         .await?
@@ -348,12 +351,12 @@ pub async fn test_reservation<S: ClusterState>(
     distribution: TaskDistribution,
 ) -> Result<()> {
     let test = ClusterStateTest::new(state).await?;
-
-    test.register_executor("1", 10)
+    let cores = num_cpus::get() as u32;
+    test.register_executor("1", 10, cores)
         .await?
-        .register_executor("2", 10)
+        .register_executor("2", 10, cores)
         .await?
-        .register_executor("3", 10)
+        .register_executor("3", 10, cores)
         .await?
         .try_reserve_slots(10, distribution, None, false)
         .await?
