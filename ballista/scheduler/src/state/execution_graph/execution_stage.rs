@@ -262,6 +262,16 @@ pub(crate) struct TaskInfo {
     pub(super) task_status: task_status::Status,
 }
 
+impl TaskInfo {
+    pub fn is_finished(&self) -> bool {
+        matches!(self.task_status, task_status::Status::Successful(_))
+    }
+
+    pub fn execution_time(&self) -> u128 {
+        self.end_exec_time - self.start_exec_time
+    }
+}
+
 impl UnresolvedStage {
     pub(super) fn new(
         stage_id: usize,

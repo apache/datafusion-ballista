@@ -964,6 +964,24 @@ message SchedulerLostParams {
 
 message SchedulerLostResponse {}
 
+message ListJobsRequest {}
+
+message Job {
+  string id = 1;
+  // how long the query has been running (in wall clock time)
+  uint64 durations_ms = 2;
+  // total aggregated duration of all completed tasks
+  uint64 total_task_duration_ms = 3;
+  // How many tasks total in the query
+  uint32 total_tasks = 4;
+  // How many tasks are completed
+  uint32 completed_tasks = 5;
+}
+
+message ListJobsResponse {
+  repeated Job running_jobs = 1;
+}
+
 service SchedulerGrpc {
   // Executors must poll the scheduler for heartbeat and to receive tasks
   rpc PollWork(PollWorkParams) returns (PollWorkResult) {}
@@ -993,6 +1011,8 @@ service SchedulerGrpc {
 
   // Used when an executor fails to update task status with a curator scheduler for tasks
   rpc SchedulerLost(SchedulerLostParams) returns (SchedulerLostResponse) {}
+
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse) {}
 }
 
 service ExecutorGrpc {

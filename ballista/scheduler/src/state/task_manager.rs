@@ -24,6 +24,7 @@ use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
 
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
+use ballista_core::serde::protobuf::job_status::Status;
 use datafusion::config::{ConfigEntry, ConfigOptions};
 use futures::future::try_join_all;
 
@@ -876,18 +877,41 @@ pub struct JobOverview {
     pub job_id: String,
     pub job_name: String,
     pub status: JobStatus,
+    pub queued_at: u64,
     pub start_time: u64,
     pub end_time: u64,
     pub num_stages: usize,
     pub completed_stages: usize,
+    pub total_task_duration_ms: u64,
+}
+
+impl JobOverview {
+    pub fn is_running(&self) -> bool {
+        matches!(self.status.status, Some(Status::Running(_)))
+    }
 }
 
 impl From<&ExecutionGraph> for JobOverview {
     fn from(value: &ExecutionGraph) -> Self {
         let mut completed_stages = 0;
+        let mut total_task_duration_ms = 0;
         for stage in value.stages().values() {
-            if let ExecutionStage::Successful(_) = stage {
+            if let ExecutionStage::Successful(stage) = stage {
                 completed_stages += 1;
+                for task in stage.task_infos.iter().filter(|t| t.is_finished()) {
+                    total_task_duration_ms += task.execution_time() as u64
+                }
+            }
+
+            if let ExecutionStage::Running(stage) = stage {
+                for task in stage
+                    .task_infos
+                    .iter()
+                    .flatten()
+                    .filter(|t| t.is_finished())
+                {
+                    total_task_duration_ms += task.execution_time() as u64
+                }
             }
         }
 
@@ -895,10 +919,12 @@ impl From<&ExecutionGraph> for JobOverview {
             job_id: value.job_id().to_string(),
             job_name: value.job_name().to_string(),
             status: value.status(),
+            queued_at: value.queued_at(),
             start_time: value.start_time(),
             end_time: value.end_time(),
             num_stages: value.stage_count(),
             completed_stages,
+            total_task_duration_ms,
         }
     }
 }

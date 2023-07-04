@@ -206,6 +206,10 @@ impl ExecutionGraph {
         self.status.clone()
     }
 
+    pub fn queued_at(&self) -> u64 {
+        self.queued_at
+    }
+
     pub fn start_time(&self) -> u64 {
         self.start_time
     }
