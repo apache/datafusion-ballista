@@ -650,9 +650,7 @@ mod test {
         Ok(())
     }
 
-    async fn test_reserve_sort_inner(
-        task_distribution: TaskDistribution,
-    ) -> Result<()> {
+    async fn test_reserve_sort_inner(task_distribution: TaskDistribution) -> Result<()> {
         let cluster = test_cluster_context();
 
         let config = SchedulerConfig::default().with_task_distribution(task_distribution);
