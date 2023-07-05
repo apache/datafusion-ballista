@@ -1696,8 +1696,8 @@ mod ballista_round_trip {
                 )
                 .unwrap();
             assert_eq!(
-                format!("{}", displayable(physical_plan.as_ref()).indent()),
-                format!("{}", displayable(round_trip.as_ref()).indent()),
+                format!("{}", displayable(physical_plan.as_ref()).indent(false)),
+                format!("{}", displayable(round_trip.as_ref()).indent(false)),
                 "physical plan round trip failed"
             );
         }
