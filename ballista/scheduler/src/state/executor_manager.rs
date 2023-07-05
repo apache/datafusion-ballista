@@ -659,7 +659,6 @@ mod test {
         let mut executor_manager =
             ExecutorManager::new(cluster.cluster_state(), Arc::new(config));
 
-
         let executors = test_executors(10, 1);
         let mut odd_executors = Vec::new();
         let mut even_executors = Vec::new();

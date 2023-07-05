@@ -69,7 +69,7 @@ impl<S: ClusterState> ClusterStateTest<S> {
                     available_task_slots: task_slots,
                 },
                 false,
-                cores
+                cores,
             )
             .await?;
 
@@ -307,7 +307,11 @@ pub async fn test_fuzz_reservations<S: ClusterState>(
 
     for idx in 0..num_executors {
         test = test
-            .register_executor(idx.to_string().as_str(), task_slots_per_executor as u32, num_cpus::get() as u32)
+            .register_executor(
+                idx.to_string().as_str(),
+                task_slots_per_executor as u32,
+                num_cpus::get() as u32,
+            )
             .await?;
     }
 
