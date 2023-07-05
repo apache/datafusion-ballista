@@ -42,8 +42,8 @@ This crate is tested with the latest stable version of Rust. We do not currrentl
 ## Starting a cluster
 
 There are numerous ways to start a Ballista cluster, including support for Docker and
-Kubernetes. For full documentation, refer to the
-[DataFusion User Guide](https://arrow.apache.org/datafusion/user-guide/introduction.html)
+Kubernetes. For full documentation, refer to the deployment section of the 
+[Ballista User Guide](https://arrow.apache.org/ballista/user-guide/deployment/)
 
 A simple way to start a local cluster for testing purposes is to use cargo to install
 the scheduler and executor crates.
