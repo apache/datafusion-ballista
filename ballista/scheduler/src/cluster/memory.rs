@@ -428,11 +428,18 @@ impl JobState for InMemoryJobState {
     }
 
     async fn get_jobs(&self) -> Result<HashSet<String>> {
-        Ok(self
-            .completed_jobs
-            .iter()
-            .map(|pair| pair.key().clone())
-            .collect())
+        let mut result =
+            HashSet::with_capacity(self.completed_jobs.len() + self.running_jobs.len());
+
+        for job in self.completed_jobs.iter() {
+            result.insert(job.key().clone());
+        }
+
+        for job in self.running_jobs.iter() {
+            result.insert(job.key().clone());
+        }
+
+        Ok(result)
     }
 
     async fn get_job_statuses(&self) -> Result<Vec<(String, JobStatus)>> {
