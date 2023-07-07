@@ -46,6 +46,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use crate::state::task_manager::JobOverviewExt;
 use datafusion::prelude::SessionContext;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
@@ -628,8 +629,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                         id: job_overview.job_id.clone(),
                         durations_ms,
                         total_task_duration_ms: job_overview.total_task_duration_ms,
-                        total_tasks: job_overview.num_stages as u32,
-                        completed_tasks: job_overview.completed_stages as u32,
+                        total_tasks: job_overview.num_stages,
+                        completed_tasks: job_overview.completed_stages,
                     })
                 }
 

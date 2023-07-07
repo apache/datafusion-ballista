@@ -978,6 +978,18 @@ message Job {
   uint32 completed_tasks = 5;
 }
 
+message JobOverview {
+  string job_id = 1;
+  string job_name = 2;
+  JobStatus status = 3;
+  uint64 queued_at = 4;
+  uint64 start_time = 5;
+  uint64 end_time = 6;
+  uint32 num_stages = 7;
+  uint32 completed_stages = 8;
+  uint64 total_task_duration_ms = 9;
+}
+
 message ListJobsResponse {
   repeated Job running_jobs = 1;
 }

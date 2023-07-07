@@ -1860,6 +1860,28 @@ pub struct Job {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct JobOverview {
+    #[prost(string, tag = "1")]
+    pub job_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub job_name: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "3")]
+    pub status: ::core::option::Option<JobStatus>,
+    #[prost(uint64, tag = "4")]
+    pub queued_at: u64,
+    #[prost(uint64, tag = "5")]
+    pub start_time: u64,
+    #[prost(uint64, tag = "6")]
+    pub end_time: u64,
+    #[prost(uint32, tag = "7")]
+    pub num_stages: u32,
+    #[prost(uint32, tag = "8")]
+    pub completed_stages: u32,
+    #[prost(uint64, tag = "9")]
+    pub total_task_duration_ms: u64,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListJobsResponse {
     #[prost(message, repeated, tag = "1")]
     pub running_jobs: ::prost::alloc::vec::Vec<Job>,

@@ -432,6 +432,8 @@ impl<S: JobState> JobStateTest<S> {
         self.state
             .fail_unscheduled_job(
                 job_id,
+                "name",
+                0,
                 Arc::new(BallistaError::Internal("failed planning".to_string())),
             )
             .await?;
@@ -456,9 +458,7 @@ impl<S: JobState> JobStateTest<S> {
     }
 
     pub async fn submit_job(self, graph: &ExecutionGraph) -> Result<Self> {
-        self.state
-            .submit_job(graph.job_id().to_string(), graph)
-            .await?;
+        self.state.submit_job(graph.job_id(), graph).await?;
         Ok(self)
     }
 

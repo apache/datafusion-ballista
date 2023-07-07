@@ -328,7 +328,7 @@ pub trait JobState: Send + Sync {
     /// Submit a new job to the `JobState`. It is assumed that the submitter owns the job.
     /// In local state the job should be save as `JobStatus::Active` and in shared state
     /// it should be saved as `JobStatus::Running` with `scheduler` set to the current scheduler
-    async fn submit_job(&self, job_id: String, graph: &ExecutionGraph) -> Result<()>;
+    async fn submit_job(&self, job_id: &str, graph: &ExecutionGraph) -> Result<()>;
 
     /// Return a `HashSet` of all active job IDs in the `JobState`
     async fn get_jobs(&self) -> Result<HashSet<String>>;
@@ -354,6 +354,8 @@ pub trait JobState: Send + Sync {
     async fn fail_unscheduled_job(
         &self,
         job_id: &str,
+        job_name: &str,
+        queued_at: u64,
         reason: Arc<BallistaError>,
     ) -> Result<()>;
 

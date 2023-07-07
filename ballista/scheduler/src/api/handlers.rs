@@ -119,8 +119,8 @@ pub(crate) async fn get_jobs<T: AsLogicalPlan, U: AsExecutionPlan>(
     let jobs: Vec<JobResponse> = jobs
         .iter()
         .map(|job| {
-            let status = &job.status;
-            let job_status = match &status.status {
+            let status = &job.status.as_ref().and_then(|s| s.status.as_ref());
+            let job_status = match status {
                 Some(Status::Queued(_)) => "Queued".to_string(),
                 Some(Status::Running(_)) => "Running".to_string(),
                 Some(Status::Failed(error)) => format!("Failed: {:?}", error.error),
@@ -156,8 +156,8 @@ pub(crate) async fn get_jobs<T: AsLogicalPlan, U: AsExecutionPlan>(
                 job_id: job.job_id.to_string(),
                 job_name: job.job_name.to_string(),
                 job_status,
-                num_stages: job.num_stages,
-                completed_stages: job.completed_stages,
+                num_stages: job.num_stages as usize,
+                completed_stages: job.completed_stages as usize,
                 percent_complete,
             }
         })

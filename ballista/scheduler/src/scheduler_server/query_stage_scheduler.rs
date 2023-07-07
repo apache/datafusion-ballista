@@ -102,6 +102,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                         let fail_message = format!("Error planning job {job_id}: {e:?}");
                         QueryStageSchedulerEvent::JobPlanningFailed {
                             job_id,
+                            job_name,
                             fail_message,
                             queued_at,
                             failed_at: timestamp_millis(),
@@ -144,6 +145,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
             }
             QueryStageSchedulerEvent::JobPlanningFailed {
                 job_id,
+                job_name,
                 fail_message,
                 queued_at,
                 failed_at,
@@ -155,7 +157,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                 error!(job_id, fail_message,%error,"job planning failed");
                 self.state
                     .task_manager
-                    .fail_unscheduled_job(&job_id, error)
+                    .fail_unscheduled_job(&job_id, &job_name, queued_at, error)
                     .await?;
             }
             QueryStageSchedulerEvent::JobFinished {

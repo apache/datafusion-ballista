@@ -20,7 +20,7 @@ use crate::cluster::{
     reserve_slots_bias, reserve_slots_round_robin, ClusterState, ExecutorHeartbeatStream,
     JobState, JobStateEvent, JobStateEventStream, JobStatus, TaskDistribution,
 };
-use crate::scheduler_server::{timestamp_secs, SessionBuilder};
+use crate::scheduler_server::{timestamp_millis, timestamp_secs, SessionBuilder};
 use crate::state::execution_graph::ExecutionGraph;
 use crate::state::executor_manager::ExecutorReservation;
 use crate::state::session_manager::create_datafusion_context;
@@ -519,28 +519,29 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         Ok(())
     }
 
-    async fn submit_job(&self, job_id: String, graph: &ExecutionGraph) -> Result<()> {
-        if self.queued_jobs.get(&job_id).is_some() {
+    async fn submit_job(&self, job_id: &str, graph: &ExecutionGraph) -> Result<()> {
+        if self.queued_jobs.get(job_id).is_some() {
             let status = graph.status();
             let encoded_graph =
                 ExecutionGraph::encode_execution_graph(graph.clone(), &self.codec)?;
 
+            let job_id_owned = job_id.to_owned();
             self.store
                 .apply_txn(vec![
                     (
                         Operation::Put(status.encode_to_vec()),
                         Keyspace::JobStatus,
-                        job_id.clone(),
+                        job_id_owned.clone(),
                     ),
                     (
                         Operation::Put(encoded_graph.encode_to_vec()),
                         Keyspace::ExecutionGraph,
-                        job_id.clone(),
+                        job_id_owned,
                     ),
                 ])
                 .await?;
 
-            self.queued_jobs.remove(&job_id);
+            self.queued_jobs.remove(job_id);
 
             Ok(())
         } else {
@@ -621,19 +622,22 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     async fn fail_unscheduled_job(
         &self,
         job_id: &str,
+        job_name: &str,
+        queued_at: u64,
         reason: Arc<BallistaError>,
     ) -> Result<()> {
-        if let Some((job_id, (job_name, queued_at))) = self.queued_jobs.remove(job_id) {
+        if self.queued_jobs.remove(job_id).is_some() {
+            let job_id = job_id.to_string();
             let status = JobStatus {
                 job_id: job_id.clone(),
-                job_name,
+                job_name: job_name.to_string(),
                 status: Some(Status::Failed(FailedJob {
                     error: Some(ExecutionError {
                         error: Some(reason.as_ref().into()),
                     }),
                     queued_at,
                     started_at: 0,
-                    ended_at: 0,
+                    ended_at: timestamp_millis(),
                 })),
             };
 
