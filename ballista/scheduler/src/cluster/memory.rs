@@ -273,7 +273,7 @@ pub struct InMemoryJobState {
     /// In-memory store of queued jobs. Map from Job ID -> (Job Name, queued_at timestamp)
     queued_jobs: DashMap<String, (String, u64)>,
     /// In-memory store of running job statuses. Map from Job ID -> JobStatus
-    running_jobs: DashMap<String, JobStatus>,
+    running_jobs: DashMap<String, ExecutionGraph>,
     /// Active ballista sessions
     sessions: DashMap<String, Arc<SessionContext>>,
     /// `SessionBuilder` for building DataFusion `SessionContext` from `BallistaConfig`
@@ -300,7 +300,7 @@ impl InMemoryJobState {
 impl JobState for InMemoryJobState {
     async fn submit_job(&self, job_id: String, graph: &ExecutionGraph) -> Result<()> {
         if self.queued_jobs.get(&job_id).is_some() {
-            self.running_jobs.insert(job_id.clone(), graph.status());
+            self.running_jobs.insert(job_id.clone(), graph.clone());
             self.queued_jobs.remove(&job_id);
 
             self.job_event_sender.send(&JobStateEvent::JobAcquired {
@@ -327,8 +327,8 @@ impl JobState for InMemoryJobState {
             }));
         }
 
-        if let Some(status) = self.running_jobs.get(job_id).as_deref().cloned() {
-            return Ok(Some(status));
+        if let Some(graph) = self.running_jobs.get(job_id).as_deref().cloned() {
+            return Ok(Some(graph.status()));
         }
 
         if let Some((status, _)) = self.completed_jobs.get(job_id).as_deref() {
@@ -339,11 +339,15 @@ impl JobState for InMemoryJobState {
     }
 
     async fn get_execution_graph(&self, job_id: &str) -> Result<Option<ExecutionGraph>> {
-        Ok(self
-            .completed_jobs
-            .get(job_id)
-            .as_deref()
-            .and_then(|(_, graph)| graph.clone()))
+        if let Some(graph) = self.running_jobs.get(job_id) {
+            Ok(Some(graph.clone()))
+        } else {
+            Ok(self
+                .completed_jobs
+                .get(job_id)
+                .as_deref()
+                .and_then(|(_, graph)| graph.clone()))
+        }
     }
 
     async fn try_acquire_job(&self, _job_id: &str) -> Result<Option<ExecutionGraph>> {
@@ -366,11 +370,11 @@ impl JobState for InMemoryJobState {
                 .insert(job_id.to_string(), (status, Some(graph.clone())));
             self.running_jobs.remove(job_id);
         } else if let Some(old_status) =
-            self.running_jobs.insert(job_id.to_string(), graph.status())
+            self.running_jobs.insert(job_id.to_string(), graph.clone())
         {
             self.job_event_sender.send(&JobStateEvent::JobUpdated {
                 job_id: job_id.to_string(),
-                status: old_status,
+                status: old_status.status(),
             })
         }
 

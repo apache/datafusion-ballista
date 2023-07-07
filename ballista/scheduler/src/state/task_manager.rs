@@ -448,19 +448,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     pub async fn get_jobs(&self) -> Result<Vec<JobOverview>> {
         let job_ids = self.state.get_jobs().await?;
 
-        let mut jobs = vec![];
+        let mut jobs = Vec::with_capacity(job_ids.len());
+
         for job_id in &job_ids {
             if let Some(cached) = self.get_active_execution_graph(job_id) {
                 let graph = cached.read().await;
                 jobs.push(graph.deref().into());
-            } else {
-                let graph = self.state
-                    .get_execution_graph(job_id)
-                    .await?
-                    .ok_or_else(|| BallistaError::Internal(format!("Error getting job overview, no execution graph found for job {job_id}")))?;
+            } else if let Some(graph) = self.state.get_execution_graph(job_id).await? {
                 jobs.push((&graph).into());
+            } else {
+                warn!("Error getting job overview, no execution graph found for job {job_id} in either the active job cache or completed jobs");
             }
         }
+
         Ok(jobs)
     }
 
