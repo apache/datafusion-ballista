@@ -455,7 +455,7 @@ impl BallistaContext {
                     ))),
                 }
             }
-            _ => ctx.sql(sql).await,
+            _ => ctx.execute_logical_plan(plan).await,
         }
     }
 }
