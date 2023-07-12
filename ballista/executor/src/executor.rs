@@ -194,8 +194,8 @@ mod test {
     use datafusion::error::DataFusionError;
     use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_plan::{
-        ExecutionPlan, Partitioning, RecordBatchStream, SendableRecordBatchStream,
-        Statistics,
+        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, RecordBatchStream,
+        SendableRecordBatchStream, Statistics,
     };
     use datafusion::prelude::SessionContext;
     use futures::Stream;
@@ -229,6 +229,20 @@ mod test {
     /// An ExecutionPlan which will never terminate
     #[derive(Debug)]
     pub struct NeverendingOperator;
+
+    impl DisplayAs for NeverendingOperator {
+        fn fmt_as(
+            &self,
+            t: DisplayFormatType,
+            f: &mut std::fmt::Formatter,
+        ) -> std::fmt::Result {
+            match t {
+                DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                    write!(f, "NeverendingOperator")
+                }
+            }
+        }
+    }
 
     impl ExecutionPlan for NeverendingOperator {
         fn as_any(&self) -> &dyn Any {
