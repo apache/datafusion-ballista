@@ -448,7 +448,12 @@ impl From<&DataFusionError> for datafusion_error::Error {
                     message: message.clone()
                 },
             ),
-    }
+            DataFusionError::AvroError(message) => datafusion_error::Error::Internal(
+                execution_error::datafusion_error::Internal {
+                    message: message.to_string()
+                },
+            ),
+        }
     }
 }
 

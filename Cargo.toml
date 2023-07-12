@@ -25,7 +25,7 @@ arrow-flight = { version = "40.0.0", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "40.0.0", default-features = false }
 configure_me = { version = "0.4.0" }
 configure_me_codegen = { version = "0.4.4" }
-datafusion = "26.0.0"
+datafusion = { version = "26.0.0", features = ["avro"] }
 datafusion-cli = "26.0.0"
 datafusion-proto = "26.0.0"
 object_store = "0.5.6"
