@@ -25,7 +25,7 @@ use datafusion::arrow::array::{
 use datafusion::arrow::datatypes::{DataType, Field};
 use datafusion::common::DataFusionError;
 use datafusion::execution::FunctionRegistry;
-use datafusion::logical_expr::{AggregateUDF, ScalarUDF};
+use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::Partitioning;
 use serde::Serialize;
@@ -295,6 +295,7 @@ pub struct TaskDefinition {
 pub struct SimpleFunctionRegistry {
     pub scalar_functions: HashMap<String, Arc<ScalarUDF>>,
     pub aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
+    pub window_functions: HashMap<String, Arc<WindowUDF>>,
 }
 
 impl FunctionRegistry for SimpleFunctionRegistry {
@@ -318,6 +319,16 @@ impl FunctionRegistry for SimpleFunctionRegistry {
         result.cloned().ok_or_else(|| {
             DataFusionError::Internal(format!(
                 "There is no UDAF named \"{name}\" in the TaskContext"
+            ))
+        })
+    }
+
+    fn udwf(&self, name: &str) -> datafusion::common::Result<Arc<WindowUDF>> {
+        let result = self.window_functions.get(name);
+
+        result.cloned().ok_or_else(|| {
+            DataFusionError::Internal(format!(
+                "There is no UDWF named \"{name}\" in the TaskContext"
             ))
         })
     }

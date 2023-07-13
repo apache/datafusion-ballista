@@ -181,12 +181,16 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
 
     let mut task_scalar_functions = HashMap::new();
     let mut task_aggregate_functions = HashMap::new();
+    let mut task_window_functions = HashMap::new();
     // TODO combine the functions from Executor's functions and TaskDefintion's function resources
     for scalar_func in executor.scalar_functions.clone() {
         task_scalar_functions.insert(scalar_func.0.clone(), scalar_func.1);
     }
     for agg_func in executor.aggregate_functions.clone() {
         task_aggregate_functions.insert(agg_func.0, agg_func.1);
+    }
+    for window_func in executor.window_functions.clone() {
+        task_window_functions.insert(window_func.0, window_func.1);
     }
     let runtime = executor.runtime.clone();
     let session_id = task.session_id.clone();
@@ -196,6 +200,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         session_config,
         task_scalar_functions,
         task_aggregate_functions,
+        task_window_functions,
         runtime.clone(),
     ));
 

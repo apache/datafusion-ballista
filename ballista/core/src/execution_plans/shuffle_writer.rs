@@ -47,7 +47,8 @@ use datafusion::physical_plan::metrics::{
 };
 
 use datafusion::physical_plan::{
-    DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream, Statistics,
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream,
+    Statistics,
 };
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 
@@ -294,6 +295,24 @@ impl ShuffleWriterExec {
     }
 }
 
+impl DisplayAs for ShuffleWriterExec {
+    fn fmt_as(
+        &self,
+        t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(
+                    f,
+                    "ShuffleWriterExec: {:?}",
+                    self.shuffle_output_partitioning
+                )
+            }
+        }
+    }
+}
+
 impl ExecutionPlan for ShuffleWriterExec {
     fn as_any(&self) -> &dyn Any {
         self
@@ -397,22 +416,6 @@ impl ExecutionPlan for ShuffleWriterExec {
 
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.metrics.clone_inner())
-    }
-
-    fn fmt_as(
-        &self,
-        t: DisplayFormatType,
-        f: &mut std::fmt::Formatter,
-    ) -> std::fmt::Result {
-        match t {
-            DisplayFormatType::Default => {
-                write!(
-                    f,
-                    "ShuffleWriterExec: {:?}",
-                    self.shuffle_output_partitioning
-                )
-            }
-        }
     }
 
     fn statistics(&self) -> Statistics {

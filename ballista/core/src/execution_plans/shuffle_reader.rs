@@ -37,7 +37,7 @@ use datafusion::error::Result;
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::{
-    DisplayFormatType, ExecutionPlan, Partitioning, RecordBatchStream,
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, RecordBatchStream,
     SendableRecordBatchStream, Statistics,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
@@ -80,6 +80,20 @@ impl ShuffleReaderExec {
             partition,
             metrics: ExecutionPlanMetricsSet::new(),
         })
+    }
+}
+
+impl DisplayAs for ShuffleReaderExec {
+    fn fmt_as(
+        &self,
+        t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(f, "ShuffleReaderExec: partitions={}", self.partition.len())
+            }
+        }
     }
 }
 
@@ -152,18 +166,6 @@ impl ExecutionPlan for ShuffleReaderExec {
             response_receiver.try_flatten(),
         );
         Ok(Box::pin(result))
-    }
-
-    fn fmt_as(
-        &self,
-        t: DisplayFormatType,
-        f: &mut std::fmt::Formatter,
-    ) -> std::fmt::Result {
-        match t {
-            DisplayFormatType::Default => {
-                write!(f, "ShuffleReaderExec: partitions={}", self.partition.len())
-            }
-        }
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

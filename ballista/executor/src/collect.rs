@@ -27,7 +27,8 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 use datafusion::physical_plan::{
-    DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream, Statistics,
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream,
+    Statistics,
 };
 use datafusion::{error::Result, physical_plan::RecordBatchStream};
 use futures::stream::SelectAll;
@@ -43,6 +44,20 @@ pub struct CollectExec {
 impl CollectExec {
     pub fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
         Self { plan }
+    }
+}
+
+impl DisplayAs for CollectExec {
+    fn fmt_as(
+        &self,
+        t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(f, "CollectExec")
+            }
+        }
     }
 }
 
@@ -91,18 +106,6 @@ impl ExecutionPlan for CollectExec {
             schema: self.schema(),
             select_all: Box::pin(futures::stream::select_all(streams)),
         }))
-    }
-
-    fn fmt_as(
-        &self,
-        t: DisplayFormatType,
-        f: &mut std::fmt::Formatter,
-    ) -> std::fmt::Result {
-        match t {
-            DisplayFormatType::Default => {
-                write!(f, "CollectExec")
-            }
-        }
     }
 
     fn statistics(&self) -> Statistics {

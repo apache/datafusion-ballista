@@ -405,7 +405,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         let plan = session_ctx.state().create_physical_plan(plan).await?;
         debug!(
             "Physical plan: {}",
-            DisplayableExecutionPlan::new(plan.as_ref()).indent()
+            DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
         );
 
         self.task_manager

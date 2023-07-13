@@ -23,7 +23,8 @@ use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 use datafusion::physical_plan::{
-    DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream, Statistics,
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream,
+    Statistics,
 };
 
 /// UnresolvedShuffleExec represents a dependency on the results of a ShuffleWriterExec node which hasn't computed yet.
@@ -53,6 +54,20 @@ impl UnresolvedShuffleExec {
             stage_id,
             schema,
             output_partition_count,
+        }
+    }
+}
+
+impl DisplayAs for UnresolvedShuffleExec {
+    fn fmt_as(
+        &self,
+        t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(f, "UnresolvedShuffleExec")
+            }
         }
     }
 }
@@ -98,18 +113,6 @@ impl ExecutionPlan for UnresolvedShuffleExec {
         Err(DataFusionError::Plan(
             "Ballista UnresolvedShuffleExec does not support execution".to_owned(),
         ))
-    }
-
-    fn fmt_as(
-        &self,
-        t: DisplayFormatType,
-        f: &mut std::fmt::Formatter,
-    ) -> std::fmt::Result {
-        match t {
-            DisplayFormatType::Default => {
-                write!(f, "UnresolvedShuffleExec")
-            }
-        }
     }
 
     fn statistics(&self) -> Statistics {

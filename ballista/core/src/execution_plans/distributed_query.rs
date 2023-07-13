@@ -33,7 +33,8 @@ use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream, Statistics,
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream,
+    Statistics,
 };
 use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
@@ -119,6 +120,24 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
     }
 }
 
+impl<T: 'static + AsLogicalPlan> DisplayAs for DistributedQueryExec<T> {
+    fn fmt_as(
+        &self,
+        t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(
+                    f,
+                    "DistributedQueryExec: scheduler_url={}",
+                    self.scheduler_url
+                )
+            }
+        }
+    }
+}
+
 impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     fn as_any(&self) -> &dyn Any {
         self
@@ -189,22 +208,6 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
 
         let schema = self.schema();
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
-    }
-
-    fn fmt_as(
-        &self,
-        t: DisplayFormatType,
-        f: &mut std::fmt::Formatter,
-    ) -> std::fmt::Result {
-        match t {
-            DisplayFormatType::Default => {
-                write!(
-                    f,
-                    "DistributedQueryExec: scheduler_url={}",
-                    self.scheduler_url
-                )
-            }
-        }
     }
 
     fn statistics(&self) -> Statistics {

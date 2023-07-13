@@ -1622,7 +1622,7 @@ pub struct TaskDescription {
 
 impl Debug for TaskDescription {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent();
+        let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent(false);
         write!(
             f,
             "TaskDescription[session_id: {},job: {}, stage: {}.{}, partition: {} task_id {}, task attempt {}]\n{}",

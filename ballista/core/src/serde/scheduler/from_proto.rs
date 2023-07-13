@@ -18,7 +18,7 @@
 use chrono::{TimeZone, Utc};
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::execution::runtime_env::RuntimeEnv;
-use datafusion::logical_expr::{AggregateUDF, ScalarUDF};
+use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use datafusion::physical_plan::metrics::{
     Count, Gauge, MetricValue, MetricsSet, Time, Timestamp,
 };
@@ -279,6 +279,7 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     runtime: Arc<RuntimeEnv>,
     scalar_functions: HashMap<String, Arc<ScalarUDF>>,
     aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
+    window_functions: HashMap<String, Arc<WindowUDF>>,
     codec: BallistaCodec<T, U>,
 ) -> Result<TaskDefinition, BallistaError> {
     let mut props = HashMap::new();
@@ -289,6 +290,7 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
 
     let mut task_scalar_functions = HashMap::new();
     let mut task_aggregate_functions = HashMap::new();
+    let mut task_window_functions = HashMap::new();
     // TODO combine the functions from Executor's functions and TaskDefinition's function resources
     for scalar_func in scalar_functions {
         task_scalar_functions.insert(scalar_func.0, scalar_func.1);
@@ -296,9 +298,13 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     for agg_func in aggregate_functions {
         task_aggregate_functions.insert(agg_func.0, agg_func.1);
     }
+    for agg_func in window_functions {
+        task_window_functions.insert(agg_func.0, agg_func.1);
+    }
     let function_registry = Arc::new(SimpleFunctionRegistry {
         scalar_functions: task_scalar_functions,
         aggregate_functions: task_aggregate_functions,
+        window_functions: task_window_functions,
     });
 
     let encoded_plan = task.plan.as_slice();
@@ -342,6 +348,7 @@ pub fn get_task_definition_vec<
     runtime: Arc<RuntimeEnv>,
     scalar_functions: HashMap<String, Arc<ScalarUDF>>,
     aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
+    window_functions: HashMap<String, Arc<WindowUDF>>,
     codec: BallistaCodec<T, U>,
 ) -> Result<Vec<TaskDefinition>, BallistaError> {
     let mut props = HashMap::new();
@@ -352,6 +359,7 @@ pub fn get_task_definition_vec<
 
     let mut task_scalar_functions = HashMap::new();
     let mut task_aggregate_functions = HashMap::new();
+    let mut task_window_functions = HashMap::new();
     // TODO combine the functions from Executor's functions and TaskDefinition's function resources
     for scalar_func in scalar_functions {
         task_scalar_functions.insert(scalar_func.0, scalar_func.1);
@@ -359,9 +367,13 @@ pub fn get_task_definition_vec<
     for agg_func in aggregate_functions {
         task_aggregate_functions.insert(agg_func.0, agg_func.1);
     }
+    for agg_func in window_functions {
+        task_window_functions.insert(agg_func.0, agg_func.1);
+    }
     let function_registry = Arc::new(SimpleFunctionRegistry {
         scalar_functions: task_scalar_functions,
         aggregate_functions: task_aggregate_functions,
+        window_functions: task_window_functions,
     });
 
     let encoded_plan = multi_task.plan.as_slice();
