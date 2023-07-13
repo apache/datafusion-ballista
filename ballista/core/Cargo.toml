@@ -56,7 +56,7 @@ futures = "0.3"
 hashbrown = "0.13"
 
 itertools = "0.10"
-libloading = "0.7.3"
+libloading = "0.8.0"
 log = "0.4"
 object_store = { workspace = true }
 once_cell = "1.9.0"
