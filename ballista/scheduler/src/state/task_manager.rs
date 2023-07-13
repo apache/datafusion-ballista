@@ -20,20 +20,20 @@ use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::execution_graph::{
     ExecutionGraph, ExecutionStage, RunningTaskInfo, TaskDescription,
 };
-use crate::state::executor_manager::{ExecutorManager, ExecutorReservation};
+use crate::state::executor_manager::ExecutorManager;
 
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 
 use crate::cluster::JobState;
 use ballista_core::serde::protobuf::{
-    self, JobStatus, MultiTaskDefinition, TaskDefinition, TaskId, TaskStatus,
+    job_status, JobStatus, MultiTaskDefinition, TaskDefinition, TaskId, TaskStatus,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use ballista_core::serde::BallistaCodec;
 use dashmap::DashMap;
-use datafusion::physical_plan::ExecutionPlan;
 
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info, warn};
@@ -101,19 +101,9 @@ impl TaskLauncher for DefaultTaskLauncher {
                 executor.id, tasks_ids
             );
         }
-        let mut client = executor_manager.get_client(&executor.id).await?;
-        client
-            .launch_multi_task(protobuf::LaunchMultiTaskParams {
-                multi_tasks: tasks,
-                scheduler_id: self.scheduler_id.clone(),
-            })
-            .await
-            .map_err(|e| {
-                BallistaError::Internal(format!(
-                    "Failed to connect to executor {}: {:?}",
-                    executor.id, e
-                ))
-            })?;
+        executor_manager
+            .launch_multi_task(&executor.id, tasks, self.scheduler_id.clone())
+            .await?;
         Ok(())
     }
 }
@@ -129,17 +119,21 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 }
 
 #[derive(Clone)]
-struct JobInfoCache {
+pub struct JobInfoCache {
     // Cache for active execution graphs curated by this scheduler
-    execution_graph: Arc<RwLock<ExecutionGraph>>,
+    pub execution_graph: Arc<RwLock<ExecutionGraph>>,
+    // Cache for job status
+    pub status: Option<job_status::Status>,
     // Cache for encoded execution stage plan to avoid duplicated encoding for multiple tasks
     encoded_stage_plans: HashMap<usize, Vec<u8>>,
 }
 
 impl JobInfoCache {
-    fn new(graph: ExecutionGraph) -> Self {
+    pub fn new(graph: ExecutionGraph) -> Self {
+        let status = graph.status().status.clone();
         Self {
             execution_graph: Arc::new(RwLock::new(graph)),
+            status,
             encoded_stage_plans: HashMap::new(),
         }
     }
@@ -186,13 +180,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 
     /// Enqueue a job for scheduling
-    pub async fn queue_job(
-        &self,
-        job_id: &str,
-        job_name: &str,
-        queued_at: u64,
-    ) -> Result<()> {
-        self.state.accept_job(job_id, job_name, queued_at).await
+    pub fn queue_job(&self, job_id: &str, job_name: &str, queued_at: u64) -> Result<()> {
+        self.state.accept_job(job_id, job_name, queued_at)
+    }
+
+    /// Get the number of queued jobs. If it's big, then it means the scheduler is too busy.
+    /// In normal case, it's better to be 0.
+    pub fn pending_job_number(&self) -> usize {
+        self.state.pending_job_number()
+    }
+
+    /// Get the number of running jobs.
+    pub fn running_job_number(&self) -> usize {
+        self.active_job_cache.len()
     }
 
     /// Generate an ExecutionGraph for the job and save it to the persistent state.
@@ -225,6 +225,22 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(())
     }
 
+    pub fn get_running_job_cache(&self) -> Arc<HashMap<String, JobInfoCache>> {
+        let ret = self
+            .active_job_cache
+            .iter()
+            .filter_map(|pair| {
+                let (job_id, job_info) = pair.pair();
+                if matches!(job_info.status, Some(job_status::Status::Running(_))) {
+                    Some((job_id.clone(), job_info.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect::<HashMap<_, _>>();
+        Arc::new(ret)
+    }
+
     /// Get a list of active job ids
     pub async fn get_jobs(&self) -> Result<Vec<JobOverview>> {
         let job_ids = self.state.get_jobs().await?;
@@ -251,7 +267,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         if let Some(graph) = self.get_active_execution_graph(job_id) {
             let guard = graph.read().await;
 
-            Ok(Some(guard.status()))
+            Ok(Some(guard.status().clone()))
         } else {
             self.state.get_job_status(job_id).await
         }
@@ -320,61 +336,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(events)
     }
 
-    /// Take a list of executor reservations and fill them with tasks that are ready
-    /// to be scheduled.
-    ///
-    /// Here we use the following  algorithm:
-    ///
-    /// 1. For each free reservation, try to assign a task from one of the active jobs
-    /// 2. If we cannot find a task in all active jobs, then add the reservation to the list of unassigned reservations
-    ///
-    /// Finally, we return:
-    /// 1. A list of assignments which is a (Executor ID, Task) tuple
-    /// 2. A list of unassigned reservations which we could not find tasks for
-    /// 3. The number of pending tasks across active jobs
-    pub async fn fill_reservations(
-        &self,
-        reservations: &[ExecutorReservation],
-    ) -> Result<(
-        Vec<(String, TaskDescription)>,
-        Vec<ExecutorReservation>,
-        usize,
-    )> {
-        // Reinitialize the free reservations.
-        let free_reservations: Vec<ExecutorReservation> = reservations
-            .iter()
-            .map(|reservation| {
-                ExecutorReservation::new_free(reservation.executor_id.clone())
-            })
-            .collect();
-
-        let mut assignments: Vec<(String, TaskDescription)> = vec![];
-        let mut pending_tasks = 0usize;
-        let mut assign_tasks = 0usize;
-        for pairs in self.active_job_cache.iter() {
-            let (_job_id, job_info) = pairs.pair();
-            let mut graph = job_info.execution_graph.write().await;
-            for reservation in free_reservations.iter().skip(assign_tasks) {
-                if let Some(task) = graph.pop_next_task(&reservation.executor_id)? {
-                    assignments.push((reservation.executor_id.clone(), task));
-                    assign_tasks += 1;
-                } else {
-                    break;
-                }
-            }
-            if assign_tasks >= free_reservations.len() {
-                pending_tasks += graph.available_tasks();
-                break;
-            }
-        }
-
-        let mut unassigned = vec![];
-        for reservation in free_reservations.iter().skip(assign_tasks) {
-            unassigned.push(reservation.clone());
-        }
-        Ok((assignments, unassigned, pending_tasks))
-    }
-
     /// Mark a job to success. This will create a key under the CompletedJobs keyspace
     /// and remove the job from ActiveJobs
     pub(crate) async fn succeed_job(&self, job_id: &str) -> Result<()> {
@@ -410,7 +371,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         failure_reason: String,
     ) -> Result<(Vec<RunningTaskInfo>, usize)> {
         let (tasks_to_cancel, pending_tasks) = if let Some(graph) =
-            self.get_active_execution_graph(job_id)
+            self.remove_active_execution_graph(job_id)
         {
             let mut guard = graph.write().await;
 
@@ -717,7 +678,7 @@ impl From<&ExecutionGraph> for JobOverview {
         Self {
             job_id: value.job_id().to_string(),
             job_name: value.job_name().to_string(),
-            status: value.status(),
+            status: value.status().clone(),
             start_time: value.start_time(),
             end_time: value.end_time(),
             num_stages: value.stage_count(),

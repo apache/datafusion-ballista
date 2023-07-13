@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -35,7 +34,6 @@ use tokio::time::Instant;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
-use crate::state::executor_manager::ExecutorReservation;
 use crate::state::SchedulerState;
 
 pub(crate) struct QueryStageScheduler<
@@ -44,7 +42,6 @@ pub(crate) struct QueryStageScheduler<
 > {
     state: Arc<SchedulerState<T, U>>,
     metrics_collector: Arc<dyn SchedulerMetricsCollector>,
-    pending_tasks: AtomicUsize,
     config: Arc<SchedulerConfig>,
 }
 
@@ -57,19 +54,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
         Self {
             state,
             metrics_collector,
-            pending_tasks: AtomicUsize::default(),
             config,
         }
-    }
-
-    pub(crate) fn set_pending_tasks(&self, tasks: usize) {
-        self.pending_tasks.store(tasks, Ordering::SeqCst);
-        self.metrics_collector
-            .set_pending_tasks_queue_size(tasks as u64);
-    }
-
-    pub(crate) fn pending_tasks(&self) -> usize {
-        self.pending_tasks.load(Ordering::SeqCst)
     }
 
     pub(crate) fn metrics_collector(&self) -> &dyn SchedulerMetricsCollector {
@@ -99,7 +85,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         if self.config.scheduler_event_expected_processing_duration > 0 {
             time_recorder = Some((Instant::now(), event.clone()));
         };
-        let tx_event = EventSender::new(tx_event.clone());
+        let event_sender = EventSender::new(tx_event.clone());
         match event {
             QueryStageSchedulerEvent::JobQueued {
                 job_id,
@@ -110,127 +96,55 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             } => {
                 info!("Job {} queued with name {:?}", job_id, job_name);
 
-                self.state
+                if let Err(e) = self
+                    .state
                     .task_manager
                     .queue_job(&job_id, &job_name, queued_at)
-                    .await?;
+                {
+                    error!("Fail to queue job {} due to {:?}", job_id, e);
+                    return Ok(());
+                }
 
                 let state = self.state.clone();
                 tokio::spawn(async move {
-                    let event =
-                        match state.plan_job(&job_id, session_ctx.clone(), &plan).await {
-                            Ok(plan) => QueryStageSchedulerEvent::JobSubmitted {
-                                job_id,
-                                job_name,
-                                session_id: session_ctx.session_id(),
-                                queued_at,
-                                submitted_at: timestamp_millis(),
-                                resubmit: false,
-                                plan,
-                            },
-                            Err(error) => {
-                                let fail_message =
-                                    format!("Error planning job {job_id}: {error:?}");
-                                error!("{}", &fail_message);
-                                QueryStageSchedulerEvent::JobPlanningFailed {
-                                    job_id,
-                                    fail_message,
-                                    queued_at,
-                                    failed_at: timestamp_millis(),
-                                }
-                            }
-                        };
-                    if let Err(e) = tx_event.post_event(event).await {
+                    let event = if let Err(e) = state
+                        .submit_job(&job_id, &job_name, session_ctx, &plan, queued_at)
+                        .await
+                    {
+                        let fail_message = format!("Error planning job {job_id}: {e:?}");
+                        error!("{}", &fail_message);
+                        QueryStageSchedulerEvent::JobPlanningFailed {
+                            job_id,
+                            fail_message,
+                            queued_at,
+                            failed_at: timestamp_millis(),
+                        }
+                    } else {
+                        QueryStageSchedulerEvent::JobSubmitted {
+                            job_id,
+                            queued_at,
+                            submitted_at: timestamp_millis(),
+                        }
+                    };
+                    if let Err(e) = event_sender.post_event(event).await {
                         error!("Fail to send event due to {}", e);
                     }
                 });
             }
             QueryStageSchedulerEvent::JobSubmitted {
                 job_id,
-                job_name,
-                session_id,
                 queued_at,
                 submitted_at,
-                resubmit,
-                plan,
             } => {
-                if !resubmit {
-                    self.metrics_collector.record_submitted(
-                        &job_id,
-                        queued_at,
-                        submitted_at,
-                    );
-                    self.state
-                        .task_manager
-                        .submit_job(
-                            job_id.as_str(),
-                            job_name.as_str(),
-                            session_id.as_str(),
-                            plan.clone(),
-                            queued_at,
-                        )
-                        .await?;
-                    info!("Job {} submitted", job_id);
-                } else {
-                    debug!("Job {} resubmitted", job_id);
-                }
+                self.metrics_collector
+                    .record_submitted(&job_id, queued_at, submitted_at);
+
+                info!("Job {} submitted", job_id);
 
                 if self.state.config.is_push_staged_scheduling() {
-                    let available_tasks = self
-                        .state
-                        .task_manager
-                        .get_available_task_count(&job_id)
+                    event_sender
+                        .post_event(QueryStageSchedulerEvent::ReviveOffers)
                         .await?;
-
-                    let reservations: Vec<ExecutorReservation> = self
-                        .state
-                        .executor_manager
-                        .reserve_slots(available_tasks as u32)
-                        .await?
-                        .into_iter()
-                        .map(|res| res.assign(job_id.clone()))
-                        .collect();
-
-                    if reservations.is_empty()
-                        && self.config.job_resubmit_interval_ms.is_some()
-                    {
-                        let wait_ms = self.config.job_resubmit_interval_ms.unwrap();
-
-                        debug!(
-                            "No task slots reserved for job {job_id}, resubmitting after {wait_ms}ms"
-                        );
-
-                        tokio::task::spawn(async move {
-                            tokio::time::sleep(Duration::from_millis(wait_ms)).await;
-
-                            if let Err(e) = tx_event
-                                .post_event(QueryStageSchedulerEvent::JobSubmitted {
-                                    job_id,
-                                    job_name,
-                                    session_id,
-                                    queued_at,
-                                    submitted_at,
-                                    resubmit: true,
-                                    plan: plan.clone(),
-                                })
-                                .await
-                            {
-                                error!("error resubmitting job: {}", e);
-                            }
-                        });
-                    } else {
-                        debug!(
-                            "Reserved {} task slots for submitted job {}",
-                            reservations.len(),
-                            job_id
-                        );
-
-                        tx_event
-                            .post_event(QueryStageSchedulerEvent::ReservationOffering(
-                                reservations,
-                            ))
-                            .await?;
-                    }
                 }
             }
             QueryStageSchedulerEvent::JobPlanningFailed {
@@ -243,10 +157,17 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .record_failed(&job_id, queued_at, failed_at);
 
                 error!("Job {} failed: {}", job_id, fail_message);
-                self.state
+                if let Err(e) = self
+                    .state
                     .task_manager
                     .fail_unscheduled_job(&job_id, fail_message)
-                    .await?;
+                    .await
+                {
+                    error!(
+                        "Fail to invoke fail_unscheduled_job for job {} due to {:?}",
+                        job_id, e
+                    );
+                }
             }
             QueryStageSchedulerEvent::JobFinished {
                 job_id,
@@ -257,7 +178,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .record_completed(&job_id, queued_at, completed_at);
 
                 info!("Job {} success", job_id);
-                self.state.task_manager.succeed_job(&job_id).await?;
+                if let Err(e) = self.state.task_manager.succeed_job(&job_id).await {
+                    error!(
+                        "Fail to invoke succeed_job for job {} due to {:?}",
+                        job_id, e
+                    );
+                }
                 self.state.clean_up_successful_job(job_id);
             }
             QueryStageSchedulerEvent::JobRunningFailed {
@@ -270,34 +196,59 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .record_failed(&job_id, queued_at, failed_at);
 
                 error!("Job {} running failed", job_id);
-                let (running_tasks, _pending_tasks) = self
+                match self
                     .state
                     .task_manager
                     .abort_job(&job_id, fail_message)
-                    .await?;
-
-                if !running_tasks.is_empty() {
-                    tx_event
-                        .post_event(QueryStageSchedulerEvent::CancelTasks(running_tasks))
-                        .await?;
+                    .await
+                {
+                    Ok((running_tasks, _pending_tasks)) => {
+                        if !running_tasks.is_empty() {
+                            event_sender
+                                .post_event(QueryStageSchedulerEvent::CancelTasks(
+                                    running_tasks,
+                                ))
+                                .await?;
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            "Fail to invoke abort_job for job {} due to {:?}",
+                            job_id, e
+                        );
+                    }
                 }
                 self.state.clean_up_failed_job(job_id);
             }
             QueryStageSchedulerEvent::JobUpdated(job_id) => {
                 info!("Job {} Updated", job_id);
-                self.state.task_manager.update_job(&job_id).await?;
+                if let Err(e) = self.state.task_manager.update_job(&job_id).await {
+                    error!(
+                        "Fail to invoke update_job for job {} due to {:?}",
+                        job_id, e
+                    );
+                }
             }
             QueryStageSchedulerEvent::JobCancel(job_id) => {
                 self.metrics_collector.record_cancelled(&job_id);
 
                 info!("Job {} Cancelled", job_id);
-                let (running_tasks, _pending_tasks) =
-                    self.state.task_manager.cancel_job(&job_id).await?;
+                match self.state.task_manager.cancel_job(&job_id).await {
+                    Ok((running_tasks, _pending_tasks)) => {
+                        event_sender
+                            .post_event(QueryStageSchedulerEvent::CancelTasks(
+                                running_tasks,
+                            ))
+                            .await?;
+                    }
+                    Err(e) => {
+                        error!(
+                            "Fail to invoke cancel_job for job {} due to {:?}",
+                            job_id, e
+                        );
+                    }
+                }
                 self.state.clean_up_failed_job(job_id);
-
-                tx_event
-                    .post_event(QueryStageSchedulerEvent::CancelTasks(running_tasks))
-                    .await?;
             }
             QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status) => {
                 debug!(
@@ -306,22 +257,26 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 );
 
                 let num_status = tasks_status.len();
+                if self.state.config.is_push_staged_scheduling() {
+                    self.state
+                        .executor_manager
+                        .unbind_tasks(vec![(executor_id.clone(), num_status as u32)])
+                        .await?;
+                }
                 match self
                     .state
                     .update_task_statuses(&executor_id, tasks_status)
                     .await
                 {
-                    Ok((stage_events, offers)) => {
+                    Ok(stage_events) => {
                         if self.state.config.is_push_staged_scheduling() {
-                            tx_event
-                                .post_event(
-                                    QueryStageSchedulerEvent::ReservationOffering(offers),
-                                )
+                            event_sender
+                                .post_event(QueryStageSchedulerEvent::ReviveOffers)
                                 .await?;
                         }
 
                         for stage_event in stage_events {
-                            tx_event.post_event(stage_event).await?;
+                            event_sender.post_event(stage_event).await?;
                         }
                     }
                     Err(e) => {
@@ -333,27 +288,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     }
                 }
             }
-            QueryStageSchedulerEvent::ReservationOffering(reservations) => {
-                let (reservations, pending) =
-                    self.state.offer_reservation(reservations).await?;
-
-                self.set_pending_tasks(pending);
-
-                if !reservations.is_empty() {
-                    tx_event
-                        .post_event(QueryStageSchedulerEvent::ReservationOffering(
-                            reservations,
-                        ))
-                        .await?;
-                }
+            QueryStageSchedulerEvent::ReviveOffers => {
+                self.state.revive_offers(event_sender).await?;
             }
             QueryStageSchedulerEvent::ExecutorLost(executor_id, _) => {
                 match self.state.task_manager.executor_lost(&executor_id).await {
                     Ok(tasks) => {
                         if !tasks.is_empty() {
-                            tx_event
-                                .post_event(QueryStageSchedulerEvent::CancelTasks(tasks))
-                                .await?;
+                            if let Err(e) = self
+                                .state
+                                .executor_manager
+                                .cancel_running_tasks(tasks)
+                                .await
+                            {
+                                warn!("Fail to cancel running tasks due to {:?}", e);
+                            }
                         }
                     }
                     Err(e) => {
@@ -365,10 +314,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 }
             }
             QueryStageSchedulerEvent::CancelTasks(tasks) => {
-                self.state
+                if let Err(e) = self
+                    .state
                     .executor_manager
                     .cancel_running_tasks(tasks)
-                    .await?;
+                    .await
+                {
+                    warn!("Fail to cancel running tasks due to {:?}", e);
+                }
             }
             QueryStageSchedulerEvent::JobDataClean(job_id) => {
                 self.state.executor_manager.clean_up_job_data(job_id);
@@ -397,75 +350,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 #[cfg(test)]
 mod tests {
     use crate::config::SchedulerConfig;
-    use crate::scheduler_server::event::QueryStageSchedulerEvent;
     use crate::test_utils::{await_condition, SchedulerTest, TestMetricsCollector};
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
-    use ballista_core::event_loop::EventAction;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::logical_expr::{col, sum, LogicalPlan};
-    use datafusion::physical_plan::empty::EmptyExec;
     use datafusion::test_util::scan_empty_with_partitions;
     use std::sync::Arc;
     use std::time::Duration;
     use tracing_subscriber::EnvFilter;
 
     #[tokio::test]
-    async fn test_job_resubmit() -> Result<()> {
-        let plan = test_plan(10);
-
-        let metrics_collector = Arc::new(TestMetricsCollector::default());
-
-        // Set resubmit interval of 1ms
-        let mut test = SchedulerTest::new(
-            SchedulerConfig::default()
-                .with_job_resubmit_interval_ms(1)
-                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
-            metrics_collector.clone(),
-            0,
-            0,
-            None,
-        )
-        .await?;
-
-        test.submit("job-id", "job-name", &plan).await?;
-
-        let query_stage_scheduler = test.query_stage_scheduler();
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<QueryStageSchedulerEvent>(10);
-
-        let event = QueryStageSchedulerEvent::JobSubmitted {
-            job_id: "job-id".to_string(),
-            job_name: "job-name".to_string(),
-            session_id: "session-id".to_string(),
-            queued_at: 0,
-            submitted_at: 0,
-            resubmit: false,
-            plan: Arc::new(EmptyExec::new(false, Arc::new(test_schema()))),
-        };
-
-        // Mock the JobQueued work.
-        query_stage_scheduler
-            .state
-            .task_manager
-            .queue_job("job-id", "job-name", 0)
-            .await?;
-
-        query_stage_scheduler.on_receive(event, &tx, &rx).await?;
-
-        let next_event = rx.recv().await.unwrap();
-
-        dbg!(next_event.clone());
-        assert!(matches!(
-            next_event,
-            QueryStageSchedulerEvent::JobSubmitted { job_id, resubmit, .. } if job_id == "job-id" && resubmit
-        ));
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_pending_task_metric() -> Result<()> {
+    async fn test_pending_job_metric() -> Result<()> {
         tracing_subscriber::fmt()
             .with_env_filter(EnvFilter::from_default_env())
             .init();
@@ -484,92 +380,53 @@ mod tests {
         )
         .await?;
 
-        test.submit("job-1", "", &plan).await?;
+        let job_id = "job-1";
 
-        // First stage has 10 tasks, one of which should be scheduled immediately
-        expect_pending_tasks(&test, 9).await;
-
-        test.tick().await?;
-
-        // First task completes and another should be scheduler, so we should have 8
-        expect_pending_tasks(&test, 8).await;
-
-        // Complete the 8 remaining tasks in the first stage
-        for _ in 0..8 {
-            test.tick().await?;
-        }
-
-        // The second stage should be resolved so we should have a new pending task
-        expect_pending_tasks(&test, 1).await;
-
-        // complete the final task
-        test.tick().await?;
-
-        expect_pending_tasks(&test, 0).await;
-
-        // complete the final task
-        test.tick().await?;
-
-        // Job should be finished now
-        let _ = test.await_completion_timeout("job-1", 5_000).await?;
-
-        Ok(())
-    }
-
-    #[ignore]
-    #[tokio::test]
-    async fn test_pending_task_metric_on_cancellation() -> Result<()> {
-        let plan = test_plan(10);
-
-        let metrics_collector = Arc::new(TestMetricsCollector::default());
-
-        let mut test = SchedulerTest::new(
-            SchedulerConfig::default()
-                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
-            metrics_collector.clone(),
-            1,
-            1,
-            None,
-        )
-        .await?;
-
-        test.submit("job-1", "", &plan).await?;
-
-        // First stage has 10 tasks, one of which should be scheduled immediately
-        expect_pending_tasks(&test, 9).await;
+        test.submit(job_id, "", &plan).await?;
 
         test.tick().await?;
 
-        // First task completes and another should be scheduler, so we should have 8
-        expect_pending_tasks(&test, 8).await;
+        let pending_jobs = test.pending_job_number();
+        let expected = 0usize;
+        assert_eq!(
+            expected, pending_jobs,
+            "Expected {} pending jobs but found {}",
+            expected, pending_jobs
+        );
 
-        test.cancel("job-1").await?;
+        let running_jobs = test.running_job_number();
+        let expected = 1usize;
+        assert_eq!(
+            expected, running_jobs,
+            "Expected {} running jobs but found {}",
+            expected, running_jobs
+        );
 
-        // First task completes and another should be scheduler, so we should have 8
-        expect_pending_tasks(&test, 0).await;
+        test.cancel(job_id).await?;
 
-        Ok(())
-    }
+        let expected = 0usize;
+        let success = await_condition(Duration::from_millis(10), 20, || {
+            let running_jobs = test.running_job_number();
 
-    async fn expect_pending_tasks(test: &SchedulerTest, expected: usize) {
-        let success = await_condition(Duration::from_millis(500), 20, || {
-            let pending_tasks = test.pending_tasks();
-
-            futures::future::ready(Ok(pending_tasks == expected))
+            futures::future::ready(Ok(running_jobs == expected))
         })
         .await
         .unwrap();
-
         assert!(
             success,
-            "Expected {} pending tasks but found {}",
+            "Expected {} running jobs but found {}",
             expected,
-            test.pending_tasks()
+            test.running_job_number()
         );
+
+        Ok(())
     }
 
     fn test_plan(partitions: usize) -> LogicalPlan {
-        let schema = test_schema();
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("gmv", DataType::UInt64, false),
+        ]);
 
         scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), partitions)
             .unwrap()
@@ -577,12 +434,5 @@ mod tests {
             .unwrap()
             .build()
             .unwrap()
-    }
-
-    fn test_schema() -> Schema {
-        Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("gmv", DataType::UInt64, false),
-        ])
     }
 }

@@ -25,7 +25,8 @@ use datafusion_proto::physical_plan::AsExecutionPlan;
 
 use tonic::{Request, Response};
 
-const INFLIGHT_TASKS_METRIC_NAME: &str = "inflight_tasks";
+const PENDING_JOBS_METRIC_NAME: &str = "pending_jobs";
+const RUNNING_JOBS_METRIC_NAME: &str = "running_jobs";
 
 #[tonic::async_trait]
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExternalScaler
@@ -44,8 +45,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExternalScaler
     ) -> Result<Response<GetMetricSpecResponse>, tonic::Status> {
         Ok(Response::new(GetMetricSpecResponse {
             metric_specs: vec![MetricSpec {
-                metric_name: INFLIGHT_TASKS_METRIC_NAME.to_string(),
-                target_size: 1,
+                metric_name: PENDING_JOBS_METRIC_NAME.to_string(),
+                target_size: 0,
             }],
         }))
     }
@@ -55,10 +56,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExternalScaler
         _request: Request<GetMetricsRequest>,
     ) -> Result<Response<GetMetricsResponse>, tonic::Status> {
         Ok(Response::new(GetMetricsResponse {
-            metric_values: vec![MetricValue {
-                metric_name: INFLIGHT_TASKS_METRIC_NAME.to_string(),
-                metric_value: self.pending_tasks() as i64,
-            }],
+            metric_values: vec![
+                MetricValue {
+                    metric_name: PENDING_JOBS_METRIC_NAME.to_string(),
+                    metric_value: self.pending_job_number() as i64,
+                },
+                MetricValue {
+                    metric_name: RUNNING_JOBS_METRIC_NAME.to_string(),
+                    metric_value: self.running_job_number() as i64,
+                },
+            ],
         }))
     }
 }

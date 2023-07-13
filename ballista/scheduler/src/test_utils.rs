@@ -55,7 +55,6 @@ use datafusion::test_util::scan_empty;
 use crate::cluster::BallistaCluster;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
-use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
 use crate::state::execution_graph::{ExecutionGraph, TaskDescription};
 use ballista_core::utils::default_session_builder;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
@@ -451,7 +450,7 @@ impl SchedulerTest {
             scheduler
                 .state
                 .executor_manager
-                .register_executor(metadata, executor_data, false)
+                .register_executor(metadata, executor_data)
                 .await?;
         }
 
@@ -462,8 +461,12 @@ impl SchedulerTest {
         })
     }
 
-    pub fn pending_tasks(&self) -> usize {
-        self.scheduler.pending_tasks()
+    pub fn pending_job_number(&self) -> usize {
+        self.scheduler.pending_job_number()
+    }
+
+    pub fn running_job_number(&self) -> usize {
+        self.scheduler.running_job_number()
     }
 
     pub async fn ctx(&self) -> Result<Arc<SessionContext>> {
@@ -655,12 +658,6 @@ impl SchedulerTest {
 
         final_status
     }
-
-    pub(crate) fn query_stage_scheduler(
-        &self,
-    ) -> Arc<QueryStageScheduler<LogicalPlanNode, PhysicalPlanNode>> {
-        self.scheduler.query_stage_scheduler()
-    }
 }
 
 #[derive(Clone)]
@@ -786,6 +783,13 @@ pub fn assert_failed_event(job_id: &str, collector: &TestMetricsCollector) {
 }
 
 pub async fn test_aggregation_plan(partition: usize) -> ExecutionGraph {
+    test_aggregation_plan_with_job_id(partition, "job").await
+}
+
+pub async fn test_aggregation_plan_with_job_id(
+    partition: usize,
+    job_id: &str,
+) -> ExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::with_config(config));
     let session_state = ctx.state();
@@ -811,7 +815,7 @@ pub async fn test_aggregation_plan(partition: usize) -> ExecutionGraph {
 
     println!("{}", DisplayableExecutionPlan::new(plan.as_ref()).indent());
 
-    ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap()
+    ExecutionGraph::new("localhost:50050", job_id, "", "session", plan, 0).unwrap()
 }
 
 pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {

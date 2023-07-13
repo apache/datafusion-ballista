@@ -17,13 +17,14 @@
 
 use crate::cluster::storage::{KeyValueStore, Keyspace, Lock, Operation, WatchEvent};
 use crate::cluster::{
-    reserve_slots_bias, reserve_slots_round_robin, ClusterState, ExecutorHeartbeatStream,
-    JobState, JobStateEvent, JobStateEventStream, JobStatus, TaskDistribution,
+    bind_task_bias, bind_task_round_robin, BoundTask, ClusterState,
+    ExecutorHeartbeatStream, ExecutorSlot, JobState, JobStateEvent, JobStateEventStream,
+    JobStatus, TaskDistribution,
 };
 use crate::scheduler_server::{timestamp_secs, SessionBuilder};
 use crate::state::execution_graph::ExecutionGraph;
-use crate::state::executor_manager::ExecutorReservation;
 use crate::state::session_manager::create_datafusion_context;
+use crate::state::task_manager::JobInfoCache;
 use crate::state::{decode_into, decode_protobuf};
 use async_trait::async_trait;
 use ballista_core::config::BallistaConfig;
@@ -174,12 +175,12 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         Ok(())
     }
 
-    async fn reserve_slots(
+    async fn bind_schedulable_tasks(
         &self,
-        num_slots: u32,
         distribution: TaskDistribution,
+        active_jobs: Arc<HashMap<String, JobInfoCache>>,
         executors: Option<HashSet<String>>,
-    ) -> Result<Vec<ExecutorReservation>> {
+    ) -> Result<Vec<BoundTask>> {
         let lock = self.store.lock(Keyspace::Slots, "global").await?;
 
         with_lock(lock, async {
@@ -192,7 +193,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     ))
                 })?;
 
-            let mut available_slots: Vec<&mut AvailableTaskSlots> = slots
+            let available_slots: Vec<&mut AvailableTaskSlots> = slots
                 .task_slots
                 .iter_mut()
                 .filter_map(|data| {
@@ -205,82 +206,33 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 })
                 .collect();
 
-            available_slots.sort_by(|a, b| Ord::cmp(&b.slots, &a.slots));
-
-            let reservations = match distribution {
-                TaskDistribution::Bias => reserve_slots_bias(available_slots, num_slots),
+            let bound_tasks = match distribution {
+                TaskDistribution::Bias => {
+                    bind_task_bias(available_slots, active_jobs, |_| false).await
+                }
                 TaskDistribution::RoundRobin => {
-                    reserve_slots_round_robin(available_slots, num_slots)
+                    bind_task_round_robin(available_slots, active_jobs, |_| false).await
                 }
             };
 
-            if !reservations.is_empty() {
+            if !bound_tasks.is_empty() {
                 self.store
                     .put(Keyspace::Slots, "all".to_owned(), slots.encode_to_vec())
                     .await?
             }
 
-            Ok(reservations)
+            Ok(bound_tasks)
         })
         .await
     }
 
-    async fn reserve_slots_exact(
-        &self,
-        num_slots: u32,
-        distribution: TaskDistribution,
-        executors: Option<HashSet<String>>,
-    ) -> Result<Vec<ExecutorReservation>> {
-        let lock = self.store.lock(Keyspace::Slots, "global").await?;
+    async fn unbind_tasks(&self, executor_slots: Vec<ExecutorSlot>) -> Result<()> {
+        let mut increments = HashMap::new();
+        for (executor_id, num_slots) in executor_slots {
+            let v = increments.entry(executor_id).or_insert_with(|| 0);
+            *v += num_slots;
+        }
 
-        with_lock(lock, async {
-            let resources = self.store.get(Keyspace::Slots, "all").await?;
-
-            let mut slots =
-                ExecutorTaskSlots::decode(resources.as_slice()).map_err(|err| {
-                    BallistaError::Internal(format!(
-                        "Unexpected value in executor slots state: {err:?}"
-                    ))
-                })?;
-
-            let mut available_slots: Vec<&mut AvailableTaskSlots> = slots
-                .task_slots
-                .iter_mut()
-                .filter_map(|data| {
-                    (data.slots > 0
-                        && executors
-                            .as_ref()
-                            .map(|executors| executors.contains(&data.executor_id))
-                            .unwrap_or(true))
-                    .then_some(data)
-                })
-                .collect();
-
-            available_slots.sort_by(|a, b| Ord::cmp(&b.slots, &a.slots));
-
-            let reservations = match distribution {
-                TaskDistribution::Bias => reserve_slots_bias(available_slots, num_slots),
-                TaskDistribution::RoundRobin => {
-                    reserve_slots_round_robin(available_slots, num_slots)
-                }
-            };
-
-            if reservations.len() == num_slots as usize {
-                self.store
-                    .put(Keyspace::Slots, "all".to_owned(), slots.encode_to_vec())
-                    .await?;
-                Ok(reservations)
-            } else {
-                Ok(vec![])
-            }
-        })
-        .await
-    }
-
-    async fn cancel_reservations(
-        &self,
-        reservations: Vec<ExecutorReservation>,
-    ) -> Result<()> {
         let lock = self.store.lock(Keyspace::Slots, "all").await?;
 
         with_lock(lock, async {
@@ -293,18 +245,9 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     ))
                 })?;
 
-            let mut increments = HashMap::new();
-            for ExecutorReservation { executor_id, .. } in reservations {
-                if let Some(inc) = increments.get_mut(&executor_id) {
-                    *inc += 1;
-                } else {
-                    increments.insert(executor_id, 1usize);
-                }
-            }
-
             for executor_slots in slots.task_slots.iter_mut() {
                 if let Some(slots) = increments.get(&executor_slots.executor_id) {
-                    executor_slots.slots += *slots as u32;
+                    executor_slots.slots += *slots;
                 }
             }
 
@@ -319,8 +262,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         &self,
         metadata: ExecutorMetadata,
         spec: ExecutorData,
-        reserve: bool,
-    ) -> Result<Vec<ExecutorReservation>> {
+    ) -> Result<()> {
         let executor_id = metadata.id.clone();
 
         //TODO this should be in a transaction
@@ -338,83 +280,40 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         })
         .await?;
 
-        if !reserve {
-            let available_slots = AvailableTaskSlots {
-                executor_id,
-                slots: spec.available_task_slots,
-            };
+        let available_slots = AvailableTaskSlots {
+            executor_id,
+            slots: spec.available_task_slots,
+        };
 
-            let lock = self.store.lock(Keyspace::Slots, "all").await?;
+        let lock = self.store.lock(Keyspace::Slots, "all").await?;
 
-            with_lock(lock, async {
-                let current_slots = self.store.get(Keyspace::Slots, "all").await?;
+        with_lock(lock, async {
+            let current_slots = self.store.get(Keyspace::Slots, "all").await?;
 
-                let mut current_slots: ExecutorTaskSlots =
-                    decode_protobuf(current_slots.as_slice())?;
+            let mut current_slots: ExecutorTaskSlots =
+                decode_protobuf(current_slots.as_slice())?;
 
-                if let Some((idx, _)) =
-                    current_slots.task_slots.iter().find_position(|slots| {
-                        slots.executor_id == available_slots.executor_id
-                    })
-                {
-                    current_slots.task_slots[idx] = available_slots;
-                } else {
-                    current_slots.task_slots.push(available_slots);
-                }
-
-                self.store
-                    .put(
-                        Keyspace::Slots,
-                        "all".to_string(),
-                        current_slots.encode_to_vec(),
-                    )
-                    .await
-            })
-            .await?;
-
-            Ok(vec![])
-        } else {
-            let num_slots = spec.available_task_slots as usize;
-            let mut reservations: Vec<ExecutorReservation> = vec![];
-            for _ in 0..num_slots {
-                reservations.push(ExecutorReservation::new_free(executor_id.clone()));
+            if let Some((idx, _)) = current_slots
+                .task_slots
+                .iter()
+                .find_position(|slots| slots.executor_id == available_slots.executor_id)
+            {
+                current_slots.task_slots[idx] = available_slots;
+            } else {
+                current_slots.task_slots.push(available_slots);
             }
 
-            let available_slots = AvailableTaskSlots {
-                executor_id,
-                slots: 0,
-            };
+            self.store
+                .put(
+                    Keyspace::Slots,
+                    "all".to_string(),
+                    current_slots.encode_to_vec(),
+                )
+                .await
+        })
+        .await?;
 
-            let lock = self.store.lock(Keyspace::Slots, "all").await?;
-
-            with_lock(lock, async {
-                let current_slots = self.store.get(Keyspace::Slots, "all").await?;
-
-                let mut current_slots: ExecutorTaskSlots =
-                    decode_protobuf(current_slots.as_slice())?;
-
-                if let Some((idx, _)) =
-                    current_slots.task_slots.iter().find_position(|slots| {
-                        slots.executor_id == available_slots.executor_id
-                    })
-                {
-                    current_slots.task_slots[idx] = available_slots;
-                } else {
-                    current_slots.task_slots.push(available_slots);
-                }
-
-                self.store
-                    .put(
-                        Keyspace::Slots,
-                        "all".to_string(),
-                        current_slots.encode_to_vec(),
-                    )
-                    .await
-            })
-            .await?;
-
-            Ok(reservations)
-        }
+        Ok(())
     }
 
     async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()> {
@@ -502,16 +401,15 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> JobState
     for KeyValueState<S, T, U>
 {
-    async fn accept_job(
-        &self,
-        job_id: &str,
-        job_name: &str,
-        queued_at: u64,
-    ) -> Result<()> {
+    fn accept_job(&self, job_id: &str, job_name: &str, queued_at: u64) -> Result<()> {
         self.queued_jobs
             .insert(job_id.to_string(), (job_name.to_string(), queued_at));
 
         Ok(())
+    }
+
+    fn pending_job_number(&self) -> usize {
+        self.queued_jobs.len()
     }
 
     async fn submit_job(&self, job_id: String, graph: &ExecutionGraph) -> Result<()> {
@@ -774,61 +672,16 @@ async fn with_lock<Out, F: Future<Output = Out>>(mut lock: Box<dyn Lock>, op: F)
 
 #[cfg(test)]
 mod test {
+
     use crate::cluster::kv::KeyValueState;
     use crate::cluster::storage::sled::SledClient;
-    use crate::cluster::test::{
-        test_executor_registration, test_fuzz_reservations, test_job_lifecycle,
-        test_job_planning_failure, test_reservation,
-    };
-    use crate::cluster::TaskDistribution;
+    use crate::cluster::test_util::{test_job_lifecycle, test_job_planning_failure};
     use crate::test_utils::{
         test_aggregation_plan, test_join_plan, test_two_aggregations_plan,
     };
     use ballista_core::error::Result;
     use ballista_core::serde::BallistaCodec;
     use ballista_core::utils::default_session_builder;
-
-    #[cfg(feature = "sled")]
-    fn make_sled_state() -> Result<KeyValueState<SledClient>> {
-        Ok(KeyValueState::new(
-            "",
-            SledClient::try_new_temporary()?,
-            BallistaCodec::default(),
-            default_session_builder,
-        ))
-    }
-
-    #[cfg(feature = "sled")]
-    #[tokio::test]
-    async fn test_sled_executor_reservation() -> Result<()> {
-        test_executor_registration(make_sled_state()?).await
-    }
-
-    #[cfg(feature = "sled")]
-    #[tokio::test]
-    async fn test_sled_reserve() -> Result<()> {
-        test_reservation(make_sled_state()?, TaskDistribution::Bias).await?;
-        test_reservation(make_sled_state()?, TaskDistribution::RoundRobin).await?;
-
-        Ok(())
-    }
-
-    #[cfg(feature = "sled")]
-    #[tokio::test]
-    async fn test_sled_fuzz_reserve() -> Result<()> {
-        test_fuzz_reservations(make_sled_state()?, 10, TaskDistribution::Bias, 10, 10)
-            .await?;
-        test_fuzz_reservations(
-            make_sled_state()?,
-            10,
-            TaskDistribution::RoundRobin,
-            10,
-            10,
-        )
-        .await?;
-
-        Ok(())
-    }
 
     #[cfg(feature = "sled")]
     #[tokio::test]
@@ -853,5 +706,15 @@ mod test {
         test_job_planning_failure(make_sled_state()?, test_join_plan(4).await).await?;
 
         Ok(())
+    }
+
+    #[cfg(feature = "sled")]
+    fn make_sled_state() -> Result<KeyValueState<SledClient>> {
+        Ok(KeyValueState::new(
+            "",
+            SledClient::try_new_temporary()?,
+            BallistaCodec::default(),
+            default_session_builder,
+        ))
     }
 }
