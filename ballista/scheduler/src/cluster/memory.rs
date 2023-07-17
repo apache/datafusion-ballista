@@ -98,7 +98,7 @@ impl ClusterState for InMemoryClusterState {
         let mut guard = self.task_slots.lock().await;
 
         for (executor_id, num_slots) in increments {
-            if let Some(mut data) = guard.get_mut(&executor_id) {
+            if let Some(data) = guard.get_mut(&executor_id) {
                 data.slots += num_slots;
             }
         }

@@ -513,7 +513,7 @@ pub(crate) async fn bind_task_round_robin(
                 }
                 // Since the slots is a vector with descending order, and the total available slots is larger than 0,
                 // we are sure the available slot number at idx_slot is larger than 1
-                let mut slot = &mut slots[idx_slot];
+                let slot = &mut slots[idx_slot];
                 let executor_id = slot.executor_id.clone();
                 let task_id = *task_id_gen;
                 *task_id_gen += 1;
