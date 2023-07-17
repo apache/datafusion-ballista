@@ -83,8 +83,8 @@ where
         Self {
             max_num: capacity,
             current_num: 0,
-            _key_marker: PhantomData::default(),
-            _value_marker: PhantomData::default(),
+            _key_marker: PhantomData,
+            _value_marker: PhantomData,
         }
     }
 }

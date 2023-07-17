@@ -69,7 +69,7 @@ impl<'a> ExecutionGraphDot<'a> {
             writeln!(&mut dot, "}}")?;
             Ok(dot)
         } else {
-            Err(fmt::Error::default())
+            Err(fmt::Error)
         }
     }
 
