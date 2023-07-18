@@ -40,8 +40,15 @@ use uuid::Uuid;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 
-use ballista_core::config::{LogRotationPolicy, TaskSchedulingPolicy};
+#[cfg(not(windows))]
+use ballista_core::cache_layer::{
+    medium::local_disk::LocalDiskMedium, policy::file::FileCacheLayer, CacheLayer,
+};
+use ballista_core::config::{DataCachePolicy, LogRotationPolicy, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
+#[cfg(not(windows))]
+use ballista_core::object_store_registry::cache::with_cache_layer;
+use ballista_core::object_store_registry::with_object_store_registry;
 use ballista_core::serde::protobuf::executor_resource::Resource;
 use ballista_core::serde::protobuf::executor_status::Status;
 use ballista_core::serde::protobuf::{
@@ -52,7 +59,6 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{
     create_grpc_client_connection, create_grpc_server, get_time_before,
-    with_object_store_provider,
 };
 use ballista_core::BALLISTA_VERSION;
 
@@ -84,6 +90,10 @@ pub struct ExecutorProcessConfig {
     pub log_rotation_policy: LogRotationPolicy,
     pub job_data_ttl_seconds: u64,
     pub job_data_clean_up_interval_seconds: u64,
+    pub data_cache_policy: Option<DataCachePolicy>,
+    pub cache_dir: Option<String>,
+    pub cache_capacity: u64,
+    pub cache_io_concurrency: u32,
     /// The maximum size of a decoded message at the grpc server side.
     pub grpc_server_max_decoding_message_size: u32,
     pub executor_heartbeat_interval_seconds: u64,
@@ -175,9 +185,35 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
         }),
     };
 
-    let config = with_object_store_provider(
-        RuntimeConfig::new().with_temp_file_path(work_dir.clone()),
-    );
+    let config = RuntimeConfig::new().with_temp_file_path(work_dir.clone());
+    // Set the object store registry
+    #[cfg(not(windows))]
+    let config = {
+        let cache_dir = opt.cache_dir.clone();
+        let cache_capacity = opt.cache_capacity;
+        let cache_io_concurrency = opt.cache_io_concurrency;
+        let cache_layer =
+            opt.data_cache_policy
+                .map(|data_cache_policy| match data_cache_policy {
+                    DataCachePolicy::LocalDiskFile => {
+                        let cache_dir = cache_dir.unwrap();
+                        let cache_layer = FileCacheLayer::new(
+                            cache_capacity as usize,
+                            cache_io_concurrency,
+                            LocalDiskMedium::new(cache_dir),
+                        );
+                        CacheLayer::LocalDiskFile(Arc::new(cache_layer))
+                    }
+                });
+        if let Some(cache_layer) = cache_layer {
+            with_cache_layer(config, cache_layer)
+        } else {
+            with_object_store_registry(config)
+        }
+    };
+    #[cfg(windows)]
+    let config = with_object_store_registry(config);
+
     let runtime = Arc::new(RuntimeEnv::new(config).map_err(|_| {
         BallistaError::Internal("Failed to init Executor RuntimeEnv".to_owned())
     })?);
