@@ -1061,6 +1061,7 @@ mod test {
                     location: Path::from(format!("file--{}", i)),
                     last_modified: Default::default(),
                     size: 1,
+                    e_tag: None,
                 },
                 partition_values: vec![],
                 range: None,

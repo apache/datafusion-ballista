@@ -39,7 +39,7 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::serde::BallistaCodec;
 use dashmap::DashMap;
-use datafusion::physical_plan::file_format::get_scan_files;
+use datafusion::datasource::physical_plan::get_scan_files;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -295,7 +295,7 @@ impl<S: KeyValueStore, T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                                 .collect();
                         let ch_topology = ch_topology.unwrap();
                         for node in ch_topology.nodes() {
-                            if let Some(mut data) = executor_data.get_mut(&node.id) {
+                            if let Some(data) = executor_data.get_mut(&node.id) {
                                 data.slots = node.available_slots;
                             } else {
                                 error!("Fail to find executor data for {}", &node.id);

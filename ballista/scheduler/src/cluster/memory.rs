@@ -42,7 +42,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::DerefMut;
 
 use ballista_core::consistent_hash::node::Node;
-use datafusion::physical_plan::file_format::get_scan_files;
+use datafusion::datasource::physical_plan::get_scan_files;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 use tokio::sync::{Mutex, MutexGuard};
@@ -161,7 +161,7 @@ impl ClusterState for InMemoryClusterState {
                     // Update the available slots
                     let ch_topology = ch_topology.unwrap();
                     for node in ch_topology.nodes() {
-                        if let Some(mut data) = guard.get_mut(&node.id) {
+                        if let Some(data) = guard.get_mut(&node.id) {
                             data.slots = node.available_slots;
                         } else {
                             error!("Fail to find executor data for {}", &node.id);
