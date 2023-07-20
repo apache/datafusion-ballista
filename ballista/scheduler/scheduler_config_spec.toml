@@ -97,8 +97,20 @@ doc = "Delayed interval for cleaning up finished job state. Default: 3600"
 [[param]]
 name = "task_distribution"
 type = "ballista_scheduler::config::TaskDistribution"
-doc = "The policy of distributing tasks to available executor slots, possible values: bias, round-robin. Default: bias"
+doc = "The policy of distributing tasks to available executor slots, possible values: bias, round-robin, consistent-hash. Default: bias"
 default = "ballista_scheduler::config::TaskDistribution::Bias"
+
+[[param]]
+name = "consistent_hash_num_replicas"
+type = "u32"
+default = "31"
+doc = "Replica number of each node for the consistent hashing. Default: 31"
+
+[[param]]
+name = "consistent_hash_tolerance"
+type = "u32"
+default = "0"
+doc = "Tolerance of the consistent hashing policy for task scheduling. Default: 0"
 
 [[param]]
 name = "plugin_dir"

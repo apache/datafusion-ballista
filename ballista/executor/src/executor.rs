@@ -73,7 +73,12 @@ pub struct Executor {
     pub window_functions: HashMap<String, Arc<WindowUDF>>,
 
     /// Runtime environment for Executor
-    pub runtime: Arc<RuntimeEnv>,
+    runtime: Arc<RuntimeEnv>,
+
+    /// Runtime environment for Executor with data cache.
+    /// The difference with [`runtime`] is that it leverages a different [`object_store_registry`].
+    /// And others things are shared with [`runtime`].
+    runtime_with_data_cache: Option<Arc<RuntimeEnv>>,
 
     /// Collector for runtime execution metrics
     pub metrics_collector: Arc<dyn ExecutorMetricsCollector>,
@@ -95,6 +100,7 @@ impl Executor {
         metadata: ExecutorRegistration,
         work_dir: &str,
         runtime: Arc<RuntimeEnv>,
+        runtime_with_data_cache: Option<Arc<RuntimeEnv>>,
         metrics_collector: Arc<dyn ExecutorMetricsCollector>,
         concurrent_tasks: usize,
         execution_engine: Option<Arc<dyn ExecutionEngine>>,
@@ -107,6 +113,7 @@ impl Executor {
             aggregate_functions: HashMap::new(),
             window_functions: HashMap::new(),
             runtime,
+            runtime_with_data_cache,
             metrics_collector,
             concurrent_tasks,
             abort_handles: Default::default(),
@@ -117,6 +124,18 @@ impl Executor {
 }
 
 impl Executor {
+    pub fn get_runtime(&self, data_cache: bool) -> Arc<RuntimeEnv> {
+        if data_cache {
+            if let Some(runtime) = self.runtime_with_data_cache.clone() {
+                runtime
+            } else {
+                self.runtime.clone()
+            }
+        } else {
+            self.runtime.clone()
+        }
+    }
+
     /// Execute one partition of a query stage and persist the result to disk in IPC format. On
     /// success, return a RecordBatch containing metadata about the results, including path
     /// and statistics.
@@ -319,6 +338,7 @@ mod test {
             executor_registration,
             &work_dir,
             ctx.runtime_env(),
+            None,
             Arc::new(LoggingMetricsCollector {}),
             2,
             None,
