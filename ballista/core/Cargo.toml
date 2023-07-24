@@ -55,7 +55,7 @@ datafusion = { workspace = true }
 datafusion-objectstore-hdfs = { version = "0.1.1", default-features = false, optional = true }
 datafusion-proto = { workspace = true }
 futures = "0.3"
-hashbrown = "0.13"
+hashbrown = "0.14"
 
 itertools = "0.11"
 libloading = "0.8.0"
