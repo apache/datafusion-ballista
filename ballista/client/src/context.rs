@@ -326,9 +326,8 @@ impl BallistaContext {
             ));
         }
 
-        if let DFStatement::Statement(s) = &statements[0] {
-            let st: &Statement = s;
-            match st {
+        if let DFStatement::Statement(st) = &statements[0] {
+            match **st {
                 Statement::ShowVariable { .. } => {
                     is_show_variable = true;
                 }

@@ -85,7 +85,7 @@ To build a simple ballista example, add the following dependencies to your `Carg
 ```toml
 [dependencies]
 ballista = "0.11"
-datafusion = "27.0.0"
+datafusion = "28.0.0"
 tokio = "1.0"
 ```
 
