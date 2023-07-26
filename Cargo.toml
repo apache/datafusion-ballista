@@ -37,7 +37,7 @@ datafusion = "28.0.0"
 datafusion-cli = "28.0.0"
 datafusion-proto = "28.0.0"
 object_store = "0.6.1"
-sqlparser = "0.36.1"
+sqlparser = "0.35.0"
 tonic = {version = "0.9"}
 tonic-build = {version = "0.9", default-features = false, features = ["transport", "prost"]}
 tracing = "0.1.36"
@@ -63,10 +63,3 @@ opt-level = 3
 overflow-checks = false
 panic = 'unwind'
 rpath = false
-
-[patch.crates-io]
-# TODO remove on upgrade to DataFusion 28.0.0
-# fix for https://github.com/apache/arrow-datafusion/issues/6819 and https://github.com/apache/arrow-datafusion/issues/6898
-datafusion = {git = "https://github.com/apache/arrow-datafusion.git", rev = "4e2a72f6c7109d40a4986e3d05360524be078dd4"}
-datafusion-cli = {git = "https://github.com/apache/arrow-datafusion.git", rev = "4e2a72f6c7109d40a4986e3d05360524be078dd4"}
-datafusion-proto = {git = "https://github.com/apache/arrow-datafusion.git", rev = "4e2a72f6c7109d40a4986e3d05360524be078dd4"}
