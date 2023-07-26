@@ -21,6 +21,7 @@ use datafusion::common::Result;
 use datafusion::common::Statistics;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_expr::PhysicalSortExpr;
+use datafusion::physical_plan::DisplayAs;
 use datafusion::physical_plan::common::AbortOnDropMany;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::metrics::{
@@ -58,6 +59,20 @@ impl CoalesceTasksExec {
 
     pub fn partitions(&self) -> &[usize] {
         &self.partitions
+    }
+}
+
+impl DisplayAs for CoalesceTasksExec {
+    fn fmt_as(
+        &self,
+        t: DisplayFormatType,
+        f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(f, "CoalesceTasksExec")
+            }
+        }
     }
 }
 
@@ -158,18 +173,6 @@ impl ExecutionPlan for CoalesceTasksExec {
             baseline_metrics,
             drop_helper: AbortOnDropMany(join_handles),
         }))
-    }
-
-    fn fmt_as(
-        &self,
-        t: DisplayFormatType,
-        f: &mut std::fmt::Formatter,
-    ) -> std::fmt::Result {
-        match t {
-            DisplayFormatType::Default => {
-                write!(f, "CoalesceTasksExec: partitions={:?}", self.partitions)
-            }
-        }
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

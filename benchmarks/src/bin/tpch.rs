@@ -712,7 +712,7 @@ async fn execute_query(
     if debug {
         println!(
             "=== Physical plan ===\n{}\n",
-            displayable(physical_plan.as_ref()).indent()
+            displayable(physical_plan.as_ref()).indent(false)
         );
     }
     let task_ctx = ctx.task_ctx();
@@ -720,7 +720,7 @@ async fn execute_query(
     if debug {
         println!(
             "=== Physical plan with metrics ===\n{}\n",
-            DisplayableExecutionPlan::with_metrics(physical_plan.as_ref()).indent()
+            DisplayableExecutionPlan::with_metrics(physical_plan.as_ref()).indent(false)
         );
         if !result.is_empty() {
             pretty::print_batches(&result)?;
@@ -1696,8 +1696,8 @@ mod ballista_round_trip {
                 )
                 .unwrap();
             assert_eq!(
-                format!("{}", displayable(physical_plan.as_ref()).indent()),
-                format!("{}", displayable(round_trip.as_ref()).indent()),
+                format!("{}", displayable(physical_plan.as_ref()).indent(false)),
+                format!("{}", displayable(round_trip.as_ref()).indent(false)),
                 "physical plan round trip failed"
             );
         }

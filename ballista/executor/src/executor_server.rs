@@ -360,6 +360,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             session_config,
             task_scalar_functions,
             task_aggregate_functions,
+            self.executor.window_functions.clone(),
             self.executor.runtime.clone(),
         ));
 
@@ -499,6 +500,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             session_config,
             task_scalar_functions,
             task_aggregate_functions,
+            self.executor.window_functions.clone(),
             runtime.clone(),
         ));
 

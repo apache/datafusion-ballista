@@ -1293,7 +1293,10 @@ pub mod execution_error {
         #[allow(clippy::derive_partial_eq_without_eq)]
         #[derive(Clone, PartialEq, ::prost::Message)]
         pub struct ObjectStore {
-            #[prost(oneof = "object_store::Error", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
+            #[prost(
+                oneof = "object_store::Error",
+                tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10"
+            )]
             pub error: ::core::option::Option<object_store::Error>,
         }
         /// Nested message and enum types in `ObjectStore`.
@@ -1352,6 +1355,22 @@ pub mod execution_error {
                 pub key: ::prost::alloc::string::String,
             }
             #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct Precondition {
+                #[prost(string, tag = "1")]
+                pub path: ::prost::alloc::string::String,
+                #[prost(string, tag = "2")]
+                pub source: ::prost::alloc::string::String,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
+            #[derive(Clone, PartialEq, ::prost::Message)]
+            pub struct NotModified {
+                #[prost(string, tag = "1")]
+                pub path: ::prost::alloc::string::String,
+                #[prost(string, tag = "2")]
+                pub source: ::prost::alloc::string::String,
+            }
+            #[allow(clippy::derive_partial_eq_without_eq)]
             #[derive(Clone, PartialEq, ::prost::Oneof)]
             pub enum Error {
                 #[prost(message, tag = "1")]
@@ -1370,6 +1389,10 @@ pub mod execution_error {
                 NotImplemented(NotImplemented),
                 #[prost(message, tag = "8")]
                 UnknownConfigurationKey(UnknownConfigurationKey),
+                #[prost(message, tag = "9")]
+                Precondition(Precondition),
+                #[prost(message, tag = "10")]
+                NotModified(NotModified),
             }
         }
         #[allow(clippy::derive_partial_eq_without_eq)]
