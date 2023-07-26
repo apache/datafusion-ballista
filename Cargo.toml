@@ -33,9 +33,9 @@ arrow-flight = {version = "43.0.0", features = ["flight-sql-experimental"]}
 arrow-schema = {version = "43.0.0", default-features = false}
 configure_me = {version = "0.4.0"}
 configure_me_codegen = {version = "0.4.4"}
-datafusion = "27.0.0"
-datafusion-cli = "27.0.0"
-datafusion-proto = "27.0.0"
+datafusion = "28.0.0"
+datafusion-cli = "28.0.0"
+datafusion-proto = "28.0.0"
 object_store = "0.6.1"
 sqlparser = "0.35.0"
 tonic = {version = "0.9"}
