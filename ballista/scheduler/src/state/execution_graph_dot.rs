@@ -22,12 +22,12 @@ use ballista_core::execution_plans::{
     ShuffleReaderExec, ShuffleWriterExec, UnresolvedShuffleExec,
 };
 use datafusion::datasource::listing::PartitionedFile;
+use datafusion::datasource::physical_plan::{
+    AvroExec, CsvExec, FileScanConfig, NdJsonExec, ParquetExec,
+};
 use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::file_format::{
-    AvroExec, CsvExec, FileScanConfig, NdJsonExec, ParquetExec,
-};
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::CrossJoinExec;
 use datafusion::physical_plan::joins::HashJoinExec;
@@ -69,7 +69,7 @@ impl<'a> ExecutionGraphDot<'a> {
             writeln!(&mut dot, "}}")?;
             Ok(dot)
         } else {
-            Err(fmt::Error::default())
+            Err(fmt::Error)
         }
     }
 

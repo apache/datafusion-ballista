@@ -722,6 +722,8 @@ message ExecutionError {
         AlreadyExists already_exists = 6;
         NotImplemented not_implemented = 7;
         UnknownConfigurationKey unknown_configurationKey = 8;
+        Precondition precondition = 9;
+        NotModified not_modified = 10;
       }
       message Generic {
         string store = 1;
@@ -748,6 +750,14 @@ message ExecutionError {
       message UnknownConfigurationKey {
         string store = 1;
         string key = 2;
+      }
+      message Precondition {
+        string path = 1;
+        string source = 2;
+      }
+      message NotModified {
+        string path = 1;
+        string source = 2;
       }
     }
     message IoError {

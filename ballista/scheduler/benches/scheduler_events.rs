@@ -27,7 +27,8 @@ use datafusion::execution::context::{SessionState, TaskContext};
 use datafusion::logical_expr::Expr;
 use datafusion::physical_expr::PhysicalSortExpr;
 use datafusion::physical_plan::{
-    EmptyRecordBatchStream, ExecutionPlan, Partitioning, SendableRecordBatchStream,
+    DisplayAs, EmptyRecordBatchStream, ExecutionPlan, Partitioning,
+    SendableRecordBatchStream,
 };
 use datafusion::prelude::{col, count, SessionContext};
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
@@ -77,6 +78,16 @@ impl TableProvider for DummyTable {
 
 #[derive(Debug)]
 struct DummyTableExec(usize);
+
+impl DisplayAs for DummyTableExec {
+    fn fmt_as(
+        &self,
+        _t: datafusion::physical_plan::DisplayFormatType,
+        _f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        unimplemented!()
+    }
+}
 
 #[async_trait]
 impl ExecutionPlan for DummyTableExec {

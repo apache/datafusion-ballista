@@ -351,7 +351,7 @@ mod test {
         let job_uuid = Uuid::new_v4();
         let stages = planner.plan_query_stages(&job_uuid.to_string(), plan)?;
         for stage in &stages {
-            println!("{}", displayable(stage.as_ref()).indent());
+            println!("{}", displayable(stage.as_ref()).indent(false));
         }
 
         /* Expected result:
@@ -459,7 +459,7 @@ order by
         let job_uuid = Uuid::new_v4();
         let stages = planner.plan_query_stages(&job_uuid.to_string(), plan)?;
         for stage in &stages {
-            println!("{}", displayable(stage.as_ref()).indent());
+            println!("{}", displayable(stage.as_ref()).indent(false));
         }
 
         /* Expected result:

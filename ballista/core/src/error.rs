@@ -349,7 +349,25 @@ impl From<&DataFusionError> for datafusion_error::Error {
                                 },
                             )),
                         },
-                    )
+                    ),
+                object_store::Error::Precondition { path, source } => datafusion_error::Error::ObjectStore(
+                    execution_error::datafusion_error::ObjectStore {
+                        error: Some(execution_error::datafusion_error::object_store::Error::Precondition(
+                            execution_error::datafusion_error::object_store::Precondition {
+                                path: path.clone(), source: source.to_string()
+                            },
+                        )),
+                    },
+                ),
+                object_store::Error::NotModified { path, source } => datafusion_error::Error::ObjectStore(
+                    execution_error::datafusion_error::ObjectStore {
+                        error: Some(execution_error::datafusion_error::object_store::Error::NotModified(
+                            execution_error::datafusion_error::object_store::NotModified {
+                                path: path.clone(), source: source.to_string()
+                            },
+                        )),
+                    },
+                ),
             },
             DataFusionError::IoError(err) => datafusion_error::Error::IoError(
                     execution_error::datafusion_error::IoError {
@@ -757,6 +775,18 @@ impl Display for execution_error::datafusion_error::ObjectStore {
                         write!(f,
                             "DatafusionError/ObjectStoreError/UnknownConfigurationKey [key: {}, store: {}]",
                             error.key, error.store
+                        )
+                    }
+                    execution_error::datafusion_error::object_store::Error::Precondition(error) => {
+                        write!(f,
+                            "DatafusionError/ObjectStoreError/Precondition path: {}, source: {}]",
+                            error.path, error.source
+                        )
+                    },
+                    execution_error::datafusion_error::object_store::Error::NotModified(error) => {
+                        write!(f,
+                            "DatafusionError/ObjectStoreError/NotModified path: {}, source: {}]",
+                            error.path, error.source
                         )
                     }
                 },

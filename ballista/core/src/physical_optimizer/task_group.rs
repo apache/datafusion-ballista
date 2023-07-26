@@ -274,7 +274,7 @@ mod tests {
 
         println!(
             "{}",
-            DisplayableExecutionPlan::new(optimized.as_ref()).indent()
+            DisplayableExecutionPlan::new(optimized.as_ref()).indent(false)
         );
 
         assert!(optimized.as_any().is::<ShuffleWriterExec>());
@@ -375,7 +375,7 @@ mod tests {
 
         println!(
             "{}",
-            DisplayableExecutionPlan::new(optimized.as_ref()).indent()
+            DisplayableExecutionPlan::new(optimized.as_ref()).indent(false)
         );
 
         assert!(optimized.as_any().is::<ShuffleWriterExec>());
@@ -421,7 +421,7 @@ mod tests {
 
         println!(
             "{}",
-            DisplayableExecutionPlan::new(optimized.as_ref()).indent()
+            DisplayableExecutionPlan::new(optimized.as_ref()).indent(false)
         );
 
         assert!(optimized.as_any().is::<ShuffleWriterExec>());

@@ -12,6 +12,7 @@ use datafusion::error::DataFusionError;
 use datafusion::error::Result;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_expr::PhysicalSortExpr;
+use datafusion::physical_plan::DisplayAs;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::Partitioning;
 use datafusion::physical_plan::RecordBatchStream;
@@ -47,6 +48,16 @@ impl TestTableExec {
             projection,
             global_limit,
         }
+    }
+}
+
+impl DisplayAs for TestTableExec {
+    fn fmt_as(
+        &self,
+        _t: datafusion::physical_plan::DisplayFormatType,
+        _f: &mut std::fmt::Formatter,
+    ) -> std::fmt::Result {
+        unimplemented!()
     }
 }
 
@@ -209,7 +220,7 @@ impl Stream for TestDataStream {
             return Poll::Pending;
         }
 
-        let mut self_mut = self.get_mut();
+        let self_mut = self.get_mut();
 
         self_mut.last_sent = current_time;
 

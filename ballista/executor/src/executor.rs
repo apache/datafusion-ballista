@@ -28,6 +28,7 @@ use ballista_core::serde::protobuf::ExecutorRegistration;
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::logical_expr::WindowUDF;
 use datafusion::physical_plan::udaf::AggregateUDF;
 use datafusion::physical_plan::udf::ScalarUDF;
 use datafusion::physical_plan::Partitioning;
@@ -86,6 +87,9 @@ pub struct Executor {
     /// Aggregate functions registered in the Executor
     pub aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
 
+    /// Window functions registered in the Executor
+    pub window_functions: HashMap<String, Arc<WindowUDF>>,
+
     /// Runtime environment for Executor
     pub runtime: Arc<RuntimeEnv>,
 
@@ -125,6 +129,7 @@ impl Executor {
             execution_engine,
             HashMap::new(),
             HashMap::new(),
+            HashMap::new(),
         )
     }
 
@@ -138,6 +143,7 @@ impl Executor {
         execution_engine: Option<Arc<dyn ExecutionEngine>>,
         scalar_functions: HashMap<String, Arc<ScalarUDF>>,
         aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
+        window_functions: HashMap<String, Arc<WindowUDF>>,
     ) -> Self {
         let (drained, check_drained) = watch::channel(());
 
@@ -146,6 +152,7 @@ impl Executor {
             work_dir: work_dir.to_owned(),
             scalar_functions,
             aggregate_functions,
+            window_functions,
             runtime,
             metrics_collector,
             concurrent_tasks,
@@ -271,8 +278,8 @@ mod test {
     use datafusion::error::DataFusionError;
     use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_plan::{
-        ExecutionPlan, Partitioning, RecordBatchStream, SendableRecordBatchStream,
-        Statistics,
+        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, RecordBatchStream,
+        SendableRecordBatchStream, Statistics,
     };
     use datafusion::prelude::SessionContext;
     use futures::Stream;
@@ -306,6 +313,20 @@ mod test {
     /// An ExecutionPlan which will never terminate
     #[derive(Debug)]
     pub struct NeverendingOperator;
+
+    impl DisplayAs for NeverendingOperator {
+        fn fmt_as(
+            &self,
+            t: DisplayFormatType,
+            f: &mut std::fmt::Formatter,
+        ) -> std::fmt::Result {
+            match t {
+                DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                    write!(f, "NeverendingOperator")
+                }
+            }
+        }
+    }
 
     impl ExecutionPlan for NeverendingOperator {
         fn as_any(&self) -> &dyn Any {

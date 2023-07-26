@@ -104,7 +104,7 @@ impl DefaultQueryStageExec {
 impl Display for DefaultQueryStageExec {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let metrics =
-            DisplayableExecutionPlan::with_metrics(&self.shuffle_writer).indent();
+            DisplayableExecutionPlan::with_metrics(&self.shuffle_writer).indent(true);
         write!(f, "{metrics}")
     }
 }
