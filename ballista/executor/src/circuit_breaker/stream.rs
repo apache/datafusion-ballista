@@ -16,7 +16,7 @@ use super::client::{CircuitBreakerClient, CircuitBreakerKey};
 
 pub struct CircuitBreakerStream {
     inner: Pin<Box<dyn RecordBatchStream + Send>>,
-    calculate: Arc<dyn Fn(&RecordBatch) -> f64 + Sync + Send>,
+    calculate: Box<dyn CircuitBreakerCalculation + Send>,
     key: CircuitBreakerKey,
     percent: f64,
     is_lagging: bool,
@@ -27,7 +27,7 @@ pub struct CircuitBreakerStream {
 impl CircuitBreakerStream {
     pub fn new(
         inner: Pin<Box<dyn RecordBatchStream + Send>>,
-        calculate: Arc<dyn Fn(&RecordBatch) -> f64 + Sync + Send>,
+        calculate: Box<dyn CircuitBreakerCalculation + Send>,
         key: CircuitBreakerKey,
         client: Arc<CircuitBreakerClient>,
     ) -> Result<Self, Error> {
@@ -52,6 +52,10 @@ impl Drop for CircuitBreakerStream {
             error!("Failed to deregister circuit breaker: {:?}", e);
         }
     }
+}
+
+pub trait CircuitBreakerCalculation {
+    fn calculate_delta(&mut self, batch: &RecordBatch) -> f64;
 }
 
 #[derive(Debug)]
@@ -86,7 +90,7 @@ impl Stream for CircuitBreakerStream {
         let poll = self.inner.poll_next_unpin(cx);
 
         if let Poll::Ready(Some(Ok(record_batch))) = &poll {
-            let delta = (self.calculate)(record_batch);
+            let delta = self.calculate.calculate_delta(record_batch);
 
             self.percent += delta;
 

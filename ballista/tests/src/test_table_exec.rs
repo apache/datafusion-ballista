@@ -3,6 +3,7 @@ use crate::test_table::TestTable;
 use ballista_executor::circuit_breaker::client::CircuitBreakerClient;
 use ballista_executor::circuit_breaker::client::CircuitBreakerKey;
 use ballista_executor::circuit_breaker::client::CircuitBreakerMetadataExtension;
+use ballista_executor::circuit_breaker::stream::CircuitBreakerCalculation;
 use ballista_executor::circuit_breaker::stream::CircuitBreakerStream;
 use ballista_scheduler::scheduler_server::timestamp_millis;
 use datafusion::arrow::array::Int32Array;
@@ -133,11 +134,10 @@ impl ExecutionPlan for TestTableExec {
 
             let limit = self.global_limit;
 
-            let calc = move |f: &RecordBatch| f.num_rows() as f64 / limit as f64;
+            let calc = Box::new(TestCalculation { limit })
+                as Box<dyn CircuitBreakerCalculation + Send>;
 
-            let arc = Arc::new(calc);
-
-            let limited_stream = CircuitBreakerStream::new(boxed, arc, key, client)
+            let limited_stream = CircuitBreakerStream::new(boxed, calc, key, client)
                 .map_err(|e| DataFusionError::Execution(e.to_string()))?;
 
             return Ok(Box::pin(limited_stream));
@@ -192,6 +192,16 @@ impl From<TestTableExec> for proto::TestTableExec {
                 .collect(),
             global_limit: value.global_limit,
         }
+    }
+}
+
+struct TestCalculation {
+    limit: u64,
+}
+
+impl CircuitBreakerCalculation for TestCalculation {
+    fn calculate_delta(&mut self, f: &RecordBatch) -> f64 {
+        f.num_rows() as f64 / self.limit as f64
     }
 }
 
