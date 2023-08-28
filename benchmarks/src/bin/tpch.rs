@@ -25,9 +25,8 @@ use ballista::prelude::{
 };
 use datafusion::arrow::array::*;
 use datafusion::arrow::util::display::array_value_to_string;
-use datafusion::datasource::file_format::csv::DEFAULT_CSV_EXTENSION;
-use datafusion::datasource::file_format::parquet::DEFAULT_PARQUET_EXTENSION;
-use datafusion::datasource::listing::ListingTableUrl;
+use datafusion::common::{DEFAULT_CSV_EXTENSION, DEFAULT_PARQUET_EXTENSION};
+use datafusion::datasource::listing::{ListingTableInsertMode, ListingTableUrl};
 use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::SessionState;
@@ -846,6 +845,7 @@ async fn get_table(
         table_partition_cols: vec![],
         file_sort_order: vec![],
         infinite_source: false,
+        insert_mode: ListingTableInsertMode::Error,
     };
 
     let url = ListingTableUrl::parse(path)?;

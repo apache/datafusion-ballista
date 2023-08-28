@@ -65,7 +65,6 @@ use datafusion::arrow::ipc::writer::{IpcDataGenerator, IpcWriteOptions};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DFSchemaRef;
 use datafusion::logical_expr::LogicalPlan;
-use datafusion::physical_plan::common::batch_byte_size;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use prost::Message;
@@ -465,7 +464,7 @@ impl FlightSqlServiceImpl {
         data: &RecordBatch,
         name: &str,
     ) -> Result<Response<FlightInfo>, Status> {
-        let num_bytes = batch_byte_size(data) as i64;
+        let num_bytes = data.get_array_memory_size() as i64;
         let schema = data.schema();
         let num_rows = data.num_rows() as i64;
 

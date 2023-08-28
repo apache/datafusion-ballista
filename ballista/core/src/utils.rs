@@ -36,7 +36,6 @@ use datafusion::logical_expr::{DdlStatement, LogicalPlan};
 use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::common::batch_byte_size;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::HashJoinExec;
@@ -88,7 +87,7 @@ pub async fn write_stream_to_disk(
     while let Some(result) = stream.next().await {
         let batch = result?;
 
-        let batch_size_bytes: usize = batch_byte_size(&batch);
+        let batch_size_bytes: usize = batch.get_array_memory_size();
         num_batches += 1;
         num_rows += batch.num_rows();
         num_bytes += batch_size_bytes;

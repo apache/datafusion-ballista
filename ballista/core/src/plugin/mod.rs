@@ -40,6 +40,7 @@ pub trait Plugin {
 }
 
 /// The enum of Plugin
+#[repr(C)]
 #[derive(PartialEq, std::cmp::Eq, std::hash::Hash, Copy, Clone)]
 pub enum PluginEnum {
     /// UDF/UDAF plugin
