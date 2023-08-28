@@ -614,6 +614,8 @@ mod tests {
                         target_partitions: x.target_partitions,
                         file_sort_order: vec![],
                         infinite_source: false,
+                        insert_mode:
+                            datafusion::datasource::listing::ListingTableInsertMode::Error,
                     };
 
                     let table_paths = listing_table

@@ -1977,10 +1977,7 @@ struct ValueLinks<K, V> {
 impl<K, V> Clone for ValueLinks<K, V> {
     #[inline]
     fn clone(&self) -> Self {
-        ValueLinks {
-            next: self.next,
-            prev: self.prev,
-        }
+        *self
     }
 }
 
@@ -1993,7 +1990,7 @@ struct FreeLink<K, V> {
 impl<K, V> Clone for FreeLink<K, V> {
     #[inline]
     fn clone(&self) -> Self {
-        FreeLink { next: self.next }
+        *self
     }
 }
 
