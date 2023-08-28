@@ -37,7 +37,7 @@ configure_me_codegen = { version = "0.4.4" }
 datafusion = "30.0.0"
 datafusion-cli = "30.0.0"
 datafusion-proto = "30.0.0"
-object_store = "0.6.1"
+object_store = "0.7.0"
 sqlparser = "0.36.1"
 tonic = { version = "0.9" }
 tonic-build = { version = "0.9", default-features = false, features = [
