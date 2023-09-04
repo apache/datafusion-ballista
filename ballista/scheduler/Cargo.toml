@@ -68,7 +68,7 @@ parking_lot = "0.12"
 parse_arg = "0.1.3"
 prometheus = { version = "0.13", features = ["process"], optional = true }
 prost = "0.11"
-prost-types = { version = "0.11.0" }
+prost-types = { version = "0.12.0" }
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 sled_package = { package = "sled", version = "0.34", optional = true }
