@@ -17,7 +17,7 @@
 
 use crate::cluster::storage::{KeyValueStore, Keyspace, Lock, Operation, WatchEvent};
 use crate::cluster::{
-    bind_task_bias, bind_task_consistent_hash, bind_task_round_robin,
+    bind_task_bias, bind_task_consistent_hash, bind_task_round_robin, get_scan_files,
     is_skip_consistent_hash, BoundTask, ClusterState, ExecutorHeartbeatStream,
     ExecutorSlot, JobState, JobStateEvent, JobStateEventStream, JobStatus,
     TaskDistributionPolicy, TopologyNode,
@@ -39,7 +39,6 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::serde::BallistaCodec;
 use dashmap::DashMap;
-use datafusion::datasource::physical_plan::get_scan_files;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
