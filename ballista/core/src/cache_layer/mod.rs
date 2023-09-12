@@ -41,7 +41,7 @@ mod tests {
     use futures::TryStreamExt;
     use object_store::local::LocalFileSystem;
     use object_store::path::Path;
-    use object_store::{GetResult, ObjectStore};
+    use object_store::{GetResultPayload, ObjectStore};
     use std::io::Write;
     use std::sync::Arc;
     use tempfile::NamedTempFile;
@@ -71,8 +71,8 @@ mod tests {
             source_object_store.clone(),
         ));
         let actual_source = source_object_store.get(&source_location).await.unwrap();
-        match actual_source {
-            GetResult::File(file, _) => {
+        match actual_source.payload {
+            GetResultPayload::File(file, _) => {
                 assert_eq!(test_bytes.len(), file.metadata()?.len() as usize);
             }
             _ => {
@@ -99,13 +99,13 @@ mod tests {
             source_object_store_with_key.clone(),
         );
         let actual_cache = cache_object_store.get(&source_location).await.unwrap();
-        match actual_cache {
-            GetResult::File(_, _) => {
+        match actual_cache.payload {
+            GetResultPayload::File(_, _) => {
                 return Err(BallistaError::General(
                     "Data stream instead of file should be returned".to_string(),
                 ))
             }
-            GetResult::Stream(s) => {
+            GetResultPayload::Stream(s) => {
                 let mut buf: Vec<u8> = vec![];
                 s.try_fold(&mut buf, |acc, part| async move {
                     let mut part: Vec<u8> = part.into();
