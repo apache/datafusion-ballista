@@ -191,7 +191,6 @@ impl ShuffleWriterExec {
 
             match output_partitioning {
                 None => {
-                    let timer = write_metrics.write_time.timer();
                     path.push(shuffle_id.to_string());
                     debug!("Creating dir {:?}", path);
 
@@ -216,7 +215,6 @@ impl ShuffleWriterExec {
                     write_metrics
                         .output_rows
                         .add(stats.num_rows.unwrap_or(0) as usize);
-                    timer.done();
 
                     info!(
                         "Executed partitions {:?} in {} seconds. Statistics: {}",
