@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::cluster::{
-    bind_task_bias, bind_task_consistent_hash, bind_task_round_robin,
+    bind_task_bias, bind_task_consistent_hash, bind_task_round_robin, get_scan_files,
     is_skip_consistent_hash, BoundTask, ClusterState, ExecutorSlot, JobState,
     JobStateEvent, JobStateEventStream, JobStatus, TaskDistributionPolicy, TopologyNode,
 };
@@ -42,7 +42,6 @@ use std::collections::{HashMap, HashSet};
 use std::ops::DerefMut;
 
 use ballista_core::consistent_hash::node::Node;
-use datafusion::datasource::physical_plan::get_scan_files;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 use tokio::sync::{Mutex, MutexGuard};

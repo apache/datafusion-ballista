@@ -21,7 +21,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use clap::ArgEnum;
+use datafusion::common::tree_node::TreeNode;
+use datafusion::common::tree_node::VisitRecursion;
 use datafusion::datasource::listing::PartitionedFile;
+use datafusion::datasource::physical_plan::{AvroExec, CsvExec, NdJsonExec, ParquetExec};
+use datafusion::error::DataFusionError;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -678,6 +682,32 @@ pub(crate) async fn bind_task_consistent_hash(
 // Or there are multiple plans which need to scan files for a stage, skip it.
 pub(crate) fn is_skip_consistent_hash(scan_files: &[Vec<Vec<PartitionedFile>>]) -> bool {
     scan_files.is_empty() || scan_files.len() > 1
+}
+
+/// Get all of the [`PartitionedFile`] to be scanned for an [`ExecutionPlan`]
+pub(crate) fn get_scan_files(
+    plan: Arc<dyn ExecutionPlan>,
+) -> std::result::Result<Vec<Vec<Vec<PartitionedFile>>>, DataFusionError> {
+    let mut collector: Vec<Vec<Vec<PartitionedFile>>> = vec![];
+    plan.apply(&mut |plan| {
+        let plan_any = plan.as_any();
+        let file_groups =
+            if let Some(parquet_exec) = plan_any.downcast_ref::<ParquetExec>() {
+                parquet_exec.base_config().file_groups.clone()
+            } else if let Some(avro_exec) = plan_any.downcast_ref::<AvroExec>() {
+                avro_exec.base_config().file_groups.clone()
+            } else if let Some(json_exec) = plan_any.downcast_ref::<NdJsonExec>() {
+                json_exec.base_config().file_groups.clone()
+            } else if let Some(csv_exec) = plan_any.downcast_ref::<CsvExec>() {
+                csv_exec.base_config().file_groups.clone()
+            } else {
+                return Ok(VisitRecursion::Continue);
+            };
+
+        collector.push(file_groups);
+        Ok(VisitRecursion::Skip)
+    })?;
+    Ok(collector)
 }
 
 #[derive(Clone)]
