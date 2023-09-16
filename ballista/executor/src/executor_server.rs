@@ -52,6 +52,7 @@ use datafusion_proto::{
     physical_plan::{from_proto::parse_protobuf_hash_partitioning, AsExecutionPlan},
 };
 use lazy_static::lazy_static;
+use tokio::fs;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
 
@@ -1186,7 +1187,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
             )));
         }
 
-        std::fs::remove_dir_all(&path)?;
+        fs::remove_dir_all(&path).await?;
 
         Ok(Response::new(RemoveJobDataResult {}))
     }

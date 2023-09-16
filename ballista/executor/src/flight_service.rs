@@ -105,8 +105,8 @@ impl FlightService for BallistaFlightService {
                 let (tx, rx) = channel(2);
 
                 let executor_id = self.executor_id.clone();
-                task::spawn(async move {
-                    if let Err(e) = read_partition(reader, tx).await {
+                task::spawn_blocking(move || {
+                    if let Err(e) = read_partition(reader, tx) {
                         warn!(executor_id, error = %e, "error streaming shuffle partition");
                     }
                 });
@@ -208,7 +208,7 @@ impl FlightService for BallistaFlightService {
     }
 }
 
-async fn read_partition<T>(
+fn read_partition<T>(
     reader: FileReader<T>,
     tx: Sender<Result<RecordBatch, FlightError>>,
 ) -> Result<(), FlightError>
@@ -222,8 +222,7 @@ where
     }
 
     for batch in reader {
-        tx.send(batch.map_err(|err| err.into()))
-            .await
+        tx.blocking_send(batch.map_err(|err| err.into()))
             .map_err(|err| {
                 if let SendError(Err(err)) = err {
                     err
