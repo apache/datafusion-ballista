@@ -29,16 +29,16 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-arrow = { version = "45.0.0" }
-arrow-flight = { version = "45.0.0", features = ["flight-sql-experimental"] }
-arrow-schema = { version = "45.0.0", default-features = false }
+arrow = { version = "46.0.0" }
+arrow-flight = { version = "46.0.0", features = ["flight-sql-experimental"] }
+arrow-schema = { version = "46.0.0", default-features = false }
 configure_me = { version = "0.4.0" }
 configure_me_codegen = { version = "0.4.4" }
-datafusion = "30.0.0"
-datafusion-cli = "30.0.0"
-datafusion-proto = "30.0.0"
-object_store = "0.6.1"
-sqlparser = "0.36.1"
+datafusion = "31.0.0"
+datafusion-cli = "31.0.0"
+datafusion-proto = "31.0.0"
+object_store = "0.7.0"
+sqlparser = "0.37.0"
 tonic = { version = "0.9" }
 tonic-build = { version = "0.9", default-features = false, features = [
     "transport",

@@ -446,8 +446,8 @@ impl FlightSqlServiceImpl {
     > {
         type FlightResult = Result<FlightData, Status>;
         let (tx, rx): (Sender<FlightResult>, Receiver<FlightResult>) = channel(2);
-        let schema = (*rb.schema()).clone();
-        let flights = batches_to_flight_data(schema, vec![rb])
+        let schema = rb.schema();
+        let flights = batches_to_flight_data(&schema, vec![rb])
             .map_err(|_| Status::internal("Error encoding batches".to_string()))?;
         for flight in flights {
             tx.send(Ok(flight))

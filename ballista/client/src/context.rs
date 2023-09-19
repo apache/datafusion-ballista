@@ -616,6 +616,8 @@ mod tests {
                         infinite_source: false,
                         insert_mode:
                             datafusion::datasource::listing::ListingTableInsertMode::Error,
+                        file_type_write_options: None,
+                        single_file: false,
                     };
 
                     let table_paths = listing_table
