@@ -940,21 +940,25 @@ message RunningTaskInfo {
   uint32 stage_id = 3;
 }
 
-message CircuitBreakerKey {
+message CircuitBreakerStageKey {
   string job_id = 1;
   uint32 stage_id = 2;
   uint32 attempt_num = 3;
-  uint32 partition = 4;
-  string node_id = 5;
-  string task_id = 6;
+}
+
+message CircuitBreakerTaskKey {
+  CircuitBreakerStageKey stage_key = 1;
+  uint32 partition = 3;
+  string task_id = 4;
 }
 
 message CircuitBreakerUpdateRequest {
   repeated CircuitBreakerUpdate updates = 1;
+  string executor_id = 2;
 }
 
 message CircuitBreakerUpdate {
-  CircuitBreakerKey key = 1;
+  CircuitBreakerTaskKey key = 1;
   double percent = 2;
 }
 
@@ -963,7 +967,7 @@ message CircuitBreakerUpdateResponse {
 }
 
 message CircuitBreakerCommand {
-  CircuitBreakerKey key = 1;
+  CircuitBreakerStageKey key = 1;
 }
 
 message SchedulerLostParams {

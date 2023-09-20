@@ -40,6 +40,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::protobuf::{
     execution_error, job_status, ExecutionError, FailedJob, ShuffleWritePartition,
+    SuccessfulTask,
 };
 use ballista_core::serde::protobuf::{task_status, RunningTask};
 use ballista_core::serde::scheduler::{
@@ -1511,6 +1512,56 @@ impl ExecutionGraph {
             failed_attempts,
             circuit_breaker_tripped: graph.circuit_breaker_tripped,
         })
+    }
+
+    pub fn trip_stage(&mut self, stage_id: usize) {
+        self.circuit_breaker_tripped = true;
+
+        let mut task_id_gen = self.task_id_gen;
+
+        let stage = if let Some(stage) = self.stages.get_mut(&stage_id) {
+            stage
+        } else {
+            return;
+        };
+        let running_stage = if let ExecutionStage::Running(stage) = stage {
+            stage
+        } else {
+            return;
+        };
+
+        let current_time = timestamp_millis() as u128;
+
+        let mut num_stopped = 0;
+
+        for i in 0..running_stage.task_infos.len() {
+            if running_stage.task_infos[i].is_none() {
+                num_stopped += 1;
+                running_stage.task_infos[i] = Some(TaskInfo {
+                    task_id: task_id_gen,
+                    scheduled_time: current_time,
+                    launch_time: current_time,
+                    start_exec_time: current_time,
+                    end_exec_time: current_time,
+                    finish_time: current_time,
+                    task_status: task_status::Status::Successful(SuccessfulTask {
+                        executor_id: "<circuit-breaker>".to_owned(),
+                        partitions: vec![],
+                    }),
+                });
+
+                task_id_gen += 1;
+            }
+        }
+
+        info!(
+            "Stopped scheduling of {} tasks due to tripped circuit breaker for stage {} in job {}",
+            num_stopped,
+            stage_id,
+            self.job_id,
+        );
+
+        self.task_id_gen = task_id_gen;
     }
 }
 

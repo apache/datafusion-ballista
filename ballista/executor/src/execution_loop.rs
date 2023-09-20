@@ -27,7 +27,7 @@ use ballista_core::serde::protobuf::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::circuit_breaker::client::{
-    CircuitBreakerClient, CircuitBreakerMetadataExtension,
+    CircuitBreakerClient, CircuitBreakerClientConfig, CircuitBreakerMetadataExtension,
 };
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
@@ -77,10 +77,10 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         DedicatedExecutor::new("task_runner", executor_specification.task_slots as usize);
 
     let circuit_breaker_client = Arc::new(CircuitBreakerClient::new(
-        Duration::from_secs(1),
         Arc::new(SingleSchedulerClient {
             scheduler: scheduler.clone(),
         }),
+        CircuitBreakerClientConfig::default(),
     ));
 
     loop {

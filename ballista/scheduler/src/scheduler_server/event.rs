@@ -73,7 +73,10 @@ pub enum QueryStageSchedulerEvent {
     ExecutorLost(String, Option<String>),
     CancelTasks(Vec<RunningTaskInfo>),
     Tick,
-    CircuitBreakerTripped(String),
+    CircuitBreakerTripped {
+        job_id: String,
+        stage_id: usize,
+    },
 }
 
 impl QueryStageSchedulerEvent {
@@ -93,7 +96,9 @@ impl QueryStageSchedulerEvent {
             QueryStageSchedulerEvent::ExecutorLost(_, _) => "ExecutorLost",
             QueryStageSchedulerEvent::CancelTasks(_) => "CancelTasks",
             QueryStageSchedulerEvent::Tick => "Tick",
-            QueryStageSchedulerEvent::CircuitBreakerTripped(_) => "CircuitBreakerTripped",
+            QueryStageSchedulerEvent::CircuitBreakerTripped { .. } => {
+                "CircuitBreakerTripped"
+            }
         }
     }
 }
@@ -123,7 +128,7 @@ impl Debug for QueryStageSchedulerEvent {
             QueryStageSchedulerEvent::ExecutorLost(_, _) => write!(f, "ExecutorLost"),
             QueryStageSchedulerEvent::CancelTasks(_) => write!(f, "CancelTasks"),
             QueryStageSchedulerEvent::Tick => write!(f, "Tick"),
-            QueryStageSchedulerEvent::CircuitBreakerTripped(_) => {
+            QueryStageSchedulerEvent::CircuitBreakerTripped { .. } => {
                 write!(f, "CircuitBreakerTripped")
             }
         }

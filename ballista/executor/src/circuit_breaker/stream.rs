@@ -12,12 +12,13 @@ use datafusion::physical_plan::RecordBatchStream;
 use futures::{Stream, StreamExt};
 use tracing::{error, info, warn};
 
-use super::client::{CircuitBreakerClient, CircuitBreakerKey};
+use super::client::CircuitBreakerClient;
+use ballista_core::circuit_breaker::model::CircuitBreakerTaskKey;
 
 pub struct CircuitBreakerStream {
     inner: Pin<Box<dyn RecordBatchStream + Send>>,
     calculate: Box<dyn CircuitBreakerCalculation + Send>,
-    key: CircuitBreakerKey,
+    key: CircuitBreakerTaskKey,
     percent: f64,
     is_lagging: bool,
     circuit_breaker: Arc<AtomicBool>,
@@ -28,13 +29,12 @@ impl CircuitBreakerStream {
     pub fn new(
         inner: Pin<Box<dyn RecordBatchStream + Send>>,
         calculate: Box<dyn CircuitBreakerCalculation + Send>,
-        key: CircuitBreakerKey,
+        key: CircuitBreakerTaskKey,
         client: Arc<CircuitBreakerClient>,
     ) -> Result<Self, Error> {
-        let circuit_breaker = Arc::new(AtomicBool::new(false));
-        client.register(key.clone(), circuit_breaker.clone())?;
+        let circuit_breaker = client.register(key.stage_key.clone())?;
 
-        Ok(Self {
+        let mut stream = Self {
             inner,
             calculate,
             key,
@@ -42,25 +42,43 @@ impl CircuitBreakerStream {
             is_lagging: false,
             circuit_breaker,
             client,
-        })
+        };
+
+        stream.try_send_update();
+
+        Ok(stream)
+    }
+
+    fn try_send_update(&mut self) {
+        let status_update = CircuitBreakerUpdate {
+            key: self.key.clone(),
+            percent: self.percent,
+        };
+
+        if let Err(e) = self.client.send_update(status_update) {
+            if !self.is_lagging {
+                self.is_lagging = true;
+                warn!("Stream could not send short circuit update to daemon, it might be running very fast! ({:?})", e);
+            }
+        }
     }
 }
 
 impl Drop for CircuitBreakerStream {
     fn drop(&mut self) {
-        if let Err(e) = self.client.deregister(self.key.clone()) {
+        if let Err(e) = self.client.deregister(self.key.stage_key.clone()) {
             error!("Failed to deregister circuit breaker: {:?}", e);
         }
     }
 }
 
 pub trait CircuitBreakerCalculation {
-    fn calculate_delta(&mut self, batch: &RecordBatch) -> f64;
+    fn calculate_delta(&mut self, poll: &Poll<Option<Result<RecordBatch>>>) -> f64;
 }
 
 #[derive(Debug)]
 pub struct CircuitBreakerUpdate {
-    pub key: CircuitBreakerKey,
+    pub key: CircuitBreakerTaskKey,
     pub percent: f64,
 }
 
@@ -89,22 +107,15 @@ impl Stream for CircuitBreakerStream {
 
         let poll = self.inner.poll_next_unpin(cx);
 
-        if let Poll::Ready(Some(Ok(record_batch))) = &poll {
-            let delta = self.calculate.calculate_delta(record_batch);
+        let delta = self.calculate.calculate_delta(&poll);
 
+        // We don't have to send an update here if the delta is zero,
+        // as even a batch update without this key will receive all trip signals from the controller.
+        // Note that we initially have to send an update with a zero delta
+        // in the constructor for this to work.
+        if delta > 0.0 {
             self.percent += delta;
-
-            let status_update = CircuitBreakerUpdate {
-                key: self.key.clone(),
-                percent: self.percent,
-            };
-
-            if let Err(e) = self.client.send_update(status_update) {
-                if !self.is_lagging {
-                    self.is_lagging = true;
-                    warn!("Stream could not send short circuit update to daemon, it might be running very fast! ({:?})", e);
-                }
-            }
+            self.try_send_update();
         }
 
         poll

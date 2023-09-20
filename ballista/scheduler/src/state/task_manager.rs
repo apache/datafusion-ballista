@@ -868,10 +868,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         }
     }
 
-    pub async fn mark_circuit_breaker_tripped(&self, job_id: String) {
+    pub async fn trip_circuit_breaker(&self, job_id: String, stage_id: usize) {
         if let Some(job) = self.active_job_queue.get_job(&job_id) {
             let mut graph = job.graph_mut().await;
-            graph.circuit_breaker_tripped = true;
+            graph.trip_stage(stage_id);
         }
     }
 }

@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use ballista_core::circuit_breaker::model::CircuitBreakerTaskKey;
 use ballista_core::config::{BallistaConfig, BALLISTA_JOB_NAME};
 use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
 use datafusion::config::Extensions;
@@ -542,23 +543,29 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         &self,
         request: Request<CircuitBreakerUpdateRequest>,
     ) -> Result<Response<CircuitBreakerUpdateResponse>, Status> {
-        let CircuitBreakerUpdateRequest { updates } = request.into_inner();
-
-        let mut commands = vec![];
+        let CircuitBreakerUpdateRequest {
+            updates,
+            executor_id,
+        } = request.into_inner();
 
         for update in updates {
-            if let Some(key) = update.key {
-                let circuit_breaker = self
+            if let Some(key_proto) = update.key {
+                let key: CircuitBreakerTaskKey =
+                    key_proto.try_into().map_err(Status::internal)?;
+
+                let stage_key = &key.stage_key;
+                let should_trip = self
                     .state
                     .circuit_breaker
-                    .update(key.clone(), update.percent)
+                    .update(key.clone(), update.percent, executor_id.clone())
                     .map_err(Status::internal)?;
 
-                if circuit_breaker {
+                if should_trip {
                     info!(
-                        job_id = key.job_id,
-                        task_id = key.task_id,
-                        "sending circuit breaker signal to task"
+                        job_id = stage_key.job_id,
+                        stage_id = stage_key.stage_id,
+                        attempt_num = stage_key.attempt_num,
+                        "Circuit breaker tripped!",
                     );
 
                     self.query_stage_event_loop
@@ -569,12 +576,32 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                                 "Get query stage event loop error due to {e:?}"
                             ))
                         })?
-                        .post_event(QueryStageSchedulerEvent::CircuitBreakerTripped(
-                            key.job_id.clone(),
-                        ));
-
-                    commands.push(CircuitBreakerCommand { key: Some(key) });
+                        .post_event(QueryStageSchedulerEvent::CircuitBreakerTripped {
+                            job_id: stage_key.job_id.clone(),
+                            stage_id: stage_key.stage_id as usize,
+                        });
                 }
+            }
+        }
+
+        let tripped_stage_keys = self
+            .state
+            .circuit_breaker
+            .retrieve_tripped_stages(&executor_id);
+
+        let mut commands = vec![];
+
+        if !tripped_stage_keys.is_empty() {
+            info!(
+                executor_id,
+                tripped_stage_keys = ?tripped_stage_keys,
+                "Sending circuit breaker signals to executor",
+            );
+
+            for stage_key in tripped_stage_keys {
+                commands.push(CircuitBreakerCommand {
+                    key: Some(stage_key.clone().into()),
+                });
             }
         }
 

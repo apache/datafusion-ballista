@@ -56,6 +56,7 @@ use ballista_core::utils::{
 };
 use ballista_core::BALLISTA_VERSION;
 
+use crate::circuit_breaker::client::CircuitBreakerClientConfig;
 use crate::execution_engine::ExecutionEngine;
 use crate::executor::Executor;
 use crate::executor_server::TERMINATING;
@@ -290,6 +291,7 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
                     stop_send,
                     &shutdown_noti,
                     Extensions::default(),
+                    CircuitBreakerClientConfig::default(),
                 )
                 .await?,
             );

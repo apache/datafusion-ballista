@@ -1,15 +1,19 @@
 use anyhow::Error;
 use ballista_core::{
+    circuit_breaker::model::CircuitBreakerStageKey,
     error::BallistaError,
     serde::protobuf::{self, CircuitBreakerUpdateRequest},
 };
+use dashmap::DashMap;
 use std::{
     collections::{HashMap, HashSet},
+    ops::Add,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
     time::Duration,
+    time::Instant,
 };
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
@@ -21,54 +25,42 @@ use crate::{
 };
 
 #[derive(Eq, PartialEq, Hash, Debug, Clone)]
-pub struct CircuitBreakerKey {
-    pub job_id: String,
-    pub stage_id: u32,
-    pub attempt_num: u32,
-    pub partition: u32,
-    pub node_id: String,
-    pub task_id: String,
-}
-
-impl From<CircuitBreakerKey> for protobuf::CircuitBreakerKey {
-    fn from(val: CircuitBreakerKey) -> Self {
-        protobuf::CircuitBreakerKey {
-            job_id: val.job_id,
-            stage_id: val.stage_id,
-            attempt_num: val.attempt_num,
-            partition: val.partition,
-            node_id: val.node_id,
-            task_id: val.task_id,
-        }
-    }
-}
-
-impl From<protobuf::CircuitBreakerKey> for CircuitBreakerKey {
-    fn from(key: protobuf::CircuitBreakerKey) -> Self {
-        Self {
-            job_id: key.job_id,
-            stage_id: key.stage_id,
-            attempt_num: key.attempt_num,
-            partition: key.partition,
-            node_id: key.node_id,
-            task_id: key.task_id,
-        }
-    }
-}
-
-#[derive(Eq, PartialEq, Hash, Debug, Clone)]
 pub struct CircuitBreakerMetadataExtension {
     pub job_id: String,
     pub stage_id: u32,
     pub attempt_number: u32,
 }
 
-pub struct CircuitBreakerClient {
-    update_sender: Sender<ClientUpdate>,
+pub struct CircuitBreakerClientConfig {
+    pub send_interval: Duration,
+    pub cache_cleanup_frequency: Duration,
+    pub cache_ttl: Duration,
 }
 
-struct CircuitBreakerTaskState {
+impl Default for CircuitBreakerClientConfig {
+    fn default() -> Self {
+        Self {
+            send_interval: Duration::from_secs(1),
+            cache_cleanup_frequency: Duration::from_secs(15),
+            cache_ttl: Duration::from_secs(60),
+        }
+    }
+}
+
+pub struct CircuitBreakerClient {
+    update_sender: Sender<ClientUpdate>,
+    state_per_stage: Arc<DashMap<CircuitBreakerStageKey, CircuitBreakerStageState>>,
+}
+
+struct CircuitBreakerStageState {
     circuit_breaker: Arc<AtomicBool>,
+    active_tasks: u32,
+}
+
+impl CircuitBreakerStageState {
+    fn trip(&self) {
+        self.circuit_breaker.store(true, Ordering::Release);
+    }
 }
 
 #[derive(Debug)]
@@ -84,13 +76,12 @@ struct SchedulerDeregistration {
 
 #[derive(Debug)]
 struct CircuitBreakerRegistration {
-    key: CircuitBreakerKey,
-    circuit_breaker: Arc<AtomicBool>,
+    key: CircuitBreakerStageKey,
 }
 
 #[derive(Debug)]
 struct CircuitBreakerDeregistration {
-    key: CircuitBreakerKey,
+    key: CircuitBreakerStageKey,
 }
 
 #[derive(Debug)]
@@ -104,35 +95,55 @@ enum ClientUpdate {
 
 impl CircuitBreakerClient {
     pub fn new(
-        send_interval: Duration,
         get_scheduler: Arc<dyn SchedulerClientRegistry>,
+        config: CircuitBreakerClientConfig,
     ) -> Self {
         let (update_sender, update_receiver) = channel(99);
 
-        tokio::spawn(Self::run_daemon(
+        let executor_id = uuid::Uuid::new_v4().to_string();
+
+        let state_per_stage = Arc::new(DashMap::new());
+
+        tokio::spawn(Self::run_sender_daemon(
             update_receiver,
-            send_interval,
+            config.send_interval,
+            config.cache_cleanup_frequency,
+            config.cache_ttl,
             get_scheduler,
+            state_per_stage.clone(),
+            executor_id,
         ));
 
-        Self { update_sender }
+        Self {
+            update_sender,
+            state_per_stage,
+        }
     }
 
     pub fn register(
         &self,
-        key: CircuitBreakerKey,
-        circuit_breaker: Arc<AtomicBool>,
-    ) -> Result<(), Error> {
-        let registration = CircuitBreakerRegistration {
-            key,
-            circuit_breaker,
-        };
+        key: CircuitBreakerStageKey,
+    ) -> Result<Arc<AtomicBool>, Error> {
+        let state = self.state_per_stage.entry(key.clone()).or_insert_with(|| {
+            CircuitBreakerStageState {
+                circuit_breaker: Arc::new(AtomicBool::new(false)),
+                active_tasks: 0,
+            }
+        });
+
+        let circuit_breaker = state.circuit_breaker.clone();
+
+        let registration = CircuitBreakerRegistration { key };
 
         let update = ClientUpdate::Create(registration);
-        self.update_sender.try_send(update).map_err(|e| e.into())
+
+        self.update_sender
+            .try_send(update)
+            .map_err(|e| e.into())
+            .map(|_| circuit_breaker)
     }
 
-    pub fn deregister(&self, key: CircuitBreakerKey) -> Result<(), Error> {
+    pub fn deregister(&self, key: CircuitBreakerStageKey) -> Result<(), Error> {
         let deregistration = CircuitBreakerDeregistration { key };
 
         let update = ClientUpdate::Delete(deregistration);
@@ -181,13 +192,18 @@ impl CircuitBreakerClient {
         })
     }
 
-    async fn run_daemon(
+    async fn run_sender_daemon(
         update_receiver: Receiver<ClientUpdate>,
         send_interval: Duration,
+        cache_cleanup_frequency: Duration,
+        cache_ttl: Duration,
         get_scheduler: Arc<dyn SchedulerClientRegistry>,
+        state_per_stage: Arc<DashMap<CircuitBreakerStageKey, CircuitBreakerStageState>>,
+        executor_id: String,
     ) {
-        let mut state_per_task = HashMap::new();
         let mut scheduler_ids = HashMap::new();
+        let mut inactive_stages = HashMap::new();
+        let mut last_cleanup = Instant::now();
 
         let updates_stream =
             ReceiverStream::new(update_receiver).chunks_timeout(1000, send_interval);
@@ -202,11 +218,12 @@ impl CircuitBreakerClient {
             for update in combined_received {
                 match update {
                     ClientUpdate::Create(register) => {
-                        let state = CircuitBreakerTaskState {
-                            circuit_breaker: register.circuit_breaker,
-                        };
-
-                        state_per_task.insert(register.key, state);
+                        if let Some(mut state) = state_per_stage.get_mut(&register.key) {
+                            state.active_tasks += 1;
+                            inactive_stages.remove(&register.key);
+                        } else {
+                            warn!("No state found for task {:?}", register.key);
+                        }
                     }
                     ClientUpdate::Delete(deregistration) => {
                         deregistrations.push(deregistration);
@@ -274,6 +291,7 @@ impl CircuitBreakerClient {
 
                 let request = CircuitBreakerUpdateRequest {
                     updates: request_updates,
+                    executor_id: executor_id.clone(),
                 };
 
                 match scheduler.send_circuit_breaker_update(request).await {
@@ -288,8 +306,8 @@ impl CircuitBreakerClient {
                             if let Some(key_proto) = command.key {
                                 let key = key_proto.into();
 
-                                if let Some(state) = state_per_task.get(&key) {
-                                    state.circuit_breaker.store(true, Ordering::Release);
+                                if let Some(state) = state_per_stage.get_mut(&key) {
+                                    state.trip();
                                 } else {
                                     warn!("No state found for task {:?}", key);
                                 }
@@ -304,7 +322,42 @@ impl CircuitBreakerClient {
             }
 
             for deregistration in deregistrations {
-                state_per_task.remove(&deregistration.key);
+                if let Some(mut state) = state_per_stage.get_mut(&deregistration.key) {
+                    state.active_tasks -= 1;
+
+                    if state.active_tasks == 0 {
+                        inactive_stages
+                            .insert(deregistration.key.clone(), Instant::now());
+                    }
+                }
+            }
+
+            if last_cleanup.add(cache_cleanup_frequency) < Instant::now() {
+                let mut inactive_stages = inactive_stages.drain().collect::<Vec<_>>();
+
+                inactive_stages.sort_by_key(|(_, last_seen)| *last_seen);
+
+                let mut to_remove = Vec::new();
+
+                for (key, last_seen) in inactive_stages {
+                    if last_seen.add(cache_ttl) < Instant::now() {
+                        to_remove.push(key);
+                    }
+                }
+
+                let mut removed_count = 0;
+                for key in to_remove {
+                    removed_count += 1;
+                    state_per_stage.remove(&key);
+                }
+
+                info!(
+                    "Cleaned up {} inactive stages, {} left",
+                    removed_count,
+                    state_per_stage.len()
+                );
+
+                last_cleanup = Instant::now();
             }
         }
     }

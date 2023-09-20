@@ -1807,18 +1807,22 @@ pub struct RunningTaskInfo {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CircuitBreakerKey {
+pub struct CircuitBreakerStageKey {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
     #[prost(uint32, tag = "2")]
     pub stage_id: u32,
     #[prost(uint32, tag = "3")]
     pub attempt_num: u32,
-    #[prost(uint32, tag = "4")]
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CircuitBreakerTaskKey {
+    #[prost(message, optional, tag = "1")]
+    pub stage_key: ::core::option::Option<CircuitBreakerStageKey>,
+    #[prost(uint32, tag = "3")]
     pub partition: u32,
-    #[prost(string, tag = "5")]
-    pub node_id: ::prost::alloc::string::String,
-    #[prost(string, tag = "6")]
+    #[prost(string, tag = "4")]
     pub task_id: ::prost::alloc::string::String,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -1826,12 +1830,14 @@ pub struct CircuitBreakerKey {
 pub struct CircuitBreakerUpdateRequest {
     #[prost(message, repeated, tag = "1")]
     pub updates: ::prost::alloc::vec::Vec<CircuitBreakerUpdate>,
+    #[prost(string, tag = "2")]
+    pub executor_id: ::prost::alloc::string::String,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CircuitBreakerUpdate {
     #[prost(message, optional, tag = "1")]
-    pub key: ::core::option::Option<CircuitBreakerKey>,
+    pub key: ::core::option::Option<CircuitBreakerTaskKey>,
     #[prost(double, tag = "2")]
     pub percent: f64,
 }
@@ -1845,7 +1851,7 @@ pub struct CircuitBreakerUpdateResponse {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CircuitBreakerCommand {
     #[prost(message, optional, tag = "1")]
-    pub key: ::core::option::Option<CircuitBreakerKey>,
+    pub key: ::core::option::Option<CircuitBreakerStageKey>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

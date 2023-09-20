@@ -57,7 +57,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
 
 use crate::circuit_breaker::client::{
-    CircuitBreakerClient, CircuitBreakerMetadataExtension,
+    CircuitBreakerClient, CircuitBreakerClientConfig, CircuitBreakerMetadataExtension,
 };
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::execution_engine::QueryStageExecutor;
@@ -88,6 +88,7 @@ struct CuratorTaskStatus {
     task_status: Vec<TaskStatus>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     mut scheduler: SchedulerGrpcClient<Channel>,
     bind_host: String,
@@ -96,6 +97,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     stop_send: mpsc::Sender<bool>,
     shutdown_noti: &ShutdownNotifier,
     default_extensions: Extensions,
+    circuit_breaker_config: CircuitBreakerClientConfig,
 ) -> Result<ServerHandle, BallistaError> {
     let channel_buf_size = executor.concurrent_tasks * 50;
     let (tx_task, rx_task) = mpsc::channel::<CuratorTaskDefinition>(channel_buf_size);
@@ -112,6 +114,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
         },
         codec,
         default_extensions,
+        circuit_breaker_config,
     );
 
     // 1. Start executor grpc service
@@ -227,12 +230,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         executor_env: ExecutorEnv,
         codec: BallistaCodec<T, U>,
         default_extensions: Extensions,
+        circuit_breaker_config: CircuitBreakerClientConfig,
     ) -> Self {
         let schedulers: SchedulerClients = Arc::new(DashMap::new());
 
         let circuit_breaker_client = Arc::new(CircuitBreakerClient::new(
-            Duration::from_secs(1),
             schedulers,
+            circuit_breaker_config,
         ));
 
         Self {

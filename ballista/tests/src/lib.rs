@@ -28,6 +28,7 @@ mod tests {
         utils::create_grpc_client_connection,
     };
     use ballista_executor::{
+        circuit_breaker::client::CircuitBreakerClientConfig,
         execution_loop,
         executor::Executor,
         executor_server::{self, ServerHandle},
@@ -311,6 +312,7 @@ mod tests {
                 stop_send,
                 shutdown_not.as_ref(),
                 Extensions::new(),
+                CircuitBreakerClientConfig::default(),
             )
             .await
             .context(format!("Starting executor {}", i))

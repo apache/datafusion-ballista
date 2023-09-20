@@ -1,7 +1,8 @@
 use crate::proto;
 use crate::test_table::TestTable;
+use ballista_core::circuit_breaker::model::CircuitBreakerStageKey;
+use ballista_core::circuit_breaker::model::CircuitBreakerTaskKey;
 use ballista_executor::circuit_breaker::client::CircuitBreakerClient;
-use ballista_executor::circuit_breaker::client::CircuitBreakerKey;
 use ballista_executor::circuit_breaker::client::CircuitBreakerMetadataExtension;
 use ballista_executor::circuit_breaker::stream::CircuitBreakerCalculation;
 use ballista_executor::circuit_breaker::stream::CircuitBreakerStream;
@@ -92,7 +93,6 @@ impl ExecutionPlan for TestTableExec {
 
     fn execute(
         &self,
-        // Each partition behaves exactly the same
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
@@ -123,13 +123,16 @@ impl ExecutionPlan for TestTableExec {
         {
             let boxed: Pin<Box<dyn RecordBatchStream + Send>> = Box::pin(stream);
 
-            let key = CircuitBreakerKey {
-                task_id,
-                partition: partition as u32,
+            let stage_key = CircuitBreakerStageKey {
                 job_id: metadata.job_id.clone(),
                 stage_id: metadata.stage_id,
                 attempt_num: metadata.attempt_number,
-                node_id: "test_table_exec".to_owned(),
+            };
+
+            let key = CircuitBreakerTaskKey {
+                stage_key,
+                partition: partition as u32,
+                task_id,
             };
 
             let limit = self.global_limit;
@@ -200,8 +203,12 @@ struct TestCalculation {
 }
 
 impl CircuitBreakerCalculation for TestCalculation {
-    fn calculate_delta(&mut self, f: &RecordBatch) -> f64 {
-        f.num_rows() as f64 / self.limit as f64
+    fn calculate_delta(&mut self, f: &Poll<Option<Result<RecordBatch>>>) -> f64 {
+        if let Poll::Ready(Some(Ok(batch))) = f {
+            batch.num_rows() as f64 / self.limit as f64
+        } else {
+            0.0
+        }
     }
 }
 

@@ -22,6 +22,7 @@ pub fn print_version() {
     println!("Ballista version: {BALLISTA_VERSION}")
 }
 
+pub mod circuit_breaker;
 pub mod client;
 pub mod config;
 pub mod error;
