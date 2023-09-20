@@ -5,6 +5,8 @@ use ballista_core::{
     serde::protobuf::{self, CircuitBreakerUpdateRequest},
 };
 use dashmap::DashMap;
+use lazy_static::lazy_static;
+use prometheus::{register_gauge, register_histogram, Gauge, Histogram};
 use std::{
     collections::{HashMap, HashSet},
     ops::Add,
@@ -95,6 +97,26 @@ enum ClientUpdate {
     Delete(CircuitBreakerDeregistration),
     SchedulerRegistration(SchedulerRegistration),
     SchedulerDeregistration(SchedulerDeregistration),
+}
+
+lazy_static! {
+    static ref BATCH_SIZE: Histogram = register_histogram!(
+        "ballista_circuit_breaker_client_batch_size",
+        "Number of updates in a batch sent to the scheduler",
+        vec![0.0, 1.0, 10.0, 100.0, 500.0, 1000.0]
+    )
+    .unwrap();
+    static ref UPDATE_LATENCY_SECONDS: Histogram = register_histogram!(
+        "ballista_circuit_breaker_client_update_latency",
+        "Latency of sending updates to the scheduler in seconds",
+        vec![0.001, 0.01, 0.1, 1.0, 10.0]
+    )
+    .unwrap();
+    static ref CACHE_SIZE: Gauge = register_gauge!(
+        "ballista_circuit_breaker_client_cache_size",
+        "Number active stages in cache"
+    )
+    .unwrap();
 }
 
 impl CircuitBreakerClient {
@@ -211,6 +233,8 @@ impl CircuitBreakerClient {
         tokio::pin!(updates_stream);
 
         while let Some(combined_received) = updates_stream.next().await {
+            BATCH_SIZE.observe(combined_received.len() as f64);
+
             let mut updates = Vec::new();
             let mut scheduler_deregistrations = Vec::new();
             let mut deregistrations = Vec::new();
@@ -294,12 +318,18 @@ impl CircuitBreakerClient {
                     executor_id: executor_id.clone(),
                 };
 
+                let request_time = Instant::now();
+
                 match scheduler.send_circuit_breaker_update(request).await {
                     Err(e) => warn!(
                         "Failed to send circuit breaker update to scheduler {}: {}",
                         scheduler_id, e
                     ),
                     Ok(response) => {
+                        let request_latency = request_time.elapsed();
+
+                        UPDATE_LATENCY_SECONDS.observe(request_latency.as_secs_f64());
+
                         let commands = response.into_inner().commands;
 
                         for command in commands {
@@ -356,6 +386,8 @@ impl CircuitBreakerClient {
                     removed_count,
                     state_per_stage.len()
                 );
+
+                CACHE_SIZE.set(state_per_stage.len() as f64);
 
                 last_cleanup = Instant::now();
             }
