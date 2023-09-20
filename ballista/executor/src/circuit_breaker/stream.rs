@@ -23,6 +23,7 @@ pub struct CircuitBreakerStream {
     is_lagging: bool,
     circuit_breaker: Arc<AtomicBool>,
     client: Arc<CircuitBreakerClient>,
+    noop: bool,
 }
 
 impl CircuitBreakerStream {
@@ -32,7 +33,15 @@ impl CircuitBreakerStream {
         key: CircuitBreakerTaskKey,
         client: Arc<CircuitBreakerClient>,
     ) -> Result<Self, Error> {
-        let circuit_breaker = client.register(key.stage_key.clone())?;
+        let mut noop = false;
+        let circuit_breaker = match client.register(key.stage_key.clone()) {
+            Ok(circuit_breaker) => circuit_breaker,
+            Err(e) => {
+                error!("Failed to register circuit breaker: {:?}", e);
+                noop = true;
+                Arc::new(AtomicBool::new(false))
+            }
+        };
 
         let mut stream = Self {
             inner,
@@ -42,6 +51,7 @@ impl CircuitBreakerStream {
             is_lagging: false,
             circuit_breaker,
             client,
+            noop,
         };
 
         stream.try_send_update();
@@ -50,6 +60,10 @@ impl CircuitBreakerStream {
     }
 
     fn try_send_update(&mut self) {
+        if self.noop {
+            return;
+        }
+
         let status_update = CircuitBreakerUpdate {
             key: self.key.clone(),
             percent: self.percent,
@@ -66,6 +80,10 @@ impl CircuitBreakerStream {
 
 impl Drop for CircuitBreakerStream {
     fn drop(&mut self) {
+        if self.noop {
+            return;
+        }
+
         if let Err(e) = self.client.deregister(self.key.stage_key.clone()) {
             error!("Failed to deregister circuit breaker: {:?}", e);
         }

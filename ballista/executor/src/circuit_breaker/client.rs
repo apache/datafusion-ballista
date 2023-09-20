@@ -110,13 +110,10 @@ impl CircuitBreakerClient {
 
         tokio::spawn(Self::run_sender_daemon(
             update_receiver,
-            config.send_interval,
-            config.cache_cleanup_frequency,
-            config.cache_ttl,
+            config,
             get_scheduler,
             state_per_stage.clone(),
             executor_id,
-            config.max_batch_size,
         ));
 
         Self {
@@ -199,20 +196,17 @@ impl CircuitBreakerClient {
 
     async fn run_sender_daemon(
         update_receiver: Receiver<ClientUpdate>,
-        send_interval: Duration,
-        cache_cleanup_frequency: Duration,
-        cache_ttl: Duration,
+        config: CircuitBreakerClientConfig,
         get_scheduler: Arc<dyn SchedulerClientRegistry>,
         state_per_stage: Arc<DashMap<CircuitBreakerStageKey, CircuitBreakerStageState>>,
         executor_id: String,
-        max_batch_size: usize,
     ) {
         let mut scheduler_ids = HashMap::new();
         let mut inactive_stages = HashMap::new();
         let mut last_cleanup = Instant::now();
 
         let updates_stream = ReceiverStream::new(update_receiver)
-            .chunks_timeout(max_batch_size, send_interval);
+            .chunks_timeout(config.max_batch_size, config.send_interval);
 
         tokio::pin!(updates_stream);
 
@@ -338,7 +332,7 @@ impl CircuitBreakerClient {
                 }
             }
 
-            if last_cleanup.add(cache_cleanup_frequency) < Instant::now() {
+            if last_cleanup.add(config.cache_cleanup_frequency) < Instant::now() {
                 let mut inactive_stages = inactive_stages.drain().collect::<Vec<_>>();
 
                 inactive_stages.sort_by_key(|(_, last_seen)| *last_seen);
@@ -346,7 +340,7 @@ impl CircuitBreakerClient {
                 let mut to_remove = Vec::new();
 
                 for (key, last_seen) in inactive_stages {
-                    if last_seen.add(cache_ttl) < Instant::now() {
+                    if last_seen.add(config.cache_ttl) < Instant::now() {
                         to_remove.push(key);
                     }
                 }
