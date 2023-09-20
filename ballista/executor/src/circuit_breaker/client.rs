@@ -35,6 +35,8 @@ pub struct CircuitBreakerClientConfig {
     pub send_interval: Duration,
     pub cache_cleanup_frequency: Duration,
     pub cache_ttl: Duration,
+    pub channel_size: usize,
+    pub max_batch_size: usize,
 }
 
 impl Default for CircuitBreakerClientConfig {
@@ -43,6 +45,8 @@ impl Default for CircuitBreakerClientConfig {
             send_interval: Duration::from_secs(1),
             cache_cleanup_frequency: Duration::from_secs(15),
             cache_ttl: Duration::from_secs(60),
+            channel_size: 1000,
+            max_batch_size: 1000,
         }
     }
 }
@@ -98,7 +102,7 @@ impl CircuitBreakerClient {
         get_scheduler: Arc<dyn SchedulerClientRegistry>,
         config: CircuitBreakerClientConfig,
     ) -> Self {
-        let (update_sender, update_receiver) = channel(99);
+        let (update_sender, update_receiver) = channel(config.channel_size);
 
         let executor_id = uuid::Uuid::new_v4().to_string();
 
@@ -112,6 +116,7 @@ impl CircuitBreakerClient {
             get_scheduler,
             state_per_stage.clone(),
             executor_id,
+            config.max_batch_size,
         ));
 
         Self {
@@ -200,13 +205,14 @@ impl CircuitBreakerClient {
         get_scheduler: Arc<dyn SchedulerClientRegistry>,
         state_per_stage: Arc<DashMap<CircuitBreakerStageKey, CircuitBreakerStageState>>,
         executor_id: String,
+        max_batch_size: usize,
     ) {
         let mut scheduler_ids = HashMap::new();
         let mut inactive_stages = HashMap::new();
         let mut last_cleanup = Instant::now();
 
-        let updates_stream =
-            ReceiverStream::new(update_receiver).chunks_timeout(1000, send_interval);
+        let updates_stream = ReceiverStream::new(update_receiver)
+            .chunks_timeout(max_batch_size, send_interval);
 
         tokio::pin!(updates_stream);
 
