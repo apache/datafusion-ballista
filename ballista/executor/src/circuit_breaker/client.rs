@@ -6,7 +6,7 @@ use ballista_core::{
 };
 use dashmap::DashMap;
 use lazy_static::lazy_static;
-use prometheus::{register_gauge, register_histogram, Gauge, Histogram};
+use prometheus::{register_histogram, register_int_gauge, Histogram, IntGauge};
 use std::{
     collections::{HashMap, HashSet},
     ops::Add,
@@ -60,7 +60,7 @@ pub struct CircuitBreakerClient {
 
 struct CircuitBreakerStageState {
     circuit_breaker: Arc<AtomicBool>,
-    active_tasks: u32,
+    last_updated: Instant,
 }
 
 impl CircuitBreakerStageState {
@@ -81,20 +81,8 @@ struct SchedulerDeregistration {
 }
 
 #[derive(Debug)]
-struct CircuitBreakerRegistration {
-    key: CircuitBreakerStageKey,
-}
-
-#[derive(Debug)]
-struct CircuitBreakerDeregistration {
-    key: CircuitBreakerStageKey,
-}
-
-#[derive(Debug)]
 enum ClientUpdate {
-    Create(CircuitBreakerRegistration),
     Update(CircuitBreakerUpdate),
-    Delete(CircuitBreakerDeregistration),
     SchedulerRegistration(SchedulerRegistration),
     SchedulerDeregistration(SchedulerDeregistration),
 }
@@ -112,9 +100,14 @@ lazy_static! {
         vec![0.001, 0.01, 0.1, 1.0, 10.0]
     )
     .unwrap();
-    static ref CACHE_SIZE: Gauge = register_gauge!(
+    static ref CACHE_SIZE: IntGauge = register_int_gauge!(
         "ballista_circuit_breaker_client_cache_size",
         "Number active stages in cache"
+    )
+    .unwrap();
+    static ref SCHEDULER_LOOKUP_SIZE: IntGauge = register_int_gauge!(
+        "ballista_circuit_breaker_client_scheduler_lookup_size",
+        "Number of schedulers in lookup"
     )
     .unwrap();
 }
@@ -151,27 +144,11 @@ impl CircuitBreakerClient {
         let state = self.state_per_stage.entry(key.clone()).or_insert_with(|| {
             CircuitBreakerStageState {
                 circuit_breaker: Arc::new(AtomicBool::new(false)),
-                active_tasks: 0,
+                last_updated: Instant::now(),
             }
         });
 
-        let circuit_breaker = state.circuit_breaker.clone();
-
-        let registration = CircuitBreakerRegistration { key };
-
-        let update = ClientUpdate::Create(registration);
-
-        self.update_sender
-            .try_send(update)
-            .map_err(|e| e.into())
-            .map(|_| circuit_breaker)
-    }
-
-    pub fn deregister(&self, key: CircuitBreakerStageKey) -> Result<(), Error> {
-        let deregistration = CircuitBreakerDeregistration { key };
-
-        let update = ClientUpdate::Delete(deregistration);
-        self.update_sender.try_send(update).map_err(|e| e.into())
+        Ok(state.circuit_breaker.clone())
     }
 
     pub fn send_update(&self, update: CircuitBreakerUpdate) -> Result<(), Error> {
@@ -224,7 +201,6 @@ impl CircuitBreakerClient {
         executor_id: String,
     ) {
         let mut scheduler_ids = HashMap::new();
-        let mut inactive_stages = HashMap::new();
         let mut last_cleanup = Instant::now();
 
         let updates_stream = ReceiverStream::new(update_receiver)
@@ -237,21 +213,9 @@ impl CircuitBreakerClient {
 
             let mut updates = Vec::new();
             let mut scheduler_deregistrations = Vec::new();
-            let mut deregistrations = Vec::new();
 
             for update in combined_received {
                 match update {
-                    ClientUpdate::Create(register) => {
-                        if let Some(mut state) = state_per_stage.get_mut(&register.key) {
-                            state.active_tasks += 1;
-                            inactive_stages.remove(&register.key);
-                        } else {
-                            warn!("No state found for task {:?}", register.key);
-                        }
-                    }
-                    ClientUpdate::Delete(deregistration) => {
-                        deregistrations.push(deregistration);
-                    }
                     ClientUpdate::Update(update) => {
                         updates.push(update);
                     }
@@ -267,12 +231,13 @@ impl CircuitBreakerClient {
             }
 
             let mut updates_per_scheduler = HashMap::new();
-            let mut seen_keys = HashSet::new();
+            let mut seen_task_keys = HashSet::new();
+            let mut seen_stage_keys = HashSet::new();
 
             for update in updates.into_iter().rev() {
                 // Per request only one update per task is sent
                 // This is why we go from newest to oldest
-                if seen_keys.insert(update.key.clone()) {
+                if seen_task_keys.insert(update.key.clone()) {
                     let scheduler_id: &String = match scheduler_ids
                         .get(&update.key.task_id)
                     {
@@ -283,10 +248,18 @@ impl CircuitBreakerClient {
                         }
                     };
 
+                    seen_stage_keys.insert(update.key.stage_key.clone());
+
                     updates_per_scheduler
                         .entry(scheduler_id.clone())
                         .or_insert_with(Vec::new)
                         .push(update);
+                }
+            }
+
+            for stage_key in seen_stage_keys {
+                if let Some(mut state) = state_per_stage.get_mut(&stage_key) {
+                    state.last_updated = Instant::now();
                 }
             }
 
@@ -347,49 +320,43 @@ impl CircuitBreakerClient {
                 };
             }
 
+            // Remove scheduler registration after all updates have been processed,
+            // to make sure we still send the last updates and deregister afterwards.
             for deregistration in scheduler_deregistrations {
                 scheduler_ids.remove(&deregistration.task_id);
             }
 
-            for deregistration in deregistrations {
-                if let Some(mut state) = state_per_stage.get_mut(&deregistration.key) {
-                    state.active_tasks -= 1;
+            let now = Instant::now();
 
-                    if state.active_tasks == 0 {
-                        inactive_stages
-                            .insert(deregistration.key.clone(), Instant::now());
-                    }
-                }
-            }
+            if last_cleanup.add(config.cache_cleanup_frequency) < now {
+                let mut keys_to_delete = Vec::new();
 
-            if last_cleanup.add(config.cache_cleanup_frequency) < Instant::now() {
-                let mut inactive_stages = inactive_stages.drain().collect::<Vec<_>>();
-
-                inactive_stages.sort_by_key(|(_, last_seen)| *last_seen);
-
-                let mut to_remove = Vec::new();
-
-                for (key, last_seen) in inactive_stages {
-                    if last_seen.add(config.cache_ttl) < Instant::now() {
-                        to_remove.push(key);
+                for entry in state_per_stage.iter() {
+                    if entry.value().last_updated.add(config.cache_ttl) < now {
+                        keys_to_delete.push(entry.key().clone());
                     }
                 }
 
-                let mut removed_count = 0;
-                for key in to_remove {
-                    removed_count += 1;
-                    state_per_stage.remove(&key);
+                for key in keys_to_delete.iter() {
+                    state_per_stage.remove(key);
                 }
 
-                info!(
-                    "Cleaned up {} inactive stages, {} left",
-                    removed_count,
-                    state_per_stage.len()
-                );
+                let removed_count = keys_to_delete.len();
 
-                CACHE_SIZE.set(state_per_stage.len() as f64);
+                if removed_count > 0 {
+                    info!(
+                        "Cleaned up {} inactive stages, {} left",
+                        removed_count,
+                        state_per_stage.len()
+                    );
+                }
 
-                last_cleanup = Instant::now();
+                CACHE_SIZE.set(state_per_stage.len() as i64);
+
+                // Not actually related to cleanup but good timing
+                SCHEDULER_LOOKUP_SIZE.set(scheduler_ids.len() as i64);
+
+                last_cleanup = now;
             }
         }
     }

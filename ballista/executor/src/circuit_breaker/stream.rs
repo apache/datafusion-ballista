@@ -78,18 +78,6 @@ impl CircuitBreakerStream {
     }
 }
 
-impl Drop for CircuitBreakerStream {
-    fn drop(&mut self) {
-        if self.noop {
-            return;
-        }
-
-        if let Err(e) = self.client.deregister(self.key.stage_key.clone()) {
-            error!("Failed to deregister circuit breaker: {:?}", e);
-        }
-    }
-}
-
 pub trait CircuitBreakerCalculation {
     fn calculate_delta(&mut self, poll: &Poll<Option<Result<RecordBatch>>>) -> f64;
 }
