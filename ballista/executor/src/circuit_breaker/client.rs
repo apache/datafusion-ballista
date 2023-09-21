@@ -6,7 +6,10 @@ use ballista_core::{
 };
 use dashmap::DashMap;
 use lazy_static::lazy_static;
-use prometheus::{register_histogram, register_int_gauge, Histogram, IntGauge};
+use prometheus::{
+    register_histogram, register_int_counter, register_int_gauge, Histogram, IntCounter,
+    IntGauge,
+};
 use std::{
     collections::{HashMap, HashSet},
     ops::Add,
@@ -33,6 +36,7 @@ pub struct CircuitBreakerMetadataExtension {
     pub attempt_number: u32,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct CircuitBreakerClientConfig {
     pub send_interval: Duration,
     pub cache_cleanup_frequency: Duration,
@@ -90,14 +94,19 @@ enum ClientUpdate {
 lazy_static! {
     static ref BATCH_SIZE: Histogram = register_histogram!(
         "ballista_circuit_breaker_client_batch_size",
-        "Number of updates in a batch sent to the scheduler",
-        vec![0.0, 1.0, 10.0, 100.0, 500.0, 1000.0]
+        "Number of updates in a batch sent to the scheduler (in percent of max batch size)",
+        Vec::from_iter((0..=100).step_by(5).map(|x| x as f64 / 100.0))
     )
     .unwrap();
     static ref UPDATE_LATENCY_SECONDS: Histogram = register_histogram!(
         "ballista_circuit_breaker_client_update_latency",
-        "Latency of sending updates to the scheduler in seconds",
-        vec![0.001, 0.01, 0.1, 1.0, 10.0]
+        "Latency of sending updates to the schedulers in seconds",
+        vec![0.01, 0.03, 0.05, 0.1, 0.3, 0.5, 1.0, 3.0]
+    )
+    .unwrap();
+    static ref SENT_UPDATES: IntCounter = register_int_counter!(
+        "ballista_circuit_breaker_client_sent_updates",
+        "Number of updates sent to the schedulers"
     )
     .unwrap();
     static ref CACHE_SIZE: IntGauge = register_int_gauge!(
@@ -209,7 +218,8 @@ impl CircuitBreakerClient {
         tokio::pin!(updates_stream);
 
         while let Some(combined_received) = updates_stream.next().await {
-            BATCH_SIZE.observe(combined_received.len() as f64);
+            BATCH_SIZE
+                .observe(combined_received.len() as f64 / config.max_batch_size as f64);
 
             let mut updates = Vec::new();
             let mut scheduler_deregistrations = Vec::new();
@@ -264,7 +274,8 @@ impl CircuitBreakerClient {
             }
 
             for (scheduler_id, updates) in updates_per_scheduler {
-                let mut request_updates = Vec::with_capacity(updates.len());
+                let updates_len = updates.len();
+                let mut request_updates = Vec::with_capacity(updates_len);
 
                 for update in updates {
                     let key = update.key.into();
@@ -301,6 +312,7 @@ impl CircuitBreakerClient {
                     Ok(response) => {
                         let request_latency = request_time.elapsed();
 
+                        SENT_UPDATES.inc_by(updates_len as u64);
                         UPDATE_LATENCY_SECONDS.observe(request_latency.as_secs_f64());
 
                         let commands = response.into_inner().commands;
