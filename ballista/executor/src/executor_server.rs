@@ -484,7 +484,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             .circuit_breaker_client
             .register_scheduler(task_identity.to_owned(), scheduler_id.clone())
         {
-            error!(executor_id = self.executor.metadata.id,task_identity, scheduler_id, error = %e, "failed to register circuit breaker");
+            error!(
+                executor_id = self.executor.metadata.id,
+                task_identity,
+                scheduler_id,
+                error = %e,
+                "failed to register circuit breaker"
+            );
         }
 
         let mut task_scalar_functions = HashMap::new();
@@ -541,6 +547,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             task_identity, "completed task"
         );
         debug!("Statistics: {:?}", execution_result);
+
+        if let Err(e) = self
+            .circuit_breaker_client
+            .deregister_scheduler(task_identity.to_owned())
+        {
+            error!(
+                executor_id = self.executor.metadata.id,
+                task_identity,
+                scheduler_id,
+                error = %e,
+                "failed to de-register circuit breaker"
+            );
+        }
 
         let plan_metrics = query_stage_exec.collect_plan_metrics();
         let operator_metrics = match plan_metrics
