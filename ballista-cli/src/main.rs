@@ -23,6 +23,7 @@ use ballista_cli::{
     exec, print_format::PrintFormat, print_options::PrintOptions, BALLISTA_CLI_VERSION,
 };
 use clap::Parser;
+use datafusion_cli::print_options::MaxRows;
 use mimalloc::MiMalloc;
 
 #[global_allocator]
@@ -83,6 +84,13 @@ struct Args {
     port: Option<u16>,
 
     #[clap(
+        long,
+        help = "The max number of rows to display for 'Table' format\n[default: 40] [possible values: numbers(0/10/...), inf(no limit)]",
+        default_value = "40"
+    )]
+    maxrows: MaxRows,
+
+    #[clap(
         short,
         long,
         help = "Reduce printing other than the results and work quietly"
@@ -133,6 +141,7 @@ pub async fn main() -> Result<()> {
     let mut print_options = PrintOptions {
         format: args.format,
         quiet: args.quiet,
+        maxrows: args.maxrows,
     };
 
     let files = args.file;

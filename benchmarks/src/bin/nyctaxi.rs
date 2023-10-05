@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
     let config = SessionConfig::new()
         .with_target_partitions(opt.partitions)
         .with_batch_size(opt.batch_size);
-    let mut ctx = SessionContext::with_config(config);
+    let mut ctx = SessionContext::new_with_config(config);
 
     let path = opt.path.to_str().unwrap();
 

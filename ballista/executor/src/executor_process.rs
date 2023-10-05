@@ -25,6 +25,7 @@ use std::{env, io};
 
 use anyhow::{Context, Result};
 use arrow_flight::flight_service_server::FlightServiceServer;
+use datafusion::execution::cache::cache_manager::CacheManager;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use log::{error, info, warn};
@@ -199,6 +200,7 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
         let cache_dir = opt.cache_dir.clone();
         let cache_capacity = opt.cache_capacity;
         let cache_io_concurrency = opt.cache_io_concurrency;
+        let cache_manager = CacheManager::default();
         let cache_layer =
             opt.data_cache_policy
                 .map(|data_cache_policy| match data_cache_policy {
@@ -221,6 +223,7 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
                 memory_pool: runtime.memory_pool.clone(),
                 disk_manager: runtime.disk_manager.clone(),
                 object_store_registry: registry,
+                cache_manager: Arc::new(cache_manager),
             }))
         } else {
             None

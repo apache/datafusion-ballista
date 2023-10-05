@@ -81,5 +81,5 @@ pub fn create_datafusion_context(
         )
         .set_bool("datafusion.optimizer.enable_round_robin_repartition", false);
     let session_state = session_builder(config);
-    Arc::new(SessionContext::with_state(session_state))
+    Arc::new(SessionContext::new_with_state(session_state))
 }

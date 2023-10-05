@@ -630,7 +630,7 @@ filter_expr="]
             .options_mut()
             .optimizer
             .enable_round_robin_repartition = false;
-        let ctx = SessionContext::with_config(config);
+        let ctx = SessionContext::new_with_config(config);
         let schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::UInt32, false),
             Field::new("b", DataType::UInt32, false),
@@ -657,7 +657,7 @@ filter_expr="]
             .options_mut()
             .optimizer
             .enable_round_robin_repartition = false;
-        let ctx = SessionContext::with_config(config);
+        let ctx = SessionContext::new_with_config(config);
         let schema =
             Arc::new(Schema::new(vec![Field::new("a", DataType::UInt32, false)]));
         let table = Arc::new(MemTable::try_new(schema.clone(), vec![])?);
