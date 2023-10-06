@@ -285,8 +285,6 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         &executor.work_dir,
     )?;
     dedicated_executor.spawn(async move {
-        let partitions = partitions;
-
         use std::panic::AssertUnwindSafe;
 
         let execution_result = match AssertUnwindSafe(executor.execute_query_stage(
