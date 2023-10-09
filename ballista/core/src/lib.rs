@@ -30,6 +30,8 @@ pub mod event_loop;
 pub mod execution_plans;
 pub mod physical_optimizer;
 /// some plugins
+
+#[allow(improper_ctypes_definitions)]
 pub mod plugin;
 pub mod utils;
 

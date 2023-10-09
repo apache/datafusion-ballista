@@ -228,7 +228,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                         reservations,
                     ));
                 } else {
-                    info!(
+                    debug!(
                         executor_id,
                         "not re-offering task slots for task status update"
                     )

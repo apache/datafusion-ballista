@@ -189,6 +189,8 @@ pub struct ResolvedStage {
     pub last_attempt_failure_reasons: ::prost::alloc::vec::Vec<
         ::prost::alloc::string::String,
     >,
+    #[prost(uint64, tag = "9")]
+    pub resolved_at: u64,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

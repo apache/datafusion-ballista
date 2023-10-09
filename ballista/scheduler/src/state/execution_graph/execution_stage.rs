@@ -158,6 +158,8 @@ pub(crate) struct ResolvedStage {
     pub(crate) plan: Arc<dyn ExecutionPlan>,
     /// Record last attempt's failure reasons to avoid duplicate resubmits
     pub(crate) last_attempt_failure_reasons: HashSet<String>,
+    /// Timestamp when then stage went into resolved state
+    pub(crate) resolved_at: u64,
 }
 
 /// Different from the resolved stage, a running stage will
@@ -190,6 +192,8 @@ pub(crate) struct RunningStage {
     pub(crate) task_failures: usize,
     /// Combined metrics of the already finished tasks in the stage, If it is None, no task is finished yet.
     pub(crate) stage_metrics: Option<Vec<MetricsSet>>,
+    /// Timestamp when then stage went into resolved state
+    pub(crate) resolved_at: u64,
 }
 
 /// If a stage finishes successfully, its task statuses and metrics will be finalized
@@ -499,6 +503,7 @@ impl ResolvedStage {
             inputs,
             plan,
             last_attempt_failure_reasons,
+            resolved_at: timestamp_millis(),
         }
     }
 
@@ -512,6 +517,7 @@ impl ResolvedStage {
             self.output_partitioning.clone(),
             self.output_links.clone(),
             self.inputs.clone(),
+            self.resolved_at,
         )
     }
 
@@ -562,6 +568,7 @@ impl ResolvedStage {
             last_attempt_failure_reasons: HashSet::from_iter(
                 stage.last_attempt_failure_reasons,
             ),
+            resolved_at: stage.resolved_at,
         })
     }
 
@@ -589,6 +596,7 @@ impl ResolvedStage {
             last_attempt_failure_reasons: Vec::from_iter(
                 stage.last_attempt_failure_reasons,
             ),
+            resolved_at: stage.resolved_at,
         })
     }
 }
@@ -606,6 +614,7 @@ impl Debug for ResolvedStage {
 }
 
 impl RunningStage {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         stage_id: usize,
         stage_attempt_num: usize,
@@ -614,6 +623,7 @@ impl RunningStage {
         output_partitioning: Option<Partitioning>,
         output_links: Vec<usize>,
         inputs: HashMap<usize, StageOutput>,
+        resolved_at: u64,
     ) -> Self {
         Self {
             stage_id,
@@ -626,6 +636,7 @@ impl RunningStage {
             task_infos: vec![None; partitions],
             task_failures: 0,
             stage_metrics: None,
+            resolved_at,
         }
     }
 
@@ -954,6 +965,7 @@ impl SuccessfulStage {
             task_failures: 0,
             task_infos,
             stage_metrics,
+            resolved_at: timestamp_millis(),
         }
     }
 

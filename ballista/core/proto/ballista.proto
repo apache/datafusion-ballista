@@ -123,6 +123,7 @@ message ResolvedStage {
   bytes plan = 6;
   uint32 stage_attempt_num = 7;
   repeated string last_attempt_failure_reasons = 8;
+  uint64 resolved_at = 9;
 }
 
 message SuccessfulStage {

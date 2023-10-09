@@ -57,9 +57,9 @@ impl DisplayAs for TestTableExec {
     fn fmt_as(
         &self,
         _t: datafusion::physical_plan::DisplayFormatType,
-        _f: &mut std::fmt::Formatter,
+        f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
-        unimplemented!()
+        write!(f, "TestTableExec")
     }
 }
 

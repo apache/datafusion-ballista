@@ -298,8 +298,7 @@ impl ExecutionGraph {
         let mut job_task_statuses: HashMap<usize, Vec<TaskStatus>> = HashMap::new();
         for task_status in task_statuses {
             let stage_id = task_status.stage_id as usize;
-            let stage_task_statuses =
-                job_task_statuses.entry(stage_id).or_insert_with(Vec::new);
+            let stage_task_statuses = job_task_statuses.entry(stage_id).or_default();
             stage_task_statuses.push(task_status);
         }
 
@@ -365,7 +364,7 @@ impl ExecutionGraph {
                                     )) => {
                                         let failed_attempts = failed_stage_attempts
                                             .entry(stage_id)
-                                            .or_insert_with(HashSet::new);
+                                            .or_default();
                                         failed_attempts.insert(task_stage_attempt_num);
                                         if failed_attempts.len() < max_stage_failures {
                                             let map_stage_id = fetch_partiton_error
@@ -400,7 +399,7 @@ impl ExecutionGraph {
                                                 let missing_inputs =
                                                     resubmit_successful_stages
                                                         .entry(map_stage_id)
-                                                        .or_insert_with(HashSet::new);
+                                                        .or_default();
                                                 missing_inputs
                                                     .extend(removed_map_partitions);
                                                 warn!(job_id = self.job_id, stage_id, map_stage_id, task_identity, "resubmitting current running stage and parent stage, error fetching partition");
@@ -629,7 +628,7 @@ impl ExecutionGraph {
 
                                         let missing_inputs = reset_running_stages
                                             .entry(map_stage_id)
-                                            .or_insert_with(HashSet::new);
+                                            .or_default();
                                         missing_inputs.extend(removed_map_partitions);
                                         warn!(map_stage_id, stage_id, task_identity, "resetting running stage, error fetching partition from parent stage");
 
@@ -1004,6 +1003,7 @@ impl ExecutionGraph {
                         task_id,
                         plan: stage.plan.clone(),
                         output_partitioning: stage.output_partitioning.clone(),
+                        resolved_at: stage.resolved_at,
                     })
                 } else {
                     Err(BallistaError::General(format!("Stage {stage_id} is not a running stage")))
@@ -1701,6 +1701,7 @@ pub struct TaskDescription {
     pub task_id: usize,
     pub plan: Arc<dyn ExecutionPlan>,
     pub output_partitioning: Option<Partitioning>,
+    pub resolved_at: u64,
 }
 
 impl TaskDescription {
@@ -1715,13 +1716,14 @@ impl Debug for TaskDescription {
         let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent(false);
         write!(
             f,
-            "TaskDescription[session_id: {},job: {}, stage: {}.{}, partitions: {:?} task_id {}]\n{}",
+            "TaskDescription[session_id: {},job: {}, stage: {}.{}, partitions: {:?} task_id: {}, resolved_at: {}]\n{}",
             self.session_id,
             self.partitions.job_id,
             self.partitions.stage_id,
             self.stage_attempt_num,
             self.partitions.partitions,
             self.task_id,
+            self.resolved_at,
             plan
         )
     }

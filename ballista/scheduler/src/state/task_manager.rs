@@ -45,6 +45,8 @@ use datafusion_proto::physical_plan::AsExecutionPlan;
 
 use datafusion::prelude::SessionContext;
 use itertools::Itertools;
+use lazy_static::lazy_static;
+use prometheus::{register_histogram, Histogram};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use std::collections::{HashMap, HashSet};
@@ -60,6 +62,15 @@ use crate::scheduler_server::timestamp_millis;
 use ballista_core::event_loop::EventSender;
 use ballista_core::physical_optimizer::OptimizeTaskGroup;
 use tracing::trace;
+
+lazy_static! {
+    static ref TASK_IDELE_TIME: Histogram = register_histogram!(
+        "scheduler_task_idle_time",
+        "Time tasks are idle before being scheduler",
+        vec![0.1, 1., 2., 3., 4., 5., 10., 20., 30., 60., 120., 240.]
+    )
+    .unwrap();
+}
 
 type ActiveJobCache = Arc<DashMap<String, JobInfoCache>>;
 
@@ -505,7 +516,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         for status in task_status {
             trace!("Task Update\n{:?}", status);
             let job_id = status.job_id.clone();
-            let job_task_statuses = job_updates.entry(job_id).or_insert_with(Vec::new);
+            let job_task_statuses = job_updates.entry(job_id).or_default();
             job_task_statuses.push(status);
         }
 
@@ -579,6 +590,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     }
 
                     if let Some(task) = graph.pop_next_task(exec_id, slots.len())? {
+                        TASK_IDELE_TIME.observe(
+                            timestamp_millis().saturating_sub(task.resolved_at) as f64
+                                / 1_000.,
+                        );
+
                         assign_tasks += task.concurrency();
                         slots.truncate(slots.len() - task.concurrency());
                         assignments.push(((*exec_id).clone(), task));
@@ -846,7 +862,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
         let state = self.state.clone();
         tokio::spawn(async move {
-            let job_id = job_id;
             tokio::time::sleep(Duration::from_secs(clean_up_interval)).await;
             if let Err(err) = state.remove_job(&job_id).await {
                 error!(job_id, error = %err, "failed to remove job");
