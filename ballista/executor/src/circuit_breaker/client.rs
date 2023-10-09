@@ -1,8 +1,8 @@
 use anyhow::Error;
 use ballista_core::{
-    circuit_breaker::model::CircuitBreakerStageKey,
+    circuit_breaker::model::{CircuitBreakerStageKey, CircuitBreakerTaskKey},
     error::BallistaError,
-    serde::protobuf::{self, CircuitBreakerUpdateRequest},
+    serde::protobuf::{self, CircuitBreakerUpdateRequest, CircuitBreakerUpdateResponse},
 };
 use dashmap::DashMap;
 use lazy_static::lazy_static;
@@ -11,7 +11,7 @@ use prometheus::{
     IntGauge,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     ops::Add,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -21,7 +21,6 @@ use std::{
     time::Instant,
 };
 use tokio::sync::mpsc::{channel, Receiver, Sender};
-use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tracing::{info, warn};
 
 use crate::{
@@ -203,173 +202,239 @@ impl CircuitBreakerClient {
     }
 
     async fn run_sender_daemon(
-        update_receiver: Receiver<ClientUpdate>,
+        mut update_receiver: Receiver<ClientUpdate>,
         config: CircuitBreakerClientConfig,
         get_scheduler: Arc<dyn SchedulerClientRegistry>,
         state_per_stage: Arc<DashMap<CircuitBreakerStageKey, CircuitBreakerStageState>>,
         executor_id: String,
     ) {
-        let mut scheduler_ids = HashMap::new();
         let mut last_cleanup = Instant::now();
+        let mut task_scheduler_lookup = HashMap::new();
+        let mut updates = HashMap::new();
+        let mut scheduler_deregistrations = Vec::new();
 
-        let updates_stream = ReceiverStream::new(update_receiver)
-            .chunks_timeout(config.max_batch_size, config.send_interval);
-
-        tokio::pin!(updates_stream);
-
-        while let Some(combined_received) = updates_stream.next().await {
-            BATCH_SIZE
-                .observe(combined_received.len() as f64 / config.max_batch_size as f64);
-
-            let mut updates = Vec::new();
-            let mut scheduler_deregistrations = Vec::new();
-
-            for update in combined_received {
-                match update {
-                    ClientUpdate::Update(update) => {
-                        updates.push(update);
-                    }
-                    ClientUpdate::SchedulerRegistration(registration) => {
-                        scheduler_ids
-                            .insert(registration.task_id, registration.scheduler_id);
-                    }
-
-                    ClientUpdate::SchedulerDeregistration(deregistration) => {
-                        scheduler_deregistrations.push(deregistration);
-                    }
-                }
-            }
-
-            let mut updates_per_scheduler = HashMap::new();
-            let mut seen_task_keys = HashSet::new();
-            let mut seen_stage_keys = HashSet::new();
-
-            for update in updates.into_iter().rev() {
-                // Per request only one update per task is sent
-                // This is why we go from newest to oldest
-                if seen_task_keys.insert(update.key.clone()) {
-                    let scheduler_id: &String = match scheduler_ids
-                        .get(&update.key.task_id)
-                    {
-                        Some(scheduler_id) => scheduler_id,
-                        None => {
-                            warn!("No scheduler found for task {}", update.key.task_id);
-                            continue;
-                        }
-                    };
-
-                    seen_stage_keys.insert(update.key.stage_key.clone());
-
-                    updates_per_scheduler
-                        .entry(scheduler_id.clone())
-                        .or_insert_with(Vec::new)
-                        .push(update);
-                }
-            }
-
-            for stage_key in seen_stage_keys {
-                if let Some(mut state) = state_per_stage.get_mut(&stage_key) {
-                    state.last_updated = Instant::now();
-                }
-            }
-
-            for (scheduler_id, updates) in updates_per_scheduler {
-                let updates_len = updates.len();
-                let mut request_updates = Vec::with_capacity(updates_len);
-
-                for update in updates {
-                    let key = update.key.into();
-
-                    request_updates.push(protobuf::CircuitBreakerUpdate {
-                        key: Some(key),
-                        percent: update.percent,
-                    })
-                }
-
-                let mut scheduler = match get_scheduler
-                    .get_or_create_scheduler_client(&scheduler_id)
-                    .await
-                {
-                    Ok(scheduler) => scheduler,
-                    Err(e) => {
-                        warn!("Failed to get scheduler {}: {}", scheduler_id, e);
-                        continue;
-                    }
-                };
-
-                let request = CircuitBreakerUpdateRequest {
-                    updates: request_updates,
-                    executor_id: executor_id.clone(),
-                };
-
-                let request_time = Instant::now();
-
-                match scheduler.send_circuit_breaker_update(request).await {
-                    Err(e) => warn!(
-                        "Failed to send circuit breaker update to scheduler {}: {}",
-                        scheduler_id, e
-                    ),
-                    Ok(response) => {
-                        let request_latency = request_time.elapsed();
-
-                        SENT_UPDATES.inc_by(updates_len as u64);
-                        UPDATE_LATENCY_SECONDS.observe(request_latency.as_secs_f64());
-
-                        let commands = response.into_inner().commands;
-
-                        for command in commands {
-                            if let Some(key_proto) = command.key {
-                                let key = key_proto.into();
-
-                                if let Some(state) = state_per_stage.get_mut(&key) {
-                                    state.trip();
-                                } else {
-                                    warn!("No state found for task {:?}", key);
-                                }
-                            }
-                        }
-                    }
-                };
-            }
-
-            // Remove scheduler registration after all updates have been processed,
-            // to make sure we still send the last updates and deregister afterwards.
-            for deregistration in scheduler_deregistrations {
-                scheduler_ids.remove(&deregistration.task_id);
-            }
+        while let Some(update) = update_receiver.recv().await {
+            Self::handle_update(
+                update,
+                &mut updates,
+                &mut task_scheduler_lookup,
+                &mut scheduler_deregistrations,
+                &config,
+                &executor_id,
+                &state_per_stage,
+                get_scheduler.as_ref(),
+            )
+            .await;
 
             let now = Instant::now();
 
             if last_cleanup.add(config.cache_cleanup_frequency) < now {
-                let mut keys_to_delete = Vec::new();
-
-                for entry in state_per_stage.iter() {
-                    if entry.value().last_updated.add(config.cache_ttl) < now {
-                        keys_to_delete.push(entry.key().clone());
-                    }
-                }
-
-                for key in keys_to_delete.iter() {
-                    state_per_stage.remove(key);
-                }
-
-                let removed_count = keys_to_delete.len();
-
-                if removed_count > 0 {
-                    info!(
-                        "Cleaned up {} inactive stages, {} left",
-                        removed_count,
-                        state_per_stage.len()
-                    );
-                }
-
-                CACHE_SIZE.set(state_per_stage.len() as i64);
-
-                // Not actually related to cleanup but good timing
-                SCHEDULER_LOOKUP_SIZE.set(scheduler_ids.len() as i64);
+                Self::cleanup_stage_states(&config, &state_per_stage, now);
+                Self::cleanup_scheduler_lookup(
+                    &mut scheduler_deregistrations,
+                    &mut task_scheduler_lookup,
+                );
 
                 last_cleanup = now;
             }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_update(
+        received: ClientUpdate,
+        updates_per_scheduler: &mut HashMap<String, PerSchedulerState>,
+        task_scheduler_lookup: &mut HashMap<String, String>,
+        scheduler_deregistrations: &mut Vec<SchedulerDeregistration>,
+        config: &CircuitBreakerClientConfig,
+        executor_id: &str,
+        state_per_stage: &DashMap<CircuitBreakerStageKey, CircuitBreakerStageState>,
+        scheduler_lookup: &dyn SchedulerClientRegistry,
+    ) {
+        let now = Instant::now();
+
+        match received {
+            ClientUpdate::Update(update) => {
+                if let Some(mut state) = state_per_stage.get_mut(&update.key.stage_key) {
+                    state.last_updated = now;
+                }
+
+                if let Some(scheduler_id) = task_scheduler_lookup.get(&update.key.task_id)
+                {
+                    let mut per_scheduler_state = updates_per_scheduler
+                        .remove(scheduler_id)
+                        .unwrap_or_default();
+
+                    per_scheduler_state
+                        .updates
+                        .entry(update.key)
+                        .and_modify(|percent| {
+                            *percent = update.percent.max(*percent);
+                        })
+                        .or_insert(update.percent);
+
+                    if per_scheduler_state.updates.len() >= config.max_batch_size
+                        || per_scheduler_state.last_sent.add(config.send_interval) < now
+                    {
+                        Self::process_batch(
+                            scheduler_id,
+                            &mut per_scheduler_state.updates,
+                            state_per_stage,
+                            scheduler_lookup,
+                            executor_id,
+                            config,
+                        )
+                        .await;
+                    } else {
+                        updates_per_scheduler
+                            .insert(scheduler_id.clone(), per_scheduler_state);
+                    }
+                } else {
+                    warn!("No scheduler found for task {}", update.key.task_id);
+                }
+            }
+            ClientUpdate::SchedulerRegistration(registration) => {
+                task_scheduler_lookup
+                    .insert(registration.task_id, registration.scheduler_id);
+            }
+
+            ClientUpdate::SchedulerDeregistration(deregistration) => {
+                scheduler_deregistrations.push(deregistration);
+            }
+        }
+    }
+
+    async fn process_batch(
+        scheduler_id: &str,
+        updates: &mut HashMap<CircuitBreakerTaskKey, f64>,
+        state_per_stage: &DashMap<CircuitBreakerStageKey, CircuitBreakerStageState>,
+        get_scheduler: &dyn SchedulerClientRegistry,
+        executor_id: &str,
+        config: &CircuitBreakerClientConfig,
+    ) {
+        let update_protos = updates
+            .drain()
+            .map(|(key, percent)| protobuf::CircuitBreakerUpdate {
+                key: Some(key.into()),
+                percent,
+            })
+            .collect::<Vec<_>>();
+
+        Self::send_updates(
+            executor_id,
+            scheduler_id,
+            update_protos,
+            get_scheduler,
+            state_per_stage,
+            config,
+        )
+        .await;
+    }
+
+    async fn send_updates(
+        executor_id: &str,
+        scheduler_id: &str,
+        updates: Vec<protobuf::CircuitBreakerUpdate>,
+        get_scheduler: &dyn SchedulerClientRegistry,
+        state_per_stage: &DashMap<CircuitBreakerStageKey, CircuitBreakerStageState>,
+        config: &CircuitBreakerClientConfig,
+    ) {
+        let updates_len = updates.len();
+
+        let mut scheduler = match get_scheduler
+            .get_or_create_scheduler_client(scheduler_id)
+            .await
+        {
+            Ok(scheduler) => scheduler,
+            Err(e) => {
+                warn!("Failed to get scheduler {}: {}", scheduler_id, e);
+                return;
+            }
+        };
+
+        let request = CircuitBreakerUpdateRequest {
+            updates,
+            executor_id: executor_id.to_owned(),
+        };
+
+        let request_time = Instant::now();
+
+        match scheduler.send_circuit_breaker_update(request).await {
+            Err(e) => warn!(
+                "Failed to send circuit breaker update to scheduler {}: {}",
+                scheduler_id, e
+            ),
+            Ok(response) => {
+                let request_latency = request_time.elapsed();
+
+                SENT_UPDATES.inc_by(updates_len as u64);
+                BATCH_SIZE.observe(updates_len as f64 / config.max_batch_size as f64);
+                UPDATE_LATENCY_SECONDS.observe(request_latency.as_secs_f64());
+
+                Self::handle_response(response.into_inner(), state_per_stage);
+            }
+        };
+    }
+
+    fn handle_response(
+        response: CircuitBreakerUpdateResponse,
+        state_per_stage: &DashMap<CircuitBreakerStageKey, CircuitBreakerStageState>,
+    ) {
+        for command in response.commands {
+            if let Some(key_proto) = command.key {
+                let key = key_proto.into();
+
+                if let Some(state) = state_per_stage.get_mut(&key) {
+                    state.trip();
+                } else {
+                    warn!("No state found for task {:?}", key);
+                }
+            }
+        }
+    }
+
+    fn cleanup_stage_states(
+        config: &CircuitBreakerClientConfig,
+        state_per_stage: &DashMap<CircuitBreakerStageKey, CircuitBreakerStageState>,
+        timestamp: Instant,
+    ) {
+        let mut keys_to_delete = Vec::new();
+
+        for entry in state_per_stage.iter() {
+            if entry.value().last_updated.add(config.cache_ttl) < timestamp {
+                keys_to_delete.push(entry.key().clone());
+            }
+        }
+
+        for key in keys_to_delete.iter() {
+            state_per_stage.remove(key);
+        }
+
+        CACHE_SIZE.set(state_per_stage.len() as i64);
+    }
+
+    fn cleanup_scheduler_lookup(
+        scheduler_deregistrations: &mut Vec<SchedulerDeregistration>,
+        task_scheduler_lookup: &mut HashMap<String, String>,
+    ) {
+        for deregistration in scheduler_deregistrations.drain(..) {
+            task_scheduler_lookup.remove(&deregistration.task_id);
+        }
+
+        SCHEDULER_LOOKUP_SIZE.set(task_scheduler_lookup.len() as i64);
+    }
+}
+
+struct PerSchedulerState {
+    updates: HashMap<CircuitBreakerTaskKey, f64>,
+    last_sent: Instant,
+}
+
+impl Default for PerSchedulerState {
+    fn default() -> Self {
+        Self {
+            updates: HashMap::new(),
+            last_sent: Instant::now(),
         }
     }
 }
