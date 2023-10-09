@@ -471,11 +471,6 @@ impl From<&DataFusionError> for datafusion_error::Error {
                     message: message.to_string()
                 },
             ),
-            DataFusionError::Configuration(message) => datafusion_error::Error::Internal(
-                execution_error::datafusion_error::Internal {
-                    message: message.to_string()
-                }
-            ),
         }
     }
 }
@@ -531,12 +526,7 @@ impl From<&ArrowError> for execution_error::arrow_error::Error {
                     message: message.clone(),
                 })
             }
-            ArrowError::IoError(message, _) => {
-                arrow_error::Error::IoError(arrow_error::IoError {
-                    message: message.clone(),
-                })
-            }
-            ArrowError::IpcError(message) => {
+            ArrowError::IoError(message) => {
                 arrow_error::Error::IoError(arrow_error::IoError {
                     message: message.clone(),
                 })

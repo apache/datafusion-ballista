@@ -316,8 +316,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                         Vec<TaskDescription>,
                     > = HashMap::new();
                     for (executor_id, task) in assignments.into_iter() {
-                        let tasks =
-                            executor_stage_assignments.entry(executor_id).or_default();
+                        let tasks = executor_stage_assignments
+                            .entry(executor_id)
+                            .or_insert_with(Vec::new);
                         tasks.push(task);
                     }
 

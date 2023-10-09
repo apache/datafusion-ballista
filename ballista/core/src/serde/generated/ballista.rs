@@ -2745,9 +2745,7 @@ pub mod scheduler_grpc_server {
                             request: tonic::Request<super::PollWorkParams>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as SchedulerGrpc>::poll_work(&inner, request).await
-                            };
+                            let fut = async move { (*inner).poll_work(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -2792,8 +2790,7 @@ pub mod scheduler_grpc_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as SchedulerGrpc>::register_executor(&inner, request)
-                                    .await
+                                (*inner).register_executor(request).await
                             };
                             Box::pin(fut)
                         }
@@ -2839,11 +2836,7 @@ pub mod scheduler_grpc_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as SchedulerGrpc>::heart_beat_from_executor(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
+                                (*inner).heart_beat_from_executor(request).await
                             };
                             Box::pin(fut)
                         }
@@ -2889,8 +2882,7 @@ pub mod scheduler_grpc_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as SchedulerGrpc>::update_task_status(&inner, request)
-                                    .await
+                                (*inner).update_task_status(request).await
                             };
                             Box::pin(fut)
                         }
@@ -2936,8 +2928,7 @@ pub mod scheduler_grpc_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as SchedulerGrpc>::get_file_metadata(&inner, request)
-                                    .await
+                                (*inner).get_file_metadata(request).await
                             };
                             Box::pin(fut)
                         }
@@ -2983,7 +2974,7 @@ pub mod scheduler_grpc_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as SchedulerGrpc>::execute_query(&inner, request).await
+                                (*inner).execute_query(request).await
                             };
                             Box::pin(fut)
                         }
@@ -3029,7 +3020,7 @@ pub mod scheduler_grpc_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as SchedulerGrpc>::get_job_status(&inner, request).await
+                                (*inner).get_job_status(request).await
                             };
                             Box::pin(fut)
                         }
@@ -3075,8 +3066,7 @@ pub mod scheduler_grpc_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as SchedulerGrpc>::executor_stopped(&inner, request)
-                                    .await
+                                (*inner).executor_stopped(request).await
                             };
                             Box::pin(fut)
                         }
@@ -3121,9 +3111,7 @@ pub mod scheduler_grpc_server {
                             request: tonic::Request<super::CancelJobParams>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as SchedulerGrpc>::cancel_job(&inner, request).await
-                            };
+                            let fut = async move { (*inner).cancel_job(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -3168,7 +3156,7 @@ pub mod scheduler_grpc_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as SchedulerGrpc>::clean_job_data(&inner, request).await
+                                (*inner).clean_job_data(request).await
                             };
                             Box::pin(fut)
                         }
@@ -3214,11 +3202,7 @@ pub mod scheduler_grpc_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as SchedulerGrpc>::send_circuit_breaker_update(
-                                        &inner,
-                                        request,
-                                    )
-                                    .await
+                                (*inner).send_circuit_breaker_update(request).await
                             };
                             Box::pin(fut)
                         }
@@ -3264,7 +3248,7 @@ pub mod scheduler_grpc_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as SchedulerGrpc>::scheduler_lost(&inner, request).await
+                                (*inner).scheduler_lost(request).await
                             };
                             Box::pin(fut)
                         }
@@ -3309,9 +3293,7 @@ pub mod scheduler_grpc_server {
                             request: tonic::Request<super::ListJobsRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as SchedulerGrpc>::list_jobs(&inner, request).await
-                            };
+                            let fut = async move { (*inner).list_jobs(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -3511,9 +3493,7 @@ pub mod executor_grpc_server {
                             request: tonic::Request<super::LaunchTaskParams>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as ExecutorGrpc>::launch_task(&inner, request).await
-                            };
+                            let fut = async move { (*inner).launch_task(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -3558,7 +3538,7 @@ pub mod executor_grpc_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ExecutorGrpc>::stop_executor(&inner, request).await
+                                (*inner).stop_executor(request).await
                             };
                             Box::pin(fut)
                         }
@@ -3604,7 +3584,7 @@ pub mod executor_grpc_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ExecutorGrpc>::cancel_tasks(&inner, request).await
+                                (*inner).cancel_tasks(request).await
                             };
                             Box::pin(fut)
                         }
@@ -3650,7 +3630,7 @@ pub mod executor_grpc_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ExecutorGrpc>::remove_job_data(&inner, request).await
+                                (*inner).remove_job_data(request).await
                             };
                             Box::pin(fut)
                         }

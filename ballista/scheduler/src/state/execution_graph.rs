@@ -298,7 +298,8 @@ impl ExecutionGraph {
         let mut job_task_statuses: HashMap<usize, Vec<TaskStatus>> = HashMap::new();
         for task_status in task_statuses {
             let stage_id = task_status.stage_id as usize;
-            let stage_task_statuses = job_task_statuses.entry(stage_id).or_default();
+            let stage_task_statuses =
+                job_task_statuses.entry(stage_id).or_insert_with(Vec::new);
             stage_task_statuses.push(task_status);
         }
 
@@ -364,7 +365,7 @@ impl ExecutionGraph {
                                     )) => {
                                         let failed_attempts = failed_stage_attempts
                                             .entry(stage_id)
-                                            .or_default();
+                                            .or_insert_with(HashSet::new);
                                         failed_attempts.insert(task_stage_attempt_num);
                                         if failed_attempts.len() < max_stage_failures {
                                             let map_stage_id = fetch_partiton_error
@@ -390,17 +391,16 @@ impl ExecutionGraph {
                                                             &executor_id,
                                                         )?;
 
-                                                let failure_reasons: &mut HashSet<
-                                                    String,
-                                                > = rollback_running_stages
-                                                    .entry(stage_id)
-                                                    .or_default();
+                                                let failure_reasons =
+                                                    rollback_running_stages
+                                                        .entry(stage_id)
+                                                        .or_insert_with(HashSet::new);
                                                 failure_reasons.insert(executor_id);
 
                                                 let missing_inputs =
                                                     resubmit_successful_stages
                                                         .entry(map_stage_id)
-                                                        .or_default();
+                                                        .or_insert_with(HashSet::new);
                                                 missing_inputs
                                                     .extend(removed_map_partitions);
                                                 warn!(job_id = self.job_id, stage_id, map_stage_id, task_identity, "resubmitting current running stage and parent stage, error fetching partition");
@@ -629,7 +629,7 @@ impl ExecutionGraph {
 
                                         let missing_inputs = reset_running_stages
                                             .entry(map_stage_id)
-                                            .or_default();
+                                            .or_insert_with(HashSet::new);
                                         missing_inputs.extend(removed_map_partitions);
                                         warn!(map_stage_id, stage_id, task_identity, "resetting running stage, error fetching partition from parent stage");
 

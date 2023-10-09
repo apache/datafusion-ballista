@@ -17,10 +17,9 @@
 
 use crate::cluster::storage::{KeyValueStore, Keyspace, Lock, Operation, WatchEvent};
 use crate::cluster::{
-    ClusterState, ExecutorHeartbeatStream, JobState, JobStateEvent, JobStateEventStream,
-    JobStatus,
+    reserve_slots_bias, reserve_slots_round_robin, ClusterState, ExecutorHeartbeatStream,
+    JobState, JobStateEvent, JobStateEventStream, JobStatus, TaskDistribution,
 };
-use crate::config::TaskDistribution;
 use crate::scheduler_server::{timestamp_millis, timestamp_secs, SessionBuilder};
 use crate::state::execution_graph::ExecutionGraph;
 use crate::state::executor_manager::ExecutorReservation;
@@ -49,8 +48,6 @@ use prost::Message;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
-
-use super::{reserve_slots_bias, reserve_slots_round_robin};
 
 /// State implementation based on underlying `KeyValueStore`
 pub struct KeyValueState<

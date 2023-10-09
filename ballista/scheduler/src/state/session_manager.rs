@@ -89,7 +89,7 @@ pub fn create_datafusion_context(
         Some(session_id) => session_state.with_session_id(session_id),
         None => session_state,
     };
-    Arc::new(SessionContext::new_with_state(session_state))
+    Arc::new(SessionContext::with_state(session_state))
 }
 
 fn propagate_ballista_configs(

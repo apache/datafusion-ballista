@@ -37,6 +37,7 @@ use datafusion::logical_expr::{DdlStatement, LogicalPlan};
 use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::common::batch_byte_size;
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::HashJoinExec;
@@ -68,7 +69,7 @@ use url::Url;
 
 /// Default session builder using the provided configuration
 pub fn default_session_builder(config: SessionConfig) -> SessionState {
-    SessionState::new_with_config_rt(
+    SessionState::with_config_rt(
         config,
         Arc::new(
             RuntimeEnv::new(with_object_store_provider(RuntimeConfig::default()))
@@ -191,7 +192,7 @@ pub async fn write_stream_to_disk(
     while let Some(result) = stream.next().await {
         let batch = result?;
 
-        let batch_size_bytes: usize = batch.get_array_memory_size();
+        let batch_size_bytes: usize = batch_byte_size(&batch);
         num_batches += 1;
         num_rows += batch.num_rows();
         num_bytes += batch_size_bytes;
@@ -348,7 +349,7 @@ pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
     let session_config = SessionConfig::new()
         .with_target_partitions(config.default_shuffle_partitions())
         .with_information_schema(true);
-    let mut session_state = SessionState::new_with_config_rt(
+    let mut session_state = SessionState::with_config_rt(
         session_config,
         Arc::new(
             RuntimeEnv::new(with_object_store_provider(RuntimeConfig::default()))
@@ -358,7 +359,7 @@ pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
     .with_query_planner(planner);
     session_state = session_state.with_session_id(session_id);
     // the SessionContext created here is the client side context, but the session_id is from server side.
-    SessionContext::new_with_state(session_state)
+    SessionContext::with_state(session_state)
 }
 
 pub struct BallistaQueryPlanner<T: AsLogicalPlan> {
