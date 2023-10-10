@@ -210,15 +210,13 @@ impl CircuitBreakerClient {
     ) {
         let mut last_cleanup = Instant::now();
         let mut task_scheduler_lookup = HashMap::new();
-        let mut updates = HashMap::new();
-        let mut scheduler_deregistrations = Vec::new();
+        let mut per_scheduler_state = HashMap::new();
 
         while let Some(update) = update_receiver.recv().await {
             Self::handle_update(
                 update,
-                &mut updates,
+                &mut per_scheduler_state,
                 &mut task_scheduler_lookup,
-                &mut scheduler_deregistrations,
                 &config,
                 &executor_id,
                 &state_per_stage,
@@ -229,13 +227,22 @@ impl CircuitBreakerClient {
             let now = Instant::now();
 
             if last_cleanup.add(config.cache_cleanup_frequency) < now {
-                Self::cleanup_stage_states(&config, &state_per_stage, now);
-                Self::cleanup_scheduler_lookup(
-                    &mut scheduler_deregistrations,
-                    &mut task_scheduler_lookup,
+                // Only cleaned up with a delay so multiple tasks of the same stage share the tripped state.
+                // This will make sure new tasks that are received after the trip signal is received will be stopped immediately.
+                Self::delete_old_stage_states(&config, &state_per_stage, now);
+
+                // We only delete from the per scheduler state if we still receive updates for a task registered with that scheduler.
+                // So we should eventually delete old per scheduler states from the map to not leak memory.
+                Self::delete_old_per_scheduler_states(
+                    &config,
+                    &mut per_scheduler_state,
+                    now,
                 );
 
                 last_cleanup = now;
+
+                // Not related to cleanup, we just don't want to calculate the length for every update.
+                SCHEDULER_LOOKUP_SIZE.set(task_scheduler_lookup.len() as i64);
             }
         }
     }
@@ -245,7 +252,6 @@ impl CircuitBreakerClient {
         received: ClientUpdate,
         updates_per_scheduler: &mut HashMap<String, PerSchedulerState>,
         task_scheduler_lookup: &mut HashMap<String, String>,
-        scheduler_deregistrations: &mut Vec<SchedulerDeregistration>,
         config: &CircuitBreakerClientConfig,
         executor_id: &str,
         state_per_stage: &DashMap<CircuitBreakerStageKey, CircuitBreakerStageState>,
@@ -286,11 +292,13 @@ impl CircuitBreakerClient {
                         )
                         .await;
                     } else {
+                        // We don't want to send an update yet, so we put the state back into the map.
                         updates_per_scheduler
                             .insert(scheduler_id.clone(), per_scheduler_state);
                     }
                 } else {
-                    warn!("No scheduler found for task {}", update.key.task_id);
+                    // This happens when the task has completed but the update was still in flight.
+                    info!("No scheduler found for task {}", update.key.task_id);
                 }
             }
             ClientUpdate::SchedulerRegistration(registration) => {
@@ -299,7 +307,7 @@ impl CircuitBreakerClient {
             }
 
             ClientUpdate::SchedulerDeregistration(deregistration) => {
-                scheduler_deregistrations.push(deregistration);
+                task_scheduler_lookup.remove(&deregistration.task_id);
             }
         }
     }
@@ -393,7 +401,7 @@ impl CircuitBreakerClient {
         }
     }
 
-    fn cleanup_stage_states(
+    fn delete_old_stage_states(
         config: &CircuitBreakerClientConfig,
         state_per_stage: &DashMap<CircuitBreakerStageKey, CircuitBreakerStageState>,
         timestamp: Instant,
@@ -413,15 +421,22 @@ impl CircuitBreakerClient {
         CACHE_SIZE.set(state_per_stage.len() as i64);
     }
 
-    fn cleanup_scheduler_lookup(
-        scheduler_deregistrations: &mut Vec<SchedulerDeregistration>,
-        task_scheduler_lookup: &mut HashMap<String, String>,
+    fn delete_old_per_scheduler_states(
+        config: &CircuitBreakerClientConfig,
+        updates_per_scheduler: &mut HashMap<String, PerSchedulerState>,
+        timestamp: Instant,
     ) {
-        for deregistration in scheduler_deregistrations.drain(..) {
-            task_scheduler_lookup.remove(&deregistration.task_id);
+        let mut keys_to_delete = Vec::new();
+
+        for (scheduler_id, state) in updates_per_scheduler.iter() {
+            if state.last_sent.add(config.cache_ttl) < timestamp {
+                keys_to_delete.push(scheduler_id.clone());
+            }
         }
 
-        SCHEDULER_LOOKUP_SIZE.set(task_scheduler_lookup.len() as i64);
+        for key in keys_to_delete.iter() {
+            updates_per_scheduler.remove(key);
+        }
     }
 }
 
