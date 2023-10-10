@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use ballista_core::circuit_breaker::model::{
     CircuitBreakerStageKey, CircuitBreakerTaskKey,
 };
+use lazy_static::lazy_static;
 use parking_lot::RwLock;
+use prometheus::{register_int_counter, IntCounter};
 use tracing::{debug, info};
 
 pub struct CircuitBreakerController {
@@ -32,6 +34,14 @@ struct AttemptState {
 
 struct PartitionState {
     percent: f64,
+}
+
+lazy_static! {
+    static ref RECEIVED_UPDATES: IntCounter = register_int_counter!(
+        "ballista_circuit_breaker_controller_received_updates_total",
+        "Total number of updates received by the circuit breaker"
+    )
+    .unwrap();
 }
 
 impl Default for CircuitBreakerController {
@@ -69,6 +79,8 @@ impl CircuitBreakerController {
         percent: f64,
         executor_id: String,
     ) -> Result<bool, String> {
+        RECEIVED_UPDATES.inc();
+
         let mut job_states = self.job_states.write();
 
         let stage_key = key.stage_key.clone();

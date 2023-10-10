@@ -19,6 +19,7 @@ use ballista_core::circuit_breaker::model::CircuitBreakerTaskKey;
 use ballista_core::config::{BallistaConfig, BALLISTA_JOB_NAME};
 use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
 use datafusion::config::Extensions;
+use prometheus::{register_int_counter, IntCounter};
 use std::convert::TryInto;
 
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
@@ -56,6 +57,16 @@ use crate::scheduler_server::SchedulerServer;
 use crate::state::executor_manager::ExecutorReservation;
 
 use super::timestamp_millis;
+
+use lazy_static::lazy_static;
+
+lazy_static! {
+    static ref CIRCUIT_BREAKER_RECEIVED_REQUESTS: IntCounter = register_int_counter!(
+        "ballista_circuit_breaker_controller_received_requests_total",
+        "Total number of requests received by the circuit breaker"
+    )
+    .unwrap();
+}
 
 #[tonic::async_trait]
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
@@ -543,6 +554,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         &self,
         request: Request<CircuitBreakerUpdateRequest>,
     ) -> Result<Response<CircuitBreakerUpdateResponse>, Status> {
+        CIRCUIT_BREAKER_RECEIVED_REQUESTS.inc();
+
         let CircuitBreakerUpdateRequest {
             updates,
             executor_id,
