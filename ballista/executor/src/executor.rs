@@ -25,6 +25,7 @@ use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::ExecutorRegistration;
 
+use crate::metrics::load::RUNNING_TASKS;
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -38,6 +39,7 @@ use prometheus::{
     register_histogram, register_int_gauge, Histogram, HistogramTimer, IntGauge,
 };
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::sync::watch;
 use tracing::info;
@@ -58,6 +60,7 @@ struct ActiveTaskMetricGuard(usize, HistogramTimer);
 
 impl ActiveTaskMetricGuard {
     fn new(partitions: usize) -> Self {
+        RUNNING_TASKS.fetch_add(partitions, Ordering::Relaxed);
         ACTIVE_TASKS.add(partitions as i64);
         Self(partitions, TASK_DURATION.start_timer())
     }
@@ -65,6 +68,7 @@ impl ActiveTaskMetricGuard {
 
 impl Drop for ActiveTaskMetricGuard {
     fn drop(&mut self) {
+        RUNNING_TASKS.fetch_sub(self.0, Ordering::Relaxed);
         ACTIVE_TASKS.sub(self.0 as i64);
     }
 }
