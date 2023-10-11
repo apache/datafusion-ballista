@@ -21,14 +21,14 @@ members = ["ballista-cli", "ballista/client", "ballista/core", "ballista/executo
 resolver = "2"
 
 [workspace.dependencies]
-arrow = { git = "https://github.com/apache/arrow-rs.git", rev = "4320a753beaee0a1a6870c59ef46b59e88c9c323" }
-arrow-flight = { git = "https://github.com/apache/arrow-rs.git", rev = "4320a753beaee0a1a6870c59ef46b59e88c9c323", features = ["flight-sql-experimental"] }
-arrow-schema = { git = "https://github.com/apache/arrow-rs.git", rev = "4320a753beaee0a1a6870c59ef46b59e88c9c323", default-features = false }
+arrow = { git = "https://github.com/apache/arrow-rs.git", rev = "92ba6c3cc1a801762bd157f88f997f70b5123084" }
+arrow-flight = { git = "https://github.com/apache/arrow-rs.git", rev = "92ba6c3cc1a801762bd157f88f997f70b5123084", features = ["flight-sql-experimental"] }
+arrow-schema = { git = "https://github.com/apache/arrow-rs.git", rev = "92ba6c3cc1a801762bd157f88f997f70b5123084", default-features = false }
 configure_me = { version = "0.4.0" }
 configure_me_codegen = { version = "0.4.4" }
-datafusion = { git = "https://github.com/apache/arrow-datafusion.git", rev = "1cf808d0e081221cc31b5f92fc414de7c76cf5c4", features=["avro"] }
-datafusion-cli = { git = "https://github.com/apache/arrow-datafusion.git", rev = "1cf808d0e081221cc31b5f92fc414de7c76cf5c4" }
-datafusion-proto = { git = "https://github.com/apache/arrow-datafusion.git", rev = "1cf808d0e081221cc31b5f92fc414de7c76cf5c4" }
+datafusion = { git = "https://github.com/apache/arrow-datafusion.git", rev = "92ba6c3cc1a801762bd157f88f997f70b5123084", features=["avro"] }
+datafusion-cli = { git = "https://github.com/apache/arrow-datafusion.git", rev = "92ba6c3cc1a801762bd157f88f997f70b5123084" }
+datafusion-proto = { git = "https://github.com/apache/arrow-datafusion.git", rev = "92ba6c3cc1a801762bd157f88f997f70b5123084" }
 object_store = "0.7.0"
 sqlparser = "0.38.0"
 tonic = { version = "0.10" }
@@ -61,9 +61,9 @@ panic = 'unwind'
 rpath = false
 
 [patch.crates-io]
-arrow = { git = "https://github.com/apache/arrow-rs.git", rev = "4320a753beaee0a1a6870c59ef46b59e88c9c323" }
-arrow-array = { git = "https://github.com/apache/arrow-rs.git", rev = "4320a753beaee0a1a6870c59ef46b59e88c9c323" }
-arrow-buffer = { git = "https://github.com/apache/arrow-rs.git", rev = "4320a753beaee0a1a6870c59ef46b59e88c9c323" }
-arrow-flight = { git = "https://github.com/apache/arrow-rs.git", rev = "4320a753beaee0a1a6870c59ef46b59e88c9c323" }
-arrow-schema = { git = "https://github.com/apache/arrow-rs.git", rev = "4320a753beaee0a1a6870c59ef46b59e88c9c323" }
-parquet = { git = "https://github.com/apache/arrow-rs.git", rev = "4320a753beaee0a1a6870c59ef46b59e88c9c323" }
+arrow = { git = "https://github.com/apache/arrow-rs.git", rev = "92ba6c3cc1a801762bd157f88f997f70b5123084" }
+arrow-array = { git = "https://github.com/apache/arrow-rs.git", rev = "92ba6c3cc1a801762bd157f88f997f70b5123084" }
+arrow-buffer = { git = "https://github.com/apache/arrow-rs.git", rev = "92ba6c3cc1a801762bd157f88f997f70b5123084" }
+arrow-flight = { git = "https://github.com/apache/arrow-rs.git", rev = "92ba6c3cc1a801762bd157f88f997f70b5123084" }
+arrow-schema = { git = "https://github.com/apache/arrow-rs.git", rev = "92ba6c3cc1a801762bd157f88f997f70b5123084" }
+parquet = { git = "https://github.com/apache/arrow-rs.git", rev = "92ba6c3cc1a801762bd157f88f997f70b5123084" }
