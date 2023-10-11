@@ -16,9 +16,9 @@
 // under the License.
 
 use crate::cluster::{
-    reserve_slots_bias, reserve_slots_round_robin, ClusterState, JobState, JobStateEvent,
-    JobStateEventStream, JobStatus, TaskDistribution,
+    ClusterState, JobState, JobStateEvent, JobStateEventStream, JobStatus,
 };
+use crate::config::TaskDistribution;
 use crate::state::execution_graph::ExecutionGraph;
 use crate::state::executor_manager::ExecutorReservation;
 use async_trait::async_trait;
@@ -45,6 +45,8 @@ use std::ops::DerefMut;
 use datafusion::config::Extensions;
 use std::sync::Arc;
 use tracing::debug;
+
+use super::{reserve_slots_bias, reserve_slots_round_robin};
 
 #[derive(Default)]
 pub struct InMemoryClusterState {
