@@ -37,9 +37,6 @@ use std::any::Any;
 use std::sync::Arc;
 use std::task::Poll;
 use tokio::sync::mpsc;
-use tracing::span;
-use tracing::Instrument;
-use tracing::Level;
 
 #[derive(Debug, Clone)]
 pub struct CoalesceTasksExec {
@@ -137,18 +134,11 @@ impl ExecutionPlan for CoalesceTasksExec {
         // are sent to the channel for consumption.
         let mut join_handles = Vec::with_capacity(input_partitions);
         for partition in self.partitions.iter().copied() {
-            let _span = span!(
-                Level::INFO,
-                "coalesce_tasks partition",
-                partition = partition
-            )
-            .entered();
-
             let input = self.input.clone();
             let context = context.clone();
             let output = sender.clone();
 
-            let fut = async move {
+            join_handles.push(tokio::spawn(async move {
                 let mut stream = match input.execute(partition, context) {
                     Err(e) => {
                         // If send fails, plan being torn down,
@@ -174,9 +164,7 @@ impl ExecutionPlan for CoalesceTasksExec {
                         return;
                     }
                 }
-            };
-
-            join_handles.push(tokio::spawn(fut.in_current_span()));
+            }));
         }
 
         Ok(Box::pin(MergeStream {
