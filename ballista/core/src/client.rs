@@ -24,6 +24,7 @@ use std::{
     convert::{TryFrom, TryInto},
     task::{Context, Poll},
 };
+use std::backtrace::Backtrace;
 
 use crate::error::{BallistaError, Result};
 use crate::serde::scheduler::Action;
@@ -184,6 +185,7 @@ impl Stream for FlightDataStream {
                 let converted_chunk = flight_data_chunk_result
                     .map_err(|e| ArrowError::from_external_error(Box::new(e)).into())
                     .and_then(|flight_data_chunk| {
+                        println!("trace={}", Backtrace::force_capture());
                         flight_data_to_arrow_batch(
                             &flight_data_chunk,
                             self.schema.clone(),

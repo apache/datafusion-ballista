@@ -729,6 +729,52 @@ mod tests {
 
     #[tokio::test]
     #[cfg(feature = "standalone")]
+    async fn test_dictionary() {
+        use super::*;
+        use ballista_core::config::{
+            BallistaConfigBuilder, BALLISTA_WITH_INFORMATION_SCHEMA,
+        };
+        use datafusion::arrow::util::pretty::pretty_format_batches;
+        let config = BallistaConfigBuilder::default()
+            .set(BALLISTA_WITH_INFORMATION_SCHEMA, "true")
+            .build()
+            .unwrap();
+        let context = BallistaContext::standalone(&config, 1).await.unwrap();
+
+        context
+            .register_parquet(
+                "jsona",
+                "testdata/part-0.parquet",
+                ParquetReadOptions::default()
+            )
+            .await
+            .unwrap();
+
+        let df = context
+            .sql("select * from jsona;")
+            .await
+            .unwrap();
+        let res1 = df.collect().await.unwrap();
+        let expected1 = vec![
+            "+--------+",
+            "| number |",
+            "+--------+",
+            "| 1      |",
+            "+--------+",
+        ];
+        assert_eq!(
+            expected1,
+            pretty_format_batches(&res1)
+                .unwrap()
+                .to_string()
+                .trim()
+                .lines()
+                .collect::<Vec<&str>>()
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "standalone")]
     async fn test_aggregate_func() {
         use crate::context::BallistaContext;
         use ballista_core::config::{
