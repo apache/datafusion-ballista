@@ -38,8 +38,8 @@ use datafusion::error::{DataFusionError, Result};
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, RecordBatchStream,
-    SendableRecordBatchStream, Statistics, ColumnStatistics,
+    ColumnStatistics, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
+    RecordBatchStream, SendableRecordBatchStream, Statistics,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
 
@@ -179,25 +179,25 @@ impl ExecutionPlan for ShuffleReaderExec {
 }
 
 fn stats_for_partitions(
-    num_fields: usize, 
+    num_fields: usize,
     partition_stats: impl Iterator<Item = PartitionStats>,
 ) -> Statistics {
     // TODO stats: add column statistics to PartitionStats
-    let (num_rows, total_byte_size) = partition_stats.fold(
-        (Some(0), Some(0)),
-        |(num_rows, total_byte_size), part| {
+    let (num_rows, total_byte_size) =
+        partition_stats.fold((Some(0), Some(0)), |(num_rows, total_byte_size), part| {
             // if any statistic is unkown it makes the entire statistic unkown
             let num_rows = num_rows.zip(part.num_rows).map(|(a, b)| a + b as usize);
             let total_byte_size = total_byte_size
                 .zip(part.num_bytes)
                 .map(|(a, b)| a + b as usize);
             (num_rows, total_byte_size)
-        },
-    );
+        });
 
     Statistics {
         num_rows: num_rows.map(Precision::Exact).unwrap_or(Precision::Absent),
-        total_byte_size: total_byte_size.map(Precision::Exact).unwrap_or(Precision::Absent),
+        total_byte_size: total_byte_size
+            .map(Precision::Exact)
+            .unwrap_or(Precision::Absent),
         column_statistics: vec![ColumnStatistics::new_unknown(); num_fields],
     }
 }
