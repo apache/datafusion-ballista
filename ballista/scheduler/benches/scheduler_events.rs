@@ -126,8 +126,8 @@ impl ExecutionPlan for DummyTableExec {
         Ok(Box::pin(EmptyRecordBatchStream::new(dummy_table_schema())))
     }
 
-    fn statistics(&self) -> Statistics {
-        Statistics::default()
+    fn statistics(&self) -> datafusion::common::Result<Statistics> {
+        Ok(Statistics::new_unknown(&self.schema()))
     }
 }
 
