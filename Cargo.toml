@@ -27,9 +27,9 @@ arrow-schema = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2ef
 configure_me = { version = "0.4.0" }
 configure_me_codegen = { version = "0.4.4" }
 
-datafusion = { git = "https://github.com/Coralogix/arrow-datafusion.git", rev = "e92afa960fcee79e48af4488034519f25e990781", features=["avro"] }
-datafusion-cli = { git = "https://github.com/Coralogix/arrow-datafusion.git", rev = "e92afa960fcee79e48af4488034519f25e990781" }
-datafusion-proto = { git = "https://github.com/Coralogix/arrow-datafusion.git", rev = "e92afa960fcee79e48af4488034519f25e990781" }
+datafusion = { git = "https://github.com/Coralogix/arrow-datafusion.git", rev = "7c3c4a9150596404a4047452046c1c9fcf21e733", features=["avro"] }
+datafusion-cli = { git = "https://github.com/Coralogix/arrow-datafusion.git", rev = "7c3c4a9150596404a4047452046c1c9fcf21e733" }
+datafusion-proto = { git = "https://github.com/Coralogix/arrow-datafusion.git", rev = "7c3c4a9150596404a4047452046c1c9fcf21e733" }
 object_store = "0.7.0"
 sqlparser = "0.38.0"
 tonic = { version = "0.10" }
