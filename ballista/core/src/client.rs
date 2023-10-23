@@ -17,35 +17,27 @@
 
 //! Client API for sending requests to executors.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use std::{
-    convert::{TryFrom, TryInto},
+    convert::TryInto,
     task::{Context, Poll},
 };
 
 use crate::error::{BallistaError, Result};
 use crate::serde::scheduler::Action;
 
-use arrow_flight::utils::flight_data_to_arrow_batch;
+use arrow_flight::decode::{DecodedPayload, FlightDataDecoder};
+use arrow_flight::error::FlightError;
+use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::Ticket;
-use arrow_flight::{flight_service_client::FlightServiceClient, FlightData};
-use datafusion::arrow::array::ArrayRef;
-use datafusion::arrow::{
-    datatypes::{Schema, SchemaRef},
-    error::ArrowError,
-    record_batch::RecordBatch,
-};
+use datafusion::arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use datafusion::error::DataFusionError;
 
 use crate::serde::protobuf;
 use crate::utils::create_grpc_client_connection;
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
-use futures::{Stream, StreamExt};
+use futures::{Stream, StreamExt, TryStreamExt};
 use log::debug;
 use prost::Message;
-use tonic::Streaming;
 
 // 16 MiB
 const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
@@ -129,7 +121,7 @@ impl BallistaClient {
 
         let request = tonic::Request::new(Ticket { ticket: buf.into() });
 
-        let mut stream = self
+        let stream = self
             .flight_client
             .do_get(request)
             .await
@@ -137,38 +129,34 @@ impl BallistaClient {
             .into_inner();
 
         // the schema should be the first message returned, else client should error
-        match stream
-            .message()
-            .await
-            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?
-        {
-            Some(flight_data) => {
-                // convert FlightData to a stream
-                let schema = Arc::new(Schema::try_from(&flight_data)?);
-
-                // all the remaining stream messages should be dictionary and record batches
-                Ok(Box::pin(FlightDataStream::new(stream, schema)))
+        let stream = stream.map_err(FlightError::Tonic);
+        let mut stream = FlightDataDecoder::new(stream);
+        let schema = loop {
+            match stream.next().await {
+                None => {}
+                Some(Ok(fd)) => match &fd.payload {
+                    DecodedPayload::None => {}
+                    DecodedPayload::Schema(schema) => {
+                        break schema.clone();
+                    }
+                    DecodedPayload::RecordBatch(_) => {}
+                },
+                Some(Err(e)) => return Err(BallistaError::Internal(e.to_string())),
             }
-            None => Err(BallistaError::GrpcActionError(
-                "Did not receive schema batch from flight server".to_string(),
-            )),
-        }
+        };
+        let stream = FlightDataStream::new(stream, schema);
+        Ok(Box::pin(stream))
     }
 }
 
 struct FlightDataStream {
-    stream: Streaming<FlightData>,
+    stream: FlightDataDecoder,
     schema: SchemaRef,
-    dictionaries_by_id: HashMap<i64, ArrayRef>,
 }
 
 impl FlightDataStream {
-    pub fn new(stream: Streaming<FlightData>, schema: SchemaRef) -> Self {
-        Self {
-            stream,
-            schema,
-            dictionaries_by_id: HashMap::new(),
-        }
+    pub fn new(stream: FlightDataDecoder, schema: SchemaRef) -> Self {
+        Self { stream, schema }
     }
 }
 
@@ -180,19 +168,14 @@ impl Stream for FlightDataStream {
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         self.stream.poll_next_unpin(cx).map(|x| match x {
-            Some(flight_data_chunk_result) => {
-                let converted_chunk = flight_data_chunk_result
-                    .map_err(|e| ArrowError::from_external_error(Box::new(e)).into())
-                    .and_then(|flight_data_chunk| {
-                        flight_data_to_arrow_batch(
-                            &flight_data_chunk,
-                            self.schema.clone(),
-                            &self.dictionaries_by_id,
-                        )
-                        .map_err(DataFusionError::ArrowError)
-                    });
-                Some(converted_chunk)
-            }
+            Some(Ok(fd)) => match fd.payload {
+                DecodedPayload::None => None,
+                DecodedPayload::Schema(_) => {
+                    Some(Err(DataFusionError::Internal("Got 2 schemas".to_string())))
+                }
+                DecodedPayload::RecordBatch(batch) => Some(Ok(batch)),
+            },
+            Some(Err(e)) => Some(Err(DataFusionError::Internal(e.to_string()))),
             None => None,
         })
     }
