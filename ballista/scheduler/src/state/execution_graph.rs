@@ -390,10 +390,11 @@ impl ExecutionGraph {
                                                             &executor_id,
                                                         )?;
 
-                                                let failure_reasons =
-                                                    rollback_running_stages
-                                                        .entry(stage_id)
-                                                        .or_insert_with(HashSet::new);
+                                                let failure_reasons: &mut HashSet<
+                                                    String,
+                                                > = rollback_running_stages
+                                                    .entry(stage_id)
+                                                    .or_default();
                                                 failure_reasons.insert(executor_id);
 
                                                 let missing_inputs =

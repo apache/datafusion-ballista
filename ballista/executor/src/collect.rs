@@ -106,7 +106,7 @@ impl ExecutionPlan for CollectExec {
         }))
     }
 
-    fn statistics(&self) -> Statistics {
+    fn statistics(&self) -> Result<Statistics> {
         self.plan.statistics()
     }
 }

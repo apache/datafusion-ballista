@@ -21,21 +21,25 @@ members = ["ballista-cli", "ballista/client", "ballista/core", "ballista/executo
 resolver = "2"
 
 [workspace.dependencies]
-arrow = { git = "https://github.com/coralogix/arrow-rs.git", tag = "v43.0.0-cx.1" }
-arrow-flight = { git = "https://github.com/coralogix/arrow-rs.git", tag = "v43.0.0-cx.1", features = ["flight-sql-experimental"]}
-arrow-schema = { git = "https://github.com/coralogix/arrow-rs.git", tag = "v43.0.0-cx.1", default-features = false}
-configure_me = {version = "0.4.0"}
-configure_me_codegen = {version = "0.4.4"}
-datafusion = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v28.0.0-cx.13", features = ["avro"] }
-datafusion-cli = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v28.0.0-cx.13" }
-datafusion-proto = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v28.0.0-cx.13" }
-object_store = "0.6.1"
-sqlparser = "0.35.0"
-tonic = {version = "0.9"}
-tonic-build = {version = "0.9", default-features = false, features = ["transport", "prost"]}
+arrow = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2efcb787385c6368acc8c582ffc5a7dfd95" }
+arrow-flight = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2efcb787385c6368acc8c582ffc5a7dfd95", features = ["flight-sql-experimental"] }
+arrow-schema = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2efcb787385c6368acc8c582ffc5a7dfd95", default-features = false }
+configure_me = { version = "0.4.0" }
+configure_me_codegen = { version = "0.4.4" }
+
+datafusion = { git = "https://github.com/Coralogix/arrow-datafusion.git", rev = "7c3c4a9150596404a4047452046c1c9fcf21e733", features=["avro"] }
+datafusion-cli = { git = "https://github.com/Coralogix/arrow-datafusion.git", rev = "7c3c4a9150596404a4047452046c1c9fcf21e733" }
+datafusion-proto = { git = "https://github.com/Coralogix/arrow-datafusion.git", rev = "7c3c4a9150596404a4047452046c1c9fcf21e733" }
+object_store = "0.7.0"
+sqlparser = "0.38.0"
+tonic = { version = "0.10" }
+tonic-build = { version = "0.10", default-features = false, features = [
+    "transport",
+    "prost"
+] }
 tracing = "0.1.36"
 tracing-appender = "0.2.2"
-tracing-subscriber = {version = "0.3.15", features = ["env-filter"]}
+tracing-subscriber = { version = "0.3.15", features = ["env-filter"] }
 
 # cargo build --profile release-lto
 [profile.release-lto]
@@ -56,3 +60,11 @@ opt-level = 3
 overflow-checks = false
 panic = 'unwind'
 rpath = false
+
+[patch.crates-io]
+arrow = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2efcb787385c6368acc8c582ffc5a7dfd95" }
+arrow-array = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2efcb787385c6368acc8c582ffc5a7dfd95" }
+arrow-buffer = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2efcb787385c6368acc8c582ffc5a7dfd95" }
+arrow-flight = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2efcb787385c6368acc8c582ffc5a7dfd95" }
+arrow-schema = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2efcb787385c6368acc8c582ffc5a7dfd95" }
+parquet = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2efcb787385c6368acc8c582ffc5a7dfd95" }

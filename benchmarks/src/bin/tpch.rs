@@ -25,9 +25,8 @@ use ballista::prelude::{
 };
 use datafusion::arrow::array::*;
 use datafusion::arrow::util::display::array_value_to_string;
-use datafusion::datasource::file_format::csv::DEFAULT_CSV_EXTENSION;
-use datafusion::datasource::file_format::parquet::DEFAULT_PARQUET_EXTENSION;
-use datafusion::datasource::listing::ListingTableUrl;
+use datafusion::common::{DEFAULT_CSV_EXTENSION, DEFAULT_PARQUET_EXTENSION};
+use datafusion::datasource::listing::{ListingTableInsertMode, ListingTableUrl};
 use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::SessionState;
@@ -290,7 +289,7 @@ async fn benchmark_datafusion(opt: DataFusionBenchmarkOpt) -> Result<Vec<RecordB
     let config = SessionConfig::new()
         .with_target_partitions(opt.partitions)
         .with_batch_size(opt.batch_size);
-    let ctx = SessionContext::with_config(config);
+    let ctx = SessionContext::new_with_config(config);
 
     // register tables
     for table in TABLES {
@@ -742,7 +741,7 @@ async fn convert_tbl(opt: ConvertOpt) -> Result<()> {
             .file_extension(".tbl");
 
         let config = SessionConfig::new().with_batch_size(opt.batch_size);
-        let ctx = SessionContext::with_config(config);
+        let ctx = SessionContext::new_with_config(config);
         let session_state = ctx.state();
 
         // build plan to read the TBL file
@@ -846,6 +845,9 @@ async fn get_table(
         table_partition_cols: vec![],
         file_sort_order: vec![],
         infinite_source: false,
+        insert_mode: ListingTableInsertMode::Error,
+        file_type_write_options: None,
+        single_file: false,
     };
 
     let url = ListingTableUrl::parse(path)?;
@@ -1524,7 +1526,7 @@ mod tests {
         let config = SessionConfig::new()
             .with_target_partitions(1)
             .with_batch_size(10);
-        let ctx = SessionContext::with_config(config);
+        let ctx = SessionContext::new_with_config(config);
 
         for &table in TABLES {
             let schema = get_schema(table);
@@ -1590,7 +1592,7 @@ mod ballista_round_trip {
         let config = SessionConfig::new()
             .with_target_partitions(1)
             .with_batch_size(10);
-        let ctx = SessionContext::with_config(config);
+        let ctx = SessionContext::new_with_config(config);
         let session_state = ctx.state();
         let codec: BallistaCodec<
             datafusion_proto::protobuf::LogicalPlanNode,
@@ -1646,7 +1648,7 @@ mod ballista_round_trip {
         let config = SessionConfig::new()
             .with_target_partitions(1)
             .with_batch_size(10);
-        let ctx = SessionContext::with_config(config);
+        let ctx = SessionContext::new_with_config(config);
         let session_state = ctx.state();
         let codec: BallistaCodec<
             datafusion_proto::protobuf::LogicalPlanNode,
