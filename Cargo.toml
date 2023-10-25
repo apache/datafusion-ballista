@@ -21,15 +21,16 @@ members = ["ballista-cli", "ballista/client", "ballista/core", "ballista/executo
 resolver = "2"
 
 [workspace.dependencies]
-arrow = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2efcb787385c6368acc8c582ffc5a7dfd95" }
-arrow-flight = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2efcb787385c6368acc8c582ffc5a7dfd95", features = ["flight-sql-experimental"] }
-arrow-schema = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2efcb787385c6368acc8c582ffc5a7dfd95", default-features = false }
+arrow = { git = "https://github.com/Coralogix/arrow-rs.git", branch="v48.0.0-cx.0" }
+arrow-buffer = { git = "https://github.com/Coralogix/arrow-rs.git", branch="v48.0.0-cx.0" }
+arrow-flight = { git = "https://github.com/Coralogix/arrow-rs.git", branch="v48.0.0-cx.0", features=["flight-sql-experimental"] }
+arrow-schema = { git = "https://github.com/Coralogix/arrow-rs.git", branch="v48.0.0-cx.0" }
 configure_me = { version = "0.4.0" }
 configure_me_codegen = { version = "0.4.4" }
 
-datafusion = { git = "https://github.com/Coralogix/arrow-datafusion.git", rev = "7c3c4a9150596404a4047452046c1c9fcf21e733", features=["avro"] }
-datafusion-cli = { git = "https://github.com/Coralogix/arrow-datafusion.git", rev = "7c3c4a9150596404a4047452046c1c9fcf21e733" }
-datafusion-proto = { git = "https://github.com/Coralogix/arrow-datafusion.git", rev = "7c3c4a9150596404a4047452046c1c9fcf21e733" }
+datafusion = { git = "https://github.com/apache/arrow-datafusion.git", rev = "af2cda928140f85d369e26931756a0cbc127e9ec", features=["avro"] }
+datafusion-cli = { git = "https://github.com/apache/arrow-datafusion.git", rev = "af2cda928140f85d369e26931756a0cbc127e9ec" }
+datafusion-proto = { git = "https://github.com/apache/arrow-datafusion.git", rev = "af2cda928140f85d369e26931756a0cbc127e9ec" }
 object_store = "0.7.0"
 sqlparser = "0.38.0"
 tonic = { version = "0.10" }
@@ -62,9 +63,9 @@ panic = 'unwind'
 rpath = false
 
 [patch.crates-io]
-arrow = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2efcb787385c6368acc8c582ffc5a7dfd95" }
-arrow-array = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2efcb787385c6368acc8c582ffc5a7dfd95" }
-arrow-buffer = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2efcb787385c6368acc8c582ffc5a7dfd95" }
-arrow-flight = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2efcb787385c6368acc8c582ffc5a7dfd95" }
-arrow-schema = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2efcb787385c6368acc8c582ffc5a7dfd95" }
-parquet = { git = "https://github.com/apache/arrow-rs.git", rev = "952cd2efcb787385c6368acc8c582ffc5a7dfd95" }
+arrow = { git = "https://github.com/Coralogix/arrow-rs.git", branch="v48.0.0-cx.0" }
+arrow-array = { git = "https://github.com/Coralogix/arrow-rs.git", branch="v48.0.0-cx.0" }
+arrow-buffer = { git = "https://github.com/Coralogix/arrow-rs.git", branch="v48.0.0-cx.0" }
+arrow-flight = { git = "https://github.com/Coralogix/arrow-rs.git", branch="v48.0.0-cx.0", features=["flight-sql-experimental"] }
+arrow-schema = { git = "https://github.com/Coralogix/arrow-rs.git", branch="v48.0.0-cx.0" }
+parquet = { git = "https://github.com/Coralogix/arrow-rs.git", branch="v48.0.0-cx.0" }
