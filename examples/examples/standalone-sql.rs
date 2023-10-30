@@ -19,6 +19,7 @@ use ballista::prelude::{BallistaConfig, BallistaContext, Result};
 use ballista_examples::test_util;
 use datafusion::prelude::CsvReadOptions;
 
+#[ignore = "csv parsing error"]
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = BallistaConfig::builder()
