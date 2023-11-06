@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{cmp::max, collections::HashMap};
 
 use ballista_core::circuit_breaker::model::{
     CircuitBreakerStageKey, CircuitBreakerTaskKey,
@@ -13,10 +13,20 @@ pub struct CircuitBreakerController {
 }
 
 struct JobState {
+    shared_states: HashMap<String, SharedState>,
+}
+
+// Multiple stages can share the same state,
+// e.g. for per-query data scan limit.
+struct SharedState {
     stage_states: HashMap<u32, StageState>,
+    // This could also be calculated from the sum of the percentages of all latest attempts of each stage.
+    percent: f64,
+    executor_trip_state: HashMap<String, bool>,
 }
 
 struct StageState {
+    latest_attempt_num: u32,
     attempt_states: HashMap<u32, AttemptState>,
 }
 
@@ -28,7 +38,7 @@ struct PartitionKey {
 
 struct AttemptState {
     partition_states: HashMap<PartitionKey, PartitionState>,
-    executor_trip_state: HashMap<String, bool>,
+    // This could also be calculated from the sum of the percentages of all partitions.
     percent: f64,
 }
 
@@ -61,7 +71,7 @@ impl CircuitBreakerController {
         job_states.insert(
             job_id.to_owned(),
             JobState {
-                stage_states: HashMap::new(),
+                shared_states: HashMap::new(),
             },
         );
     }
@@ -96,51 +106,80 @@ impl CircuitBreakerController {
             }
         };
 
-        let stage_states = &mut job_state.stage_states;
+        let shared_states = &mut job_state.shared_states;
 
-        let stage_state =
-            &mut stage_states
-                .entry(stage_key.stage_id)
-                .or_insert_with(|| StageState {
-                    attempt_states: HashMap::new(),
-                });
-
-        let attempt_states = &mut stage_state.attempt_states;
-
-        let attempt_state = attempt_states
-            .entry(key.stage_key.attempt_num)
+        let shared_state = shared_states
+            .entry(key.stage_key.shared_state_id.clone())
             .or_insert_with(|| {
                 let mut executor_trip_state = HashMap::new();
                 executor_trip_state.insert(executor_id.clone(), false);
-                AttemptState {
-                    partition_states: HashMap::new(),
+                SharedState {
+                    stage_states: HashMap::new(),
                     executor_trip_state,
                     percent: 0.0,
                 }
             });
 
-        attempt_state
+        let stage_states = &mut shared_state.stage_states;
+
+        let stage_state =
+            &mut stage_states
+                .entry(stage_key.stage_id)
+                .or_insert_with(|| StageState {
+                    latest_attempt_num: key.stage_key.attempt_num,
+                    attempt_states: HashMap::new(),
+                });
+
+        let old_latest_attempt_num = stage_state.latest_attempt_num;
+
+        let new_latest_attempt_num =
+            max(old_latest_attempt_num, key.stage_key.attempt_num);
+
+        stage_state.latest_attempt_num = new_latest_attempt_num;
+
+        let attempt_states = &mut stage_state.attempt_states;
+
+        let old_latest_attempt_percent = attempt_states
+            .get(&old_latest_attempt_num)
+            .map(|a| a.percent)
+            .unwrap_or(0.0);
+
+        let attempt_state = attempt_states
+            .entry(key.stage_key.attempt_num)
+            .or_insert_with(|| AttemptState {
+                partition_states: HashMap::new(),
+                percent: 0.0,
+            });
+
+        shared_state
             .executor_trip_state
             .entry(executor_id.clone())
             .or_insert_with(|| false);
 
         let partition_states = &mut attempt_state.partition_states;
 
-        let old_sum_percentage = attempt_state.percent;
+        let old_sum_percentage = shared_state.percent;
 
         let partition_key = PartitionKey {
             task_id: key.task_id.clone(),
             partition: key.partition,
         };
 
-        partition_states
+        let partition_state = partition_states
             .entry(partition_key)
-            .or_insert_with(|| PartitionState { percent })
-            .percent = percent;
+            .or_insert_with(|| PartitionState { percent: 0.0 });
 
-        attempt_state.percent = partition_states.values().map(|s| s.percent).sum::<f64>();
+        attempt_state.percent += percent - partition_state.percent;
 
-        let should_trip = attempt_state.percent >= 1.0 && old_sum_percentage < 1.0;
+        partition_state.percent = percent;
+
+        if key.stage_key.attempt_num == new_latest_attempt_num {
+            // No matter if the latest partition changed or remained the same,
+            // this should update the shared percentage correctly.
+            shared_state.percent += attempt_state.percent - old_latest_attempt_percent;
+        };
+
+        let should_trip = shared_state.percent >= 1.0 && old_sum_percentage < 1.0;
 
         Ok(should_trip)
     }
@@ -149,37 +188,44 @@ impl CircuitBreakerController {
         &self,
         executor_id: &str,
     ) -> Vec<CircuitBreakerStageKey> {
-        self.job_states
+        let results = self
+            .job_states
             .write()
             .iter_mut()
             .flat_map(|(job_id, job_state)| {
-                job_state
-                    .stage_states
-                    .iter_mut()
-                    .flat_map(|(stage_num, stage_state)| {
-                        stage_state.attempt_states.iter_mut().flat_map(
-                            |(attempt_num, attempt_state)| {
-                                if let Some(tripped) =
-                                    attempt_state.executor_trip_state.get_mut(executor_id)
-                                {
-                                    if !*tripped && attempt_state.percent >= 1.0 {
-                                        *tripped = true;
+                job_state.shared_states.iter_mut().flat_map(
+                    |(shared_state_id, shared_state)| {
+                        if let Some(tripped) =
+                            shared_state.executor_trip_state.get_mut(executor_id)
+                        {
+                            if !*tripped && shared_state.percent >= 1.0 {
+                                *tripped = true;
 
-                                        Some(CircuitBreakerStageKey {
-                                            job_id: job_id.clone(),
-                                            stage_id: *stage_num,
-                                            attempt_num: *attempt_num,
-                                        })
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                }
-                            },
-                        )
-                    })
+                                shared_state
+                                    .stage_states
+                                    .iter()
+                                    .flat_map(|(stage_num, stage_state)| {
+                                        stage_state.attempt_states.keys().map(
+                                            |attempt_num| CircuitBreakerStageKey {
+                                                job_id: job_id.clone(),
+                                                stage_id: *stage_num,
+                                                shared_state_id: shared_state_id.clone(),
+                                                attempt_num: *attempt_num,
+                                            },
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                            } else {
+                                Vec::new()
+                            }
+                        } else {
+                            Vec::new()
+                        }
+                    },
+                )
             })
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+
+        results
     }
 }

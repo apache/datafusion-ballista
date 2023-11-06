@@ -3,6 +3,7 @@ use crate::serde::protobuf;
 #[derive(Eq, PartialEq, Hash, Debug, Clone)]
 pub struct CircuitBreakerStageKey {
     pub job_id: String,
+    pub shared_state_id: String,
     pub stage_id: u32,
     pub attempt_num: u32,
 }
@@ -13,6 +14,7 @@ impl From<CircuitBreakerStageKey> for protobuf::CircuitBreakerStageKey {
             job_id: val.job_id,
             stage_id: val.stage_id,
             attempt_num: val.attempt_num,
+            shared_state_id: val.shared_state_id,
         }
     }
 }
@@ -23,6 +25,7 @@ impl From<protobuf::CircuitBreakerStageKey> for CircuitBreakerStageKey {
             job_id: key.job_id,
             stage_id: key.stage_id,
             attempt_num: key.attempt_num,
+            shared_state_id: key.shared_state_id,
         }
     }
 }

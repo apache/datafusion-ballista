@@ -125,6 +125,7 @@ impl ExecutionPlan for TestTableExec {
 
             let stage_key = CircuitBreakerStageKey {
                 job_id: metadata.job_id.clone(),
+                shared_state_id: metadata.stage_id.to_string(),
                 stage_id: metadata.stage_id,
                 attempt_num: metadata.attempt_number,
             };
