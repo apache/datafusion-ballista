@@ -22,17 +22,19 @@ resolver = "2"
 
 [workspace.dependencies]
 arrow = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
+arrow-array = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
+arrow-data = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
 arrow-buffer = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
 arrow-flight = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0", features=["flight-sql-experimental"] }
 arrow-schema = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
 configure_me = { version = "0.4.0" }
 configure_me_codegen = { version = "0.4.4" }
 
-datafusion = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v32.0.0-cx.1", features=["avro"] }
-datafusion-cli = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v32.0.0-cx.1" }
-datafusion-proto = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v32.0.0-cx.1" }
+datafusion = { git = "https://github.com/coralogix/arrow-datafusion.git", branch = "upgrade_df_agg", features=["avro"] }
+datafusion-cli = { git = "https://github.com/coralogix/arrow-datafusion.git", branch = "upgrade_df_agg" }
+datafusion-proto = { git = "https://github.com/coralogix/arrow-datafusion.git", branch = "upgrade_df_agg" }
 object_store = "0.7.0"
-sqlparser = "0.38.0"
+sqlparser = "0.39.0"
 tonic = { version = "0.10" }
 tonic-build = { version = "0.10", default-features = false, features = [
     "transport",
@@ -65,6 +67,7 @@ rpath = false
 [patch.crates-io]
 arrow = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
 arrow-array = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
+arrow-data = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
 arrow-buffer = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
 arrow-flight = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
 arrow-schema = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
