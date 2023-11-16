@@ -304,7 +304,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         for status in task_status {
             trace!("Task Update\n{:?}", status);
             let job_id = status.job_id.clone();
-            let job_task_statuses = job_updates.entry(job_id).or_insert_with(Vec::new);
+            let job_task_statuses = job_updates.entry(job_id).or_default();
             job_task_statuses.push(status);
         }
 
@@ -695,7 +695,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
         let state = self.state.clone();
         tokio::spawn(async move {
-            let job_id = job_id;
             tokio::time::sleep(Duration::from_secs(clean_up_interval)).await;
             if let Err(err) = state.remove_job(&job_id).await {
                 error!("Failed to delete job {job_id}: {err:?}");

@@ -357,7 +357,7 @@ impl BallistaContext {
         // the show tables、 show columns sql can not run at scheduler because the tables is store at client
         if is_show {
             let state = self.state.lock();
-            ctx = Arc::new(SessionContext::with_config(
+            ctx = Arc::new(SessionContext::new_with_config(
                 SessionConfig::new().with_information_schema(
                     state.config.default_with_information_schema(),
                 ),
