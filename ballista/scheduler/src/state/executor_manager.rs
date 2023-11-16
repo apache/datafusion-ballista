@@ -103,9 +103,7 @@ impl ExecutorManager {
             Default::default();
 
         for task_info in tasks {
-            let infos = tasks_to_cancel
-                .entry(task_info.executor_id)
-                .or_default();
+            let infos = tasks_to_cancel.entry(task_info.executor_id).or_default();
             infos.push(protobuf::RunningTaskInfo {
                 task_id: task_info.task_id as u32,
                 job_id: task_info.job_id,

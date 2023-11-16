@@ -278,8 +278,7 @@ impl ExecutionGraph {
         let mut job_task_statuses: HashMap<usize, Vec<TaskStatus>> = HashMap::new();
         for task_status in task_statuses {
             let stage_id = task_status.stage_id as usize;
-            let stage_task_statuses =
-                job_task_statuses.entry(stage_id).or_default();
+            let stage_task_statuses = job_task_statuses.entry(stage_id).or_default();
             stage_task_statuses.push(task_status);
         }
 
