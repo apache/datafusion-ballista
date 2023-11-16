@@ -47,20 +47,20 @@ arrow-flight = { workspace = true }
 async-recursion = "1.0.0"
 async-trait = "0.1.41"
 ballista-core = { path = "../core", version = "0.11.0", features = ["s3"] }
-base64 = { version = "0.13" }
+base64 = { version = "0.21" }
 clap = { version = "3", features = ["derive", "cargo"] }
 configure_me = { workspace = true }
 dashmap = "5.4.0"
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
-etcd-client = { version = "0.11", optional = true }
+etcd-client = { version = "0.12", optional = true }
 flatbuffers = { version = "23.5.26" }
 futures = "0.3"
 graphviz-rust = "0.6.1"
 http = "0.2"
 http-body = "0.4"
 hyper = "0.14.4"
-itertools = "0.11.0"
+itertools = "0.12.0"
 log = "0.4"
 object_store = { workspace = true }
 once_cell = { version = "1.16.0", optional = true }
