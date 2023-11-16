@@ -210,11 +210,11 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 
-    fn statistics(&self) -> Statistics {
+    fn statistics(&self) -> Result<Statistics> {
         // This execution plan sends the logical plan to the scheduler without
         // performing the node by node conversion to a full physical plan.
         // This implies that we cannot infer the statistics at this stage.
-        Statistics::default()
+        Ok(Statistics::new_unknown(&self.schema()))
     }
 }
 

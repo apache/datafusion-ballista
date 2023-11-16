@@ -299,8 +299,8 @@ mod test {
             Ok(Box::pin(NeverendingRecordBatchStream))
         }
 
-        fn statistics(&self) -> Statistics {
-            Statistics::default()
+        fn statistics(&self) -> Result<Statistics> {
+            Ok(Statistics::new_unknown(&self.schema()))
         }
     }
 
