@@ -451,10 +451,9 @@ mod tests {
         let result = stats_for_partitions(0, std::iter::empty());
 
         let exptected = Statistics {
-            is_exact: true,
-            num_rows: Some(0),
-            total_byte_size: Some(0),
-            column_statistics: None,
+            num_rows: Precision::Exact(0),
+            total_byte_size: Precision::Exact(0),
+            column_statistics: vec![],
         };
 
         assert_eq!(result, exptected);
@@ -475,13 +474,12 @@ mod tests {
             },
         ];
 
-        let result = stats_for_partitions(part_stats.into_iter());
+        let result = stats_for_partitions(0, part_stats.into_iter());
 
         let exptected = Statistics {
-            is_exact: true,
-            num_rows: Some(14),
-            total_byte_size: Some(149),
-            column_statistics: None,
+            num_rows: Precision::Exact(0),
+            total_byte_size: Precision::Exact(0),
+            column_statistics: vec![],
         };
 
         assert_eq!(result, exptected);
@@ -502,13 +500,12 @@ mod tests {
             },
         ];
 
-        let result = stats_for_partitions(part_stats.into_iter());
+        let result = stats_for_partitions(0, part_stats.into_iter());
 
         let exptected = Statistics {
-            is_exact: true,
-            num_rows: None,
-            total_byte_size: None,
-            column_statistics: None,
+            num_rows: Precision::Exact(0),
+            total_byte_size: Precision::Exact(0),
+            column_statistics: vec![],
         };
 
         assert_eq!(result, exptected);
