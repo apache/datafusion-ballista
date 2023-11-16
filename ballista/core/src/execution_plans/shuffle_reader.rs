@@ -477,8 +477,8 @@ mod tests {
         let result = stats_for_partitions(0, part_stats.into_iter());
 
         let exptected = Statistics {
-            num_rows: Precision::Exact(0),
-            total_byte_size: Precision::Exact(0),
+            num_rows: Precision::Exact(14),
+            total_byte_size: Precision::Exact(149),
             column_statistics: vec![],
         };
 
@@ -503,8 +503,8 @@ mod tests {
         let result = stats_for_partitions(0, part_stats.into_iter());
 
         let exptected = Statistics {
-            num_rows: Precision::Exact(0),
-            total_byte_size: Precision::Exact(0),
+            num_rows: Precision::Absent,
+            total_byte_size: Precision::Absent,
             column_statistics: vec![],
         };
 
