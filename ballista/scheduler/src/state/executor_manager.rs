@@ -105,7 +105,7 @@ impl ExecutorManager {
         for task_info in tasks {
             let infos = tasks_to_cancel
                 .entry(task_info.executor_id)
-                .or_insert_with(Vec::new);
+                .or_default();
             infos.push(protobuf::RunningTaskInfo {
                 task_id: task_info.task_id as u32,
                 job_id: task_info.job_id,

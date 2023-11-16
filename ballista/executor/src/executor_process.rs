@@ -220,6 +220,7 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
             Some(Arc::new(RuntimeEnv {
                 memory_pool: runtime.memory_pool.clone(),
                 disk_manager: runtime.disk_manager.clone(),
+                cache_manager: runtime.cache_manager.clone(),
                 object_store_registry: registry,
             }))
         } else {

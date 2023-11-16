@@ -129,7 +129,7 @@ pub fn test_cluster_context() -> BallistaCluster {
 pub async fn datafusion_test_context(path: &str) -> Result<SessionContext> {
     let default_shuffle_partitions = 2;
     let config = SessionConfig::new().with_target_partitions(default_shuffle_partitions);
-    let ctx = SessionContext::with_config(config);
+    let ctx = SessionContext::new_with_config(config);
     for table in TPCH_TABLES {
         let schema = get_tpch_schema(table);
         let options = CsvReadOptions::new()
@@ -791,7 +791,7 @@ pub async fn test_aggregation_plan_with_job_id(
     job_id: &str,
 ) -> ExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
-    let ctx = Arc::new(SessionContext::with_config(config));
+    let ctx = Arc::new(SessionContext::new_with_config(config));
     let session_state = ctx.state();
 
     let schema = Schema::new(vec![
@@ -823,7 +823,7 @@ pub async fn test_aggregation_plan_with_job_id(
 
 pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
-    let ctx = Arc::new(SessionContext::with_config(config));
+    let ctx = Arc::new(SessionContext::new_with_config(config));
     let session_state = ctx.state();
 
     let schema = Schema::new(vec![
@@ -858,7 +858,7 @@ pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
 
 pub async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
-    let ctx = Arc::new(SessionContext::with_config(config));
+    let ctx = Arc::new(SessionContext::new_with_config(config));
     let session_state = ctx.state();
 
     let schema = Schema::new(vec![
@@ -889,7 +889,7 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
         .options_mut()
         .optimizer
         .enable_round_robin_repartition = false;
-    let ctx = Arc::new(SessionContext::with_config(config));
+    let ctx = Arc::new(SessionContext::new_with_config(config));
     let session_state = ctx.state();
 
     let schema = Schema::new(vec![
@@ -938,7 +938,7 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
 
 pub async fn test_union_all_plan(partition: usize) -> ExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
-    let ctx = Arc::new(SessionContext::with_config(config));
+    let ctx = Arc::new(SessionContext::new_with_config(config));
     let session_state = ctx.state();
 
     let logical_plan = ctx
@@ -970,7 +970,7 @@ pub async fn test_union_all_plan(partition: usize) -> ExecutionGraph {
 
 pub async fn test_union_plan(partition: usize) -> ExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
-    let ctx = Arc::new(SessionContext::with_config(config));
+    let ctx = Arc::new(SessionContext::new_with_config(config));
     let session_state = ctx.state();
 
     let logical_plan = ctx

@@ -509,7 +509,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                 if let Some(task_status) = maybe_task_status {
                     let task_status_vec = curator_task_status_map
                         .entry(task_status.scheduler_id)
-                        .or_insert_with(Vec::new);
+                        .or_default();
                     task_status_vec.push(task_status.task_status);
                     fetched_task_num += 1;
                 } else {
@@ -524,7 +524,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                         Ok(task_status) => {
                             let task_status_vec = curator_task_status_map
                                 .entry(task_status.scheduler_id)
-                                .or_insert_with(Vec::new);
+                                .or_default();
                             task_status_vec.push(task_status.task_status);
                             fetched_task_num += 1;
                         }

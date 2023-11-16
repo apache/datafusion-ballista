@@ -59,7 +59,7 @@ use tonic::transport::{Channel, Error, Server};
 
 /// Default session builder using the provided configuration
 pub fn default_session_builder(config: SessionConfig) -> SessionState {
-    SessionState::with_config_rt(
+    SessionState::new_with_config_rt(
         config,
         Arc::new(
             RuntimeEnv::new(with_object_store_registry(RuntimeConfig::default()))
@@ -244,7 +244,7 @@ pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
     let session_config = SessionConfig::new()
         .with_target_partitions(config.default_shuffle_partitions())
         .with_information_schema(true);
-    let mut session_state = SessionState::with_config_rt(
+    let mut session_state = SessionState::new_with_config_rt(
         session_config,
         Arc::new(
             RuntimeEnv::new(with_object_store_registry(RuntimeConfig::default()))
@@ -254,7 +254,7 @@ pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
     .with_query_planner(planner);
     session_state = session_state.with_session_id(session_id);
     // the SessionContext created here is the client side context, but the session_id is from server side.
-    SessionContext::with_state(session_state)
+    SessionContext::new_with_state(session_state)
 }
 
 pub struct BallistaQueryPlanner<T: AsLogicalPlan> {
