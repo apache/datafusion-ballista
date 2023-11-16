@@ -210,7 +210,7 @@ mod test {
 
     use crate::execution_engine::DefaultQueryStageExec;
     use ballista_core::serde::scheduler::PartitionId;
-    use datafusion::error::DataFusionError;
+    use datafusion::error::{DataFusionError, Result};
     use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, RecordBatchStream,
