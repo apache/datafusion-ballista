@@ -30,7 +30,7 @@ resolver = "2"
 
 [workspace.dependencies]
 arrow = { version = "47.0.0" }
-arrow-flight = { version = "47.0.0", features = ["flight-sql-experimental"] }
+arrow-flight = { version = "49.0.0", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "47.0.0", default-features = false }
 configure_me = { version = "0.4.0" }
 configure_me_codegen = { version = "0.4.4" }
