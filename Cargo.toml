@@ -38,7 +38,7 @@ datafusion = "32.0.0"
 datafusion-cli = "32.0.0"
 datafusion-proto = "32.0.0"
 object_store = "0.7.0"
-sqlparser = "0.38.0"
+sqlparser = "0.39.0"
 tonic = { version = "0.10" }
 tonic-build = { version = "0.10", default-features = false, features = [
     "transport",
