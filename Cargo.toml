@@ -63,6 +63,7 @@ rpath = false
 
 [patch.crates-io]
 arrow = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
+arrow-ord = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
 arrow-array = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
 arrow-data = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
 arrow-buffer = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }

@@ -39,8 +39,9 @@ use futures::{Stream, StreamExt, TryStreamExt};
 use log::debug;
 use prost::Message;
 
-// 16 MiB
-const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+// Set the max gRPC message size to 64 MiB. This is quite large
+// but we have to send execution plans over gRPC and they can be large.
+const MAX_GRPC_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 
 /// Client for interacting with Ballista executors.
 #[derive(Clone)]
@@ -63,8 +64,8 @@ impl BallistaClient {
                 ))
                 })?;
         let flight_client = FlightServiceClient::new(connection)
-            .max_decoding_message_size(MAX_MESSAGE_SIZE)
-            .max_encoding_message_size(MAX_MESSAGE_SIZE);
+            .max_decoding_message_size(MAX_GRPC_MESSAGE_SIZE)
+            .max_encoding_message_size(MAX_GRPC_MESSAGE_SIZE);
 
         debug!("BallistaClient connected OK");
 
