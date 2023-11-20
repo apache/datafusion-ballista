@@ -21,6 +21,8 @@ use std::convert::TryFrom;
 use std::fs::File;
 use std::pin::Pin;
 
+use arrow::ipc::writer::IpcWriteOptions;
+use arrow::ipc::CompressionType;
 use ballista_core::error::BallistaError;
 use ballista_core::serde::decode_protobuf;
 use ballista_core::serde::scheduler::Action as BallistaAction;
@@ -110,10 +112,13 @@ impl FlightService for BallistaFlightService {
                         warn!(executor_id, error = %e, "error streaming shuffle partition");
                     }
                 });
-
+                let write_options = IpcWriteOptions::default()
+                    .try_with_compression(Some(CompressionType::LZ4_FRAME))
+                    .map_err(|e| from_arrow_err(&e))?;
                 let flight_data_stream = FlightDataEncoderBuilder::new()
                     .with_max_flight_data_size(MAX_MESSAGE_SIZE)
                     .with_schema(schema)
+                    .with_options(write_options)
                     .build(ReceiverStream::new(rx))
                     .map_err(|err| Status::from_error(Box::new(err)));
 
