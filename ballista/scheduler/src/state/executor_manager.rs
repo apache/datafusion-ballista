@@ -144,23 +144,23 @@ impl ExecutorManager {
     }
 
     /// Send rpc to Executors to cancel the running tasks
-    pub async fn cancel_running_tasks(&self, tasks: Vec<RunningTaskInfo>) -> Result<()> {
-        let mut tasks_to_cancel: HashMap<&str, Vec<protobuf::RunningTaskInfo>> =
+    pub fn cancel_running_tasks(&self, tasks: Vec<RunningTaskInfo>) {
+        let mut tasks_to_cancel: HashMap<String, Vec<protobuf::RunningTaskInfo>> =
             Default::default();
 
-        for task_info in &tasks {
+        for task_info in tasks {
             if let Some(infos) = tasks_to_cancel.get_mut(task_info.executor_id.as_str()) {
                 infos.push(protobuf::RunningTaskInfo {
                     task_id: task_info.task_id as u32,
-                    job_id: task_info.job_id.clone(),
+                    job_id: task_info.job_id,
                     stage_id: task_info.stage_id as u32,
                 })
             } else {
                 tasks_to_cancel.insert(
-                    task_info.executor_id.as_str(),
+                    task_info.executor_id,
                     vec![protobuf::RunningTaskInfo {
                         task_id: task_info.task_id as u32,
-                        job_id: task_info.job_id.clone(),
+                        job_id: task_info.job_id,
                         stage_id: task_info.stage_id as u32,
                     }],
                 );
@@ -168,18 +168,38 @@ impl ExecutorManager {
         }
 
         for (executor_id, infos) in tasks_to_cancel {
-            if let Ok(mut client) = self.get_client(executor_id).await {
-                client
-                    .cancel_tasks(CancelTasksParams { task_infos: infos })
-                    .await?;
-            } else {
+            let executor_manager = self.clone();
+            tokio::spawn(async move {
+                executor_manager
+                    .cancel_running_tasks_inner(&executor_id, infos)
+                    .await;
+            });
+        }
+    }
+
+    async fn cancel_running_tasks_inner(
+        &self,
+        executor_id: &str,
+        task_infos: Vec<protobuf::RunningTaskInfo>,
+    ) {
+        match self.get_client(executor_id).await {
+            Ok(mut client) => {
+                if let Err(error) =
+                    client.cancel_tasks(CancelTasksParams { task_infos }).await
+                {
+                    error!(
+                        "Failed to cancel tasks on executor ID {}: {:?}",
+                        executor_id, error,
+                    )
+                }
+            }
+            Err(error) => {
                 error!(
-                    "Failed to get client for executor ID {} to cancel tasks",
-                    executor_id
+                    "Failed to get client for executor ID {} to cancel tasks: {:?}",
+                    executor_id, error,
                 )
             }
         }
-        Ok(())
     }
 
     /// Send rpc to Executors to clean up the job data by delayed clean_up_interval seconds

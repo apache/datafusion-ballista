@@ -309,10 +309,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                 }
             }
             QueryStageSchedulerEvent::CancelTasks(tasks) => {
-                self.state
-                    .executor_manager
-                    .cancel_running_tasks(tasks)
-                    .await?;
+                self.state.executor_manager.cancel_running_tasks(tasks);
             }
             QueryStageSchedulerEvent::JobDataClean(job_id) => {
                 self.state.executor_manager.clean_up_job_data(job_id);
