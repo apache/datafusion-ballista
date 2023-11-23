@@ -64,6 +64,12 @@ pub struct ExecutorMetadata {
     pub specification: ExecutorSpecification,
 }
 
+impl ExecutorMetadata {
+    pub fn endpoint(&self) -> String {
+        format!("{}:{}", self.host, self.grpc_port)
+    }
+}
+
 /// Specification of an executor, indicting executor resources, like total task slots
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ExecutorSpecification {

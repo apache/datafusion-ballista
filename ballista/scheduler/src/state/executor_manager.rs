@@ -260,22 +260,16 @@ impl ExecutorManager {
         &self,
         executor_id: &str,
     ) -> Result<ExecutorGrpcClient<Channel>> {
-        let client = self.clients.get(executor_id).map(|value| value.clone());
+        let executor_metadata = self.get_executor_metadata(executor_id).await?;
+        let endpoint = executor_metadata.endpoint();
+        let client = self.clients.get(&endpoint).as_deref().cloned();
 
         if let Some(client) = client {
             Ok(client)
         } else {
-            let executor_metadata = self.get_executor_metadata(executor_id).await?;
-            let executor_url = format!(
-                "http://{}:{}",
-                executor_metadata.host, executor_metadata.grpc_port
-            );
-            let connection = create_grpc_client_connection(executor_url).await?;
+            let connection = create_grpc_client_connection(endpoint.clone()).await?;
             let client = ExecutorGrpcClient::new(connection);
-
-            {
-                self.clients.insert(executor_id.to_owned(), client.clone());
-            }
+            let client = self.clients.entry(endpoint).or_insert(client).clone();
             Ok(client)
         }
     }
@@ -367,7 +361,10 @@ impl ExecutorManager {
         reason: Option<String>,
     ) -> Result<()> {
         info!("Removing executor {}: {:?}", executor_id, reason);
-        self.cluster_state.remove_executor(executor_id).await
+        let executor_metadata = self.get_executor_metadata(executor_id).await?;
+        self.cluster_state.remove_executor(executor_id).await?;
+        self.clients.remove(&executor_metadata.endpoint());
+        Ok(())
     }
 
     #[cfg(not(test))]
