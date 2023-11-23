@@ -66,7 +66,7 @@ pub struct ExecutorMetadata {
 
 impl ExecutorMetadata {
     pub fn endpoint(&self) -> String {
-        format!("{}:{}", self.host, self.grpc_port)
+        format!("http://{}:{}", self.host, self.grpc_port)
     }
 }
 
