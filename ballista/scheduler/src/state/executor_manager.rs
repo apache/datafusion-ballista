@@ -38,7 +38,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tonic::transport::Channel;
 
-type ExecutorClients = Arc<DashMap<String, ExecutorGrpcClient<Channel>>>;
+type ExecutorClients = Arc<DashMap<String, (String, ExecutorGrpcClient<Channel>)>>;
 
 /// Represents a task slot that is reserved (i.e. available for scheduling but not visible to the
 /// rest of the system).
@@ -264,12 +264,16 @@ impl ExecutorManager {
         let endpoint = executor_metadata.endpoint();
         let client = self.clients.get(&endpoint).as_deref().cloned();
 
-        if let Some(client) = client {
+        if let Some((_, client)) = client {
             Ok(client)
         } else {
             let connection = create_grpc_client_connection(endpoint.clone()).await?;
             let client = ExecutorGrpcClient::new(connection);
-            let client = self.clients.entry(endpoint).or_insert(client).clone();
+            let (_, client) = self
+                .clients
+                .entry(endpoint)
+                .or_insert((executor_id.to_string(), client))
+                .clone();
             Ok(client)
         }
     }
@@ -361,9 +365,8 @@ impl ExecutorManager {
         reason: Option<String>,
     ) -> Result<()> {
         info!("Removing executor {}: {:?}", executor_id, reason);
-        let executor_metadata = self.get_executor_metadata(executor_id).await?;
         self.cluster_state.remove_executor(executor_id).await?;
-        self.clients.remove(&executor_metadata.endpoint());
+        self.clients.retain(|_, (id, _)| id != executor_id);
         Ok(())
     }
 
