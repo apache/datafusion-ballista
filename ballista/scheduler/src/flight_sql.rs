@@ -35,6 +35,7 @@ use arrow_flight::{
     Action, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest,
     HandshakeResponse, Location, Ticket,
 };
+use base64::Engine;
 use futures::Stream;
 use log::{debug, error, warn};
 use std::convert::TryFrom;
@@ -503,8 +504,8 @@ impl FlightSqlService for FlightSqlServiceImpl {
                 "Auth type not implemented: {authorization}"
             )))?;
         }
-        let base64 = &authorization[basic.len()..];
-        let bytes = base64::decode(base64)
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&authorization[basic.len()..])
             .map_err(|_| Status::invalid_argument("authorization not parsable"))?;
         let str = String::from_utf8(bytes)
             .map_err(|_| Status::invalid_argument("authorization not parsable"))?;

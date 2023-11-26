@@ -115,9 +115,9 @@ impl ExecutionPlan for UnresolvedShuffleExec {
         ))
     }
 
-    fn statistics(&self) -> Statistics {
+    fn statistics(&self) -> Result<Statistics> {
         // The full statistics are computed in the `ShuffleReaderExec` node
         // that replaces this one once the previous stage is completed.
-        Statistics::default()
+        Ok(Statistics::new_unknown(&self.schema()))
     }
 }
