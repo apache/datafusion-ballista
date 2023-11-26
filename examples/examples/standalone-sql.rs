@@ -17,7 +17,7 @@
 
 use ballista::prelude::{BallistaConfig, BallistaContext, Result};
 use ballista_examples::test_util;
-use datafusion::prelude::CsvReadOptions;
+use datafusion::execution::options::ParquetReadOptions;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -29,11 +29,11 @@ async fn main() -> Result<()> {
 
     let testdata = test_util::examples_test_data();
 
-    // register csv file with the execution context
-    ctx.register_csv(
+    // register parquet file with the execution context
+    ctx.register_parquet(
         "test",
-        &format!("{testdata}/aggregate_test_100.csv"),
-        CsvReadOptions::new(),
+        &format!("{testdata}/alltypes_plain.parquet"),
+        ParquetReadOptions::default(),
     )
     .await?;
 
