@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub mod hashlink;
+pub mod lru_cache;
 
 use crate::backend::policy::CachePolicyPutResult;
 use crate::backend::CachePolicy;

@@ -19,7 +19,7 @@ use crate::cache_layer::medium::CacheMedium;
 use crate::cache_layer::object_store::ObjectStoreWithKey;
 use crate::error::{BallistaError, Result};
 use async_trait::async_trait;
-use ballista_cache::backend::policy::lru::hashlink::lru_cache::LruCache;
+use ballista_cache::backend::policy::lru::lru_cache::LruCache;
 use ballista_cache::backend::policy::lru::ResourceCounter;
 use ballista_cache::listener::cache_policy::{
     CachePolicyListener, CachePolicyWithListener,

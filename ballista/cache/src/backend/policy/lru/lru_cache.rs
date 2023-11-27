@@ -16,14 +16,9 @@
 // under the License.
 
 use crate::backend::policy::lru::ResourceCounter;
-use crate::backend::policy::{
-    lru::{
-        hashlink::linked_hash_map::{self, IntoIter, Iter, IterMut, LinkedHashMap},
-        LruCachePolicy,
-    },
-    CachePolicy, CachePolicyPutResult,
-};
+use crate::backend::policy::{lru::LruCachePolicy, CachePolicy, CachePolicyPutResult};
 use hashbrown::hash_map::DefaultHashBuilder;
+use hashlink::linked_hash_map::{self, IntoIter, Iter, IterMut, LinkedHashMap};
 use std::any::Any;
 use std::fmt;
 use std::fmt::Debug;
@@ -227,7 +222,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::backend::policy::lru::hashlink::lru_cache::LruCache;
+    use crate::backend::policy::lru::lru_cache::LruCache;
     use crate::backend::policy::lru::{DefaultResourceCounter, ResourceCounter};
     use crate::backend::policy::CachePolicy;
     use hashbrown::HashMap;

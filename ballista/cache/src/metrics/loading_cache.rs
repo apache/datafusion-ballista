@@ -191,7 +191,7 @@ impl U64Counter {
 
 #[cfg(test)]
 mod tests {
-    use crate::backend::policy::lru::hashlink::lru_cache::LruCache;
+    use crate::backend::policy::lru::lru_cache::LruCache;
     use crate::backend::policy::lru::DefaultResourceCounter;
     use crate::create_loading_cache_with_metrics;
     use crate::loading_cache::loader::CacheLoader;

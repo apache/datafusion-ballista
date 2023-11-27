@@ -452,7 +452,7 @@ where
 #[cfg(test)]
 mod tests {
 
-    use crate::backend::policy::lru::hashlink::lru_cache::LruCache;
+    use crate::backend::policy::lru::lru_cache::LruCache;
     use crate::listener::cache_policy::CachePolicyListener;
     use crate::{CacheBackend, CacheDriver, CacheLoader, CachePolicyWithListener};
 
