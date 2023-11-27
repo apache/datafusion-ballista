@@ -29,7 +29,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-arrow = { version = "48.0.0" }
+arrow = { version = "48.0.0", features=["ipc_compression"] }
 arrow-flight = { version = "48.0.0", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "48.0.0", default-features = false }
 configure_me = { version = "0.4.0" }
