@@ -20,6 +20,8 @@
 //! partition is re-partitioned and streamed to disk in Arrow IPC format. Future stages of the query
 //! will use the ShuffleReaderExec to read these results.
 
+use datafusion::arrow::ipc::writer::IpcWriteOptions;
+use datafusion::arrow::ipc::CompressionType;
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 
 use std::any::Any;
@@ -242,9 +244,14 @@ impl ShuffleWriterExec {
                                         ));
                                         debug!("Writing results to {:?}", path);
 
-                                        let mut writer = IPCWriter::new(
+                                        let options = IpcWriteOptions::default()
+                                            .try_with_compression(Some(
+                                                CompressionType::LZ4_FRAME,
+                                            ))?;
+                                        let mut writer = IPCWriter::new_with_options(
                                             &path,
                                             stream.schema().as_ref(),
+                                            options,
                                         )?;
 
                                         writer.write(&output_batch)?;
