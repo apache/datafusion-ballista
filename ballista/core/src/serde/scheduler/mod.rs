@@ -68,12 +68,16 @@ impl ExecutorMetadata {
     pub fn endpoint(&self) -> String {
         format!("http://{}:{}", self.host, self.grpc_port)
     }
+    pub fn version(&self) -> String {
+        self.specification.version.clone()
+    }
 }
 
 /// Specification of an executor, indicting executor resources, like total task slots
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExecutorSpecification {
     pub task_slots: u32,
+    pub version: String,
 }
 
 /// From Spark, available resources for an executor, like available task slots

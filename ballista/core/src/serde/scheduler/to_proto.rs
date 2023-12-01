@@ -204,9 +204,10 @@ impl Into<protobuf::ExecutorMetadata> for ExecutorMetadata {
 impl Into<protobuf::ExecutorSpecification> for ExecutorSpecification {
     fn into(self) -> protobuf::ExecutorSpecification {
         protobuf::ExecutorSpecification {
-            resources: vec![protobuf::executor_resource::Resource::TaskSlots(
-                self.task_slots,
-            )]
+            resources: vec![
+                protobuf::executor_resource::Resource::TaskSlots(self.task_slots),
+                protobuf::executor_resource::Resource::Version(self.version),
+            ]
             .into_iter()
             .map(|r| protobuf::ExecutorResource { resource: Some(r) })
             .collect(),

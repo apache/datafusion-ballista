@@ -63,6 +63,7 @@ pub async fn new_standalone_executor<
         specification: Some(
             ExecutorSpecification {
                 task_slots: concurrent_tasks as u32,
+                version: "0".to_string(),
             }
             .into(),
         ),

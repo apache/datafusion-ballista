@@ -109,6 +109,11 @@ type = "String"
 doc = "Log dir: a path to save log. This will create a new storage directory at the specified path if it does not already exist."
 
 [[param]]
+name = "executor_version"
+type = "String"
+doc = "Set the executor's version to be reported to the scheduler"
+
+[[param]]
 name = "print_thread_info"
 type = "bool"
 doc = "Enable print thread ids and names in log file."

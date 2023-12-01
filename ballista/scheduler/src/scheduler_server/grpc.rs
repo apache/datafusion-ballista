@@ -729,7 +729,13 @@ mod test {
             optional_host: Some(OptionalHost::Host("http://localhost:8080".to_owned())),
             port: 0,
             grpc_port: 0,
-            specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
+            specification: Some(
+                ExecutorSpecification {
+                    task_slots: 2,
+                    version: "".to_string(),
+                }
+                .into(),
+            ),
         };
         let request: Request<PollWorkParams> = Request::new(PollWorkParams {
             metadata: Some(exec_meta.clone()),
@@ -816,7 +822,13 @@ mod test {
             optional_host: Some(OptionalHost::Host("http://localhost:8080".to_owned())),
             port: 0,
             grpc_port: 0,
-            specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
+            specification: Some(
+                ExecutorSpecification {
+                    task_slots: 2,
+                    version: "".to_string(),
+                }
+                .into(),
+            ),
         };
 
         let request: Request<RegisterExecutorParams> =
@@ -904,7 +916,13 @@ mod test {
             optional_host: Some(OptionalHost::Host("http://localhost:8080".to_owned())),
             port: 0,
             grpc_port: 0,
-            specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
+            specification: Some(
+                ExecutorSpecification {
+                    task_slots: 2,
+                    version: "".to_string(),
+                }
+                .into(),
+            ),
         };
 
         let request: Request<HeartBeatParams> = Request::new(HeartBeatParams {
@@ -956,7 +974,13 @@ mod test {
             optional_host: Some(OptionalHost::Host("http://localhost:8080".to_owned())),
             port: 0,
             grpc_port: 0,
-            specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
+            specification: Some(
+                ExecutorSpecification {
+                    task_slots: 2,
+                    version: "".to_string(),
+                }
+                .into(),
+            ),
         };
 
         let request: Request<RegisterExecutorParams> =

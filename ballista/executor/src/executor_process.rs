@@ -72,6 +72,7 @@ pub struct ExecutorProcessConfig {
     pub external_host: Option<String>,
     pub port: u16,
     pub grpc_port: u16,
+    pub version: Option<String>,
     pub scheduler_host: String,
     pub scheduler_port: u16,
     pub scheduler_connect_timeout_seconds: u16,
@@ -159,6 +160,15 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
     info!("concurrent_tasks: {}", concurrent_tasks);
     info!("executor_id: {}", executor_id);
 
+    let mut resources = vec![ExecutorResource {
+        resource: Some(Resource::TaskSlots(concurrent_tasks as u32)),
+    }];
+    if let Some(version) = opt.version {
+        resources.push(ExecutorResource {
+            resource: Some(Resource::Version(version.to_string())),
+        });
+    }
+
     let executor_meta = ExecutorRegistration {
         id: executor_id.clone(),
         optional_host: opt
@@ -168,9 +178,7 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
         port: opt.port as u32,
         grpc_port: opt.grpc_port as u32,
         specification: Some(ExecutorSpecification {
-            resources: vec![ExecutorResource {
-                resource: Some(Resource::TaskSlots(concurrent_tasks as u32)),
-            }],
+            resources: resources.clone(),
         }),
     };
 
@@ -359,11 +367,7 @@ pub async fn start_executor_process(opt: ExecutorProcessConfig) -> Result<()> {
                         .map(executor_registration::OptionalHost::Host),
                     port: opt.port as u32,
                     grpc_port: opt.grpc_port as u32,
-                    specification: Some(ExecutorSpecification {
-                        resources: vec![ExecutorResource {
-                            resource: Some(Resource::TaskSlots(concurrent_tasks as u32)),
-                        }],
-                    }),
+                    specification: Some(ExecutorSpecification { resources }),
                 }),
             })
             .await

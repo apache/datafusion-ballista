@@ -342,7 +342,10 @@ async fn setup_env(
             host: "127.0.0.1".to_string(),
             port: 7799,
             grpc_port: 7799,
-            specification: ExecutorSpecification { task_slots: 10 },
+            specification: ExecutorSpecification {
+                task_slots: 10,
+                version: "bench-1.0".to_string(),
+            },
         };
 
         let executor_data = ExecutorData {

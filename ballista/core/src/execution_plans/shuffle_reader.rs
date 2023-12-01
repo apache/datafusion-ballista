@@ -546,7 +546,10 @@ mod tests {
                     host: "executor_1".to_string(),
                     port: 7070,
                     grpc_port: 8080,
-                    specification: ExecutorSpecification { task_slots: 1 },
+                    specification: ExecutorSpecification {
+                        task_slots: 1,
+                        version: "".to_string(),
+                    },
                 },
                 partition_stats: Default::default(),
                 path: "test_path".to_string(),
@@ -667,7 +670,10 @@ mod tests {
                     host: "localhost".to_string(),
                     port: 50051,
                     grpc_port: 50052,
-                    specification: ExecutorSpecification { task_slots: 12 },
+                    specification: ExecutorSpecification {
+                        task_slots: 12,
+                        version: "0".to_string(),
+                    },
                 },
                 partition_stats: Default::default(),
                 path: path.clone(),

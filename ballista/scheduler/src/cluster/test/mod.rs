@@ -52,6 +52,7 @@ impl<S: ClusterState> ClusterStateTest<S> {
         mut self,
         executor_id: &str,
         task_slots: u32,
+        version: String,
     ) -> Result<Self> {
         self.state
             .register_executor(
@@ -60,7 +61,10 @@ impl<S: ClusterState> ClusterStateTest<S> {
                     host: executor_id.to_string(),
                     port: 0,
                     grpc_port: 0,
-                    specification: ExecutorSpecification { task_slots },
+                    specification: ExecutorSpecification {
+                        task_slots,
+                        version,
+                    },
                 },
                 ExecutorData {
                     executor_id: executor_id.to_string(),
@@ -86,6 +90,7 @@ impl<S: ClusterState> ClusterStateTest<S> {
         self,
         executor_id: &str,
         task_slots: u32,
+        version: String,
     ) -> Result<Self> {
         let executor = self.state.get_executor_metadata(executor_id).await;
         assert!(
@@ -93,13 +98,18 @@ impl<S: ClusterState> ClusterStateTest<S> {
             "Metadata for executor {} not found in state",
             executor_id
         );
+        let executor = executor?;
         assert_eq!(
-            executor.unwrap().specification.task_slots,
-            task_slots,
+            executor.specification.task_slots, task_slots,
             "Unexpected number of task slots for executor"
         );
+        assert_eq!(
+            executor.version(),
+            version,
+            "Unexpected version for executor"
+        );
 
-        // Heratbeat stream is async so wait up to 500ms for it to show up
+        // Heartbeat stream is async so wait up to 500ms for it to show up
         await_condition(Duration::from_millis(50), 10, || {
             let found_heartbeat = self.state.get_executor_heartbeat(executor_id).map_or(
                 false,
@@ -305,7 +315,11 @@ pub async fn test_fuzz_reservations<S: ClusterState>(
 
     for idx in 0..num_executors {
         test = test
-            .register_executor(idx.to_string().as_str(), task_slots_per_executor as u32)
+            .register_executor(
+                idx.to_string().as_str(),
+                task_slots_per_executor as u32,
+                "1.0".to_string(),
+            )
             .await?;
     }
 
@@ -315,17 +329,17 @@ pub async fn test_fuzz_reservations<S: ClusterState>(
 pub async fn test_executor_registration<S: ClusterState>(state: S) -> Result<()> {
     let test = ClusterStateTest::new(state).await?;
 
-    test.register_executor("1", 10)
+    test.register_executor("1", 10, "1.0".to_string())
         .await?
-        .register_executor("2", 10)
+        .register_executor("2", 10, "1.1".to_string())
         .await?
-        .register_executor("3", 10)
+        .register_executor("3", 10, "1.2".to_string())
         .await?
-        .assert_live_executor("1", 10)
+        .assert_live_executor("1", 10, "1.0".to_string())
         .await?
-        .assert_live_executor("2", 10)
+        .assert_live_executor("2", 10, "1.1".to_string())
         .await?
-        .assert_live_executor("3", 10)
+        .assert_live_executor("3", 10, "1.2".to_string())
         .await?
         .remove_executor("1")
         .await?
@@ -349,11 +363,11 @@ pub async fn test_reservation<S: ClusterState>(
 ) -> Result<()> {
     let test = ClusterStateTest::new(state).await?;
 
-    test.register_executor("1", 10)
+    test.register_executor("1", 10, "1.0".to_string())
         .await?
-        .register_executor("2", 10)
+        .register_executor("2", 10, "1.1".to_string())
         .await?
-        .register_executor("3", 10)
+        .register_executor("3", 10, "1.2".to_string())
         .await?
         .try_reserve_slots(10, distribution, None, false)
         .await?

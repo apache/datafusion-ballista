@@ -570,7 +570,7 @@ pub struct ExecutorSpecification {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorResource {
     /// TODO add more resources
-    #[prost(oneof = "executor_resource::Resource", tags = "1")]
+    #[prost(oneof = "executor_resource::Resource", tags = "1, 2")]
     pub resource: ::core::option::Option<executor_resource::Resource>,
 }
 /// Nested message and enum types in `ExecutorResource`.
@@ -581,6 +581,8 @@ pub mod executor_resource {
     pub enum Resource {
         #[prost(uint32, tag = "1")]
         TaskSlots(u32),
+        #[prost(string, tag = "2")]
+        Version(::prost::alloc::string::String),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]

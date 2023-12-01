@@ -65,6 +65,7 @@ async fn main() -> Result<()> {
         bind_host: opt.bind_host,
         port: opt.bind_port,
         grpc_port: opt.bind_grpc_port,
+        version: opt.executor_version,
         scheduler_host: opt.scheduler_host,
         scheduler_port: opt.scheduler_port,
         scheduler_connect_timeout_seconds: opt.scheduler_connect_timeout_seconds,

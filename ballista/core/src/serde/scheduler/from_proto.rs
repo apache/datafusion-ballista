@@ -32,6 +32,7 @@ use crate::serde::scheduler::{
 };
 
 use crate::serde::protobuf;
+use crate::serde::protobuf::executor_resource::Resource;
 use protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
 
 impl TryInto<Action> for protobuf::Action {
@@ -215,15 +216,22 @@ impl Into<ExecutorMetadata> for protobuf::ExecutorMetadata {
 #[allow(clippy::from_over_into)]
 impl Into<ExecutorSpecification> for protobuf::ExecutorSpecification {
     fn into(self) -> ExecutorSpecification {
-        let mut ret = ExecutorSpecification { task_slots: 0 };
-        for resource in self.resources {
-            if let Some(protobuf::executor_resource::Resource::TaskSlots(task_slots)) =
-                resource.resource
-            {
-                ret.task_slots = task_slots
+        let mut task_slots = 0;
+        let mut version = "0".to_string();
+
+        for exec_resource in self.resources {
+            if let Some(resource) = exec_resource.resource {
+                match resource {
+                    Resource::TaskSlots(tasks) => task_slots = tasks,
+                    Resource::Version(v) => version = v,
+                }
             }
         }
-        ret
+
+        ExecutorSpecification {
+            task_slots,
+            version,
+        }
     }
 }
 

@@ -330,6 +330,7 @@ message ExecutorResource {
   // TODO add more resources
   oneof resource {
     uint32 task_slots = 1;
+    string version = 2;
   }
 }
 

@@ -326,8 +326,10 @@ impl ExecutorManager {
         test_connection: bool,
     ) -> Result<Vec<ExecutorReservation>> {
         debug!(
-            "registering executor {} with {} task slots",
-            metadata.id, specification.total_task_slots
+            "registering executor {} at version {} with {} task slots",
+            metadata.id,
+            metadata.version(),
+            specification.total_task_slots
         );
 
         if test_connection {
@@ -764,6 +766,7 @@ mod test {
                     grpc_port: 9090,
                     specification: ExecutorSpecification {
                         task_slots: slots_per_executor,
+                        version: "".to_string(),
                     },
                 },
                 ExecutorData {

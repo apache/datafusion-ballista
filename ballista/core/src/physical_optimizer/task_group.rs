@@ -234,7 +234,10 @@ mod tests {
                     host: "".into(),
                     port: 0,
                     grpc_port: 0,
-                    specification: ExecutorSpecification { task_slots: 0 },
+                    specification: ExecutorSpecification {
+                        task_slots: 0,
+                        version: "0".to_string(),
+                    },
                 },
                 partition_stats: PartitionStats {
                     num_rows: None,

@@ -269,9 +269,14 @@ mod tests {
 
         for i in 0..n {
             let specification = ExecutorSpecification {
-                resources: vec![ExecutorResource {
-                    resource: Some(Resource::TaskSlots(1)),
-                }],
+                resources: vec![
+                    ExecutorResource {
+                        resource: Some(Resource::TaskSlots(1)),
+                    },
+                    ExecutorResource {
+                        resource: Some(Resource::Version("test".to_string())),
+                    },
+                ],
             };
 
             let port = 50051 + i as u32;
