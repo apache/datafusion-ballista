@@ -32,9 +32,11 @@ impl CircuitBreakerStream {
         calculate: Box<dyn CircuitBreakerCalculation + Send>,
         key: CircuitBreakerTaskKey,
         client: Arc<CircuitBreakerClient>,
+        labels: Vec<String>,
     ) -> Result<Self, Error> {
         let mut noop = false;
-        let circuit_breaker = match client.register(key.stage_key.clone()) {
+
+        let circuit_breaker = match client.register(key.clone(), labels) {
             Ok(circuit_breaker) => circuit_breaker,
             Err(e) => {
                 error!("Failed to register circuit breaker: {:?}", e);
@@ -80,6 +82,12 @@ impl CircuitBreakerStream {
 
 pub trait CircuitBreakerCalculation {
     fn calculate_delta(&mut self, poll: &Poll<Option<Result<RecordBatch>>>) -> f64;
+}
+
+#[derive(Debug)]
+pub struct CircuitBreakerLabelsRegistration {
+    pub key: CircuitBreakerTaskKey,
+    pub labels: Vec<String>,
 }
 
 #[derive(Debug)]

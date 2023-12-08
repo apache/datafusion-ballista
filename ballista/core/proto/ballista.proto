@@ -88,6 +88,7 @@ message ExecutionGraph {
   uint64 end_time = 12;
   uint64 queued_at = 13;
   bool circuit_breaker_tripped = 14;
+  repeated string circuit_breaker_tripped_labels = 15;
 }
 
 message StageAttempts {
@@ -539,6 +540,7 @@ message SuccessfulJob {
   uint64 started_at = 3;
   uint64 ended_at = 4;
   bool circuit_breaker_tripped = 5;
+  repeated string circuit_breaker_tripped_labels = 6;
 }
 
 message QueuedJob {
@@ -958,11 +960,17 @@ message CircuitBreakerTaskKey {
 message CircuitBreakerUpdateRequest {
   repeated CircuitBreakerUpdate updates = 1;
   string executor_id = 2;
+  repeated CircuitBreakerLabelsRegistration label_registrations = 3;
 }
 
 message CircuitBreakerUpdate {
   CircuitBreakerTaskKey key = 1;
   double percent = 2;
+}
+
+message CircuitBreakerLabelsRegistration {
+  CircuitBreakerTaskKey key = 1;
+  repeated string labels = 2;
 }
 
 message CircuitBreakerUpdateResponse {

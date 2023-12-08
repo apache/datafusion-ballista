@@ -334,10 +334,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
                     );
                 }
             }
-            QueryStageSchedulerEvent::CircuitBreakerTripped { job_id, stage_id } => {
+            QueryStageSchedulerEvent::CircuitBreakerTripped {
+                job_id,
+                stage_id,
+                labels,
+            } => {
                 self.state
                     .task_manager
-                    .trip_circuit_breaker(job_id, stage_id)
+                    .trip_circuit_breaker(job_id, stage_id, labels)
                     .await;
             }
         }

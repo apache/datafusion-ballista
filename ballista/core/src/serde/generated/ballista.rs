@@ -114,6 +114,10 @@ pub struct ExecutionGraph {
     pub queued_at: u64,
     #[prost(bool, tag = "14")]
     pub circuit_breaker_tripped: bool,
+    #[prost(string, repeated, tag = "15")]
+    pub circuit_breaker_tripped_labels: ::prost::alloc::vec::Vec<
+        ::prost::alloc::string::String,
+    >,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -943,6 +947,10 @@ pub struct SuccessfulJob {
     pub ended_at: u64,
     #[prost(bool, tag = "5")]
     pub circuit_breaker_tripped: bool,
+    #[prost(string, repeated, tag = "6")]
+    pub circuit_breaker_tripped_labels: ::prost::alloc::vec::Vec<
+        ::prost::alloc::string::String,
+    >,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1838,6 +1846,8 @@ pub struct CircuitBreakerUpdateRequest {
     pub updates: ::prost::alloc::vec::Vec<CircuitBreakerUpdate>,
     #[prost(string, tag = "2")]
     pub executor_id: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "3")]
+    pub label_registrations: ::prost::alloc::vec::Vec<CircuitBreakerLabelsRegistration>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1846,6 +1856,14 @@ pub struct CircuitBreakerUpdate {
     pub key: ::core::option::Option<CircuitBreakerTaskKey>,
     #[prost(double, tag = "2")]
     pub percent: f64,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CircuitBreakerLabelsRegistration {
+    #[prost(message, optional, tag = "1")]
+    pub key: ::core::option::Option<CircuitBreakerTaskKey>,
+    #[prost(string, repeated, tag = "2")]
+    pub labels: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

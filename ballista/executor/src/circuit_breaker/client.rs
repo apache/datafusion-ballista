@@ -28,6 +28,8 @@ use crate::{
     scheduler_client_registry::SchedulerClientRegistry,
 };
 
+use super::stream::CircuitBreakerLabelsRegistration;
+
 #[derive(Eq, PartialEq, Hash, Debug, Clone)]
 pub struct CircuitBreakerMetadataExtension {
     pub job_id: String,
@@ -85,6 +87,7 @@ struct SchedulerDeregistration {
 
 #[derive(Debug)]
 enum ClientUpdate {
+    LabelsRegistration(CircuitBreakerLabelsRegistration),
     Update(CircuitBreakerUpdate),
     SchedulerRegistration(SchedulerRegistration),
     SchedulerDeregistration(SchedulerDeregistration),
@@ -101,6 +104,11 @@ lazy_static! {
         "ballista_circuit_breaker_client_update_latency",
         "Latency of sending updates to the schedulers in seconds",
         vec![0.01, 0.03, 0.05, 0.1, 0.3, 0.5, 1.0, 3.0]
+    )
+    .unwrap();
+    static ref SENT_LABEL_REGISTRATIONS: IntCounter = register_int_counter!(
+        "ballista_circuit_breaker_client_sent_label_registrations",
+        "Number of registrations sent to the schedulers"
     )
     .unwrap();
     static ref SENT_UPDATES: IntCounter = register_int_counter!(
@@ -147,16 +155,23 @@ impl CircuitBreakerClient {
 
     pub fn register(
         &self,
-        key: CircuitBreakerStageKey,
+        key: CircuitBreakerTaskKey,
+        labels: Vec<String>,
     ) -> Result<Arc<AtomicBool>, Error> {
-        let state = self.state_per_stage.entry(key.clone()).or_insert_with(|| {
-            CircuitBreakerStageState {
+        let state = self
+            .state_per_stage
+            .entry(key.stage_key.clone())
+            .or_insert_with(|| CircuitBreakerStageState {
                 circuit_breaker: Arc::new(AtomicBool::new(false)),
                 last_updated: Instant::now(),
-            }
-        });
+            });
 
-        Ok(state.circuit_breaker.clone())
+        let registration = CircuitBreakerLabelsRegistration { key, labels };
+
+        self.update_sender
+            .try_send(ClientUpdate::LabelsRegistration(registration))
+            .map_err(|e| e.into())
+            .map(|_| state.circuit_breaker.clone())
     }
 
     pub fn send_update(&self, update: CircuitBreakerUpdate) -> Result<(), Error> {
@@ -260,6 +275,27 @@ impl CircuitBreakerClient {
         let now = Instant::now();
 
         match received {
+            ClientUpdate::LabelsRegistration(registration) => {
+                if let Some(scheduler_id) =
+                    task_scheduler_lookup.get(&registration.key.task_id)
+                {
+                    // For now, send a new message for every registration.
+                    Self::process_label_registration(
+                        scheduler_id,
+                        registration,
+                        state_per_stage,
+                        scheduler_lookup,
+                        executor_id,
+                    )
+                    .await;
+                } else {
+                    // This happens when the task has completed but the update was still in flight.
+                    info!(
+                        "No scheduler found for task {} during label registration",
+                        registration.key.task_id
+                    );
+                }
+            }
             ClientUpdate::Update(update) => {
                 if let Some(mut state) = state_per_stage.get_mut(&update.key.stage_key) {
                     state.last_updated = now;
@@ -312,6 +348,72 @@ impl CircuitBreakerClient {
         }
     }
 
+    async fn process_label_registration(
+        scheduler_id: &str,
+        registration: CircuitBreakerLabelsRegistration,
+        state_per_stage: &DashMap<CircuitBreakerStageKey, CircuitBreakerStageState>,
+        get_scheduler: &dyn SchedulerClientRegistry,
+        executor_id: &str,
+    ) {
+        let registration_proto = protobuf::CircuitBreakerLabelsRegistration {
+            key: Some(registration.key.into()),
+            labels: registration.labels,
+        };
+
+        Self::send_registrations(
+            executor_id,
+            scheduler_id,
+            get_scheduler,
+            vec![registration_proto],
+            state_per_stage,
+        )
+        .await;
+    }
+
+    async fn send_registrations(
+        executor_id: &str,
+        scheduler_id: &str,
+        get_scheduler: &dyn SchedulerClientRegistry,
+        label_registrations: Vec<protobuf::CircuitBreakerLabelsRegistration>,
+        state_per_stage: &DashMap<CircuitBreakerStageKey, CircuitBreakerStageState>,
+    ) {
+        let mut scheduler = match get_scheduler
+            .get_or_create_scheduler_client(scheduler_id)
+            .await
+        {
+            Ok(scheduler) => scheduler,
+            Err(e) => {
+                warn!("Failed to get scheduler {}: {}", scheduler_id, e);
+                return;
+            }
+        };
+
+        let label_registrations_len = label_registrations.len();
+
+        let request = CircuitBreakerUpdateRequest {
+            updates: vec![],
+            label_registrations,
+            executor_id: executor_id.to_owned(),
+        };
+
+        let request_time = Instant::now();
+
+        match scheduler.send_circuit_breaker_update(request).await {
+            Err(e) => warn!(
+                "Failed to send circuit breaker update to scheduler {}: {}",
+                scheduler_id, e
+            ),
+            Ok(response) => {
+                let request_latency = request_time.elapsed();
+
+                SENT_LABEL_REGISTRATIONS.inc_by(label_registrations_len as u64);
+                UPDATE_LATENCY_SECONDS.observe(request_latency.as_secs_f64());
+
+                Self::handle_response(response.into_inner(), state_per_stage);
+            }
+        };
+    }
+
     async fn process_batch(
         scheduler_id: &str,
         updates: &mut HashMap<CircuitBreakerTaskKey, f64>,
@@ -362,6 +464,7 @@ impl CircuitBreakerClient {
 
         let request = CircuitBreakerUpdateRequest {
             updates,
+            label_registrations: vec![],
             executor_id: executor_id.to_owned(),
         };
 

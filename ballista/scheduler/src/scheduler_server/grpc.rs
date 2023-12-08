@@ -558,26 +558,40 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
         let CircuitBreakerUpdateRequest {
             updates,
+            label_registrations,
             executor_id,
         } = request.into_inner();
+
+        for label_registration in label_registrations {
+            if let Some(key) = label_registration.key {
+                let key: CircuitBreakerTaskKey =
+                    key.try_into().map_err(Status::invalid_argument)?;
+                self.state.circuit_breaker.register_labels(
+                    key.stage_key,
+                    executor_id.clone(),
+                    label_registration.labels,
+                )
+            }
+        }
 
         for update in updates {
             if let Some(key_proto) = update.key {
                 let key: CircuitBreakerTaskKey =
-                    key_proto.try_into().map_err(Status::internal)?;
+                    key_proto.try_into().map_err(Status::invalid_argument)?;
 
                 let stage_key = &key.stage_key;
-                let should_trip = self
+                let labels = self
                     .state
                     .circuit_breaker
                     .update(key.clone(), update.percent, executor_id.clone())
                     .map_err(Status::internal)?;
 
-                if should_trip {
+                if let Some(labels) = labels {
                     info!(
                         job_id = stage_key.job_id,
                         stage_id = stage_key.stage_id,
                         attempt_num = stage_key.attempt_num,
+                        labels = ?labels,
                         "Circuit breaker tripped!",
                     );
 
@@ -592,6 +606,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                         .post_event(QueryStageSchedulerEvent::CircuitBreakerTripped {
                             job_id: stage_key.job_id.clone(),
                             stage_id: stage_key.stage_id as usize,
+                            labels: labels.clone(),
                         });
                 }
             }

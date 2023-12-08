@@ -144,11 +144,22 @@ mod tests {
 
         let job_id = result.into_inner().job_id;
 
-        let successful_job = await_job_completion(&mut scheduler_client, &job_id)
+        let mut successful_job = await_job_completion(&mut scheduler_client, &job_id)
             .await
             .unwrap();
 
         assert!(successful_job.circuit_breaker_tripped);
+
+        successful_job.circuit_breaker_tripped_labels.sort();
+
+        assert_eq!(
+            successful_job.circuit_breaker_tripped_labels,
+            vec![
+                "partition-0".to_owned(),
+                "partition-1".to_owned(),
+                "test".to_owned()
+            ]
+        );
 
         let partitions = successful_job.partition_location;
 

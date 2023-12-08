@@ -76,6 +76,7 @@ pub enum QueryStageSchedulerEvent {
     CircuitBreakerTripped {
         job_id: String,
         stage_id: usize,
+        labels: Vec<String>,
     },
 }
 

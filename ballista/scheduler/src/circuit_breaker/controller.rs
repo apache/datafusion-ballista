@@ -1,8 +1,12 @@
-use std::{cmp::max, collections::HashMap};
+use std::{
+    cmp::max,
+    collections::{HashMap, HashSet},
+};
 
 use ballista_core::circuit_breaker::model::{
     CircuitBreakerStageKey, CircuitBreakerTaskKey,
 };
+use itertools::Itertools;
 use lazy_static::lazy_static;
 use parking_lot::RwLock;
 use prometheus::{register_int_counter, IntCounter};
@@ -23,6 +27,21 @@ struct SharedState {
     // This could also be calculated from the sum of the percentages of all latest attempts of each stage.
     percent: f64,
     executor_trip_state: HashMap<String, bool>,
+    labels: HashSet<String>,
+}
+
+impl SharedState {
+    fn new(executor_id: String) -> Self {
+        let mut executor_trip_state = HashMap::new();
+        executor_trip_state.insert(executor_id, false);
+
+        Self {
+            stage_states: HashMap::new(),
+            percent: 0.0,
+            executor_trip_state,
+            labels: HashSet::new(),
+        }
+    }
 }
 
 struct StageState {
@@ -83,12 +102,40 @@ impl CircuitBreakerController {
         info!(job_id, "deleted circuit breaker",);
     }
 
+    pub fn register_labels(
+        &self,
+        key: CircuitBreakerStageKey,
+        executor_id: String,
+        labels: Vec<String>,
+    ) {
+        let mut job_states = self.job_states.write();
+
+        let job_state = match job_states.get_mut(&key.job_id) {
+            Some(state) => state,
+            None => {
+                debug!(
+                    job_id = key.job_id,
+                    "received circuit breaker update for unregistered job",
+                );
+                return;
+            }
+        };
+
+        let shared_states = &mut job_state.shared_states;
+
+        let entry = shared_states
+            .entry(key.shared_state_id.clone())
+            .or_insert_with(|| SharedState::new(executor_id));
+
+        entry.labels.extend(labels);
+    }
+
     pub fn update(
         &self,
         key: CircuitBreakerTaskKey,
         percent: f64,
         executor_id: String,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<Vec<String>>, String> {
         RECEIVED_UPDATES.inc();
 
         let mut job_states = self.job_states.write();
@@ -102,7 +149,7 @@ impl CircuitBreakerController {
                     job_id = stage_key.job_id,
                     "received circuit breaker update for unregistered job",
                 );
-                return Ok(false);
+                return Ok(None);
             }
         };
 
@@ -117,6 +164,7 @@ impl CircuitBreakerController {
                     stage_states: HashMap::new(),
                     executor_trip_state,
                     percent: 0.0,
+                    labels: HashSet::new(),
                 }
             });
 
@@ -181,7 +229,13 @@ impl CircuitBreakerController {
 
         let should_trip = shared_state.percent >= 1.0 && old_sum_percentage < 1.0;
 
-        Ok(should_trip)
+        let labels = if should_trip {
+            Some(shared_state.labels.iter().cloned().collect_vec())
+        } else {
+            None
+        };
+
+        Ok(labels)
     }
 
     pub fn retrieve_tripped_stages(

@@ -883,10 +883,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         }
     }
 
-    pub async fn trip_circuit_breaker(&self, job_id: String, stage_id: usize) {
+    pub async fn trip_circuit_breaker(
+        &self,
+        job_id: String,
+        stage_id: usize,
+        labels: Vec<String>,
+    ) {
         if let Some(job) = self.active_job_queue.get_job(&job_id) {
             let mut graph = job.graph_mut().await;
-            graph.trip_stage(stage_id);
+            graph.trip_stage(stage_id, labels);
         }
     }
 }

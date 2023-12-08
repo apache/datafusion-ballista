@@ -141,8 +141,11 @@ impl ExecutionPlan for TestTableExec {
             let calc = Box::new(TestCalculation { limit })
                 as Box<dyn CircuitBreakerCalculation + Send>;
 
-            let limited_stream = CircuitBreakerStream::new(boxed, calc, key, client)
-                .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+            let labels = vec!["test".to_owned(), format!("partition-{}", partition)];
+
+            let limited_stream =
+                CircuitBreakerStream::new(boxed, calc, key, client, labels)
+                    .map_err(|e| DataFusionError::Execution(e.to_string()))?;
 
             return Ok(Box::pin(limited_stream));
         }
