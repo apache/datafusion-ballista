@@ -27,6 +27,7 @@ use log::info;
 use object_store::path::Path;
 use object_store::{
     Error, GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore,
+    PutOptions, PutResult,
 };
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
@@ -73,12 +74,25 @@ impl<M> ObjectStore for FileCacheObjectStore<M>
 where
     M: CacheMedium,
 {
-    async fn put(&self, _location: &Path, _bytes: Bytes) -> object_store::Result<()> {
+    async fn put(
+        &self,
+        _location: &Path,
+        _bytes: Bytes,
+    ) -> object_store::Result<PutResult> {
         Err(Error::NotSupported {
             source: Box::new(BallistaError::General(
                 "Write path is not supported".to_string(),
             )),
         })
+    }
+
+    async fn put_opts(
+        &self,
+        location: &Path,
+        bytes: Bytes,
+        opts: PutOptions,
+    ) -> object_store::Result<PutResult> {
+        todo!()
     }
 
     async fn put_multipart(
@@ -209,13 +223,14 @@ where
         })
     }
 
-    async fn list(
+    fn list(
         &self,
-        _prefix: Option<&Path>,
-    ) -> object_store::Result<BoxStream<'_, object_store::Result<ObjectMeta>>> {
-        Err(Error::NotSupported {
-            source: Box::new(BallistaError::General("List is not supported".to_string())),
-        })
+        prefix: Option<&Path>,
+    ) -> BoxStream<'_, object_store::Result<ObjectMeta>> {
+        // Err(Error::NotSupported {
+        //     source: Box::new(BallistaError::General("List is not supported".to_string())),
+        // })
+        todo!()
     }
 
     async fn list_with_delimiter(

@@ -319,7 +319,7 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
         match logical_plan {
             LogicalPlan::Ddl(DdlStatement::CreateExternalTable(_)) => {
                 // table state is managed locally in the BallistaContext, not in the scheduler
-                Ok(Arc::new(EmptyExec::new(false, Arc::new(Schema::empty()))))
+                Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))))
             }
             _ => Ok(Arc::new(DistributedQueryExec::with_repr(
                 self.scheduler_url.clone(),
