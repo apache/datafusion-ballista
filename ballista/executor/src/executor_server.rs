@@ -112,6 +112,9 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
             BALLISTA_VERSION, addr
         );
         let server = ExecutorGrpcServer::new(executor_server.clone())
+            .max_encoding_message_size(
+                config.grpc_server_max_encoding_message_size as usize,
+            )
             .max_decoding_message_size(
                 config.grpc_server_max_decoding_message_size as usize,
             );
