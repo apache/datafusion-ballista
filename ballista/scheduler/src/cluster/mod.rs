@@ -1092,6 +1092,7 @@ mod test {
                     last_modified: Default::default(),
                     size: 1,
                     e_tag: None,
+                    version: None,
                 },
                 partition_values: vec![],
                 range: None,
