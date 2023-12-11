@@ -76,7 +76,7 @@ pub async fn start_server(
             let scheduler_grpc_server =
                 SchedulerGrpcServer::new(scheduler_server.clone())
                     .max_encoding_message_size(
-                        config.grpc_server_max_decoding_message_size as usize,
+                        config.grpc_server_max_encoding_message_size as usize,
                     )
                     .max_decoding_message_size(
                         config.grpc_server_max_decoding_message_size as usize,

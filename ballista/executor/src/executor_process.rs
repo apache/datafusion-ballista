@@ -96,6 +96,8 @@ pub struct ExecutorProcessConfig {
     pub cache_io_concurrency: u32,
     /// The maximum size of a decoded message at the grpc server side.
     pub grpc_server_max_decoding_message_size: u32,
+    /// The maximum size of an encoded message at the grpc server side.
+    pub grpc_server_max_encoding_message_size: u32,
     pub executor_heartbeat_interval_seconds: u64,
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.

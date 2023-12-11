@@ -133,6 +133,12 @@ default = "16777216"
 doc = "The maximum size of a decoded message at the grpc server side. Default: 16MB"
 
 [[param]]
+name = "grpc_server_max_encoding_message_size"
+type = "u32"
+default = "16777216"
+doc = "The maximum size of an encoded message at the grpc server side. Default: 16MB"
+
+[[param]]
 name = "executor_heartbeat_interval_seconds"
 type = "u64"
 doc = "The heartbeat interval in seconds to the scheduler for push-based task scheduling"

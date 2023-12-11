@@ -155,6 +155,7 @@ async fn main() -> Result<()> {
         scheduler_event_expected_processing_duration: opt
             .scheduler_event_expected_processing_duration,
         grpc_server_max_decoding_message_size: opt.grpc_server_max_decoding_message_size,
+        grpc_server_max_encoding_message_size: opt.grpc_server_max_encoding_message_size,
         executor_timeout_seconds: opt.executor_timeout_seconds,
         expire_dead_executor_interval_seconds: opt.expire_dead_executor_interval_seconds,
     };
