@@ -88,11 +88,15 @@ where
 
     async fn put_opts(
         &self,
-        location: &Path,
-        bytes: Bytes,
-        opts: PutOptions,
+        _location: &Path,
+        _bytes: Bytes,
+        _opts: PutOptions,
     ) -> object_store::Result<PutResult> {
-        todo!()
+        Err(Error::NotSupported {
+            source: Box::new(BallistaError::General(
+                "Write path is not supported".to_string(),
+            )),
+        })
     }
 
     async fn put_multipart(
@@ -225,8 +229,9 @@ where
 
     fn list(
         &self,
-        prefix: Option<&Path>,
+        _prefix: Option<&Path>,
     ) -> BoxStream<'_, object_store::Result<ObjectMeta>> {
+        // TODO we can no longer return an Err here
         // Err(Error::NotSupported {
         //     source: Box::new(BallistaError::General("List is not supported".to_string())),
         // })

@@ -71,11 +71,11 @@ impl ObjectStore for ObjectStoreWithKey {
 
     async fn put_opts(
         &self,
-        _location: &Path,
-        _bytes: Bytes,
-        _opts: PutOptions,
+        location: &Path,
+        bytes: Bytes,
+        opts: PutOptions,
     ) -> object_store::Result<PutResult> {
-        todo!()
+        self.inner.put_opts(location, bytes, opts).await
     }
 
     async fn put_multipart(
