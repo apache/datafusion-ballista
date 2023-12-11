@@ -22,7 +22,7 @@ use crate::error::BallistaError;
 use async_trait::async_trait;
 use ballista_cache::loading_cache::LoadingCache;
 use bytes::Bytes;
-use futures::stream::BoxStream;
+use futures::stream::{self, BoxStream, StreamExt};
 use log::info;
 use object_store::path::Path;
 use object_store::{
@@ -231,11 +231,14 @@ where
         &self,
         _prefix: Option<&Path>,
     ) -> BoxStream<'_, object_store::Result<ObjectMeta>> {
-        // TODO we can no longer return an Err here
-        // Err(Error::NotSupported {
-        //     source: Box::new(BallistaError::General("List is not supported".to_string())),
-        // })
-        todo!()
+        stream::once(async {
+            Err(Error::NotSupported {
+                source: Box::new(BallistaError::General(
+                    "List is not supported".to_string(),
+                )),
+            })
+        })
+        .boxed()
     }
 
     async fn list_with_delimiter(
