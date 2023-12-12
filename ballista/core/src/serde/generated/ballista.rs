@@ -1309,7 +1309,7 @@ pub mod scheduler_grpc_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Push-based task scheduler will only leverage this interface
+        /// Push-based task schedSchuler will only leverage this interface
         /// rather than the PollWork interface to report executor states
         pub async fn heart_beat_from_executor(
             &mut self,
@@ -1854,7 +1854,7 @@ pub mod scheduler_grpc_server {
             tonic::Response<super::RegisterExecutorResult>,
             tonic::Status,
         >;
-        /// Push-based task scheduler will only leverage this interface
+        /// Push-based task schedSchuler will only leverage this interface
         /// rather than the PollWork interface to report executor states
         async fn heart_beat_from_executor(
             &self,
