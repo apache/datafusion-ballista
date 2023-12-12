@@ -237,7 +237,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         } else {
             let scheduler_url = format!("http://{scheduler_id}");
             let connection = create_grpc_client_connection(scheduler_url).await?;
-            let scheduler = SchedulerGrpcClient::new(connection);
+            let scheduler = SchedulerGrpcClient::new(connection)
+                .max_encoding_message_size(16 * 1024 * 1024)
+                .max_decoding_message_size(16 * 1024 * 1024);
 
             {
                 self.schedulers
