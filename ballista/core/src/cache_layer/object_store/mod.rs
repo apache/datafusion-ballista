@@ -22,7 +22,8 @@ use bytes::Bytes;
 use futures::stream::BoxStream;
 use object_store::path::Path;
 use object_store::{
-    GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore,
+    GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore, PutOptions,
+    PutResult,
 };
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
@@ -60,8 +61,21 @@ impl Display for ObjectStoreWithKey {
 
 #[async_trait]
 impl ObjectStore for ObjectStoreWithKey {
-    async fn put(&self, location: &Path, bytes: Bytes) -> object_store::Result<()> {
+    async fn put(
+        &self,
+        location: &Path,
+        bytes: Bytes,
+    ) -> object_store::Result<PutResult> {
         self.inner.put(location, bytes).await
+    }
+
+    async fn put_opts(
+        &self,
+        location: &Path,
+        bytes: Bytes,
+        opts: PutOptions,
+    ) -> object_store::Result<PutResult> {
+        self.inner.put_opts(location, bytes, opts).await
     }
 
     async fn put_multipart(
@@ -115,11 +129,11 @@ impl ObjectStore for ObjectStoreWithKey {
         self.inner.delete(location).await
     }
 
-    async fn list(
+    fn list(
         &self,
         prefix: Option<&Path>,
-    ) -> object_store::Result<BoxStream<'_, object_store::Result<ObjectMeta>>> {
-        self.inner.list(prefix).await
+    ) -> BoxStream<'_, object_store::Result<ObjectMeta>> {
+        self.inner.list(prefix)
     }
 
     async fn list_with_delimiter(

@@ -29,16 +29,16 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-arrow = { version = "48.0.0", features=["ipc_compression"] }
-arrow-flight = { version = "48.0.0", features = ["flight-sql-experimental"] }
-arrow-schema = { version = "48.0.0", default-features = false }
+arrow = { version = "49.0.0", features=["ipc_compression"] }
+arrow-flight = { version = "49.0.0", features = ["flight-sql-experimental"] }
+arrow-schema = { version = "49.0.0", default-features = false }
 configure_me = { version = "0.4.0" }
 configure_me_codegen = { version = "0.4.4" }
-datafusion = "33.0.0"
-datafusion-cli = "33.0.0"
-datafusion-proto = "33.0.0"
-object_store = "0.7.0"
-sqlparser = "0.39.0"
+datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "34.0.0-rc1" }
+datafusion-cli = { git = "https://github.com/apache/arrow-datafusion", rev = "34.0.0-rc1" }
+datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "34.0.0-rc1" }
+object_store = "0.8.0"
+sqlparser = "0.40.0"
 tonic = { version = "0.10" }
 tonic-build = { version = "0.10", default-features = false, features = [
     "transport",

@@ -22,11 +22,12 @@ use crate::error::BallistaError;
 use async_trait::async_trait;
 use ballista_cache::loading_cache::LoadingCache;
 use bytes::Bytes;
-use futures::stream::BoxStream;
+use futures::stream::{self, BoxStream, StreamExt};
 use log::info;
 use object_store::path::Path;
 use object_store::{
     Error, GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore,
+    PutOptions, PutResult,
 };
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
@@ -73,7 +74,24 @@ impl<M> ObjectStore for FileCacheObjectStore<M>
 where
     M: CacheMedium,
 {
-    async fn put(&self, _location: &Path, _bytes: Bytes) -> object_store::Result<()> {
+    async fn put(
+        &self,
+        _location: &Path,
+        _bytes: Bytes,
+    ) -> object_store::Result<PutResult> {
+        Err(Error::NotSupported {
+            source: Box::new(BallistaError::General(
+                "Write path is not supported".to_string(),
+            )),
+        })
+    }
+
+    async fn put_opts(
+        &self,
+        _location: &Path,
+        _bytes: Bytes,
+        _opts: PutOptions,
+    ) -> object_store::Result<PutResult> {
         Err(Error::NotSupported {
             source: Box::new(BallistaError::General(
                 "Write path is not supported".to_string(),
@@ -209,13 +227,18 @@ where
         })
     }
 
-    async fn list(
+    fn list(
         &self,
         _prefix: Option<&Path>,
-    ) -> object_store::Result<BoxStream<'_, object_store::Result<ObjectMeta>>> {
-        Err(Error::NotSupported {
-            source: Box::new(BallistaError::General("List is not supported".to_string())),
+    ) -> BoxStream<'_, object_store::Result<ObjectMeta>> {
+        stream::once(async {
+            Err(Error::NotSupported {
+                source: Box::new(BallistaError::General(
+                    "List is not supported".to_string(),
+                )),
+            })
         })
+        .boxed()
     }
 
     async fn list_with_delimiter(
