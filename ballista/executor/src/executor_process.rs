@@ -284,7 +284,9 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
         }
     }?;
 
-    let mut scheduler = SchedulerGrpcClient::new(connection);
+    let mut scheduler = SchedulerGrpcClient::new(connection)
+        .max_encoding_message_size(16 * 1024 * 1024)
+        .max_decoding_message_size(16 * 1024 * 1024);
 
     let default_codec: BallistaCodec<LogicalPlanNode, PhysicalPlanNode> =
         BallistaCodec::default();
