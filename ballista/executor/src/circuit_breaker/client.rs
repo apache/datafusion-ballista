@@ -126,6 +126,11 @@ lazy_static! {
         "Number of schedulers in lookup"
     )
     .unwrap();
+    static ref UPDATE_CHANNEL_CAPACITY: IntGauge = register_int_gauge!(
+        "ballista_circuit_breaker_client_update_channel_capacity",
+        "Capacity of the update channel"
+    )
+    .unwrap();
 }
 
 impl CircuitBreakerClient {
@@ -168,15 +173,18 @@ impl CircuitBreakerClient {
 
         let registration = CircuitBreakerLabelsRegistration { key, labels };
 
-        self.update_sender
-            .try_send(ClientUpdate::LabelsRegistration(registration))
-            .map_err(|e| e.into())
+        self.send_update_internal(ClientUpdate::LabelsRegistration(registration))
             .map(|_| state.circuit_breaker.clone())
     }
 
     pub fn send_update(&self, update: CircuitBreakerUpdate) -> Result<(), Error> {
-        let update = ClientUpdate::Update(update);
-        self.update_sender.try_send(update).map_err(|e| e.into())
+        self.send_update_internal(ClientUpdate::Update(update))
+    }
+
+    fn send_update_internal(&self, update: ClientUpdate) -> Result<(), Error> {
+        let res = self.update_sender.try_send(update).map_err(|e| e.into());
+        UPDATE_CHANNEL_CAPACITY.set(self.update_sender.capacity() as i64);
+        res
     }
 
     pub fn register_scheduler(
@@ -194,7 +202,7 @@ impl CircuitBreakerClient {
             scheduler_id,
         });
 
-        self.update_sender.try_send(update).map_err(|e| {
+        self.send_update_internal(update).map_err(|e| {
             BallistaError::Internal(format!(
                 "Failed to send scheduler registration: {}",
                 e
@@ -208,7 +216,7 @@ impl CircuitBreakerClient {
         let update =
             ClientUpdate::SchedulerDeregistration(SchedulerDeregistration { task_id });
 
-        self.update_sender.try_send(update).map_err(|e| {
+        self.send_update_internal(update).map_err(|e| {
             BallistaError::Internal(format!(
                 "Failed to send scheduler deregistration: {}",
                 e
