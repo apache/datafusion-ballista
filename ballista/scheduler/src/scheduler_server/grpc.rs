@@ -307,12 +307,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let path = Path::from(path.as_str());
         let file_metas: Vec<_> = obj_store
             .list(Some(&path))
-            .await
             .map_err(|e| {
                 let msg = format!("Error listing files: {e}");
                 error!("{}", msg);
                 tonic::Status::internal(msg)
-            })?
+            })
             .try_collect()
             .await
             .map_err(|e| {

@@ -21,17 +21,17 @@ members = ["ballista-cli", "ballista/client", "ballista/core", "ballista/executo
 resolver = "2"
 
 [workspace.dependencies]
-arrow = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0", features=['ipc_compression'] }
-arrow-flight = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0", features=["flight-sql-experimental"] }
-arrow-schema = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
+arrow = { version = "49.0.0", features=['ipc_compression'] }
+arrow-schema = { version = "49.0.0" }
+arrow-flight = { version = "49.0.0", features=["flight-sql-experimental"] }
 configure_me = { version = "0.4.0" }
 configure_me_codegen = { version = "0.4.4" }
 
-datafusion = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v32.0.0-cx.5", features=["avro"] }
-datafusion-cli = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v32.0.0-cx.5" }
-datafusion-proto = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v32.0.0-cx.5" }
-object_store = "0.7.0"
-sqlparser = "0.39.0"
+datafusion = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v33.0.0-cx.0", features=["avro"] }
+datafusion-cli = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v33.0.0-cx.0" }
+datafusion-proto = { git = "https://github.com/coralogix/arrow-datafusion.git", tag = "v33.0.0-cx.0" }
+object_store = "0.8.0"
+sqlparser = "0.40.0"
 tonic = { version = "0.10" }
 tonic-build = { version = "0.10", default-features = false, features = [
     "transport",
@@ -60,13 +60,3 @@ opt-level = 3
 overflow-checks = false
 panic = 'unwind'
 rpath = false
-
-[patch.crates-io]
-arrow = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
-arrow-ord = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
-arrow-array = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
-arrow-data = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
-arrow-buffer = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
-arrow-flight = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
-arrow-schema = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }
-parquet = { git = "https://github.com/Coralogix/arrow-rs.git", tag="v48.0.0-cx.0" }

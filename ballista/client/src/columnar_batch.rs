@@ -147,10 +147,10 @@ impl ColumnarValue {
         }
     }
 
-    pub fn to_arrow(&self) -> ArrayRef {
+    pub fn to_arrow(&self) -> Result<ArrayRef> {
         match self {
-            ColumnarValue::Columnar(array) => array.clone(),
-            ColumnarValue::Scalar(value, n) => value.to_array_of_size(*n),
+            ColumnarValue::Columnar(array) => Ok(array.clone()),
+            ColumnarValue::Scalar(value, n) => Ok(value.to_array_of_size(*n)?),
         }
     }
 
