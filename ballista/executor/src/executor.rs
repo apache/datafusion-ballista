@@ -232,6 +232,24 @@ impl Executor {
         }
     }
 
+    pub fn cancel_all_tasks(&self) -> usize {
+        let mut cancelled = 0;
+        for mut entry in self.abort_handles.iter_mut() {
+            let ((job_id, task_id), handle) = entry.pair_mut();
+
+            info!(
+                executor_id = self.metadata.id,
+                job_id, task_id, "cancelling task"
+            );
+
+            handle.abort();
+            cancelled += 1;
+        }
+
+        self.drained.send_replace(());
+        cancelled
+    }
+
     pub fn work_dir(&self) -> &str {
         &self.work_dir
     }
@@ -279,6 +297,7 @@ mod test {
     use datafusion::execution::context::TaskContext;
 
     use crate::execution_engine::DefaultQueryStageExec;
+    use ballista_core::error::BallistaError;
     use datafusion::error::DataFusionError;
     use datafusion::physical_expr::PhysicalSortExpr;
     use datafusion::physical_plan::{
@@ -289,6 +308,7 @@ mod test {
     use futures::Stream;
     use std::any::Any;
     use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::task::{Context, Poll};
     use std::time::Duration;
@@ -458,5 +478,120 @@ mod test {
         // Make sure the actual task failed
         let inner_result = result.unwrap().unwrap();
         assert!(inner_result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_task_cancel_all() {
+        let work_dir = TempDir::new()
+            .unwrap()
+            .into_path()
+            .into_os_string()
+            .into_string()
+            .unwrap();
+
+        let executor_registration = ExecutorRegistration {
+            id: "executor".to_string(),
+            port: 0,
+            grpc_port: 0,
+            specification: None,
+            optional_host: None,
+        };
+
+        let ctx = SessionContext::new();
+
+        let executor = Executor::new(
+            executor_registration,
+            &work_dir,
+            ctx.runtime_env(),
+            Arc::new(LoggingMetricsCollector {}),
+            2,
+            None,
+        );
+
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(5);
+
+        let spawned = Arc::new(AtomicUsize::new(0));
+
+        for task_idx in 0..5 {
+            let shuffle_write = ShuffleWriterExec::try_new(
+                "job-id".to_owned(),
+                1,
+                vec![task_idx],
+                Arc::new(CoalesceTasksExec::new(
+                    Arc::new(NeverendingOperator),
+                    vec![5],
+                )),
+                work_dir.clone(),
+                None,
+            )
+            .expect("creating shuffle writer");
+
+            let query_stage_exec = DefaultQueryStageExec::new(shuffle_write);
+
+            // Spawn our non-terminating task on a separate fiber.
+            let executor_clone = executor.clone();
+            let sender = sender.clone();
+            let task_ctx = ctx.task_ctx();
+            let spawned = spawned.clone();
+            tokio::task::spawn(async move {
+                println!("spawning task");
+
+                let task_result = executor_clone
+                    .execute_query_stage(
+                        "job-id",
+                        1,
+                        task_idx,
+                        &[task_idx],
+                        Arc::new(query_stage_exec),
+                        task_ctx,
+                        None,
+                    )
+                    .await;
+
+                spawned.fetch_add(1, Ordering::SeqCst);
+
+                println!("sending task result {task_result:?}");
+
+                sender.send(task_result).await.expect("sending result");
+            });
+        }
+
+        drop(sender);
+
+        // Wait for all tasks to be spawned
+        loop {
+            if executor.abort_handles.len() == 5 {
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // Now cancel the task. We can only cancel once the task has been executed and has an `AbortHandle` registered, so
+        // poll until that happens.
+        let cancelled = executor.cancel_all_tasks();
+        assert_eq!(cancelled, 5);
+
+        let num_cancelled = async {
+            let mut cancelled = 0;
+            while let Some(r) = receiver.recv().await {
+                println!("received {r:?}");
+                if matches!(r, Err(BallistaError::Cancelled)) {
+                    cancelled += 1;
+                }
+            }
+
+            cancelled
+        };
+
+        // Wait for our task to complete
+        let result = tokio::time::timeout(Duration::from_secs(5), num_cancelled).await;
+
+        // Make sure the task didn't timeout
+        assert!(result.is_ok());
+
+        // // Make sure the actual task failed
+        let num_cancelled = result.unwrap();
+        assert_eq!(num_cancelled, 5);
     }
 }
