@@ -27,6 +27,7 @@ use ballista_core::error::BallistaError;
 use ballista_core::serde::decode_protobuf;
 use ballista_core::serde::scheduler::Action as BallistaAction;
 
+use arrow::ipc::reader::StreamReader;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::{
@@ -34,9 +35,7 @@ use arrow_flight::{
     FlightData, FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse,
     PutResult, SchemaResult, Ticket,
 };
-use datafusion::arrow::{
-    error::ArrowError, ipc::reader::FileReader, record_batch::RecordBatch,
-};
+use datafusion::arrow::{error::ArrowError, record_batch::RecordBatch};
 use futures::{Stream, StreamExt, TryStreamExt};
 use std::io::{Read, Seek};
 use tokio::sync::mpsc::channel;
@@ -101,7 +100,7 @@ impl FlightService for BallistaFlightService {
                     })
                     .map_err(|e| from_ballista_err(&e))?;
                 let reader =
-                    FileReader::try_new(file, None).map_err(|e| from_arrow_err(&e))?;
+                    StreamReader::try_new(file, None).map_err(|e| from_arrow_err(&e))?;
                 let schema = reader.schema();
 
                 let (tx, rx) = channel(2);
@@ -214,7 +213,7 @@ impl FlightService for BallistaFlightService {
 }
 
 fn read_partition<T>(
-    reader: FileReader<T>,
+    reader: StreamReader<std::io::BufReader<T>>,
     tx: Sender<Result<RecordBatch, FlightError>>,
 ) -> Result<(), FlightError>
 where

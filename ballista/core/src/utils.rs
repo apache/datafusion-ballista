@@ -23,7 +23,8 @@ use crate::execution_plans::{
 use crate::serde::scheduler::PartitionStats;
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::Schema;
-use datafusion::arrow::{ipc::writer::FileWriter, record_batch::RecordBatch};
+use datafusion::arrow::ipc::writer::StreamWriter;
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::object_store::{
     DefaultObjectStoreRegistry, ObjectStoreRegistry,
 };
@@ -186,7 +187,7 @@ pub async fn write_stream_to_disk(
     let mut num_rows = 0;
     let mut num_batches = 0;
     let mut num_bytes = 0;
-    let mut writer = FileWriter::try_new(file, stream.schema().as_ref())?;
+    let mut writer = StreamWriter::try_new(file, stream.schema().as_ref())?;
 
     while let Some(result) = stream.next().await {
         let batch = result?;
