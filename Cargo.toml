@@ -34,9 +34,9 @@ arrow-flight = { version = "49.0.0", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "49.0.0", default-features = false }
 configure_me = { version = "0.4.0" }
 configure_me_codegen = { version = "0.4.4" }
-datafusion = { git = "https://github.com/apache/arrow-datafusion", rev = "34.0.0-rc1" }
-datafusion-cli = { git = "https://github.com/apache/arrow-datafusion", rev = "34.0.0-rc1" }
-datafusion-proto = { git = "https://github.com/apache/arrow-datafusion", rev = "34.0.0-rc1" }
+datafusion = "34.0.0"
+datafusion-cli = "34.0.0"
+datafusion-proto = "34.0.0"
 object_store = "0.8.0"
 sqlparser = "0.40.0"
 tonic = { version = "0.10" }
