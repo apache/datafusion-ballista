@@ -58,6 +58,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs::File, pin::Pin};
 use tonic::codegen::StdError;
 use tonic::transport::{Channel, Error, Server};
+use datafusion::arrow::ipc::writer::StreamWriter;
 
 /// Default session builder using the provided configuration
 pub fn default_session_builder(config: SessionConfig) -> SessionState {
@@ -89,7 +90,7 @@ pub async fn write_stream_to_disk(
         .try_with_compression(Some(CompressionType::LZ4_FRAME))?;
 
     let mut writer =
-        FileWriter::try_new_with_options(file, stream.schema().as_ref(), options)?;
+        StreamWriter::try_new_with_options(file, stream.schema().as_ref(), options)?;
 
     while let Some(result) = stream.next().await {
         let batch = result?;
