@@ -17,8 +17,8 @@
 
 //! Implementation of the Apache Arrow Flight protocol that wraps an executor.
 
-use std::convert::TryFrom;
 use arrow::ipc::reader::StreamReader;
+use std::convert::TryFrom;
 use std::fs::File;
 use std::pin::Pin;
 
@@ -35,9 +35,7 @@ use arrow_flight::{
     FlightData, FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse,
     PutResult, SchemaResult, Ticket,
 };
-use datafusion::arrow::{
-    error::ArrowError, ipc::reader::FileReader, record_batch::RecordBatch,
-};
+use datafusion::arrow::{error::ArrowError, record_batch::RecordBatch};
 use futures::{Stream, StreamExt, TryStreamExt};
 use log::{debug, info};
 use std::io::{Read, Seek};

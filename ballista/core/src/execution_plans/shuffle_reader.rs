@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::arrow::ipc::reader::StreamReader;
 use async_trait::async_trait;
+use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::common::stats::Precision;
 use std::any::Any;
 use std::collections::HashMap;
@@ -33,7 +33,6 @@ use crate::serde::scheduler::{PartitionLocation, PartitionStats};
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
-use datafusion::arrow::ipc::reader::FileReader;
 use datafusion::arrow::record_batch::RecordBatch;
 
 use datafusion::error::Result;
@@ -440,7 +439,6 @@ mod tests {
     use crate::utils;
     use datafusion::arrow::array::{Int32Array, StringArray, UInt32Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::arrow::ipc::writer::FileWriter;
     use datafusion::arrow::ipc::writer::StreamWriter;
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::common::DataFusionError;

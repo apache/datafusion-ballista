@@ -24,6 +24,7 @@ use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::physical_plan::expressions::PhysicalSortExpr;
 
+use datafusion::arrow::ipc::writer::StreamWriter;
 use std::any::Any;
 use std::fs;
 use std::fs::File;
@@ -32,7 +33,6 @@ use std::iter::Iterator;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use datafusion::arrow::ipc::writer::StreamWriter;
 
 use crate::utils;
 
@@ -45,7 +45,6 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError, Result};
-use datafusion::physical_plan::common::IPCWriter;
 use datafusion::physical_plan::memory::MemoryStream;
 use datafusion::physical_plan::metrics::{
     self, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
@@ -295,7 +294,7 @@ impl ShuffleWriterExec {
                                 debug!(
                                     "Finished writing shuffle partition {} at {:?}. Batches: {}. Rows: {}. Bytes: {}.",
                                     i,
-                                    w.path(),
+                                    w.path,
                                     w.num_batches,
                                     w.num_rows,
                                     num_bytes
@@ -303,7 +302,7 @@ impl ShuffleWriterExec {
 
                                 part_locs.push(ShuffleWritePartition {
                                     partition_id: i as u64,
-                                    path: w.path().to_string_lossy().to_string(),
+                                    path: w.path.to_string_lossy().to_string(),
                                     num_batches: w.num_batches as u64,
                                     num_rows: w.num_rows as u64,
                                     num_bytes,
