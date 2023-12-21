@@ -17,6 +17,7 @@
 
 //! Implementation of the Apache Arrow Flight protocol that wraps an executor.
 
+use arrow::ipc::reader::StreamReader;
 use std::convert::TryFrom;
 use std::fs::File;
 use std::pin::Pin;
@@ -34,9 +35,7 @@ use arrow_flight::{
     FlightData, FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse,
     PutResult, SchemaResult, Ticket,
 };
-use datafusion::arrow::{
-    error::ArrowError, ipc::reader::FileReader, record_batch::RecordBatch,
-};
+use datafusion::arrow::{error::ArrowError, record_batch::RecordBatch};
 use futures::{Stream, StreamExt, TryStreamExt};
 use log::{debug, info};
 use std::io::{Read, Seek};
@@ -97,7 +96,7 @@ impl FlightService for BallistaFlightService {
                     })
                     .map_err(|e| from_ballista_err(&e))?;
                 let reader =
-                    FileReader::try_new(file, None).map_err(|e| from_arrow_err(&e))?;
+                    StreamReader::try_new(file, None).map_err(|e| from_arrow_err(&e))?;
 
                 let (tx, rx) = channel(2);
                 let schema = reader.schema();
@@ -207,7 +206,7 @@ impl FlightService for BallistaFlightService {
 }
 
 fn read_partition<T>(
-    reader: FileReader<T>,
+    reader: StreamReader<std::io::BufReader<T>>,
     tx: Sender<Result<RecordBatch, FlightError>>,
 ) -> Result<(), FlightError>
 where
