@@ -101,7 +101,7 @@ impl From<parser::ParserError> for BallistaError {
 impl From<DataFusionError> for BallistaError {
     fn from(e: DataFusionError) -> Self {
         match e {
-            DataFusionError::ArrowError(e) => Self::from(e),
+            DataFusionError::ArrowError(e, _) => Self::from(e),
             _ => BallistaError::DataFusionError(e),
         }
     }

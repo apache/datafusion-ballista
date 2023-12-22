@@ -409,7 +409,7 @@ impl BallistaContext {
                         schema
                             .field_with_name(col)
                             .map(|f| (f.name().to_owned(), f.data_type().to_owned()))
-                            .map_err(DataFusionError::ArrowError)
+                            .map_err(|e| DataFusionError::ArrowError(e, None))
                     })
                     .collect::<Result<Vec<_>>>()?;
 
@@ -464,7 +464,13 @@ impl BallistaContext {
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "standalone")]
+    use ballista_core::error::Result;
+    #[cfg(feature = "standalone")]
+    use datafusion::dataframe::DataFrameWriteOptions;
+    #[cfg(feature = "standalone")]
     use datafusion::datasource::listing::ListingTableUrl;
+    #[cfg(feature = "standalone")]
+    use tempfile::TempDir;
 
     #[tokio::test]
     #[cfg(feature = "standalone")]
@@ -475,6 +481,21 @@ mod tests {
             .unwrap();
         let df = context.sql("SELECT 1;").await.unwrap();
         df.collect().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "standalone")]
+    async fn test_write_parquet() -> Result<()> {
+        use super::*;
+        let context =
+            BallistaContext::standalone(&BallistaConfig::new().unwrap(), 1).await?;
+        let df = context.sql("SELECT 1;").await?;
+        let tmp_dir = TempDir::new().unwrap();
+        let file_path =
+            format!("{:?}", tmp_dir.path().join("test_write_parquet.parquet"));
+        df.write_parquet(&file_path, DataFrameWriteOptions::default(), None)
+            .await?;
+        Ok(())
     }
 
     #[tokio::test]
@@ -615,7 +636,6 @@ mod tests {
                         collect_stat: x.collect_stat,
                         target_partitions: x.target_partitions,
                         file_sort_order: vec![],
-                        infinite_source: false,
                         file_type_write_options: None,
                         single_file: false,
                     };
