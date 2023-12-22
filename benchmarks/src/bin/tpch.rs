@@ -845,7 +845,6 @@ async fn get_table(
         table_partition_cols: vec![],
         file_sort_order: vec![],
         file_type_write_options: None,
-        single_file: false,
     };
 
     let url = ListingTableUrl::parse(path)?;
