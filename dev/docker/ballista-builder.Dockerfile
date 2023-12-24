@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM rust:1-buster
+FROM rust:1.74.1-buster
 
 ARG EXT_UID
 
@@ -43,7 +43,7 @@ ENV PATH=$HOME/.cargo/bin:$PATH
 # prepare rust
 RUN rustup update && \
     rustup component add rustfmt && \
-    cargo install cargo-chef --version 0.1.34
+    cargo install cargo-chef --version 0.1.62
 
 WORKDIR /home/builder/workspace
 
