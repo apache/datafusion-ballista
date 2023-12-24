@@ -210,7 +210,6 @@ impl BallistaContext {
     }
 
     /// Create a DataFrame representing an Json table scan
-    /// TODO fetch schema from scheduler instead of resolving locally
     pub async fn read_json<P: DataFilePaths>(
         &self,
         paths: P,
@@ -221,7 +220,6 @@ impl BallistaContext {
     }
 
     /// Create a DataFrame representing an Avro table scan
-    /// TODO fetch schema from scheduler instead of resolving locally
     pub async fn read_avro<P: DataFilePaths>(
         &self,
         paths: P,
@@ -232,7 +230,6 @@ impl BallistaContext {
     }
 
     /// Create a DataFrame representing a Parquet table scan
-    /// TODO fetch schema from scheduler instead of resolving locally
     pub async fn read_parquet<P: DataFilePaths>(
         &self,
         paths: P,
@@ -243,7 +240,6 @@ impl BallistaContext {
     }
 
     /// Create a DataFrame representing a CSV table scan
-    /// TODO fetch schema from scheduler instead of resolving locally
     pub async fn read_csv<P: DataFilePaths>(
         &self,
         paths: P,
