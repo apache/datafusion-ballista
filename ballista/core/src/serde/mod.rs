@@ -33,7 +33,6 @@ use datafusion_proto::{
     physical_plan::{AsExecutionPlan, PhysicalExtensionCodec},
 };
 
-use datafusion::physical_plan::insert::FileSinkExec;
 use prost::Message;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -286,8 +285,6 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             })?;
 
             Ok(())
-        } else if let Some(exec) = node.as_any().downcast_ref::<FileSinkExec>() {
-            todo!()
         } else {
             Err(DataFusionError::Internal(format!(
                 "unsupported plan type: {node:?}"

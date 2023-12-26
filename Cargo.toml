@@ -34,9 +34,9 @@ arrow-flight = { version = "49.0.0", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "49.0.0", default-features = false }
 configure_me = { version = "0.4.0" }
 configure_me_codegen = { version = "0.4.4" }
-datafusion = { git = "https://github.com/andygrove/arrow-datafusion", branch = "parquet-writer-props-serde" }
-datafusion-cli = { git = "https://github.com/andygrove/arrow-datafusion", branch = "parquet-writer-props-serde" }
-datafusion-proto = { git = "https://github.com/andygrove/arrow-datafusion", branch = "parquet-writer-props-serde" }
+datafusion = { git = "https://github.com/andygrove/arrow-datafusion", branch = "serde-csv-parquet-sink" }
+datafusion-cli = { git = "https://github.com/andygrove/arrow-datafusion", branch = "serde-csv-parquet-sink" }
+datafusion-proto = { git = "https://github.com/andygrove/arrow-datafusion", branch = "serde-csv-parquet-sink" }
 object_store = "0.8.0"
 sqlparser = "0.40.0"
 tonic = { version = "0.10" }
