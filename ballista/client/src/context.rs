@@ -405,7 +405,7 @@ impl BallistaContext {
                         schema
                             .field_with_name(col)
                             .map(|f| (f.name().to_owned(), f.data_type().to_owned()))
-                            .map_err(DataFusionError::ArrowError)
+                            .map_err(|e| DataFusionError::ArrowError(e, None))
                     })
                     .collect::<Result<Vec<_>>>()?;
 
@@ -458,12 +458,15 @@ impl BallistaContext {
 }
 
 #[cfg(test)]
-mod tests {
-    #[cfg(feature = "standalone")]
+#[cfg(feature = "standalone")]
+mod standalone_tests {
+    use ballista_core::error::Result;
+    use datafusion::dataframe::DataFrameWriteOptions;
     use datafusion::datasource::listing::ListingTableUrl;
+    use datafusion::parquet::file::properties::WriterProperties;
+    use tempfile::TempDir;
 
     #[tokio::test]
-    #[cfg(feature = "standalone")]
     async fn test_standalone_mode() {
         use super::*;
         let context = BallistaContext::standalone(&BallistaConfig::new().unwrap(), 1)
@@ -474,7 +477,40 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "standalone")]
+    async fn test_write_parquet() -> Result<()> {
+        use super::*;
+        let context =
+            BallistaContext::standalone(&BallistaConfig::new().unwrap(), 1).await?;
+        let df = context.sql("SELECT 1;").await?;
+        let tmp_dir = TempDir::new().unwrap();
+        let file_path = format!(
+            "{}",
+            tmp_dir.path().join("test_write_parquet.parquet").display()
+        );
+        df.write_parquet(
+            &file_path,
+            DataFrameWriteOptions::default(),
+            Some(WriterProperties::default()),
+        )
+        .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_write_csv() -> Result<()> {
+        use super::*;
+        let context =
+            BallistaContext::standalone(&BallistaConfig::new().unwrap(), 1).await?;
+        let df = context.sql("SELECT 1;").await?;
+        let tmp_dir = TempDir::new().unwrap();
+        let file_path =
+            format!("{}", tmp_dir.path().join("test_write_csv.csv").display());
+        df.write_csv(&file_path, DataFrameWriteOptions::default(), None)
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_ballista_show_tables() {
         use super::*;
         use std::fs::File;
@@ -517,7 +553,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "standalone")]
     async fn test_show_tables_not_with_information_schema() {
         use super::*;
         use ballista_core::config::{
@@ -563,7 +598,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "standalone")]
     #[ignore]
     // Tracking: https://github.com/apache/arrow-datafusion/issues/1840
     async fn test_task_stuck_when_referenced_task_failed() {
@@ -611,9 +645,7 @@ mod tests {
                         collect_stat: x.collect_stat,
                         target_partitions: x.target_partitions,
                         file_sort_order: vec![],
-                        infinite_source: false,
                         file_type_write_options: None,
-                        single_file: false,
                     };
 
                     let table_paths = listing_table
@@ -644,7 +676,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "standalone")]
     async fn test_empty_exec_with_one_row() {
         use crate::context::BallistaContext;
         use ballista_core::config::{
@@ -664,7 +695,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "standalone")]
     async fn test_union_and_union_all() {
         use super::*;
         use ballista_core::config::{
@@ -723,7 +753,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "standalone")]
     async fn test_aggregate_func() {
         use crate::context::BallistaContext;
         use ballista_core::config::{

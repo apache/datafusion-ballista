@@ -286,9 +286,9 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
 
             Ok(())
         } else {
-            Err(DataFusionError::Internal(
-                "unsupported plan type".to_string(),
-            ))
+            Err(DataFusionError::Internal(format!(
+                "unsupported plan type: {node:?}"
+            )))
         }
     }
 }

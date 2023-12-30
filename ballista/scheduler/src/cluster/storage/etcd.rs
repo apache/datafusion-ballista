@@ -57,7 +57,7 @@ impl KeyValueStore for EtcdClient {
             .await
             .map_err(|e| ballista_error(&format!("etcd error {e:?}")))?
             .kvs()
-            .get(0)
+            .first()
             .map(|kv| kv.value().to_owned())
             .unwrap_or_default())
     }
@@ -181,7 +181,7 @@ impl KeyValueStore for EtcdClient {
             .await
             .map_err(|e| ballista_error(&format!("etcd error {e:?}")))?
             .kvs()
-            .get(0)
+            .first()
             .map(|kv| kv.value().to_owned());
 
         if let Some(value) = current_value {

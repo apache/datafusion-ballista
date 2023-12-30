@@ -557,7 +557,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         &self,
         tasks: Vec<TaskDescription>,
     ) -> Result<Vec<MultiTaskDefinition>> {
-        if let Some(task) = tasks.get(0) {
+        if let Some(task) = tasks.first() {
             let session_id = task.session_id.clone();
             let job_id = task.partition.job_id.clone();
             let stage_id = task.partition.stage_id;
