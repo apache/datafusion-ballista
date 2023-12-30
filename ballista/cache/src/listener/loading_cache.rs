@@ -145,7 +145,7 @@ where
     fn listen_on_get_if_present(&self, k: Self::K, v: Option<Self::V>) {
         if self.listeners.len() == 1 {
             self.listeners
-                .get(0)
+                .first()
                 .unwrap()
                 .listen_on_get_if_present(k, v);
         } else {
@@ -157,7 +157,7 @@ where
 
     fn listen_on_get(&self, k: Self::K, v: Self::V, status: CacheGetStatus) {
         if self.listeners.len() == 1 {
-            self.listeners.get(0).unwrap().listen_on_get(k, v, status);
+            self.listeners.first().unwrap().listen_on_get(k, v, status);
         } else {
             self.listeners.iter().for_each(|listener| {
                 listener.listen_on_get(k.clone(), v.clone(), status)
@@ -167,7 +167,7 @@ where
 
     fn listen_on_put(&self, k: Self::K, v: Self::V) {
         if self.listeners.len() == 1 {
-            self.listeners.get(0).unwrap().listen_on_put(k, v);
+            self.listeners.first().unwrap().listen_on_put(k, v);
         } else {
             self.listeners
                 .iter()
@@ -177,7 +177,7 @@ where
 
     fn listen_on_invalidate(&self, k: Self::K) {
         if self.listeners.len() == 1 {
-            self.listeners.get(0).unwrap().listen_on_invalidate(k);
+            self.listeners.first().unwrap().listen_on_invalidate(k);
         } else {
             self.listeners
                 .iter()
@@ -187,7 +187,7 @@ where
 
     fn listen_on_get_cancelling(&self, k: Self::K) {
         if self.listeners.len() == 1 {
-            self.listeners.get(0).unwrap().listen_on_get_cancelling(k);
+            self.listeners.first().unwrap().listen_on_get_cancelling(k);
         } else {
             self.listeners
                 .iter()
