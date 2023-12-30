@@ -506,6 +506,20 @@ mod tests {
 
     #[tokio::test]
     #[cfg(feature = "standalone")]
+    async fn test_write_csv() -> Result<()> {
+        use super::*;
+        let context =
+            BallistaContext::standalone(&BallistaConfig::new().unwrap(), 1).await?;
+        let df = context.sql("SELECT 1;").await?;
+        let tmp_dir = TempDir::new().unwrap();
+        let file_path = format!("{:?}", tmp_dir.path().join("test_write_csv.csv"));
+        df.write_csv(&file_path, DataFrameWriteOptions::default(), None)
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "standalone")]
     async fn test_ballista_show_tables() {
         use super::*;
         use std::fs::File;
