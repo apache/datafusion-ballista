@@ -487,8 +487,10 @@ mod standalone_tests {
             BallistaContext::standalone(&BallistaConfig::new().unwrap(), 1).await?;
         let df = context.sql("SELECT 1;").await?;
         let tmp_dir = TempDir::new().unwrap();
-        let file_path =
-            format!("{}", tmp_dir.path().join("test_write_parquet.parquet").display());
+        let file_path = format!(
+            "{}",
+            tmp_dir.path().join("test_write_parquet.parquet").display()
+        );
         df.write_parquet(
             &file_path,
             DataFrameWriteOptions::default(),
@@ -505,7 +507,8 @@ mod standalone_tests {
             BallistaContext::standalone(&BallistaConfig::new().unwrap(), 1).await?;
         let df = context.sql("SELECT 1;").await?;
         let tmp_dir = TempDir::new().unwrap();
-        let file_path = format!("{}", tmp_dir.path().join("test_write_csv.csv").display());
+        let file_path =
+            format!("{}", tmp_dir.path().join("test_write_csv.csv").display());
         df.write_csv(&file_path, DataFrameWriteOptions::default(), None)
             .await?;
         Ok(())
