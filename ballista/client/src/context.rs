@@ -462,20 +462,15 @@ impl BallistaContext {
 }
 
 #[cfg(test)]
-mod tests {
-    #[cfg(feature = "standalone")]
+#[cfg(feature = "standalone")]
+mod standalone_tests {
     use ballista_core::error::Result;
-    #[cfg(feature = "standalone")]
     use datafusion::dataframe::DataFrameWriteOptions;
-    #[cfg(feature = "standalone")]
     use datafusion::datasource::listing::ListingTableUrl;
-    #[cfg(feature = "standalone")]
     use datafusion::parquet::file::properties::WriterProperties;
-    #[cfg(feature = "standalone")]
     use tempfile::TempDir;
 
     #[tokio::test]
-    #[cfg(feature = "standalone")]
     async fn test_standalone_mode() {
         use super::*;
         let context = BallistaContext::standalone(&BallistaConfig::new().unwrap(), 1)
@@ -486,7 +481,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "standalone")]
     async fn test_write_parquet() -> Result<()> {
         use super::*;
         let context =
@@ -505,7 +499,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "standalone")]
     async fn test_write_csv() -> Result<()> {
         use super::*;
         let context =
@@ -519,7 +512,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "standalone")]
     async fn test_ballista_show_tables() {
         use super::*;
         use std::fs::File;
@@ -562,7 +554,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "standalone")]
     async fn test_show_tables_not_with_information_schema() {
         use super::*;
         use ballista_core::config::{
@@ -608,7 +599,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "standalone")]
     #[ignore]
     // Tracking: https://github.com/apache/arrow-datafusion/issues/1840
     async fn test_task_stuck_when_referenced_task_failed() {
@@ -687,7 +677,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "standalone")]
     async fn test_empty_exec_with_one_row() {
         use crate::context::BallistaContext;
         use ballista_core::config::{
@@ -707,7 +696,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "standalone")]
     async fn test_union_and_union_all() {
         use super::*;
         use ballista_core::config::{
@@ -766,7 +754,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "standalone")]
     async fn test_aggregate_func() {
         use crate::context::BallistaContext;
         use ballista_core::config::{
