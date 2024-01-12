@@ -62,7 +62,6 @@ You can now access the UI at http://localhost:3000/
 The examples can be run using the `cargo run --bin` syntax. Open a new terminal session and run the following commands.
 ## Running the examples
 
-The examples can be run using the `cargo run --bin` syntax.
 
 ## Distributed SQL Example
 
