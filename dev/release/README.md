@@ -118,7 +118,6 @@ Generating changelog content
 This process is not fully automated, so there are some additional manual steps:
 
 - Add the ASF header to the generated file
-- Add a link to this changelog from the top-level `/ballista/CHANGELOG.md`
 - Add the following content (copy from the previous version's changelog and update as appropriate:
 
 ```

@@ -6,7 +6,7 @@ dev/release
 python
 **/docs
 target/
-**/CHANGELOG.md
+CHANGELOG.md
 **/tests
 **/data
 !target/release/ballista-scheduler
