@@ -102,7 +102,7 @@ pip3 install PyGitHub
 Run the following command to generate the changelog content.
 
 ```bash
-$ GITHUB_TOKEN=<TOKEN> ./dev/release/generate-changelog.py apache/arrow-ballista 0.12.0 HEAD > 0.12.0.md
+$ GITHUB_TOKEN=<TOKEN> ./dev/release/generate-changelog.py apache/arrow-ballista 0.11.0 HEAD > 0.12.0.md
 ```
 
 This script creates a changelog from GitHub PRs based on the labels associated with them as well as looking for
@@ -124,7 +124,7 @@ This process is not fully automated, so there are some additional manual steps:
 ```
 ## [0.12.0](https://github.com/apache/arrow-ballista/tree/0.12.0) (2024-01-14)
 
-[Full Changelog](https://github.com/apache/arrow-datafusion/compare/0.11.0...0.12.0)
+[Full Changelog](https://github.com/apache/arrow-ballista/compare/0.11.0...0.12.0)
 ```
 
 Send a PR to get these changes merged into the release branch (e.g. `branch-0.12`). If new commits that could change the
