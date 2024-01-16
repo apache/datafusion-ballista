@@ -21,7 +21,10 @@
 
 A simple way to start a local cluster for testing purposes is to use cargo to build the project and then run the scheduler and executor binaries directly along with the Ballista UI.
 
-If you open this application in the provided [Dev Container](https://containers.dev/overview) the required dependencies will already be installed namely Rust, Node.js and Yarn. If you are not using the Dev Container, you will need to install these dependencies yourself.
+Project Requirements:
+- [Rust](https://www.rust-lang.org/tools/install)
+- [Node.js](https://nodejs.org/en/download)
+- [Yarn](https://classic.yarnpkg.com/lang/en/docs/install)
 
 ### Build the project
 
