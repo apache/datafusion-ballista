@@ -87,27 +87,46 @@ GitHub dependency.
 
 ### Change Log
 
-### Update CHANGELOG.md
+We maintain a `CHANGELOG.md` so our users know what has been changed between releases.
 
-Define release branch (e.g. `branch-0.11`), base version tag (e.g. `0.7.0`) and future version tag (e.g. `0.9.0`). Commits
-between the base version tag and the release branch will be used to populate the changelog content.
+You will need a GitHub Personal Access Token for the following steps. Follow
+[these instructions](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token)
+to generate one if you do not already have one.
+
+The changelog is generated using a Python script. There is a dependency on `PyGitHub`, which can be installed using pip:
 
 ```bash
-# create the changelog
-CHANGELOG_GITHUB_TOKEN=<TOKEN> ./dev/release/update_change_log-ballista.sh main 0.8.0 0.7.0
-# review change log / edit issues and labels if needed, rerun until you are happy with the result
-git commit -a -m 'Create changelog for release'
+pip3 install PyGitHub
 ```
 
-_If you see the error `"You have exceeded a secondary rate limit"` when running this script, try reducing the CPU
-allocation to slow the process down and throttle the number of GitHub requests made per minute, by modifying the
-value of the `--cpus` argument in the `update_change_log.sh` script._
+Run the following command to generate the changelog content.
 
-You can add `invalid` or `development-process` label to exclude items from
-release notes. Add `datafusion`, `ballista` and `python` labels to group items
-into each sub-project's change log.
+```bash
+$ GITHUB_TOKEN=<TOKEN> ./dev/release/generate-changelog.py apache/arrow-ballista 0.11.0 HEAD > 0.12.0.md
+```
 
-Send a PR to get these changes merged into the release branch (e.g. `branch-0.11`). If new commits that could change the
+This script creates a changelog from GitHub PRs based on the labels associated with them as well as looking for
+titles starting with `feat:`, `fix:`, or `docs:` . The script will produce output similar to:
+
+```
+Fetching list of commits between 0.11.0 and HEAD
+Fetching pull requests
+Categorizing pull requests
+Generating changelog content
+```
+
+This process is not fully automated, so there are some additional manual steps:
+
+- Add the ASF header to the generated file
+- Add the following content (copy from the previous version's changelog and update as appropriate:
+
+```
+## [0.12.0](https://github.com/apache/arrow-ballista/tree/0.12.0) (2024-01-14)
+
+[Full Changelog](https://github.com/apache/arrow-ballista/compare/0.11.0...0.12.0)
+```
+
+Send a PR to get these changes merged into the release branch (e.g. `branch-0.12`). If new commits that could change the
 change log content landed in the release branch before you could merge the PR, you need to rerun the changelog update
 script to regenerate the changelog and update the PR accordingly.
 

@@ -18,7 +18,7 @@
 [package]
 name = "ballista-benchmarks"
 description = "Ballista Benchmarks"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 authors = ["Apache Arrow <dev@arrow.apache.org>"]
 homepage = "https://github.com/apache/arrow-ballista"
@@ -35,7 +35,7 @@ snmalloc = ["snmalloc-rs"]
 
 [dependencies]
 arrow-schema = { workspace = true }
-ballista = { path = "../ballista/client", version = "0.11.0" }
+ballista = { path = "../ballista/client", version = "0.12.0" }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 env_logger = "0.10"
@@ -55,4 +55,4 @@ tokio = { version = "^1.0", features = [
 ] }
 
 [dev-dependencies]
-ballista-core = { path = "../ballista/core", version = "0.11.0" }
+ballista-core = { path = "../ballista/core", version = "0.12.0" }
