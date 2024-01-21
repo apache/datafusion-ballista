@@ -70,5 +70,7 @@ Table of content
    :caption: Community
 
    community/communication
+   community/development
+   
    Issue tracker <https://github.com/apache/arrow-ballista/issues>
    Code of conduct <https://github.com/apache/arrow-ballista/blob/main/CODE_OF_CONDUCT.md>
