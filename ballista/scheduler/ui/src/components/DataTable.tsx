@@ -36,7 +36,7 @@ import {
   usePagination,
   Column as RTColumn,
 } from "react-table";
-import { HiChevronLeft, HiChevronRight } from "react-icons/all";
+import { HiChevronLeft, HiChevronRight } from "react-icons/hi";
 import TimeAgo from "react-timeago";
 
 type RenderFn = (props: any) => React.ReactNode;
