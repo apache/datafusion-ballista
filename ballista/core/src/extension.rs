@@ -26,11 +26,12 @@ use crate::serde::protobuf::KeyValuePair;
 use crate::serde::{BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec};
 use datafusion::execution::context::{QueryPlanner, SessionConfig, SessionState};
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use datafusion::execution::session_state::SessionStateBuilder;
+use datafusion::execution::session_state::{CacheFactory, SessionStateBuilder};
 use datafusion::functions::all_default_functions;
 use datafusion::functions_aggregate::all_default_aggregate_functions;
 use datafusion::functions_nested::all_default_nested_functions;
 use datafusion::functions_window::all_default_window_functions;
+use datafusion::logical_expr::LogicalPlan;
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
@@ -253,6 +254,7 @@ impl SessionStateExt for SessionState {
         let session_state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(session_config)
+            .with_cache_factory(Some(Arc::new(BallistaCacheFactory::new())))
             .with_runtime_env(Arc::new(runtime_env))
             .with_query_planner(Arc::new(planner))
             .with_scalar_functions(ballista_scalar_functions())
@@ -274,8 +276,9 @@ impl SessionStateExt for SessionState {
 
         let ballista_config = session_config.ballista_config();
 
-        let builder =
-            SessionStateBuilder::new_from_existing(self).with_config(session_config);
+        let builder = SessionStateBuilder::new_from_existing(self)
+            .with_config(session_config)
+            .with_cache_factory(Some(Arc::new(BallistaCacheFactory::new())));
 
         let builder = match planner_override {
             Some(planner) => builder.with_query_planner(planner),
@@ -719,6 +722,27 @@ impl BallistaConfigGrpcEndpoint {
 /// Wrapper for cluster-wide TLS configuration
 #[derive(Clone, Copy)]
 pub struct BallistaUseTls(pub bool);
+
+#[derive(Debug)]
+struct BallistaCacheFactory;
+
+impl BallistaCacheFactory {
+    fn new() -> Self {
+        Self {}
+    }
+}
+
+impl CacheFactory for BallistaCacheFactory {
+    fn create(
+        &self,
+        _plan: LogicalPlan,
+        _session_state: &SessionState,
+    ) -> datafusion::error::Result<LogicalPlan> {
+        Err(datafusion::error::DataFusionError::Configuration(
+            "Dataframe cache is not supported with Ballista".to_string(),
+        ))
+    }
+}
 
 #[cfg(test)]
 mod test {

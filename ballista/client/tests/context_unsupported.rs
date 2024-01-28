@@ -143,4 +143,26 @@ mod unsupported {
 
         Ok(())
     }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_support_caching_data_frame_without_error(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+    ) -> datafusion::error::Result<()> {
+        let result = ctx.sql("SELECT 1").await?.cache().await;
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Dataframe cache is not supported with Ballista")
+        );
+
+        Ok(())
+    }
 }
