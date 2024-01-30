@@ -17,11 +17,12 @@
   under the License.
 -->
 
-# Ballista Quickstart 
+# Ballista Quickstart
 
 A simple way to start a local cluster for testing purposes is to use cargo to build the project and then run the scheduler and executor binaries directly along with the Ballista UI.
 
 Project Requirements:
+
 - [Rust](https://www.rust-lang.org/tools/install)
 - [Node.js](https://nodejs.org/en/download)
 - [Yarn](https://classic.yarnpkg.com/lang/en/docs/install)
@@ -59,12 +60,11 @@ yarn start
 
 You can now access the UI at http://localhost:3000/
 
-
 ## Running the examples
 
 The examples can be run using the `cargo run --bin` syntax. Open a new terminal session and run the following commands.
-## Running the examples
 
+## Running the examples
 
 ## Distributed SQL Example
 
