@@ -18,7 +18,8 @@
 import React from "react";
 import { Box, Flex, Button } from "@chakra-ui/react";
 import Logo from "./logo.svg";
-import { AiFillGithub, HiDocumentText } from "react-icons/all";
+import { HiDocumentText } from "react-icons/hi";
+import { AiFillGithub } from "react-icons/ai";
 import { SchedulerState } from "./Summary";
 
 export const NavBarContainer: React.FunctionComponent<

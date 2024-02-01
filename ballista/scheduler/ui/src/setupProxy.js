@@ -15,25 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import React from "react";
-import { createRoot } from "react-dom/client";
-import { ChakraProvider } from "@chakra-ui/react";
 
-import "./index.css";
-import App from "./App";
-import reportWebVitals from "./reportWebVitals";
+// Proxy configuration for the development server.
+// Previously, this was configured by adding a "proxy" field to package.json, but that stopped working.
+// For additional details see https://create-react-app.dev/docs/proxying-api-requests-in-development/#configuring-the-proxy-manually
+const { createProxyMiddleware } = require("http-proxy-middleware");
 
-const root = createRoot(document.getElementById("root")!);
-
-root.render(
-  <React.StrictMode>
-    <ChakraProvider>
-      <App />
-    </ChakraProvider>
-  </React.StrictMode>
-);
-
-// If you want to start measuring performance in your app, pass a function
-// to log results (for example: reportWebVitals(console.log))
-// or send to an analytics endpoint. Learn more: https://bit.ly/CRA-vitals
-reportWebVitals();
+module.exports = function (app) {
+  app.use(
+    "/api", // the API endpoint
+    createProxyMiddleware({
+      target: "http://localhost:50050", // the local development backend server
+      changeOrigin: true,
+    })
+  );
+};

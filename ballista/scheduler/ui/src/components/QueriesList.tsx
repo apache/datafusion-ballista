@@ -168,7 +168,7 @@ export const JobLinkCell: (props: any) => React.ReactNode = (props: any) => {
 
   return (
     <Flex>
-      <Link onClick={onOpen} icon>
+      <Link onClick={onOpen}>
         {props.value} <ExternalLinkIcon mx="2px" />
       </Link>
       <Modal isOpen={isOpen} size="small" onClose={onClose}>
