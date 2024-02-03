@@ -20,11 +20,6 @@
 //! partition is re-partitioned and streamed to disk in Arrow IPC format. Future stages of the query
 //! will use the ShuffleReaderExec to read these results.
 
-use datafusion::arrow::ipc::writer::IpcWriteOptions;
-use datafusion::arrow::ipc::CompressionType;
-use datafusion::physical_plan::expressions::PhysicalSortExpr;
-
-use datafusion::arrow::ipc::writer::StreamWriter;
 use std::any::Any;
 use std::fs;
 use std::fs::File;
@@ -42,13 +37,18 @@ use datafusion::arrow::array::{
     ArrayBuilder, ArrayRef, StringBuilder, StructBuilder, UInt32Builder, UInt64Builder,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-
+use datafusion::arrow::ipc::writer::IpcWriteOptions;
+use datafusion::arrow::ipc::CompressionType;
+use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::datasource::physical_plan::ParquetExec;
+use datafusion::physical_plan::expressions::PhysicalSortExpr;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::physical_plan::memory::MemoryStream;
 use datafusion::physical_plan::metrics::{
     self, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
+use datafusion::arrow::ipc::writer::StreamWriter;
 
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, SendableRecordBatchStream,
@@ -172,7 +172,30 @@ impl ShuffleWriterExec {
 
         async move {
             let now = Instant::now();
-            let mut stream = plan.execute(input_partition, context)?;
+
+            // Transform the plan to remove partition columns from the file schema.
+            let mut stream = plan
+                .transform(&|plan| {
+                    if let Some(p) = plan.as_any().downcast_ref::<ParquetExec>() {
+                        let mut base_config = p.base_config().clone();
+
+                        let file_schema = prune_schema(
+                            base_config.file_schema.clone(),
+                            &base_config.table_partition_cols,
+                        );
+                        base_config.file_schema = file_schema;
+
+                        let p = ParquetExec::new(
+                            base_config,
+                            p.predicate().map(|a| a.clone()),
+                            None,
+                        );
+                        Ok(Transformed::Yes(Arc::new(p)))
+                    } else {
+                        Ok(Transformed::No(plan))
+                    }
+                })?
+                .execute(input_partition, context)?;
 
             match output_partitioning {
                 None => {
@@ -459,6 +482,26 @@ fn result_schema() -> SchemaRef {
     ]))
 }
 
+// Remove partition columns from the file schema.
+fn prune_schema(
+    schema: SchemaRef,
+    table_partition_cols: &Vec<datafusion::arrow::datatypes::Field>,
+) -> Arc<Schema> {
+    // Currently when the schema for the file is set the partition columns
+    // are present, which is illegal because they aren't actually in the files.
+    // This is a workaround to remove them from the schema.
+    let file_schema = Arc::new(Schema::new(
+        schema
+            .fields()
+            .iter()
+            .filter(|field| !table_partition_cols.contains(field))
+            .cloned()
+            .collect::<Vec<_>>(),
+    ));
+
+    file_schema
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,6 +568,36 @@ mod tests {
         assert_eq!(4, num_rows.value(1));
 
         Ok(())
+    }
+
+    #[test]
+    fn test_prune_schema() {
+        // Create a sample file schema with partition columns.
+        let partition_col1 = Field::new("partition_col1", DataType::Int32, false);
+        let partition_col2 = Field::new("partition_col2", DataType::Utf8, false);
+        let file_schema = Arc::new(Schema::new(vec![
+            partition_col1.clone(),
+            partition_col2.clone(),
+            Field::new("col1", DataType::Int32, false),
+            Field::new("col2", DataType::Utf8, false),
+        ]));
+
+        // Create a sample table partition columns
+        let table_partition_cols = vec![partition_col1.clone(), partition_col2.clone()];
+
+        // Call the prune_schema function
+        let pruned_schema = prune_schema(file_schema.clone(), &table_partition_cols);
+
+        // Assert that the file schema has been pruned correctly
+        assert_eq!(
+            pruned_schema.fields().len(),
+            file_schema.fields().len() - table_partition_cols.len()
+        );
+
+        assert!(!pruned_schema
+            .fields()
+            .iter()
+            .any(|field| table_partition_cols.contains(field)));
     }
 
     #[tokio::test]
