@@ -26,15 +26,20 @@ There are no officially published Docker images, so it is currently necessary to
 Run the following commands to clone the source repository and build the Docker image.
 
 ```bash
-git clone git@github.com:apache/arrow-ballista.git -b 0.9.0
+git clone git@github.com:apache/arrow-ballista.git -b 0.12.0
 cd arrow-ballista
 ./dev/build-ballista-docker.sh
 ```
 
 This will create the following images:
 
-- `apache/arrow-ballista-scheduler:0.9.0`
-- `apache/arrow-ballista-executor:0.9.0`
+- `apache/arrow-ballista-benchmarks:0.12.0`
+- `apache/arrow-ballista-cli:0.12.0`
+- `apache/arrow-ballista-executor:0.12.0`
+- `apache/arrow-ballista-scheduler:0.12.0`
+- `apache/arrow-ballista-standalone:0.12.0`
+
+## Start a Cluster
 
 ### Start a Scheduler
 
@@ -42,7 +47,7 @@ Start a scheduler using the following syntax:
 
 ```bash
 docker run --network=host \
- -d apache/arrow-ballista-scheduler:0.9.0 \
+ -d apache/arrow-ballista-scheduler:0.12.0 \
  --bind-port 50050
 ```
 
@@ -50,19 +55,23 @@ Run `docker ps` to check that the process is running:
 
 ```
 $ docker ps
-CONTAINER ID   IMAGE                                   COMMAND                  CREATED         STATUS        PORTS     NAMES
-8cdea4956c97   apache/arrow-ballista-scheduler:0.9.0   "/scheduler-entrypoi…"   2 seconds ago   Up 1 second             nervous_swirles
+CONTAINER ID   IMAGE                                    COMMAND                  CREATED         STATUS         PORTS     NAMES
+a756055576f3   apache/arrow-ballista-scheduler:0.12.0   "/root/scheduler-ent…"   8 seconds ago   Up 8 seconds             xenodochial_carson
 ```
 
 Run `docker logs CONTAINER_ID` to check the output from the process:
 
 ```
-$ docker logs 8cdea4956c97
+$ docker logs a756055576f3
 Starting nginx to serve Ballista Scheduler web UI on port 80
-2022-09-19T13:51:34.792363Z  INFO main ThreadId(01) ballista_scheduler: Ballista v0.9.0 Scheduler listening on 0.0.0.0:50050
-2022-09-19T13:51:34.792395Z  INFO main ThreadId(01) ballista_scheduler: Starting Scheduler grpc server with task scheduling policy of PullStaged
-2022-09-19T13:51:34.792494Z  INFO main ThreadId(01) ballista_scheduler::scheduler_server::query_stage_scheduler: Starting QueryStageScheduler
-2022-09-19T13:51:34.792581Z  INFO tokio-runtime-worker ThreadId(45) ballista_core::event_loop: Starting the event loop query_stage
+2024-02-03T14:49:47.904571Z  INFO main ThreadId(01) ballista_scheduler::cluster: Initializing Sled database in temp directory
+nginx: [warn] duplicate value "error" in /etc/nginx/sites-enabled/default:49
+nginx: [warn] duplicate value "non_idempotent" in /etc/nginx/sites-enabled/default:49
+2024-02-03T14:49:47.924679Z  INFO main ThreadId(01) ballista_scheduler::scheduler_process: Ballista v0.12.0 Scheduler listening on 0.0.0.0:50050
+2024-02-03T14:49:47.924709Z  INFO main ThreadId(01) ballista_scheduler::scheduler_process: Starting Scheduler grpc server with task scheduling policy of PullStaged
+2024-02-03T14:49:47.925261Z  INFO main ThreadId(01) ballista_scheduler::cluster::kv: Initializing heartbeat listener
+2024-02-03T14:49:47.925476Z  INFO main ThreadId(01) ballista_scheduler::scheduler_server::query_stage_scheduler: Starting QueryStageScheduler
+2024-02-03T14:49:47.925587Z  INFO tokio-runtime-worker ThreadId(47) ballista_core::event_loop: Starting the event loop query_stage
 ```
 
 ### Start Executors
@@ -71,7 +80,7 @@ Start one or more executor processes. Each executor process will need to listen 
 
 ```bash
 docker run --network=host \
-  -d apache/arrow-ballista-executor:0.9.0 \
+  -d apache/arrow-ballista-executor:0.12.0 \
   --external-host localhost --bind-port 50051
 ```
 
@@ -79,20 +88,20 @@ Use `docker ps` to check that both the scheduler and executor(s) are now running
 
 ```
 $ docker ps
-CONTAINER ID   IMAGE                                   COMMAND                  CREATED         STATUS         PORTS     NAMES
-f0b21f6b5050   apache/arrow-ballista-executor:0.9.0    "/executor-entrypoin…"   2 seconds ago   Up 1 second              relaxed_goldberg
-8cdea4956c97   apache/arrow-ballista-scheduler:0.9.0   "/scheduler-entrypoi…"   2 minutes ago   Up 2 minutes             nervous_swirles
+CONTAINER ID   IMAGE                                    COMMAND                  CREATED         STATUS         PORTS     NAMES
+fb8b530cee6d   apache/arrow-ballista-executor:0.12.0    "/root/executor-entr…"   2 seconds ago   Up 1 second              gallant_galois
+a756055576f3   apache/arrow-ballista-scheduler:0.12.0   "/root/scheduler-ent…"   8 seconds ago   Up 8 seconds             xenodochial_carson
 ```
 
 Use `docker logs CONTAINER_ID` to check the output from the executor(s):
 
 ```
-$ docker logs f0b21f6b5050
-2022-09-19T13:54:10.806231Z  INFO main ThreadId(01) ballista_executor: Running with config:
-2022-09-19T13:54:10.806261Z  INFO main ThreadId(01) ballista_executor: work_dir: /tmp/.tmp5BdxT2
-2022-09-19T13:54:10.806265Z  INFO main ThreadId(01) ballista_executor: concurrent_tasks: 48
-2022-09-19T13:54:10.807454Z  INFO tokio-runtime-worker ThreadId(49) ballista_executor: Ballista v0.9.0 Rust Executor Flight Server listening on 0.0.0.0:50051
-2022-09-19T13:54:10.807467Z  INFO tokio-runtime-worker ThreadId(46) ballista_executor::execution_loop: Starting poll work loop with scheduler
+$ docker logs fb8b530cee6d
+2024-02-03T14:50:24.061607Z  INFO main ThreadId(01) ballista_executor::executor_process: Running with config:
+2024-02-03T14:50:24.061649Z  INFO main ThreadId(01) ballista_executor::executor_process: work_dir: /tmp/.tmpAkP3pZ
+2024-02-03T14:50:24.061655Z  INFO main ThreadId(01) ballista_executor::executor_process: concurrent_tasks: 48
+2024-02-03T14:50:24.063256Z  INFO tokio-runtime-worker ThreadId(44) ballista_executor::executor_process: Ballista v0.12.0 Rust Executor Flight Server listening on 0.0.0.0:50051
+2024-02-03T14:50:24.063281Z  INFO tokio-runtime-worker ThreadId(47) ballista_executor::execution_loop: Starting poll work loop with scheduler
 ```
 
 ### Using etcd as a Backing Store
@@ -104,7 +113,7 @@ to launch the scheduler with this option enabled.
 
 ```bash
 docker run --network=host \
-  -d apache/arrow-ballista-scheduler:0.9.0 \
+  -d apache/arrow-ballista-scheduler:0.12.0 \
   --bind-port 50050 \
   --config-backend etcd \
   --etcd-urls etcd:2379
@@ -112,3 +121,9 @@ docker run --network=host \
 
 Please refer to the [etcd](https://etcd.io/) website for installation instructions. Etcd version 3.4.9 or later is
 recommended.
+
+## Connect from the CLI
+
+```shell
+docker run --network=host -it apache/arrow-ballista-cli:0.12.0 --host localhost --port 50050
+```

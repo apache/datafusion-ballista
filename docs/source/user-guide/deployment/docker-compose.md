@@ -27,15 +27,18 @@ There are no officially published Docker images, so it is currently necessary to
 Run the following commands to clone the source repository and build the Docker image.
 
 ```bash
-git clone git@github.com:apache/arrow-ballista.git -b 0.9.0
+git clone git@github.com:apache/arrow-ballista.git -b 0.12.0
 cd arrow-ballista
 ./dev/build-ballista-docker.sh
 ```
 
 This will create the following images:
 
-- `apache/arrow-ballista-scheduler:0.9.0`
-- `apache/arrow-ballista-executor:0.9.0`
+- `apache/arrow-ballista-benchmarks:0.12.0`
+- `apache/arrow-ballista-cli:0.12.0`
+- `apache/arrow-ballista-executor:0.12.0`
+- `apache/arrow-ballista-scheduler:0.12.0`
+- `apache/arrow-ballista-standalone:0.12.0`
 
 ## Start a Cluster
 
@@ -58,10 +61,16 @@ Attaching to ballista-benchmarks_etcd_1, ballista-benchmarks_ballista-scheduler_
 ballista-executor_1   | [2021-08-28T15:55:22Z INFO  ballista_executor] Running with config:
 ballista-executor_1   | [2021-08-28T15:55:22Z INFO  ballista_executor] work_dir: /tmp/.tmpLVx39c
 ballista-executor_1   | [2021-08-28T15:55:22Z INFO  ballista_executor] concurrent_tasks: 4
-ballista-scheduler_1  | [2021-08-28T15:55:22Z INFO  ballista_scheduler] Ballista v0.9.0 Scheduler listening on 0.0.0.0:50050
-ballista-executor_1   | [2021-08-28T15:55:22Z INFO  ballista_executor] Ballista v0.9.0 Rust Executor listening on 0.0.0.0:50051
+ballista-scheduler_1  | [2021-08-28T15:55:22Z INFO  ballista_scheduler] Ballista v0.12.0 Scheduler listening on 0.0.0.0:50050
+ballista-executor_1   | [2021-08-28T15:55:22Z INFO  ballista_executor] Ballista v0.12.0 Rust Executor listening on 0.0.0.0:50051
 ```
 
 The scheduler listens on port 50050 and this is the port that clients will need to connect to.
 
 The scheduler web UI is available on port 80 in the scheduler.
+
+## Connect from the Ballista CLI
+
+```shell
+docker run --network=host -it apache/arrow-ballista-cli:0.12.0 --host localhost --port 50050
+```
