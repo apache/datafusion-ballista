@@ -46,25 +46,28 @@ There are no officially published Docker images, so it is currently necessary to
 Run the following commands to clone the source repository and build the Docker image.
 
 ```bash
-git clone git@github.com:apache/arrow-ballista.git -b 0.9.0
+git clone git@github.com:apache/arrow-ballista.git -b 0.12.0
 cd arrow-ballista
 ./dev/build-ballista-docker.sh
 ```
 
 This will create the following images:
 
-- `apache/arrow-ballista-scheduler:0.9.0`
-- `apache/arrow-ballista-executor:0.9.0`
+- `apache/arrow-ballista-benchmarks:0.12.0`
+- `apache/arrow-ballista-cli:0.12.0`
+- `apache/arrow-ballista-executor:0.12.0`
+- `apache/arrow-ballista-scheduler:0.12.0`
+- `apache/arrow-ballista-standalone:0.12.0`
 
 ## Publishing Docker Images
 
 Once the images have been built, you can retag them and can push them to your favourite Docker registry.
 
 ```bash
-docker tag apache/arrow-ballista-scheduler:0.9.0 <your-repo>/arrow-ballista-scheduler:0.9.0
-docker tag apache/arrow-ballista-executor:0.9.0 <your-repo>/arrow-ballista-executor:0.9.0
-docker push <your-repo>/arrow-ballista-scheduler:0.9.0
-docker push <your-repo>/arrow-ballista-executor:0.9.0
+docker tag apache/arrow-ballista-scheduler:0.12.0 <your-repo>/arrow-ballista-scheduler:0.12.0
+docker tag apache/arrow-ballista-executor:0.12.0 <your-repo>/arrow-ballista-executor:0.12.0
+docker push <your-repo>/arrow-ballista-scheduler:0.12.0
+docker push <your-repo>/arrow-ballista-executor:0.12.0
 ```
 
 ## Create Persistent Volume and Persistent Volume Claim
@@ -152,7 +155,7 @@ spec:
     spec:
       containers:
         - name: ballista-scheduler
-          image: <your-repo>/arrow-ballista-scheduler:0.9.0
+          image: <your-repo>/arrow-ballista-scheduler:0.12.0
           args: ["--bind-port=50050"]
           ports:
             - containerPort: 50050
@@ -184,7 +187,7 @@ spec:
     spec:
       containers:
         - name: ballista-executor
-          image: <your-repo>/arrow-ballista-executor:0.9.0
+          image: <your-repo>/arrow-ballista-executor:0.12.0
           args:
             - "--bind-port=50051"
             - "--scheduler-host=ballista-scheduler"
