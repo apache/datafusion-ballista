@@ -16,6 +16,8 @@
 # under the License.
 
 apache-rat-*.jar
+rat.txt
+filtered_rat.txt
 arrow-src.tar
 arrow-src.tar.gz
 CHANGELOG.md.bak

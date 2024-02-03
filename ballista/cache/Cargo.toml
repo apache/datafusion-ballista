@@ -17,7 +17,13 @@
 
 [package]
 name = "ballista-cache"
-version = "0.11.0"
+description = "Ballista Cache"
+license = "Apache-2.0"
+homepage = "https://github.com/apache/arrow-ballista"
+repository = "https://github.com/apache/arrow-ballista"
+readme = "README.md"
+authors = ["Apache Arrow <dev@arrow.apache.org>"]
+version = "0.12.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
