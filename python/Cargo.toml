@@ -17,8 +17,16 @@
 
 [package]
 name = "pyballista"
-version = "0.1.0"
+version = "0.12.0"
+homepage = "https://github.com/apache/arrow-ballista"
+repository = "https://github.com/apache/arrow-ballista"
+authors = ["Apache Arrow <dev@arrow.apache.org>"]
+description = "Apache Arrow Ballista Python Client"
+readme = "README.md"
+license = "Apache-2.0"
 edition = "2021"
+rust-version = "1.64"
+include = ["/src", "/pyballista", "/LICENSE.txt", "pyproject.toml", "Cargo.toml", "Cargo.lock"]
 
 [dependencies]
 ballista = { git = "https://github.com/apache/arrow-ballista", version = "0.12.0-rc4" }
@@ -26,10 +34,6 @@ datafusion = "35.0.0"
 datafusion-python = { git = "https://github.com/apache/arrow-datafusion-python", version = "35.0.0-rc1" }
 pyo3 = { version = "0.20", features = ["extension-module", "abi3", "abi3-py38"] }
 tokio = { version = "1.35", features = ["macros", "rt", "rt-multi-thread", "sync"] }
-
-# TODO: is this needed?
-[build-dependencies]
-pyo3-build-config = "0.20.0"
 
 [lib]
 crate-type = ["cdylib"]
