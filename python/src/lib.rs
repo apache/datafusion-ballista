@@ -17,6 +17,7 @@
 
 use datafusion::arrow::pyarrow::ToPyArrow;
 use datafusion::prelude::DataFrame;
+use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use std::future::Future;
 use std::sync::Arc;
@@ -36,13 +37,13 @@ impl PySessionContext {
     pub fn new(host: &str, port: u16, py: Python) -> PyResult<Self> {
         let config = BallistaConfig::new().unwrap();
         let ballista_context = BallistaContext::remote(host, port, &config);
-        let ctx = wait_for_future(py, ballista_context).unwrap();
+        let ctx = wait_for_future(py, ballista_context).map_err(to_pyerr)?;
         Ok(Self { ctx })
     }
 
     pub fn sql(&mut self, query: &str, py: Python) -> PyResult<PyDataFrame> {
         let result = self.ctx.sql(query);
-        let df = wait_for_future(py, result).unwrap();
+        let df = wait_for_future(py, result)?;
         Ok(PyDataFrame::new(df))
     }
 }
@@ -67,7 +68,7 @@ impl PyDataFrame {
     /// Unless some order is specified in the plan, there is no
     /// guarantee of the order of the result.
     fn collect(&self, py: Python) -> PyResult<Vec<PyObject>> {
-        let batches = wait_for_future(py, self.df.as_ref().clone().collect()).unwrap();
+        let batches = wait_for_future(py, self.df.as_ref().clone().collect())?;
         // cannot use PyResult<Vec<RecordBatch>> return type due to
         // https://github.com/PyO3/pyo3/issues/1813
         batches.into_iter().map(|rb| rb.to_pyarrow(py)).collect()
@@ -94,6 +95,10 @@ fn get_tokio_runtime(py: Python) -> PyRef<TokioRuntime> {
             obj.extract().unwrap()
         }
     }
+}
+
+fn to_pyerr(err: BallistaError) -> PyErr {
+    PyException::new_err(err.to_string())
 }
 
 #[pyclass]
