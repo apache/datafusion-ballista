@@ -21,10 +21,12 @@
 
 Minimal Python client for Ballista.
 
-The goal of this project is to provide a way to run SQL against a Ballista cluster from Python and collect results.
+The goal of this project is to provide a way to run SQL against a Ballista cluster from Python and collect
+results as PyArrow record batches.
 
-The goal is not to provide the full DataFrame API. This could be added later if there is sufficient interest
-from maintainers, and should just be a thin wrapper around the DataFusion Python bindings.
+Note that this client currently only provides a SQL API and not a DataFrame API. A future release will support
+using the DataFrame API from DataFusion's Python bindings to create a logical plan and then execute that logical plan
+from the Ballista context ([tracking issue](https://github.com/apache/arrow-ballista/issues/971)).
 
 This project is versioned and released independently from the main Ballista project and is intentionally not
 part of the default Cargo workspace so that it doesn't cause overhead for maintainers of the main Ballista codebase.
@@ -39,45 +41,24 @@ from pyballista import SessionContext
 >>> df.collect()
 ```
 
-Output:
+## Creating Virtual Environment
 
-```python
-[pyarrow.RecordBatch
- l_orderkey: int64 not null
-l_partkey: int64 not null
-l_suppkey: int64 not null
-l_linenumber: int32 not null
-l_quantity: decimal128(11, 2) not null
-l_extendedprice: decimal128(11, 2) not null
-l_discount: decimal128(11, 2) not null
-l_tax: decimal128(11, 2) not null
-l_returnflag: string not null
-l_linestatus: string not null
-l_shipdate: date32[day] not null
-l_commitdate: date32[day] not null
-l_receiptdate: date32[day] not null
-l_shipinstruct: string not null
-l_shipmode: string not null
-l_comment: string not null
-_ignore: string not null
-                    ----
-l_orderkey: [17500001,17500001,17500001,17500001,17500001]
-l_partkey: [1661786,1635206,907114,1849041,820472]
-l_suppkey: [36835,60223,32124,24096,20473]
-l_linenumber: [2,3,4,5,6]
-l_quantity: [50.00,26.00,25.00,14.00,33.00]
-l_extendedprice: [87385.00,29669.12,28026.75,13859.30,45950.19]
-l_discount: [0.09,0.09,0.08,0.08,0.06]
-l_tax: [0.00,0.04,0.04,0.04,0.07]
-l_returnflag: ["N","N","N","N","N"]
-l_linestatus: ["O","O","O","O","O"]
-...]
+```shell
+python3 -m venv venv
+source venv/bin/activate
+pip3 install -r requirements.txt
 ```
 
 ## Building
 
 ```shell
-python3 -m venv venv
-source venv/bin/activate
 maturin develop
+```
+
+Note that you can also run `maturin develop --release` to get a release build locally.
+
+## Testing
+
+```shell
+python3 -m pytest
 ```

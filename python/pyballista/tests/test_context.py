@@ -22,4 +22,5 @@ def test_create_context():
 
 def test_select_one():
     ctx = SessionContext("localhost", 50050)
-    ctx.sql("SELECT 1")
+    df = ctx.sql("SELECT 1")
+    df.collect()
