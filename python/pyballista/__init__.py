@@ -25,7 +25,7 @@ except ImportError:
 
 import pyarrow as pa
 
-from ._internal import (
+from .pyballista_internal import (
     SessionContext,
     DataFrame
 )

@@ -55,7 +55,7 @@ repository = "https://github.com/apache/arrow-ballista"
 profile = "black"
 
 [tool.maturin]
-module-name = "pyballista._internal"
+module-name = "pyballista.pyballista_internal"
 include = [
     { path = "Cargo.lock", format = "sdist" }
 ]

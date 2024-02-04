@@ -105,7 +105,7 @@ fn to_pyerr(err: BallistaError) -> PyErr {
 pub(crate) struct TokioRuntime(tokio::runtime::Runtime);
 
 #[pymodule]
-fn _internal(_py: Python, m: &PyModule) -> PyResult<()> {
+fn pyballista_internal(_py: Python, m: &PyModule) -> PyResult<()> {
     // Register the Tokio Runtime as a module attribute so we can reuse it
     m.add(
         "runtime",
