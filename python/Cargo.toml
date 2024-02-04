@@ -32,7 +32,7 @@ tokio = { version = "1.35", features = ["macros", "rt", "rt-multi-thread", "sync
 pyo3-build-config = "0.20.0"
 
 [lib]
-name = "pyballista"
 crate-type = ["cdylib"]
+name = "pyballista"
 
 
