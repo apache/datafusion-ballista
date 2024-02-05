@@ -26,6 +26,7 @@ members = [
     "benchmarks",
     "examples"
 ]
+exclude = [ "python" ]
 resolver = "2"
 
 [workspace.dependencies]
