@@ -24,3 +24,4 @@ def test_select_one():
     ctx = SessionContext("localhost", 50050)
     df = ctx.sql("SELECT 1")
     df.collect()
+    df.collect()

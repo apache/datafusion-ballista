@@ -455,6 +455,18 @@ impl BallistaContext {
             _ => ctx.execute_logical_plan(plan).await,
         }
     }
+
+    /// Execute the [`LogicalPlan`], return a [`DataFrame`]. This API
+    /// is not featured limited (so all SQL such as `CREATE TABLE` and
+    /// `COPY` will be run).
+    ///
+    /// If you wish to limit the type of plan that can be run from
+    /// SQL, see [`Self::sql_with_options`] and
+    /// [`SQLOptions::verify_plan`].
+    pub async fn execute_logical_plan(&self, plan: LogicalPlan) -> Result<DataFrame> {
+        let ctx = self.context.clone();
+        ctx.execute_logical_plan(plan).await
+    }
 }
 
 #[cfg(test)]

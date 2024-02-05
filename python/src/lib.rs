@@ -17,6 +17,7 @@
 
 use datafusion::arrow::pyarrow::ToPyArrow;
 use datafusion::prelude::DataFrame;
+use datafusion_python::sql::logical::PyLogicalPlan;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use std::future::Future;
@@ -44,6 +45,16 @@ impl PySessionContext {
     pub fn sql(&mut self, query: &str, py: Python) -> PyResult<PyDataFrame> {
         let result = self.ctx.sql(query);
         let df = wait_for_future(py, result)?;
+        Ok(PyDataFrame::new(df))
+    }
+
+    pub fn execute_logical_plan(
+        &mut self,
+        logical_plan: PyLogicalPlan,
+        py: Python,
+    ) -> PyResult<PyDataFrame> {
+        let result = self.ctx.execute_logical_plan(logical_plan.into());
+        let df = wait_for_future(py, result).unwrap();
         Ok(PyDataFrame::new(df))
     }
 }
