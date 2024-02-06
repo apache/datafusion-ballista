@@ -15,7 +15,8 @@
 # specific language governing permissions and limitations
 # under the License.
 
-sphinx==2.4.4
-pydata-sphinx-theme
-myst-parser<1
-maturin<0.12
+sphinx
+Jinja2
+pydata-sphinx-theme==0.8.0
+myst-parser
+maturin
