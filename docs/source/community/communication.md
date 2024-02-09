@@ -22,7 +22,7 @@
 We welcome participation from everyone and encourage you to join us, ask
 questions, and get involved.
 
-All participation in the Apache Arrow DataFusion project is governed by the
+All participation in the Apache Arrow Ballista project is governed by the
 Apache Software Foundation's [code of
 conduct](https://www.apache.org/foundation/policies/conduct.html).
 
@@ -37,7 +37,7 @@ coorindation and design discussions
 [archives](https://lists.apache.org/list.html?dev@arrow.apache.org)).
 
 When emailing the dev list, please make sure to prefix the subject line with a
-`[DataFusion]` tag, e.g. `"[DataFusion] New API for remote data sources"`, so
+`[Ballista]` tag, e.g. `"[Ballista] New API for remote data sources"`, so
 that the appropriate people in the Apache Arrow community notice the message.
 
 ### Slack and Discord
