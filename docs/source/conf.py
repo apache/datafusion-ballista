@@ -31,13 +31,11 @@
 # import sys
 # sys.path.insert(0, os.path.abspath('.'))
 
-import datafusion
-
 # -- Project information -----------------------------------------------------
 
-project = 'Arrow DataFusion'
-copyright = '2022, Apache Software Foundation'
-author = 'Arrow DataFusion Authors'
+project = 'Apache Arrow Ballista'
+copyright = '2019-2024, Apache Software Foundation'
+author = 'Apache Software Foundation'
 
 
 # -- General configuration ---------------------------------------------------
