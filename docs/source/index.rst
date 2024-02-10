@@ -51,6 +51,7 @@ Table of content
    :maxdepth: 1
    :caption: Reference
 
+   user-guide/architecture
    user-guide/configs
    user-guide/tuning-guide
    user-guide/faq
