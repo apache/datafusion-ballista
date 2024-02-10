@@ -24,25 +24,28 @@ def test_create_context():
 def test_select_one():
     ctx = SessionContext("localhost", 50050)
     df = ctx.sql("SELECT 1")
-    rows = df.collect()
-    assert len(rows) == 1
+    batches = df.collect()
+    assert len(batches) == 1
 
 def test_read_csv():
     ctx = SessionContext("localhost", 50050)
     df = ctx.read_csv("testdata/test.csv", has_header=True)
-    rows = df.collect()
-    assert len(rows) == 1
+    batches = df.collect()
+    assert len(batches) == 1
+    assert len(batches[0]) == 1
 
 def test_read_parquet():
     ctx = SessionContext("localhost", 50050)
     df = ctx.read_parquet("testdata/test.parquet")
-    rows = df.collect()
-    assert len(rows) == 1
+    batches = df.collect()
+    assert len(batches) == 1
+    assert len(batches[0]) == 8
 
 def test_read_dataframe_api():
     ctx = SessionContext("localhost", 50050)
     df = ctx.read_csv("testdata/test.csv", has_header=True) \
         .select_columns('a', 'b') \
         .limit(1)
-    rows = df.collect()
-    assert len(rows) == 1
+    batches = df.collect()
+    assert len(batches) == 1
+    assert len(batches[0]) == 1
