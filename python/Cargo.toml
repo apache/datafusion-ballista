@@ -27,7 +27,7 @@ license = "Apache-2.0"
 edition = "2021"
 rust-version = "1.64"
 include = ["/src", "/pyballista", "/LICENSE.txt", "pyproject.toml", "Cargo.toml", "Cargo.lock"]
-publish = "false"
+publish = false
 
 [dependencies]
 async-trait = "0.1.77"

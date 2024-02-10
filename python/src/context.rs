@@ -32,8 +32,8 @@ use datafusion_python::errors::DataFusionError;
 use datafusion_python::expr::PyExpr;
 use datafusion_python::utils::wait_for_future;
 
-/// PySessionContext SessionContext. This is largely a duplicate of
-/// DataFusion's PySessionContext, with the main difference being the
+/// PyBallista session context. This is largely a duplicate of
+/// DataFusion's PySessionContext, with the main difference being
 /// that this operates on a BallistaContext instead of DataFusion's
 /// SessionContext. We could probably add extra extension points to
 /// DataFusion to allow for a pluggable context and remove much of
@@ -98,13 +98,8 @@ impl PySessionContext {
             .delimiter(delimiter[0])
             .schema_infer_max_records(schema_infer_max_records)
             .file_extension(file_extension)
-            //TODO Remove unwraps
-            .table_partition_cols(
-                convert_table_partition_cols(table_partition_cols).unwrap(),
-            )
-            .file_compression_type(
-                parse_file_compression_type(file_compression_type).unwrap(),
-            );
+            .table_partition_cols(convert_table_partition_cols(table_partition_cols)?)
+            .file_compression_type(parse_file_compression_type(file_compression_type)?);
 
         if let Some(py_schema) = schema {
             options.schema = Some(&py_schema.0);
