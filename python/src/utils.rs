@@ -15,17 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use pyo3::prelude::*;
-pub mod context;
-mod utils;
+use ballista_core::error::BallistaError;
+use pyo3::exceptions::PyException;
+use pyo3::PyErr;
 
-pub use crate::context::PySessionContext;
-
-#[pymodule]
-fn pyballista_internal(_py: Python, m: &PyModule) -> PyResult<()> {
-    // Ballista structs
-    m.add_class::<PySessionContext>()?;
-    // DataFusion structs
-    m.add_class::<datafusion_python::dataframe::PyDataFrame>()?;
-    Ok(())
+pub(crate) fn to_pyerr(err: BallistaError) -> PyErr {
+    PyException::new_err(err.to_string())
 }

@@ -19,26 +19,33 @@
 
 # PyBallista
 
-Minimal Python client for Ballista.
-
-The goal of this project is to provide a way to run SQL against a Ballista cluster from Python and collect
-results as PyArrow record batches.
-
-Note that this client currently only provides a SQL API and not a DataFrame API. A future release will support
-using the DataFrame API from DataFusion's Python bindings to create a logical plan and then execute that logical plan
-from the Ballista context ([tracking issue](https://github.com/apache/arrow-ballista/issues/971)).
+Python client for Ballista.
 
 This project is versioned and released independently from the main Ballista project and is intentionally not
 part of the default Cargo workspace so that it doesn't cause overhead for maintainers of the main Ballista codebase.
 
-## Example Usage
+## Creating a SessionContext
+
+Creates a new context and connects to a Ballista scheduler process.
 
 ```python
 from pyballista import SessionContext
 >>> ctx = SessionContext("localhost", 50050)
+```
+
+## Example SQL Usage
+
+```python
 >>> ctx.sql("create external table t stored as parquet location '/mnt/bigdata/tpch/sf10-parquet/lineitem.parquet'")
 >>> df = ctx.sql("select * from t limit 5")
->>> df.collect()
+>>> pyarrow_batches = df.collect()
+```
+
+## Example DataFrame Usage
+
+```python
+>>> df = ctx.read_parquet('/mnt/bigdata/tpch/sf10-parquet/lineitem.parquet').limit(5)
+>>> pyarrow_batches = df.collect()
 ```
 
 ## Creating Virtual Environment

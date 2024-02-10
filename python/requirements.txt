@@ -1,2 +1,3 @@
+datafusion==35.0.0
 pyarrow
 pytest
