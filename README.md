@@ -20,7 +20,7 @@
 # Ballista: Distributed SQL Query Engine, built on Apache Arrow
 
 Ballista is a distributed SQL query engine powered by the Rust implementation of [Apache Arrow][arrow] and
-[DataFusion][datafusion].
+[Apache Arrow DataFusion][datafusion].
 
 If you are looking for documentation for a released version of Ballista, please refer to the
 [Ballista User Guide][user-guide].
@@ -40,6 +40,20 @@ Ballista implements a similar design to Apache Spark (particularly Spark SQL), b
 - The use of Apache Arrow as the memory model and network protocol means that data can be exchanged efficiently between
   executors using the [Flight Protocol][flight], and between clients and schedulers/executors using the
   [Flight SQL Protocol][flight-sql]
+
+## Architecture
+
+A Ballista cluster consists of one or more scheduler processes and one or more executor processes. These processes
+can be run as native binaries and are also available as Docker Images, which can be easily deployed with
+[Docker Compose](https://arrow.apache.org/ballista/user-guide/deployment/docker-compose.html) or
+[Kubernetes](https://arrow.apache.org/ballista/user-guide/deployment/kubernetes.html).
+
+The following diagram shows the interaction between clients and the scheduler for submitting jobs, and the interaction
+between the executor(s) and the scheduler for fetching tasks and reporting task status.
+
+![Ballista Cluster Diagram](docs/source/user-guide/ballista.drawio.png)
+
+See the [architecture guide](docs/source/user-guide/architecture.md) for more details.
 
 ## Features
 
@@ -64,10 +78,6 @@ The tracking issue for improving these results is [#339](https://github.com/apac
 
 The easiest way to get started is to run one of the standalone or distributed [examples](./examples/README.md). After
 that, refer to the [Getting Started Guide](ballista/client/README.md).
-
-## Architecture
-
-See the [architecture guide](docs/source/user-guide/architecture.md).
 
 ## Project Status
 
