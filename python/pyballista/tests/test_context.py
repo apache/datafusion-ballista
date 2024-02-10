@@ -24,4 +24,11 @@ def test_create_context():
 def test_select_one():
     ctx = SessionContext("localhost", 50050)
     df = ctx.sql("SELECT 1")
-    df.collect()
+    rows = df.collect()
+    assert len(rows) == 1
+
+def test_read_csv():
+    ctx = SessionContext("localhost", 50050)
+    df = ctx.read_csv("testdata/test.csv", has_header=True)
+    rows = df.collect()
+    assert len(rows) == 1
