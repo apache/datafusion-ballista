@@ -25,7 +25,8 @@ Ballista’s primary purpose is to provide a distributed SQL query engine implem
 language and using the Apache Arrow memory model.
 
 Ballista also provides a DataFrame API (both in Rust and Python), suitable for constructing ETL pipelines and
-analytical queries.
+analytical queries. The DataFrame API is inspired by Apache Spark and is currently better suited for ETL/SQL work 
+than for data science.
 
 ### Cluster
 
@@ -33,6 +34,8 @@ A Ballista cluster consists of one or more scheduler processes and one or more e
 can be run as native binaries and are also available as Docker Images, which can be easily deployed with
 [Docker Compose](https://arrow.apache.org/ballista/user-guide/deployment/docker-compose.html) or
 [Kubernetes](https://arrow.apache.org/ballista/user-guide/deployment/kubernetes.html).
+
+![Ballista Cluster Diagram](ballista.drawio.png)
 
 ### Scheduler
 
@@ -46,6 +49,9 @@ The scheduler provides the following capabilities:
 Jobs are submitted to the scheduler's gRPC service from a client context, either in the form of a logical query
 plan or a SQL string. The scheduler then creates an execution graph, which contains a physical plan broken down into
 stages (pipelines) that can be scheduled independently.
+
+It is possible to have multiple schedulers running with shared state in etcd, so that jobs can continue to run 
+even if a scheduler process fails.
 
 ### Executor
 
@@ -62,7 +68,7 @@ can be performed.
 
 Each executor will re-partition the output of the stage it is running so that it can be consumed by the next
 stage. This mechanism is known as an Exchange or a Shuffle. The logic for this can be found in the ShuffleWriterExec
-and ShuffleReaderExec structs.
+and ShuffleReaderExec operators.
 
 ### Clients
 
@@ -78,7 +84,8 @@ There are multiple clients available for submitting jobs to a Ballista cluster:
 ### Arrow-native
 
 Ballista uses the Apache Arrow memory format during query execution, and Apache Arrow IPC format on disk for
-shuffle files and for exchanging data between executors.
+shuffle files and for exchanging data between executors. Queries can be submitted using the Arrow Flight SQL API 
+and the Arrow Flight SQL JDBC Driver.
 
 ### Language Agnostic
 
