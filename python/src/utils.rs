@@ -22,6 +22,8 @@ use pyo3::{Py, PyAny, PyErr, PyRef, Python};
 use std::future::Future;
 use tokio::runtime::Runtime;
 
+/// Allow async functions to be called from Python as blocking calls
+//TODO this is duplicated from ADP
 pub(crate) fn wait_for_future<F: Future>(py: Python, f: F) -> F::Output
 where
     F: Send,
@@ -31,7 +33,8 @@ where
     py.allow_threads(|| runtime.block_on(f))
 }
 
-pub(crate) fn get_tokio_runtime(py: Python) -> PyRef<TokioRuntime> {
+fn get_tokio_runtime(py: Python) -> PyRef<TokioRuntime> {
+    // TODO should get DataFusion's runtime here?
     let ballista = py.import("pyballista._internal").unwrap();
     let tmp = ballista.getattr("runtime").unwrap();
     match tmp.extract::<PyRef<TokioRuntime>>() {

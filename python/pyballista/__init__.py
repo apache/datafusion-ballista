@@ -27,12 +27,10 @@ import pyarrow as pa
 
 from .pyballista_internal import (
     SessionContext,
-    DataFrame
 )
 
 __version__ = importlib_metadata.version(__name__)
 
 __all__ = [
     "SessionContext",
-    "DataFrame",
 ]

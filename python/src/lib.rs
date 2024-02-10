@@ -17,10 +17,9 @@
 
 use pyo3::prelude::*;
 pub mod context;
-pub mod dataframe;
 mod utils;
 
-pub use crate::context::{PyDataFrame, PySessionContext};
+pub use crate::context::PySessionContext;
 
 #[pyclass]
 pub(crate) struct TokioRuntime(tokio::runtime::Runtime);
@@ -32,7 +31,9 @@ fn pyballista_internal(_py: Python, m: &PyModule) -> PyResult<()> {
         "runtime",
         TokioRuntime(tokio::runtime::Runtime::new().unwrap()),
     )?;
+    // Ballista structs
     m.add_class::<PySessionContext>()?;
-    m.add_class::<PyDataFrame>()?;
+    // DataFusion structs
+    m.add_class::<datafusion_python::dataframe::PyDataFrame>()?;
     Ok(())
 }
