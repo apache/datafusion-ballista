@@ -35,6 +35,9 @@ can be run as native binaries and are also available as Docker Images, which can
 [Docker Compose](https://arrow.apache.org/ballista/user-guide/deployment/docker-compose.html) or
 [Kubernetes](https://arrow.apache.org/ballista/user-guide/deployment/kubernetes.html).
 
+The following diagram shows the interaction between clients and the scheduler for submitting jobs, and the interaction 
+between the executor(s) and the scheduler for fetching tasks and reporting task status.
+
 ![Ballista Cluster Diagram](ballista.drawio.png)
 
 ### Scheduler
