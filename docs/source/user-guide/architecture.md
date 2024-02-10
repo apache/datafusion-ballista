@@ -31,7 +31,8 @@ analytical queries.
 
 A Ballista cluster consists of one or more scheduler processes and one or more executor processes. These processes
 can be run as native binaries and are also available as Docker Images, which can be easily deployed with
-Docker Compose or Kubernetes.
+[Docker Compose](https://arrow.apache.org/ballista/user-guide/deployment/docker-compose.html) or
+[Kubernetes](https://arrow.apache.org/ballista/user-guide/deployment/kubernetes.html).
 
 ### Scheduler
 
@@ -54,7 +55,7 @@ can execute multiple partitions of the same plan in parallel.
 
 ### Shuffle
 
-Each stage of the execution graph has the same partitioning schema for all of the operators in the plan. However,
+Each stage of the execution graph has the same partitioning scheme for all of the operators in the plan. However,
 the output of each stage typically needs to be repartitioned before it can be used as the input to the next stage. An
 example of this is when a query contains multiple joins. Data needs to be partitioned by the join keys before the join
 can be performed.
@@ -67,10 +68,10 @@ and ShuffleReaderExec structs.
 
 There are multiple clients available for submitting jobs to a Ballista cluster:
 
-- The Ballista CLI provides a SQL command-line tool
-- The Python bindings (PyBallista) provide a session context with support for SQL and DataFrame operations
-- The ballista crate provides a native Rust session context with support for SQL and DataFrame operations
-- The Flight SQL JDBC driver can be used from popular SQL tools to execute SQL queries against a cluster
+- The [Ballista CLI](https://github.com/apache/arrow-ballista/tree/main/ballista-cli) provides a SQL command-line interface
+- The Python bindings ([PyBallista](https://github.com/apache/arrow-ballista/tree/main/python)) provide a session context with support for SQL and DataFrame operations
+- The [ballista crate](https://crates.io/crates/ballista) provides a native Rust session context with support for SQL and DataFrame operations
+- The [Flight SQL JDBC driver](https://arrow.apache.org/docs/java/flight_sql_jdbc_driver.html) can be used from popular SQL tools to execute SQL queries against a cluster
 
 ## Design Principles
 
