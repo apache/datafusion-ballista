@@ -26,6 +26,8 @@ part of the default Cargo workspace so that it doesn't cause overhead for mainta
 
 ## Creating a SessionContext
 
+Creates a new context and connects to a Ballista scheduler process.
+
 ```python
 from pyballista import SessionContext
 >>> ctx = SessionContext("localhost", 50050)
@@ -36,14 +38,14 @@ from pyballista import SessionContext
 ```python
 >>> ctx.sql("create external table t stored as parquet location '/mnt/bigdata/tpch/sf10-parquet/lineitem.parquet'")
 >>> df = ctx.sql("select * from t limit 5")
->>> df.collect()
+>>> pyarrow_batches = df.collect()
 ```
 
 ## Example DataFrame Usage
 
 ```python
 >>> df = ctx.read_parquet('/mnt/bigdata/tpch/sf10-parquet/lineitem.parquet').limit(5)
->>> df.collect()
+>>> pyarrow_batches = df.collect()
 ```
 
 ## Creating Virtual Environment
