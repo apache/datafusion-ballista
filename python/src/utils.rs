@@ -16,36 +16,8 @@
 // under the License.
 
 use ballista_core::error::BallistaError;
-use datafusion_python::TokioRuntime;
 use pyo3::exceptions::PyException;
-use pyo3::{Py, PyAny, PyErr, PyRef, Python};
-use std::future::Future;
-use tokio::runtime::Runtime;
-
-/// Allow async functions to be called from Python as blocking calls
-//TODO this is duplicated from ADP
-pub(crate) fn wait_for_future<F: Future>(py: Python, f: F) -> F::Output
-where
-    F: Send,
-    F::Output: Send,
-{
-    let runtime: &Runtime = &get_tokio_runtime(py).0;
-    py.allow_threads(|| runtime.block_on(f))
-}
-
-fn get_tokio_runtime(py: Python) -> PyRef<TokioRuntime> {
-    // TODO duplicates code from ADP
-    let ballista = py.import("datafusion._internal").unwrap();
-    let tmp = ballista.getattr("runtime").unwrap();
-    match tmp.extract::<PyRef<TokioRuntime>>() {
-        Ok(runtime) => runtime,
-        Err(_e) => {
-            let rt = TokioRuntime(tokio::runtime::Runtime::new().unwrap());
-            let obj: &PyAny = Py::new(py, rt).unwrap().into_ref(py);
-            obj.extract().unwrap()
-        }
-    }
-}
+use pyo3::PyErr;
 
 pub(crate) fn to_pyerr(err: BallistaError) -> PyErr {
     PyException::new_err(err.to_string())
