@@ -28,6 +28,8 @@ use datafusion_python::context::{
     convert_table_partition_cols, parse_file_compression_type,
 };
 use datafusion_python::dataframe::PyDataFrame;
+use datafusion_python::errors::DataFusionError;
+use datafusion_python::expr::PyExpr;
 use datafusion_python::utils::wait_for_future;
 
 /// PySessionContext SessionContext. This is largely a duplicate of
@@ -114,5 +116,43 @@ impl PySessionContext {
             let df = PyDataFrame::new(wait_for_future(py, result)?);
             Ok(df)
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        path,
+        table_partition_cols=vec![],
+        parquet_pruning=true,
+        file_extension=".parquet",
+        skip_metadata=true,
+        schema=None,
+        file_sort_order=None))]
+    pub fn read_parquet(
+        &self,
+        path: &str,
+        table_partition_cols: Vec<(String, String)>,
+        parquet_pruning: bool,
+        file_extension: &str,
+        skip_metadata: bool,
+        schema: Option<PyArrowType<Schema>>,
+        file_sort_order: Option<Vec<Vec<PyExpr>>>,
+        py: Python,
+    ) -> PyResult<PyDataFrame> {
+        let mut options = ParquetReadOptions::default()
+            .table_partition_cols(convert_table_partition_cols(table_partition_cols)?)
+            .parquet_pruning(parquet_pruning)
+            .skip_metadata(skip_metadata);
+        options.file_extension = file_extension;
+        options.schema = schema.as_ref().map(|x| &x.0);
+        options.file_sort_order = file_sort_order
+            .unwrap_or_default()
+            .into_iter()
+            .map(|e| e.into_iter().map(|f| f.into()).collect())
+            .collect();
+
+        let result = self.ctx.read_parquet(path, options);
+        let df =
+            PyDataFrame::new(wait_for_future(py, result).map_err(DataFusionError::from)?);
+        Ok(df)
     }
 }
