@@ -20,8 +20,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::path::PathBuf;
 
-use crate::utils::to_pyerr;
-use crate::utils::wait_for_future;
+use crate::utils::{to_pyerr, wait_for_future};
 use ballista::prelude::*;
 use datafusion_python::dataframe::PyDataFrame;
 

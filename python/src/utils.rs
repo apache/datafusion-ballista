@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::TokioRuntime;
 use ballista_core::error::BallistaError;
+use datafusion_python::TokioRuntime;
 use pyo3::exceptions::PyException;
 use pyo3::{Py, PyAny, PyErr, PyRef, Python};
 use std::future::Future;
@@ -34,8 +34,8 @@ where
 }
 
 fn get_tokio_runtime(py: Python) -> PyRef<TokioRuntime> {
-    // TODO should get DataFusion's runtime here?
-    let ballista = py.import("pyballista._internal").unwrap();
+    // TODO duplicates code from ADP
+    let ballista = py.import("datafusion._internal").unwrap();
     let tmp = ballista.getattr("runtime").unwrap();
     match tmp.extract::<PyRef<TokioRuntime>>() {
         Ok(runtime) => runtime,

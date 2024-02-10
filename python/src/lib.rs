@@ -21,16 +21,16 @@ mod utils;
 
 pub use crate::context::PySessionContext;
 
-#[pyclass]
-pub(crate) struct TokioRuntime(tokio::runtime::Runtime);
+// #[pyclass]
+// pub(crate) struct TokioRuntime(tokio::runtime::Runtime);
 
 #[pymodule]
 fn pyballista_internal(_py: Python, m: &PyModule) -> PyResult<()> {
     // Register the Tokio Runtime as a module attribute so we can reuse it
-    m.add(
-        "runtime",
-        TokioRuntime(tokio::runtime::Runtime::new().unwrap()),
-    )?;
+    // m.add(
+    //     "runtime",
+    //     TokioRuntime(tokio::runtime::Runtime::new().unwrap()),
+    // )?;
     // Ballista structs
     m.add_class::<PySessionContext>()?;
     // DataFusion structs
