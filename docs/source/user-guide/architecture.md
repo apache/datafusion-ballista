@@ -90,6 +90,19 @@ The executor processes connect to a scheduler and poll for tasks to perform. The
 protocol buffer format. These physical plans are typically executed against multiple partitions of input data. Executors
 can execute multiple partitions of the same plan in parallel.
 
+### Clients
+
+There are multiple clients available for submitting jobs to a Ballista cluster:
+
+- The [Ballista CLI](https://github.com/apache/arrow-ballista/tree/main/ballista-cli) provides a SQL command-line
+  interface.
+- The Python bindings ([PyBallista](https://github.com/apache/arrow-ballista/tree/main/python)) provide a session
+  context with support for SQL and DataFrame operations.
+- The [ballista crate](https://crates.io/crates/ballista) provides a native Rust session context with support for
+  SQL and DataFrame operations.
+- The [Flight SQL JDBC driver](https://arrow.apache.org/docs/java/flight_sql_jdbc_driver.html) can be used from
+  popular SQL tools to execute SQL queries against a cluster.
+
 ## Distributed Query Scheduling
 
 Distributed query plans are fundamentally different to in-process query plans because we can't just build a
@@ -187,12 +200,3 @@ can be performed.
 Each executor will re-partition the output of the stage it is running so that it can be consumed by the next
 stage. This mechanism is known as an Exchange or a Shuffle. The logic for this can be found in the ShuffleWriterExec
 and ShuffleReaderExec operators.
-
-## Clients
-
-There are multiple clients available for submitting jobs to a Ballista cluster:
-
-- The [Ballista CLI](https://github.com/apache/arrow-ballista/tree/main/ballista-cli) provides a SQL command-line interface
-- The Python bindings ([PyBallista](https://github.com/apache/arrow-ballista/tree/main/python)) provide a session context with support for SQL and DataFrame operations
-- The [ballista crate](https://crates.io/crates/ballista) provides a native Rust session context with support for SQL and DataFrame operations
-- The [Flight SQL JDBC driver](https://arrow.apache.org/docs/java/flight_sql_jdbc_driver.html) can be used from popular SQL tools to execute SQL queries against a cluster
