@@ -150,4 +150,84 @@ impl PySessionContext {
             PyDataFrame::new(wait_for_future(py, result).map_err(DataFusionError::from)?);
         Ok(df)
     }
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (name, path, table_partition_cols=vec![],
+    parquet_pruning=true,
+    file_extension=".parquet",
+    skip_metadata=true,
+    schema=None,
+    file_sort_order=None))]
+    pub fn register_parquet(
+        &mut self,
+        name: &str,
+        path: &str,
+        table_partition_cols: Vec<(String, String)>,
+        parquet_pruning: bool,
+        file_extension: &str,
+        skip_metadata: bool,
+        schema: Option<PyArrowType<Schema>>,
+        file_sort_order: Option<Vec<Vec<PyExpr>>>,
+        py: Python,
+    ) -> PyResult<()> {
+        let mut options = ParquetReadOptions::default()
+            .table_partition_cols(convert_table_partition_cols(table_partition_cols)?)
+            .parquet_pruning(parquet_pruning)
+            .skip_metadata(skip_metadata);
+        options.file_extension = file_extension;
+        options.schema = schema.as_ref().map(|x| &x.0);
+        options.file_sort_order = file_sort_order
+            .unwrap_or_default()
+            .into_iter()
+            .map(|e| e.into_iter().map(|f| f.into()).collect())
+            .collect();
+
+        let result = self.ctx.register_parquet(name, path, options);
+        wait_for_future(py, result).map_err(DataFusionError::from)?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (name,
+    path,
+    schema=None,
+    has_header=true,
+    delimiter=",",
+    schema_infer_max_records=1000,
+    file_extension=".csv",
+    file_compression_type=None))]
+    pub fn register_csv(
+        &mut self,
+        name: &str,
+        path: PathBuf,
+        schema: Option<PyArrowType<Schema>>,
+        has_header: bool,
+        delimiter: &str,
+        schema_infer_max_records: usize,
+        file_extension: &str,
+        file_compression_type: Option<String>,
+        py: Python,
+    ) -> PyResult<()> {
+        let path = path
+            .to_str()
+            .ok_or_else(|| PyValueError::new_err("Unable to convert path to a string"))?;
+        let delimiter = delimiter.as_bytes();
+        if delimiter.len() != 1 {
+            return Err(PyValueError::new_err(
+                "Delimiter must be a single character",
+            ));
+        }
+
+        let mut options = CsvReadOptions::new()
+            .has_header(has_header)
+            .delimiter(delimiter[0])
+            .schema_infer_max_records(schema_infer_max_records)
+            .file_extension(file_extension)
+            .file_compression_type(parse_file_compression_type(file_compression_type)?);
+        options.schema = schema.as_ref().map(|x| &x.0);
+
+        let result = self.ctx.register_csv(name, path, options);
+        wait_for_future(py, result).map_err(DataFusionError::from)?;
+
+        Ok(())
+    }
 }
