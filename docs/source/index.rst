@@ -53,15 +53,19 @@ Table of content
 
    user-guide/configs
    user-guide/tuning-guide
+   user-guide/metrics
    user-guide/faq
 
-.. _toc.source:
+.. _toc.contributors:
 
 .. toctree::
    :maxdepth: 1
-   :caption: Source Code
+   :caption: Contributors Guide
 
-   Ballista <https://github.com/apache/arrow-ballista/>
+   contributors-guide/architecture
+   contributors-guide/code-organization
+   contributors-guide/development
+   Source code <https://github.com/apache/arrow-ballista/>
 
 .. _toc.community:
 
@@ -70,7 +74,6 @@ Table of content
    :caption: Community
 
    community/communication
-   community/development
-   
+
    Issue tracker <https://github.com/apache/arrow-ballista/issues>
    Code of conduct <https://github.com/apache/arrow-ballista/blob/main/CODE_OF_CONDUCT.md>
