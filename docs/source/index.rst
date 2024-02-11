@@ -51,10 +51,16 @@ Table of content
    :maxdepth: 1
    :caption: Reference
 
-   user-guide/architecture
    user-guide/configs
    user-guide/tuning-guide
    user-guide/faq
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Contributors Guide
+
+   user-guide/architecture
+   user-guide/code-organization
 
 .. _toc.source:
 
