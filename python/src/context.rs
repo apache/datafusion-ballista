@@ -325,6 +325,7 @@ impl PySessionContext {
             .map_err(DataFusionError::from)?;
         Ok(())
     }
+
     pub fn execute_logical_plan(
         &mut self,
         logical_plan: PyLogicalPlan,
