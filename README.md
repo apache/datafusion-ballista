@@ -53,7 +53,7 @@ between the executor(s) and the scheduler for fetching tasks and reporting task 
 
 ![Ballista Cluster Diagram](docs/source/user-guide/ballista.drawio.png)
 
-See the [architecture guide](docs/source/user-guide/architecture.md) for more details.
+See the [architecture guide](docs/source/contributors-guide/architecture.md) for more details.
 
 ## Features
 
