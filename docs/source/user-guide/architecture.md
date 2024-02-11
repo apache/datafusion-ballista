@@ -201,8 +201,8 @@ Each executor will re-partition the output of the stage it is running so that it
 stage. This mechanism is known as an Exchange or a Shuffle. The logic for this can be found in the [ShuffleWriterExec]
 and [ShuffleReaderExec] operators.
 
-[ShuffleWriterExec]: https://github.com/apache/arrow-ballista/blob/main/ballista/core/src/execution_plans/shuffle_writer.rs
-[ShuffleReaderExec]: https://github.com/apache/arrow-ballista/blob/main/ballista/core/src/execution_plans/shuffle_reader.rs
+[shufflewriterexec]: https://github.com/apache/arrow-ballista/blob/main/ballista/core/src/execution_plans/shuffle_writer.rs
+[shufflereaderexec]: https://github.com/apache/arrow-ballista/blob/main/ballista/core/src/execution_plans/shuffle_reader.rs
 
 ## Code Organization
 
