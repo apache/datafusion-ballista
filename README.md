@@ -20,7 +20,7 @@
 # Ballista: Distributed SQL Query Engine, built on Apache Arrow
 
 Ballista is a distributed SQL query engine powered by the Rust implementation of [Apache Arrow][arrow] and
-[DataFusion][datafusion].
+[Apache Arrow DataFusion][datafusion].
 
 If you are looking for documentation for a released version of Ballista, please refer to the
 [Ballista User Guide][user-guide].
@@ -40,6 +40,20 @@ Ballista implements a similar design to Apache Spark (particularly Spark SQL), b
 - The use of Apache Arrow as the memory model and network protocol means that data can be exchanged efficiently between
   executors using the [Flight Protocol][flight], and between clients and schedulers/executors using the
   [Flight SQL Protocol][flight-sql]
+
+## Architecture
+
+A Ballista cluster consists of one or more scheduler processes and one or more executor processes. These processes
+can be run as native binaries and are also available as Docker Images, which can be easily deployed with
+[Docker Compose](https://arrow.apache.org/ballista/user-guide/deployment/docker-compose.html) or
+[Kubernetes](https://arrow.apache.org/ballista/user-guide/deployment/kubernetes.html).
+
+The following diagram shows the interaction between clients and the scheduler for submitting jobs, and the interaction
+between the executor(s) and the scheduler for fetching tasks and reporting task status.
+
+![Ballista Cluster Diagram](docs/source/contributors-guide/ballista.drawio.png)
+
+See the [architecture guide](docs/source/contributors-guide/architecture.md) for more details.
 
 ## Features
 
@@ -72,53 +86,7 @@ Ballista supports a wide range of SQL, including CTEs, Joins, and Subqueries and
 Refer to the [DataFusion SQL Reference](https://arrow.apache.org/datafusion/user-guide/sql/index.html) for more
 information on supported SQL.
 
-Ballista is maturing quickly and is now working towards being production ready. See the following roadmap for more details.
-
-## Roadmap
-
-There is an excellent discussion in https://github.com/apache/arrow-ballista/issues/30 about the future of the project,
-and we encourage you to participate and add your feedback there if you are interested in using or contributing to
-Ballista.
-
-The current focus is on the following items:
-
-- Make production ready
-  - Shuffle file cleanup
-    - Periodically ([#185](https://github.com/apache/arrow-ballista/issues/185))
-    - Add gRPC & REST interfaces for clients/UI to actively call the cleanup for a job or the whole system
-  - Fill functional gaps between DataFusion and Ballista
-  - Improve task scheduling and data exchange efficiency
-  - Better error handling
-    - Scheduler restart
-  - Improve monitoring, logging, and metrics
-  - Auto scaling support
-  - Better configuration management
-  - Support for multi-scheduler deployments. Initially for resiliency and fault tolerance but ultimately to support
-    sharding for scalability and more efficient caching.
-- Shuffle improvement
-  - Shuffle memory control ([#320](https://github.com/apache/arrow-ballista/issues/320))
-  - Improve shuffle IO to avoid producing too many files
-  - Support sort-based shuffle
-  - Support range partition
-  - Support broadcast shuffle ([#342](https://github.com/apache/arrow-ballista/issues/342))
-- Scheduler Improvements
-  - All-at-once job task scheduling
-  - Executor deployment grouping based on resource allocation
-- Cloud Support
-  - Support Azure Blob Storage ([#294](https://github.com/apache/arrow-ballista/issues/294))
-  - Support Google Cloud Storage ([#293](https://github.com/apache/arrow-ballista/issues/293))
-- Performance and scalability
-  - Implement Adaptive Query Execution ([#387](https://github.com/apache/arrow-ballista/issues/387))
-  - Implement bubble execution ([#408](https://github.com/apache/arrow-ballista/issues/408))
-  - Improve benchmark results ([#339](https://github.com/apache/arrow-ballista/issues/339))
-- Python Support
-  - Support Python UDFs ([#173](https://github.com/apache/arrow-ballista/issues/173))
-
-## Architecture Overview
-
-There are currently no up-to-date architecture documents available. You can get a general overview of the architecture
-by watching the [Ballista: Distributed Compute with Rust and Apache Arrow][ballista-talk] talk from the New York Open
-Statistical Programming Meetup (Feb 2021).
+Ballista is maturing quickly and is now working towards being production ready. See the [roadmap](ROADMAP.md) for more details.
 
 ## Contribution Guide
 
