@@ -53,6 +53,7 @@ Table of content
 
    user-guide/configs
    user-guide/tuning-guide
+   user-guide/metrics
    user-guide/faq
 
 .. _toc.contributors:
