@@ -26,20 +26,41 @@ Ballista context.
 
 ```ignore
 USAGE:
-    ballista-cli [FLAGS] [OPTIONS]
-
-FLAGS:
-    -h, --help       Prints help information
-    -q, --quiet      Reduce printing other than the results and work quietly
-    -V, --version    Prints version information
+    ballista-cli [OPTIONS]
 
 OPTIONS:
-    -c, --batch-size <batch-size>    The batch size of each query, or use DataFusion default
-    -p, --data-path <data-path>      Path to your data, default to current directory
-    -f, --file <file>...             Execute commands from file(s), then exit
-        --format <format>            Output format [default: table]  [possible values: csv, tsv, table, json, ndjson]
-        --host <host>                Ballista scheduler host
-        --port <port>                Ballista scheduler port
+    -c, --batch-size <BATCH_SIZE>
+            The batch size of each query, or use Ballista default
+
+        --concurrent-tasks <CONCURRENT_TASKS>
+            The max concurrent tasks, only for Ballista local mode. Default: all available cores
+
+    -f, --file <FILE>...
+            Execute commands from file(s), then exit
+
+        --format <FORMAT>
+            [default: table] [possible values: csv, tsv, table, json, nd-json, automatic]
+
+    -h, --help
+            Print help information
+
+        --host <HOST>
+            Ballista scheduler host
+
+    -p, --data-path <DATA_PATH>
+            Path to your data, default to current directory
+
+        --port <PORT>
+            Ballista scheduler port
+
+    -q, --quiet
+            Reduce printing other than the results and work quietly
+
+    -r, --rc <RC>...
+            Run the provided files on startup instead of ~/.ballistarc
+
+    -V, --version
+            Print version information
 ```
 
 ## Example
@@ -53,7 +74,7 @@ $ echo "1,2" > data.csv
 ```sql,ignore
 $ ballista-cli
 
-Ballista CLI v0.6.0
+Ballista CLI v0.12.0
 
 > CREATE EXTERNAL TABLE foo (a INT, b INT) STORED AS CSV LOCATION 'data.csv';
 0 rows in set. Query took 0.001 seconds.
@@ -65,6 +86,8 @@ Ballista CLI v0.6.0
 | 1 | 2 |
 +---+---+
 1 row in set. Query took 0.017 seconds.
+
+> \q
 ```
 
 ## Ballista-Cli
@@ -74,6 +97,7 @@ If you want to execute the SQL in ballista by `ballista-cli`, you must build/com
 ```bash
 cd arrow-ballista/ballista-cli
 cargo build
+cargo install --path .
 ```
 
 The Ballista CLI can connect to a Ballista scheduler for query execution.
