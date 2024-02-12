@@ -15,15 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::prelude::*;
+use crate::utils::to_pyerr;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::path::PathBuf;
 
-use crate::utils::to_pyerr;
 use ballista::prelude::*;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::pyarrow::PyArrowType;
+use datafusion::prelude::*;
 use datafusion_python::catalog::PyTable;
 use datafusion_python::context::{
     convert_table_partition_cols, parse_file_compression_type,
@@ -31,6 +31,7 @@ use datafusion_python::context::{
 use datafusion_python::dataframe::PyDataFrame;
 use datafusion_python::errors::DataFusionError;
 use datafusion_python::expr::PyExpr;
+use datafusion_python::sql::logical::PyLogicalPlan;
 use datafusion_python::utils::wait_for_future;
 
 /// PyBallista session context. This is largely a duplicate of
@@ -323,5 +324,15 @@ impl PySessionContext {
             .register_table(name, table.table())
             .map_err(DataFusionError::from)?;
         Ok(())
+    }
+
+    pub fn execute_logical_plan(
+        &mut self,
+        logical_plan: PyLogicalPlan,
+        py: Python,
+    ) -> PyResult<PyDataFrame> {
+        let result = self.ctx.execute_logical_plan(logical_plan.into());
+        let df = wait_for_future(py, result).unwrap();
+        Ok(PyDataFrame::new(df))
     }
 }

@@ -65,3 +65,13 @@ def test_read_dataframe_api():
     batches = df.collect()
     assert len(batches) == 1
     assert len(batches[0]) == 1
+
+def test_execute_plan():
+    ctx = SessionContext("localhost", 50050)
+    df = ctx.read_csv("testdata/test.csv", has_header=True) \
+        .select_columns('a', 'b') \
+        .limit(1)
+    df = ctx.execute_logical_plan(df.logical_plan())
+    batches = df.collect()
+    assert len(batches) == 1
+    assert len(batches[0]) == 1
