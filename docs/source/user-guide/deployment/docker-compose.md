@@ -24,6 +24,7 @@ Docker Compose is a convenient way to launch a cluster when testing locally.
 ## Build Docker Images
 
 Run the following commands to download the [official Docker image](https://github.com/apache/arrow-ballista/pkgs/container/arrow-ballista-standalone):
+
 ```bash
 docker pull ghcr.io/apache/arrow-ballista-standalone:0.12.0-rc4
 ```

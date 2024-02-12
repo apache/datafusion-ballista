@@ -20,7 +20,9 @@
 # Starting a Ballista Cluster using Docker
 
 ## Build Docker Images
+
 Run the following commands to download the [official Docker image](https://github.com/apache/arrow-ballista/pkgs/container/arrow-ballista-standalone):
+
 ```bash
 docker pull ghcr.io/apache/arrow-ballista-standalone:0.12.0-rc4
 ```
