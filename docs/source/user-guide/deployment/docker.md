@@ -21,9 +21,13 @@
 
 ## Build Docker Images
 
-There are no officially published Docker images, so it is currently necessary to build the images from source.
+Run the following commands to download the [official Docker image](https://github.com/apache/arrow-ballista/pkgs/container/arrow-ballista-standalone):
 
-Run the following commands to clone the source repository and build the Docker image.
+```bash
+docker pull ghcr.io/apache/arrow-ballista-standalone:0.12.0-rc4
+```
+
+Altenatively run the following commands to clone the source repository and build the Docker images from source:
 
 ```bash
 git clone git@github.com:apache/arrow-ballista.git -b 0.12.0
