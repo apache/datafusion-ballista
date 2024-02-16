@@ -43,6 +43,9 @@ pub const BALLISTA_DATA_CACHE_ENABLED: &str = "ballista.data_cache.enabled";
 pub const BALLISTA_WITH_INFORMATION_SCHEMA: &str = "ballista.with_information_schema";
 /// give a plugin files dir, and then the dynamic library files in this dir will be load when scheduler state init.
 pub const BALLISTA_PLUGIN_DIR: &str = "ballista.plugin_dir";
+/// max message size for gRPC clients
+pub const BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE: &str =
+    "ballista.grpc_client_max_message_size";
 
 pub type ParseResult<T> = result::Result<T, String>;
 
@@ -207,6 +210,10 @@ impl BallistaConfig {
             ConfigEntry::new(BALLISTA_PLUGIN_DIR.to_string(),
                              "Sets the plugin dir".to_string(),
                              DataType::Utf8, Some("".to_string())),
+            ConfigEntry::new(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE.to_string(),
+                             "Configuration for max message size in gRPC clients".to_string(),
+                             DataType::UInt64,
+                             Some((16 * 1024 * 1024).to_string())),
         ];
         entries
             .iter()
@@ -232,6 +239,10 @@ impl BallistaConfig {
 
     pub fn hash_join_single_partition_threshold(&self) -> usize {
         self.get_usize_setting(BALLISTA_HASH_JOIN_SINGLE_PARTITION_THRESHOLD)
+    }
+
+    pub fn default_grpc_client_max_message_size(&self) -> usize {
+        self.get_usize_setting(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE)
     }
 
     pub fn repartition_joins(&self) -> bool {
@@ -370,7 +381,7 @@ mod tests {
         let config = BallistaConfig::new()?;
         assert_eq!(16, config.default_shuffle_partitions());
         assert!(!config.default_with_information_schema());
-        assert_eq!("", config.default_plugin_dir().as_str());
+        assert_eq!(16777216, config.default_grpc_client_max_message_size());
         Ok(())
     }
 
@@ -379,9 +390,14 @@ mod tests {
         let config = BallistaConfig::builder()
             .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "123")
             .set(BALLISTA_WITH_INFORMATION_SCHEMA, "true")
+            .set(
+                BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE,
+                (8 * 1024 * 1024).to_string().as_str(),
+            )
             .build()?;
         assert_eq!(123, config.default_shuffle_partitions());
         assert!(config.default_with_information_schema());
+        assert_eq!(8388608, config.default_grpc_client_max_message_size());
         Ok(())
     }
 

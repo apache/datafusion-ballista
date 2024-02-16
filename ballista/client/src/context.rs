@@ -100,9 +100,10 @@ impl BallistaContext {
         let connection = create_grpc_client_connection(scheduler_url.clone())
             .await
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+        let limit = config.default_grpc_client_max_message_size();
         let mut scheduler = SchedulerGrpcClient::new(connection)
-            .max_encoding_message_size(16 * 1024 * 1024)
-            .max_decoding_message_size(16 * 1024 * 1024);
+            .max_encoding_message_size(limit)
+            .max_decoding_message_size(limit);
 
         let remote_session_id = scheduler
             .create_session(CreateSessionParams {
