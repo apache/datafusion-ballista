@@ -94,10 +94,10 @@ pub struct ExecutorProcessConfig {
     pub cache_dir: Option<String>,
     pub cache_capacity: u64,
     pub cache_io_concurrency: u32,
-    /// The maximum size of a decoded message at the grpc server side.
-    pub grpc_server_max_decoding_message_size: u32,
-    /// The maximum size of an encoded message at the grpc server side.
-    pub grpc_server_max_encoding_message_size: u32,
+    /// The maximum size of a decoded message
+    pub grpc_max_decoding_message_size: u32,
+    /// The maximum size of an encoded message
+    pub grpc_max_encoding_message_size: u32,
     pub executor_heartbeat_interval_seconds: u64,
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.
@@ -285,8 +285,8 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
     }?;
 
     let mut scheduler = SchedulerGrpcClient::new(connection)
-        .max_encoding_message_size(16 * 1024 * 1024)
-        .max_decoding_message_size(16 * 1024 * 1024);
+        .max_encoding_message_size(opt.grpc_max_encoding_message_size as usize)
+        .max_decoding_message_size(opt.grpc_max_decoding_message_size as usize);
 
     let default_codec: BallistaCodec<LogicalPlanNode, PhysicalPlanNode> =
         BallistaCodec::default();

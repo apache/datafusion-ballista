@@ -99,6 +99,8 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
             tx_stop: stop_send,
         },
         codec,
+        config.grpc_max_encoding_message_size as usize,
+        config.grpc_max_decoding_message_size as usize,
     );
 
     // 1. Start executor grpc service
@@ -112,12 +114,8 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
             BALLISTA_VERSION, addr
         );
         let server = ExecutorGrpcServer::new(executor_server.clone())
-            .max_encoding_message_size(
-                config.grpc_server_max_encoding_message_size as usize,
-            )
-            .max_decoding_message_size(
-                config.grpc_server_max_decoding_message_size as usize,
-            );
+            .max_encoding_message_size(config.grpc_max_encoding_message_size as usize)
+            .max_decoding_message_size(config.grpc_max_decoding_message_size as usize);
         let mut grpc_shutdown = shutdown_noti.subscribe_for_shutdown();
         tokio::spawn(async move {
             let shutdown_signal = grpc_shutdown.recv();
@@ -188,6 +186,8 @@ pub struct ExecutorServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPl
     codec: BallistaCodec<T, U>,
     scheduler_to_register: SchedulerGrpcClient<Channel>,
     schedulers: SchedulerClients,
+    grpc_max_encoding_message_size: usize,
+    grpc_max_decoding_message_size: usize,
 }
 
 #[derive(Clone)]
@@ -212,6 +212,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         executor: Arc<Executor>,
         executor_env: ExecutorEnv,
         codec: BallistaCodec<T, U>,
+        grpc_max_encoding_message_size: usize,
+        grpc_max_decoding_message_size: usize,
     ) -> Self {
         Self {
             _start_time: SystemTime::now()
@@ -223,6 +225,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             codec,
             scheduler_to_register,
             schedulers: Default::default(),
+            grpc_max_encoding_message_size,
+            grpc_max_decoding_message_size,
         }
     }
 
@@ -238,8 +242,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             let scheduler_url = format!("http://{scheduler_id}");
             let connection = create_grpc_client_connection(scheduler_url).await?;
             let scheduler = SchedulerGrpcClient::new(connection)
-                .max_encoding_message_size(16 * 1024 * 1024)
-                .max_decoding_message_size(16 * 1024 * 1024);
+                .max_encoding_message_size(self.grpc_max_encoding_message_size)
+                .max_decoding_message_size(self.grpc_max_decoding_message_size);
 
             {
                 self.schedulers
