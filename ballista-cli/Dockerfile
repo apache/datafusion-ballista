@@ -15,15 +15,21 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM rust:1.59 as builder
-
-COPY ./datafusion /usr/src/datafusion
+FROM rust:1.76-bullseye as builder
 
 COPY ./ballista-cli /usr/src/ballista-cli
 
 COPY ./ballista /usr/src/ballista
 
+COPY ./benchmarks /usr/src/benchmarks
+
+COPY ./examples /usr/src/examples
+
+COPY ./Cargo.toml /usr/src/Cargo.toml
+
 WORKDIR /usr/src/ballista-cli
+
+RUN apt-get update && apt-get install -y protobuf-compiler
 
 RUN rustup component add rustfmt
 
@@ -31,7 +37,7 @@ RUN cargo build --release
 
 FROM debian:bullseye-slim
 
-COPY --from=builder /usr/src/ballista-cli/target/release/ballista-cli /usr/local/bin
+COPY --from=builder /usr/src/target/release/ballista-cli /usr/local/bin
 
 ENTRYPOINT ["ballista-cli"]
 
