@@ -80,13 +80,10 @@ RUST_LOG=info ballista-executor --bind-port 50052 -c 4
 Ballista provides a `BallistaContext` as a starting point for creating queries. DataFrames can be created
 by invoking the `read_csv`, `read_parquet`, and `sql` methods.
 
-To build a simple ballista example, add the following dependencies to your `Cargo.toml` file:
+To build a simple ballista example, run the following command to add the dependencies to your `Cargo.toml` file:
 
-```toml
-[dependencies]
-ballista = "0.11"
-datafusion = "28.0.0"
-tokio = "1.0"
+```bash
+cargo add ballista datafusion tokio
 ```
 
 The following example runs a simple aggregate SQL query against a Parquet file (`yellow_tripdata_2022-01.parquet`) from the
@@ -96,8 +93,6 @@ data set. Download the file and add it to the `testdata` folder before running t
 ```rust,no_run
 use ballista::prelude::*;
 use datafusion::prelude::{col, min, max, avg, sum, ParquetReadOptions};
-use datafusion::arrow::util::pretty;
-use datafusion::prelude::CsvReadOptions;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -116,8 +111,16 @@ async fn main() -> Result<()> {
         .read_parquet(filename, ParquetReadOptions::default())
         .await?
         .select_columns(&["passenger_count", "fare_amount"])?
-        .aggregate(vec![col("passenger_count")], vec![min(col("fare_amount")), max(col("fare_amount")), avg(col("fare_amount")), sum(col("fare_amount"))])?
-        .sort(vec![col("passenger_count").sort(true,true)])?;
+        .aggregate(
+            vec![col("passenger_count")],
+            vec![
+                min(col("fare_amount")),
+                max(col("fare_amount")),
+                avg(col("fare_amount")),
+                sum(col("fare_amount")),
+            ],
+        )?
+        .sort(vec![col("passenger_count").sort(true, true)])?;
 
     // this is equivalent to the following SQL
     // SELECT passenger_count, MIN(fare_amount), MAX(fare_amount), AVG(fare_amount), SUM(fare_amount)
