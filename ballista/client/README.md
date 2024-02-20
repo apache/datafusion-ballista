@@ -59,7 +59,7 @@ With these crates installed, it is now possible to start a scheduler process.
 RUST_LOG=info ballista-scheduler
 ```
 
-The scheduler will bind to port 50050 by default.
+The scheduler will bind to port `50050` by default.
 
 Next, start an executor processes in a new terminal session with the specified concurrency
 level.
@@ -68,7 +68,7 @@ level.
 RUST_LOG=info ballista-executor -c 4
 ```
 
-The executor will bind to port 50051 by default. Additional executors can be started by
+The executor will bind to port `50051` by default. Additional executors can be started by
 manually specifying a bind port. For example:
 
 ```bash
