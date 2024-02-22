@@ -201,8 +201,13 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         };
 
         let stream = futures::stream::once(
-            execute_query(self.scheduler_url.clone(), self.session_id.clone(), query)
-                .map_err(|e| ArrowError::ExternalError(Box::new(e))),
+            execute_query(
+                self.scheduler_url.clone(),
+                self.session_id.clone(),
+                query,
+                self.config.default_grpc_client_max_message_size(),
+            )
+            .map_err(|e| ArrowError::ExternalError(Box::new(e))),
         )
         .try_flatten();
 
@@ -222,6 +227,7 @@ async fn execute_query(
     scheduler_url: String,
     session_id: String,
     query: ExecuteQueryParams,
+    max_message_size: usize,
 ) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
     info!("Connecting to Ballista scheduler at {}", scheduler_url);
     // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
@@ -230,8 +236,8 @@ async fn execute_query(
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
     let mut scheduler = SchedulerGrpcClient::new(connection)
-        .max_encoding_message_size(16 * 1024 * 1024)
-        .max_decoding_message_size(16 * 1024 * 1024);
+        .max_encoding_message_size(max_message_size)
+        .max_decoding_message_size(max_message_size);
 
     let query_result = scheduler
         .execute_query(query)
