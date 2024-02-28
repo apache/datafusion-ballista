@@ -24,6 +24,7 @@ A simple way to start a local cluster for testing purposes is to use cargo to bu
 Project Requirements:
 
 - [Rust](https://www.rust-lang.org/tools/install)
+- [Protobuf Compiler](https://protobuf.dev/downloads/)
 - [Node.js](https://nodejs.org/en/download)
 - [Yarn](https://classic.yarnpkg.com/lang/en/docs/install)
 

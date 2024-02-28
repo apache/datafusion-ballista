@@ -40,6 +40,7 @@ bottom right corner of the IDE.
 If you are not using the Dev Container or VScode, you will need to install these dependencies yourself.
 
 - [Rust](https://www.rust-lang.org/tools/install)
+- [Protobuf Compiler](https://protobuf.dev/downloads/) is required to build the project.
 - [Node.js](https://nodejs.org/en/download/) is required to build the project.
 - [Yarn](https://classic.yarnpkg.com/en/docs/install) is required to build the UI.
 - [Docker](https://docs.docker.com/get-docker/) is required to run the integration tests.
