@@ -124,8 +124,11 @@ impl Debug for QueryStageSchedulerEvent {
             QueryStageSchedulerEvent::ReviveOffers => {
                 write!(f, "ReviveOffers.")
             }
-            QueryStageSchedulerEvent::ExecutorLost(job_id, reason) => {
-                write!(f, "ExecutorLost : job_id={job_id}, reason:[{reason:?}].")
+            QueryStageSchedulerEvent::ExecutorLost(executor_id, reason) => {
+                write!(
+                    f,
+                    "ExecutorLost : executor_id={executor_id}, reason:[{reason:?}]."
+                )
             }
             QueryStageSchedulerEvent::CancelTasks(status) => {
                 write!(f, "CancelTasks : status:[{status:?}].")
