@@ -493,7 +493,7 @@ mod tests {
         assert_eq!(1, batches.len());
         let batch = &batches[0];
         assert_eq!(3, batch.num_columns());
-        assert_eq!(2, batch.num_rows());
+        assert_eq!(2, batch.num_rows()); // TODO
         let path = batch.columns()[1]
             .as_any()
             .downcast_ref::<StringArray>()
@@ -577,7 +577,7 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(UInt32Array::from(vec![Some(1), Some(2)])),
+                Arc::new(UInt32Array::from(vec![Some(1), Some(3)])),
                 Arc::new(StringArray::from(vec![Some("hello"), Some("world")])),
             ],
         )?;
