@@ -345,6 +345,7 @@ pub(crate) async fn get_job_svg_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
                     &mut PrinterContext::default(),
                     vec![CommandArg::Format(Format::Svg)],
                 )
+                .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
                 .map_err(|_| warp::reject())
             } else {
                 Ok("Cannot parse graph".to_string())
