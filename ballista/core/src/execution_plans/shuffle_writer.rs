@@ -493,7 +493,7 @@ mod tests {
         assert_eq!(1, batches.len());
         let batch = &batches[0];
         assert_eq!(3, batch.num_columns());
-        assert_eq!(2, batch.num_rows()); // TODO
+        assert_eq!(2, batch.num_rows());
         let path = batch.columns()[1]
             .as_any()
             .downcast_ref::<StringArray>()
