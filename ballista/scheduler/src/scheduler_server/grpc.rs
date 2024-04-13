@@ -116,7 +116,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     Status::internal(msg)
                 })?;
 
-            let mut available_slots = vec![AvailableTaskSlots {
+            let mut available_slots = [AvailableTaskSlots {
                 executor_id,
                 slots: num_free_slots,
             }];
