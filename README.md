@@ -45,8 +45,8 @@ Ballista implements a similar design to Apache Spark (particularly Spark SQL), b
 
 A Ballista cluster consists of one or more scheduler processes and one or more executor processes. These processes
 can be run as native binaries and are also available as Docker Images, which can be easily deployed with
-[Docker Compose](https://arrow.apache.org/ballista/user-guide/deployment/docker-compose.html) or
-[Kubernetes](https://arrow.apache.org/ballista/user-guide/deployment/kubernetes.html).
+[Docker Compose](https://datafusion.apache.org/ballista/user-guide/deployment/docker-compose.html) or
+[Kubernetes](https://datafusion.apache.org/ballista/user-guide/deployment/kubernetes.html).
 
 The following diagram shows the interaction between clients and the scheduler for submitting jobs, and the interaction
 between the executor(s) and the scheduler for fetching tasks and reporting task status.
@@ -83,7 +83,7 @@ that, refer to the [Getting Started Guide](ballista/client/README.md).
 
 Ballista supports a wide range of SQL, including CTEs, Joins, and Subqueries and can execute complex queries at scale.
 
-Refer to the [DataFusion SQL Reference](https://arrow.apache.org/datafusion/user-guide/sql/index.html) for more
+Refer to the [DataFusion SQL Reference](https://datafusion.apache.org/user-guide/sql/index.html) for more
 information on supported SQL.
 
 Ballista is maturing quickly and is now working towards being production ready. See the [roadmap](ROADMAP.md) for more details.
@@ -97,4 +97,4 @@ Please see the [Contribution Guide](CONTRIBUTING.md) for information about contr
 [flight]: https://arrow.apache.org/blog/2019/10/13/introducing-arrow-flight/
 [flight-sql]: https://arrow.apache.org/blog/2022/02/16/introducing-arrow-flight-sql/
 [ballista-talk]: https://www.youtube.com/watch?v=ZZHQaOap9pQ
-[user-guide]: https://arrow.apache.org/ballista/
+[user-guide]: https://datafusion.apache.org/ballista/

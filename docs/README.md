@@ -21,7 +21,7 @@
 
 ## User Documentation
 
-Documentation for the current published release can be found at https://arrow.apache.org/ballista and the source
+Documentation for the current published release can be found at https://datafusion.apache.org/ballista and the source
 content is located [here](source/user-guide/introduction.md).
 
 ## Developer Documentation
