@@ -289,15 +289,11 @@ impl FlightSqlServiceImpl {
             } else {
                 Err(Status::internal("Error getting stats".to_string()))?
             }
-            let authority = format!("{}:{}", &host, &port);
-            let loc = Location {
-                uri: format!("grpc+tcp://{authority}"),
-            };
             let buf = fetch.as_any().encode_to_vec();
             let ticket = Ticket { ticket: buf.into() };
             let fiep = FlightEndpoint {
                 ticket: Some(ticket),
-                location: vec![loc],
+                location: vec![],
             };
             fieps.push(fiep);
         }
