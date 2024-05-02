@@ -653,6 +653,8 @@ mod test {
 
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
+    use object_store::path::Path;
+    use tempfile::NamedTempFile;
     use tonic::{Code, Request};
 
     use crate::config::SchedulerConfig;
@@ -858,17 +860,21 @@ mod test {
             );
         scheduler.init().await?;
 
+        let mut test_file = NamedTempFile::new()?;
+        let source_location_str =
+            Path::from(test_file.as_ref().to_str().unwrap()).to_string();
+
         let requests = vec![
             Request::new(GetFileMetadataParams {
-                path: "/tmp/file.parquet".to_string(),
+                path: source_location_str.clone(),
                 file_type: "parquet".to_string(),
             }),
             Request::new(GetFileMetadataParams {
-                path: "/tmp/file.csv".to_string(),
+                path: source_location_str.clone(),
                 file_type: "csv".to_string(),
             }),
             Request::new(GetFileMetadataParams {
-                path: "/tmp/file.tbl".to_string(),
+                path: source_location_str.clone(),
                 file_type: "tbl".to_string(),
             }),
         ];
@@ -891,7 +897,7 @@ mod test {
 
         let request: Request<GetFileMetadataParams> =
             Request::new(GetFileMetadataParams {
-                path: "/tmp/file.avro".to_string(),
+                path: source_location_str,
                 file_type: "avro".to_string(),
             });
         let avro_response = scheduler
