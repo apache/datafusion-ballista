@@ -860,7 +860,7 @@ mod test {
             );
         scheduler.init().await?;
 
-        let mut test_file = NamedTempFile::new()?;
+        let test_file = NamedTempFile::new()?;
         let source_location_str =
             Path::from(test_file.as_ref().to_str().unwrap()).to_string();
 
