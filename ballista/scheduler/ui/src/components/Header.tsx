@@ -59,7 +59,7 @@ export const Header: React.FunctionComponent<HeaderProps> = ({
             <a
               rel={"noreferrer"}
               target={"_blank"}
-              href={"https://arrow.apache.org/ballista/"}
+              href={"https://datafusion.apache.org/ballista/"}
             >
               <Button
                 mr={4}

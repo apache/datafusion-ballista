@@ -22,7 +22,7 @@ license = "Apache-2.0"
 homepage = "https://github.com/apache/arrow-ballista"
 repository = "https://github.com/apache/arrow-ballista"
 readme = "README.md"
-authors = ["Apache Arrow <dev@arrow.apache.org>"]
+authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
 version = "0.12.0"
 edition = "2021"
 

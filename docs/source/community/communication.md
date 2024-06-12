@@ -30,11 +30,11 @@ conduct](https://www.apache.org/foundation/policies/conduct.html).
 
 ### Mailing list
 
-We use arrow.apache.org's `dev@` mailing list for project management, release
+We use datafusion.apache.org's `dev@` mailing list for project management, release
 coorindation and design discussions
-([subscribe](mailto:dev-subscribe@arrow.apache.org),
-[unsubscribe](mailto:dev-unsubscribe@arrow.apache.org),
-[archives](https://lists.apache.org/list.html?dev@arrow.apache.org)).
+([subscribe](mailto:dev-subscribe@datafusion.apache.org),
+[unsubscribe](mailto:dev-unsubscribe@datafusion.apache.org),
+[archives](https://lists.apache.org/list.html?dev@datafusion.apache.org)).
 
 When emailing the dev list, please make sure to prefix the subject line with a
 `[Ballista]` tag, e.g. `"[Ballista] New API for remote data sources"`, so
@@ -68,7 +68,7 @@ The goals of these calls are:
 
 No decisions are made on the call and anything of substance will be discussed on this mailing list or in github issues / google docs.
 
-We will send a summary of all sync ups to the dev@arrow.apache.org mailing list.
+We will send a summary of all sync ups to the dev@datafusion.apache.org mailing list.
 
 ## Contributing
 

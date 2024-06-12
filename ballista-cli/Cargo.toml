@@ -19,7 +19,7 @@
 name = "ballista-cli"
 description = "Command Line Client for Ballista distributed query engine."
 version = "0.12.0"
-authors = ["Apache Arrow <dev@arrow.apache.org>"]
+authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
 edition = "2021"
 keywords = ["ballista", "cli"]
 license = "Apache-2.0"

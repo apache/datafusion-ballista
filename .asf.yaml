@@ -16,13 +16,13 @@
 # under the License.
 
 notifications:
-  commits:      commits@arrow.apache.org
-  issues:       github@arrow.apache.org
-  pullrequests: github@arrow.apache.org
+  commits:      commits@datafusion.apache.org
+  issues:       github@datafusion.apache.org
+  pullrequests: github@datafusion.apache.org
   jira_options: link label worklog
 github:
-  description: "Apache Arrow Ballista Distributed Query Engine"
-  homepage: https://arrow.apache.org/ballista
+  description: "Apache DataFusion Ballista Distributed Query Engine"
+  homepage: https://datafusion.apache.org/ballista
   labels:
     - arrow
     - big-data
