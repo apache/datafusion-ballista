@@ -345,6 +345,10 @@ impl BallistaContext {
         Ok(is_show_variable)
     }
 
+    pub fn context(&self) -> &SessionContext {
+        &self.context
+    }
+
     /// Create a DataFrame from a SQL statement.
     ///
     /// This method is `async` because queries of type `CREATE EXTERNAL TABLE`

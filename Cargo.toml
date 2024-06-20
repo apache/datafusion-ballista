@@ -35,11 +35,11 @@ arrow-flight = { version = "50.0.0", features = ["flight-sql-experimental"] }
 arrow-schema = { version = "50.0.0", default-features = false }
 configure_me = { version = "0.4.0" }
 configure_me_codegen = { version = "0.4.4" }
-datafusion = "35.0.0"
-datafusion-cli = "35.0.0"
-datafusion-proto = "35.0.0"
+datafusion = "36.0.0"
+datafusion-cli = "36.0.0"
+datafusion-proto = "36.0.0"
 object_store = "0.9.0"
-sqlparser = "0.41.0"
+sqlparser = "0.43.0"
 tonic = { version = "0.10" }
 tonic-build = { version = "0.10", default-features = false, features = [
     "transport",
