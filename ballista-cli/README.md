@@ -32,6 +32,9 @@ OPTIONS:
     -c, --batch-size <BATCH_SIZE>
             The batch size of each query, or use Ballista default
 
+        --color
+            Enables console syntax highlighting
+
         --concurrent-tasks <CONCURRENT_TASKS>
             The max concurrent tasks, only for Ballista local mode. Default: all available cores
 
