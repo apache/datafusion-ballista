@@ -53,7 +53,11 @@ pub async fn exec_from_lines(
                         Ok(_) => {}
                         Err(err) => println!("{err:?}"),
                     }
-                    query = "".to_owned();
+
+                    #[allow(clippy::assigning_clones)]
+                    {
+                        query = "".to_owned();
+                    }
                 } else {
                     query.push('\n');
                 }

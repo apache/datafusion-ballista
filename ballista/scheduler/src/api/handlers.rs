@@ -32,12 +32,6 @@ struct SchedulerStateResponse {
     started: u128,
     version: &'static str,
 }
-
-#[derive(Debug, serde::Serialize)]
-struct ExecutorsResponse {
-    executors: Vec<ExecutorMetaResponse>,
-}
-
 #[derive(Debug, serde::Serialize)]
 pub struct ExecutorMetaResponse {
     pub id: String,
