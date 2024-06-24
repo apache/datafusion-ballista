@@ -53,7 +53,11 @@ pub async fn exec_from_lines(
                         Ok(_) => {}
                         Err(err) => println!("{err:?}"),
                     }
-                    query = "".to_owned();
+
+                    #[allow(clippy::assigning_clones)]
+                    {
+                        query = "".to_owned();
+                    }
                 } else {
                     query.push('\n');
                 }
@@ -91,7 +95,15 @@ pub async fn exec_from_files(
 /// run and execute SQL statements and commands against a context with the given print options
 pub async fn exec_from_repl(ctx: &BallistaContext, print_options: &mut PrintOptions) {
     let mut rl = Editor::new().expect("created editor");
-    rl.set_helper(Some(CliHelper::default()));
+    rl.set_helper(Some(CliHelper::new(
+        &ctx.context()
+            .task_ctx()
+            .session_config()
+            .options()
+            .sql_parser
+            .dialect,
+        print_options.color,
+    )));
     rl.load_history(".history").ok();
 
     let mut print_options = print_options.clone();

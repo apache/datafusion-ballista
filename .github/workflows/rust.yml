@@ -349,12 +349,12 @@ jobs:
         uses: actions/download-artifact@v2
         with:
           name: rust-artifacts
-          path: /home/runner/work/arrow-ballista/arrow-ballista/target/release
+          path: target/release
       - name: Restore react artifacts
         uses: actions/download-artifact@v2
         with:
           name: react-artifacts
-          path: /home/runner/work/arrow-ballista/arrow-ballista/ballista/scheduler/ui/build
+          path: ballista/scheduler/ui/build
       - name: Build and push Docker image
         run: |
           echo "github user is $DOCKER_USER"

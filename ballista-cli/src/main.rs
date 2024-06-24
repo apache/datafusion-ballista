@@ -89,6 +89,9 @@ struct Args {
         help = "Reduce printing other than the results and work quietly"
     )]
     quiet: bool,
+
+    #[clap(long, help = "Enables console syntax highlighting")]
+    color: bool,
 }
 
 #[tokio::main]
@@ -135,6 +138,7 @@ pub async fn main() -> Result<()> {
         format: args.format,
         quiet: args.quiet,
         maxrows: MaxRows::Unlimited,
+        color: args.color,
     };
 
     let files = args.file;
