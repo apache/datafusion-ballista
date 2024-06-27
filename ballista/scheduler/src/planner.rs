@@ -318,7 +318,8 @@ mod test {
 
     macro_rules! downcast_exec {
         ($exec: expr, $ty: ty) => {
-            $exec.as_any().downcast_ref::<$ty>().unwrap()
+            $exec.as_any().downcast_ref::<$ty>().expect(
+                &format!("Downcast to {} failed. Got {:?}", stringify!($ty), $exec))
         };
     }
 
@@ -344,8 +345,8 @@ mod test {
         let mut planner = DistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
         let stages = planner.plan_query_stages(&job_uuid.to_string(), plan)?;
-        for stage in &stages {
-            println!("{}", displayable(stage.as_ref()).indent(false));
+        for (i, stage) in stages.iter().enumerate() {
+            println!("Stage {i}:\n{}", displayable(stage.as_ref()).indent(false));
         }
 
         /* Expected result:
@@ -450,8 +451,8 @@ order by
         let mut planner = DistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
         let stages = planner.plan_query_stages(&job_uuid.to_string(), plan)?;
-        for stage in &stages {
-            println!("{}", displayable(stage.as_ref()).indent(false));
+        for (i, stage) in stages.iter().enumerate() {
+            println!("Stage {i}:\n{}", displayable(stage.as_ref()).indent(false));
         }
 
         /* Expected result:
@@ -503,7 +504,7 @@ order by
             2,
             stages[0]
                 .shuffle_output_partitioning()
-                .unwrap()
+                .expect("stage 0")
                 .partition_count()
         );
 
@@ -519,7 +520,7 @@ order by
             2,
             stages[1]
                 .shuffle_output_partitioning()
-                .unwrap()
+                .expect("stage 1")
                 .partition_count()
         );
 
@@ -530,7 +531,7 @@ order by
             2,
             stages[2]
                 .shuffle_output_partitioning()
-                .unwrap()
+                .expect("stage 2")
                 .partition_count()
         );
 
