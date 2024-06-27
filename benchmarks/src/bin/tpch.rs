@@ -1041,7 +1041,6 @@ async fn get_expected_results(n: usize, path: &str) -> Result<Vec<RecordBatch>> 
                         // there's no support for casting from Utf8 to Decimal, so
                         // we'll cast from Utf8 to Float64 to Decimal for Decimal types
                         let inner_cast = Box::new(Expr::Cast(Cast::new(
-                            // TODO
                             Box::new(trim(vec![col(Field::name(field))])),
                             DataType::Float64,
                         )));
@@ -1052,7 +1051,6 @@ async fn get_expected_results(n: usize, path: &str) -> Result<Vec<RecordBatch>> 
                         .alias(Field::name(field))
                     }
                     _ => Expr::Cast(Cast::new(
-                        // TODO
                         Box::new(trim(vec![col(Field::name(field))])),
                         Field::data_type(field).to_owned(),
                     ))

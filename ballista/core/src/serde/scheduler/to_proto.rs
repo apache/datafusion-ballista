@@ -103,7 +103,6 @@ pub fn hash_partitioning_to_proto(
         Some(Partitioning::Hash(exprs, partition_count)) => {
             let default_codec =
                 datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec {};
-            //let k: PhysicalExprNode = exprs.iter().next().unwrap().try_into().unwrap();
             Ok(Some(datafusion_protobuf::PhysicalHashRepartition {
                 hash_expr: exprs
                     .iter()

@@ -156,8 +156,6 @@ impl BallistaClient {
             };
 
             let mut stream = res.into_inner();
-            //let st = FlightRecordBatchStream::new_from_flight_data(
-            //                stream.map_err(|e| e.into()));
 
             match stream.message().await {
                 Ok(res) => {
