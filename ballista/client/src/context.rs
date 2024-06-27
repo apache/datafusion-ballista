@@ -481,7 +481,7 @@ mod standalone_tests {
     use datafusion::config::TableParquetOptions;
     use datafusion::dataframe::DataFrameWriteOptions;
     use datafusion::datasource::listing::ListingTableUrl;
-    use datafusion::parquet::file::properties::WriterProperties;
+    
     use tempfile::TempDir;
 
     #[tokio::test]

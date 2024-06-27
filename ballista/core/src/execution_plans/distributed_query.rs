@@ -32,7 +32,6 @@ use datafusion::execution::context::TaskContext;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion::physical_plan::ExecutionPlanProperties;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionMode, ExecutionPlan, Partitioning,
     PlanProperties, SendableRecordBatchStream, Statistics,

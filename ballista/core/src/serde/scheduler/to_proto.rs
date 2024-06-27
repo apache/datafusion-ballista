@@ -29,7 +29,6 @@ use crate::serde::scheduler::{
     PartitionLocation, PartitionStats,
 };
 use datafusion::physical_plan::Partitioning;
-use datafusion_proto::protobuf::PhysicalExprNode;
 use protobuf::{action::ActionType, operator_metric, NamedCount, NamedGauge, NamedTime};
 
 impl TryInto<protobuf::Action> for Action {

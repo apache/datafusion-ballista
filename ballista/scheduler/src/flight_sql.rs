@@ -33,7 +33,7 @@ use arrow_flight::sql::{
 };
 use arrow_flight::{
     Action, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest,
-    HandshakeResponse, Location, Ticket,
+    HandshakeResponse, Ticket,
 };
 use base64::Engine;
 use futures::Stream;
