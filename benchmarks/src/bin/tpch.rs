@@ -1583,6 +1583,7 @@ mod ballista_round_trip {
     use datafusion_proto::physical_plan::AsExecutionPlan;
     use std::env;
     use std::ops::Deref;
+    use datafusion::config::TableOptions;
 
     async fn round_trip_logical_plan(n: usize) -> Result<()> {
         let config = SessionConfig::new()
@@ -1608,7 +1609,7 @@ mod ballista_round_trip {
                 .has_header(false)
                 .file_extension(".tbl");
             let cfg = SessionConfig::new();
-            let listing_options = options.to_listing_options(&cfg);
+            let listing_options = options.to_listing_options(&cfg, TableOptions::default());
             let config = ListingTableConfig::new(path.clone())
                 .with_listing_options(listing_options)
                 .with_schema(Arc::new(schema));
@@ -1664,7 +1665,7 @@ mod ballista_round_trip {
                 .has_header(false)
                 .file_extension(".tbl");
             let cfg = SessionConfig::new();
-            let listing_options = options.to_listing_options(&cfg);
+            let listing_options = options.to_listing_options(&cfg, TableOptions::default());
             let config = ListingTableConfig::new(path.clone())
                 .with_listing_options(listing_options)
                 .with_schema(Arc::new(schema));
