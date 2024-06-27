@@ -308,10 +308,10 @@ fn send_fetch_partitions(
         let semaphore = semaphore.clone();
         let response_sender = response_sender.clone();
         spawned_tasks.push(SpawnedTask::spawn(async move {
-            // Block if exceeds max request number
+            // Block if exceeds max request number.
             let permit = semaphore.acquire_owned().await.unwrap();
             let r = PartitionReaderEnum::FlightRemote.fetch_partition(&p).await;
-            // Block if the channel buffer is ful
+            // Block if the channel buffer is full.
             if let Err(e) = response_sender.send(r).await {
                 error!("Fail to send response event to the channel due to {}", e);
             }
