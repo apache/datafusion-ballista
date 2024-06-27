@@ -281,12 +281,12 @@ aggr=[{}]",
     } else if let Some(exec) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() {
         format!(
             "CoalescePartitions [{}]",
-            format_partitioning(exec.output_partitioning())
+            format_partitioning(exec.properties().output_partitioning().clone())
         )
     } else if let Some(exec) = plan.as_any().downcast_ref::<RepartitionExec>() {
         format!(
             "RepartitionExec [{}]",
-            format_partitioning(exec.output_partitioning())
+            format_partitioning(exec.properties().output_partitioning().clone())
         )
     } else if let Some(exec) = plan.as_any().downcast_ref::<HashJoinExec>() {
         let join_expr = exec
@@ -323,24 +323,24 @@ filter_expr={}",
     } else if plan.as_any().downcast_ref::<MemoryExec>().is_some() {
         "MemoryExec".to_string()
     } else if let Some(exec) = plan.as_any().downcast_ref::<CsvExec>() {
-        let parts = exec.output_partitioning().partition_count();
+        let parts = exec.properties().output_partitioning().partition_count();
         format!(
             "CSV: {} [{} partitions]",
             get_file_scan(exec.base_config()),
             parts
         )
     } else if let Some(exec) = plan.as_any().downcast_ref::<NdJsonExec>() {
-        let parts = exec.output_partitioning().partition_count();
+        let parts = exec.properties().output_partitioning().partition_count();
         format!("JSON [{parts} partitions]")
     } else if let Some(exec) = plan.as_any().downcast_ref::<AvroExec>() {
-        let parts = exec.output_partitioning().partition_count();
+        let parts = exec.properties().output_partitioning().partition_count();
         format!(
             "Avro: {} [{} partitions]",
             get_file_scan(exec.base_config()),
             parts
         )
     } else if let Some(exec) = plan.as_any().downcast_ref::<ParquetExec>() {
-        let parts = exec.output_partitioning().partition_count();
+        let parts = exec.properties().output_partitioning().partition_count();
         format!(
             "Parquet: {} [{} partitions]",
             get_file_scan(exec.base_config()),

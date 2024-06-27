@@ -109,8 +109,7 @@ impl DistributedPlanner {
             let unresolved_shuffle = create_unresolved_shuffle(&shuffle_writer);
             stages.push(shuffle_writer);
             Ok((
-                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?
-                    .into(),
+                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
                 stages,
             ))
         } else if let Some(_sort_preserving_merge) = execution_plan
@@ -126,14 +125,13 @@ impl DistributedPlanner {
             let unresolved_shuffle = create_unresolved_shuffle(&shuffle_writer);
             stages.push(shuffle_writer);
             Ok((
-                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?
-                    .into(),
+                with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
                 stages,
             ))
         } else if let Some(repart) =
             execution_plan.as_any().downcast_ref::<RepartitionExec>()
         {
-            match repart.output_partitioning() {
+            match repart.properties().output_partitioning() {
                 Partitioning::Hash(_, _) => {
                     let shuffle_writer = create_shuffle_writer(
                         job_id,
@@ -158,7 +156,7 @@ impl DistributedPlanner {
             )))
         } else {
             Ok((
-                with_new_children_if_necessary(execution_plan, children)?.into(),
+                with_new_children_if_necessary(execution_plan, children)?,
                 stages,
             ))
         }
@@ -177,7 +175,10 @@ fn create_unresolved_shuffle(
     Arc::new(UnresolvedShuffleExec::new(
         shuffle_writer.stage_id(),
         shuffle_writer.schema(),
-        shuffle_writer.output_partitioning().partition_count(),
+        shuffle_writer
+            .properties()
+            .output_partitioning()
+            .partition_count(),
     ))
 }
 
@@ -250,7 +251,7 @@ pub fn remove_unresolved_shuffles(
             new_children.push(remove_unresolved_shuffles(child, partition_locations)?);
         }
     }
-    Ok(with_new_children_if_necessary(stage, new_children)?.into())
+    Ok(with_new_children_if_necessary(stage, new_children)?)
 }
 
 /// Rollback the ShuffleReaderExec to UnresolvedShuffleExec.
@@ -262,8 +263,10 @@ pub fn rollback_resolved_shuffles(
     let mut new_children: Vec<Arc<dyn ExecutionPlan>> = vec![];
     for child in stage.children() {
         if let Some(shuffle_reader) = child.as_any().downcast_ref::<ShuffleReaderExec>() {
-            let output_partition_count =
-                shuffle_reader.output_partitioning().partition_count();
+            let output_partition_count = shuffle_reader
+                .properties()
+                .output_partitioning()
+                .partition_count();
             let stage_id = shuffle_reader.stage_id;
 
             let unresolved_shuffle = Arc::new(UnresolvedShuffleExec::new(
@@ -276,7 +279,7 @@ pub fn rollback_resolved_shuffles(
             new_children.push(rollback_resolved_shuffles(child)?);
         }
     }
-    Ok(with_new_children_if_necessary(stage, new_children)?.into())
+    Ok(with_new_children_if_necessary(stage, new_children)?)
 }
 
 fn create_shuffle_writer(
@@ -318,7 +321,11 @@ mod test {
 
     macro_rules! downcast_exec {
         ($exec: expr, $ty: ty) => {
-            $exec.as_any().downcast_ref::<$ty>().unwrap()
+            $exec.as_any().downcast_ref::<$ty>().expect(&format!(
+                "Downcast to {} failed. Got {:?}",
+                stringify!($ty),
+                $exec
+            ))
         };
     }
 
@@ -344,8 +351,8 @@ mod test {
         let mut planner = DistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
         let stages = planner.plan_query_stages(&job_uuid.to_string(), plan)?;
-        for stage in &stages {
-            println!("{}", displayable(stage.as_ref()).indent(false));
+        for (i, stage) in stages.iter().enumerate() {
+            println!("Stage {i}:\n{}", displayable(stage.as_ref()).indent(false));
         }
 
         /* Expected result:
@@ -450,8 +457,8 @@ order by
         let mut planner = DistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
         let stages = planner.plan_query_stages(&job_uuid.to_string(), plan)?;
-        for stage in &stages {
-            println!("{}", displayable(stage.as_ref()).indent(false));
+        for (i, stage) in stages.iter().enumerate() {
+            println!("Stage {i}:\n{}", displayable(stage.as_ref()).indent(false));
         }
 
         /* Expected result:
@@ -467,13 +474,12 @@ order by
 
         ShuffleWriterExec: Some(Hash([Column { name: "l_shipmode", index: 0 }], 2))
           AggregateExec: mode=Partial, gby=[l_shipmode@0 as l_shipmode], aggr=[SUM(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), SUM(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
-            ProjectionExec: expr=[l_shipmode@1 as l_shipmode, o_orderpriority@3 as o_orderpriority]
-              CoalesceBatchesExec: target_batch_size=8192
-                HashJoinExec: mode=Partitioned, join_type=Inner, on=[(Column { name: "l_orderkey", index: 0 }, Column { name: "o_orderkey", index: 0 })]
-                  CoalesceBatchesExec: target_batch_size=8192
-                    UnresolvedShuffleExec
-                  CoalesceBatchesExec: target_batch_size=8192
-                    UnresolvedShuffleExec
+            CoalesceBatchesExec: target_batch_size=8192
+              HashJoinExec: mode=Partitioned, join_type=Inner, on=[(l_orderkey@0, o_orderkey@0)], projection=[l_shipmode@1, o_orderpriority@3]
+                CoalesceBatchesExec: target_batch_size=8192
+                  UnresolvedShuffleExec
+                CoalesceBatchesExec: target_batch_size=8192
+                  UnresolvedShuffleExec
 
         ShuffleWriterExec: None
           SortExec: expr=[l_shipmode@0 ASC NULLS LAST]
@@ -495,6 +501,7 @@ order by
         assert_eq!(
             2,
             stages[0].children()[0]
+                .properties()
                 .output_partitioning()
                 .partition_count()
         );
@@ -502,7 +509,7 @@ order by
             2,
             stages[0]
                 .shuffle_output_partitioning()
-                .unwrap()
+                .expect("stage 0")
                 .partition_count()
         );
 
@@ -510,6 +517,7 @@ order by
         assert_eq!(
             1,
             stages[1].children()[0]
+                .properties()
                 .output_partitioning()
                 .partition_count()
         );
@@ -517,31 +525,32 @@ order by
             2,
             stages[1]
                 .shuffle_output_partitioning()
-                .unwrap()
+                .expect("stage 1")
                 .partition_count()
         );
 
         // join and partial hash aggregate
         let input = stages[2].children()[0].clone();
-        assert_eq!(2, input.output_partitioning().partition_count());
+        assert_eq!(
+            2,
+            input.properties().output_partitioning().partition_count()
+        );
         assert_eq!(
             2,
             stages[2]
                 .shuffle_output_partitioning()
-                .unwrap()
+                .expect("stage 2")
                 .partition_count()
         );
 
         let hash_agg = downcast_exec!(input, AggregateExec);
 
-        let projection = hash_agg.children()[0].clone();
-        let projection = downcast_exec!(projection, ProjectionExec);
-
-        let coalesce_batches = projection.children()[0].clone();
+        let coalesce_batches = hash_agg.children()[0].clone();
         let coalesce_batches = downcast_exec!(coalesce_batches, CoalesceBatchesExec);
 
         let join = coalesce_batches.children()[0].clone();
         let join = downcast_exec!(join, HashJoinExec);
+        assert!(join.contain_projection());
 
         let join_input_1 = join.children()[0].clone();
         // skip CoalesceBatches
@@ -561,6 +570,7 @@ order by
         assert_eq!(
             2,
             stages[3].children()[0]
+                .properties()
                 .output_partitioning()
                 .partition_count()
         );
@@ -570,6 +580,7 @@ order by
         assert_eq!(
             1,
             stages[4].children()[0]
+                .properties()
                 .output_partitioning()
                 .partition_count()
         );

@@ -34,26 +34,24 @@ use crate::serde::scheduler::{PartitionLocation, PartitionStats};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::runtime::SpawnedTask;
 
 use datafusion::error::Result;
-use datafusion::physical_plan::expressions::PhysicalSortExpr;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::{
     ColumnStatistics, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
-    RecordBatchStream, SendableRecordBatchStream, Statistics,
+    PlanProperties, RecordBatchStream, SendableRecordBatchStream, Statistics,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
 
 use crate::error::BallistaError;
 use datafusion::execution::context::TaskContext;
-use datafusion::physical_plan::common::AbortOnDropMany;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use itertools::Itertools;
 use log::{error, info};
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
 use tokio::sync::{mpsc, Semaphore};
-use tokio::task::JoinHandle;
 use tokio_stream::wrappers::ReceiverStream;
 
 /// ShuffleReaderExec reads partitions that have already been materialized by a ShuffleWriterExec
@@ -67,6 +65,7 @@ pub struct ShuffleReaderExec {
     pub partition: Vec<Vec<PartitionLocation>>,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
+    properties: PlanProperties,
 }
 
 impl ShuffleReaderExec {
@@ -76,11 +75,19 @@ impl ShuffleReaderExec {
         partition: Vec<Vec<PartitionLocation>>,
         schema: SchemaRef,
     ) -> Result<Self> {
+        let properties = PlanProperties::new(
+            datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
+            // TODO partitioning may be known and could be populated here
+            // see https://github.com/apache/arrow-datafusion/issues/758
+            Partitioning::UnknownPartitioning(partition.len()),
+            datafusion::physical_plan::ExecutionMode::Bounded,
+        );
         Ok(Self {
             stage_id,
             schema,
             partition,
             metrics: ExecutionPlanMetricsSet::new(),
+            properties,
         })
     }
 }
@@ -108,16 +115,9 @@ impl ExecutionPlan for ShuffleReaderExec {
         self.schema.clone()
     }
 
-    fn output_partitioning(&self) -> Partitioning {
-        // TODO partitioning may be known and could be populated here
-        // see https://github.com/apache/arrow-datafusion/issues/758
-        Partitioning::UnknownPartitioning(self.partition.len())
+    fn properties(&self) -> &PlanProperties {
+        &self.properties
     }
-
-    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> {
-        None
-    }
-
     fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
         vec![]
     }
@@ -244,7 +244,7 @@ struct AbortableReceiverStream {
     inner: ReceiverStream<result::Result<SendableRecordBatchStream, BallistaError>>,
 
     #[allow(dead_code)]
-    drop_helper: AbortOnDropMany<()>,
+    drop_helper: Vec<SpawnedTask<()>>,
 }
 
 impl AbortableReceiverStream {
@@ -253,12 +253,12 @@ impl AbortableReceiverStream {
         rx: tokio::sync::mpsc::Receiver<
             result::Result<SendableRecordBatchStream, BallistaError>,
         >,
-        join_handles: Vec<JoinHandle<()>>,
+        spawned_tasks: Vec<SpawnedTask<()>>,
     ) -> AbortableReceiverStream {
         let inner = ReceiverStream::new(rx);
         Self {
             inner,
-            drop_helper: AbortOnDropMany(join_handles),
+            drop_helper: spawned_tasks,
         }
     }
 }
@@ -282,7 +282,7 @@ fn send_fetch_partitions(
 ) -> AbortableReceiverStream {
     let (response_sender, response_receiver) = mpsc::channel(max_request_num);
     let semaphore = Arc::new(Semaphore::new(max_request_num));
-    let mut join_handles = vec![];
+    let mut spawned_tasks: Vec<SpawnedTask<()>> = vec![];
     let (local_locations, remote_locations): (Vec<_>, Vec<_>) = partition_locations
         .into_iter()
         .partition(check_is_local_location);
@@ -295,34 +295,32 @@ fn send_fetch_partitions(
 
     // keep local shuffle files reading in serial order for memory control.
     let response_sender_c = response_sender.clone();
-    let join_handle = tokio::spawn(async move {
+    spawned_tasks.push(SpawnedTask::spawn(async move {
         for p in local_locations {
             let r = PartitionReaderEnum::Local.fetch_partition(&p).await;
             if let Err(e) = response_sender_c.send(r).await {
                 error!("Fail to send response event to the channel due to {}", e);
             }
         }
-    });
-    join_handles.push(join_handle);
+    }));
 
     for p in remote_locations.into_iter() {
         let semaphore = semaphore.clone();
         let response_sender = response_sender.clone();
-        let join_handle = tokio::spawn(async move {
-            // Block if exceeds max request number
+        spawned_tasks.push(SpawnedTask::spawn(async move {
+            // Block if exceeds max request number.
             let permit = semaphore.acquire_owned().await.unwrap();
             let r = PartitionReaderEnum::FlightRemote.fetch_partition(&p).await;
-            // Block if the channel buffer is ful
+            // Block if the channel buffer is full.
             if let Err(e) = response_sender.send(r).await {
                 error!("Fail to send response event to the channel due to {}", e);
             }
             // Increase semaphore by dropping existing permits.
             drop(permit);
-        });
-        join_handles.push(join_handle);
+        }));
     }
 
-    AbortableReceiverStream::create(response_receiver, join_handles)
+    AbortableReceiverStream::create(response_receiver, spawned_tasks)
 }
 
 fn check_is_local_location(location: &PartitionLocation) -> bool {
