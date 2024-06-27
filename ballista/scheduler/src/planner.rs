@@ -468,13 +468,12 @@ order by
 
         ShuffleWriterExec: Some(Hash([Column { name: "l_shipmode", index: 0 }], 2))
           AggregateExec: mode=Partial, gby=[l_shipmode@0 as l_shipmode], aggr=[SUM(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), SUM(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
-            ProjectionExec: expr=[l_shipmode@1 as l_shipmode, o_orderpriority@3 as o_orderpriority]
-              CoalesceBatchesExec: target_batch_size=8192
-                HashJoinExec: mode=Partitioned, join_type=Inner, on=[(Column { name: "l_orderkey", index: 0 }, Column { name: "o_orderkey", index: 0 })]
-                  CoalesceBatchesExec: target_batch_size=8192
-                    UnresolvedShuffleExec
-                  CoalesceBatchesExec: target_batch_size=8192
-                    UnresolvedShuffleExec
+            CoalesceBatchesExec: target_batch_size=8192
+              HashJoinExec: mode=Partitioned, join_type=Inner, on=[(l_orderkey@0, o_orderkey@0)], projection=[l_shipmode@1, o_orderpriority@3]
+                CoalesceBatchesExec: target_batch_size=8192
+                  UnresolvedShuffleExec
+                CoalesceBatchesExec: target_batch_size=8192
+                  UnresolvedShuffleExec
 
         ShuffleWriterExec: None
           SortExec: expr=[l_shipmode@0 ASC NULLS LAST]
@@ -537,14 +536,12 @@ order by
 
         let hash_agg = downcast_exec!(input, AggregateExec);
 
-        let projection = hash_agg.children()[0].clone();
-        let projection = downcast_exec!(projection, ProjectionExec);
-
-        let coalesce_batches = projection.children()[0].clone();
+        let coalesce_batches = hash_agg.children()[0].clone();
         let coalesce_batches = downcast_exec!(coalesce_batches, CoalesceBatchesExec);
 
         let join = coalesce_batches.children()[0].clone();
         let join = downcast_exec!(join, HashJoinExec);
+        assert!(join.contain_projection());
 
         let join_input_1 = join.children()[0].clone();
         // skip CoalesceBatches
