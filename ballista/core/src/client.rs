@@ -29,10 +29,10 @@ use crate::error::{BallistaError, Result};
 use crate::serde::scheduler::{Action, PartitionId};
 
 use arrow_flight;
+use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::utils::flight_data_to_arrow_batch;
 use arrow_flight::Ticket;
 use arrow_flight::{flight_service_client::FlightServiceClient, FlightData};
-use arrow_flight::decode::FlightRecordBatchStream;
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::{
     datatypes::{Schema, SchemaRef},

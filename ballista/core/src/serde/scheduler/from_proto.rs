@@ -419,6 +419,6 @@ fn reset_metrics_for_execution_plan(
         let children = plan.children().clone();
         plan.with_new_children(children).map(Transformed::yes)
     })
-        .data()
-        .map_err(BallistaError::DataFusionError)
+    .data()
+    .map_err(BallistaError::DataFusionError)
 }

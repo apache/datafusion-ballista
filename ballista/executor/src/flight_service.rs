@@ -33,7 +33,7 @@ use arrow::ipc::writer::IpcWriteOptions;
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty,
     FlightData, FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse,
-    PutResult, SchemaResult, Ticket, PollInfo,
+    PollInfo, PutResult, SchemaResult, Ticket,
 };
 use datafusion::arrow::{error::ArrowError, record_batch::RecordBatch};
 use futures::{Stream, StreamExt, TryStreamExt};
@@ -210,7 +210,6 @@ impl FlightService for BallistaFlightService {
     ) -> Result<Response<PollInfo>, Status> {
         Err(Status::unimplemented("poll_flight_info"))
     }
-
 }
 
 fn read_partition<T>(

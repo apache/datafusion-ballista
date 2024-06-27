@@ -200,7 +200,8 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             // to get the true output partitioning
             let output_partitioning = match exec.shuffle_output_partitioning() {
                 Some(Partitioning::Hash(exprs, partition_count)) => {
-                    let default_codec = datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec {};
+                    let default_codec =
+                        datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec {};
                     Some(datafusion_proto::protobuf::PhysicalHashRepartition {
                         hash_expr: exprs
                             .iter()

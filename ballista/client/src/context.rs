@@ -477,8 +477,8 @@ impl BallistaContext {
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod standalone_tests {
-    use datafusion::config::TableParquetOptions;
     use ballista_core::error::Result;
+    use datafusion::config::TableParquetOptions;
     use datafusion::dataframe::DataFrameWriteOptions;
     use datafusion::datasource::listing::ListingTableUrl;
     use datafusion::parquet::file::properties::WriterProperties;

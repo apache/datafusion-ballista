@@ -38,7 +38,10 @@ use datafusion::common::runtime::SpawnedTask;
 
 use datafusion::error::Result;
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
-use datafusion::physical_plan::{ColumnStatistics, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, RecordBatchStream, SendableRecordBatchStream, Statistics};
+use datafusion::physical_plan::{
+    ColumnStatistics, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
+    PlanProperties, RecordBatchStream, SendableRecordBatchStream, Statistics,
+};
 use futures::{Stream, StreamExt, TryStreamExt};
 
 use crate::error::BallistaError;
@@ -72,7 +75,7 @@ impl ShuffleReaderExec {
         partition: Vec<Vec<PartitionLocation>>,
         schema: SchemaRef,
     ) -> Result<Self> {
-        let properties =  PlanProperties::new(
+        let properties = PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
             // TODO partitioning may be known and could be populated here
             // see https://github.com/apache/arrow-datafusion/issues/758

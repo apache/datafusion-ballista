@@ -103,9 +103,13 @@ impl FlightSqlServiceImpl {
         ]));
         let mut names: Vec<Option<String>> = vec![];
         for catalog_name in ctx.catalog_names() {
-            let catalog = ctx.catalog(&catalog_name).expect("catalog should have been found");
+            let catalog = ctx
+                .catalog(&catalog_name)
+                .expect("catalog should have been found");
             for schema_name in catalog.schema_names() {
-                let schema = catalog.schema(&schema_name).expect("schema should have been found");
+                let schema = catalog
+                    .schema(&schema_name)
+                    .expect("schema should have been found");
                 for table_name in schema.table_names() {
                     names.push(Some(table_name));
                 }

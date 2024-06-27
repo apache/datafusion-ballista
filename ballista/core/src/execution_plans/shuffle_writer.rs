@@ -49,7 +49,10 @@ use datafusion::physical_plan::metrics::{
     self, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
 
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, SendableRecordBatchStream, Statistics};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    SendableRecordBatchStream, Statistics,
+};
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 
 use datafusion::arrow::error::ArrowError;
@@ -127,12 +130,13 @@ impl ShuffleWriterExec {
         // If [`shuffle_output_partitioning`] is none, then there's no need to do repartitioning.
         // Therefore, the partition is the same as its input plan's.
         let partitioning = shuffle_output_partitioning
-                .clone()
-                .unwrap_or_else(|| plan.properties().output_partitioning().clone());
-        let properties =  PlanProperties::new(
+            .clone()
+            .unwrap_or_else(|| plan.properties().output_partitioning().clone());
+        let properties = PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(plan.schema()),
             partitioning,
-            datafusion::physical_plan::ExecutionMode::Bounded);
+            datafusion::physical_plan::ExecutionMode::Bounded,
+        );
         Ok(Self {
             job_id,
             stage_id,
@@ -156,7 +160,10 @@ impl ShuffleWriterExec {
 
     /// Get the input partition count
     pub fn input_partition_count(&self) -> usize {
-        self.plan.properties().output_partitioning().partition_count()
+        self.plan
+            .properties()
+            .output_partitioning()
+            .partition_count()
     }
 
     /// Get the true output partitioning

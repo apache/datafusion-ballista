@@ -212,7 +212,10 @@ mod test {
     use ballista_core::serde::scheduler::PartitionId;
     use datafusion::error::{DataFusionError, Result};
     use datafusion::physical_expr::PhysicalSortExpr;
-    use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, RecordBatchStream, SendableRecordBatchStream, Statistics};
+    use datafusion::physical_plan::{
+        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+        RecordBatchStream, SendableRecordBatchStream, Statistics,
+    };
     use datafusion::prelude::SessionContext;
     use futures::Stream;
     use std::any::Any;
@@ -252,10 +255,12 @@ mod test {
         fn new() -> Self {
             NeverendingOperator {
                 properties: PlanProperties::new(
-                    datafusion::physical_expr::EquivalenceProperties::new(Arc::new(Schema::empty())),
+                    datafusion::physical_expr::EquivalenceProperties::new(Arc::new(
+                        Schema::empty(),
+                    )),
                     Partitioning::UnknownPartitioning(1),
-                    datafusion::physical_plan::ExecutionMode::Bounded
-                )
+                    datafusion::physical_plan::ExecutionMode::Bounded,
+                ),
             }
         }
     }

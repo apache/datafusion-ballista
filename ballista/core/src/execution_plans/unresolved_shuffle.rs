@@ -21,7 +21,10 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, SendableRecordBatchStream, Statistics};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    SendableRecordBatchStream, Statistics,
+};
 
 /// UnresolvedShuffleExec represents a dependency on the results of a ShuffleWriterExec node which hasn't computed yet.
 ///
@@ -48,12 +51,13 @@ impl UnresolvedShuffleExec {
         schema: SchemaRef,
         output_partition_count: usize,
     ) -> Self {
-        let properties =  PlanProperties::new(
+        let properties = PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
             // TODO the output partition is known and should be populated here!
             // see https://github.com/apache/arrow-datafusion/issues/758
             Partitioning::UnknownPartitioning(output_partition_count),
-            datafusion::physical_plan::ExecutionMode::Bounded);
+            datafusion::physical_plan::ExecutionMode::Bounded,
+        );
         Self {
             stage_id,
             schema,
@@ -85,7 +89,6 @@ impl ExecutionPlan for UnresolvedShuffleExec {
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
-
 
     fn properties(&self) -> &PlanProperties {
         &self.properties

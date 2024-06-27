@@ -25,7 +25,10 @@ use std::{any::Any, pin::Pin};
 use datafusion::arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::TaskContext;
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, SendableRecordBatchStream, Statistics};
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    SendableRecordBatchStream, Statistics,
+};
 use datafusion::{error::Result, physical_plan::RecordBatchStream};
 use futures::stream::SelectAll;
 use futures::Stream;
@@ -40,15 +43,12 @@ pub struct CollectExec {
 
 impl CollectExec {
     pub fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
-        let properties =  PlanProperties::new(
+        let properties = PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(plan.schema()),
             Partitioning::UnknownPartitioning(1),
             datafusion::physical_plan::ExecutionMode::Bounded,
         );
-        Self {
-            plan,
-            properties,
-        }
+        Self { plan, properties }
     }
 }
 
@@ -96,7 +96,11 @@ impl ExecutionPlan for CollectExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         assert_eq!(0, partition);
-        let num_partitions = self.plan.properties().output_partitioning().partition_count();
+        let num_partitions = self
+            .plan
+            .properties()
+            .output_partitioning()
+            .partition_count();
 
         let streams = (0..num_partitions)
             .map(|i| self.plan.execute(i, context.clone()))

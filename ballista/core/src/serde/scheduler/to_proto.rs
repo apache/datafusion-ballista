@@ -102,7 +102,8 @@ pub fn hash_partitioning_to_proto(
 ) -> Result<Option<datafusion_protobuf::PhysicalHashRepartition>, BallistaError> {
     match output_partitioning {
         Some(Partitioning::Hash(exprs, partition_count)) => {
-            let default_codec = datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec {};
+            let default_codec =
+                datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec {};
             //let k: PhysicalExprNode = exprs.iter().next().unwrap().try_into().unwrap();
             Ok(Some(datafusion_protobuf::PhysicalHashRepartition {
                 hash_expr: exprs
