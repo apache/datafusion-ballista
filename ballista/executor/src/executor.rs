@@ -200,17 +200,17 @@ impl Executor {
 
 #[cfg(test)]
 mod test {
+    use crate::execution_engine::DefaultQueryStageExec;
     use crate::executor::Executor;
     use crate::metrics::LoggingMetricsCollector;
     use arrow::datatypes::{Schema, SchemaRef};
     use arrow::record_batch::RecordBatch;
     use ballista_core::execution_plans::ShuffleWriterExec;
     use ballista_core::serde::protobuf::ExecutorRegistration;
-    use datafusion::execution::context::TaskContext;
-    use crate::execution_engine::DefaultQueryStageExec;
     use ballista_core::serde::scheduler::PartitionId;
     use datafusion::error::{DataFusionError, Result};
-    
+    use datafusion::execution::context::TaskContext;
+
     use datafusion::physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
         RecordBatchStream, SendableRecordBatchStream, Statistics,
