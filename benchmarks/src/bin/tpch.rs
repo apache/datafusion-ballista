@@ -827,7 +827,7 @@ async fn get_table(
             }
             "parquet" => {
                 let path = format!("{path}/{table}");
-                let format = ParquetFormat::default().with_enable_pruning(Some(true));
+                let format = ParquetFormat::default().with_enable_pruning(true);
 
                 (Arc::new(format), path, DEFAULT_PARQUET_EXTENSION)
             }
@@ -844,7 +844,6 @@ async fn get_table(
         collect_stat: true,
         table_partition_cols: vec![],
         file_sort_order: vec![],
-        file_type_write_options: None,
     };
 
     let url = ListingTableUrl::parse(path)?;
@@ -1042,7 +1041,8 @@ async fn get_expected_results(n: usize, path: &str) -> Result<Vec<RecordBatch>> 
                         // there's no support for casting from Utf8 to Decimal, so
                         // we'll cast from Utf8 to Float64 to Decimal for Decimal types
                         let inner_cast = Box::new(Expr::Cast(Cast::new(
-                            Box::new(trim(col(Field::name(field)))),
+                            // TODO
+                            Box::new(trim(vec![col(Field::name(field))])),
                             DataType::Float64,
                         )));
                         Expr::Cast(Cast::new(
@@ -1052,7 +1052,8 @@ async fn get_expected_results(n: usize, path: &str) -> Result<Vec<RecordBatch>> 
                         .alias(Field::name(field))
                     }
                     _ => Expr::Cast(Cast::new(
-                        Box::new(trim(col(Field::name(field)))),
+                        // TODO
+                        Box::new(trim(vec![col(Field::name(field))])),
                         Field::data_type(field).to_owned(),
                     ))
                     .alias(Field::name(field)),

@@ -29,6 +29,7 @@ use crate::serde::scheduler::{
     PartitionLocation, PartitionStats,
 };
 use datafusion::physical_plan::Partitioning;
+use datafusion_proto::protobuf::PhysicalExprNode;
 use protobuf::{action::ActionType, operator_metric, NamedCount, NamedGauge, NamedTime};
 
 impl TryInto<protobuf::Action> for Action {
@@ -101,10 +102,12 @@ pub fn hash_partitioning_to_proto(
 ) -> Result<Option<datafusion_protobuf::PhysicalHashRepartition>, BallistaError> {
     match output_partitioning {
         Some(Partitioning::Hash(exprs, partition_count)) => {
+            let default_codec = datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec {};
+            //let k: PhysicalExprNode = exprs.iter().next().unwrap().try_into().unwrap();
             Ok(Some(datafusion_protobuf::PhysicalHashRepartition {
                 hash_expr: exprs
                     .iter()
-                    .map(|expr| expr.clone().try_into())
+                    .map(|expr|datafusion_proto::physical_plan::to_proto::serialize_physical_expr(expr.clone(), &default_codec))
                     .collect::<Result<Vec<_>, DataFusionError>>()?,
                 partition_count: *partition_count as u64,
             }))

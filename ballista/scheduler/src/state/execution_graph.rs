@@ -151,7 +151,7 @@ impl ExecutionGraph {
     ) -> Result<Self> {
         let mut planner = DistributedPlanner::new();
 
-        let output_partitions = plan.output_partitioning().partition_count();
+        let output_partitions = plan.properties().output_partitioning().partition_count();
 
         let shuffle_stages = planner.plan_query_stages(job_id, plan)?;
 

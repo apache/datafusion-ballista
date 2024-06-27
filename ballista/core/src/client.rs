@@ -28,9 +28,11 @@ use std::{
 use crate::error::{BallistaError, Result};
 use crate::serde::scheduler::{Action, PartitionId};
 
+use arrow_flight;
 use arrow_flight::utils::flight_data_to_arrow_batch;
 use arrow_flight::Ticket;
 use arrow_flight::{flight_service_client::FlightServiceClient, FlightData};
+use arrow_flight::decode::FlightRecordBatchStream;
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::{
     datatypes::{Schema, SchemaRef},
@@ -137,7 +139,6 @@ impl BallistaClient {
                 ticket: buf.clone().into(),
             });
             let result = self.flight_client.do_get(request).await;
-
             let res = match result {
                 Ok(res) => res,
                 Err(ref err) => {
@@ -156,11 +157,13 @@ impl BallistaClient {
             };
 
             let mut stream = res.into_inner();
+            //let st = FlightRecordBatchStream::new_from_flight_data(
+            //                stream.map_err(|e| e.into()));
+
             match stream.message().await {
                 Ok(res) => {
                     return match res {
                         Some(flight_data) => {
-                            // convert FlightData to a stream
                             let schema = Arc::new(Schema::try_from(&flight_data)?);
 
                             // all the remaining stream messages should be dictionary and record batches
