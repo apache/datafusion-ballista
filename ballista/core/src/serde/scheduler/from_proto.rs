@@ -16,7 +16,7 @@
 // under the License.
 
 use chrono::{TimeZone, Utc};
-use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use datafusion::physical_plan::metrics::{
@@ -417,7 +417,8 @@ fn reset_metrics_for_execution_plan(
 ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
     plan.transform(&|plan| {
         let children = plan.children().clone();
-        plan.with_new_children(children).map(Transformed::Yes)
+        plan.with_new_children(children).map(Transformed::yes)
     })
+    .data()
     .map_err(BallistaError::DataFusionError)
 }

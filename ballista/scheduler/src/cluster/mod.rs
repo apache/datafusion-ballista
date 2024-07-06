@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use clap::ArgEnum;
 use datafusion::common::tree_node::TreeNode;
-use datafusion::common::tree_node::VisitRecursion;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{AvroExec, CsvExec, NdJsonExec, ParquetExec};
 use datafusion::error::DataFusionError;
@@ -701,11 +701,11 @@ pub(crate) fn get_scan_files(
             } else if let Some(csv_exec) = plan_any.downcast_ref::<CsvExec>() {
                 csv_exec.base_config().file_groups.clone()
             } else {
-                return Ok(VisitRecursion::Continue);
+                return Ok(TreeNodeRecursion::Continue);
             };
 
         collector.push(file_groups);
-        Ok(VisitRecursion::Skip)
+        Ok(TreeNodeRecursion::Jump)
     })?;
     Ok(collector)
 }

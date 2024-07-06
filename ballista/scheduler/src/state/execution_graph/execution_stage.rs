@@ -1176,7 +1176,7 @@ fn get_stage_partitions(plan: Arc<dyn ExecutionPlan>) -> usize {
     plan.as_any()
         .downcast_ref::<ShuffleWriterExec>()
         .map(|shuffle_writer| shuffle_writer.input_partition_count())
-        .unwrap_or_else(|| plan.output_partitioning().partition_count())
+        .unwrap_or_else(|| plan.properties().output_partitioning().partition_count())
 }
 
 /// This data structure collects the partition locations for an `ExecutionStage`.

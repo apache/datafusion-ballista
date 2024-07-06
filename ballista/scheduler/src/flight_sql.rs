@@ -33,7 +33,7 @@ use arrow_flight::sql::{
 };
 use arrow_flight::{
     Action, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest,
-    HandshakeResponse, Location, Ticket,
+    HandshakeResponse, Ticket,
 };
 use base64::Engine;
 use futures::Stream;
@@ -69,6 +69,7 @@ use datafusion::common::DFSchemaRef;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionContext;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+use prost::bytes::Bytes;
 use prost::Message;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::time::sleep;
@@ -93,7 +94,6 @@ impl FlightSqlServiceImpl {
         }
     }
 
-    #[allow(deprecated)]
     fn tables(&self, ctx: Arc<SessionContext>) -> Result<RecordBatch, ArrowError> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("catalog_name", DataType::Utf8, true),
@@ -101,9 +101,21 @@ impl FlightSqlServiceImpl {
             Field::new("table_name", DataType::Utf8, false),
             Field::new("table_type", DataType::Utf8, false),
         ]));
-        let tables = ctx.tables()?; // resolved in #501
-        let names: Vec<_> = tables.iter().map(|it| Some(it.as_str())).collect();
-        let types: Vec<_> = names.iter().map(|_| Some("TABLE")).collect();
+        let mut names: Vec<Option<String>> = vec![];
+        for catalog_name in ctx.catalog_names() {
+            let catalog = ctx
+                .catalog(&catalog_name)
+                .expect("catalog should have been found");
+            for schema_name in catalog.schema_names() {
+                let schema = catalog
+                    .schema(&schema_name)
+                    .expect("schema should have been found");
+                for table_name in schema.table_names() {
+                    names.push(Some(table_name));
+                }
+            }
+        }
+        let types: Vec<_> = names.iter().map(|_| Some("TABLE".to_string())).collect();
         let cats: Vec<_> = names.iter().map(|_| None).collect();
         let schemas: Vec<_> = names.iter().map(|_| None).collect();
         let rb = RecordBatch::try_new(
@@ -290,15 +302,11 @@ impl FlightSqlServiceImpl {
                 Err(Status::internal("Error getting stats".to_string()))?
             }
             let authority = format!("{}:{}", &host, &port);
-            let loc = Location {
-                uri: format!("grpc+tcp://{authority}"),
-            };
             let buf = fetch.as_any().encode_to_vec();
             let ticket = Ticket { ticket: buf.into() };
-            let fiep = FlightEndpoint {
-                ticket: Some(ticket),
-                location: vec![loc],
-            };
+            let fiep = FlightEndpoint::new()
+                .with_ticket(ticket)
+                .with_location(format!("grpc+tcp://{authority}"));
             fieps.push(fiep);
         }
         Ok(fieps)
@@ -319,15 +327,11 @@ impl FlightSqlServiceImpl {
             settings: vec![],
         };
         let authority = format!("{}:{}", &host, &port); // TODO: use advertise host
-        let loc = Location {
-            uri: format!("grpc+tcp://{authority}"),
-        };
         let buf = fetch.as_any().encode_to_vec();
         let ticket = Ticket { ticket: buf.into() };
-        let fiep = FlightEndpoint {
-            ticket: Some(ticket),
-            location: vec![loc],
-        };
+        let fiep = FlightEndpoint::new()
+            .with_ticket(ticket)
+            .with_location(format!("grpc+tcp://{authority}"));
         let fieps = vec![fiep];
         Ok(fieps)
     }
@@ -406,6 +410,7 @@ impl FlightSqlServiceImpl {
             total_records: num_rows,
             total_bytes: num_bytes,
             ordered: false,
+            app_metadata: Bytes::new(),
         };
         Response::new(info)
     }
