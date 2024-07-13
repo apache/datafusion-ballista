@@ -21,27 +21,27 @@
 
 ## Build Docker Images
 
-Run the following commands to download the [official Docker image](https://github.com/apache/arrow-ballista/pkgs/container/arrow-ballista-standalone):
+Run the following commands to download the [official Docker image](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone):
 
 ```bash
-docker pull ghcr.io/apache/arrow-ballista-standalone:0.12.0-rc4
+docker pull ghcr.io/apache/datafusion-ballista-standalone:0.12.0-rc4
 ```
 
 Altenatively run the following commands to clone the source repository and build the Docker images from source:
 
 ```bash
-git clone git@github.com:apache/arrow-ballista.git -b 0.12.0
-cd arrow-ballista
+git clone git@github.com:apache/datafusion-ballista.git -b 0.12.0
+cd datafusion-ballista
 ./dev/build-ballista-docker.sh
 ```
 
 This will create the following images:
 
-- `apache/arrow-ballista-benchmarks:0.12.0`
-- `apache/arrow-ballista-cli:0.12.0`
-- `apache/arrow-ballista-executor:0.12.0`
-- `apache/arrow-ballista-scheduler:0.12.0`
-- `apache/arrow-ballista-standalone:0.12.0`
+- `apache/datafusion-ballista-benchmarks:0.12.0`
+- `apache/datafusion-ballista-cli:0.12.0`
+- `apache/datafusion-ballista-executor:0.12.0`
+- `apache/datafusion-ballista-scheduler:0.12.0`
+- `apache/datafusion-ballista-standalone:0.12.0`
 
 ## Start a Cluster
 
@@ -51,7 +51,7 @@ Start a scheduler using the following syntax:
 
 ```bash
 docker run --network=host \
- -d apache/arrow-ballista-scheduler:0.12.0 \
+ -d apache/datafusion-ballista-scheduler:0.12.0 \
  --bind-port 50050
 ```
 
@@ -60,7 +60,7 @@ Run `docker ps` to check that the process is running:
 ```
 $ docker ps
 CONTAINER ID   IMAGE                                    COMMAND                  CREATED         STATUS         PORTS     NAMES
-a756055576f3   apache/arrow-ballista-scheduler:0.12.0   "/root/scheduler-ent…"   8 seconds ago   Up 8 seconds             xenodochial_carson
+a756055576f3   apache/datafusion-ballista-scheduler:0.12.0   "/root/scheduler-ent…"   8 seconds ago   Up 8 seconds             xenodochial_carson
 ```
 
 Run `docker logs CONTAINER_ID` to check the output from the process:
@@ -84,7 +84,7 @@ Start one or more executor processes. Each executor process will need to listen 
 
 ```bash
 docker run --network=host \
-  -d apache/arrow-ballista-executor:0.12.0 \
+  -d apache/datafusion-ballista-executor:0.12.0 \
   --external-host localhost --bind-port 50051
 ```
 
@@ -93,8 +93,8 @@ Use `docker ps` to check that both the scheduler and executor(s) are now running
 ```
 $ docker ps
 CONTAINER ID   IMAGE                                    COMMAND                  CREATED         STATUS         PORTS     NAMES
-fb8b530cee6d   apache/arrow-ballista-executor:0.12.0    "/root/executor-entr…"   2 seconds ago   Up 1 second              gallant_galois
-a756055576f3   apache/arrow-ballista-scheduler:0.12.0   "/root/scheduler-ent…"   8 seconds ago   Up 8 seconds             xenodochial_carson
+fb8b530cee6d   apache/datafusion-ballista-executor:0.12.0    "/root/executor-entr…"   2 seconds ago   Up 1 second              gallant_galois
+a756055576f3   apache/datafusion-ballista-scheduler:0.12.0   "/root/scheduler-ent…"   8 seconds ago   Up 8 seconds             xenodochial_carson
 ```
 
 Use `docker logs CONTAINER_ID` to check the output from the executor(s):
@@ -117,7 +117,7 @@ to launch the scheduler with this option enabled.
 
 ```bash
 docker run --network=host \
-  -d apache/arrow-ballista-scheduler:0.12.0 \
+  -d apache/datafusion-ballista-scheduler:0.12.0 \
   --bind-port 50050 \
   --config-backend etcd \
   --etcd-urls etcd:2379
@@ -129,5 +129,5 @@ recommended.
 ## Connect from the CLI
 
 ```shell
-docker run --network=host -it apache/arrow-ballista-cli:0.12.0 --host localhost --port 50050
+docker run --network=host -it apache/datafusion-ballista-cli:0.12.0 --host localhost --port 50050
 ```

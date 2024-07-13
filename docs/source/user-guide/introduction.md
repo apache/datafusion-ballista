@@ -19,7 +19,7 @@
 
 # Overview
 
-Ballista is a distributed compute platform primarily implemented in Rust, and powered by Apache Arrow.
+Ballista is a distributed compute platform primarily implemented in Rust, and powered by Apache DataFusion.
 
 Ballista has a scheduler and an executor process that are standard Rust executables and can be executed directly, but
 Dockerfiles are provided to build images for use in containerized environments, such as Docker, Docker Compose, and

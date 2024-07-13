@@ -23,33 +23,33 @@ This section provides links to the source code for major areas of functionality.
 
 ### ballista-core crate
 
-- [Crate Source](https://github.com/apache/arrow-ballista/blob/main/ballista/core)
-- [Protocol Buffer Definition](https://github.com/apache/arrow-ballista/blob/main/ballista/core/proto/ballista.proto)
-- [Execution Plans](https://github.com/apache/arrow-ballista/tree/main/ballista/core/src/execution_plans)
-- [Ballista Client](https://github.com/apache/arrow-ballista/blob/main/ballista/core/src/client.rs)
+- [Crate Source](https://github.com/apache/datafusion-ballista/blob/main/ballista/core)
+- [Protocol Buffer Definition](https://github.com/apache/datafusion-ballista/blob/main/ballista/core/proto/ballista.proto)
+- [Execution Plans](https://github.com/apache/datafusion-ballista/tree/main/ballista/core/src/execution_plans)
+- [Ballista Client](https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/client.rs)
 
 ### ballista-scheduler crate
 
-- [Crate Source](https://github.com/apache/arrow-ballista/tree/main/ballista/scheduler)
-- [Distributed Query Planner](https://github.com/apache/arrow-ballista/blob/main/ballista/scheduler/src/planner.rs)
-- [gRPC Service](https://github.com/apache/arrow-ballista/blob/main/ballista/scheduler/src/scheduler_server/grpc.rs)
-- [Flight SQL Service](https://github.com/apache/arrow-ballista/blob/main/ballista/scheduler/src/flight_sql.rs)
-- [REST API](https://github.com/apache/arrow-ballista/tree/main/ballista/scheduler/src/api)
-- [Web UI](https://github.com/apache/arrow-ballista/tree/main/ballista/scheduler/ui)
-- [Prometheus Integration](https://github.com/apache/arrow-ballista/blob/main/ballista/scheduler/src/metrics/prometheus.rs)
+- [Crate Source](https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler)
+- [Distributed Query Planner](https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/planner.rs)
+- [gRPC Service](https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/scheduler_server/grpc.rs)
+- [Flight SQL Service](https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/flight_sql.rs)
+- [REST API](https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler/src/api)
+- [Web UI](https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler/ui)
+- [Prometheus Integration](https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/metrics/prometheus.rs)
 
 ### ballista-executor crate
 
-- [Crate Source](https://github.com/apache/arrow-ballista/tree/main/ballista/executor)
-- [Flight Service](https://github.com/apache/arrow-ballista/blob/main/ballista/executor/src/flight_service.rs)
-- [Executor Server](https://github.com/apache/arrow-ballista/blob/main/ballista/executor/src/executor_server.rs)
+- [Crate Source](https://github.com/apache/datafusion-ballista/tree/main/ballista/executor)
+- [Flight Service](https://github.com/apache/datafusion-ballista/blob/main/ballista/executor/src/flight_service.rs)
+- [Executor Server](https://github.com/apache/datafusion-ballista/blob/main/ballista/executor/src/executor_server.rs)
 
 ### ballista crate
 
-- [Crate Source](https://github.com/apache/arrow-ballista/tree/main/ballista/client)
-- [Context](https://github.com/apache/arrow-ballista/blob/main/ballista/client/src/context.rs)
+- [Crate Source](https://github.com/apache/datafusion-ballista/tree/main/ballista/client)
+- [Context](https://github.com/apache/datafusion-ballista/blob/main/ballista/client/src/context.rs)
 
 ### PyBallista
 
-- [Source](https://github.com/apache/arrow-ballista/tree/main/python)
-- [Context](https://github.com/apache/arrow-ballista/blob/main/python/src/context.rs)
+- [Source](https://github.com/apache/datafusion-ballista/tree/main/python)
+- [Context](https://github.com/apache/datafusion-ballista/blob/main/python/src/context.rs)
