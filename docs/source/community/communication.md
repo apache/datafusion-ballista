@@ -34,7 +34,7 @@ We use the same communication channels as the main DataFusion project:
 
 Our source code is hosted on
 [GitHub](https://github.com/apache/datafusion-ballista). More information on contributing is in
-the [Contribution Guide](https://github.com/apache/datafusion-ballista/blob/master/CONTRIBUTING.md)
+the [Contribution Guide](https://github.com/apache/datafusion-ballista/blob/main/CONTRIBUTING.md)
 , and we have curated a [good-first-issue](https://github.com/apache/datafusion-ballista/contribute)
 list to help you get started. You can find datafusion's major designs in docs/source/specification.
 
