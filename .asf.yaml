@@ -39,3 +39,8 @@ github:
     rebase: false    
   features:
     issues: true        
+# publishes the content of the `asf-site` branch to
+# https://datafusion.apache.org/ballista/
+publish:
+  whoami: asf-site
+  subdir: ballista
