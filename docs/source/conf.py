@@ -90,7 +90,7 @@ html_theme_options = {
 
 html_context = {
     "github_user": "apache",
-    "github_repo": "arrow-ballista",
+    "github_repo": "datafusion-ballista",
     "github_version": "main",
     "doc_path": "docs/source",
 }
