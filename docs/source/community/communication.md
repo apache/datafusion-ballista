@@ -29,3 +29,15 @@ conduct](https://www.apache.org/foundation/policies/conduct.html).
 We use the same communication channels as the main DataFusion project:
 
 [https://datafusion.apache.org/contributor-guide/communication.html](https://datafusion.apache.org/contributor-guide/communication.html)
+
+## Contributing
+
+Our source code is hosted on
+[GitHub](https://github.com/apache/datafusion-ballista). More information on contributing is in
+the [Contribution Guide](https://github.com/apache/datafusion-ballista/blob/master/CONTRIBUTING.md)
+, and we have curated a [good-first-issue](https://github.com/apache/datafusion-ballista/contribute)
+list to help you get started. You can find datafusion's major designs in docs/source/specification.
+
+We use GitHub issues for maintaining a queue of development work and as the
+public record. We often use Google docs, Github issues and pull requests for
+quick and small design discussions. For major design change proposals, we encourage you to write a rfc.
