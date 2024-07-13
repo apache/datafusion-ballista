@@ -21,7 +21,7 @@ use crate::serde::protobuf::execute_query_params::OptionalSessionId;
 use crate::serde::protobuf::{
     execute_query_params::Query, execute_query_result, job_status,
     scheduler_grpc_client::SchedulerGrpcClient, ExecuteQueryParams, GetJobStatusParams,
-    GetJobStatusResult, PartitionLocation,
+    GetJobStatusResult, KeyValuePair, PartitionLocation,
 };
 use crate::utils::create_grpc_client_connection;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -208,7 +208,15 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
 
         let query = ExecuteQueryParams {
             query: Some(Query::LogicalPlan(buf)),
-            settings: vec![],
+            settings: self
+                .config
+                .settings()
+                .iter()
+                .map(|(k, v)| KeyValuePair {
+                    key: k.to_owned(),
+                    value: v.to_owned(),
+                })
+                .collect::<Vec<_>>(),
             optional_session_id: Some(OptionalSessionId::SessionId(
                 self.session_id.clone(),
             )),
