@@ -94,9 +94,9 @@ can execute multiple partitions of the same plan in parallel.
 
 There are multiple clients available for submitting jobs to a Ballista cluster:
 
-- The [Ballista CLI](https://github.com/apache/arrow-ballista/tree/main/ballista-cli) provides a SQL command-line
+- The [Ballista CLI](https://github.com/apache/datafusion-ballista/tree/main/ballista-cli) provides a SQL command-line
   interface.
-- The Python bindings ([PyBallista](https://github.com/apache/arrow-ballista/tree/main/python)) provide a session
+- The Python bindings ([PyBallista](https://github.com/apache/datafusion-ballista/tree/main/python)) provide a session
   context with support for SQL and DataFrame operations.
 - The [ballista crate](https://crates.io/crates/ballista) provides a native Rust session context with support for
   SQL and DataFrame operations.
@@ -201,5 +201,5 @@ Each executor will re-partition the output of the stage it is running so that it
 stage. This mechanism is known as an Exchange or a Shuffle. The logic for this can be found in the [ShuffleWriterExec]
 and [ShuffleReaderExec] operators.
 
-[shufflewriterexec]: https://github.com/apache/arrow-ballista/blob/main/ballista/core/src/execution_plans/shuffle_writer.rs
-[shufflereaderexec]: https://github.com/apache/arrow-ballista/blob/main/ballista/core/src/execution_plans/shuffle_reader.rs
+[shufflewriterexec]: https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/execution_plans/shuffle_writer.rs
+[shufflereaderexec]: https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/execution_plans/shuffle_reader.rs

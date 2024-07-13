@@ -23,31 +23,31 @@ Docker Compose is a convenient way to launch a cluster when testing locally.
 
 ## Build Docker Images
 
-Run the following commands to download the [official Docker image](https://github.com/apache/arrow-ballista/pkgs/container/arrow-ballista-standalone):
+Run the following commands to download the [official Docker image](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone):
 
 ```bash
-docker pull ghcr.io/apache/arrow-ballista-standalone:0.12.0-rc4
+docker pull ghcr.io/apache/datafusion-ballista-standalone:0.12.0-rc4
 ```
 
 Altenatively run the following commands to clone the source repository and build the Docker images from source:
 
 ```bash
-git clone git@github.com:apache/arrow-ballista.git -b 0.12.0
-cd arrow-ballista
+git clone git@github.com:apache/datafusion-ballista.git -b 0.12.0
+cd datafusion-ballista
 ./dev/build-ballista-docker.sh
 ```
 
 This will create the following images:
 
-- `apache/arrow-ballista-benchmarks:0.12.0`
-- `apache/arrow-ballista-cli:0.12.0`
-- `apache/arrow-ballista-executor:0.12.0`
-- `apache/arrow-ballista-scheduler:0.12.0`
-- `apache/arrow-ballista-standalone:0.12.0`
+- `apache/datafusion-ballista-benchmarks:0.12.0`
+- `apache/datafusion-ballista-cli:0.12.0`
+- `apache/datafusion-ballista-executor:0.12.0`
+- `apache/datafusion-ballista-scheduler:0.12.0`
+- `apache/datafusion-ballista-standalone:0.12.0`
 
 ## Start a Cluster
 
-Using the [docker-compose.yml](https://github.com/apache/arrow-ballista/blob/main/docker-compose.yml) from the
+Using the [docker-compose.yml](https://github.com/apache/datafusion-ballista/blob/main/docker-compose.yml) from the
 source repository, run the following command to start a cluster:
 
 ```bash
@@ -77,5 +77,5 @@ The scheduler web UI is available on port 80 in the scheduler.
 ## Connect from the Ballista CLI
 
 ```shell
-docker run --network=host -it apache/arrow-ballista-cli:0.12.0 --host localhost --port 50050
+docker run --network=host -it apache/datafusion-ballista-cli:0.12.0 --host localhost --port 50050
 ```

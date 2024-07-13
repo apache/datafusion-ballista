@@ -47,16 +47,6 @@ inside a Python virtualenv.
 
 ## Release
 
-The documentation is served through the [arrow-site](https://github.com/apache/arrow-site/) repository. To release
-a new version of the documentation, follow these steps:
+The documentation is served through the [datafusion-site](https://github.com/apache/datafusion-site/) repository.
 
-1. Download the release source tarball (we can only publish documentation from official releases)
-2. Run `./build.sh` inside `docs` folder to generate the docs website inside the `build/html` folder.
-3. Clone the arrow-site repo
-4. Checkout to the `asf-site` branch (NOT `master`)
-5. Copy build artifacts into `arrow-site` repo's `ballista` folder with a command such as
-
-- `cp -rT ./build/html/ ../../arrow-site/ballista/` (doesn't work on mac)
-- `rsync -avzr ./build/html/ ../../arrow-site/ballista/`
-
-6. Commit changes in `arrow-site` and send a PR.
+Documentation is published automatically when documentation changes are pushed to the main branch.

@@ -54,7 +54,7 @@ choco install docker-desktop
 ## <a name="docker"/> Run Docker Container
 
 ```shell
-docker run -p 50050:50050 --rm ghcr.io/apache/arrow-ballista-standalone:0.10.0
+docker run -p 50050:50050 --rm ghcr.io/apache/datafusion-ballista-standalone:0.10.0
 ```
 
 ## <a name="jdbc"/>Download the FlightSQL JDBC Driver
