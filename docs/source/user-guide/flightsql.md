@@ -79,7 +79,7 @@ The important pieces of information:
 ## <a name="hello"/>Run a "Hello, World!" Query
 
 ```sql
-select 'Hello from Arrow Ballista!' as greeting;
+select 'Hello from DataFusion Ballista!' as greeting;
 ```
 
 ## <a name="complex"/>Run a Complex Query
