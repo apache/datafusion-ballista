@@ -33,7 +33,7 @@
 
 # -- Project information -----------------------------------------------------
 
-project = 'Apache Arrow Ballista'
+project = 'Apache DataFusion Ballista'
 copyright = '2019-2024, Apache Software Foundation'
 author = 'Apache Software Foundation'
 
