@@ -205,7 +205,7 @@
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference external" href="https://github.com/apache/arrow-ballista/">
+  <a class="reference external" href="https://github.com/apache/datafusion-ballista/">
    Source code
   </a>
  </li>
@@ -222,12 +222,12 @@
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference external" href="https://github.com/apache/arrow-ballista/issues">
+  <a class="reference external" href="https://github.com/apache/datafusion-ballista/issues">
    Issue tracker
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference external" href="https://github.com/apache/arrow-ballista/blob/main/CODE_OF_CONDUCT.md">
+  <a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/CODE_OF_CONDUCT.md">
    Code of conduct
   </a>
  </li>
@@ -335,7 +335,7 @@
                 
 
 <div class="tocsection editthispage">
-    <a href="https://github.com/apache/arrow-ballista/edit/main/docs/source/contributors-guide/architecture.md">
+    <a href="https://github.com/apache/datafusion-ballista/edit/main/docs/source/contributors-guide/architecture.md">
         <i class="fas fa-pencil-alt"></i> Edit this page
     </a>
 </div>
@@ -444,9 +444,9 @@ can execute multiple partitions of the same plan in parallel.</p>
 <h3>Clients<a class="headerlink" href="#clients" title="Link to this heading">¶</a></h3>
 <p>There are multiple clients available for submitting jobs to a Ballista cluster:</p>
 <ul class="simple">
-<li><p>The <a class="reference external" href="https://github.com/apache/arrow-ballista/tree/main/ballista-cli">Ballista CLI</a> provides a SQL command-line
+<li><p>The <a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/ballista-cli">Ballista CLI</a> provides a SQL command-line
 interface.</p></li>
-<li><p>The Python bindings (<a class="reference external" href="https://github.com/apache/arrow-ballista/tree/main/python">PyBallista</a>) provide a session
+<li><p>The Python bindings (<a class="reference external" href="https://github.com/apache/datafusion-ballista/tree/main/python">PyBallista</a>) provide a session
 context with support for SQL and DataFrame operations.</p></li>
 <li><p>The <a class="reference external" href="https://crates.io/crates/ballista">ballista crate</a> provides a native Rust session context with support for
 SQL and DataFrame operations.</p></li>
@@ -535,8 +535,8 @@ the output of each stage typically needs to be repartitioned before it can be us
 example of this is when a query contains multiple joins. Data needs to be partitioned by the join keys before the join
 can be performed.</p>
 <p>Each executor will re-partition the output of the stage it is running so that it can be consumed by the next
-stage. This mechanism is known as an Exchange or a Shuffle. The logic for this can be found in the <a class="reference external" href="https://github.com/apache/arrow-ballista/blob/main/ballista/core/src/execution_plans/shuffle_writer.rs">ShuffleWriterExec</a>
-and <a class="reference external" href="https://github.com/apache/arrow-ballista/blob/main/ballista/core/src/execution_plans/shuffle_reader.rs">ShuffleReaderExec</a> operators.</p>
+stage. This mechanism is known as an Exchange or a Shuffle. The logic for this can be found in the <a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/execution_plans/shuffle_writer.rs">ShuffleWriterExec</a>
+and <a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/execution_plans/shuffle_reader.rs">ShuffleReaderExec</a> operators.</p>
 </section>
 </section>
 </section>

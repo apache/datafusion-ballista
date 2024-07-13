@@ -41,37 +41,37 @@ microk8s enable dns
 
 ## Build Docker Images
 
-Run the following commands to download the [official Docker image](https://github.com/apache/arrow-ballista/pkgs/container/arrow-ballista-standalone):
+Run the following commands to download the [official Docker image](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone):
 
 ```bash
-docker pull ghcr.io/apache/arrow-ballista-standalone:0.12.0-rc4
+docker pull ghcr.io/apache/datafusion-ballista-standalone:0.12.0-rc4
 ```
 
 Altenatively run the following commands to clone the source repository and build the Docker images from source:
 
 ```bash
-git clone git@github.com:apache/arrow-ballista.git -b 0.12.0
-cd arrow-ballista
+git clone git@github.com:apache/datafusion-ballista.git -b 0.12.0
+cd datafusion-ballista
 ./dev/build-ballista-docker.sh
 ```
 
 This will create the following images:
 
-- `apache/arrow-ballista-benchmarks:0.12.0`
-- `apache/arrow-ballista-cli:0.12.0`
-- `apache/arrow-ballista-executor:0.12.0`
-- `apache/arrow-ballista-scheduler:0.12.0`
-- `apache/arrow-ballista-standalone:0.12.0`
+- `apache/datafusion-ballista-benchmarks:0.12.0`
+- `apache/datafusion-ballista-cli:0.12.0`
+- `apache/datafusion-ballista-executor:0.12.0`
+- `apache/datafusion-ballista-scheduler:0.12.0`
+- `apache/datafusion-ballista-standalone:0.12.0`
 
 ## Publishing Docker Images
 
 Once the images have been built, you can retag them and can push them to your favourite Docker registry.
 
 ```bash
-docker tag apache/arrow-ballista-scheduler:0.12.0 <your-repo>/arrow-ballista-scheduler:0.12.0
-docker tag apache/arrow-ballista-executor:0.12.0 <your-repo>/arrow-ballista-executor:0.12.0
-docker push <your-repo>/arrow-ballista-scheduler:0.12.0
-docker push <your-repo>/arrow-ballista-executor:0.12.0
+docker tag apache/datafusion-ballista-scheduler:0.12.0 <your-repo>/datafusion-ballista-scheduler:0.12.0
+docker tag apache/datafusion-ballista-executor:0.12.0 <your-repo>/datafusion-ballista-executor:0.12.0
+docker push <your-repo>/datafusion-ballista-scheduler:0.12.0
+docker push <your-repo>/datafusion-ballista-executor:0.12.0
 ```
 
 ## Create Persistent Volume and Persistent Volume Claim
@@ -159,7 +159,7 @@ spec:
     spec:
       containers:
         - name: ballista-scheduler
-          image: <your-repo>/arrow-ballista-scheduler:0.12.0
+          image: <your-repo>/datafusion-ballista-scheduler:0.12.0
           args: ["--bind-port=50050"]
           ports:
             - containerPort: 50050
@@ -191,7 +191,7 @@ spec:
     spec:
       containers:
         - name: ballista-executor
-          image: <your-repo>/arrow-ballista-executor:0.12.0
+          image: <your-repo>/datafusion-ballista-executor:0.12.0
           args:
             - "--bind-port=50051"
             - "--scheduler-host=ballista-scheduler"
