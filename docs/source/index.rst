@@ -16,7 +16,7 @@
 .. under the License.
 
 =====================
-Apache Arrow Ballista
+Apache DataFusion Ballista
 =====================
 
 Table of content
