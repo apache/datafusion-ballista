@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Starting a Ballista Cluster using Docker Compose &#8212; Apache DataFusion Ballista  documentation</title>
+    
+    <link href="../../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+  
+    
+    <link rel="stylesheet"
+      href="../../_static/vendor/fontawesome/5.13.0/css/all.min.css">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../../_static/vendor/fontawesome/5.13.0/webfonts/fa-solid-900.woff2">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../../_static/vendor/fontawesome/5.13.0/webfonts/fa-brands-400.woff2">
+  
+    
+      
+  
+    
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=a746c00c" />
+    <link rel="stylesheet" type="text/css" href="../../_static/styles/pydata-sphinx-theme.css?v=1140d252" />
+    <link rel="stylesheet" type="text/css" href="../../_static/theme_overrides.css?v=ef9fea58" />
+    
+    <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf">
+  
+    <script src="../../_static/documentation_options.js?v=8a448e45"></script>
+    <script src="../../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Deploying Ballista with Kubernetes" href="kubernetes.html" />
+    <link rel="prev" title="Starting a Ballista Cluster using Docker" href="docker.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="docsearch:language" content="en">
+    
+
+    <!-- Google Analytics -->
+    
+  </head>
+  <body data-spy="scroll" data-target="#bd-toc-nav" data-offset="80">
+    
+    <div class="container-fluid" id="banner"></div>
+
+    
+
+
+    <div class="container-xl">
+      <div class="row">
+          
+            
+            <!-- Only show if we have sidebars configured, else just a small margin  -->
+            <div class="col-12 col-md-3 bd-sidebar">
+              <div class="sidebar-start-items">
+<a class="navbar-brand" href="../../index.html">
+  <img src="../../_static/images/ballista-logo.png" class="logo" alt="logo">
+</a>
+
+<form class="bd-search d-flex align-items-center" action="../../search.html" method="get">
+  <i class="icon fas fa-search"></i>
+  <input type="search" class="form-control" name="q" id="search-input" placeholder="Search the docs ..." aria-label="Search the docs ..." autocomplete="off" >
+</form>
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    
+    <p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  User Guide
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../introduction.html">
+   Introduction
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Cluster Deployment
+ </span>
+</p>
+<ul class="current nav bd-sidenav">
+ <li class="toctree-l1 current active has-children">
+  <a class="reference internal" href="index.html">
+   Deployment
+  </a>
+  <input checked="" class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" type="checkbox"/>
+  <label for="toctree-checkbox-1">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul class="current">
+   <li class="toctree-l2">
+    <a class="reference internal" href="quick-start.html">
+     Quick Start
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="cargo-install.html">
+     Cargo Install
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="docker.html">
+     Docker
+    </a>
+   </li>
+   <li class="toctree-l2 current active">
+    <a class="current reference internal" href="#">
+     Docker Compose
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="kubernetes.html">
+     Kubernetes
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../scheduler.html">
+   Scheduler
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Clients
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../python.html">
+   Python
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../rust.html">
+   Rust
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../flightsql.html">
+   Flight SQL JDBC
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../cli.html">
+   SQL CLI
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Reference
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../configs.html">
+   Configuration
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../tuning-guide.html">
+   Tuning Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../metrics.html">
+   Ballista Scheduler Metrics
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../faq.html">
+   Frequently Asked Questions
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Contributors Guide
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributors-guide/architecture.html">
+   Ballista Architecture
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributors-guide/code-organization.html">
+   Ballista Code Organization
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributors-guide/development.html">
+   Ballista Development
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/arrow-ballista/">
+   Source code
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Community
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../community/communication.html">
+   Communication
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/arrow-ballista/issues">
+   Issue tracker
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/arrow-ballista/blob/main/CODE_OF_CONDUCT.md">
+   Code of conduct
+  </a>
+ </li>
+</ul>
+
+    
+  </div>
+</nav>
+              </div>
+              <div class="sidebar-end-items">
+              </div>
+            </div>
+            
+          
+
+          
+          <div class="d-none d-xl-block col-xl-2 bd-toc">
+            
+              
+              <div class="toc-item">
+                
+<div class="tocsection onthispage pt-5 pb-3">
+    <i class="fas fa-list"></i> On this page
+</div>
+
+<nav id="bd-toc-nav">
+    <ul class="visible nav section-nav flex-column">
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#build-docker-images">
+   Build Docker Images
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#start-a-cluster">
+   Start a Cluster
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#connect-from-the-ballista-cli">
+   Connect from the Ballista CLI
+  </a>
+ </li>
+</ul>
+
+</nav>
+              </div>
+              
+              <div class="toc-item">
+                
+
+<div class="tocsection editthispage">
+    <a href="https://github.com/apache/arrow-ballista/edit/main/docs/source/user-guide/deployment/docker-compose.md">
+        <i class="fas fa-pencil-alt"></i> Edit this page
+    </a>
+</div>
+
+              </div>
+              
+            
+          </div>
+          
+
+          
+          
+            
+          
+          <main class="col-12 col-md-9 col-xl-7 py-md-5 pl-md-5 pr-md-4 bd-content" role="main">
+              
+              <div>
+                
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="starting-a-ballista-cluster-using-docker-compose">
+<h1>Starting a Ballista Cluster using Docker Compose<a class="headerlink" href="#starting-a-ballista-cluster-using-docker-compose" title="Link to this heading">¶</a></h1>
+<p>Docker Compose is a convenient way to launch a cluster when testing locally.</p>
+<section id="build-docker-images">
+<h2>Build Docker Images<a class="headerlink" href="#build-docker-images" title="Link to this heading">¶</a></h2>
+<p>Run the following commands to download the <a class="reference external" href="https://github.com/apache/arrow-ballista/pkgs/container/arrow-ballista-standalone">official Docker image</a>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>pull<span class="w"> </span>ghcr.io/apache/arrow-ballista-standalone:0.12.0-rc4
+</pre></div>
+</div>
+<p>Altenatively run the following commands to clone the source repository and build the Docker images from source:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>git@github.com:apache/arrow-ballista.git<span class="w"> </span>-b<span class="w"> </span><span class="m">0</span>.12.0
+<span class="nb">cd</span><span class="w"> </span>arrow-ballista
+./dev/build-ballista-docker.sh
+</pre></div>
+</div>
+<p>This will create the following images:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">apache/arrow-ballista-benchmarks:0.12.0</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">apache/arrow-ballista-cli:0.12.0</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">apache/arrow-ballista-executor:0.12.0</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">apache/arrow-ballista-scheduler:0.12.0</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">apache/arrow-ballista-standalone:0.12.0</span></code></p></li>
+</ul>
+</section>
+<section id="start-a-cluster">
+<h2>Start a Cluster<a class="headerlink" href="#start-a-cluster" title="Link to this heading">¶</a></h2>
+<p>Using the <a class="reference external" href="https://github.com/apache/arrow-ballista/blob/main/docker-compose.yml">docker-compose.yml</a> from the
+source repository, run the following command to start a cluster:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker-compose<span class="w"> </span>up<span class="w"> </span>--build
+</pre></div>
+</div>
+<p>This should show output similar to the following:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>$<span class="w"> </span>docker-compose<span class="w"> </span>up
+Creating<span class="w"> </span>network<span class="w"> </span><span class="s2">&quot;ballista-benchmarks_default&quot;</span><span class="w"> </span>with<span class="w"> </span>the<span class="w"> </span>default<span class="w"> </span>driver
+Creating<span class="w"> </span>ballista-benchmarks_etcd_1<span class="w"> </span>...<span class="w"> </span><span class="k">done</span>
+Creating<span class="w"> </span>ballista-benchmarks_ballista-scheduler_1<span class="w"> </span>...<span class="w"> </span><span class="k">done</span>
+Creating<span class="w"> </span>ballista-benchmarks_ballista-executor_1<span class="w">  </span>...<span class="w"> </span><span class="k">done</span>
+Attaching<span class="w"> </span>to<span class="w"> </span>ballista-benchmarks_etcd_1,<span class="w"> </span>ballista-benchmarks_ballista-scheduler_1,<span class="w"> </span>ballista-benchmarks_ballista-executor_1
+ballista-executor_1<span class="w">   </span><span class="p">|</span><span class="w"> </span><span class="o">[</span><span class="m">2021</span>-08-28T15:55:22Z<span class="w"> </span>INFO<span class="w">  </span>ballista_executor<span class="o">]</span><span class="w"> </span>Running<span class="w"> </span>with<span class="w"> </span>config:
+ballista-executor_1<span class="w">   </span><span class="p">|</span><span class="w"> </span><span class="o">[</span><span class="m">2021</span>-08-28T15:55:22Z<span class="w"> </span>INFO<span class="w">  </span>ballista_executor<span class="o">]</span><span class="w"> </span>work_dir:<span class="w"> </span>/tmp/.tmpLVx39c
+ballista-executor_1<span class="w">   </span><span class="p">|</span><span class="w"> </span><span class="o">[</span><span class="m">2021</span>-08-28T15:55:22Z<span class="w"> </span>INFO<span class="w">  </span>ballista_executor<span class="o">]</span><span class="w"> </span>concurrent_tasks:<span class="w"> </span><span class="m">4</span>
+ballista-scheduler_1<span class="w">  </span><span class="p">|</span><span class="w"> </span><span class="o">[</span><span class="m">2021</span>-08-28T15:55:22Z<span class="w"> </span>INFO<span class="w">  </span>ballista_scheduler<span class="o">]</span><span class="w"> </span>Ballista<span class="w"> </span>v0.12.0<span class="w"> </span>Scheduler<span class="w"> </span>listening<span class="w"> </span>on<span class="w"> </span><span class="m">0</span>.0.0.0:50050
+ballista-executor_1<span class="w">   </span><span class="p">|</span><span class="w"> </span><span class="o">[</span><span class="m">2021</span>-08-28T15:55:22Z<span class="w"> </span>INFO<span class="w">  </span>ballista_executor<span class="o">]</span><span class="w"> </span>Ballista<span class="w"> </span>v0.12.0<span class="w"> </span>Rust<span class="w"> </span>Executor<span class="w"> </span>listening<span class="w"> </span>on<span class="w"> </span><span class="m">0</span>.0.0.0:50051
+</pre></div>
+</div>
+<p>The scheduler listens on port 50050 and this is the port that clients will need to connect to.</p>
+<p>The scheduler web UI is available on port 80 in the scheduler.</p>
+</section>
+<section id="connect-from-the-ballista-cli">
+<h2>Connect from the Ballista CLI<a class="headerlink" href="#connect-from-the-ballista-cli" title="Link to this heading">¶</a></h2>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>run<span class="w"> </span>--network<span class="o">=</span>host<span class="w"> </span>-it<span class="w"> </span>apache/arrow-ballista-cli:0.12.0<span class="w"> </span>--host<span class="w"> </span>localhost<span class="w"> </span>--port<span class="w"> </span><span class="m">50050</span>
+</pre></div>
+</div>
+</section>
+</section>
+
+
+              </div>
+              
+              
+              <!-- Previous / next buttons -->
+<div class='prev-next-area'>
+    <a class='left-prev' id="prev-link" href="docker.html" title="previous page">
+        <i class="fas fa-angle-left"></i>
+        <div class="prev-next-info">
+            <p class="prev-next-subtitle">previous</p>
+            <p class="prev-next-title">Starting a Ballista Cluster using Docker</p>
+        </div>
+    </a>
+    <a class='right-next' id="next-link" href="kubernetes.html" title="next page">
+    <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Deploying Ballista with Kubernetes</p>
+    </div>
+    <i class="fas fa-angle-right"></i>
+    </a>
+</div>
+              
+          </main>
+          
+
+      </div>
+    </div>
+  
+    <script src="../../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf"></script>
+  
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p class="copyright">
+    &copy; Copyright 2019-2024, Apache Software Foundation.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p class="sphinx-version">
+Created using <a href="http://sphinx-doc.org/">Sphinx</a> 7.3.7.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p>Apache DataFusion Ballista, Arrow Ballista, Apache, the Apache feather logo, and the Apache DataFusion Ballista project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>

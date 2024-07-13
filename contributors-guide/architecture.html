@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Ballista Architecture &#8212; Apache DataFusion Ballista  documentation</title>
+    
+    <link href="../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+  
+    
+    <link rel="stylesheet"
+      href="../_static/vendor/fontawesome/5.13.0/css/all.min.css">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-solid-900.woff2">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-brands-400.woff2">
+  
+    
+      
+  
+    
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=a746c00c" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/pydata-sphinx-theme.css?v=1140d252" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=ef9fea58" />
+    
+    <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf">
+  
+    <script src="../_static/documentation_options.js?v=8a448e45"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Ballista Code Organization" href="code-organization.html" />
+    <link rel="prev" title="Frequently Asked Questions" href="../user-guide/faq.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="docsearch:language" content="en">
+    
+
+    <!-- Google Analytics -->
+    
+  </head>
+  <body data-spy="scroll" data-target="#bd-toc-nav" data-offset="80">
+    
+    <div class="container-fluid" id="banner"></div>
+
+    
+
+
+    <div class="container-xl">
+      <div class="row">
+          
+            
+            <!-- Only show if we have sidebars configured, else just a small margin  -->
+            <div class="col-12 col-md-3 bd-sidebar">
+              <div class="sidebar-start-items">
+<a class="navbar-brand" href="../index.html">
+  <img src="../_static/images/ballista-logo.png" class="logo" alt="logo">
+</a>
+
+<form class="bd-search d-flex align-items-center" action="../search.html" method="get">
+  <i class="icon fas fa-search"></i>
+  <input type="search" class="form-control" name="q" id="search-input" placeholder="Search the docs ..." aria-label="Search the docs ..." autocomplete="off" >
+</form>
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    
+    <p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  User Guide
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/introduction.html">
+   Introduction
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Cluster Deployment
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1 has-children">
+  <a class="reference internal" href="../user-guide/deployment/index.html">
+   Deployment
+  </a>
+  <input class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" type="checkbox"/>
+  <label for="toctree-checkbox-1">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../user-guide/deployment/quick-start.html">
+     Quick Start
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../user-guide/deployment/cargo-install.html">
+     Cargo Install
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../user-guide/deployment/docker.html">
+     Docker
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../user-guide/deployment/docker-compose.html">
+     Docker Compose
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../user-guide/deployment/kubernetes.html">
+     Kubernetes
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/scheduler.html">
+   Scheduler
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Clients
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/python.html">
+   Python
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/rust.html">
+   Rust
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/flightsql.html">
+   Flight SQL JDBC
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/cli.html">
+   SQL CLI
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Reference
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/configs.html">
+   Configuration
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/tuning-guide.html">
+   Tuning Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/metrics.html">
+   Ballista Scheduler Metrics
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../user-guide/faq.html">
+   Frequently Asked Questions
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Contributors Guide
+ </span>
+</p>
+<ul class="current nav bd-sidenav">
+ <li class="toctree-l1 current active">
+  <a class="current reference internal" href="#">
+   Ballista Architecture
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="code-organization.html">
+   Ballista Code Organization
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="development.html">
+   Ballista Development
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/arrow-ballista/">
+   Source code
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Community
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../community/communication.html">
+   Communication
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/arrow-ballista/issues">
+   Issue tracker
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/arrow-ballista/blob/main/CODE_OF_CONDUCT.md">
+   Code of conduct
+  </a>
+ </li>
+</ul>
+
+    
+  </div>
+</nav>
+              </div>
+              <div class="sidebar-end-items">
+              </div>
+            </div>
+            
+          
+
+          
+          <div class="d-none d-xl-block col-xl-2 bd-toc">
+            
+              
+              <div class="toc-item">
+                
+<div class="tocsection onthispage pt-5 pb-3">
+    <i class="fas fa-list"></i> On this page
+</div>
+
+<nav id="bd-toc-nav">
+    <ul class="visible nav section-nav flex-column">
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#overview">
+   Overview
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#design-principles">
+   Design Principles
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#arrow-native">
+     Arrow-native
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#language-agnostic">
+     Language Agnostic
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#extensible">
+     Extensible
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#deployment-architecture">
+   Deployment Architecture
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#cluster">
+     Cluster
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#scheduler">
+     Scheduler
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#executor">
+     Executor
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#clients">
+     Clients
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#distributed-query-scheduling">
+   Distributed Query Scheduling
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#producing-a-distributed-query-plan">
+     Producing a Distributed Query Plan
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#shuffle">
+     Shuffle
+    </a>
+   </li>
+  </ul>
+ </li>
+</ul>
+
+</nav>
+              </div>
+              
+              <div class="toc-item">
+                
+
+<div class="tocsection editthispage">
+    <a href="https://github.com/apache/arrow-ballista/edit/main/docs/source/contributors-guide/architecture.md">
+        <i class="fas fa-pencil-alt"></i> Edit this page
+    </a>
+</div>
+
+              </div>
+              
+            
+          </div>
+          
+
+          
+          
+            
+          
+          <main class="col-12 col-md-9 col-xl-7 py-md-5 pl-md-5 pr-md-4 bd-content" role="main">
+              
+              <div>
+                
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="ballista-architecture">
+<h1>Ballista Architecture<a class="headerlink" href="#ballista-architecture" title="Link to this heading">¶</a></h1>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">¶</a></h2>
+<p>Ballista’s primary purpose is to provide a distributed SQL query engine implemented in the Rust programming
+language and using the Apache Arrow memory model.</p>
+<p>Ballista also provides a DataFrame API (both in Rust and Python), suitable for constructing ETL pipelines and
+analytical queries. The DataFrame API is inspired by Apache Spark and is currently better suited for ETL/SQL work
+than for data science.</p>
+</section>
+<section id="design-principles">
+<h2>Design Principles<a class="headerlink" href="#design-principles" title="Link to this heading">¶</a></h2>
+<section id="arrow-native">
+<h3>Arrow-native<a class="headerlink" href="#arrow-native" title="Link to this heading">¶</a></h3>
+<p>Ballista uses the Apache Arrow memory format during query execution, and Apache Arrow IPC format on disk for
+shuffle files and for exchanging data between executors. Queries can be submitted using the Arrow Flight SQL API
+and the Arrow Flight SQL JDBC Driver.</p>
+</section>
+<section id="language-agnostic">
+<h3>Language Agnostic<a class="headerlink" href="#language-agnostic" title="Link to this heading">¶</a></h3>
+<p>Although most of the implementation code is written in Rust, the scheduler and executor APIs are based on open
+standards, including protocol buffers, gRPC, Apache Arrow IPC, and Apache Arrow Flight SQL.</p>
+<p>This language agnostic approach will allow Ballista to eventually support UDFs in languages other than Rust,
+including Wasm.</p>
+</section>
+<section id="extensible">
+<h3>Extensible<a class="headerlink" href="#extensible" title="Link to this heading">¶</a></h3>
+<p>Many Ballista users have their own distributed query engines that use Ballista as a foundation, rather than
+using Ballista directly. This allows the scheduler and executor processes to be extended with support for
+additional data formats, operators, expressions, or custom SQL dialects or other DSLs.</p>
+<p>Ballista uses the DataFusion query engine for query execution, but it should be possible to plug in other execution
+engines.</p>
+</section>
+</section>
+<section id="deployment-architecture">
+<h2>Deployment Architecture<a class="headerlink" href="#deployment-architecture" title="Link to this heading">¶</a></h2>
+<section id="cluster">
+<h3>Cluster<a class="headerlink" href="#cluster" title="Link to this heading">¶</a></h3>
+<p>A Ballista cluster consists of one or more scheduler processes and one or more executor processes. These processes
+can be run as native binaries and are also available as Docker Images, which can be easily deployed with
+<a class="reference external" href="https://datafusion.apache.org/ballista/user-guide/deployment/docker-compose.html">Docker Compose</a> or
+<a class="reference external" href="https://datafusion.apache.org/ballista/user-guide/deployment/kubernetes.html">Kubernetes</a>.</p>
+<p>The following diagram shows the interaction between clients and the scheduler for submitting jobs, and the interaction
+between the executor(s) and the scheduler for fetching tasks and reporting task status.</p>
+<p><img alt="Ballista Cluster Diagram" src="../_images/ballista.drawio.png" /></p>
+</section>
+<section id="scheduler">
+<h3>Scheduler<a class="headerlink" href="#scheduler" title="Link to this heading">¶</a></h3>
+<p>The scheduler provides the following interfaces:</p>
+<ul class="simple">
+<li><p>gRPC service for submitting and managing jobs</p></li>
+<li><p>Flight SQL API</p></li>
+<li><p>REST API for monitoring jobs</p></li>
+<li><p>Web user interface for monitoring jobs</p></li>
+</ul>
+<p>Jobs are submitted to the scheduler’s gRPC service from a client context, either in the form of a logical query
+plan or a SQL string. The scheduler then creates an execution graph, which contains a physical plan broken down into
+stages (pipelines) that can be scheduled independently. This process is explained in detail in the Distributed
+Query Scheduling section of this guide.</p>
+<p>It is possible to have multiple schedulers running with shared state in etcd, so that jobs can continue to run
+even if a scheduler process fails.</p>
+</section>
+<section id="executor">
+<h3>Executor<a class="headerlink" href="#executor" title="Link to this heading">¶</a></h3>
+<p>The executor processes connect to a scheduler and poll for tasks to perform. These tasks are physical plans in
+protocol buffer format. These physical plans are typically executed against multiple partitions of input data. Executors
+can execute multiple partitions of the same plan in parallel.</p>
+</section>
+<section id="clients">
+<h3>Clients<a class="headerlink" href="#clients" title="Link to this heading">¶</a></h3>
+<p>There are multiple clients available for submitting jobs to a Ballista cluster:</p>
+<ul class="simple">
+<li><p>The <a class="reference external" href="https://github.com/apache/arrow-ballista/tree/main/ballista-cli">Ballista CLI</a> provides a SQL command-line
+interface.</p></li>
+<li><p>The Python bindings (<a class="reference external" href="https://github.com/apache/arrow-ballista/tree/main/python">PyBallista</a>) provide a session
+context with support for SQL and DataFrame operations.</p></li>
+<li><p>The <a class="reference external" href="https://crates.io/crates/ballista">ballista crate</a> provides a native Rust session context with support for
+SQL and DataFrame operations.</p></li>
+<li><p>The <a class="reference external" href="https://arrow.apache.org/docs/java/flight_sql_jdbc_driver.html">Flight SQL JDBC driver</a> can be used from
+popular SQL tools to execute SQL queries against a cluster.</p></li>
+</ul>
+</section>
+</section>
+<section id="distributed-query-scheduling">
+<h2>Distributed Query Scheduling<a class="headerlink" href="#distributed-query-scheduling" title="Link to this heading">¶</a></h2>
+<p>Distributed query plans are fundamentally different to in-process query plans because we can’t just build a
+tree of operators and start executing them. The query now requires co-ordination across executors which means that
+we now need a scheduler.</p>
+<p>At a high level, the concept of a distributed query scheduler is not complex. The scheduler needs to examine the
+whole query and break it down into stages that can be executed in isolation (usually in parallel across the executors)
+and then schedule these stages for execution based on the available resources in the cluster. Once each query
+stage completes then any subsequent dependent query stages can be scheduled. This process repeats until all query
+stages have been executed.</p>
+<section id="producing-a-distributed-query-plan">
+<h3>Producing a Distributed Query Plan<a class="headerlink" href="#producing-a-distributed-query-plan" title="Link to this heading">¶</a></h3>
+<p>Some operators can run in parallel on input partitions and some operators require data to be repartitioned. These
+changes in partitioning are key to planning a distributed query. Changes in partitioning within a plan are sometimes
+called pipeline breakers and these changes in partitioning define the boundaries between query stages.</p>
+<p>We will now use the following SQL query to see how this process works.</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">customer</span><span class="p">.</span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="k">sum</span><span class="p">(</span><span class="k">order</span><span class="p">.</span><span class="n">amount</span><span class="p">)</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="n">total_amount</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">customer</span><span class="w"> </span><span class="k">JOIN</span><span class="w"> </span><span class="k">order</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">customer</span><span class="p">.</span><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">order</span><span class="p">.</span><span class="n">customer_id</span>
+<span class="k">GROUP</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">customer</span><span class="p">.</span><span class="n">id</span>
+</pre></div>
+</div>
+<p>The physical (non-distributed) plan for this query would look something like this:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Projection</span><span class="p">:</span> <span class="c1">#customer.id, #total_amount</span>
+  <span class="n">HashAggregate</span><span class="p">:</span> <span class="n">groupBy</span><span class="o">=</span><span class="p">[</span><span class="n">customer</span><span class="o">.</span><span class="n">id</span><span class="p">],</span> <span class="n">aggr</span><span class="o">=</span><span class="p">[</span><span class="n">MAX</span><span class="p">(</span><span class="n">max_fare</span><span class="p">)</span> <span class="n">AS</span> <span class="n">total_amount</span><span class="p">]</span>
+    <span class="n">Join</span><span class="p">:</span> <span class="n">condition</span><span class="o">=</span><span class="p">[</span><span class="n">customer</span><span class="o">.</span><span class="n">id</span> <span class="o">=</span> <span class="n">order</span><span class="o">.</span><span class="n">customer_id</span><span class="p">]</span>
+      <span class="n">Scan</span><span class="p">:</span> <span class="n">customer</span>
+      <span class="n">Scan</span><span class="p">:</span> <span class="n">order</span>
+</pre></div>
+</div>
+<p>Assuming that the customer and order tables are not already partitioned on customer id, we will need to schedule
+execution of the first two query stages to repartition this data. These two query stages can run in parallel.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Query</span> <span class="n">Stage</span> <span class="c1">#1: repartition=[customer.id]</span>
+  <span class="n">Scan</span><span class="p">:</span> <span class="n">customer</span>
+<span class="n">Query</span> <span class="n">Stage</span> <span class="c1">#2: repartition=[order.customer_id]</span>
+  <span class="n">Scan</span><span class="p">:</span> <span class="n">order</span>
+</pre></div>
+</div>
+<p>Next, we can schedule the join, which will run in parallel for each partition of the two inputs. The next operator
+after the join is the aggregate, which is split into two parts; the aggregate that runs in parallel and then
+the final aggregate that requires a single input partition. We can perform the parallel part of this aggregate
+in the same query stage as the join because this first aggregate does not care how the data is partitioned. This
+gives us our third query stage, which can now be scheduled for execution. The output of this query stage
+remains partitioned by customer id.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Query</span> <span class="n">Stage</span> <span class="c1">#3: repartition=[]</span>
+  <span class="n">HashAggregate</span><span class="p">:</span> <span class="n">groupBy</span><span class="o">=</span><span class="p">[</span><span class="n">customer</span><span class="o">.</span><span class="n">id</span><span class="p">],</span> <span class="n">aggr</span><span class="o">=</span><span class="p">[</span><span class="n">MAX</span><span class="p">(</span><span class="n">max_fare</span><span class="p">)</span> <span class="n">AS</span> <span class="n">total_amount</span><span class="p">]</span>
+    <span class="n">Join</span><span class="p">:</span> <span class="n">condition</span><span class="o">=</span><span class="p">[</span><span class="n">customer</span><span class="o">.</span><span class="n">id</span> <span class="o">=</span> <span class="n">order</span><span class="o">.</span><span class="n">customer_id</span><span class="p">]</span>
+      <span class="n">Query</span> <span class="n">Stage</span> <span class="c1">#1</span>
+      <span class="n">Query</span> <span class="n">Stage</span> <span class="c1">#2</span>
+</pre></div>
+</div>
+<p>The final query stage performs the aggregate of the aggregates, reading from all of the partitions from the previous
+stage.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Query</span> <span class="n">Stage</span> <span class="c1">#4:</span>
+  <span class="n">Projection</span><span class="p">:</span> <span class="c1">#customer.id, #total_amount</span>
+    <span class="n">HashAggregate</span><span class="p">:</span> <span class="n">groupBy</span><span class="o">=</span><span class="p">[</span><span class="n">customer</span><span class="o">.</span><span class="n">id</span><span class="p">],</span> <span class="n">aggr</span><span class="o">=</span><span class="p">[</span><span class="n">MAX</span><span class="p">(</span><span class="n">max_fare</span><span class="p">)</span> <span class="n">AS</span> <span class="n">total_amount</span><span class="p">]</span>
+      <span class="n">QueryStage</span> <span class="c1">#3</span>
+</pre></div>
+</div>
+<p>To recap, here is the full distributed query plan showing the query stages that are introduced when data needs to be
+repartitioned or exchanged between pipelined operations.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Query</span> <span class="n">Stage</span> <span class="c1">#4:</span>
+  <span class="n">Projection</span><span class="p">:</span> <span class="c1">#customer.id, #total_amount</span>
+    <span class="n">HashAggregate</span><span class="p">:</span> <span class="n">groupBy</span><span class="o">=</span><span class="p">[</span><span class="n">customer</span><span class="o">.</span><span class="n">id</span><span class="p">],</span> <span class="n">aggr</span><span class="o">=</span><span class="p">[</span><span class="n">MAX</span><span class="p">(</span><span class="n">max_fare</span><span class="p">)</span> <span class="n">AS</span> <span class="n">total_amount</span><span class="p">]</span>
+      <span class="n">Query</span> <span class="n">Stage</span> <span class="c1">#3: repartition=[]</span>
+        <span class="n">HashAggregate</span><span class="p">:</span> <span class="n">groupBy</span><span class="o">=</span><span class="p">[</span><span class="n">customer</span><span class="o">.</span><span class="n">id</span><span class="p">],</span> <span class="n">aggr</span><span class="o">=</span><span class="p">[</span><span class="n">MAX</span><span class="p">(</span><span class="n">max_fare</span><span class="p">)</span> <span class="n">AS</span> <span class="n">total_amount</span><span class="p">]</span>
+          <span class="n">Join</span><span class="p">:</span> <span class="n">condition</span><span class="o">=</span><span class="p">[</span><span class="n">customer</span><span class="o">.</span><span class="n">id</span> <span class="o">=</span> <span class="n">order</span><span class="o">.</span><span class="n">customer_id</span><span class="p">]</span>
+            <span class="n">Query</span> <span class="n">Stage</span> <span class="c1">#1: repartition=[customer.id]</span>
+              <span class="n">Scan</span><span class="p">:</span> <span class="n">customer</span>
+            <span class="n">Query</span> <span class="n">Stage</span> <span class="c1">#2: repartition=[order.customer_id]</span>
+              <span class="n">Scan</span><span class="p">:</span> <span class="n">order</span>
+</pre></div>
+</div>
+</section>
+<section id="shuffle">
+<h3>Shuffle<a class="headerlink" href="#shuffle" title="Link to this heading">¶</a></h3>
+<p>Each stage of the execution graph has the same partitioning scheme for all of the operators in the plan. However,
+the output of each stage typically needs to be repartitioned before it can be used as the input to the next stage. An
+example of this is when a query contains multiple joins. Data needs to be partitioned by the join keys before the join
+can be performed.</p>
+<p>Each executor will re-partition the output of the stage it is running so that it can be consumed by the next
+stage. This mechanism is known as an Exchange or a Shuffle. The logic for this can be found in the <a class="reference external" href="https://github.com/apache/arrow-ballista/blob/main/ballista/core/src/execution_plans/shuffle_writer.rs">ShuffleWriterExec</a>
+and <a class="reference external" href="https://github.com/apache/arrow-ballista/blob/main/ballista/core/src/execution_plans/shuffle_reader.rs">ShuffleReaderExec</a> operators.</p>
+</section>
+</section>
+</section>
+
+
+              </div>
+              
+              
+              <!-- Previous / next buttons -->
+<div class='prev-next-area'>
+    <a class='left-prev' id="prev-link" href="../user-guide/faq.html" title="previous page">
+        <i class="fas fa-angle-left"></i>
+        <div class="prev-next-info">
+            <p class="prev-next-subtitle">previous</p>
+            <p class="prev-next-title">Frequently Asked Questions</p>
+        </div>
+    </a>
+    <a class='right-next' id="next-link" href="code-organization.html" title="next page">
+    <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Ballista Code Organization</p>
+    </div>
+    <i class="fas fa-angle-right"></i>
+    </a>
+</div>
+              
+          </main>
+          
+
+      </div>
+    </div>
+  
+    <script src="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf"></script>
+  
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p class="copyright">
+    &copy; Copyright 2019-2024, Apache Software Foundation.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p class="sphinx-version">
+Created using <a href="http://sphinx-doc.org/">Sphinx</a> 7.3.7.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p>Apache DataFusion Ballista, Arrow Ballista, Apache, the Apache feather logo, and the Apache DataFusion Ballista project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>

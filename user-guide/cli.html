@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Ballista Command-line Interface &#8212; Apache DataFusion Ballista  documentation</title>
+    
+    <link href="../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+  
+    
+    <link rel="stylesheet"
+      href="../_static/vendor/fontawesome/5.13.0/css/all.min.css">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-solid-900.woff2">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-brands-400.woff2">
+  
+    
+      
+  
+    
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=a746c00c" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/pydata-sphinx-theme.css?v=1140d252" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=ef9fea58" />
+    
+    <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf">
+  
+    <script src="../_static/documentation_options.js?v=8a448e45"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Configuration" href="configs.html" />
+    <link rel="prev" title="Using FlightSQL to Connect to Ballista" href="flightsql.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="docsearch:language" content="en">
+    
+
+    <!-- Google Analytics -->
+    
+  </head>
+  <body data-spy="scroll" data-target="#bd-toc-nav" data-offset="80">
+    
+    <div class="container-fluid" id="banner"></div>
+
+    
+
+
+    <div class="container-xl">
+      <div class="row">
+          
+            
+            <!-- Only show if we have sidebars configured, else just a small margin  -->
+            <div class="col-12 col-md-3 bd-sidebar">
+              <div class="sidebar-start-items">
+<a class="navbar-brand" href="../index.html">
+  <img src="../_static/images/ballista-logo.png" class="logo" alt="logo">
+</a>
+
+<form class="bd-search d-flex align-items-center" action="../search.html" method="get">
+  <i class="icon fas fa-search"></i>
+  <input type="search" class="form-control" name="q" id="search-input" placeholder="Search the docs ..." aria-label="Search the docs ..." autocomplete="off" >
+</form>
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    
+    <p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  User Guide
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="introduction.html">
+   Introduction
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Cluster Deployment
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1 has-children">
+  <a class="reference internal" href="deployment/index.html">
+   Deployment
+  </a>
+  <input class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" type="checkbox"/>
+  <label for="toctree-checkbox-1">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul>
+   <li class="toctree-l2">
+    <a class="reference internal" href="deployment/quick-start.html">
+     Quick Start
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="deployment/cargo-install.html">
+     Cargo Install
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="deployment/docker.html">
+     Docker
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="deployment/docker-compose.html">
+     Docker Compose
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="deployment/kubernetes.html">
+     Kubernetes
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="scheduler.html">
+   Scheduler
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Clients
+ </span>
+</p>
+<ul class="current nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="python.html">
+   Python
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="rust.html">
+   Rust
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="flightsql.html">
+   Flight SQL JDBC
+  </a>
+ </li>
+ <li class="toctree-l1 current active">
+  <a class="current reference internal" href="#">
+   SQL CLI
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Reference
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="configs.html">
+   Configuration
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="tuning-guide.html">
+   Tuning Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="metrics.html">
+   Ballista Scheduler Metrics
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="faq.html">
+   Frequently Asked Questions
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Contributors Guide
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributors-guide/architecture.html">
+   Ballista Architecture
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributors-guide/code-organization.html">
+   Ballista Code Organization
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributors-guide/development.html">
+   Ballista Development
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/arrow-ballista/">
+   Source code
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Community
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../community/communication.html">
+   Communication
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/arrow-ballista/issues">
+   Issue tracker
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/arrow-ballista/blob/main/CODE_OF_CONDUCT.md">
+   Code of conduct
+  </a>
+ </li>
+</ul>
+
+    
+  </div>
+</nav>
+              </div>
+              <div class="sidebar-end-items">
+              </div>
+            </div>
+            
+          
+
+          
+          <div class="d-none d-xl-block col-xl-2 bd-toc">
+            
+              
+              <div class="toc-item">
+                
+<div class="tocsection onthispage pt-5 pb-3">
+    <i class="fas fa-list"></i> On this page
+</div>
+
+<nav id="bd-toc-nav">
+    <ul class="visible nav section-nav flex-column">
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#usage">
+   Usage
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#example">
+   Example
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#run-ballista-cli-in-distributed-mode">
+   Run Ballista CLI in Distributed Mode
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#run-ballista-cli-in-standalone-mode">
+   Run Ballista CLI in Standalone Mode
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#cli-commands">
+   Cli commands
+  </a>
+ </li>
+</ul>
+
+</nav>
+              </div>
+              
+              <div class="toc-item">
+                
+
+<div class="tocsection editthispage">
+    <a href="https://github.com/apache/arrow-ballista/edit/main/docs/source/user-guide/cli.md">
+        <i class="fas fa-pencil-alt"></i> Edit this page
+    </a>
+</div>
+
+              </div>
+              
+            
+          </div>
+          
+
+          
+          
+            
+          
+          <main class="col-12 col-md-9 col-xl-7 py-md-5 pl-md-5 pr-md-4 bd-content" role="main">
+              
+              <div>
+                
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="ballista-command-line-interface">
+<h1>Ballista Command-line Interface<a class="headerlink" href="#ballista-command-line-interface" title="Link to this heading">¶</a></h1>
+<p>The Ballista CLI allows SQL queries to be executed against a Ballista cluster, or in standalone mode in a single
+process.</p>
+<p>Use Cargo to install:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cargo<span class="w"> </span>install<span class="w"> </span>ballista-cli
+</pre></div>
+</div>
+<section id="usage">
+<h2>Usage<a class="headerlink" href="#usage" title="Link to this heading">¶</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">USAGE</span><span class="p">:</span>
+    <span class="n">ballista</span><span class="o">-</span><span class="n">cli</span> <span class="p">[</span><span class="n">OPTIONS</span><span class="p">]</span>
+
+<span class="n">OPTIONS</span><span class="p">:</span>
+    <span class="o">-</span><span class="n">c</span><span class="p">,</span> <span class="o">--</span><span class="n">batch</span><span class="o">-</span><span class="n">size</span> <span class="o">&lt;</span><span class="n">BATCH_SIZE</span><span class="o">&gt;</span>    <span class="n">The</span> <span class="n">batch</span> <span class="n">size</span> <span class="n">of</span> <span class="n">each</span> <span class="n">query</span><span class="p">,</span> <span class="ow">or</span> <span class="n">use</span> <span class="n">Ballista</span> <span class="n">default</span>
+    <span class="o">-</span><span class="n">f</span><span class="p">,</span> <span class="o">--</span><span class="n">file</span> <span class="o">&lt;</span><span class="n">FILE</span><span class="o">&gt;...</span>             <span class="n">Execute</span> <span class="n">commands</span> <span class="kn">from</span> <span class="nn">file</span><span class="p">(</span><span class="n">s</span><span class="p">),</span> <span class="n">then</span> <span class="n">exit</span>
+        <span class="o">--</span><span class="nb">format</span> <span class="o">&lt;</span><span class="n">FORMAT</span><span class="o">&gt;</span>            <span class="p">[</span><span class="n">default</span><span class="p">:</span> <span class="n">table</span><span class="p">]</span> <span class="p">[</span><span class="n">possible</span> <span class="n">values</span><span class="p">:</span> <span class="n">csv</span><span class="p">,</span> <span class="n">tsv</span><span class="p">,</span> <span class="n">table</span><span class="p">,</span> <span class="n">json</span><span class="p">,</span>
+                                     <span class="n">nd</span><span class="o">-</span><span class="n">json</span><span class="p">]</span>
+    <span class="o">-</span><span class="n">h</span><span class="p">,</span> <span class="o">--</span><span class="n">help</span>                       <span class="n">Print</span> <span class="n">help</span> <span class="n">information</span>
+        <span class="o">--</span><span class="n">host</span> <span class="o">&lt;</span><span class="n">HOST</span><span class="o">&gt;</span>                <span class="n">Ballista</span> <span class="n">scheduler</span> <span class="n">host</span>
+    <span class="o">-</span><span class="n">p</span><span class="p">,</span> <span class="o">--</span><span class="n">data</span><span class="o">-</span><span class="n">path</span> <span class="o">&lt;</span><span class="n">DATA_PATH</span><span class="o">&gt;</span>      <span class="n">Path</span> <span class="n">to</span> <span class="n">your</span> <span class="n">data</span><span class="p">,</span> <span class="n">default</span> <span class="n">to</span> <span class="n">current</span> <span class="n">directory</span>
+        <span class="o">--</span><span class="n">port</span> <span class="o">&lt;</span><span class="n">PORT</span><span class="o">&gt;</span>                <span class="n">Ballista</span> <span class="n">scheduler</span> <span class="n">port</span>
+    <span class="o">-</span><span class="n">q</span><span class="p">,</span> <span class="o">--</span><span class="n">quiet</span>                      <span class="n">Reduce</span> <span class="n">printing</span> <span class="n">other</span> <span class="n">than</span> <span class="n">the</span> <span class="n">results</span> <span class="ow">and</span> <span class="n">work</span> <span class="n">quietly</span>
+    <span class="o">-</span><span class="n">r</span><span class="p">,</span> <span class="o">--</span><span class="n">rc</span> <span class="o">&lt;</span><span class="n">RC</span><span class="o">&gt;...</span>                 <span class="n">Run</span> <span class="n">the</span> <span class="n">provided</span> <span class="n">files</span> <span class="n">on</span> <span class="n">startup</span> <span class="n">instead</span> <span class="n">of</span> <span class="o">~/.</span><span class="n">ballistarc</span>
+    <span class="o">-</span><span class="n">V</span><span class="p">,</span> <span class="o">--</span><span class="n">version</span>                    <span class="n">Print</span> <span class="n">version</span> <span class="n">information</span>
+</pre></div>
+</div>
+</section>
+<section id="example">
+<h2>Example<a class="headerlink" href="#example" title="Link to this heading">¶</a></h2>
+<p>Create a CSV file to query.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>$<span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;1,2&quot;</span><span class="w"> </span>&gt;<span class="w"> </span>data.csv
+</pre></div>
+</div>
+</section>
+<section id="run-ballista-cli-in-distributed-mode">
+<h2>Run Ballista CLI in Distributed Mode<a class="headerlink" href="#run-ballista-cli-in-distributed-mode" title="Link to this heading">¶</a></h2>
+<p>The CLI can connect to a Ballista scheduler for query execution.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ballista-cli<span class="w"> </span>--host<span class="w"> </span>localhost<span class="w"> </span>--port<span class="w"> </span><span class="m">50050</span>
+</pre></div>
+</div>
+</section>
+<section id="run-ballista-cli-in-standalone-mode">
+<h2>Run Ballista CLI in Standalone Mode<a class="headerlink" href="#run-ballista-cli-in-standalone-mode" title="Link to this heading">¶</a></h2>
+<p>It is also possible to run the CLI in standalone mode, where it will create a scheduler and executor in-process.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>$<span class="w"> </span>ballista-cli
+
+Ballista<span class="w"> </span>CLI<span class="w"> </span>v8.0.0
+
+&gt;<span class="w"> </span>CREATE<span class="w"> </span>EXTERNAL<span class="w"> </span>TABLE<span class="w"> </span>foo<span class="w"> </span><span class="o">(</span>a<span class="w"> </span>INT,<span class="w"> </span>b<span class="w"> </span>INT<span class="o">)</span><span class="w"> </span>STORED<span class="w"> </span>AS<span class="w"> </span>CSV<span class="w"> </span>LOCATION<span class="w"> </span><span class="s1">&#39;data.csv&#39;</span><span class="p">;</span>
+<span class="m">0</span><span class="w"> </span>rows<span class="w"> </span><span class="k">in</span><span class="w"> </span>set.<span class="w"> </span>Query<span class="w"> </span>took<span class="w"> </span><span class="m">0</span>.001<span class="w"> </span>seconds.
+
+&gt;<span class="w"> </span>SELECT<span class="w"> </span>*<span class="w"> </span>FROM<span class="w"> </span>foo<span class="p">;</span>
++---+---+
+<span class="p">|</span><span class="w"> </span>a<span class="w"> </span><span class="p">|</span><span class="w"> </span>b<span class="w"> </span><span class="p">|</span>
++---+---+
+<span class="p">|</span><span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="p">|</span><span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="p">|</span>
++---+---+
+<span class="m">1</span><span class="w"> </span>row<span class="w"> </span><span class="k">in</span><span class="w"> </span>set.<span class="w"> </span>Query<span class="w"> </span>took<span class="w"> </span><span class="m">0</span>.017<span class="w"> </span>seconds.
+</pre></div>
+</div>
+</section>
+<section id="cli-commands">
+<h2>Cli commands<a class="headerlink" href="#cli-commands" title="Link to this heading">¶</a></h2>
+<p>Available commands inside Ballista CLI are:</p>
+<ul class="simple">
+<li><p>Quit</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>&gt;<span class="w"> </span><span class="se">\q</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>Help</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>&gt;<span class="w"> </span><span class="se">\?</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>ListTables</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>&gt;<span class="w"> </span><span class="se">\d</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>DescribeTable</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>&gt;<span class="w"> </span><span class="se">\d</span><span class="w"> </span>table_name
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>QuietMode</p></li>
+</ul>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">&gt;</span> \<span class="n">quiet</span> <span class="p">[</span><span class="n">true</span><span class="o">|</span><span class="n">false</span><span class="p">]</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>list function</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>&gt;<span class="w"> </span><span class="se">\h</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>Search and describe function</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>&gt;<span class="w"> </span><span class="se">\h</span><span class="w"> </span>function_table
+</pre></div>
+</div>
+</section>
+</section>
+
+
+              </div>
+              
+              
+              <!-- Previous / next buttons -->
+<div class='prev-next-area'>
+    <a class='left-prev' id="prev-link" href="flightsql.html" title="previous page">
+        <i class="fas fa-angle-left"></i>
+        <div class="prev-next-info">
+            <p class="prev-next-subtitle">previous</p>
+            <p class="prev-next-title">Using FlightSQL to Connect to Ballista</p>
+        </div>
+    </a>
+    <a class='right-next' id="next-link" href="configs.html" title="next page">
+    <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Configuration</p>
+    </div>
+    <i class="fas fa-angle-right"></i>
+    </a>
+</div>
+              
+          </main>
+          
+
+      </div>
+    </div>
+  
+    <script src="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf"></script>
+  
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p class="copyright">
+    &copy; Copyright 2019-2024, Apache Software Foundation.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p class="sphinx-version">
+Created using <a href="http://sphinx-doc.org/">Sphinx</a> 7.3.7.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p>Apache DataFusion Ballista, Arrow Ballista, Apache, the Apache feather logo, and the Apache DataFusion Ballista project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>
