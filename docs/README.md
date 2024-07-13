@@ -47,6 +47,6 @@ inside a Python virtualenv.
 
 ## Release
 
-The documentation is served through the [datafusion-site](https://github.com/apache/datafusion-site/) repository.
+The documentation is published from the `asf-site` branch of this repository.
 
 Documentation is published automatically when documentation changes are pushed to the main branch.
