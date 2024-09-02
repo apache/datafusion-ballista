@@ -137,7 +137,7 @@ async fn main() -> Result<()> {
 
 The output should look similar to the following table.
 
-```{r eval=FALSE}
+```text
 +-----------------+--------------------------+--------------------------+--------------------------+--------------------------+
 | passenger_count | MIN(?table?.fare_amount) | MAX(?table?.fare_amount) | AVG(?table?.fare_amount) | SUM(?table?.fare_amount) |
 +-----------------+--------------------------+--------------------------+--------------------------+--------------------------+
