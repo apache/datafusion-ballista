@@ -145,7 +145,7 @@ pub(crate) struct ResolvedStage {
 /// 1. save the execution plan as encoded one to avoid serialization cost for creating task definition
 /// 2. manage the task statuses
 /// 3. manage the stage-level combined metrics
-/// Running stages will only be maintained in memory and will not saved to the backend storage
+///    Running stages will only be maintained in memory and will not saved to the backend storage
 #[derive(Clone)]
 pub(crate) struct RunningStage {
     /// Stage ID
