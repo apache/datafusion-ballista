@@ -35,8 +35,10 @@ rustc-args = ["--cfg", "docsrs"]
 
 [features]
 azure = ["object_store/azure"]
+docsrs = []
 # Used for testing ONLY: causes all values to hash to the same value (test for collisions)
 force_hash_collisions = ["datafusion/force_hash_collisions"]
+gcs = ["object_store/gcp"]
 # Used to enable hdfs to be registered in the ObjectStoreRegistry by default
 hdfs = ["datafusion-objectstore-hdfs/hdfs"]
 hdfs3 = ["datafusion-objectstore-hdfs/hdfs3"]

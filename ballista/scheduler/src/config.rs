@@ -199,7 +199,7 @@ pub enum TaskDistribution {
     RoundRobin,
     /// 1. Firstly, try to bind tasks without scanning source files by [`RoundRobin`] policy.
     /// 2. Then for a task for scanning source files, firstly calculate a hash value based on input files.
-    /// And then bind it with an execute according to consistent hashing policy.
+    ///    And then bind it with an execute according to consistent hashing policy.
     /// 3. If needed, work stealing can be enabled based on the tolerance of the consistent hashing.
     ConsistentHash,
 }
@@ -228,7 +228,7 @@ pub enum TaskDistributionPolicy {
     RoundRobin,
     /// 1. Firstly, try to bind tasks without scanning source files by [`RoundRobin`] policy.
     /// 2. Then for a task for scanning source files, firstly calculate a hash value based on input files.
-    /// And then bind it with an execute according to consistent hashing policy.
+    ///    And then bind it with an execute according to consistent hashing policy.
     /// 3. If needed, work stealing can be enabled based on the tolerance of the consistent hashing.
     ConsistentHash {
         num_replicas: usize,
