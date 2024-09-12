@@ -55,6 +55,7 @@ clap = { version = "3", features = ["derive", "cargo"] }
 datafusion = { workspace = true }
 datafusion-objectstore-hdfs = { version = "0.1.4", default-features = false, optional = true }
 datafusion-proto = { workspace = true }
+datafusion-proto-common = { workspace = true }
 futures = "0.3"
 hashbrown = "0.14"
 

@@ -26,7 +26,6 @@ use ballista_executor::executor_process::{
 };
 use config::prelude::*;
 
-#[macro_use]
 extern crate configure_me;
 
 #[allow(clippy::all, warnings)]

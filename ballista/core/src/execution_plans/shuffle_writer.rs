@@ -367,8 +367,8 @@ impl ExecutionPlan for ShuffleWriterExec {
         &self.properties
     }
 
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
-        vec![self.plan.clone()]
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.plan]
     }
 
     fn with_new_children(

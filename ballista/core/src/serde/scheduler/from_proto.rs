@@ -421,7 +421,8 @@ fn reset_metrics_for_execution_plan(
     plan: Arc<dyn ExecutionPlan>,
 ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
     plan.transform(&|plan: Arc<dyn ExecutionPlan>| {
-        let children = plan.children().clone();
+        let children: Vec<Arc<dyn ExecutionPlan>> =
+            plan.children().into_iter().cloned().collect();
         plan.with_new_children(children).map(Transformed::yes)
     })
     .data()

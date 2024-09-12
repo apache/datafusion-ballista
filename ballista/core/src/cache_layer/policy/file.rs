@@ -30,7 +30,7 @@ use ballista_cache::{
 };
 use log::{error, info, warn};
 use object_store::path::Path;
-use object_store::{ObjectMeta, ObjectStore};
+use object_store::{ObjectMeta, ObjectStore, PutPayload};
 use std::ops::Range;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -181,11 +181,14 @@ where
         data.len(),
         source_location
     );
-    cache_store.put(&cache_location, data).await.map_err(|e| {
-        BallistaError::General(format!(
-            "Fail to write out data to {cache_location} due to {e}"
-        ))
-    })?;
+    cache_store
+        .put(&cache_location, PutPayload::from_bytes(data))
+        .await
+        .map_err(|e| {
+            BallistaError::General(format!(
+                "Fail to write out data to {cache_location} due to {e}"
+            ))
+        })?;
     info!(
         "Object {} has already been cached to {}",
         source_location, cache_location

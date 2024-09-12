@@ -26,13 +26,12 @@ use futures::stream::{self, BoxStream, StreamExt};
 use log::info;
 use object_store::path::Path;
 use object_store::{
-    Error, GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore,
-    PutOptions, PutResult,
+    Error, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    PutMultipartOpts, PutOptions, PutPayload, PutResult,
 };
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::Arc;
-use tokio::io::AsyncWrite;
 
 #[derive(Debug)]
 pub struct FileCacheObjectStore<M>
@@ -77,7 +76,7 @@ where
     async fn put(
         &self,
         _location: &Path,
-        _bytes: Bytes,
+        _bytes: PutPayload,
     ) -> object_store::Result<PutResult> {
         Err(Error::NotSupported {
             source: Box::new(BallistaError::General(
@@ -89,7 +88,7 @@ where
     async fn put_opts(
         &self,
         _location: &Path,
-        _bytes: Bytes,
+        _bytes: PutPayload,
         _opts: PutOptions,
     ) -> object_store::Result<PutResult> {
         Err(Error::NotSupported {
@@ -102,7 +101,7 @@ where
     async fn put_multipart(
         &self,
         _location: &Path,
-    ) -> object_store::Result<(MultipartId, Box<dyn AsyncWrite + Unpin + Send>)> {
+    ) -> object_store::Result<Box<dyn MultipartUpload>> {
         Err(Error::NotSupported {
             source: Box::new(BallistaError::General(
                 "Write path is not supported".to_string(),
@@ -110,11 +109,11 @@ where
         })
     }
 
-    async fn abort_multipart(
+    async fn put_multipart_opts(
         &self,
         _location: &Path,
-        _multipart_id: &MultipartId,
-    ) -> object_store::Result<()> {
+        _opts: PutMultipartOpts,
+    ) -> object_store::Result<Box<dyn MultipartUpload>> {
         Err(Error::NotSupported {
             source: Box::new(BallistaError::General(
                 "Write path is not supported".to_string(),

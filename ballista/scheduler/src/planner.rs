@@ -193,7 +193,7 @@ pub fn find_unresolved_shuffles(
     } else {
         Ok(plan
             .children()
-            .iter()
+            .into_iter()
             .map(find_unresolved_shuffles)
             .collect::<Result<Vec<_>>>()?
             .into_iter()
@@ -248,7 +248,10 @@ pub fn remove_unresolved_shuffles(
                 unresolved_shuffle.schema().clone(),
             )?))
         } else {
-            new_children.push(remove_unresolved_shuffles(child, partition_locations)?);
+            new_children.push(remove_unresolved_shuffles(
+                child.clone(),
+                partition_locations,
+            )?);
         }
     }
     Ok(with_new_children_if_necessary(stage, new_children)?)
@@ -276,7 +279,7 @@ pub fn rollback_resolved_shuffles(
             ));
             new_children.push(unresolved_shuffle);
         } else {
-            new_children.push(rollback_resolved_shuffles(child)?);
+            new_children.push(rollback_resolved_shuffles(child.clone())?);
         }
     }
     Ok(with_new_children_if_necessary(stage, new_children)?)

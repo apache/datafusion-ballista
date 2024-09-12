@@ -387,18 +387,22 @@ impl BallistaContext {
 
         let plan = ctx.state().create_logical_plan(sql).await?;
 
-        match plan {
+        match &plan {
             LogicalPlan::Ddl(DdlStatement::CreateExternalTable(
                 CreateExternalTable {
                     ref schema,
                     ref name,
                     ref location,
                     ref file_type,
-                    ref has_header,
-                    ref delimiter,
                     ref table_partition_cols,
                     ref if_not_exists,
                     ..
+                    // definition,
+                    // order_exprs,
+                    // unbounded,
+                    // options,
+                    // constraints,
+                    // column_defaults,
                 },
             )) => {
                 let table_exists = ctx.table_exist(name.to_owned())?;
@@ -417,8 +421,9 @@ impl BallistaContext {
                     (_, false) => match file_type.to_lowercase().as_str() {
                         "csv" => {
                             let mut options = CsvReadOptions::new()
-                                .has_header(*has_header)
-                                .delimiter(*delimiter as u8)
+                                // TODO get options
+                                // .has_header(*has_header)
+                                // .delimiter(*delimiter as u8)
                                 .table_partition_cols(table_partition_cols.to_vec());
                             if !schema.fields().is_empty() {
                                 options = options.schema(&schema);

@@ -22,13 +22,12 @@ use bytes::Bytes;
 use futures::stream::BoxStream;
 use object_store::path::Path;
 use object_store::{
-    GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore, PutOptions,
-    PutResult,
+    GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    PutMultipartOpts, PutOptions, PutPayload, PutResult,
 };
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::Arc;
-use tokio::io::AsyncWrite;
 
 /// An [`ObjectStore`] wrapper with a specific key which is used for registration in [`ObjectStoreRegistry`].
 ///
@@ -64,7 +63,7 @@ impl ObjectStore for ObjectStoreWithKey {
     async fn put(
         &self,
         location: &Path,
-        bytes: Bytes,
+        bytes: PutPayload,
     ) -> object_store::Result<PutResult> {
         self.inner.put(location, bytes).await
     }
@@ -72,7 +71,7 @@ impl ObjectStore for ObjectStoreWithKey {
     async fn put_opts(
         &self,
         location: &Path,
-        bytes: Bytes,
+        bytes: PutPayload,
         opts: PutOptions,
     ) -> object_store::Result<PutResult> {
         self.inner.put_opts(location, bytes, opts).await
@@ -81,16 +80,16 @@ impl ObjectStore for ObjectStoreWithKey {
     async fn put_multipart(
         &self,
         location: &Path,
-    ) -> object_store::Result<(MultipartId, Box<dyn AsyncWrite + Unpin + Send>)> {
+    ) -> object_store::Result<Box<dyn MultipartUpload>> {
         self.inner.put_multipart(location).await
     }
 
-    async fn abort_multipart(
+    async fn put_multipart_opts(
         &self,
         location: &Path,
-        multipart_id: &MultipartId,
-    ) -> object_store::Result<()> {
-        self.inner.abort_multipart(location, multipart_id).await
+        opts: PutMultipartOpts,
+    ) -> object_store::Result<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
     }
 
     async fn get(&self, location: &Path) -> object_store::Result<GetResult> {

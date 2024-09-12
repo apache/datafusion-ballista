@@ -161,14 +161,14 @@ impl From<tokio::task::JoinError> for BallistaError {
     }
 }
 
-impl From<datafusion_proto::logical_plan::from_proto::Error> for BallistaError {
-    fn from(e: datafusion_proto::logical_plan::from_proto::Error) -> Self {
+impl From<datafusion_proto_common::from_proto::Error> for BallistaError {
+    fn from(e: datafusion_proto_common::from_proto::Error) -> Self {
         BallistaError::General(e.to_string())
     }
 }
 
-impl From<datafusion_proto::logical_plan::to_proto::Error> for BallistaError {
-    fn from(e: datafusion_proto::logical_plan::to_proto::Error) -> Self {
+impl From<datafusion_proto_common::to_proto::Error> for BallistaError {
+    fn from(e: datafusion_proto_common::to_proto::Error) -> Self {
         BallistaError::General(e.to_string())
     }
 }

@@ -118,7 +118,7 @@ impl ExecutionPlan for ShuffleReaderExec {
     fn properties(&self) -> &PlanProperties {
         &self.properties
     }
-    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> {
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]
     }
 
