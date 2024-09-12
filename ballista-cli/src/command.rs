@@ -56,21 +56,27 @@ impl Command {
     ) -> Result<()> {
         let now = Instant::now();
         match self {
-            Self::Help => print_options
-                .print_batches(&[all_commands_info()], now)
-                .map_err(BallistaError::DataFusionError),
+            Self::Help =>
+            // TODO need to provide valid schema
+            {
+                print_options
+                    .print_batches(Arc::new(Schema::empty()), &[all_commands_info()], now)
+                    .map_err(BallistaError::DataFusionError)
+            }
             Self::ListTables => {
                 let df = ctx.sql("SHOW TABLES").await?;
+                let schema = Arc::new(df.schema().as_arrow().clone());
                 let batches = df.collect().await?;
                 print_options
-                    .print_batches(&batches, now)
+                    .print_batches(schema, &batches, now)
                     .map_err(BallistaError::DataFusionError)
             }
             Self::DescribeTable(name) => {
                 let df = ctx.sql(&format!("SHOW COLUMNS FROM {name}")).await?;
+                let schema = Arc::new(df.schema().as_arrow().clone());
                 let batches = df.collect().await?;
                 print_options
-                    .print_batches(&batches, now)
+                    .print_batches(schema, &batches, now)
                     .map_err(BallistaError::DataFusionError)
             }
             Self::QuietMode(quiet) => {

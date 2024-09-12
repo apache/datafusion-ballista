@@ -908,9 +908,8 @@ impl FlightSqlService for FlightSqlServiceImpl {
     ) -> Result<(), Status> {
         debug!("do_action_close_prepared_statement");
         let handle = Uuid::from_slice(handle.prepared_statement_handle.as_ref())
-            .map(|id| {
+            .inspect(|id| {
                 debug!("Closing {}", id);
-                id
             })
             .map_err(|e| Status::internal(format!("Failed to parse handle: {e:?}")))?;
 

@@ -420,7 +420,10 @@ pub struct NamedTime {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OperatorMetric {
-    #[prost(oneof = "operator_metric::Metric", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
+    #[prost(
+        oneof = "operator_metric::Metric",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11"
+    )]
     pub metric: ::core::option::Option<operator_metric::Metric>,
 }
 /// Nested message and enum types in `OperatorMetric`.
@@ -448,6 +451,8 @@ pub mod operator_metric {
         StartTimestamp(i64),
         #[prost(int64, tag = "10")]
         EndTimestamp(i64),
+        #[prost(uint64, tag = "11")]
+        SpilledRows(u64),
     }
 }
 /// Used by scheduler

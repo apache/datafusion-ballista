@@ -20,6 +20,7 @@
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::BufReader;
+use std::sync::Arc;
 use std::time::Instant;
 
 use ballista::prelude::{BallistaContext, Result};
@@ -176,8 +177,9 @@ async fn exec_and_print(
 ) -> Result<()> {
     let now = Instant::now();
     let df = ctx.sql(&sql).await?;
+    let schema = Arc::new(df.schema().as_arrow().clone());
     let results = df.collect().await?;
-    print_options.print_batches(&results, now)?;
+    print_options.print_batches(schema, &results, now)?;
 
     Ok(())
 }

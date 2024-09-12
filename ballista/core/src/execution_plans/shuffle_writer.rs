@@ -178,7 +178,7 @@ impl ShuffleWriterExec {
     ) -> impl Future<Output = Result<Vec<ShuffleWritePartition>>> {
         let mut path = PathBuf::from(&self.work_dir);
         path.push(&self.job_id);
-        path.push(&format!("{}", self.stage_id));
+        path.push(format!("{}", self.stage_id));
 
         let write_metrics = ShuffleWriteMetrics::new(input_partition, &self.metrics);
         let output_partitioning = self.shuffle_output_partitioning.clone();
@@ -191,7 +191,7 @@ impl ShuffleWriterExec {
             match output_partitioning {
                 None => {
                     let timer = write_metrics.write_time.timer();
-                    path.push(&format!("{input_partition}"));
+                    path.push(format!("{input_partition}"));
                     std::fs::create_dir_all(&path)?;
                     path.push("data.arrow");
                     let path = path.to_str().unwrap();
@@ -261,7 +261,7 @@ impl ShuffleWriterExec {
                                     }
                                     None => {
                                         let mut path = path.clone();
-                                        path.push(&format!("{output_partition}"));
+                                        path.push(format!("{output_partition}"));
                                         std::fs::create_dir_all(&path)?;
 
                                         path.push(format!(
