@@ -481,10 +481,18 @@ impl BallistaContext {
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod standalone_tests {
+    use datafusion::arrow;
+    use datafusion::arrow::util::pretty::pretty_format_batches;
+
+    use crate::context::BallistaContext;
+    use ballista_core::config::{
+        BallistaConfigBuilder, BALLISTA_WITH_INFORMATION_SCHEMA,
+    };
     use ballista_core::error::Result;
     use datafusion::config::TableParquetOptions;
     use datafusion::dataframe::DataFrameWriteOptions;
     use datafusion::datasource::listing::ListingTableUrl;
+    use datafusion::prelude::ParquetReadOptions;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -773,29 +781,8 @@ mod standalone_tests {
     }
 
     #[tokio::test]
-    async fn test_aggregate_func() {
-        use crate::context::BallistaContext;
-        use ballista_core::config::{
-            BallistaConfigBuilder, BALLISTA_WITH_INFORMATION_SCHEMA,
-        };
-        use datafusion::arrow;
-        use datafusion::arrow::util::pretty::pretty_format_batches;
-        use datafusion::prelude::ParquetReadOptions;
-
-        let config = BallistaConfigBuilder::default()
-            .set(BALLISTA_WITH_INFORMATION_SCHEMA, "true")
-            .build()
-            .unwrap();
-        let context = BallistaContext::standalone(&config, 1).await.unwrap();
-
-        context
-            .register_parquet(
-                "test",
-                "testdata/alltypes_plain.parquet",
-                ParquetReadOptions::default(),
-            )
-            .await
-            .unwrap();
+    async fn test_aggregate_min_max() {
+        let context = create_test_context().await;
 
         let df = context.sql("select min(\"id\") from test").await.unwrap();
         let res = df.collect().await.unwrap();
@@ -818,6 +805,11 @@ mod standalone_tests {
             "+--------------+",
         ];
         assert_result_eq(expected, &res);
+    }
+
+    #[tokio::test]
+    async fn test_aggregate_sum() {
+        let context = create_test_context().await;
 
         let df = context.sql("select SUM(\"id\") from test").await.unwrap();
         let res = df.collect().await.unwrap();
@@ -829,6 +821,10 @@ mod standalone_tests {
             "+--------------+",
         ];
         assert_result_eq(expected, &res);
+    }
+    #[tokio::test]
+    async fn test_aggregate_avg() {
+        let context = create_test_context().await;
 
         let df = context.sql("select AVG(\"id\") from test").await.unwrap();
         let res = df.collect().await.unwrap();
@@ -840,6 +836,11 @@ mod standalone_tests {
             "+--------------+",
         ];
         assert_result_eq(expected, &res);
+    }
+
+    #[tokio::test]
+    async fn test_aggregate_count() {
+        let context = create_test_context().await;
 
         let df = context.sql("select COUNT(\"id\") from test").await.unwrap();
         let res = df.collect().await.unwrap();
@@ -851,6 +852,10 @@ mod standalone_tests {
             "+----------------+",
         ];
         assert_result_eq(expected, &res);
+    }
+    #[tokio::test]
+    async fn test_aggregate_approx_distinct() {
+        let context = create_test_context().await;
 
         let df = context
             .sql("select approx_distinct(\"id\") from test")
@@ -865,6 +870,10 @@ mod standalone_tests {
             "+--------------------------+",
         ];
         assert_result_eq(expected, &res);
+    }
+    #[tokio::test]
+    async fn test_aggregate_array_agg() {
+        let context = create_test_context().await;
 
         let df = context
             .sql("select ARRAY_AGG(\"id\") from test")
@@ -879,6 +888,10 @@ mod standalone_tests {
             "+--------------------------+",
         ];
         assert_result_eq(expected, &res);
+    }
+    #[tokio::test]
+    async fn test_aggregate_var() {
+        let context = create_test_context().await;
 
         let df = context.sql("select VAR(\"id\") from test").await.unwrap();
         let res = df.collect().await.unwrap();
@@ -918,6 +931,10 @@ mod standalone_tests {
             "+-------------------+",
         ];
         assert_result_eq(expected, &res);
+    }
+    #[tokio::test]
+    async fn test_aggregate_stddev() {
+        let context = create_test_context().await;
 
         let df = context
             .sql("select STDDEV(\"id\") from test")
@@ -946,6 +963,10 @@ mod standalone_tests {
             "+--------------------+",
         ];
         assert_result_eq(expected, &res);
+    }
+    #[tokio::test]
+    async fn test_aggregate_covar() {
+        let context = create_test_context().await;
 
         let df = context
             .sql("select COVAR(id, tinyint_col) from test")
@@ -960,6 +981,10 @@ mod standalone_tests {
             "+---------------------------------+",
         ];
         assert_result_eq(expected, &res);
+    }
+    #[tokio::test]
+    async fn test_aggregate_correlation() {
+        let context = create_test_context().await;
 
         let df = context
             .sql("select CORR(id, tinyint_col) from test")
@@ -974,6 +999,10 @@ mod standalone_tests {
             "+--------------------------------+",
         ];
         assert_result_eq(expected, &res);
+    }
+    #[tokio::test]
+    async fn test_aggregate_approx_percentile() {
+        let context = create_test_context().await;
 
         let df = context
             .sql("select approx_percentile_cont_with_weight(\"id\", 2, 0.5) from test")
@@ -1003,20 +1032,37 @@ mod standalone_tests {
         ];
 
         assert_result_eq(expected, &res);
+    }
 
-        fn assert_result_eq(
-            expected: Vec<&str>,
-            results: &[arrow::record_batch::RecordBatch],
-        ) {
-            assert_eq!(
-                expected,
-                pretty_format_batches(results)
-                    .unwrap()
-                    .to_string()
-                    .trim()
-                    .lines()
-                    .collect::<Vec<&str>>()
-            );
-        }
+    fn assert_result_eq(
+        expected: Vec<&str>,
+        results: &[arrow::record_batch::RecordBatch],
+    ) {
+        assert_eq!(
+            expected,
+            pretty_format_batches(results)
+                .unwrap()
+                .to_string()
+                .trim()
+                .lines()
+                .collect::<Vec<&str>>()
+        );
+    }
+    async fn create_test_context() -> BallistaContext {
+        let config = BallistaConfigBuilder::default()
+            .set(BALLISTA_WITH_INFORMATION_SCHEMA, "true")
+            .build()
+            .unwrap();
+        let context = BallistaContext::standalone(&config, 4).await.unwrap();
+
+        context
+            .register_parquet(
+                "test",
+                "testdata/alltypes_plain.parquet",
+                ParquetReadOptions::default(),
+            )
+            .await
+            .unwrap();
+        context
     }
 }

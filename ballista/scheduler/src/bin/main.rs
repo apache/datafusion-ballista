@@ -33,6 +33,8 @@ use ballista_scheduler::config::{
 use ballista_scheduler::scheduler_process::start_server;
 use tracing_subscriber::EnvFilter;
 
+#[allow(unused_imports)]
+#[macro_use]
 extern crate configure_me;
 
 #[allow(clippy::all, warnings)]
