@@ -149,7 +149,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     shuffle_writer.output_partitioning.as_ref(),
                     registry,
                     input.schema().as_ref(),
-                    &default_codec
+                    &default_codec,
                 )?;
 
                 Ok(Arc::new(ShuffleWriterExec::try_new(

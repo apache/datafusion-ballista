@@ -412,7 +412,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
         let plan = plan.transform_down(&|node: Arc<dyn ExecutionPlan>| {
             if node.output_partitioning().partition_count() == 0 {
-                let empty: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(node.schema()));
+                let empty: Arc<dyn ExecutionPlan> =
+                    Arc::new(EmptyExec::new(node.schema()));
                 Ok(Transformed::yes(empty))
             } else {
                 Ok(Transformed::no(node))

@@ -17,12 +17,12 @@
 use crate::error::{BallistaError, Result};
 use crate::plugin::plugin_manager::global_plugin_manager;
 use crate::plugin::{Plugin, PluginEnum, PluginRegistrar};
+use datafusion::logical_expr::{AggregateUDF, ScalarUDF};
 use libloading::{Library, Symbol};
 use std::any::Any;
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
-use datafusion::logical_expr::{AggregateUDF, ScalarUDF};
 
 /// UDF plugin trait
 pub trait UDFPlugin: Plugin {

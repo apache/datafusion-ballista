@@ -420,7 +420,7 @@ pub fn get_task_definition_vec<
 fn reset_metrics_for_execution_plan(
     plan: Arc<dyn ExecutionPlan>,
 ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
-    plan.transform(&|plan: Arc<dyn ExecutionPlan> | {
+    plan.transform(&|plan: Arc<dyn ExecutionPlan>| {
         let children = plan.children().clone();
         plan.with_new_children(children).map(Transformed::yes)
     })

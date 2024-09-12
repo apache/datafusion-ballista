@@ -57,10 +57,12 @@ impl Command {
         let now = Instant::now();
         match self {
             Self::Help =>
-                // TODO need to provide valid schema
+            // TODO need to provide valid schema
+            {
                 print_options
-                .print_batches(Arc::new(Schema::empty()), &[all_commands_info()], now)
-                .map_err(BallistaError::DataFusionError),
+                    .print_batches(Arc::new(Schema::empty()), &[all_commands_info()], now)
+                    .map_err(BallistaError::DataFusionError)
+            }
             Self::ListTables => {
                 let df = ctx.sql("SHOW TABLES").await?;
                 let schema = Arc::new(df.schema().as_arrow().clone());

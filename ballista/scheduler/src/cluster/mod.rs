@@ -1097,7 +1097,7 @@ mod test {
                 partition_values: vec![],
                 range: None,
                 extensions: None,
-                statistics: None
+                statistics: None,
             }]);
         }
         vec![scan_files]
