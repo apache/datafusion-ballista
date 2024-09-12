@@ -274,6 +274,7 @@ message OperatorMetric {
     NamedTime time = 8;
     int64 start_timestamp = 9;
     int64 end_timestamp = 10;
+    uint64 spilled_rows = 11;
   }
 }
 

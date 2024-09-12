@@ -142,10 +142,14 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             PhysicalPlanType::ShuffleWriter(shuffle_writer) => {
                 let input = inputs[0].clone();
 
+                let default_codec =
+                    datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec {};
+
                 let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
                     shuffle_writer.output_partitioning.as_ref(),
                     registry,
                     input.schema().as_ref(),
+                    &default_codec
                 )?;
 
                 Ok(Arc::new(ShuffleWriterExec::try_new(

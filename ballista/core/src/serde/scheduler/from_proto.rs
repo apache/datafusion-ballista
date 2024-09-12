@@ -151,6 +151,11 @@ impl TryInto<MetricValue> for protobuf::OperatorMetric {
                 count.add(value as usize);
                 Ok(MetricValue::SpilledBytes(count))
             }
+            Some(operator_metric::Metric::SpilledRows(value)) => {
+                let count = Count::new();
+                count.add(value as usize);
+                Ok(MetricValue::SpilledRows(count))
+            }
             Some(operator_metric::Metric::CurrentMemoryUsage(value)) => {
                 let gauge = Gauge::new();
                 gauge.add(value as usize);
@@ -415,7 +420,7 @@ pub fn get_task_definition_vec<
 fn reset_metrics_for_execution_plan(
     plan: Arc<dyn ExecutionPlan>,
 ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
-    plan.transform(&|plan| {
+    plan.transform(&|plan: Arc<dyn ExecutionPlan> | {
         let children = plan.children().clone();
         plan.with_new_children(children).map(Transformed::yes)
     })

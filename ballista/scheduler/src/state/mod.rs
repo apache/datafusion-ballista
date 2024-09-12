@@ -19,7 +19,7 @@ use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::datasource::listing::{ListingTable, ListingTableUrl};
 use datafusion::datasource::source_as_provider;
 use datafusion::error::DataFusionError;
-use datafusion::physical_plan::ExecutionPlanProperties;
+use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use std::any::type_name;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -365,7 +365,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             debug!("Optimized plan: {}", optimized_plan.display_indent());
         }
 
-        plan.apply(&mut |plan| {
+        plan. apply(&mut |plan: &LogicalPlan| {
             if let LogicalPlan::TableScan(scan) = plan {
                 let provider = source_as_provider(&scan.source)?;
                 if let Some(table) = provider.as_any().downcast_ref::<ListingTable>() {
@@ -410,9 +410,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
         );
 
-        let plan = plan.transform_down(&|node| {
+        let plan = plan.transform_down(&|node: Arc<dyn ExecutionPlan>| {
             if node.output_partitioning().partition_count() == 0 {
-                Ok(Transformed::yes(Arc::new(EmptyExec::new(node.schema()))))
+                let empty: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(node.schema()));
+                Ok(Transformed::yes(empty))
             } else {
                 Ok(Transformed::no(node))
             }

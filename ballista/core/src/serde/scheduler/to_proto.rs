@@ -135,6 +135,9 @@ impl TryInto<protobuf::OperatorMetric> for &MetricValue {
             MetricValue::SpilledBytes(count) => Ok(protobuf::OperatorMetric {
                 metric: Some(operator_metric::Metric::SpilledBytes(count.value() as u64)),
             }),
+            MetricValue::SpilledRows(count) => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::SpilledRows(count.value() as u64)),
+            }),
             MetricValue::CurrentMemoryUsage(gauge) => Ok(protobuf::OperatorMetric {
                 metric: Some(operator_metric::Metric::CurrentMemoryUsage(
                     gauge.value() as u64
