@@ -22,7 +22,6 @@ use datafusion::execution::context::DataFilePaths;
 use log::info;
 use parking_lot::Mutex;
 use sqlparser::ast::Statement;
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -373,12 +372,12 @@ impl BallistaContext {
             for (name, prov) in &state.tables {
                 // ctx is shared between queries, check table exists or not before register
                 let table_ref = TableReference::Bare {
-                    table: Cow::Borrowed(name),
+                    table: name.as_str().into(),
                 };
                 if !ctx.table_exist(table_ref)? {
                     ctx.register_table(
                         TableReference::Bare {
-                            table: Cow::Borrowed(name),
+                            table: name.as_str().into(),
                         },
                         Arc::clone(prov),
                     )?;
@@ -402,7 +401,7 @@ impl BallistaContext {
                     ..
                 },
             )) => {
-                let table_exists = ctx.table_exist(name)?;
+                let table_exists = ctx.table_exist(name.to_owned())?;
                 let schema: SchemaRef = Arc::new(schema.as_ref().to_owned().into());
                 let table_partition_cols = table_partition_cols
                     .iter()

@@ -22,7 +22,7 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
-use datafusion::logical_expr::{AggregateUDF, AggregateUDFImpl, ScalarUDF};
+use datafusion::logical_expr::{AggregateUDF, ScalarUDF};
 
 /// UDF plugin trait
 pub trait UDFPlugin: Plugin {
