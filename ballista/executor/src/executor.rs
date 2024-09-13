@@ -277,6 +277,10 @@ mod test {
     }
 
     impl ExecutionPlan for NeverendingOperator {
+        fn name(&self) -> &str {
+            "NeverendingOperator"
+        }
+
         fn as_any(&self) -> &dyn Any {
             self
         }

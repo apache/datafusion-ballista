@@ -107,6 +107,10 @@ impl DisplayAs for ShuffleReaderExec {
 }
 
 impl ExecutionPlan for ShuffleReaderExec {
+    fn name(&self) -> &str {
+        "ShuffleReaderExec"
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }

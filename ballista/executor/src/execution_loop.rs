@@ -32,9 +32,16 @@ use ballista_core::error::BallistaError;
 use ballista_core::serde::scheduler::{ExecutorSpecification, PartitionId};
 use ballista_core::serde::BallistaCodec;
 use datafusion::execution::context::TaskContext;
+use datafusion::functions_aggregate::approx_distinct::approx_distinct_udaf;
+use datafusion::functions_aggregate::approx_percentile_cont::approx_percentile_cont_udaf;
+use datafusion::functions_aggregate::approx_percentile_cont_with_weight::approx_percentile_cont_with_weight_udaf;
+use datafusion::functions_aggregate::average::avg_udaf;
+use datafusion::functions_aggregate::correlation::corr_udaf;
+use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::covariance::{covar_pop_udaf, covar_samp_udaf};
+use datafusion::functions_aggregate::stddev::{stddev_pop_udaf, stddev_udaf};
 use datafusion::functions_aggregate::sum::sum_udaf;
-use datafusion::functions_aggregate::variance::var_samp_udaf;
+use datafusion::functions_aggregate::variance::{var_pop_udaf, var_samp_udaf};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::FutureExt;
@@ -119,7 +126,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     {
                         Ok(_) => {}
                         Err(e) => {
-                            warn!("Failed to run task: {:?}", e);
+                            println!("Failed to run task: {:?}", e);
                         }
                     }
                 }
@@ -194,10 +201,31 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     }
     // since DataFusion 38 some internal functions were converted to UDAF, so
     // we have to register them manually
-    task_aggregate_functions.insert("var".to_string(), var_samp_udaf());
+    task_aggregate_functions.insert("var_sample".to_string(), var_samp_udaf());
+    task_aggregate_functions.insert("var_pop".to_string(), var_pop_udaf());
     task_aggregate_functions.insert("covar_samp".to_string(), covar_samp_udaf());
     task_aggregate_functions.insert("covar_pop".to_string(), covar_pop_udaf());
-    task_aggregate_functions.insert("SUM".to_string(), sum_udaf());
+    task_aggregate_functions.insert("corr".to_string(), corr_udaf());
+    task_aggregate_functions.insert("sum".to_string(), sum_udaf());
+    task_aggregate_functions.insert("count".to_string(), count_udaf());
+    task_aggregate_functions.insert("avg".to_string(), avg_udaf());
+    task_aggregate_functions
+        .insert("approx_distinct".to_string(), approx_distinct_udaf());
+    task_aggregate_functions.insert(
+        "approx_percentile".to_string(),
+        approx_percentile_cont_udaf(),
+    );
+    task_aggregate_functions.insert(
+        "approx_percentile_cont".to_string(),
+        approx_percentile_cont_udaf(),
+    );
+    task_aggregate_functions.insert(
+        "approx_percentile_cont_with_weight".to_string(),
+        approx_percentile_cont_with_weight_udaf(),
+    );
+    task_aggregate_functions.insert("stddev".to_string(), stddev_udaf());
+    task_aggregate_functions.insert("stddev_samp".to_string(), stddev_udaf());
+    task_aggregate_functions.insert("stddev_pop".to_string(), stddev_pop_udaf());
 
     for window_func in executor.window_functions.clone() {
         task_window_functions.insert(window_func.0, window_func.1);

@@ -25,6 +25,7 @@ use datafusion::arrow::array::{
 use datafusion::arrow::datatypes::{DataType, Field};
 use datafusion::common::DataFusionError;
 use datafusion::execution::FunctionRegistry;
+use datafusion::logical_expr::planner::ExprPlanner;
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::Partitioning;
@@ -331,5 +332,9 @@ impl FunctionRegistry for SimpleFunctionRegistry {
                 "There is no UDWF named \"{name}\" in the TaskContext"
             ))
         })
+    }
+
+    fn expr_planners(&self) -> Vec<Arc<dyn ExprPlanner>> {
+        unimplemented!()
     }
 }
