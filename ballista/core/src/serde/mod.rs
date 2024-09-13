@@ -24,8 +24,8 @@ use arrow_flight::sql::ProstMessageExt;
 use datafusion::common::DataFusionError;
 use datafusion::execution::FunctionRegistry;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
-use datafusion_proto::common::proto_error;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_hash_partitioning;
+use datafusion_proto::protobuf::proto_error;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use datafusion_proto::{
     convert_required,

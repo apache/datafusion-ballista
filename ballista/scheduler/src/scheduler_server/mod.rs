@@ -342,7 +342,8 @@ mod test {
     use std::sync::Arc;
 
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::logical_expr::{col, sum, LogicalPlan};
+    use datafusion::functions_aggregate::sum::sum;
+    use datafusion::logical_expr::{col, LogicalPlan};
 
     use datafusion::test_util::scan_empty;
     use datafusion_proto::protobuf::LogicalPlanNode;

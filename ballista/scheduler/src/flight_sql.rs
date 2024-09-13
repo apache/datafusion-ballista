@@ -29,7 +29,8 @@ use arrow_flight::sql::{
     CommandGetImportedKeys, CommandGetPrimaryKeys, CommandGetSqlInfo,
     CommandGetTableTypes, CommandGetTables, CommandGetXdbcTypeInfo,
     CommandPreparedStatementQuery, CommandPreparedStatementUpdate, CommandStatementQuery,
-    CommandStatementSubstraitPlan, CommandStatementUpdate, SqlInfo, TicketStatementQuery,
+    CommandStatementSubstraitPlan, CommandStatementUpdate, DoPutPreparedStatementResult,
+    SqlInfo, TicketStatementQuery,
 };
 use arrow_flight::{
     Action, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest,
@@ -861,7 +862,7 @@ impl FlightSqlService for FlightSqlServiceImpl {
         &self,
         _query: CommandPreparedStatementQuery,
         _request: Request<PeekableFlightDataStream>,
-    ) -> Result<Response<<Self as FlightService>::DoPutStream>, Status> {
+    ) -> Result<DoPutPreparedStatementResult, Status> {
         debug!("do_put_prepared_statement_query");
         Err(Status::unimplemented(
             "Implement do_put_prepared_statement_query",

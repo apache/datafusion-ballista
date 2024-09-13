@@ -387,17 +387,16 @@ impl BallistaContext {
 
         let plan = ctx.state().create_logical_plan(sql).await?;
 
-        match plan {
+        match &plan {
             LogicalPlan::Ddl(DdlStatement::CreateExternalTable(
                 CreateExternalTable {
                     ref schema,
                     ref name,
                     ref location,
                     ref file_type,
-                    ref has_header,
-                    ref delimiter,
                     ref table_partition_cols,
                     ref if_not_exists,
+                    options,
                     ..
                 },
             )) => {
@@ -416,9 +415,17 @@ impl BallistaContext {
                 match (if_not_exists, table_exists) {
                     (_, false) => match file_type.to_lowercase().as_str() {
                         "csv" => {
+                            let has_header = match options.get("format.has_header") {
+                                Some(str) => str.parse::<bool>().unwrap(),
+                                None => false,
+                            };
+                            let delimiter = match options.get("format.delimiter") {
+                                Some(str) => str.chars().next().unwrap(),
+                                None => ',',
+                            };
                             let mut options = CsvReadOptions::new()
-                                .has_header(*has_header)
-                                .delimiter(*delimiter as u8)
+                                .has_header(has_header)
+                                .delimiter(delimiter as u8)
                                 .table_partition_cols(table_partition_cols.to_vec());
                             if !schema.fields().is_empty() {
                                 options = options.schema(&schema);
@@ -565,6 +572,7 @@ mod standalone_tests {
               )
               STORED AS CSV
               LOCATION '{}'
+              OPTIONS ('has_header' 'false', 'delimiter' ',')
               ",
             file_path.to_str().expect("path is utf8")
         );
@@ -892,7 +900,7 @@ mod standalone_tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+-------------------+",
-            "| VAR(test.id)      |",
+            "| var(test.id)      |",
             "+-------------------+",
             "| 6.000000000000001 |",
             "+-------------------+",
@@ -920,7 +928,7 @@ mod standalone_tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+-------------------+",
-            "| VAR(test.id)      |",
+            "| var(test.id)      |",
             "+-------------------+",
             "| 6.000000000000001 |",
             "+-------------------+",
@@ -960,7 +968,6 @@ mod standalone_tests {
         assert_result_eq(expected, &res);
     }
     #[tokio::test]
-    #[ignore] // TODO fix this test - it never completes
     async fn test_aggregate_covar() {
         let context = create_test_context().await;
 
@@ -970,11 +977,11 @@ mod standalone_tests {
             .unwrap();
         let res = df.collect().await.unwrap();
         let expected = vec![
-            "+---------------------------------+",
-            "| COVAR(test.id,test.tinyint_col) |",
-            "+---------------------------------+",
-            "| 0.28571428571428586             |",
-            "+---------------------------------+",
+            "+--------------------------------------+",
+            "| covar_samp(test.id,test.tinyint_col) |",
+            "+--------------------------------------+",
+            "| 0.28571428571428586                  |",
+            "+--------------------------------------+",
         ];
         assert_result_eq(expected, &res);
     }
