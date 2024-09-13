@@ -44,6 +44,7 @@ use std::ops::Deref;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{sync::Arc, time::Duration};
+use datafusion::functions_aggregate::variance::var_samp_udaf;
 use tonic::transport::Channel;
 
 pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
@@ -116,7 +117,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     {
                         Ok(_) => {}
                         Err(e) => {
-                            warn!("Failed to run task: {:?}", e);
+                            panic!("Failed to run task: {:?}", e);
                         }
                     }
                 }
@@ -189,6 +190,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     for agg_func in executor.aggregate_functions.clone() {
         task_aggregate_functions.insert(agg_func.0, agg_func.1);
     }
+    task_aggregate_functions.insert("var".to_string(), var_samp_udaf());
     for window_func in executor.window_functions.clone() {
         task_window_functions.insert(window_func.0, window_func.1);
     }

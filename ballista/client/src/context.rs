@@ -897,7 +897,7 @@ mod standalone_tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+-------------------+",
-            "| VAR(test.id)      |",
+            "| var(test.id)      |",
             "+-------------------+",
             "| 6.000000000000001 |",
             "+-------------------+",
@@ -925,7 +925,7 @@ mod standalone_tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+-------------------+",
-            "| VAR(test.id)      |",
+            "| var(test.id)      |",
             "+-------------------+",
             "| 6.000000000000001 |",
             "+-------------------+",
