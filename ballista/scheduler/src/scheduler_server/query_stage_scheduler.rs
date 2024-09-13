@@ -354,7 +354,8 @@ mod tests {
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::logical_expr::{col, sum, LogicalPlan};
+    use datafusion::functions_aggregate::sum::sum;
+    use datafusion::logical_expr::{col, LogicalPlan};
     use datafusion::test_util::scan_empty_with_partitions;
     use std::sync::Arc;
     use std::time::Duration;

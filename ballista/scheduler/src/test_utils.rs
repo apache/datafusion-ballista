@@ -45,11 +45,12 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::DataFusionError;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::context::{SessionConfig, SessionContext, SessionState};
+use datafusion::functions_aggregate::sum::sum;
 use datafusion::logical_expr::expr::Sort;
 use datafusion::logical_expr::{Expr, LogicalPlan};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::{col, count, sum, CsvReadOptions, JoinType};
+use datafusion::prelude::{col, count, CsvReadOptions, JoinType};
 use datafusion::test_util::scan_empty;
 
 use crate::cluster::BallistaCluster;
