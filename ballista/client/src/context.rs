@@ -396,6 +396,7 @@ impl BallistaContext {
                     ref file_type,
                     ref table_partition_cols,
                     ref if_not_exists,
+                    options,
                     ..
                     // definition,
                     // order_exprs,
@@ -420,10 +421,17 @@ impl BallistaContext {
                 match (if_not_exists, table_exists) {
                     (_, false) => match file_type.to_lowercase().as_str() {
                         "csv" => {
+                            let has_header = match options.get("format.has_header") {
+                                Some(str) => str.parse::<bool>().unwrap(),
+                                None => false,
+                            };
+                            let delimiter = match options.get("format.delimiter") {
+                                Some(str) => str.chars().next().unwrap(),
+                                None => ',',
+                            };
                             let mut options = CsvReadOptions::new()
-                                // TODO get options
-                                // .has_header(*has_header)
-                                // .delimiter(*delimiter as u8)
+                                .has_header(has_header)
+                                .delimiter(delimiter as u8)
                                 .table_partition_cols(table_partition_cols.to_vec());
                             if !schema.fields().is_empty() {
                                 options = options.schema(&schema);
@@ -570,6 +578,7 @@ mod standalone_tests {
               )
               STORED AS CSV
               LOCATION '{}'
+              OPTIONS ('has_header' 'false', 'delimiter' ',')
               ",
             file_path.to_str().expect("path is utf8")
         );
