@@ -1,0 +1,60 @@
+select
+    o_orderpriority,
+    count(*) as order_count
+from
+    orders
+where
+        o_orderdate >= '1993-07-01'
+  and o_orderdate < date '1993-07-01' + interval '3' month
+  and exists (
+        select
+            *
+        from
+            lineitem
+        where
+                l_orderkey = o_orderkey
+          and l_commitdate < l_receiptdate
+    )
+group by
+    o_orderpriority
+order by
+    o_orderpriority;
+
+
+Query Stage 0:
+ShuffleWriterExec: Some(Hash([Column { name: "o_orderkey", index: 0 }], 8))
+  ProjectionExec: expr=[o_orderkey@0 as o_orderkey, o_orderpriority@2 as o_orderpriority]
+    CoalesceBatchesExec: target_batch_size=8192
+      FilterExec: o_orderdate@1 >= 1993-07-01 AND o_orderdate@1 < 1993-10-01
+        ParquetExec: file_groups={8 groups: [[mnt/bigdata/tpch/sf100/orders.parquet/part1.parquet:0..414015218, mnt/bigdata/tpch/sf100/orders.parquet/part10.parquet:0..414048620, mnt/bigdata/tpch/sf100/orders.parquet/part11.parquet:0..38879], [mnt/bigdata/tpch/sf100/orders.parquet/part11.parquet:38879..414036634, mnt/bigdata/tpch/sf100/orders.parquet/part12.parquet:0..414048473, mnt/bigdata/tpch/sf100/orders.parquet/part13.parquet:0..56489], [mnt/bigdata/tpch/sf100/orders.parquet/part13.parquet:56489..414046189, mnt/bigdata/tpch/sf100/orders.parquet/part14.parquet:0..414061303, mnt/bigdata/tpch/sf100/orders.parquet/part15.parquet:0..51714], [mnt/bigdata/tpch/sf100/orders.parquet/part15.parquet:51714..414057732, mnt/bigdata/tpch/sf100/orders.parquet/part16.parquet:0..414039840, mnt/bigdata/tpch/sf100/orders.parquet/part2.parquet:0..56859], [mnt/bigdata/tpch/sf100/orders.parquet/part2.parquet:56859..414037014, mnt/bigdata/tpch/sf100/orders.parquet/part3.parquet:0..414067201, mnt/bigdata/tpch/sf100/orders.parquet/part4.parquet:0..55361], [mnt/bigdata/tpch/sf100/orders.parquet/part4.parquet:55361..414066732, mnt/bigdata/tpch/sf100/orders.parquet/part5.parquet:0..414028297, mnt/bigdata/tpch/sf100/orders.parquet/part6.parquet:0..63049], [mnt/bigdata/tpch/sf100/orders.parquet/part6.parquet:63049..414092946, mnt/bigdata/tpch/sf100/orders.parquet/part7.parquet:0..414072820], [mnt/bigdata/tpch/sf100/orders.parquet/part7.parquet:414072820..414077818, mnt/bigdata/tpch/sf100/orders.parquet/part8.parquet:0..414070661, mnt/bigdata/tpch/sf100/orders.parquet/part9.parquet:0..414027051]]}, projection=[o_orderkey, o_orderdate, o_orderpriority], predicate=o_orderdate@4 >= 1993-07-01 AND o_orderdate@4 < 1993-10-01, pruning_predicate=CASE WHEN o_orderdate_null_count@1 = o_orderdate_row_count@2 THEN false ELSE o_orderdate_max@0 >= 1993-07-01 END AND CASE WHEN o_orderdate_null_count@1 = o_orderdate_row_count@2 THEN false ELSE o_orderdate_min@3 < 1993-10-01 END, required_guarantees=[]
+
+Query Stage 1:
+ShuffleWriterExec: Some(Hash([Column { name: "l_orderkey", index: 0 }], 8))
+  ProjectionExec: expr=[l_orderkey@0 as l_orderkey]
+    CoalesceBatchesExec: target_batch_size=8192
+      FilterExec: l_receiptdate@2 > l_commitdate@1
+        ParquetExec: file_groups={8 groups: [[mnt/bigdata/tpch/sf100/lineitem.parquet/part1.parquet:0..1469550136, mnt/bigdata/tpch/sf100/lineitem.parquet/part10.parquet:0..1469810475], [mnt/bigdata/tpch/sf100/lineitem.parquet/part10.parquet:1469810475..1469811062, mnt/bigdata/tpch/sf100/lineitem.parquet/part11.parquet:0..1469792487, mnt/bigdata/tpch/sf100/lineitem.parquet/part12.parquet:0..1469567537], [mnt/bigdata/tpch/sf100/lineitem.parquet/part12.parquet:1469567537..1469576762, mnt/bigdata/tpch/sf100/lineitem.parquet/part13.parquet:0..1469839488, mnt/bigdata/tpch/sf100/lineitem.parquet/part14.parquet:0..1469511898], [mnt/bigdata/tpch/sf100/lineitem.parquet/part14.parquet:1469511898..1469647240, mnt/bigdata/tpch/sf100/lineitem.parquet/part15.parquet:0..1469833433, mnt/bigdata/tpch/sf100/lineitem.parquet/part16.parquet:0..1469391836], [mnt/bigdata/tpch/sf100/lineitem.parquet/part16.parquet:1469391836..1469765133, mnt/bigdata/tpch/sf100/lineitem.parquet/part2.parquet:0..1469212062, mnt/bigdata/tpch/sf100/lineitem.parquet/part3.parquet:0..1469775252], [mnt/bigdata/tpch/sf100/lineitem.parquet/part3.parquet:1469775252..1469794280, mnt/bigdata/tpch/sf100/lineitem.parquet/part4.parquet:0..1469768080, mnt/bigdata/tpch/sf100/lineitem.parquet/part5.parquet:0..1469573503], [mnt/bigdata/tpch/sf100/lineitem.parquet/part5.parquet:1469573503..1469812961, mnt/bigdata/tpch/sf100/lineitem.parquet/part6.parquet:0..1469938331, mnt/bigdata/tpch/sf100/lineitem.parquet/part7.parquet:0..1469182822], [mnt/bigdata/tpch/sf100/lineitem.parquet/part7.parquet:1469182822..1469651669, mnt/bigdata/tpch/sf100/lineitem.parquet/part8.parquet:0..1469328494, mnt/bigdata/tpch/sf100/lineitem.parquet/part9.parquet:0..1469563265]]}, projection=[l_orderkey, l_commitdate, l_receiptdate], predicate=l_receiptdate@12 > l_commitdate@11
+
+Query Stage 2:
+ShuffleWriterExec: Some(Hash([Column { name: "o_orderpriority", index: 0 }], 8))
+  AggregateExec: mode=Partial, gby=[o_orderpriority@0 as o_orderpriority], aggr=[COUNT(*)]
+    CoalesceBatchesExec: target_batch_size=8192
+      HashJoinExec: mode=Partitioned, join_type=LeftSemi, on=[(o_orderkey@0, l_orderkey@0)], projection=[o_orderpriority@1]
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+
+Query Stage 3:
+ShuffleWriterExec: None
+  SortExec: expr=[o_orderpriority@0 ASC NULLS LAST], preserve_partitioning=[true]
+    ProjectionExec: expr=[o_orderpriority@0 as o_orderpriority, COUNT(*)@1 as order_count]
+      AggregateExec: mode=FinalPartitioned, gby=[o_orderpriority@0 as o_orderpriority], aggr=[COUNT(*)]
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+
+Query Stage 4:
+ShuffleWriterExec: None
+  SortPreservingMergeExec: [o_orderpriority@0 ASC NULLS LAST]
+    UnresolvedShuffleExec
+

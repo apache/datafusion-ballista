@@ -17,7 +17,7 @@
 
 [workspace]
 exclude = ["python"]
-members = ["ballista-cli", "ballista/cache", "ballista/client", "ballista/core", "ballista/executor", "ballista/scheduler", "benchmarks", "examples"]
+members = ["ballista-cli", "ballista/cache", "ballista/client", "ballista/core", "ballista/executor", "ballista/scheduler", "ballista/tests", "benchmarks", "examples"]
 resolver = "2"
 
 [workspace.dependencies]

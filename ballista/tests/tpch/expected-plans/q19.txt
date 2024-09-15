@@ -1,0 +1,67 @@
+select
+    sum(l_extendedprice* (1 - l_discount)) as revenue
+from
+    lineitem,
+    part
+where
+    (
+                p_partkey = l_partkey
+            and p_brand = 'Brand#12'
+            and p_container in ('SM CASE', 'SM BOX', 'SM PACK', 'SM PKG')
+            and l_quantity >= 1 and l_quantity <= 1 + 10
+            and p_size between 1 and 5
+            and l_shipmode in ('AIR', 'AIR REG')
+            and l_shipinstruct = 'DELIVER IN PERSON'
+        )
+   or
+    (
+                p_partkey = l_partkey
+            and p_brand = 'Brand#23'
+            and p_container in ('MED BAG', 'MED BOX', 'MED PKG', 'MED PACK')
+            and l_quantity >= 10 and l_quantity <= 10 + 10
+            and p_size between 1 and 10
+            and l_shipmode in ('AIR', 'AIR REG')
+            and l_shipinstruct = 'DELIVER IN PERSON'
+        )
+   or
+    (
+                p_partkey = l_partkey
+            and p_brand = 'Brand#34'
+            and p_container in ('LG CASE', 'LG BOX', 'LG PACK', 'LG PKG')
+            and l_quantity >= 20 and l_quantity <= 20 + 10
+            and p_size between 1 and 15
+            and l_shipmode in ('AIR', 'AIR REG')
+            and l_shipinstruct = 'DELIVER IN PERSON'
+        );
+
+
+Query Stage 0:
+ShuffleWriterExec: Some(Hash([Column { name: "p_partkey", index: 0 }], 8))
+  CoalesceBatchesExec: target_batch_size=8192
+    FilterExec: (p_brand@1 = Brand#12 AND Use p_container@3 IN (SET) ([Literal { value: Utf8("SM CASE") }, Literal { value: Utf8("SM BOX") }, Literal { value: Utf8("SM PACK") }, Literal { value: Utf8("SM PKG") }]) AND p_size@2 <= 5 OR p_brand@1 = Brand#23 AND Use p_container@3 IN (SET) ([Literal { value: Utf8("MED BAG") }, Literal { value: Utf8("MED BOX") }, Literal { value: Utf8("MED PKG") }, Literal { value: Utf8("MED PACK") }]) AND p_size@2 <= 10 OR p_brand@1 = Brand#34 AND Use p_container@3 IN (SET) ([Literal { value: Utf8("LG CASE") }, Literal { value: Utf8("LG BOX") }, Literal { value: Utf8("LG PACK") }, Literal { value: Utf8("LG PKG") }]) AND p_size@2 <= 15) AND p_size@2 >= 1
+      ParquetExec: file_groups={8 groups: [[mnt/bigdata/tpch/sf100/part.parquet/part1.parquet:0..40049979, mnt/bigdata/tpch/sf100/part.parquet/part10.parquet:0..40061159, mnt/bigdata/tpch/sf100/part.parquet/part11.parquet:0..8190], [mnt/bigdata/tpch/sf100/part.parquet/part11.parquet:8190..40056642, mnt/bigdata/tpch/sf100/part.parquet/part12.parquet:0..40065338, mnt/bigdata/tpch/sf100/part.parquet/part13.parquet:0..5538], [mnt/bigdata/tpch/sf100/part.parquet/part13.parquet:5538..40056587, mnt/bigdata/tpch/sf100/part.parquet/part14.parquet:0..40068279], [mnt/bigdata/tpch/sf100/part.parquet/part14.parquet:40068279..40070033, mnt/bigdata/tpch/sf100/part.parquet/part15.parquet:0..40064342, mnt/bigdata/tpch/sf100/part.parquet/part16.parquet:0..40053232], [mnt/bigdata/tpch/sf100/part.parquet/part16.parquet:40053232..40065675, mnt/bigdata/tpch/sf100/part.parquet/part2.parquet:0..40061056, mnt/bigdata/tpch/sf100/part.parquet/part3.parquet:0..40045829], [mnt/bigdata/tpch/sf100/part.parquet/part3.parquet:40045829..40059089, mnt/bigdata/tpch/sf100/part.parquet/part4.parquet:0..40058789, mnt/bigdata/tpch/sf100/part.parquet/part5.parquet:0..40047279], [mnt/bigdata/tpch/sf100/part.parquet/part5.parquet:40047279..40055014, mnt/bigdata/tpch/sf100/part.parquet/part6.parquet:0..40060917, mnt/bigdata/tpch/sf100/part.parquet/part7.parquet:0..40050676], [mnt/bigdata/tpch/sf100/part.parquet/part7.parquet:40050676..40051593, mnt/bigdata/tpch/sf100/part.parquet/part8.parquet:0..40055632, mnt/bigdata/tpch/sf100/part.parquet/part9.parquet:0..40062778]]}, projection=[p_partkey, p_brand, p_size, p_container], predicate=p_size@5 >= 1 AND (p_brand@3 = Brand#12 AND Use p_container@6 IN (SET) ([Literal { value: Utf8("SM CASE") }, Literal { value: Utf8("SM BOX") }, Literal { value: Utf8("SM PACK") }, Literal { value: Utf8("SM PKG") }]) AND p_size@5 <= 5 OR p_brand@3 = Brand#23 AND Use p_container@6 IN (SET) ([Literal { value: Utf8("MED BAG") }, Literal { value: Utf8("MED BOX") }, Literal { value: Utf8("MED PKG") }, Literal { value: Utf8("MED PACK") }]) AND p_size@5 <= 10 OR p_brand@3 = Brand#34 AND Use p_container@6 IN (SET) ([Literal { value: Utf8("LG CASE") }, Literal { value: Utf8("LG BOX") }, Literal { value: Utf8("LG PACK") }, Literal { value: Utf8("LG PKG") }]) AND p_size@5 <= 15), pruning_predicate=CASE WHEN p_size_null_count@1 = p_size_row_count@2 THEN false ELSE p_size_max@0 >= 1 END AND (CASE WHEN p_brand_null_count@5 = p_brand_row_count@6 THEN false ELSE p_brand_min@3 <= Brand#12 AND Brand#12 <= p_brand_max@4 END AND (CASE WHEN p_container_null_count@9 = p_container_row_count@10 THEN false ELSE p_container_min@7 <= SM CASE AND SM CASE <= p_container_max@8 END OR CASE WHEN p_container_null_count@9 = p_container_row_count@10 THEN false ELSE p_container_min@7 <= SM BOX AND SM BOX <= p_container_max@8 END OR CASE WHEN p_container_null_count@9 = p_container_row_count@10 THEN false ELSE p_container_min@7 <= SM PACK AND SM PACK <= p_container_max@8 END OR CASE WHEN p_container_null_count@9 = p_container_row_count@10 THEN false ELSE p_container_min@7 <= SM PKG AND SM PKG <= p_container_max@8 END) AND CASE WHEN p_size_null_count@1 = p_size_row_count@2 THEN false ELSE p_size_min@11 <= 5 END OR CASE WHEN p_brand_null_count@5 = p_brand_row_count@6 THEN false ELSE p_brand_min@3 <= Brand#23 AND Brand#23 <= p_brand_max@4 END AND (CASE WHEN p_container_null_count@9 = p_container_row_count@10 THEN false ELSE p_container_min@7 <= MED BAG AND MED BAG <= p_container_max@8 END OR CASE WHEN p_container_null_count@9 = p_container_row_count@10 THEN false ELSE p_container_min@7 <= MED BOX AND MED BOX <= p_container_max@8 END OR CASE WHEN p_container_null_count@9 = p_container_row_count@10 THEN false ELSE p_container_min@7 <= MED PKG AND MED PKG <= p_container_max@8 END OR CASE WHEN p_container_null_count@9 = p_container_row_count@10 THEN false ELSE p_container_min@7 <= MED PACK AND MED PACK <= p_container_max@8 END) AND CASE WHEN p_size_null_count@1 = p_size_row_count@2 THEN false ELSE p_size_min@11 <= 10 END OR CASE WHEN p_brand_null_count@5 = p_brand_row_count@6 THEN false ELSE p_brand_min@3 <= Brand#34 AND Brand#34 <= p_brand_max@4 END AND (CASE WHEN p_container_null_count@9 = p_container_row_count@10 THEN false ELSE p_container_min@7 <= LG CASE AND LG CASE <= p_container_max@8 END OR CASE WHEN p_container_null_count@9 = p_container_row_count@10 THEN false ELSE p_container_min@7 <= LG BOX AND LG BOX <= p_container_max@8 END OR CASE WHEN p_container_null_count@9 = p_container_row_count@10 THEN false ELSE p_container_min@7 <= LG PACK AND LG PACK <= p_container_max@8 END OR CASE WHEN p_container_null_count@9 = p_container_row_count@10 THEN false ELSE p_container_min@7 <= LG PKG AND LG PKG <= p_container_max@8 END) AND CASE WHEN p_size_null_count@1 = p_size_row_count@2 THEN false ELSE p_size_min@11 <= 15 END), required_guarantees=[]
+
+Query Stage 1:
+ShuffleWriterExec: Some(Hash([Column { name: "l_partkey", index: 0 }], 8))
+  ProjectionExec: expr=[l_partkey@0 as l_partkey, l_quantity@1 as l_quantity, l_extendedprice@2 as l_extendedprice, l_discount@3 as l_discount]
+    CoalesceBatchesExec: target_batch_size=8192
+      FilterExec: (l_quantity@1 >= Some(100),11,2 AND l_quantity@1 <= Some(1100),11,2 OR l_quantity@1 >= Some(1000),11,2 AND l_quantity@1 <= Some(2000),11,2 OR l_quantity@1 >= Some(2000),11,2 AND l_quantity@1 <= Some(3000),11,2) AND (l_shipmode@5 = AIR OR l_shipmode@5 = AIR REG) AND l_shipinstruct@4 = DELIVER IN PERSON
+        ParquetExec: file_groups={8 groups: [[mnt/bigdata/tpch/sf100/lineitem.parquet/part1.parquet:0..1469550136, mnt/bigdata/tpch/sf100/lineitem.parquet/part10.parquet:0..1469810475], [mnt/bigdata/tpch/sf100/lineitem.parquet/part10.parquet:1469810475..1469811062, mnt/bigdata/tpch/sf100/lineitem.parquet/part11.parquet:0..1469792487, mnt/bigdata/tpch/sf100/lineitem.parquet/part12.parquet:0..1469567537], [mnt/bigdata/tpch/sf100/lineitem.parquet/part12.parquet:1469567537..1469576762, mnt/bigdata/tpch/sf100/lineitem.parquet/part13.parquet:0..1469839488, mnt/bigdata/tpch/sf100/lineitem.parquet/part14.parquet:0..1469511898], [mnt/bigdata/tpch/sf100/lineitem.parquet/part14.parquet:1469511898..1469647240, mnt/bigdata/tpch/sf100/lineitem.parquet/part15.parquet:0..1469833433, mnt/bigdata/tpch/sf100/lineitem.parquet/part16.parquet:0..1469391836], [mnt/bigdata/tpch/sf100/lineitem.parquet/part16.parquet:1469391836..1469765133, mnt/bigdata/tpch/sf100/lineitem.parquet/part2.parquet:0..1469212062, mnt/bigdata/tpch/sf100/lineitem.parquet/part3.parquet:0..1469775252], [mnt/bigdata/tpch/sf100/lineitem.parquet/part3.parquet:1469775252..1469794280, mnt/bigdata/tpch/sf100/lineitem.parquet/part4.parquet:0..1469768080, mnt/bigdata/tpch/sf100/lineitem.parquet/part5.parquet:0..1469573503], [mnt/bigdata/tpch/sf100/lineitem.parquet/part5.parquet:1469573503..1469812961, mnt/bigdata/tpch/sf100/lineitem.parquet/part6.parquet:0..1469938331, mnt/bigdata/tpch/sf100/lineitem.parquet/part7.parquet:0..1469182822], [mnt/bigdata/tpch/sf100/lineitem.parquet/part7.parquet:1469182822..1469651669, mnt/bigdata/tpch/sf100/lineitem.parquet/part8.parquet:0..1469328494, mnt/bigdata/tpch/sf100/lineitem.parquet/part9.parquet:0..1469563265]]}, projection=[l_partkey, l_quantity, l_extendedprice, l_discount, l_shipinstruct, l_shipmode], predicate=(l_shipmode@14 = AIR OR l_shipmode@14 = AIR REG) AND l_shipinstruct@13 = DELIVER IN PERSON AND (l_quantity@4 >= Some(100),11,2 AND l_quantity@4 <= Some(1100),11,2 OR l_quantity@4 >= Some(1000),11,2 AND l_quantity@4 <= Some(2000),11,2 OR l_quantity@4 >= Some(2000),11,2 AND l_quantity@4 <= Some(3000),11,2), pruning_predicate=(CASE WHEN l_shipmode_null_count@2 = l_shipmode_row_count@3 THEN false ELSE l_shipmode_min@0 <= AIR AND AIR <= l_shipmode_max@1 END OR CASE WHEN l_shipmode_null_count@2 = l_shipmode_row_count@3 THEN false ELSE l_shipmode_min@0 <= AIR REG AND AIR REG <= l_shipmode_max@1 END) AND CASE WHEN l_shipinstruct_null_count@6 = l_shipinstruct_row_count@7 THEN false ELSE l_shipinstruct_min@4 <= DELIVER IN PERSON AND DELIVER IN PERSON <= l_shipinstruct_max@5 END AND (CASE WHEN l_quantity_null_count@9 = l_quantity_row_count@10 THEN false ELSE l_quantity_max@8 >= Some(100),11,2 END AND CASE WHEN l_quantity_null_count@9 = l_quantity_row_count@10 THEN false ELSE l_quantity_min@11 <= Some(1100),11,2 END OR CASE WHEN l_quantity_null_count@9 = l_quantity_row_count@10 THEN false ELSE l_quantity_max@8 >= Some(1000),11,2 END AND CASE WHEN l_quantity_null_count@9 = l_quantity_row_count@10 THEN false ELSE l_quantity_min@11 <= Some(2000),11,2 END OR CASE WHEN l_quantity_null_count@9 = l_quantity_row_count@10 THEN false ELSE l_quantity_max@8 >= Some(2000),11,2 END AND CASE WHEN l_quantity_null_count@9 = l_quantity_row_count@10 THEN false ELSE l_quantity_min@11 <= Some(3000),11,2 END), required_guarantees=[l_shipmode in (AIR REG, AIR), l_shipinstruct in (DELIVER IN PERSON)]
+
+Query Stage 2:
+ShuffleWriterExec: None
+  AggregateExec: mode=Partial, gby=[], aggr=[SUM(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
+    CoalesceBatchesExec: target_batch_size=8192
+      HashJoinExec: mode=Partitioned, join_type=Inner, on=[(p_partkey@0, l_partkey@0)], filter=p_brand@1 = Brand#12 AND Use p_container@3 IN (SET) ([Literal { value: Utf8("SM CASE") }, Literal { value: Utf8("SM BOX") }, Literal { value: Utf8("SM PACK") }, Literal { value: Utf8("SM PKG") }]) AND l_quantity@0 >= Some(100),11,2 AND l_quantity@0 <= Some(1100),11,2 AND p_size@2 <= 5 OR p_brand@1 = Brand#23 AND Use p_container@3 IN (SET) ([Literal { value: Utf8("MED BAG") }, Literal { value: Utf8("MED BOX") }, Literal { value: Utf8("MED PKG") }, Literal { value: Utf8("MED PACK") }]) AND l_quantity@0 >= Some(1000),11,2 AND l_quantity@0 <= Some(2000),11,2 AND p_size@2 <= 10 OR p_brand@1 = Brand#34 AND Use p_container@3 IN (SET) ([Literal { value: Utf8("LG CASE") }, Literal { value: Utf8("LG BOX") }, Literal { value: Utf8("LG PACK") }, Literal { value: Utf8("LG PKG") }]) AND l_quantity@0 >= Some(2000),11,2 AND l_quantity@0 <= Some(3000),11,2 AND p_size@2 <= 15, projection=[l_extendedprice@6, l_discount@7]
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+
+Query Stage 3:
+ShuffleWriterExec: None
+  ProjectionExec: expr=[SUM(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)@0 as revenue]
+    AggregateExec: mode=Final, gby=[], aggr=[SUM(lineitem.l_extendedprice * Int64(1) - lineitem.l_discount)]
+      CoalescePartitionsExec
+        UnresolvedShuffleExec
+

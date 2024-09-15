@@ -1,0 +1,124 @@
+select
+    nation,
+    o_year,
+    sum(amount) as sum_profit
+from
+    (
+        select
+            n_name as nation,
+            extract(year from o_orderdate) as o_year,
+            l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity as amount
+        from
+            part,
+            supplier,
+            lineitem,
+            partsupp,
+            orders,
+            nation
+        where
+                s_suppkey = l_suppkey
+          and ps_suppkey = l_suppkey
+          and ps_partkey = l_partkey
+          and p_partkey = l_partkey
+          and o_orderkey = l_orderkey
+          and s_nationkey = n_nationkey
+          and p_name like '%green%'
+    ) as profit
+group by
+    nation,
+    o_year
+order by
+    nation,
+    o_year desc;
+
+
+Query Stage 0:
+ShuffleWriterExec: Some(Hash([Column { name: "n_nationkey", index: 0 }], 8))
+  ParquetExec: file_groups={1 group: [[mnt/bigdata/tpch/sf100/nation.parquet/part1.parquet]]}, projection=[n_nationkey, n_name]
+
+Query Stage 1:
+ShuffleWriterExec: Some(Hash([Column { name: "o_orderkey", index: 0 }], 8))
+  ParquetExec: file_groups={8 groups: [[mnt/bigdata/tpch/sf100/orders.parquet/part1.parquet:0..414015218, mnt/bigdata/tpch/sf100/orders.parquet/part10.parquet:0..414048620, mnt/bigdata/tpch/sf100/orders.parquet/part11.parquet:0..38879], [mnt/bigdata/tpch/sf100/orders.parquet/part11.parquet:38879..414036634, mnt/bigdata/tpch/sf100/orders.parquet/part12.parquet:0..414048473, mnt/bigdata/tpch/sf100/orders.parquet/part13.parquet:0..56489], [mnt/bigdata/tpch/sf100/orders.parquet/part13.parquet:56489..414046189, mnt/bigdata/tpch/sf100/orders.parquet/part14.parquet:0..414061303, mnt/bigdata/tpch/sf100/orders.parquet/part15.parquet:0..51714], [mnt/bigdata/tpch/sf100/orders.parquet/part15.parquet:51714..414057732, mnt/bigdata/tpch/sf100/orders.parquet/part16.parquet:0..414039840, mnt/bigdata/tpch/sf100/orders.parquet/part2.parquet:0..56859], [mnt/bigdata/tpch/sf100/orders.parquet/part2.parquet:56859..414037014, mnt/bigdata/tpch/sf100/orders.parquet/part3.parquet:0..414067201, mnt/bigdata/tpch/sf100/orders.parquet/part4.parquet:0..55361], [mnt/bigdata/tpch/sf100/orders.parquet/part4.parquet:55361..414066732, mnt/bigdata/tpch/sf100/orders.parquet/part5.parquet:0..414028297, mnt/bigdata/tpch/sf100/orders.parquet/part6.parquet:0..63049], [mnt/bigdata/tpch/sf100/orders.parquet/part6.parquet:63049..414092946, mnt/bigdata/tpch/sf100/orders.parquet/part7.parquet:0..414072820], [mnt/bigdata/tpch/sf100/orders.parquet/part7.parquet:414072820..414077818, mnt/bigdata/tpch/sf100/orders.parquet/part8.parquet:0..414070661, mnt/bigdata/tpch/sf100/orders.parquet/part9.parquet:0..414027051]]}, projection=[o_orderkey, o_orderdate]
+
+Query Stage 2:
+ShuffleWriterExec: Some(Hash([Column { name: "ps_suppkey", index: 1 }, Column { name: "ps_partkey", index: 0 }], 8))
+  ParquetExec: file_groups={8 groups: [[mnt/bigdata/tpch/sf100/partsupp.parquet/part1.parquet:0..268789252, mnt/bigdata/tpch/sf100/partsupp.parquet/part10.parquet:0..268794706], [mnt/bigdata/tpch/sf100/partsupp.parquet/part10.parquet:268794706..268829152, mnt/bigdata/tpch/sf100/partsupp.parquet/part11.parquet:0..268794985, mnt/bigdata/tpch/sf100/partsupp.parquet/part12.parquet:0..268754527], [mnt/bigdata/tpch/sf100/partsupp.parquet/part12.parquet:268754527..268790409, mnt/bigdata/tpch/sf100/partsupp.parquet/part13.parquet:0..268856901, mnt/bigdata/tpch/sf100/partsupp.parquet/part14.parquet:0..268691175], [mnt/bigdata/tpch/sf100/partsupp.parquet/part14.parquet:268691175..268828827, mnt/bigdata/tpch/sf100/partsupp.parquet/part15.parquet:0..268810891, mnt/bigdata/tpch/sf100/partsupp.parquet/part16.parquet:0..268635415], [mnt/bigdata/tpch/sf100/partsupp.parquet/part16.parquet:268635415..268754289, mnt/bigdata/tpch/sf100/partsupp.parquet/part2.parquet:0..268700035, mnt/bigdata/tpch/sf100/partsupp.parquet/part3.parquet:0..268744147, mnt/bigdata/tpch/sf100/partsupp.parquet/part4.parquet:0..20902], [mnt/bigdata/tpch/sf100/partsupp.parquet/part4.parquet:20902..268881829, mnt/bigdata/tpch/sf100/partsupp.parquet/part5.parquet:0..268723031], [mnt/bigdata/tpch/sf100/partsupp.parquet/part5.parquet:268723031..268774298, mnt/bigdata/tpch/sf100/partsupp.parquet/part6.parquet:0..268810719, mnt/bigdata/tpch/sf100/partsupp.parquet/part7.parquet:0..268721972], [mnt/bigdata/tpch/sf100/partsupp.parquet/part7.parquet:268721972..268793426, mnt/bigdata/tpch/sf100/partsupp.parquet/part8.parquet:0..268780807, mnt/bigdata/tpch/sf100/partsupp.parquet/part9.parquet:0..268731691]]}, projection=[ps_partkey, ps_suppkey, ps_supplycost]
+
+Query Stage 3:
+ShuffleWriterExec: Some(Hash([Column { name: "s_suppkey", index: 0 }], 8))
+  ParquetExec: file_groups={8 groups: [[mnt/bigdata/tpch/sf100/supplier.parquet/part1.parquet:0..5503838, mnt/bigdata/tpch/sf100/supplier.parquet/part10.parquet:0..5497270, mnt/bigdata/tpch/sf100/supplier.parquet/part11.parquet:0..1793], [mnt/bigdata/tpch/sf100/supplier.parquet/part11.parquet:1793..5508630, mnt/bigdata/tpch/sf100/supplier.parquet/part12.parquet:0..5496064], [mnt/bigdata/tpch/sf100/supplier.parquet/part12.parquet:5496064..5498685, mnt/bigdata/tpch/sf100/supplier.parquet/part13.parquet:0..5504379, mnt/bigdata/tpch/sf100/supplier.parquet/part14.parquet:0..5495901], [mnt/bigdata/tpch/sf100/supplier.parquet/part14.parquet:5495901..5502882, mnt/bigdata/tpch/sf100/supplier.parquet/part15.parquet:0..5499373, mnt/bigdata/tpch/sf100/supplier.parquet/part16.parquet:0..5496547], [mnt/bigdata/tpch/sf100/supplier.parquet/part16.parquet:5496547..5503828, mnt/bigdata/tpch/sf100/supplier.parquet/part2.parquet:0..5498113, mnt/bigdata/tpch/sf100/supplier.parquet/part3.parquet:0..5496774, mnt/bigdata/tpch/sf100/supplier.parquet/part4.parquet:0..733], [mnt/bigdata/tpch/sf100/supplier.parquet/part4.parquet:733..5495657, mnt/bigdata/tpch/sf100/supplier.parquet/part5.parquet:0..5502994, mnt/bigdata/tpch/sf100/supplier.parquet/part6.parquet:0..4983], [mnt/bigdata/tpch/sf100/supplier.parquet/part6.parquet:4983..5503668, mnt/bigdata/tpch/sf100/supplier.parquet/part7.parquet:0..5504216], [mnt/bigdata/tpch/sf100/supplier.parquet/part7.parquet:5504216..5508016, mnt/bigdata/tpch/sf100/supplier.parquet/part8.parquet:0..5498618, mnt/bigdata/tpch/sf100/supplier.parquet/part9.parquet:0..5500477]]}, projection=[s_suppkey, s_nationkey]
+
+Query Stage 4:
+ShuffleWriterExec: Some(Hash([Column { name: "p_partkey", index: 0 }], 8))
+  ProjectionExec: expr=[p_partkey@0 as p_partkey]
+    CoalesceBatchesExec: target_batch_size=8192
+      FilterExec: p_name@1 LIKE %green%
+        ParquetExec: file_groups={8 groups: [[mnt/bigdata/tpch/sf100/part.parquet/part1.parquet:0..40049979, mnt/bigdata/tpch/sf100/part.parquet/part10.parquet:0..40061159, mnt/bigdata/tpch/sf100/part.parquet/part11.parquet:0..8190], [mnt/bigdata/tpch/sf100/part.parquet/part11.parquet:8190..40056642, mnt/bigdata/tpch/sf100/part.parquet/part12.parquet:0..40065338, mnt/bigdata/tpch/sf100/part.parquet/part13.parquet:0..5538], [mnt/bigdata/tpch/sf100/part.parquet/part13.parquet:5538..40056587, mnt/bigdata/tpch/sf100/part.parquet/part14.parquet:0..40068279], [mnt/bigdata/tpch/sf100/part.parquet/part14.parquet:40068279..40070033, mnt/bigdata/tpch/sf100/part.parquet/part15.parquet:0..40064342, mnt/bigdata/tpch/sf100/part.parquet/part16.parquet:0..40053232], [mnt/bigdata/tpch/sf100/part.parquet/part16.parquet:40053232..40065675, mnt/bigdata/tpch/sf100/part.parquet/part2.parquet:0..40061056, mnt/bigdata/tpch/sf100/part.parquet/part3.parquet:0..40045829], [mnt/bigdata/tpch/sf100/part.parquet/part3.parquet:40045829..40059089, mnt/bigdata/tpch/sf100/part.parquet/part4.parquet:0..40058789, mnt/bigdata/tpch/sf100/part.parquet/part5.parquet:0..40047279], [mnt/bigdata/tpch/sf100/part.parquet/part5.parquet:40047279..40055014, mnt/bigdata/tpch/sf100/part.parquet/part6.parquet:0..40060917, mnt/bigdata/tpch/sf100/part.parquet/part7.parquet:0..40050676], [mnt/bigdata/tpch/sf100/part.parquet/part7.parquet:40050676..40051593, mnt/bigdata/tpch/sf100/part.parquet/part8.parquet:0..40055632, mnt/bigdata/tpch/sf100/part.parquet/part9.parquet:0..40062778]]}, projection=[p_partkey, p_name], predicate=p_name@1 LIKE %green%
+
+Query Stage 5:
+ShuffleWriterExec: Some(Hash([Column { name: "l_partkey", index: 1 }], 8))
+  ParquetExec: file_groups={8 groups: [[mnt/bigdata/tpch/sf100/lineitem.parquet/part1.parquet:0..1469550136, mnt/bigdata/tpch/sf100/lineitem.parquet/part10.parquet:0..1469810475], [mnt/bigdata/tpch/sf100/lineitem.parquet/part10.parquet:1469810475..1469811062, mnt/bigdata/tpch/sf100/lineitem.parquet/part11.parquet:0..1469792487, mnt/bigdata/tpch/sf100/lineitem.parquet/part12.parquet:0..1469567537], [mnt/bigdata/tpch/sf100/lineitem.parquet/part12.parquet:1469567537..1469576762, mnt/bigdata/tpch/sf100/lineitem.parquet/part13.parquet:0..1469839488, mnt/bigdata/tpch/sf100/lineitem.parquet/part14.parquet:0..1469511898], [mnt/bigdata/tpch/sf100/lineitem.parquet/part14.parquet:1469511898..1469647240, mnt/bigdata/tpch/sf100/lineitem.parquet/part15.parquet:0..1469833433, mnt/bigdata/tpch/sf100/lineitem.parquet/part16.parquet:0..1469391836], [mnt/bigdata/tpch/sf100/lineitem.parquet/part16.parquet:1469391836..1469765133, mnt/bigdata/tpch/sf100/lineitem.parquet/part2.parquet:0..1469212062, mnt/bigdata/tpch/sf100/lineitem.parquet/part3.parquet:0..1469775252], [mnt/bigdata/tpch/sf100/lineitem.parquet/part3.parquet:1469775252..1469794280, mnt/bigdata/tpch/sf100/lineitem.parquet/part4.parquet:0..1469768080, mnt/bigdata/tpch/sf100/lineitem.parquet/part5.parquet:0..1469573503], [mnt/bigdata/tpch/sf100/lineitem.parquet/part5.parquet:1469573503..1469812961, mnt/bigdata/tpch/sf100/lineitem.parquet/part6.parquet:0..1469938331, mnt/bigdata/tpch/sf100/lineitem.parquet/part7.parquet:0..1469182822], [mnt/bigdata/tpch/sf100/lineitem.parquet/part7.parquet:1469182822..1469651669, mnt/bigdata/tpch/sf100/lineitem.parquet/part8.parquet:0..1469328494, mnt/bigdata/tpch/sf100/lineitem.parquet/part9.parquet:0..1469563265]]}, projection=[l_orderkey, l_partkey, l_suppkey, l_quantity, l_extendedprice, l_discount]
+
+Query Stage 6:
+ShuffleWriterExec: Some(Hash([Column { name: "l_suppkey", index: 2 }], 8))
+  CoalesceBatchesExec: target_batch_size=8192
+    HashJoinExec: mode=Partitioned, join_type=Inner, on=[(p_partkey@0, l_partkey@1)], projection=[l_orderkey@1, l_partkey@2, l_suppkey@3, l_quantity@4, l_extendedprice@5, l_discount@6]
+      CoalesceBatchesExec: target_batch_size=8192
+        UnresolvedShuffleExec
+      CoalesceBatchesExec: target_batch_size=8192
+        UnresolvedShuffleExec
+
+Query Stage 7:
+ShuffleWriterExec: Some(Hash([Column { name: "l_suppkey", index: 2 }, Column { name: "l_partkey", index: 1 }], 8))
+  ProjectionExec: expr=[l_orderkey@1 as l_orderkey, l_partkey@2 as l_partkey, l_suppkey@3 as l_suppkey, l_quantity@4 as l_quantity, l_extendedprice@5 as l_extendedprice, l_discount@6 as l_discount, s_nationkey@0 as s_nationkey]
+    CoalesceBatchesExec: target_batch_size=8192
+      HashJoinExec: mode=Partitioned, join_type=Inner, on=[(s_suppkey@0, l_suppkey@2)], projection=[s_nationkey@1, l_orderkey@2, l_partkey@3, l_suppkey@4, l_quantity@5, l_extendedprice@6, l_discount@7]
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+
+Query Stage 8:
+ShuffleWriterExec: Some(Hash([Column { name: "l_orderkey", index: 0 }], 8))
+  ProjectionExec: expr=[l_orderkey@1 as l_orderkey, l_quantity@2 as l_quantity, l_extendedprice@3 as l_extendedprice, l_discount@4 as l_discount, s_nationkey@5 as s_nationkey, ps_supplycost@0 as ps_supplycost]
+    CoalesceBatchesExec: target_batch_size=8192
+      HashJoinExec: mode=Partitioned, join_type=Inner, on=[(ps_suppkey@1, l_suppkey@2), (ps_partkey@0, l_partkey@1)], projection=[ps_supplycost@2, l_orderkey@3, l_quantity@6, l_extendedprice@7, l_discount@8, s_nationkey@9]
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+
+Query Stage 9:
+ShuffleWriterExec: Some(Hash([Column { name: "s_nationkey", index: 3 }], 8))
+  ProjectionExec: expr=[l_quantity@1 as l_quantity, l_extendedprice@2 as l_extendedprice, l_discount@3 as l_discount, s_nationkey@4 as s_nationkey, ps_supplycost@5 as ps_supplycost, o_orderdate@0 as o_orderdate]
+    CoalesceBatchesExec: target_batch_size=8192
+      HashJoinExec: mode=Partitioned, join_type=Inner, on=[(o_orderkey@0, l_orderkey@0)], projection=[o_orderdate@1, l_quantity@3, l_extendedprice@4, l_discount@5, s_nationkey@6, ps_supplycost@7]
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+
+Query Stage 10:
+ShuffleWriterExec: Some(Hash([Column { name: "nation", index: 0 }, Column { name: "o_year", index: 1 }], 8))
+  AggregateExec: mode=Partial, gby=[nation@0 as nation, o_year@1 as o_year], aggr=[SUM(profit.amount)]
+    ProjectionExec: expr=[n_name@0 as nation, date_part(YEAR, o_orderdate@5) as o_year, l_extendedprice@2 * (Some(1),20,0 - l_discount@3) - ps_supplycost@4 * l_quantity@1 as amount]
+      CoalesceBatchesExec: target_batch_size=8192
+        HashJoinExec: mode=Partitioned, join_type=Inner, on=[(n_nationkey@0, s_nationkey@3)], projection=[n_name@1, l_quantity@2, l_extendedprice@3, l_discount@4, ps_supplycost@6, o_orderdate@7]
+          CoalesceBatchesExec: target_batch_size=8192
+            UnresolvedShuffleExec
+          CoalesceBatchesExec: target_batch_size=8192
+            UnresolvedShuffleExec
+
+Query Stage 11:
+ShuffleWriterExec: None
+  SortExec: expr=[nation@0 ASC NULLS LAST,o_year@1 DESC], preserve_partitioning=[true]
+    ProjectionExec: expr=[nation@0 as nation, o_year@1 as o_year, SUM(profit.amount)@2 as sum_profit]
+      AggregateExec: mode=FinalPartitioned, gby=[nation@0 as nation, o_year@1 as o_year], aggr=[SUM(profit.amount)]
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+
+Query Stage 12:
+ShuffleWriterExec: None
+  SortPreservingMergeExec: [nation@0 ASC NULLS LAST,o_year@1 DESC]
+    UnresolvedShuffleExec
+

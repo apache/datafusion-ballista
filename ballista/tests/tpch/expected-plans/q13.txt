@@ -1,0 +1,58 @@
+select
+    c_count,
+    count(*) as custdist
+from
+    (
+        select
+            c_custkey,
+            count(o_orderkey)
+        from
+            customer left outer join orders on
+                        c_custkey = o_custkey
+                    and o_comment not like '%special%requests%'
+        group by
+            c_custkey
+    ) as c_orders (c_custkey, c_count)
+group by
+    c_count
+order by
+    custdist desc,
+    c_count desc;
+
+
+Query Stage 0:
+ShuffleWriterExec: Some(Hash([Column { name: "c_custkey", index: 0 }], 8))
+  ParquetExec: file_groups={8 groups: [[mnt/bigdata/tpch/sf100/customer.parquet/part1.parquet:0..78209135, mnt/bigdata/tpch/sf100/customer.parquet/part10.parquet:0..78199486], [mnt/bigdata/tpch/sf100/customer.parquet/part10.parquet:78199486..78230419, mnt/bigdata/tpch/sf100/customer.parquet/part11.parquet:0..78213009, mnt/bigdata/tpch/sf100/customer.parquet/part12.parquet:0..78164679], [mnt/bigdata/tpch/sf100/customer.parquet/part12.parquet:78164679..78184439, mnt/bigdata/tpch/sf100/customer.parquet/part13.parquet:0..78214803, mnt/bigdata/tpch/sf100/customer.parquet/part14.parquet:0..78174058], [mnt/bigdata/tpch/sf100/customer.parquet/part14.parquet:78174058..78203896, mnt/bigdata/tpch/sf100/customer.parquet/part15.parquet:0..78207662, mnt/bigdata/tpch/sf100/customer.parquet/part16.parquet:0..78171121], [mnt/bigdata/tpch/sf100/customer.parquet/part16.parquet:78171121..78199415, mnt/bigdata/tpch/sf100/customer.parquet/part2.parquet:0..78172558, mnt/bigdata/tpch/sf100/customer.parquet/part3.parquet:0..78198064, mnt/bigdata/tpch/sf100/customer.parquet/part4.parquet:0..9705], [mnt/bigdata/tpch/sf100/customer.parquet/part4.parquet:9705..78221511, mnt/bigdata/tpch/sf100/customer.parquet/part5.parquet:0..78196815], [mnt/bigdata/tpch/sf100/customer.parquet/part5.parquet:78196815..78206183, mnt/bigdata/tpch/sf100/customer.parquet/part6.parquet:0..78200661, mnt/bigdata/tpch/sf100/customer.parquet/part7.parquet:0..78198592], [mnt/bigdata/tpch/sf100/customer.parquet/part7.parquet:78198592..78215057, mnt/bigdata/tpch/sf100/customer.parquet/part8.parquet:0..78193102, mnt/bigdata/tpch/sf100/customer.parquet/part9.parquet:0..78199052]]}, projection=[c_custkey]
+
+Query Stage 1:
+ShuffleWriterExec: Some(Hash([Column { name: "o_custkey", index: 1 }], 8))
+  ProjectionExec: expr=[o_orderkey@0 as o_orderkey, o_custkey@1 as o_custkey]
+    CoalesceBatchesExec: target_batch_size=8192
+      FilterExec: o_comment@2 NOT LIKE %special%requests%
+        ParquetExec: file_groups={8 groups: [[mnt/bigdata/tpch/sf100/orders.parquet/part1.parquet:0..414015218, mnt/bigdata/tpch/sf100/orders.parquet/part10.parquet:0..414048620, mnt/bigdata/tpch/sf100/orders.parquet/part11.parquet:0..38879], [mnt/bigdata/tpch/sf100/orders.parquet/part11.parquet:38879..414036634, mnt/bigdata/tpch/sf100/orders.parquet/part12.parquet:0..414048473, mnt/bigdata/tpch/sf100/orders.parquet/part13.parquet:0..56489], [mnt/bigdata/tpch/sf100/orders.parquet/part13.parquet:56489..414046189, mnt/bigdata/tpch/sf100/orders.parquet/part14.parquet:0..414061303, mnt/bigdata/tpch/sf100/orders.parquet/part15.parquet:0..51714], [mnt/bigdata/tpch/sf100/orders.parquet/part15.parquet:51714..414057732, mnt/bigdata/tpch/sf100/orders.parquet/part16.parquet:0..414039840, mnt/bigdata/tpch/sf100/orders.parquet/part2.parquet:0..56859], [mnt/bigdata/tpch/sf100/orders.parquet/part2.parquet:56859..414037014, mnt/bigdata/tpch/sf100/orders.parquet/part3.parquet:0..414067201, mnt/bigdata/tpch/sf100/orders.parquet/part4.parquet:0..55361], [mnt/bigdata/tpch/sf100/orders.parquet/part4.parquet:55361..414066732, mnt/bigdata/tpch/sf100/orders.parquet/part5.parquet:0..414028297, mnt/bigdata/tpch/sf100/orders.parquet/part6.parquet:0..63049], [mnt/bigdata/tpch/sf100/orders.parquet/part6.parquet:63049..414092946, mnt/bigdata/tpch/sf100/orders.parquet/part7.parquet:0..414072820], [mnt/bigdata/tpch/sf100/orders.parquet/part7.parquet:414072820..414077818, mnt/bigdata/tpch/sf100/orders.parquet/part8.parquet:0..414070661, mnt/bigdata/tpch/sf100/orders.parquet/part9.parquet:0..414027051]]}, projection=[o_orderkey, o_custkey, o_comment], predicate=o_comment@8 NOT LIKE %special%requests%
+
+Query Stage 2:
+ShuffleWriterExec: Some(Hash([Column { name: "c_count", index: 0 }], 8))
+  AggregateExec: mode=Partial, gby=[c_count@0 as c_count], aggr=[COUNT(*)]
+    ProjectionExec: expr=[COUNT(orders.o_orderkey)@1 as c_count]
+      AggregateExec: mode=SinglePartitioned, gby=[c_custkey@0 as c_custkey], aggr=[COUNT(orders.o_orderkey)]
+        CoalesceBatchesExec: target_batch_size=8192
+          HashJoinExec: mode=Partitioned, join_type=Left, on=[(c_custkey@0, o_custkey@1)], projection=[c_custkey@0, o_orderkey@1]
+            CoalesceBatchesExec: target_batch_size=8192
+              UnresolvedShuffleExec
+            CoalesceBatchesExec: target_batch_size=8192
+              UnresolvedShuffleExec
+
+Query Stage 3:
+ShuffleWriterExec: None
+  SortExec: expr=[custdist@1 DESC,c_count@0 DESC], preserve_partitioning=[true]
+    ProjectionExec: expr=[c_count@0 as c_count, COUNT(*)@1 as custdist]
+      AggregateExec: mode=FinalPartitioned, gby=[c_count@0 as c_count], aggr=[COUNT(*)]
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+
+Query Stage 4:
+ShuffleWriterExec: None
+  SortPreservingMergeExec: [custdist@1 DESC,c_count@0 DESC]
+    UnresolvedShuffleExec
+

@@ -1,0 +1,66 @@
+select
+    l_shipmode,
+    sum(case
+            when o_orderpriority = '1-URGENT'
+                or o_orderpriority = '2-HIGH'
+                then 1
+            else 0
+        end) as high_line_count,
+    sum(case
+            when o_orderpriority <> '1-URGENT'
+                and o_orderpriority <> '2-HIGH'
+                then 1
+            else 0
+        end) as low_line_count
+from
+    lineitem
+        join
+    orders
+    on
+            l_orderkey = o_orderkey
+where
+        l_shipmode in ('MAIL', 'SHIP')
+  and l_commitdate < l_receiptdate
+  and l_shipdate < l_commitdate
+  and l_receiptdate >= date '1994-01-01'
+  and l_receiptdate < date '1995-01-01'
+group by
+    l_shipmode
+order by
+    l_shipmode;
+
+
+Query Stage 0:
+ShuffleWriterExec: Some(Hash([Column { name: "l_orderkey", index: 0 }], 8))
+  ProjectionExec: expr=[l_orderkey@0 as l_orderkey, l_shipmode@4 as l_shipmode]
+    CoalesceBatchesExec: target_batch_size=8192
+      FilterExec: (l_shipmode@4 = MAIL OR l_shipmode@4 = SHIP) AND l_receiptdate@3 > l_commitdate@2 AND l_shipdate@1 < l_commitdate@2 AND l_receiptdate@3 >= 1994-01-01 AND l_receiptdate@3 < 1995-01-01
+        ParquetExec: file_groups={8 groups: [[mnt/bigdata/tpch/sf100/lineitem.parquet/part1.parquet:0..1469550136, mnt/bigdata/tpch/sf100/lineitem.parquet/part10.parquet:0..1469810475], [mnt/bigdata/tpch/sf100/lineitem.parquet/part10.parquet:1469810475..1469811062, mnt/bigdata/tpch/sf100/lineitem.parquet/part11.parquet:0..1469792487, mnt/bigdata/tpch/sf100/lineitem.parquet/part12.parquet:0..1469567537], [mnt/bigdata/tpch/sf100/lineitem.parquet/part12.parquet:1469567537..1469576762, mnt/bigdata/tpch/sf100/lineitem.parquet/part13.parquet:0..1469839488, mnt/bigdata/tpch/sf100/lineitem.parquet/part14.parquet:0..1469511898], [mnt/bigdata/tpch/sf100/lineitem.parquet/part14.parquet:1469511898..1469647240, mnt/bigdata/tpch/sf100/lineitem.parquet/part15.parquet:0..1469833433, mnt/bigdata/tpch/sf100/lineitem.parquet/part16.parquet:0..1469391836], [mnt/bigdata/tpch/sf100/lineitem.parquet/part16.parquet:1469391836..1469765133, mnt/bigdata/tpch/sf100/lineitem.parquet/part2.parquet:0..1469212062, mnt/bigdata/tpch/sf100/lineitem.parquet/part3.parquet:0..1469775252], [mnt/bigdata/tpch/sf100/lineitem.parquet/part3.parquet:1469775252..1469794280, mnt/bigdata/tpch/sf100/lineitem.parquet/part4.parquet:0..1469768080, mnt/bigdata/tpch/sf100/lineitem.parquet/part5.parquet:0..1469573503], [mnt/bigdata/tpch/sf100/lineitem.parquet/part5.parquet:1469573503..1469812961, mnt/bigdata/tpch/sf100/lineitem.parquet/part6.parquet:0..1469938331, mnt/bigdata/tpch/sf100/lineitem.parquet/part7.parquet:0..1469182822], [mnt/bigdata/tpch/sf100/lineitem.parquet/part7.parquet:1469182822..1469651669, mnt/bigdata/tpch/sf100/lineitem.parquet/part8.parquet:0..1469328494, mnt/bigdata/tpch/sf100/lineitem.parquet/part9.parquet:0..1469563265]]}, projection=[l_orderkey, l_shipdate, l_commitdate, l_receiptdate, l_shipmode], predicate=(l_shipmode@14 = MAIL OR l_shipmode@14 = SHIP) AND l_receiptdate@12 > l_commitdate@11 AND l_shipdate@10 < l_commitdate@11 AND l_receiptdate@12 >= 1994-01-01 AND l_receiptdate@12 < 1995-01-01, pruning_predicate=(CASE WHEN l_shipmode_null_count@2 = l_shipmode_row_count@3 THEN false ELSE l_shipmode_min@0 <= MAIL AND MAIL <= l_shipmode_max@1 END OR CASE WHEN l_shipmode_null_count@2 = l_shipmode_row_count@3 THEN false ELSE l_shipmode_min@0 <= SHIP AND SHIP <= l_shipmode_max@1 END) AND CASE WHEN l_receiptdate_null_count@5 = l_receiptdate_row_count@6 THEN false ELSE l_receiptdate_max@4 >= 1994-01-01 END AND CASE WHEN l_receiptdate_null_count@5 = l_receiptdate_row_count@6 THEN false ELSE l_receiptdate_min@7 < 1995-01-01 END, required_guarantees=[l_shipmode in (MAIL, SHIP)]
+
+Query Stage 1:
+ShuffleWriterExec: Some(Hash([Column { name: "o_orderkey", index: 0 }], 8))
+  ParquetExec: file_groups={8 groups: [[mnt/bigdata/tpch/sf100/orders.parquet/part1.parquet:0..414015218, mnt/bigdata/tpch/sf100/orders.parquet/part10.parquet:0..414048620, mnt/bigdata/tpch/sf100/orders.parquet/part11.parquet:0..38879], [mnt/bigdata/tpch/sf100/orders.parquet/part11.parquet:38879..414036634, mnt/bigdata/tpch/sf100/orders.parquet/part12.parquet:0..414048473, mnt/bigdata/tpch/sf100/orders.parquet/part13.parquet:0..56489], [mnt/bigdata/tpch/sf100/orders.parquet/part13.parquet:56489..414046189, mnt/bigdata/tpch/sf100/orders.parquet/part14.parquet:0..414061303, mnt/bigdata/tpch/sf100/orders.parquet/part15.parquet:0..51714], [mnt/bigdata/tpch/sf100/orders.parquet/part15.parquet:51714..414057732, mnt/bigdata/tpch/sf100/orders.parquet/part16.parquet:0..414039840, mnt/bigdata/tpch/sf100/orders.parquet/part2.parquet:0..56859], [mnt/bigdata/tpch/sf100/orders.parquet/part2.parquet:56859..414037014, mnt/bigdata/tpch/sf100/orders.parquet/part3.parquet:0..414067201, mnt/bigdata/tpch/sf100/orders.parquet/part4.parquet:0..55361], [mnt/bigdata/tpch/sf100/orders.parquet/part4.parquet:55361..414066732, mnt/bigdata/tpch/sf100/orders.parquet/part5.parquet:0..414028297, mnt/bigdata/tpch/sf100/orders.parquet/part6.parquet:0..63049], [mnt/bigdata/tpch/sf100/orders.parquet/part6.parquet:63049..414092946, mnt/bigdata/tpch/sf100/orders.parquet/part7.parquet:0..414072820], [mnt/bigdata/tpch/sf100/orders.parquet/part7.parquet:414072820..414077818, mnt/bigdata/tpch/sf100/orders.parquet/part8.parquet:0..414070661, mnt/bigdata/tpch/sf100/orders.parquet/part9.parquet:0..414027051]]}, projection=[o_orderkey, o_orderpriority]
+
+Query Stage 2:
+ShuffleWriterExec: Some(Hash([Column { name: "l_shipmode", index: 0 }], 8))
+  AggregateExec: mode=Partial, gby=[l_shipmode@0 as l_shipmode], aggr=[SUM(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), SUM(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
+    CoalesceBatchesExec: target_batch_size=8192
+      HashJoinExec: mode=Partitioned, join_type=Inner, on=[(l_orderkey@0, o_orderkey@0)], projection=[l_shipmode@1, o_orderpriority@3]
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+
+Query Stage 3:
+ShuffleWriterExec: None
+  SortExec: expr=[l_shipmode@0 ASC NULLS LAST], preserve_partitioning=[true]
+    ProjectionExec: expr=[l_shipmode@0 as l_shipmode, SUM(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@1 as high_line_count, SUM(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@2 as low_line_count]
+      AggregateExec: mode=FinalPartitioned, gby=[l_shipmode@0 as l_shipmode], aggr=[SUM(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), SUM(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+
+Query Stage 4:
+ShuffleWriterExec: None
+  SortPreservingMergeExec: [l_shipmode@0 ASC NULLS LAST]
+    UnresolvedShuffleExec
+

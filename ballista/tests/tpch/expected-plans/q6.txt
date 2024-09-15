@@ -1,0 +1,26 @@
+select
+    sum(l_extendedprice * l_discount) as revenue
+from
+    lineitem
+where
+        l_shipdate >= date '1994-01-01'
+  and l_shipdate < date '1995-01-01'
+  and l_discount between 0.06 - 0.01 and 0.06 + 0.01
+  and l_quantity < 24;
+
+
+Query Stage 0:
+ShuffleWriterExec: None
+  AggregateExec: mode=Partial, gby=[], aggr=[SUM(lineitem.l_extendedprice * lineitem.l_discount)]
+    ProjectionExec: expr=[l_extendedprice@1 as l_extendedprice, l_discount@2 as l_discount]
+      CoalesceBatchesExec: target_batch_size=8192
+        FilterExec: l_shipdate@3 >= 1994-01-01 AND l_shipdate@3 < 1995-01-01 AND l_discount@2 >= Some(5),11,2 AND l_discount@2 <= Some(7),11,2 AND l_quantity@0 < Some(2400),11,2
+          ParquetExec: file_groups={8 groups: [[mnt/bigdata/tpch/sf100/lineitem.parquet/part1.parquet:0..1469550136, mnt/bigdata/tpch/sf100/lineitem.parquet/part10.parquet:0..1469810475], [mnt/bigdata/tpch/sf100/lineitem.parquet/part10.parquet:1469810475..1469811062, mnt/bigdata/tpch/sf100/lineitem.parquet/part11.parquet:0..1469792487, mnt/bigdata/tpch/sf100/lineitem.parquet/part12.parquet:0..1469567537], [mnt/bigdata/tpch/sf100/lineitem.parquet/part12.parquet:1469567537..1469576762, mnt/bigdata/tpch/sf100/lineitem.parquet/part13.parquet:0..1469839488, mnt/bigdata/tpch/sf100/lineitem.parquet/part14.parquet:0..1469511898], [mnt/bigdata/tpch/sf100/lineitem.parquet/part14.parquet:1469511898..1469647240, mnt/bigdata/tpch/sf100/lineitem.parquet/part15.parquet:0..1469833433, mnt/bigdata/tpch/sf100/lineitem.parquet/part16.parquet:0..1469391836], [mnt/bigdata/tpch/sf100/lineitem.parquet/part16.parquet:1469391836..1469765133, mnt/bigdata/tpch/sf100/lineitem.parquet/part2.parquet:0..1469212062, mnt/bigdata/tpch/sf100/lineitem.parquet/part3.parquet:0..1469775252], [mnt/bigdata/tpch/sf100/lineitem.parquet/part3.parquet:1469775252..1469794280, mnt/bigdata/tpch/sf100/lineitem.parquet/part4.parquet:0..1469768080, mnt/bigdata/tpch/sf100/lineitem.parquet/part5.parquet:0..1469573503], [mnt/bigdata/tpch/sf100/lineitem.parquet/part5.parquet:1469573503..1469812961, mnt/bigdata/tpch/sf100/lineitem.parquet/part6.parquet:0..1469938331, mnt/bigdata/tpch/sf100/lineitem.parquet/part7.parquet:0..1469182822], [mnt/bigdata/tpch/sf100/lineitem.parquet/part7.parquet:1469182822..1469651669, mnt/bigdata/tpch/sf100/lineitem.parquet/part8.parquet:0..1469328494, mnt/bigdata/tpch/sf100/lineitem.parquet/part9.parquet:0..1469563265]]}, projection=[l_quantity, l_extendedprice, l_discount, l_shipdate], predicate=l_shipdate@10 >= 1994-01-01 AND l_shipdate@10 < 1995-01-01 AND l_discount@6 >= Some(5),11,2 AND l_discount@6 <= Some(7),11,2 AND l_quantity@4 < Some(2400),11,2, pruning_predicate=CASE WHEN l_shipdate_null_count@1 = l_shipdate_row_count@2 THEN false ELSE l_shipdate_max@0 >= 1994-01-01 END AND CASE WHEN l_shipdate_null_count@1 = l_shipdate_row_count@2 THEN false ELSE l_shipdate_min@3 < 1995-01-01 END AND CASE WHEN l_discount_null_count@5 = l_discount_row_count@6 THEN false ELSE l_discount_max@4 >= Some(5),11,2 END AND CASE WHEN l_discount_null_count@5 = l_discount_row_count@6 THEN false ELSE l_discount_min@7 <= Some(7),11,2 END AND CASE WHEN l_quantity_null_count@9 = l_quantity_row_count@10 THEN false ELSE l_quantity_min@8 < Some(2400),11,2 END, required_guarantees=[]
+
+Query Stage 1:
+ShuffleWriterExec: None
+  ProjectionExec: expr=[SUM(lineitem.l_extendedprice * lineitem.l_discount)@0 as revenue]
+    AggregateExec: mode=Final, gby=[], aggr=[SUM(lineitem.l_extendedprice * lineitem.l_discount)]
+      CoalescePartitionsExec
+        UnresolvedShuffleExec
+

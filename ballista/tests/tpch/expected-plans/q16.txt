@@ -1,0 +1,89 @@
+select
+    p_brand,
+    p_type,
+    p_size,
+    count(distinct ps_suppkey) as supplier_cnt
+from
+    partsupp,
+    part
+where
+        p_partkey = ps_partkey
+  and p_brand <> 'Brand#45'
+  and p_type not like 'MEDIUM POLISHED%'
+  and p_size in (49, 14, 23, 45, 19, 3, 36, 9)
+  and ps_suppkey not in (
+    select
+        s_suppkey
+    from
+        supplier
+    where
+            s_comment like '%Customer%Complaints%'
+)
+group by
+    p_brand,
+    p_type,
+    p_size
+order by
+    supplier_cnt desc,
+    p_brand,
+    p_type,
+    p_size;
+
+
+Query Stage 0:
+ShuffleWriterExec: Some(Hash([Column { name: "s_suppkey", index: 0 }], 8))
+  ProjectionExec: expr=[s_suppkey@0 as s_suppkey]
+    CoalesceBatchesExec: target_batch_size=8192
+      FilterExec: s_comment@1 LIKE %Customer%Complaints%
+        ParquetExec: file_groups={8 groups: [[mnt/bigdata/tpch/sf100/supplier.parquet/part1.parquet:0..5503838, mnt/bigdata/tpch/sf100/supplier.parquet/part10.parquet:0..5497270, mnt/bigdata/tpch/sf100/supplier.parquet/part11.parquet:0..1793], [mnt/bigdata/tpch/sf100/supplier.parquet/part11.parquet:1793..5508630, mnt/bigdata/tpch/sf100/supplier.parquet/part12.parquet:0..5496064], [mnt/bigdata/tpch/sf100/supplier.parquet/part12.parquet:5496064..5498685, mnt/bigdata/tpch/sf100/supplier.parquet/part13.parquet:0..5504379, mnt/bigdata/tpch/sf100/supplier.parquet/part14.parquet:0..5495901], [mnt/bigdata/tpch/sf100/supplier.parquet/part14.parquet:5495901..5502882, mnt/bigdata/tpch/sf100/supplier.parquet/part15.parquet:0..5499373, mnt/bigdata/tpch/sf100/supplier.parquet/part16.parquet:0..5496547], [mnt/bigdata/tpch/sf100/supplier.parquet/part16.parquet:5496547..5503828, mnt/bigdata/tpch/sf100/supplier.parquet/part2.parquet:0..5498113, mnt/bigdata/tpch/sf100/supplier.parquet/part3.parquet:0..5496774, mnt/bigdata/tpch/sf100/supplier.parquet/part4.parquet:0..733], [mnt/bigdata/tpch/sf100/supplier.parquet/part4.parquet:733..5495657, mnt/bigdata/tpch/sf100/supplier.parquet/part5.parquet:0..5502994, mnt/bigdata/tpch/sf100/supplier.parquet/part6.parquet:0..4983], [mnt/bigdata/tpch/sf100/supplier.parquet/part6.parquet:4983..5503668, mnt/bigdata/tpch/sf100/supplier.parquet/part7.parquet:0..5504216], [mnt/bigdata/tpch/sf100/supplier.parquet/part7.parquet:5504216..5508016, mnt/bigdata/tpch/sf100/supplier.parquet/part8.parquet:0..5498618, mnt/bigdata/tpch/sf100/supplier.parquet/part9.parquet:0..5500477]]}, projection=[s_suppkey, s_comment], predicate=s_comment@6 LIKE %Customer%Complaints%
+
+Query Stage 1:
+ShuffleWriterExec: Some(Hash([Column { name: "p_partkey", index: 0 }], 8))
+  CoalesceBatchesExec: target_batch_size=8192
+    FilterExec: p_brand@1 != Brand#45 AND p_type@2 NOT LIKE MEDIUM POLISHED% AND Use p_size@3 IN (SET) ([Literal { value: Int32(49) }, Literal { value: Int32(14) }, Literal { value: Int32(23) }, Literal { value: Int32(45) }, Literal { value: Int32(19) }, Literal { value: Int32(3) }, Literal { value: Int32(36) }, Literal { value: Int32(9) }])
+      ParquetExec: file_groups={8 groups: [[mnt/bigdata/tpch/sf100/part.parquet/part1.parquet:0..40049979, mnt/bigdata/tpch/sf100/part.parquet/part10.parquet:0..40061159, mnt/bigdata/tpch/sf100/part.parquet/part11.parquet:0..8190], [mnt/bigdata/tpch/sf100/part.parquet/part11.parquet:8190..40056642, mnt/bigdata/tpch/sf100/part.parquet/part12.parquet:0..40065338, mnt/bigdata/tpch/sf100/part.parquet/part13.parquet:0..5538], [mnt/bigdata/tpch/sf100/part.parquet/part13.parquet:5538..40056587, mnt/bigdata/tpch/sf100/part.parquet/part14.parquet:0..40068279], [mnt/bigdata/tpch/sf100/part.parquet/part14.parquet:40068279..40070033, mnt/bigdata/tpch/sf100/part.parquet/part15.parquet:0..40064342, mnt/bigdata/tpch/sf100/part.parquet/part16.parquet:0..40053232], [mnt/bigdata/tpch/sf100/part.parquet/part16.parquet:40053232..40065675, mnt/bigdata/tpch/sf100/part.parquet/part2.parquet:0..40061056, mnt/bigdata/tpch/sf100/part.parquet/part3.parquet:0..40045829], [mnt/bigdata/tpch/sf100/part.parquet/part3.parquet:40045829..40059089, mnt/bigdata/tpch/sf100/part.parquet/part4.parquet:0..40058789, mnt/bigdata/tpch/sf100/part.parquet/part5.parquet:0..40047279], [mnt/bigdata/tpch/sf100/part.parquet/part5.parquet:40047279..40055014, mnt/bigdata/tpch/sf100/part.parquet/part6.parquet:0..40060917, mnt/bigdata/tpch/sf100/part.parquet/part7.parquet:0..40050676], [mnt/bigdata/tpch/sf100/part.parquet/part7.parquet:40050676..40051593, mnt/bigdata/tpch/sf100/part.parquet/part8.parquet:0..40055632, mnt/bigdata/tpch/sf100/part.parquet/part9.parquet:0..40062778]]}, projection=[p_partkey, p_brand, p_type, p_size], predicate=p_brand@3 != Brand#45 AND p_type@4 NOT LIKE MEDIUM POLISHED% AND Use p_size@5 IN (SET) ([Literal { value: Int32(49) }, Literal { value: Int32(14) }, Literal { value: Int32(23) }, Literal { value: Int32(45) }, Literal { value: Int32(19) }, Literal { value: Int32(3) }, Literal { value: Int32(36) }, Literal { value: Int32(9) }]), pruning_predicate=CASE WHEN p_brand_null_count@2 = p_brand_row_count@3 THEN false ELSE p_brand_min@0 != Brand#45 OR Brand#45 != p_brand_max@1 END AND (CASE WHEN p_size_null_count@6 = p_size_row_count@7 THEN false ELSE p_size_min@4 <= 49 AND 49 <= p_size_max@5 END OR CASE WHEN p_size_null_count@6 = p_size_row_count@7 THEN false ELSE p_size_min@4 <= 14 AND 14 <= p_size_max@5 END OR CASE WHEN p_size_null_count@6 = p_size_row_count@7 THEN false ELSE p_size_min@4 <= 23 AND 23 <= p_size_max@5 END OR CASE WHEN p_size_null_count@6 = p_size_row_count@7 THEN false ELSE p_size_min@4 <= 45 AND 45 <= p_size_max@5 END OR CASE WHEN p_size_null_count@6 = p_size_row_count@7 THEN false ELSE p_size_min@4 <= 19 AND 19 <= p_size_max@5 END OR CASE WHEN p_size_null_count@6 = p_size_row_count@7 THEN false ELSE p_size_min@4 <= 3 AND 3 <= p_size_max@5 END OR CASE WHEN p_size_null_count@6 = p_size_row_count@7 THEN false ELSE p_size_min@4 <= 36 AND 36 <= p_size_max@5 END OR CASE WHEN p_size_null_count@6 = p_size_row_count@7 THEN false ELSE p_size_min@4 <= 9 AND 9 <= p_size_max@5 END), required_guarantees=[p_brand not in (Brand#45), p_size in (19, 9, 23, 49, 45, 14, 36, 3)]
+
+Query Stage 2:
+ShuffleWriterExec: Some(Hash([Column { name: "ps_partkey", index: 0 }], 8))
+  ParquetExec: file_groups={8 groups: [[mnt/bigdata/tpch/sf100/partsupp.parquet/part1.parquet:0..268789252, mnt/bigdata/tpch/sf100/partsupp.parquet/part10.parquet:0..268794706], [mnt/bigdata/tpch/sf100/partsupp.parquet/part10.parquet:268794706..268829152, mnt/bigdata/tpch/sf100/partsupp.parquet/part11.parquet:0..268794985, mnt/bigdata/tpch/sf100/partsupp.parquet/part12.parquet:0..268754527], [mnt/bigdata/tpch/sf100/partsupp.parquet/part12.parquet:268754527..268790409, mnt/bigdata/tpch/sf100/partsupp.parquet/part13.parquet:0..268856901, mnt/bigdata/tpch/sf100/partsupp.parquet/part14.parquet:0..268691175], [mnt/bigdata/tpch/sf100/partsupp.parquet/part14.parquet:268691175..268828827, mnt/bigdata/tpch/sf100/partsupp.parquet/part15.parquet:0..268810891, mnt/bigdata/tpch/sf100/partsupp.parquet/part16.parquet:0..268635415], [mnt/bigdata/tpch/sf100/partsupp.parquet/part16.parquet:268635415..268754289, mnt/bigdata/tpch/sf100/partsupp.parquet/part2.parquet:0..268700035, mnt/bigdata/tpch/sf100/partsupp.parquet/part3.parquet:0..268744147, mnt/bigdata/tpch/sf100/partsupp.parquet/part4.parquet:0..20902], [mnt/bigdata/tpch/sf100/partsupp.parquet/part4.parquet:20902..268881829, mnt/bigdata/tpch/sf100/partsupp.parquet/part5.parquet:0..268723031], [mnt/bigdata/tpch/sf100/partsupp.parquet/part5.parquet:268723031..268774298, mnt/bigdata/tpch/sf100/partsupp.parquet/part6.parquet:0..268810719, mnt/bigdata/tpch/sf100/partsupp.parquet/part7.parquet:0..268721972], [mnt/bigdata/tpch/sf100/partsupp.parquet/part7.parquet:268721972..268793426, mnt/bigdata/tpch/sf100/partsupp.parquet/part8.parquet:0..268780807, mnt/bigdata/tpch/sf100/partsupp.parquet/part9.parquet:0..268731691]]}, projection=[ps_partkey, ps_suppkey]
+
+Query Stage 3:
+ShuffleWriterExec: Some(Hash([Column { name: "ps_suppkey", index: 0 }], 8))
+  ProjectionExec: expr=[ps_suppkey@3 as ps_suppkey, p_brand@0 as p_brand, p_type@1 as p_type, p_size@2 as p_size]
+    CoalesceBatchesExec: target_batch_size=8192
+      HashJoinExec: mode=Partitioned, join_type=Inner, on=[(p_partkey@0, ps_partkey@0)], projection=[p_brand@1, p_type@2, p_size@3, ps_suppkey@5]
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+
+Query Stage 4:
+ShuffleWriterExec: Some(Hash([Column { name: "p_brand", index: 0 }, Column { name: "p_type", index: 1 }, Column { name: "p_size", index: 2 }, Column { name: "alias1", index: 3 }], 8))
+  AggregateExec: mode=Partial, gby=[p_brand@1 as p_brand, p_type@2 as p_type, p_size@3 as p_size, ps_suppkey@0 as alias1], aggr=[]
+    CoalesceBatchesExec: target_batch_size=8192
+      HashJoinExec: mode=Partitioned, join_type=RightAnti, on=[(s_suppkey@0, ps_suppkey@0)]
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+
+Query Stage 5:
+ShuffleWriterExec: Some(Hash([Column { name: "p_brand", index: 0 }, Column { name: "p_type", index: 1 }, Column { name: "p_size", index: 2 }], 8))
+  AggregateExec: mode=Partial, gby=[p_brand@0 as p_brand, p_type@1 as p_type, p_size@2 as p_size], aggr=[COUNT(alias1)]
+    AggregateExec: mode=FinalPartitioned, gby=[p_brand@0 as p_brand, p_type@1 as p_type, p_size@2 as p_size, alias1@3 as alias1], aggr=[]
+      CoalesceBatchesExec: target_batch_size=8192
+        UnresolvedShuffleExec
+
+Query Stage 6:
+ShuffleWriterExec: None
+  SortExec: expr=[supplier_cnt@3 DESC,p_brand@0 ASC NULLS LAST,p_type@1 ASC NULLS LAST,p_size@2 ASC NULLS LAST], preserve_partitioning=[true]
+    ProjectionExec: expr=[p_brand@0 as p_brand, p_type@1 as p_type, p_size@2 as p_size, COUNT(alias1)@3 as supplier_cnt]
+      AggregateExec: mode=FinalPartitioned, gby=[p_brand@0 as p_brand, p_type@1 as p_type, p_size@2 as p_size], aggr=[COUNT(alias1)]
+        CoalesceBatchesExec: target_batch_size=8192
+          UnresolvedShuffleExec
+
+Query Stage 7:
+ShuffleWriterExec: None
+  SortPreservingMergeExec: [supplier_cnt@3 DESC,p_brand@0 ASC NULLS LAST,p_type@1 ASC NULLS LAST,p_size@2 ASC NULLS LAST]
+    UnresolvedShuffleExec
+
