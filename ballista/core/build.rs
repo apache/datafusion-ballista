@@ -43,6 +43,7 @@ fn main() -> Result<(), String> {
         tonic_build::configure()
             .extern_path(".datafusion_common", "::datafusion_proto_common")
             .extern_path(".datafusion", "::datafusion_proto::protobuf")
+            .protoc_arg("--experimental_allow_proto3_optional")
             .compile(&["proto/ballista.proto"], &["proto"])
             .map_err(|e| format!("protobuf compilation failed: {e}"))?;
         let generated_source_path = out.join("ballista.protobuf.rs");
