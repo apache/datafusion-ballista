@@ -45,7 +45,7 @@ pub struct UnresolvedShuffleExecNode {
     #[prost(uint32, tag = "1")]
     pub stage_id: u32,
     #[prost(message, optional, tag = "2")]
-    pub schema: ::core::option::Option<::datafusion_proto::protobuf::Schema>,
+    pub schema: ::core::option::Option<::datafusion_proto_common::Schema>,
     #[prost(uint32, tag = "4")]
     pub output_partition_count: u32,
 }
@@ -55,7 +55,7 @@ pub struct ShuffleReaderExecNode {
     #[prost(message, repeated, tag = "1")]
     pub partition: ::prost::alloc::vec::Vec<ShuffleReaderPartition>,
     #[prost(message, optional, tag = "2")]
-    pub schema: ::core::option::Option<::datafusion_proto::protobuf::Schema>,
+    pub schema: ::core::option::Option<::datafusion_proto_common::Schema>,
     /// The stage to read from
     #[prost(uint32, tag = "3")]
     pub stage_id: u32,
@@ -379,9 +379,9 @@ pub struct PartitionStats {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ColumnStats {
     #[prost(message, optional, tag = "1")]
-    pub min_value: ::core::option::Option<::datafusion_proto::protobuf::ScalarValue>,
+    pub min_value: ::core::option::Option<::datafusion_proto_common::ScalarValue>,
     #[prost(message, optional, tag = "2")]
-    pub max_value: ::core::option::Option<::datafusion_proto::protobuf::ScalarValue>,
+    pub max_value: ::core::option::Option<::datafusion_proto_common::ScalarValue>,
     #[prost(uint32, tag = "3")]
     pub null_count: u32,
     #[prost(uint32, tag = "4")]
@@ -1083,7 +1083,7 @@ pub struct GetFileMetadataParams {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetFileMetadataResult {
     #[prost(message, optional, tag = "1")]
-    pub schema: ::core::option::Option<::datafusion_proto::protobuf::Schema>,
+    pub schema: ::core::option::Option<::datafusion_proto_common::Schema>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
