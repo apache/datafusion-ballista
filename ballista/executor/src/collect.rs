@@ -67,6 +67,10 @@ impl DisplayAs for CollectExec {
 }
 
 impl ExecutionPlan for CollectExec {
+    fn name(&self) -> &str {
+        "CollectExec"
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }

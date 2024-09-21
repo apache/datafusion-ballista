@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ballista::prelude::{BallistaContext, BallistaError, Result};
-use clap::ArgEnum;
+use clap::ValueEnum;
 use datafusion::arrow::array::{ArrayRef, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::record_batch::RecordBatch;

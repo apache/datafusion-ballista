@@ -16,6 +16,7 @@
 // under the License.
 
 use ballista_core::error::{BallistaError, Result};
+use datafusion::catalog::Session;
 use std::any::Any;
 use std::collections::HashMap;
 use std::future::Future;
@@ -44,13 +45,13 @@ use ballista_core::serde::{protobuf, BallistaCodec};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::DataFusionError;
 use datafusion::datasource::{TableProvider, TableType};
-use datafusion::execution::context::{SessionConfig, SessionContext, SessionState};
-use datafusion::functions_aggregate::sum::sum;
+use datafusion::execution::context::{SessionConfig, SessionContext};
+use datafusion::functions_aggregate::{count::count, sum::sum};
 use datafusion::logical_expr::expr::Sort;
-use datafusion::logical_expr::{Expr, LogicalPlan};
+use datafusion::logical_expr::{Expr, LogicalPlan, SortExpr};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::{col, count, CsvReadOptions, JoinType};
+use datafusion::prelude::{col, CsvReadOptions, JoinType};
 use datafusion::test_util::scan_empty;
 
 use crate::cluster::BallistaCluster;
@@ -89,7 +90,7 @@ impl TableProvider for ExplodingTableProvider {
 
     async fn scan(
         &self,
-        _ctx: &SessionState,
+        _ctx: &dyn Session,
         _projection: Option<&Vec<usize>>,
         _filters: &[Expr],
         _limit: Option<usize>,
@@ -905,7 +906,7 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
         .build()
         .unwrap();
 
-    let sort_expr = Expr::Sort(Sort::new(Box::new(col("id")), false, false));
+    let sort_expr = SortExpr::new(Sort::new(Box::new(col("id")), false, false));
 
     let logical_plan = left_plan
         .join(right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)
