@@ -19,6 +19,7 @@
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::context::DataFilePaths;
+use datafusion::sql::TableReference;
 use log::info;
 use parking_lot::Mutex;
 use sqlparser::ast::Statement;
@@ -33,7 +34,6 @@ use ballista_core::utils::{
 };
 use datafusion_proto::protobuf::LogicalPlanNode;
 
-use datafusion::catalog::TableReference;
 use datafusion::dataframe::DataFrame;
 use datafusion::datasource::{source_as_provider, TableProvider};
 use datafusion::error::{DataFusionError, Result};
@@ -791,7 +791,7 @@ mod standalone_tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+--------------+",
-            "| MIN(test.id) |",
+            "| min(test.id) |",
             "+--------------+",
             "| 0            |",
             "+--------------+",
@@ -802,7 +802,7 @@ mod standalone_tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+--------------+",
-            "| MAX(test.id) |",
+            "| max(test.id) |",
             "+--------------+",
             "| 7            |",
             "+--------------+",
@@ -818,7 +818,7 @@ mod standalone_tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+--------------+",
-            "| SUM(test.id) |",
+            "| sum(test.id) |",
             "+--------------+",
             "| 28           |",
             "+--------------+",
@@ -833,7 +833,7 @@ mod standalone_tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+--------------+",
-            "| AVG(test.id) |",
+            "| avg(test.id) |",
             "+--------------+",
             "| 3.5          |",
             "+--------------+",
@@ -849,7 +849,7 @@ mod standalone_tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+----------------+",
-            "| COUNT(test.id) |",
+            "| count(test.id) |",
             "+----------------+",
             "| 8              |",
             "+----------------+",
@@ -867,7 +867,7 @@ mod standalone_tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+--------------------------+",
-            "| APPROX_DISTINCT(test.id) |",
+            "| approx_distinct(test.id) |",
             "+--------------------------+",
             "| 8                        |",
             "+--------------------------+",
@@ -885,7 +885,7 @@ mod standalone_tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+--------------------------+",
-            "| ARRAY_AGG(test.id)       |",
+            "| array_agg(test.id)       |",
             "+--------------------------+",
             "| [4, 5, 6, 7, 2, 3, 0, 1] |",
             "+--------------------------+",
@@ -914,7 +914,7 @@ mod standalone_tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+-------------------+",
-            "| VAR_POP(test.id)  |",
+            "| var_pop(test.id)  |",
             "+-------------------+",
             "| 5.250000000000001 |",
             "+-------------------+",
@@ -946,7 +946,7 @@ mod standalone_tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+--------------------+",
-            "| STDDEV(test.id)    |",
+            "| stddev(test.id)    |",
             "+--------------------+",
             "| 2.4494897427831783 |",
             "+--------------------+",
@@ -960,7 +960,7 @@ mod standalone_tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+--------------------+",
-            "| STDDEV(test.id)    |",
+            "| stddev(test.id)    |",
             "+--------------------+",
             "| 2.4494897427831783 |",
             "+--------------------+",
@@ -996,7 +996,7 @@ mod standalone_tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+--------------------------------+",
-            "| CORR(test.id,test.tinyint_col) |",
+            "| corr(test.id,test.tinyint_col) |",
             "+--------------------------------+",
             "| 0.21821789023599245            |",
             "+--------------------------------+",
@@ -1008,13 +1008,13 @@ mod standalone_tests {
         let context = create_test_context().await;
 
         let df = context
-            .sql("select approx_percentile_cont_with_weight(\"id\", 2, 0.5) from test")
+            .sql("select approx_percentile_cont_with_weight(id, 2, 0.5) from test")
             .await
             .unwrap();
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+-------------------------------------------------------------------+",
-            "| APPROX_PERCENTILE_CONT_WITH_WEIGHT(test.id,Int64(2),Float64(0.5)) |",
+            "| approx_percentile_cont_with_weight(test.id,Int64(2),Float64(0.5)) |",
             "+-------------------------------------------------------------------+",
             "| 1                                                                 |",
             "+-------------------------------------------------------------------+",
@@ -1028,7 +1028,7 @@ mod standalone_tests {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+------------------------------------------------------+",
-            "| APPROX_PERCENTILE_CONT(test.double_col,Float64(0.5)) |",
+            "| approx_percentile_cont(test.double_col,Float64(0.5)) |",
             "+------------------------------------------------------+",
             "| 7.574999999999999                                    |",
             "+------------------------------------------------------+",
