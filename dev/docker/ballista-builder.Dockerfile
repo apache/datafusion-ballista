@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM rust:1.74.1-buster
+FROM rust:1.81-bullseye
 
 ARG EXT_UID
 
@@ -31,7 +31,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
     apt-get install -y nodejs && \
     npm install -g yarn
 
-# create build user with same UID as 
+# create build user with same UID as
 RUN adduser -q -u $EXT_UID builder --home /home/builder && \
     mkdir -p /home/builder/workspace
 USER builder
