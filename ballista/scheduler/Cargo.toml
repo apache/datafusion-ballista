@@ -46,8 +46,7 @@ anyhow = "1"
 arrow-flight = { workspace = true }
 async-recursion = "1.0.0"
 async-trait = "0.1.41"
-axum = "0.7.5"
-axum-server = "0.7.1"
+axum = "=0.7.5"
 ballista-core = { path = "../core", version = "0.12.0", features = ["s3"] }
 base64 = { version = "0.21" }
 clap = { workspace = true }
@@ -55,7 +54,7 @@ configure_me = { workspace = true }
 dashmap = "5.4.0"
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
-etcd-client = { version = "0.12", optional = true }
+etcd-client = { version = "0.14", optional = true }
 flatbuffers = { version = "23.5.26" }
 futures = "0.3"
 graphviz-rust = "0.8.0"
@@ -76,7 +75,8 @@ sled_package = { package = "sled", version = "0.34", optional = true }
 tokio = { version = "1.0", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"], optional = true }
 tonic = { workspace = true }
-tower = { version = "0.4.1", default-features = false, features = ["make", "util"] }
+# tonic 0.12.2 depends on tower 0.4.7
+tower = { version = "0.4.7", default-features = false, features = ["make", "util"] }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }

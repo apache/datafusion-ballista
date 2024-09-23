@@ -15,10 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use axum::extract::ConnectInfo;
 use ballista_core::config::{BallistaConfig, BALLISTA_JOB_NAME};
 use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
 use std::collections::HashMap;
 use std::convert::TryInto;
+use std::net::SocketAddr;
 
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
@@ -155,7 +157,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         &self,
         request: Request<RegisterExecutorParams>,
     ) -> Result<Response<RegisterExecutorResult>, Status> {
-        let remote_addr = request.remote_addr();
+        let remote_addr = request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .cloned();
         if let RegisterExecutorParams {
             metadata: Some(metadata),
         } = request.into_inner()
