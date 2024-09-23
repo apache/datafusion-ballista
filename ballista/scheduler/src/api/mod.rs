@@ -11,7 +11,6 @@
 // limitations under the License.
 
 mod handlers;
-pub mod multiplex_service;
 
 use crate::scheduler_server::SchedulerServer;
 use axum::routing::patch;

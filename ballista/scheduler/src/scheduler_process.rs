@@ -18,7 +18,6 @@
 use anyhow::{Error, Result};
 #[cfg(feature = "flight-sql")]
 use arrow_flight::flight_service_server::FlightServiceServer;
-use axum_server::Server;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::create_grpc_server;
@@ -27,7 +26,7 @@ use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use log::info;
 use std::{net::SocketAddr, sync::Arc};
 
-use crate::api::{get_routes, multiplex_service::MultiplexService};
+use crate::api::get_routes;
 use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
 use crate::flight_sql::FlightSqlServiceImpl;
@@ -82,12 +81,12 @@ pub async fn start_server(
     let tonic = tonic_builder.into_service().into_axum_router();
 
     let axum = get_routes(Arc::new(scheduler_server));
+    let merged = axum
+        .merge(tonic)
+        .into_make_service_with_connect_info::<SocketAddr>();
 
-    // // combine them into one service
-    let service = MultiplexService::new(axum, tonic);
-
-    Server::bind(addr)
-        .serve(tower::make::Shared::new(service))
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    axum::serve(listener, merged)
         .await
         .map_err(|e| Error::from(e))
 }
