@@ -32,6 +32,8 @@ use ballista_core::error::BallistaError;
 use ballista_core::serde::scheduler::{ExecutorSpecification, PartitionId};
 use ballista_core::serde::BallistaCodec;
 use datafusion::execution::context::TaskContext;
+use datafusion::functions::datetime::date_part;
+use datafusion::functions::unicode::substr;
 use datafusion::functions_aggregate::covariance::{covar_pop_udaf, covar_samp_udaf};
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::functions_aggregate::variance::var_samp_udaf;
@@ -198,6 +200,10 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     task_aggregate_functions.insert("covar_samp".to_string(), covar_samp_udaf());
     task_aggregate_functions.insert("covar_pop".to_string(), covar_pop_udaf());
     task_aggregate_functions.insert("SUM".to_string(), sum_udaf());
+
+    // TODO which other functions need adding here?
+    task_scalar_functions.insert("date_part".to_string(), date_part());
+    task_scalar_functions.insert("substr".to_string(), substr());
 
     for window_func in executor.window_functions.clone() {
         task_window_functions.insert(window_func.0, window_func.1);
