@@ -348,6 +348,8 @@ impl UnresolvedStage {
             &input_locations,
         )?;
 
+        // TODO reinstate this logic once https://github.com/apache/datafusion/issues/10978
+        // is fixed
         // Optimize join order and statistics based on new resolved statistics
         // let optimize_join = JoinSelection::new();
         // let config = SessionConfig::default();
