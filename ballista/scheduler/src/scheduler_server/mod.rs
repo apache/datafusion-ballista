@@ -345,7 +345,7 @@ mod test {
     use datafusion::functions_aggregate::sum::sum;
     use datafusion::logical_expr::{col, LogicalPlan};
 
-    use datafusion::test_util::scan_empty;
+    use datafusion::test_util::scan_empty_with_partitions;
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
 
@@ -700,7 +700,9 @@ mod test {
             Field::new("gmv", DataType::UInt64, false),
         ]);
 
-        scan_empty(None, &schema, Some(vec![0, 1]))
+        // partitions need to be > 1 for the datafusion's optimizer to insert a repartition node
+        // behavior changed with: https://github.com/apache/datafusion/pull/11875
+        scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
             .unwrap()
             .aggregate(vec![col("id")], vec![sum(col("gmv"))])
             .unwrap()

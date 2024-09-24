@@ -764,7 +764,10 @@ mod test {
     };
     use crate::state::execution_graph::ExecutionGraph;
     use crate::state::task_manager::JobInfoCache;
-    use crate::test_utils::{mock_completed_task, test_aggregation_plan_with_job_id};
+    use crate::test_utils::{
+        complete_up_to_n_tasks, mock_completed_task, test_aggregation_plan_with_job_id,
+        test_aggregation_plan_with_job_id_and_input_partitions,
+    };
 
     #[tokio::test]
     async fn test_bind_task_bias() -> Result<()> {
@@ -1008,10 +1011,16 @@ mod test {
 
     async fn mock_graph(
         job_id: &str,
-        num_partition: usize,
+        num_target_partitions: usize,
         num_pending_task: usize,
     ) -> Result<ExecutionGraph> {
-        let mut graph = test_aggregation_plan_with_job_id(num_partition, job_id).await;
+        let num_input_partitions = 2;
+        let mut graph = test_aggregation_plan_with_job_id_and_input_partitions(
+            num_input_partitions,
+            num_target_partitions,
+            job_id,
+        )
+        .await;
         let executor = ExecutorMetadata {
             id: "executor_0".to_string(),
             host: "localhost".to_string(),
@@ -1020,14 +1029,12 @@ mod test {
             specification: ExecutorSpecification { task_slots: 32 },
         };
 
-        if let Some(task) = graph.pop_next_task(&executor.id)? {
-            let task_status = mock_completed_task(task, &executor.id);
-            graph.update_task_status(&executor, vec![task_status], 1, 1)?;
-        }
+        // complete first stage
+        complete_up_to_n_tasks(&mut graph, num_input_partitions)?;
 
         graph.revive();
 
-        for _i in 0..num_partition - num_pending_task {
+        for _i in 0..num_target_partitions - num_pending_task {
             if let Some(task) = graph.pop_next_task(&executor.id)? {
                 let task_status = mock_completed_task(task, &executor.id);
                 graph.update_task_status(&executor, vec![task_status], 1, 1)?;
