@@ -1694,7 +1694,8 @@ mod test {
 
     use crate::state::execution_graph::ExecutionGraph;
     use crate::test_utils::{
-        mock_completed_task, mock_executor, mock_failed_task, test_aggregation_plan,
+        complete_up_to_n_tasks, mock_completed_task, mock_executor, mock_failed_task,
+        test_aggregation_plan, test_aggregation_plan_with_input_partitions,
         test_coalesce_plan, test_join_plan, test_two_aggregations_plan,
         test_union_all_plan, test_union_plan,
     };
@@ -1935,24 +1936,27 @@ mod test {
 
     #[tokio::test]
     async fn test_do_not_retry_killed_task() -> Result<()> {
-        let executor1 = mock_executor("executor-id1".to_string());
-        let executor2 = mock_executor("executor-id2".to_string());
-        let mut agg_graph = test_aggregation_plan(4).await;
+        let input_partitions = 2;
+        let output_partitions = 4;
+
+        let executor = mock_executor("executor-id-123".to_string());
+        let mut agg_graph = test_aggregation_plan_with_input_partitions(
+            input_partitions,
+            output_partitions,
+        )
+        .await;
         // Call revive to move the leaf Resolved stages to Running
         agg_graph.revive();
 
         // Complete the first stage
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
-            let task_status = mock_completed_task(task, &executor1.id);
-            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
-        }
+        complete_up_to_n_tasks(&mut agg_graph, input_partitions)?;
 
         // 1st task in the second stage
-        let task1 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
-        let task_status1 = mock_completed_task(task1, &executor2.id);
+        let task1 = agg_graph.pop_next_task(&executor.id)?.unwrap();
+        let task_status1 = mock_completed_task(task1, &executor.id);
 
         // 2rd task in the second stage
-        let task2 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task2 = agg_graph.pop_next_task(&executor.id)?.unwrap();
         let task_status2 = mock_failed_task(
             task2,
             FailedTask {
@@ -1964,13 +1968,13 @@ mod test {
         );
 
         agg_graph.update_task_status(
-            &executor2,
+            &executor,
             vec![task_status1, task_status2],
             4,
             4,
         )?;
 
-        assert_eq!(agg_graph.available_tasks(), 2);
+        assert_eq!(agg_graph.available_tasks(), output_partitions - 2);
         drain_tasks(&mut agg_graph)?;
         assert_eq!(agg_graph.available_tasks(), 0);
 
@@ -2756,17 +2760,16 @@ mod test {
 
     #[tokio::test]
     async fn test_fetch_failure_with_normal_task_failure() -> Result<()> {
+        let input_partitions = 2;
         let executor1 = mock_executor("executor-id1".to_string());
         let executor2 = mock_executor("executor-id2".to_string());
-        let mut agg_graph = test_aggregation_plan(4).await;
+        let mut agg_graph =
+            test_aggregation_plan_with_input_partitions(input_partitions, 4).await;
         // Call revive to move the leaf Resolved stages to Running
         agg_graph.revive();
 
         // Complete the Stage 1
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
-            let task_status = mock_completed_task(task, &executor1.id);
-            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
-        }
+        complete_up_to_n_tasks(&mut agg_graph, input_partitions)?;
 
         // 1st task in the Stage 2
         let task1 = agg_graph.pop_next_task(&executor2.id)?.unwrap();

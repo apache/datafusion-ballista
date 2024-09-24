@@ -47,12 +47,11 @@ use datafusion::common::DataFusionError;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::context::{SessionConfig, SessionContext};
 use datafusion::functions_aggregate::{count::count, sum::sum};
-use datafusion::logical_expr::expr::Sort;
 use datafusion::logical_expr::{Expr, LogicalPlan, SortExpr};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{col, CsvReadOptions, JoinType};
-use datafusion::test_util::scan_empty;
+use datafusion::test_util::{scan_empty, scan_empty_with_partitions};
 
 use crate::cluster::BallistaCluster;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
@@ -784,15 +783,52 @@ pub fn assert_failed_event(job_id: &str, collector: &TestMetricsCollector) {
     assert!(found, "{}", "Expected failed event for job {job_id}");
 }
 
+pub fn complete_up_to_n_tasks(
+    graph: &mut ExecutionGraph,
+    num_tasks: usize,
+) -> Result<()> {
+    if num_tasks <= 0 {
+        return Ok(());
+    }
+
+    let executor = mock_executor("executor-id1".to_string());
+    let mut i = 0;
+    while let Some(task) = graph.pop_next_task(&executor.id)? {
+        let task_status = mock_completed_task(task, &executor.id);
+        graph.update_task_status(&executor, vec![task_status], 1, 1)?;
+
+        i += 1;
+
+        if i >= num_tasks {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
 pub async fn test_aggregation_plan(partition: usize) -> ExecutionGraph {
     test_aggregation_plan_with_job_id(partition, "job").await
 }
 
-pub async fn test_aggregation_plan_with_job_id(
-    partition: usize,
+pub async fn test_aggregation_plan_with_input_partitions(
+    input_partitions: usize,
+    output_partitions: usize,
+) -> ExecutionGraph {
+    test_aggregation_plan_with_job_id_and_input_partitions(
+        input_partitions,
+        output_partitions,
+        "job",
+    )
+    .await
+}
+
+pub async fn test_aggregation_plan_with_job_id_and_input_partitions(
+    input_partitions: usize,
+    output_partitions: usize,
     job_id: &str,
 ) -> ExecutionGraph {
-    let config = SessionConfig::new().with_target_partitions(partition);
+    let config = SessionConfig::new().with_target_partitions(output_partitions);
     let ctx = Arc::new(SessionContext::new_with_config(config));
     let session_state = ctx.state();
 
@@ -801,12 +837,13 @@ pub async fn test_aggregation_plan_with_job_id(
         Field::new("gmv", DataType::UInt64, false),
     ]);
 
-    let logical_plan = scan_empty(None, &schema, Some(vec![0, 1]))
-        .unwrap()
-        .aggregate(vec![col("id")], vec![sum(col("gmv"))])
-        .unwrap()
-        .build()
-        .unwrap();
+    let logical_plan =
+        scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), input_partitions)
+            .unwrap()
+            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
+            .unwrap()
+            .build()
+            .unwrap();
 
     let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
@@ -821,6 +858,13 @@ pub async fn test_aggregation_plan_with_job_id(
     );
 
     ExecutionGraph::new("localhost:50050", job_id, "", "session", plan, 0).unwrap()
+}
+
+pub async fn test_aggregation_plan_with_job_id(
+    partition: usize,
+    job_id: &str,
+) -> ExecutionGraph {
+    test_aggregation_plan_with_job_id_and_input_partitions(1, partition, job_id).await
 }
 
 pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
