@@ -51,12 +51,12 @@ use datafusion::logical_expr::{Expr, LogicalPlan, SortExpr};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{col, CsvReadOptions, JoinType};
-use datafusion::test_util::{scan_empty, scan_empty_with_partitions};
+use datafusion::test_util::scan_empty_with_partitions;
 
 use crate::cluster::BallistaCluster;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
-use crate::state::execution_graph::{ExecutionGraph, TaskDescription};
+use crate::state::execution_graph::{ExecutionGraph, ExecutionStage, TaskDescription};
 use ballista_core::utils::default_session_builder;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use parking_lot::Mutex;
@@ -783,52 +783,56 @@ pub fn assert_failed_event(job_id: &str, collector: &TestMetricsCollector) {
     assert!(found, "{}", "Expected failed event for job {job_id}");
 }
 
-pub fn complete_up_to_n_tasks(
-    graph: &mut ExecutionGraph,
-    num_tasks: usize,
-) -> Result<()> {
-    if num_tasks <= 0 {
-        return Ok(());
-    }
-
+pub fn revive_graph_and_complete_next_stage(graph: &mut ExecutionGraph) -> Result<usize> {
     let executor = mock_executor("executor-id1".to_string());
-    let mut i = 0;
-    while let Some(task) = graph.pop_next_task(&executor.id)? {
-        let task_status = mock_completed_task(task, &executor.id);
-        graph.update_task_status(&executor, vec![task_status], 1, 1)?;
+    revive_graph_and_complete_next_stage_with_executor(graph, &executor)
+}
 
-        i += 1;
+pub fn revive_graph_and_complete_next_stage_with_executor(
+    graph: &mut ExecutionGraph,
+    executor: &ExecutorMetadata,
+) -> Result<usize> {
+    graph.revive();
 
-        if i >= num_tasks {
-            break;
+    // find the num_available_tasks of the next running stage
+    let num_available_tasks = graph
+        .stages()
+        .iter()
+        .map(|(_stage_id, stage)| {
+            if let ExecutionStage::Running(stage) = stage {
+                stage
+                    .task_infos
+                    .iter()
+                    .filter(|info| info.is_none())
+                    .count()
+            } else {
+                0
+            }
+        })
+        .find(|num_available_tasks| num_available_tasks > &0)
+        .unwrap();
+
+    if num_available_tasks > 0 {
+        for _ in 0..num_available_tasks {
+            if let Some(task) = graph.pop_next_task(&executor.id).unwrap() {
+                let task_status = mock_completed_task(task, &executor.id);
+                graph.update_task_status(&executor, vec![task_status], 1, 1)?;
+            }
         }
     }
 
-    Ok(())
+    Ok(num_available_tasks)
 }
 
 pub async fn test_aggregation_plan(partition: usize) -> ExecutionGraph {
     test_aggregation_plan_with_job_id(partition, "job").await
 }
 
-pub async fn test_aggregation_plan_with_input_partitions(
-    input_partitions: usize,
-    output_partitions: usize,
-) -> ExecutionGraph {
-    test_aggregation_plan_with_job_id_and_input_partitions(
-        input_partitions,
-        output_partitions,
-        "job",
-    )
-    .await
-}
-
-pub async fn test_aggregation_plan_with_job_id_and_input_partitions(
-    input_partitions: usize,
-    output_partitions: usize,
+pub async fn test_aggregation_plan_with_job_id(
+    partition: usize,
     job_id: &str,
 ) -> ExecutionGraph {
-    let config = SessionConfig::new().with_target_partitions(output_partitions);
+    let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::new_with_config(config));
     let session_state = ctx.state();
 
@@ -837,13 +841,13 @@ pub async fn test_aggregation_plan_with_job_id_and_input_partitions(
         Field::new("gmv", DataType::UInt64, false),
     ]);
 
-    let logical_plan =
-        scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), input_partitions)
-            .unwrap()
-            .aggregate(vec![col("id")], vec![sum(col("gmv"))])
-            .unwrap()
-            .build()
-            .unwrap();
+    // we specify the input partitions to be > 1 because of https://github.com/apache/datafusion/issues/12611
+    let logical_plan = scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
+        .unwrap()
+        .aggregate(vec![col("id")], vec![sum(col("gmv"))])
+        .unwrap()
+        .build()
+        .unwrap();
 
     let optimized_plan = session_state.optimize(&logical_plan).unwrap();
 
@@ -860,13 +864,6 @@ pub async fn test_aggregation_plan_with_job_id_and_input_partitions(
     ExecutionGraph::new("localhost:50050", job_id, "", "session", plan, 0).unwrap()
 }
 
-pub async fn test_aggregation_plan_with_job_id(
-    partition: usize,
-    job_id: &str,
-) -> ExecutionGraph {
-    test_aggregation_plan_with_job_id_and_input_partitions(1, partition, job_id).await
-}
-
 pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::new_with_config(config));
@@ -878,7 +875,8 @@ pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
         Field::new("gmv", DataType::UInt64, false),
     ]);
 
-    let logical_plan = scan_empty(None, &schema, Some(vec![0, 1, 2]))
+    // we specify the input partitions to be > 1 because of https://github.com/apache/datafusion/issues/12611
+    let logical_plan = scan_empty_with_partitions(None, &schema, Some(vec![0, 1, 2]), 2)
         .unwrap()
         .aggregate(vec![col("id"), col("name")], vec![sum(col("gmv"))])
         .unwrap()
@@ -912,7 +910,8 @@ pub async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
         Field::new("gmv", DataType::UInt64, false),
     ]);
 
-    let logical_plan = scan_empty(None, &schema, Some(vec![0, 1]))
+    // we specify the input partitions to be > 1 because of https://github.com/apache/datafusion/issues/12611
+    let logical_plan = scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
         .unwrap()
         .limit(0, Some(1))
         .unwrap()
@@ -943,9 +942,10 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
         Field::new("gmv", DataType::UInt64, false),
     ]);
 
-    let left_plan = scan_empty(Some("left"), &schema, None).unwrap();
+    // we specify the input partitions to be > 1 because of https://github.com/apache/datafusion/issues/12611
+    let left_plan = scan_empty_with_partitions(Some("left"), &schema, None, 2).unwrap();
 
-    let right_plan = scan_empty(Some("right"), &schema, None)
+    let right_plan = scan_empty_with_partitions(Some("right"), &schema, None, 2)
         .unwrap()
         .build()
         .unwrap();
