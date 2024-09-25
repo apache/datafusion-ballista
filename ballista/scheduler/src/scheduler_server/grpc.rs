@@ -72,7 +72,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 "Bad request because poll work is not supported for push-based task scheduling",
             ));
         }
-        let remote_addr = request.remote_addr();
+        let remote_addr = request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .cloned();
         if let PollWorkParams {
             metadata: Some(metadata),
             num_free_slots,
@@ -196,7 +199,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         &self,
         request: Request<HeartBeatParams>,
     ) -> Result<Response<HeartBeatResult>, Status> {
-        let remote_addr = request.remote_addr();
+        let remote_addr = request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .cloned();
+        println!("HEARTBEAT FROM {:?}", remote_addr);
         let HeartBeatParams {
             executor_id,
             metrics,
