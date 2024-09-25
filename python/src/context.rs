@@ -30,7 +30,7 @@ use datafusion_python::context::{
 };
 use datafusion_python::dataframe::PyDataFrame;
 use datafusion_python::errors::DataFusionError;
-use datafusion_python::expr::PyExpr;
+use datafusion_python::expr::sort_expr::PySortExpr;
 use datafusion_python::sql::logical::PyLogicalPlan;
 use datafusion_python::utils::wait_for_future;
 
@@ -187,7 +187,7 @@ impl PySessionContext {
         file_extension: &str,
         skip_metadata: bool,
         schema: Option<PyArrowType<Schema>>,
-        file_sort_order: Option<Vec<Vec<PyExpr>>>,
+        file_sort_order: Option<Vec<Vec<PySortExpr>>>,
         py: Python,
     ) -> PyResult<PyDataFrame> {
         let mut options = ParquetReadOptions::default()
@@ -299,7 +299,7 @@ impl PySessionContext {
         file_extension: &str,
         skip_metadata: bool,
         schema: Option<PyArrowType<Schema>>,
-        file_sort_order: Option<Vec<Vec<PyExpr>>>,
+        file_sort_order: Option<Vec<Vec<PySortExpr>>>,
         py: Python,
     ) -> PyResult<()> {
         let mut options = ParquetReadOptions::default()

@@ -82,6 +82,10 @@ impl DisplayAs for UnresolvedShuffleExec {
 }
 
 impl ExecutionPlan for UnresolvedShuffleExec {
+    fn name(&self) -> &str {
+        "UnresolvedShuffleExec"
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }

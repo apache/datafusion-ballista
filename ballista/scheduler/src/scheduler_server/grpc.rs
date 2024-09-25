@@ -15,10 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use axum::extract::ConnectInfo;
 use ballista_core::config::{BallistaConfig, BALLISTA_JOB_NAME};
 use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
 use std::collections::HashMap;
 use std::convert::TryInto;
+use std::net::SocketAddr;
 
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
@@ -70,7 +72,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 "Bad request because poll work is not supported for push-based task scheduling",
             ));
         }
-        let remote_addr = request.remote_addr();
+        let remote_addr = extract_connect_info(&request);
         if let PollWorkParams {
             metadata: Some(metadata),
             num_free_slots,
@@ -155,7 +157,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         &self,
         request: Request<RegisterExecutorParams>,
     ) -> Result<Response<RegisterExecutorResult>, Status> {
-        let remote_addr = request.remote_addr();
+        let remote_addr = extract_connect_info(&request);
         if let RegisterExecutorParams {
             metadata: Some(metadata),
         } = request.into_inner()
@@ -191,7 +193,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         &self,
         request: Request<HeartBeatParams>,
     ) -> Result<Response<HeartBeatResult>, Status> {
-        let remote_addr = request.remote_addr();
+        let remote_addr = extract_connect_info(&request);
         let HeartBeatParams {
             executor_id,
             metrics,
@@ -632,6 +634,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             })?;
         Ok(Response::new(CleanJobDataResult {}))
     }
+}
+
+fn extract_connect_info<T>(request: &Request<T>) -> Option<ConnectInfo<SocketAddr>> {
+    request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .cloned()
 }
 
 #[cfg(all(test, feature = "sled"))]

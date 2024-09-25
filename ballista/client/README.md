@@ -92,7 +92,8 @@ data set. Download the file and add it to the `testdata` folder before running t
 
 ```rust,no_run
 use ballista::prelude::*;
-use datafusion::prelude::{col, min, max, avg, sum, ParquetReadOptions};
+use datafusion::prelude::{col, ParquetReadOptions};
+use datafusion::functions_aggregate::{min_max::min, min_max::max, sum::sum, average::avg};
 
 #[tokio::main]
 async fn main() -> Result<()> {

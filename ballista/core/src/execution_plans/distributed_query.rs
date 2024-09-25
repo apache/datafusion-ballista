@@ -154,6 +154,10 @@ impl<T: 'static + AsLogicalPlan> DisplayAs for DistributedQueryExec<T> {
 }
 
 impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
+    fn name(&self) -> &str {
+        "DistributedQueryExec"
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }

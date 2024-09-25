@@ -15,26 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use anyhow::{Context, Result};
+use anyhow::{Error, Result};
 #[cfg(feature = "flight-sql")]
 use arrow_flight::flight_service_server::FlightServiceServer;
-use futures::future::{self, Either, TryFutureExt};
-use hyper::{server::conn::AddrStream, service::make_service_fn, Server};
-use log::info;
-use std::convert::Infallible;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use tonic::transport::server::Connected;
-use tower::Service;
-
-use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
-
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::create_grpc_server;
 use ballista_core::BALLISTA_VERSION;
+use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+use log::info;
+use std::{net::SocketAddr, sync::Arc};
 
-use crate::api::{get_routes, EitherBody, Error};
+use crate::api::get_routes;
 use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
 use crate::flight_sql::FlightSqlServiceImpl;
@@ -70,58 +62,29 @@ pub async fn start_server(
 
     scheduler_server.init().await?;
 
-    Server::bind(&addr)
-        .serve(make_service_fn(move |request: &AddrStream| {
-            let config = &scheduler_server.state.config;
-            let scheduler_grpc_server =
-                SchedulerGrpcServer::new(scheduler_server.clone())
-                    .max_encoding_message_size(
-                        config.grpc_server_max_encoding_message_size as usize,
-                    )
-                    .max_decoding_message_size(
-                        config.grpc_server_max_decoding_message_size as usize,
-                    );
+    let config = &scheduler_server.state.config;
+    let scheduler_grpc_server = SchedulerGrpcServer::new(scheduler_server.clone())
+        .max_encoding_message_size(config.grpc_server_max_encoding_message_size as usize)
+        .max_decoding_message_size(config.grpc_server_max_decoding_message_size as usize);
 
-            let keda_scaler = ExternalScalerServer::new(scheduler_server.clone());
+    let keda_scaler = ExternalScalerServer::new(scheduler_server.clone());
 
-            let tonic_builder = create_grpc_server()
-                .add_service(scheduler_grpc_server)
-                .add_service(keda_scaler);
+    let tonic_builder = create_grpc_server()
+        .add_service(scheduler_grpc_server)
+        .add_service(keda_scaler);
 
-            #[cfg(feature = "flight-sql")]
-            let tonic_builder = tonic_builder.add_service(FlightServiceServer::new(
-                FlightSqlServiceImpl::new(scheduler_server.clone()),
-            ));
+    #[cfg(feature = "flight-sql")]
+    let tonic_builder = tonic_builder.add_service(FlightServiceServer::new(
+        FlightSqlServiceImpl::new(scheduler_server.clone()),
+    ));
 
-            let mut tonic = tonic_builder.into_service();
+    let tonic = tonic_builder.into_service().into_axum_router();
 
-            let mut warp = warp::service(get_routes(scheduler_server.clone()));
+    let axum = get_routes(Arc::new(scheduler_server));
+    let merged = axum
+        .merge(tonic)
+        .into_make_service_with_connect_info::<SocketAddr>();
 
-            let connect_info = request.connect_info();
-            future::ok::<_, Infallible>(tower::service_fn(
-                move |req: hyper::Request<hyper::Body>| {
-                    // Set the connect info from hyper to tonic
-                    let (mut parts, body) = req.into_parts();
-                    parts.extensions.insert(connect_info.clone());
-                    let req = http::Request::from_parts(parts, body);
-
-                    if req.uri().path().starts_with("/api") {
-                        return Either::Left(
-                            warp.call(req)
-                                .map_ok(|res| res.map(EitherBody::Left))
-                                .map_err(Error::from),
-                        );
-                    }
-
-                    Either::Right(
-                        tonic
-                            .call(req)
-                            .map_ok(|res| res.map(EitherBody::Right))
-                            .map_err(Error::from),
-                    )
-                },
-            ))
-        }))
-        .await
-        .context("Could not start grpc server")
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    axum::serve(listener, merged).await.map_err(Error::from)
 }

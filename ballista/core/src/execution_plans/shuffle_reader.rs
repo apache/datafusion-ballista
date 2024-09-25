@@ -107,6 +107,10 @@ impl DisplayAs for ShuffleReaderExec {
 }
 
 impl ExecutionPlan for ShuffleReaderExec {
+    fn name(&self) -> &str {
+        "ShuffleReaderExec"
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -415,7 +419,7 @@ fn fetch_partition_local_inner(
     let file = File::open(path).map_err(|e| {
         BallistaError::General(format!("Failed to open partition file at {path}: {e:?}"))
     })?;
-    let reader = StreamReader::try_new(file, None).map_err(|e| {
+    let reader = StreamReader::try_new_buffered(file, None).map_err(|e| {
         BallistaError::General(format!("Failed to new arrow FileReader at {path}: {e:?}"))
     })?;
     Ok(reader)

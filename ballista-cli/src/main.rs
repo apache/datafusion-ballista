@@ -36,7 +36,7 @@ struct Args {
         short = 'p',
         long,
         help = "Path to your data, default to current directory",
-        validator(is_valid_data_dir)
+        value_parser(parse_valid_data_dir)
     )]
     data_path: Option<String>,
 
@@ -44,37 +44,37 @@ struct Args {
         short = 'c',
         long,
         help = "The batch size of each query, or use Ballista default",
-        validator(is_valid_batch_size)
+        value_parser(parse_batch_size)
     )]
     batch_size: Option<usize>,
 
     #[clap(
         long,
         help = "The max concurrent tasks, only for Ballista local mode. Default: all available cores",
-        validator(is_valid_concurrent_tasks_size)
+        value_parser(parse_valid_concurrent_tasks_size)
     )]
     concurrent_tasks: Option<usize>,
 
     #[clap(
         short,
         long,
-        multiple_values = true,
+        num_args = 0..,
         help = "Execute commands from file(s), then exit",
-        validator(is_valid_file)
+        value_parser(parse_valid_file)
     )]
     file: Vec<String>,
 
     #[clap(
         short = 'r',
         long,
-        multiple_values = true,
+        num_args = 0..,
         help = "Run the provided files on startup instead of ~/.ballistarc",
-        validator(is_valid_file),
+        value_parser(parse_valid_file),
         conflicts_with = "file"
     )]
     rc: Option<Vec<String>>,
 
-    #[clap(long, arg_enum, default_value_t = PrintFormat::Table)]
+    #[clap(long, value_enum, default_value_t = PrintFormat::Table)]
     format: PrintFormat,
 
     #[clap(long, help = "Ballista scheduler host")]
@@ -168,32 +168,32 @@ pub async fn main() -> Result<()> {
     Ok(())
 }
 
-fn is_valid_file(dir: &str) -> std::result::Result<(), String> {
+fn parse_valid_file(dir: &str) -> std::result::Result<String, String> {
     if Path::new(dir).is_file() {
-        Ok(())
+        Ok(dir.to_string())
     } else {
         Err(format!("Invalid file '{dir}'"))
     }
 }
 
-fn is_valid_data_dir(dir: &str) -> std::result::Result<(), String> {
+fn parse_valid_data_dir(dir: &str) -> std::result::Result<String, String> {
     if Path::new(dir).is_dir() {
-        Ok(())
+        Ok(dir.to_string())
     } else {
         Err(format!("Invalid data directory '{dir}'"))
     }
 }
 
-fn is_valid_batch_size(size: &str) -> std::result::Result<(), String> {
+fn parse_batch_size(size: &str) -> std::result::Result<usize, String> {
     match size.parse::<usize>() {
-        Ok(size) if size > 0 => Ok(()),
+        Ok(size) if size > 0 => Ok(size),
         _ => Err(format!("Invalid batch size '{size}'")),
     }
 }
 
-fn is_valid_concurrent_tasks_size(size: &str) -> std::result::Result<(), String> {
+fn parse_valid_concurrent_tasks_size(size: &str) -> std::result::Result<usize, String> {
     match size.parse::<usize>() {
-        Ok(size) if size > 0 => Ok(()),
+        Ok(size) if size > 0 => Ok(size),
         _ => Err(format!("Invalid concurrent_tasks size '{size}'")),
     }
 }

@@ -35,6 +35,7 @@ use datafusion::execution::context::{
     QueryPlanner, SessionConfig, SessionContext, SessionState,
 };
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
+use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::logical_expr::{DdlStatement, LogicalPlan};
 use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
@@ -62,13 +63,14 @@ use tonic::transport::{Channel, Error, Server};
 
 /// Default session builder using the provided configuration
 pub fn default_session_builder(config: SessionConfig) -> SessionState {
-    SessionState::new_with_config_rt(
-        config,
-        Arc::new(
+    SessionStateBuilder::new()
+        .with_default_features()
+        .with_config(config)
+        .with_runtime_env(Arc::new(
             RuntimeEnv::new(with_object_store_registry(RuntimeConfig::default()))
                 .unwrap(),
-        ),
-    )
+        ))
+        .build()
 }
 
 /// Stream data to disk in Arrow IPC format
@@ -252,15 +254,16 @@ pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
     let session_config = SessionConfig::new()
         .with_target_partitions(config.default_shuffle_partitions())
         .with_information_schema(true);
-    let mut session_state = SessionState::new_with_config_rt(
-        session_config,
-        Arc::new(
+    let session_state = SessionStateBuilder::new()
+        .with_default_features()
+        .with_config(session_config)
+        .with_runtime_env(Arc::new(
             RuntimeEnv::new(with_object_store_registry(RuntimeConfig::default()))
                 .unwrap(),
-        ),
-    )
-    .with_query_planner(planner);
-    session_state = session_state.with_session_id(session_id);
+        ))
+        .with_query_planner(planner)
+        .with_session_id(session_id)
+        .build();
     // the SessionContext created here is the client side context, but the session_id is from server side.
     SessionContext::new_with_state(session_state)
 }

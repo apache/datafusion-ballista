@@ -28,6 +28,8 @@ use ballista_core::serde::scheduler::PartitionId;
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::functions::all_default_functions;
+use datafusion::functions_aggregate::all_default_aggregate_functions;
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use futures::future::AbortHandle;
 use std::collections::HashMap;
@@ -103,12 +105,22 @@ impl Executor {
         concurrent_tasks: usize,
         execution_engine: Option<Arc<dyn ExecutionEngine>>,
     ) -> Self {
+        let scalar_functions = all_default_functions()
+            .into_iter()
+            .map(|f| (f.name().to_string(), f))
+            .collect();
+
+        let aggregate_functions = all_default_aggregate_functions()
+            .into_iter()
+            .map(|f| (f.name().to_string(), f))
+            .collect();
+
         Self {
             metadata,
             work_dir: work_dir.to_owned(),
-            // TODO add logic to dynamically load UDF/UDAFs libs from files
-            scalar_functions: HashMap::new(),
-            aggregate_functions: HashMap::new(),
+            scalar_functions,
+            aggregate_functions,
+            // TODO: set to default window functions when they are moved to udwf
             window_functions: HashMap::new(),
             runtime,
             runtime_with_data_cache,
@@ -277,6 +289,10 @@ mod test {
     }
 
     impl ExecutionPlan for NeverendingOperator {
+        fn name(&self) -> &str {
+            "NeverendingOperator"
+        }
+
         fn as_any(&self) -> &dyn Any {
             self
         }

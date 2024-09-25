@@ -65,8 +65,7 @@ pub fn create_datafusion_context(
     ballista_config: &BallistaConfig,
     session_builder: SessionBuilder,
 ) -> Arc<SessionContext> {
-    let config =
-        SessionConfig::from_string_hash_map(ballista_config.settings().clone()).unwrap();
+    let config = SessionConfig::from_string_hash_map(ballista_config.settings()).unwrap();
     let config = config
         .with_target_partitions(ballista_config.default_shuffle_partitions())
         .with_batch_size(ballista_config.default_batch_size())

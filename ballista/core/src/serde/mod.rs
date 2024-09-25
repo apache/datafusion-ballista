@@ -21,9 +21,13 @@
 use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 
 use arrow_flight::sql::ProstMessageExt;
-use datafusion::common::DataFusionError;
+use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::FunctionRegistry;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+use datafusion_proto::logical_plan::file_formats::{
+    ArrowLogicalExtensionCodec, AvroLogicalExtensionCodec, CsvLogicalExtensionCodec,
+    JsonLogicalExtensionCodec, ParquetLogicalExtensionCodec,
+};
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_hash_partitioning;
 use datafusion_proto::protobuf::proto_error;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
@@ -84,7 +88,7 @@ pub struct BallistaCodec<
 impl Default for BallistaCodec {
     fn default() -> Self {
         Self {
-            logical_extension_codec: Arc::new(DefaultLogicalExtensionCodec {}),
+            logical_extension_codec: Arc::new(BallistaLogicalExtensionCodec::default()),
             physical_extension_codec: Arc::new(BallistaPhysicalExtensionCodec {}),
             logical_plan_repr: PhantomData,
             physical_plan_repr: PhantomData,
@@ -111,6 +115,102 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> BallistaCodec<T, 
 
     pub fn physical_extension_codec(&self) -> &dyn PhysicalExtensionCodec {
         self.physical_extension_codec.as_ref()
+    }
+}
+
+#[derive(Debug)]
+pub struct BallistaLogicalExtensionCodec {
+    default_codec: Arc<dyn LogicalExtensionCodec>,
+    file_format_codecs: Vec<Arc<dyn LogicalExtensionCodec>>,
+}
+
+impl BallistaLogicalExtensionCodec {
+    fn try_any<T>(
+        &self,
+        mut f: impl FnMut(&dyn LogicalExtensionCodec) -> Result<T>,
+    ) -> Result<T> {
+        let mut last_err = None;
+        for codec in &self.file_format_codecs {
+            match f(codec.as_ref()) {
+                Ok(node) => return Ok(node),
+                Err(err) => last_err = Some(err),
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            DataFusionError::NotImplemented("Empty list of composed codecs".to_owned())
+        }))
+    }
+}
+
+impl Default for BallistaLogicalExtensionCodec {
+    fn default() -> Self {
+        Self {
+            default_codec: Arc::new(DefaultLogicalExtensionCodec {}),
+            file_format_codecs: vec![
+                Arc::new(CsvLogicalExtensionCodec {}),
+                Arc::new(JsonLogicalExtensionCodec {}),
+                Arc::new(ParquetLogicalExtensionCodec {}),
+                Arc::new(ArrowLogicalExtensionCodec {}),
+                Arc::new(AvroLogicalExtensionCodec {}),
+            ],
+        }
+    }
+}
+
+impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
+    fn try_decode(
+        &self,
+        buf: &[u8],
+        inputs: &[datafusion::logical_expr::LogicalPlan],
+        ctx: &datafusion::prelude::SessionContext,
+    ) -> Result<datafusion::logical_expr::Extension> {
+        self.default_codec.try_decode(buf, inputs, ctx)
+    }
+
+    fn try_encode(
+        &self,
+        node: &datafusion::logical_expr::Extension,
+        buf: &mut Vec<u8>,
+    ) -> Result<()> {
+        self.default_codec.try_encode(node, buf)
+    }
+
+    fn try_decode_table_provider(
+        &self,
+        buf: &[u8],
+        table_ref: &datafusion::sql::TableReference,
+        schema: datafusion::arrow::datatypes::SchemaRef,
+        ctx: &datafusion::prelude::SessionContext,
+    ) -> Result<Arc<dyn datafusion::catalog::TableProvider>> {
+        self.default_codec
+            .try_decode_table_provider(buf, table_ref, schema, ctx)
+    }
+
+    fn try_encode_table_provider(
+        &self,
+        table_ref: &datafusion::sql::TableReference,
+        node: Arc<dyn datafusion::catalog::TableProvider>,
+        buf: &mut Vec<u8>,
+    ) -> Result<()> {
+        self.default_codec
+            .try_encode_table_provider(table_ref, node, buf)
+    }
+
+    fn try_decode_file_format(
+        &self,
+        buf: &[u8],
+        ctx: &datafusion::prelude::SessionContext,
+    ) -> Result<Arc<dyn datafusion::datasource::file_format::FileFormatFactory>> {
+        self.try_any(|codec| codec.try_decode_file_format(buf, ctx))
+    }
+
+    fn try_encode_file_format(
+        &self,
+        buf: &mut Vec<u8>,
+        node: Arc<dyn datafusion::datasource::file_format::FileFormatFactory>,
+    ) -> Result<()> {
+        self.try_any(|codec| codec.try_encode_file_format(buf, node.clone()))
     }
 }
 
@@ -209,7 +309,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     Some(datafusion_proto::protobuf::PhysicalHashRepartition {
                         hash_expr: exprs
                             .iter()
-                            .map(|expr|datafusion_proto::physical_plan::to_proto::serialize_physical_expr(expr.clone(), &default_codec))
+                            .map(|expr|datafusion_proto::physical_plan::to_proto::serialize_physical_expr(expr, &default_codec))
                             .collect::<Result<Vec<_>, DataFusionError>>()?,
                         partition_count: *partition_count as u64,
                     })

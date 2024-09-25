@@ -2,7 +2,6 @@
 /// /////////////////////////////////////////////////////////////////////////////////////////////////
 /// Ballista Physical Plan
 /// /////////////////////////////////////////////////////////////////////////////////////////////////
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BallistaPhysicalPlanNode {
     #[prost(oneof = "ballista_physical_plan_node::PhysicalPlanType", tags = "1, 2, 3")]
@@ -12,7 +11,6 @@ pub struct BallistaPhysicalPlanNode {
 }
 /// Nested message and enum types in `BallistaPhysicalPlanNode`.
 pub mod ballista_physical_plan_node {
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum PhysicalPlanType {
         #[prost(message, tag = "1")]
@@ -23,7 +21,6 @@ pub mod ballista_physical_plan_node {
         UnresolvedShuffle(super::UnresolvedShuffleExecNode),
     }
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleWriterExecNode {
     /// TODO it seems redundant to provide job and stage id here since we also have them
@@ -39,7 +36,6 @@ pub struct ShuffleWriterExecNode {
         ::datafusion_proto::protobuf::PhysicalHashRepartition,
     >,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UnresolvedShuffleExecNode {
     #[prost(uint32, tag = "1")]
@@ -49,7 +45,6 @@ pub struct UnresolvedShuffleExecNode {
     #[prost(uint32, tag = "4")]
     pub output_partition_count: u32,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleReaderExecNode {
     #[prost(message, repeated, tag = "1")]
@@ -60,7 +55,6 @@ pub struct ShuffleReaderExecNode {
     #[prost(uint32, tag = "3")]
     pub stage_id: u32,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleReaderPartition {
     /// each partition of a shuffle read can read data from multiple locations
@@ -70,7 +64,6 @@ pub struct ShuffleReaderPartition {
 /// /////////////////////////////////////////////////////////////////////////////////////////////////
 /// Ballista Scheduling
 /// /////////////////////////////////////////////////////////////////////////////////////////////////
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionGraph {
     #[prost(string, tag = "1")]
@@ -100,7 +93,6 @@ pub struct ExecutionGraph {
     #[prost(uint64, tag = "13")]
     pub queued_at: u64,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StageAttempts {
     #[prost(uint32, tag = "1")]
@@ -108,7 +100,6 @@ pub struct StageAttempts {
     #[prost(uint32, repeated, tag = "2")]
     pub stage_attempt_num: ::prost::alloc::vec::Vec<u32>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutionGraphStage {
     #[prost(oneof = "execution_graph_stage::StageType", tags = "1, 2, 3, 4")]
@@ -116,7 +107,6 @@ pub struct ExecutionGraphStage {
 }
 /// Nested message and enum types in `ExecutionGraphStage`.
 pub mod execution_graph_stage {
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum StageType {
         #[prost(message, tag = "1")]
@@ -129,7 +119,6 @@ pub mod execution_graph_stage {
         FailedStage(super::FailedStage),
     }
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UnResolvedStage {
     #[prost(uint32, tag = "1")]
@@ -147,7 +136,6 @@ pub struct UnResolvedStage {
         ::prost::alloc::string::String,
     >,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResolvedStage {
     #[prost(uint32, tag = "1")]
@@ -167,7 +155,6 @@ pub struct ResolvedStage {
         ::prost::alloc::string::String,
     >,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SuccessfulStage {
     #[prost(uint32, tag = "1")]
@@ -187,7 +174,6 @@ pub struct SuccessfulStage {
     #[prost(uint32, tag = "9")]
     pub stage_attempt_num: u32,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FailedStage {
     #[prost(uint32, tag = "1")]
@@ -207,7 +193,6 @@ pub struct FailedStage {
     #[prost(uint32, tag = "9")]
     pub stage_attempt_num: u32,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskInfo {
     #[prost(uint32, tag = "1")]
@@ -234,7 +219,6 @@ pub struct TaskInfo {
 }
 /// Nested message and enum types in `TaskInfo`.
 pub mod task_info {
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Status {
         #[prost(message, tag = "8")]
@@ -245,7 +229,6 @@ pub mod task_info {
         Successful(super::SuccessfulTask),
     }
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GraphStageInput {
     #[prost(uint32, tag = "1")]
@@ -255,7 +238,6 @@ pub struct GraphStageInput {
     #[prost(bool, tag = "3")]
     pub complete: bool,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskInputPartitions {
     #[prost(uint32, tag = "1")]
@@ -263,7 +245,6 @@ pub struct TaskInputPartitions {
     #[prost(message, repeated, tag = "2")]
     pub partition_location: ::prost::alloc::vec::Vec<PartitionLocation>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct KeyValuePair {
     #[prost(string, tag = "1")]
@@ -271,7 +252,6 @@ pub struct KeyValuePair {
     #[prost(string, tag = "2")]
     pub value: ::prost::alloc::string::String,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Action {
     /// configuration settings
@@ -282,7 +262,6 @@ pub struct Action {
 }
 /// Nested message and enum types in `Action`.
 pub mod action {
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum ActionType {
         /// Fetch a partition from an executor
@@ -290,7 +269,6 @@ pub mod action {
         FetchPartition(super::FetchPartition),
     }
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutePartition {
     #[prost(string, tag = "1")]
@@ -310,7 +288,6 @@ pub struct ExecutePartition {
         ::datafusion_proto::protobuf::PhysicalHashRepartition,
     >,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FetchPartition {
     #[prost(string, tag = "1")]
@@ -326,7 +303,6 @@ pub struct FetchPartition {
     #[prost(uint32, tag = "6")]
     pub port: u32,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PartitionLocation {
     /// partition_id of the map stage who produces the shuffle.
@@ -343,7 +319,6 @@ pub struct PartitionLocation {
     pub path: ::prost::alloc::string::String,
 }
 /// Unique identifier for a materialized partition of data
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PartitionId {
     #[prost(string, tag = "1")]
@@ -353,8 +328,7 @@ pub struct PartitionId {
     #[prost(uint32, tag = "4")]
     pub partition_id: u32,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct TaskId {
     #[prost(uint32, tag = "1")]
     pub task_id: u32,
@@ -363,7 +337,6 @@ pub struct TaskId {
     #[prost(uint32, tag = "3")]
     pub partition_id: u32,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PartitionStats {
     #[prost(int64, tag = "1")]
@@ -375,7 +348,6 @@ pub struct PartitionStats {
     #[prost(message, repeated, tag = "4")]
     pub column_stats: ::prost::alloc::vec::Vec<ColumnStats>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ColumnStats {
     #[prost(message, optional, tag = "1")]
@@ -387,13 +359,11 @@ pub struct ColumnStats {
     #[prost(uint32, tag = "4")]
     pub distinct_count: u32,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OperatorMetricsSet {
     #[prost(message, repeated, tag = "1")]
     pub metrics: ::prost::alloc::vec::Vec<OperatorMetric>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NamedCount {
     #[prost(string, tag = "1")]
@@ -401,7 +371,6 @@ pub struct NamedCount {
     #[prost(uint64, tag = "2")]
     pub value: u64,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NamedGauge {
     #[prost(string, tag = "1")]
@@ -409,7 +378,6 @@ pub struct NamedGauge {
     #[prost(uint64, tag = "2")]
     pub value: u64,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NamedTime {
     #[prost(string, tag = "1")]
@@ -417,7 +385,6 @@ pub struct NamedTime {
     #[prost(uint64, tag = "2")]
     pub value: u64,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OperatorMetric {
     #[prost(
@@ -428,7 +395,6 @@ pub struct OperatorMetric {
 }
 /// Nested message and enum types in `OperatorMetric`.
 pub mod operator_metric {
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Metric {
         #[prost(uint64, tag = "1")]
@@ -456,7 +422,6 @@ pub mod operator_metric {
     }
 }
 /// Used by scheduler
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorMetadata {
     #[prost(string, tag = "1")]
@@ -471,7 +436,6 @@ pub struct ExecutorMetadata {
     pub specification: ::core::option::Option<ExecutorSpecification>,
 }
 /// Used by grpc
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorRegistration {
     #[prost(string, tag = "1")]
@@ -491,14 +455,12 @@ pub struct ExecutorRegistration {
 pub mod executor_registration {
     /// "optional" keyword is stable in protoc 3.15 but prost is still on 3.14 (see <https://github.com/tokio-rs/prost/issues/430> and <https://github.com/tokio-rs/prost/pull/455>)
     /// this syntax is ugly but is binary compatible with the "optional" keyword (see <https://stackoverflow.com/questions/42622015/how-to-define-an-optional-field-in-protobuf-3>)
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum OptionalHost {
         #[prost(string, tag = "2")]
         Host(::prost::alloc::string::String),
     }
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorHeartbeat {
     #[prost(string, tag = "1")]
@@ -511,8 +473,7 @@ pub struct ExecutorHeartbeat {
     #[prost(message, optional, tag = "4")]
     pub status: ::core::option::Option<ExecutorStatus>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ExecutorMetric {
     /// TODO add more metrics
     #[prost(oneof = "executor_metric::Metric", tags = "1")]
@@ -521,14 +482,12 @@ pub struct ExecutorMetric {
 /// Nested message and enum types in `ExecutorMetric`.
 pub mod executor_metric {
     /// TODO add more metrics
-    #[allow(clippy::derive_partial_eq_without_eq)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, Copy, PartialEq, ::prost::Oneof)]
     pub enum Metric {
         #[prost(uint64, tag = "1")]
         AvailableMemory(u64),
     }
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorStatus {
     #[prost(oneof = "executor_status::Status", tags = "1, 2, 3, 4")]
@@ -536,7 +495,6 @@ pub struct ExecutorStatus {
 }
 /// Nested message and enum types in `ExecutorStatus`.
 pub mod executor_status {
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Status {
         #[prost(string, tag = "1")]
@@ -549,14 +507,12 @@ pub mod executor_status {
         Terminating(::prost::alloc::string::String),
     }
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorSpecification {
     #[prost(message, repeated, tag = "1")]
     pub resources: ::prost::alloc::vec::Vec<ExecutorResource>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ExecutorResource {
     /// TODO add more resources
     #[prost(oneof = "executor_resource::Resource", tags = "1")]
@@ -565,14 +521,12 @@ pub struct ExecutorResource {
 /// Nested message and enum types in `ExecutorResource`.
 pub mod executor_resource {
     /// TODO add more resources
-    #[allow(clippy::derive_partial_eq_without_eq)]
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, Copy, PartialEq, ::prost::Oneof)]
     pub enum Resource {
         #[prost(uint32, tag = "1")]
         TaskSlots(u32),
     }
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AvailableTaskSlots {
     #[prost(string, tag = "1")]
@@ -580,13 +534,11 @@ pub struct AvailableTaskSlots {
     #[prost(uint32, tag = "2")]
     pub slots: u32,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorTaskSlots {
     #[prost(message, repeated, tag = "1")]
     pub task_slots: ::prost::alloc::vec::Vec<AvailableTaskSlots>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorData {
     #[prost(string, tag = "1")]
@@ -594,21 +546,18 @@ pub struct ExecutorData {
     #[prost(message, repeated, tag = "2")]
     pub resources: ::prost::alloc::vec::Vec<ExecutorResourcePair>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ExecutorResourcePair {
     #[prost(message, optional, tag = "1")]
     pub total: ::core::option::Option<ExecutorResource>,
     #[prost(message, optional, tag = "2")]
     pub available: ::core::option::Option<ExecutorResource>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RunningTask {
     #[prost(string, tag = "1")]
     pub executor_id: ::prost::alloc::string::String,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FailedTask {
     #[prost(string, tag = "1")]
@@ -623,7 +572,6 @@ pub struct FailedTask {
 }
 /// Nested message and enum types in `FailedTask`.
 pub mod failed_task {
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum FailedReason {
         #[prost(message, tag = "4")]
@@ -641,7 +589,6 @@ pub mod failed_task {
         TaskKilled(super::TaskKilled),
     }
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SuccessfulTask {
     #[prost(string, tag = "1")]
@@ -651,10 +598,8 @@ pub struct SuccessfulTask {
     #[prost(message, repeated, tag = "2")]
     pub partitions: ::prost::alloc::vec::Vec<ShuffleWritePartition>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ExecutionError {}
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FetchPartitionError {
     #[prost(string, tag = "1")]
@@ -664,19 +609,14 @@ pub struct FetchPartitionError {
     #[prost(uint32, tag = "3")]
     pub map_partition_id: u32,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct IoError {}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ExecutorLost {}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ResultLost {}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct TaskKilled {}
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ShuffleWritePartition {
     #[prost(uint64, tag = "1")]
@@ -690,7 +630,6 @@ pub struct ShuffleWritePartition {
     #[prost(uint64, tag = "5")]
     pub num_bytes: u64,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskStatus {
     #[prost(uint32, tag = "1")]
@@ -716,7 +655,6 @@ pub struct TaskStatus {
 }
 /// Nested message and enum types in `TaskStatus`.
 pub mod task_status {
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Status {
         #[prost(message, tag = "9")]
@@ -727,7 +665,6 @@ pub mod task_status {
         Successful(super::SuccessfulTask),
     }
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PollWorkParams {
     #[prost(message, optional, tag = "1")]
@@ -738,7 +675,6 @@ pub struct PollWorkParams {
     #[prost(message, repeated, tag = "3")]
     pub task_status: ::prost::alloc::vec::Vec<TaskStatus>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TaskDefinition {
     #[prost(uint32, tag = "1")]
@@ -763,7 +699,6 @@ pub struct TaskDefinition {
     pub props: ::prost::alloc::vec::Vec<KeyValuePair>,
 }
 /// A set of tasks in the same stage
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MultiTaskDefinition {
     #[prost(message, repeated, tag = "1")]
@@ -783,13 +718,11 @@ pub struct MultiTaskDefinition {
     #[prost(message, repeated, tag = "9")]
     pub props: ::prost::alloc::vec::Vec<KeyValuePair>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SessionSettings {
     #[prost(message, repeated, tag = "1")]
     pub configs: ::prost::alloc::vec::Vec<KeyValuePair>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct JobSessionConfig {
     #[prost(string, tag = "1")]
@@ -797,25 +730,21 @@ pub struct JobSessionConfig {
     #[prost(message, repeated, tag = "2")]
     pub configs: ::prost::alloc::vec::Vec<KeyValuePair>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PollWorkResult {
     #[prost(message, repeated, tag = "1")]
     pub tasks: ::prost::alloc::vec::Vec<TaskDefinition>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RegisterExecutorParams {
     #[prost(message, optional, tag = "1")]
     pub metadata: ::core::option::Option<ExecutorRegistration>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct RegisterExecutorResult {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HeartBeatParams {
     #[prost(string, tag = "1")]
@@ -827,14 +756,12 @@ pub struct HeartBeatParams {
     #[prost(message, optional, tag = "4")]
     pub metadata: ::core::option::Option<ExecutorRegistration>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct HeartBeatResult {
     /// TODO it's from Spark for BlockManager
     #[prost(bool, tag = "1")]
     pub reregister: bool,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StopExecutorParams {
     #[prost(string, tag = "1")]
@@ -846,10 +773,8 @@ pub struct StopExecutorParams {
     #[prost(bool, tag = "3")]
     pub force: bool,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct StopExecutorResult {}
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorStoppedParams {
     #[prost(string, tag = "1")]
@@ -858,10 +783,8 @@ pub struct ExecutorStoppedParams {
     #[prost(string, tag = "2")]
     pub reason: ::prost::alloc::string::String,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ExecutorStoppedResult {}
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateTaskStatusParams {
     #[prost(string, tag = "1")]
@@ -870,13 +793,11 @@ pub struct UpdateTaskStatusParams {
     #[prost(message, repeated, tag = "2")]
     pub task_status: ::prost::alloc::vec::Vec<TaskStatus>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct UpdateTaskStatusResult {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteQueryParams {
     #[prost(message, repeated, tag = "4")]
@@ -890,7 +811,6 @@ pub struct ExecuteQueryParams {
 }
 /// Nested message and enum types in `ExecuteQueryParams`.
 pub mod execute_query_params {
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Query {
         #[prost(bytes, tag = "1")]
@@ -898,26 +818,22 @@ pub mod execute_query_params {
         #[prost(string, tag = "2")]
         Sql(::prost::alloc::string::String),
     }
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum OptionalSessionId {
         #[prost(string, tag = "3")]
         SessionId(::prost::alloc::string::String),
     }
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CreateSessionParams {
     #[prost(message, repeated, tag = "1")]
     pub settings: ::prost::alloc::vec::Vec<KeyValuePair>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CreateSessionResult {
     #[prost(string, tag = "1")]
     pub session_id: ::prost::alloc::string::String,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateSessionParams {
     #[prost(string, tag = "1")]
@@ -925,31 +841,26 @@ pub struct UpdateSessionParams {
     #[prost(message, repeated, tag = "2")]
     pub settings: ::prost::alloc::vec::Vec<KeyValuePair>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct UpdateSessionResult {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RemoveSessionParams {
     #[prost(string, tag = "1")]
     pub session_id: ::prost::alloc::string::String,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct RemoveSessionResult {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteSqlParams {
     #[prost(string, tag = "1")]
     pub sql: ::prost::alloc::string::String,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteQueryResult {
     #[prost(oneof = "execute_query_result::Result", tags = "1, 2")]
@@ -957,7 +868,6 @@ pub struct ExecuteQueryResult {
 }
 /// Nested message and enum types in `ExecuteQueryResult`.
 pub mod execute_query_result {
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(message, tag = "1")]
@@ -966,7 +876,6 @@ pub mod execute_query_result {
         Failure(super::ExecuteQueryFailureResult),
     }
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteQuerySuccessResult {
     #[prost(string, tag = "1")]
@@ -974,7 +883,6 @@ pub struct ExecuteQuerySuccessResult {
     #[prost(string, tag = "2")]
     pub session_id: ::prost::alloc::string::String,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteQueryFailureResult {
     #[prost(oneof = "execute_query_failure_result::Failure", tags = "1, 2, 3")]
@@ -982,7 +890,6 @@ pub struct ExecuteQueryFailureResult {
 }
 /// Nested message and enum types in `ExecuteQueryFailureResult`.
 pub mod execute_query_failure_result {
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Failure {
         #[prost(string, tag = "1")]
@@ -993,13 +900,11 @@ pub mod execute_query_failure_result {
         SqlParsingFailure(::prost::alloc::string::String),
     }
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetJobStatusParams {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SuccessfulJob {
     #[prost(message, repeated, tag = "1")]
@@ -1011,14 +916,12 @@ pub struct SuccessfulJob {
     #[prost(uint64, tag = "4")]
     pub ended_at: u64,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct QueuedJob {
     #[prost(uint64, tag = "1")]
     pub queued_at: u64,
 }
 /// TODO: add progress report
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RunningJob {
     #[prost(uint64, tag = "1")]
@@ -1028,7 +931,6 @@ pub struct RunningJob {
     #[prost(string, tag = "3")]
     pub scheduler: ::prost::alloc::string::String,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FailedJob {
     #[prost(string, tag = "1")]
@@ -1040,7 +942,6 @@ pub struct FailedJob {
     #[prost(uint64, tag = "4")]
     pub ended_at: u64,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct JobStatus {
     #[prost(string, tag = "5")]
@@ -1052,7 +953,6 @@ pub struct JobStatus {
 }
 /// Nested message and enum types in `JobStatus`.
 pub mod job_status {
-    #[allow(clippy::derive_partial_eq_without_eq)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Status {
         #[prost(message, tag = "1")]
@@ -1065,13 +965,11 @@ pub mod job_status {
         Successful(super::SuccessfulJob),
     }
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetJobStatusResult {
     #[prost(message, optional, tag = "1")]
     pub status: ::core::option::Option<JobStatus>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetFileMetadataParams {
     #[prost(string, tag = "1")]
@@ -1079,40 +977,33 @@ pub struct GetFileMetadataParams {
     #[prost(string, tag = "2")]
     pub file_type: ::prost::alloc::string::String,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetFileMetadataResult {
     #[prost(message, optional, tag = "1")]
     pub schema: ::core::option::Option<::datafusion_proto_common::Schema>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FilePartitionMetadata {
     #[prost(string, repeated, tag = "1")]
     pub filename: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CancelJobParams {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct CancelJobResult {
     #[prost(bool, tag = "1")]
     pub cancelled: bool,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CleanJobDataParams {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct CleanJobDataResult {}
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LaunchTaskParams {
     /// Allow to launch a task set to an executor at once
@@ -1121,7 +1012,6 @@ pub struct LaunchTaskParams {
     #[prost(string, tag = "2")]
     pub scheduler_id: ::prost::alloc::string::String,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LaunchMultiTaskParams {
     /// Allow to launch a task set to an executor at once
@@ -1130,42 +1020,35 @@ pub struct LaunchMultiTaskParams {
     #[prost(string, tag = "2")]
     pub scheduler_id: ::prost::alloc::string::String,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct LaunchTaskResult {
     /// TODO when part of the task set are scheduled successfully
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct LaunchMultiTaskResult {
     /// TODO when part of the task set are scheduled successfully
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CancelTasksParams {
     #[prost(message, repeated, tag = "1")]
     pub task_infos: ::prost::alloc::vec::Vec<RunningTaskInfo>,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct CancelTasksResult {
     #[prost(bool, tag = "1")]
     pub cancelled: bool,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RemoveJobDataParams {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
 }
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct RemoveJobDataResult {}
-#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RunningTaskInfo {
     #[prost(uint32, tag = "1")]
@@ -1201,8 +1084,8 @@ pub mod scheduler_grpc_client {
     where
         T: tonic::client::GrpcService<tonic::body::BoxBody>,
         T::Error: Into<StdError>,
-        T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
     {
         pub fn new(inner: T) -> Self {
             let inner = tonic::client::Grpc::new(inner);
@@ -1227,7 +1110,7 @@ pub mod scheduler_grpc_client {
             >,
             <T as tonic::codegen::Service<
                 http::Request<tonic::body::BoxBody>,
-            >>::Error: Into<StdError> + Send + Sync,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             SchedulerGrpcClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -1645,8 +1528,8 @@ pub mod executor_grpc_client {
     where
         T: tonic::client::GrpcService<tonic::body::BoxBody>,
         T::Error: Into<StdError>,
-        T::ResponseBody: Body<Data = Bytes> + Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
     {
         pub fn new(inner: T) -> Self {
             let inner = tonic::client::Grpc::new(inner);
@@ -1671,7 +1554,7 @@ pub mod executor_grpc_client {
             >,
             <T as tonic::codegen::Service<
                 http::Request<tonic::body::BoxBody>,
-            >>::Error: Into<StdError> + Send + Sync,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             ExecutorGrpcClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -1847,7 +1730,7 @@ pub mod scheduler_grpc_server {
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with SchedulerGrpcServer.
     #[async_trait]
-    pub trait SchedulerGrpc: Send + Sync + 'static {
+    pub trait SchedulerGrpc: std::marker::Send + std::marker::Sync + 'static {
         /// Executors must poll the scheduler for heartbeat and to receive tasks
         async fn poll_work(
             &self,
@@ -1936,20 +1819,18 @@ pub mod scheduler_grpc_server {
         >;
     }
     #[derive(Debug)]
-    pub struct SchedulerGrpcServer<T: SchedulerGrpc> {
-        inner: _Inner<T>,
+    pub struct SchedulerGrpcServer<T> {
+        inner: Arc<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
         max_decoding_message_size: Option<usize>,
         max_encoding_message_size: Option<usize>,
     }
-    struct _Inner<T>(Arc<T>);
-    impl<T: SchedulerGrpc> SchedulerGrpcServer<T> {
+    impl<T> SchedulerGrpcServer<T> {
         pub fn new(inner: T) -> Self {
             Self::from_arc(Arc::new(inner))
         }
         pub fn from_arc(inner: Arc<T>) -> Self {
-            let inner = _Inner(inner);
             Self {
                 inner,
                 accept_compression_encodings: Default::default(),
@@ -1999,8 +1880,8 @@ pub mod scheduler_grpc_server {
     impl<T, B> tonic::codegen::Service<http::Request<B>> for SchedulerGrpcServer<T>
     where
         T: SchedulerGrpc,
-        B: Body + Send + 'static,
-        B::Error: Into<StdError> + Send + 'static,
+        B: Body + std::marker::Send + 'static,
+        B::Error: Into<StdError> + std::marker::Send + 'static,
     {
         type Response = http::Response<tonic::body::BoxBody>;
         type Error = std::convert::Infallible;
@@ -2012,7 +1893,6 @@ pub mod scheduler_grpc_server {
             Poll::Ready(Ok(()))
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
-            let inner = self.inner.clone();
             match req.uri().path() {
                 "/ballista.protobuf.SchedulerGrpc/PollWork" => {
                     #[allow(non_camel_case_types)]
@@ -2043,7 +1923,6 @@ pub mod scheduler_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = PollWorkSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -2090,7 +1969,6 @@ pub mod scheduler_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = RegisterExecutorSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -2140,7 +2018,6 @@ pub mod scheduler_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = HeartBeatFromExecutorSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -2187,7 +2064,6 @@ pub mod scheduler_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = UpdateTaskStatusSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -2234,7 +2110,6 @@ pub mod scheduler_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = GetFileMetadataSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -2280,7 +2155,6 @@ pub mod scheduler_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = CreateSessionSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -2326,7 +2200,6 @@ pub mod scheduler_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = UpdateSessionSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -2372,7 +2245,6 @@ pub mod scheduler_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = RemoveSessionSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -2418,7 +2290,6 @@ pub mod scheduler_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = ExecuteQuerySvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -2464,7 +2335,6 @@ pub mod scheduler_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = GetJobStatusSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -2511,7 +2381,6 @@ pub mod scheduler_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = ExecutorStoppedSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -2557,7 +2426,6 @@ pub mod scheduler_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = CancelJobSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -2603,7 +2471,6 @@ pub mod scheduler_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = CleanJobDataSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -2625,8 +2492,11 @@ pub mod scheduler_grpc_server {
                         Ok(
                             http::Response::builder()
                                 .status(200)
-                                .header("grpc-status", "12")
-                                .header("content-type", "application/grpc")
+                                .header("grpc-status", tonic::Code::Unimplemented as i32)
+                                .header(
+                                    http::header::CONTENT_TYPE,
+                                    tonic::metadata::GRPC_CONTENT_TYPE,
+                                )
                                 .body(empty_body())
                                 .unwrap(),
                         )
@@ -2635,7 +2505,7 @@ pub mod scheduler_grpc_server {
             }
         }
     }
-    impl<T: SchedulerGrpc> Clone for SchedulerGrpcServer<T> {
+    impl<T> Clone for SchedulerGrpcServer<T> {
         fn clone(&self) -> Self {
             let inner = self.inner.clone();
             Self {
@@ -2647,18 +2517,10 @@ pub mod scheduler_grpc_server {
             }
         }
     }
-    impl<T: SchedulerGrpc> Clone for _Inner<T> {
-        fn clone(&self) -> Self {
-            Self(Arc::clone(&self.0))
-        }
-    }
-    impl<T: std::fmt::Debug> std::fmt::Debug for _Inner<T> {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{:?}", self.0)
-        }
-    }
-    impl<T: SchedulerGrpc> tonic::server::NamedService for SchedulerGrpcServer<T> {
-        const NAME: &'static str = "ballista.protobuf.SchedulerGrpc";
+    /// Generated gRPC service name
+    pub const SERVICE_NAME: &str = "ballista.protobuf.SchedulerGrpc";
+    impl<T> tonic::server::NamedService for SchedulerGrpcServer<T> {
+        const NAME: &'static str = SERVICE_NAME;
     }
 }
 /// Generated server implementations.
@@ -2667,7 +2529,7 @@ pub mod executor_grpc_server {
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with ExecutorGrpcServer.
     #[async_trait]
-    pub trait ExecutorGrpc: Send + Sync + 'static {
+    pub trait ExecutorGrpc: std::marker::Send + std::marker::Sync + 'static {
         async fn launch_task(
             &self,
             request: tonic::Request<super::LaunchTaskParams>,
@@ -2705,20 +2567,18 @@ pub mod executor_grpc_server {
         >;
     }
     #[derive(Debug)]
-    pub struct ExecutorGrpcServer<T: ExecutorGrpc> {
-        inner: _Inner<T>,
+    pub struct ExecutorGrpcServer<T> {
+        inner: Arc<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
         max_decoding_message_size: Option<usize>,
         max_encoding_message_size: Option<usize>,
     }
-    struct _Inner<T>(Arc<T>);
-    impl<T: ExecutorGrpc> ExecutorGrpcServer<T> {
+    impl<T> ExecutorGrpcServer<T> {
         pub fn new(inner: T) -> Self {
             Self::from_arc(Arc::new(inner))
         }
         pub fn from_arc(inner: Arc<T>) -> Self {
-            let inner = _Inner(inner);
             Self {
                 inner,
                 accept_compression_encodings: Default::default(),
@@ -2768,8 +2628,8 @@ pub mod executor_grpc_server {
     impl<T, B> tonic::codegen::Service<http::Request<B>> for ExecutorGrpcServer<T>
     where
         T: ExecutorGrpc,
-        B: Body + Send + 'static,
-        B::Error: Into<StdError> + Send + 'static,
+        B: Body + std::marker::Send + 'static,
+        B::Error: Into<StdError> + std::marker::Send + 'static,
     {
         type Response = http::Response<tonic::body::BoxBody>;
         type Error = std::convert::Infallible;
@@ -2781,7 +2641,6 @@ pub mod executor_grpc_server {
             Poll::Ready(Ok(()))
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
-            let inner = self.inner.clone();
             match req.uri().path() {
                 "/ballista.protobuf.ExecutorGrpc/LaunchTask" => {
                     #[allow(non_camel_case_types)]
@@ -2812,7 +2671,6 @@ pub mod executor_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = LaunchTaskSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -2859,7 +2717,6 @@ pub mod executor_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = LaunchMultiTaskSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -2905,7 +2762,6 @@ pub mod executor_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = StopExecutorSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -2951,7 +2807,6 @@ pub mod executor_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = CancelTasksSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -2997,7 +2852,6 @@ pub mod executor_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let inner = inner.0;
                         let method = RemoveJobDataSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
@@ -3019,8 +2873,11 @@ pub mod executor_grpc_server {
                         Ok(
                             http::Response::builder()
                                 .status(200)
-                                .header("grpc-status", "12")
-                                .header("content-type", "application/grpc")
+                                .header("grpc-status", tonic::Code::Unimplemented as i32)
+                                .header(
+                                    http::header::CONTENT_TYPE,
+                                    tonic::metadata::GRPC_CONTENT_TYPE,
+                                )
                                 .body(empty_body())
                                 .unwrap(),
                         )
@@ -3029,7 +2886,7 @@ pub mod executor_grpc_server {
             }
         }
     }
-    impl<T: ExecutorGrpc> Clone for ExecutorGrpcServer<T> {
+    impl<T> Clone for ExecutorGrpcServer<T> {
         fn clone(&self) -> Self {
             let inner = self.inner.clone();
             Self {
@@ -3041,17 +2898,9 @@ pub mod executor_grpc_server {
             }
         }
     }
-    impl<T: ExecutorGrpc> Clone for _Inner<T> {
-        fn clone(&self) -> Self {
-            Self(Arc::clone(&self.0))
-        }
-    }
-    impl<T: std::fmt::Debug> std::fmt::Debug for _Inner<T> {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{:?}", self.0)
-        }
-    }
-    impl<T: ExecutorGrpc> tonic::server::NamedService for ExecutorGrpcServer<T> {
-        const NAME: &'static str = "ballista.protobuf.ExecutorGrpc";
+    /// Generated gRPC service name
+    pub const SERVICE_NAME: &str = "ballista.protobuf.ExecutorGrpc";
+    impl<T> tonic::server::NamedService for ExecutorGrpcServer<T> {
+        const NAME: &'static str = SERVICE_NAME;
     }
 }

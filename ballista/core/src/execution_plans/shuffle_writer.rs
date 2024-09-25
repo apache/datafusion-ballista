@@ -355,6 +355,10 @@ impl DisplayAs for ShuffleWriterExec {
 }
 
 impl ExecutionPlan for ShuffleWriterExec {
+    fn name(&self) -> &str {
+        "ShuffleWriterExec"
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }

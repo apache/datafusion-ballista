@@ -16,6 +16,7 @@
 // under the License.
 
 use ballista_core::error::{BallistaError, Result};
+use datafusion::catalog::Session;
 use std::any::Any;
 use std::collections::HashMap;
 use std::future::Future;
@@ -44,19 +45,18 @@ use ballista_core::serde::{protobuf, BallistaCodec};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::DataFusionError;
 use datafusion::datasource::{TableProvider, TableType};
-use datafusion::execution::context::{SessionConfig, SessionContext, SessionState};
-use datafusion::functions_aggregate::sum::sum;
-use datafusion::logical_expr::expr::Sort;
-use datafusion::logical_expr::{Expr, LogicalPlan};
+use datafusion::execution::context::{SessionConfig, SessionContext};
+use datafusion::functions_aggregate::{count::count, sum::sum};
+use datafusion::logical_expr::{Expr, LogicalPlan, SortExpr};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::{col, count, CsvReadOptions, JoinType};
-use datafusion::test_util::scan_empty;
+use datafusion::prelude::{col, CsvReadOptions, JoinType};
+use datafusion::test_util::scan_empty_with_partitions;
 
 use crate::cluster::BallistaCluster;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
-use crate::state::execution_graph::{ExecutionGraph, TaskDescription};
+use crate::state::execution_graph::{ExecutionGraph, ExecutionStage, TaskDescription};
 use ballista_core::utils::default_session_builder;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use parking_lot::Mutex;
@@ -89,7 +89,7 @@ impl TableProvider for ExplodingTableProvider {
 
     async fn scan(
         &self,
-        _ctx: &SessionState,
+        _ctx: &dyn Session,
         _projection: Option<&Vec<usize>>,
         _filters: &[Expr],
         _limit: Option<usize>,
@@ -783,6 +783,47 @@ pub fn assert_failed_event(job_id: &str, collector: &TestMetricsCollector) {
     assert!(found, "{}", "Expected failed event for job {job_id}");
 }
 
+pub fn revive_graph_and_complete_next_stage(graph: &mut ExecutionGraph) -> Result<usize> {
+    let executor = mock_executor("executor-id1".to_string());
+    revive_graph_and_complete_next_stage_with_executor(graph, &executor)
+}
+
+pub fn revive_graph_and_complete_next_stage_with_executor(
+    graph: &mut ExecutionGraph,
+    executor: &ExecutorMetadata,
+) -> Result<usize> {
+    graph.revive();
+
+    // find the num_available_tasks of the next running stage
+    let num_available_tasks = graph
+        .stages()
+        .iter()
+        .map(|(_stage_id, stage)| {
+            if let ExecutionStage::Running(stage) = stage {
+                stage
+                    .task_infos
+                    .iter()
+                    .filter(|info| info.is_none())
+                    .count()
+            } else {
+                0
+            }
+        })
+        .find(|num_available_tasks| num_available_tasks > &0)
+        .unwrap();
+
+    if num_available_tasks > 0 {
+        for _ in 0..num_available_tasks {
+            if let Some(task) = graph.pop_next_task(&executor.id).unwrap() {
+                let task_status = mock_completed_task(task, &executor.id);
+                graph.update_task_status(executor, vec![task_status], 1, 1)?;
+            }
+        }
+    }
+
+    Ok(num_available_tasks)
+}
+
 pub async fn test_aggregation_plan(partition: usize) -> ExecutionGraph {
     test_aggregation_plan_with_job_id(partition, "job").await
 }
@@ -800,7 +841,8 @@ pub async fn test_aggregation_plan_with_job_id(
         Field::new("gmv", DataType::UInt64, false),
     ]);
 
-    let logical_plan = scan_empty(None, &schema, Some(vec![0, 1]))
+    // we specify the input partitions to be > 1 because of https://github.com/apache/datafusion/issues/12611
+    let logical_plan = scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
         .unwrap()
         .aggregate(vec![col("id")], vec![sum(col("gmv"))])
         .unwrap()
@@ -833,7 +875,8 @@ pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
         Field::new("gmv", DataType::UInt64, false),
     ]);
 
-    let logical_plan = scan_empty(None, &schema, Some(vec![0, 1, 2]))
+    // we specify the input partitions to be > 1 because of https://github.com/apache/datafusion/issues/12611
+    let logical_plan = scan_empty_with_partitions(None, &schema, Some(vec![0, 1, 2]), 2)
         .unwrap()
         .aggregate(vec![col("id"), col("name")], vec![sum(col("gmv"))])
         .unwrap()
@@ -867,7 +910,8 @@ pub async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
         Field::new("gmv", DataType::UInt64, false),
     ]);
 
-    let logical_plan = scan_empty(None, &schema, Some(vec![0, 1]))
+    // we specify the input partitions to be > 1 because of https://github.com/apache/datafusion/issues/12611
+    let logical_plan = scan_empty_with_partitions(None, &schema, Some(vec![0, 1]), 2)
         .unwrap()
         .limit(0, Some(1))
         .unwrap()
@@ -898,14 +942,15 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
         Field::new("gmv", DataType::UInt64, false),
     ]);
 
-    let left_plan = scan_empty(Some("left"), &schema, None).unwrap();
+    // we specify the input partitions to be > 1 because of https://github.com/apache/datafusion/issues/12611
+    let left_plan = scan_empty_with_partitions(Some("left"), &schema, None, 2).unwrap();
 
-    let right_plan = scan_empty(Some("right"), &schema, None)
+    let right_plan = scan_empty_with_partitions(Some("right"), &schema, None, 2)
         .unwrap()
         .build()
         .unwrap();
 
-    let sort_expr = Expr::Sort(Sort::new(Box::new(col("id")), false, false));
+    let sort_expr = SortExpr::new(col("id"), false, false);
 
     let logical_plan = left_plan
         .join(right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)

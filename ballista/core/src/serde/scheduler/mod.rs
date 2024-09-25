@@ -25,6 +25,7 @@ use datafusion::arrow::array::{
 use datafusion::arrow::datatypes::{DataType, Field};
 use datafusion::common::DataFusionError;
 use datafusion::execution::FunctionRegistry;
+use datafusion::logical_expr::planner::ExprPlanner;
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::Partitioning;
@@ -299,6 +300,10 @@ pub struct SimpleFunctionRegistry {
 }
 
 impl FunctionRegistry for SimpleFunctionRegistry {
+    fn expr_planners(&self) -> Vec<Arc<dyn ExprPlanner>> {
+        vec![]
+    }
+
     fn udfs(&self) -> HashSet<String> {
         self.scalar_functions.keys().cloned().collect()
     }

@@ -33,13 +33,13 @@ publish = false
 async-trait = "0.1.77"
 ballista = { path = "../ballista/client", version = "0.12.0" }
 ballista-core = { path = "../ballista/core", version = "0.12.0" }
-datafusion = "35.0.0"
-datafusion-proto = "35.0.0"
+datafusion = "42.0.0"
+datafusion-proto = "42.0.0"
+# TODO: pin to 42.0.0 when it's released
+datafusion-python = { git = "https://github.com/apache/datafusion-python.git", rev = "f6261b05ce0d68489403fe966a464cdd7d24b3b5" }
 
-# we need to use a recent build of ADP that has a public PyDataFrame
-datafusion-python = { git = "https://github.com/apache/arrow-datafusion-python", rev = "5296c0cfcf8e6fcb654d5935252469bf04f929e9" }
-
-pyo3 = { version = "0.20", features = ["extension-module", "abi3", "abi3-py38"] }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3", "abi3-py38"] }
+pyo3-log = "0.11.0"
 tokio = { version = "1.35", features = ["macros", "rt", "rt-multi-thread", "sync"] }
 
 [lib]

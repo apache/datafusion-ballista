@@ -14,6 +14,11 @@ use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::SchedulerServer;
 use crate::state::execution_graph::ExecutionStage;
 use crate::state::execution_graph_dot::ExecutionGraphDot;
+use axum::{
+    extract::{Path, State},
+    response::{IntoResponse, Response},
+    Json,
+};
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::BALLISTA_VERSION;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet, Time};
@@ -22,10 +27,9 @@ use datafusion_proto::physical_plan::AsExecutionPlan;
 use graphviz_rust::cmd::{CommandArg, Format};
 use graphviz_rust::exec;
 use graphviz_rust::printer::PrinterContext;
-use http::header::CONTENT_TYPE;
-
+use http::{header::CONTENT_TYPE, StatusCode};
+use std::sync::Arc;
 use std::time::Duration;
-use warp::Rejection;
 
 #[derive(Debug, serde::Serialize)]
 struct SchedulerStateResponse {
@@ -64,22 +68,26 @@ pub struct QueryStageSummary {
     pub elapsed_compute: String,
 }
 
-/// Return current scheduler state
-pub(crate) async fn get_scheduler_state<T: AsLogicalPlan, U: AsExecutionPlan>(
-    data_server: SchedulerServer<T, U>,
-) -> Result<impl warp::Reply, Rejection> {
+pub async fn get_scheduler_state<
+    T: AsLogicalPlan + Clone + Send + Sync + 'static,
+    U: AsExecutionPlan + Send + Sync + 'static,
+>(
+    State(data_server): State<Arc<SchedulerServer<T, U>>>,
+) -> impl IntoResponse {
     let response = SchedulerStateResponse {
         started: data_server.start_time,
         version: BALLISTA_VERSION,
     };
-    Ok(warp::reply::json(&response))
+    Json(response)
 }
 
-/// Return list of executors
-pub(crate) async fn get_executors<T: AsLogicalPlan, U: AsExecutionPlan>(
-    data_server: SchedulerServer<T, U>,
-) -> Result<impl warp::Reply, Rejection> {
-    let state = data_server.state;
+pub async fn get_executors<
+    T: AsLogicalPlan + Clone + Send + Sync + 'static,
+    U: AsExecutionPlan + Send + Sync + 'static,
+>(
+    State(data_server): State<Arc<SchedulerServer<T, U>>>,
+) -> impl IntoResponse {
+    let state = &data_server.state;
     let executors: Vec<ExecutorMetaResponse> = state
         .executor_manager
         .get_executor_state()
@@ -94,21 +102,23 @@ pub(crate) async fn get_executors<T: AsLogicalPlan, U: AsExecutionPlan>(
         })
         .collect();
 
-    Ok(warp::reply::json(&executors))
+    Json(executors)
 }
 
-/// Return list of jobs
-pub(crate) async fn get_jobs<T: AsLogicalPlan, U: AsExecutionPlan>(
-    data_server: SchedulerServer<T, U>,
-) -> Result<impl warp::Reply, Rejection> {
+pub async fn get_jobs<
+    T: AsLogicalPlan + Clone + Send + Sync + 'static,
+    U: AsExecutionPlan + Send + Sync + 'static,
+>(
+    State(data_server): State<Arc<SchedulerServer<T, U>>>,
+) -> Result<impl IntoResponse, StatusCode> {
     // TODO: Display last seen information in UI
-    let state = data_server.state;
+    let state = &data_server.state;
 
     let jobs = state
         .task_manager
         .get_jobs()
         .await
-        .map_err(|_| warp::reject())?;
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let jobs: Vec<JobResponse> = jobs
         .iter()
@@ -157,31 +167,34 @@ pub(crate) async fn get_jobs<T: AsLogicalPlan, U: AsExecutionPlan>(
         })
         .collect();
 
-    Ok(warp::reply::json(&jobs))
+    Ok(Json(jobs))
 }
 
-pub(crate) async fn cancel_job<T: AsLogicalPlan, U: AsExecutionPlan>(
-    data_server: SchedulerServer<T, U>,
-    job_id: String,
-) -> Result<impl warp::Reply, Rejection> {
+pub async fn cancel_job<
+    T: AsLogicalPlan + Clone + Send + Sync + 'static,
+    U: AsExecutionPlan + Send + Sync + 'static,
+>(
+    State(data_server): State<Arc<SchedulerServer<T, U>>>,
+    Path(job_id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
     // 404 if job doesn't exist
     data_server
         .state
         .task_manager
         .get_job_status(&job_id)
         .await
-        .map_err(|_| warp::reject())?
-        .ok_or_else(warp::reject)?;
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
 
     data_server
         .query_stage_event_loop
         .get_sender()
-        .map_err(|_| warp::reject())?
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .post_event(QueryStageSchedulerEvent::JobCancel(job_id))
         .await
-        .map_err(|_| warp::reject())?;
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Ok(warp::reply::json(&CancelJobResponse { cancelled: true }))
+    Ok(Json(CancelJobResponse { cancelled: true }))
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -189,69 +202,71 @@ pub struct QueryStagesResponse {
     pub stages: Vec<QueryStageSummary>,
 }
 
-/// Get the execution graph for the specified job id
-pub(crate) async fn get_query_stages<T: AsLogicalPlan, U: AsExecutionPlan>(
-    data_server: SchedulerServer<T, U>,
-    job_id: String,
-) -> Result<impl warp::Reply, Rejection> {
+pub async fn get_query_stages<
+    T: AsLogicalPlan + Clone + Send + Sync + 'static,
+    U: AsExecutionPlan + Send + Sync + 'static,
+>(
+    State(data_server): State<Arc<SchedulerServer<T, U>>>,
+    Path(job_id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
     if let Some(graph) = data_server
         .state
         .task_manager
         .get_job_execution_graph(&job_id)
         .await
-        .map_err(|_| warp::reject())?
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
-        Ok(warp::reply::json(&QueryStagesResponse {
-            stages: graph
-                .as_ref()
-                .stages()
-                .iter()
-                .map(|(id, stage)| {
-                    let mut summary = QueryStageSummary {
-                        stage_id: id.to_string(),
-                        stage_status: stage.variant_name().to_string(),
-                        input_rows: 0,
-                        output_rows: 0,
-                        elapsed_compute: "".to_string(),
-                    };
-                    match stage {
-                        ExecutionStage::Running(running_stage) => {
-                            summary.input_rows = running_stage
-                                .stage_metrics
-                                .as_ref()
-                                .map(|m| get_combined_count(m.as_slice(), "input_rows"))
-                                .unwrap_or(0);
-                            summary.output_rows = running_stage
-                                .stage_metrics
-                                .as_ref()
-                                .map(|m| get_combined_count(m.as_slice(), "output_rows"))
-                                .unwrap_or(0);
-                            summary.elapsed_compute = running_stage
-                                .stage_metrics
-                                .as_ref()
-                                .map(|m| get_elapsed_compute_nanos(m.as_slice()))
-                                .unwrap_or_default();
-                        }
-                        ExecutionStage::Successful(completed_stage) => {
-                            summary.input_rows = get_combined_count(
-                                &completed_stage.stage_metrics,
-                                "input_rows",
-                            );
-                            summary.output_rows = get_combined_count(
-                                &completed_stage.stage_metrics,
-                                "output_rows",
-                            );
-                            summary.elapsed_compute =
-                                get_elapsed_compute_nanos(&completed_stage.stage_metrics);
-                        }
-                        _ => {}
+        let stages = graph
+            .as_ref()
+            .stages()
+            .iter()
+            .map(|(id, stage)| {
+                let mut summary = QueryStageSummary {
+                    stage_id: id.to_string(),
+                    stage_status: stage.variant_name().to_string(),
+                    input_rows: 0,
+                    output_rows: 0,
+                    elapsed_compute: "".to_string(),
+                };
+                match stage {
+                    ExecutionStage::Running(running_stage) => {
+                        summary.input_rows = running_stage
+                            .stage_metrics
+                            .as_ref()
+                            .map(|m| get_combined_count(m.as_slice(), "input_rows"))
+                            .unwrap_or(0);
+                        summary.output_rows = running_stage
+                            .stage_metrics
+                            .as_ref()
+                            .map(|m| get_combined_count(m.as_slice(), "output_rows"))
+                            .unwrap_or(0);
+                        summary.elapsed_compute = running_stage
+                            .stage_metrics
+                            .as_ref()
+                            .map(|m| get_elapsed_compute_nanos(m.as_slice()))
+                            .unwrap_or_default();
                     }
-                    summary
-                })
-                .collect(),
-        }))
+                    ExecutionStage::Successful(completed_stage) => {
+                        summary.input_rows = get_combined_count(
+                            &completed_stage.stage_metrics,
+                            "input_rows",
+                        );
+                        summary.output_rows = get_combined_count(
+                            &completed_stage.stage_metrics,
+                            "output_rows",
+                        );
+                        summary.elapsed_compute =
+                            get_elapsed_compute_nanos(&completed_stage.stage_metrics);
+                    }
+                    _ => {}
+                }
+                summary
+            })
+            .collect();
+
+        Ok(Json(QueryStagesResponse { stages }))
     } else {
-        Ok(warp::reply::json(&QueryStagesResponse { stages: vec![] }))
+        Ok(Json(QueryStagesResponse { stages: vec![] }))
     }
 }
 
@@ -286,78 +301,96 @@ fn get_combined_count(metrics: &[MetricsSet], name: &str) -> usize {
         .sum()
 }
 
-/// Generate a dot graph for the specified job id and return as plain text
-pub(crate) async fn get_job_dot_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
-    data_server: SchedulerServer<T, U>,
-    job_id: String,
-) -> Result<String, Rejection> {
+pub async fn get_job_dot_graph<
+    T: AsLogicalPlan + Clone + Send + Sync + 'static,
+    U: AsExecutionPlan + Send + Sync + 'static,
+>(
+    State(data_server): State<Arc<SchedulerServer<T, U>>>,
+    Path(job_id): Path<String>,
+) -> Result<String, StatusCode> {
     if let Some(graph) = data_server
         .state
         .task_manager
         .get_job_execution_graph(&job_id)
         .await
-        .map_err(|_| warp::reject())?
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
-        ExecutionGraphDot::generate(graph.as_ref()).map_err(|_| warp::reject())
+        ExecutionGraphDot::generate(graph.as_ref())
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
     } else {
         Ok("Not Found".to_string())
     }
 }
 
-/// Generate a dot graph for the specified job id and query stage and return as plain text
-pub(crate) async fn get_query_stage_dot_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
-    data_server: SchedulerServer<T, U>,
-    job_id: String,
-    stage_id: usize,
-) -> Result<String, Rejection> {
+pub async fn get_query_stage_dot_graph<
+    T: AsLogicalPlan + Clone + Send + Sync + 'static,
+    U: AsExecutionPlan + Send + Sync + 'static,
+>(
+    State(data_server): State<Arc<SchedulerServer<T, U>>>,
+    Path((job_id, stage_id)): Path<(String, usize)>,
+) -> Result<impl IntoResponse, StatusCode> {
     if let Some(graph) = data_server
         .state
         .task_manager
         .get_job_execution_graph(&job_id)
         .await
-        .map_err(|_| warp::reject())?
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
         ExecutionGraphDot::generate_for_query_stage(graph.as_ref(), stage_id)
-            .map_err(|_| warp::reject())
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
     } else {
         Ok("Not Found".to_string())
     }
 }
 
-/// Generate an SVG graph for the specified job id and return it as plain text
-pub(crate) async fn get_job_svg_graph<T: AsLogicalPlan, U: AsExecutionPlan>(
-    data_server: SchedulerServer<T, U>,
-    job_id: String,
-) -> Result<String, Rejection> {
-    let dot = get_job_dot_graph(data_server, job_id).await;
-    match dot {
-        Ok(dot) => {
-            let graph = graphviz_rust::parse(&dot);
-            if let Ok(graph) = graph {
-                exec(
-                    graph,
-                    &mut PrinterContext::default(),
-                    vec![CommandArg::Format(Format::Svg)],
-                )
-                .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
-                .map_err(|_| warp::reject())
-            } else {
-                Ok("Cannot parse graph".to_string())
-            }
+pub async fn get_job_svg_graph<
+    T: AsLogicalPlan + Clone + Send + Sync + 'static,
+    U: AsExecutionPlan + Send + Sync + 'static,
+>(
+    State(data_server): State<Arc<SchedulerServer<T, U>>>,
+    Path(job_id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let dot = get_job_dot_graph(State(data_server.clone()), Path(job_id)).await?;
+    match graphviz_rust::parse(&dot) {
+        Ok(graph) => {
+            let result = exec(
+                graph,
+                &mut PrinterContext::default(),
+                vec![CommandArg::Format(Format::Svg)],
+            )
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            let svg = String::from_utf8_lossy(&result).to_string();
+            Ok(Response::builder()
+                .header(CONTENT_TYPE, "image/svg+xml")
+                .body(svg)
+                .unwrap())
         }
-        _ => Ok("Not Found".to_string()),
+        Err(_) => Ok(Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body("Cannot parse graph".to_string())
+            .unwrap()),
     }
 }
 
-pub(crate) async fn get_scheduler_metrics<T: AsLogicalPlan, U: AsExecutionPlan>(
-    data_server: SchedulerServer<T, U>,
-) -> Result<impl warp::Reply, Rejection> {
-    Ok(data_server
-        .metrics_collector()
-        .gather_metrics()
-        .map_err(|_| warp::reject())?
-        .map(|(data, content_type)| {
-            warp::reply::with_header(data, CONTENT_TYPE, content_type)
-        })
-        .unwrap_or_else(|| warp::reply::with_header(vec![], CONTENT_TYPE, "text/html")))
+pub async fn get_scheduler_metrics<
+    T: AsLogicalPlan + Clone + Send + Sync + 'static,
+    U: AsExecutionPlan + Send + Sync + 'static,
+>(
+    State(data_server): State<Arc<SchedulerServer<T, U>>>,
+) -> impl IntoResponse {
+    match data_server.metrics_collector().gather_metrics() {
+        Ok(Some((data, content_type))) => Response::builder()
+            .header(CONTENT_TYPE, content_type)
+            .body(axum::body::Body::from(data))
+            .unwrap(),
+        Ok(None) => Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .body(axum::body::Body::empty())
+            .unwrap(),
+        Err(_) => Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    }
 }

@@ -22,7 +22,8 @@ mod utils;
 pub use crate::context::PySessionContext;
 
 #[pymodule]
-fn pyballista_internal(_py: Python, m: &PyModule) -> PyResult<()> {
+fn pyballista_internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
+    pyo3_log::init();
     // Ballista structs
     m.add_class::<PySessionContext>()?;
     // DataFusion structs
