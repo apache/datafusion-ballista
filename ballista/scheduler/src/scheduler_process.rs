@@ -86,7 +86,5 @@ pub async fn start_server(
         .into_make_service_with_connect_info::<SocketAddr>();
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, merged)
-        .await
-        .map_err(|e| Error::from(e))
+    axum::serve(listener, merged).await.map_err(Error::from)
 }

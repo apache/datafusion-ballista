@@ -816,7 +816,7 @@ pub fn revive_graph_and_complete_next_stage_with_executor(
         for _ in 0..num_available_tasks {
             if let Some(task) = graph.pop_next_task(&executor.id).unwrap() {
                 let task_status = mock_completed_task(task, &executor.id);
-                graph.update_task_status(&executor, vec![task_status], 1, 1)?;
+                graph.update_task_status(executor, vec![task_status], 1, 1)?;
             }
         }
     }
