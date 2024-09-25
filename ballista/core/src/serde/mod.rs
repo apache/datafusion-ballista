@@ -88,7 +88,7 @@ pub struct BallistaCodec<
 impl Default for BallistaCodec {
     fn default() -> Self {
         Self {
-            logical_extension_codec: Arc::new(BallistaLogicalExtensionCodec::new()),
+            logical_extension_codec: Arc::new(BallistaLogicalExtensionCodec::default()),
             physical_extension_codec: Arc::new(BallistaPhysicalExtensionCodec {}),
             logical_plan_repr: PhantomData,
             physical_plan_repr: PhantomData,
@@ -118,26 +118,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> BallistaCodec<T, 
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct BallistaLogicalExtensionCodec {
-    default_codec: DefaultLogicalExtensionCodec,
+    default_codec: Arc<dyn LogicalExtensionCodec>,
     file_format_codecs: Vec<Arc<dyn LogicalExtensionCodec>>,
 }
 
 impl BallistaLogicalExtensionCodec {
-    pub fn new() -> Self {
-        Self {
-            default_codec: DefaultLogicalExtensionCodec {},
-            file_format_codecs: vec![
-                Arc::new(CsvLogicalExtensionCodec {}),
-                Arc::new(JsonLogicalExtensionCodec {}),
-                Arc::new(ParquetLogicalExtensionCodec {}),
-                Arc::new(ArrowLogicalExtensionCodec {}),
-                Arc::new(AvroLogicalExtensionCodec {}),
-            ],
-        }
-    }
-
     fn try_any<T>(
         &self,
         mut f: impl FnMut(&dyn LogicalExtensionCodec) -> Result<T>,
@@ -153,6 +140,21 @@ impl BallistaLogicalExtensionCodec {
         Err(last_err.unwrap_or_else(|| {
             DataFusionError::NotImplemented("Empty list of composed codecs".to_owned())
         }))
+    }
+}
+
+impl Default for BallistaLogicalExtensionCodec {
+    fn default() -> Self {
+        Self {
+            default_codec: Arc::new(DefaultLogicalExtensionCodec {}),
+            file_format_codecs: vec![
+                Arc::new(CsvLogicalExtensionCodec {}),
+                Arc::new(JsonLogicalExtensionCodec {}),
+                Arc::new(ParquetLogicalExtensionCodec {}),
+                Arc::new(ArrowLogicalExtensionCodec {}),
+                Arc::new(AvroLogicalExtensionCodec {}),
+            ],
+        }
     }
 }
 
