@@ -72,10 +72,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 "Bad request because poll work is not supported for push-based task scheduling",
             ));
         }
-        let remote_addr = request
-            .extensions()
-            .get::<ConnectInfo<SocketAddr>>()
-            .cloned();
+        let remote_addr = extract_connect_info(&request);
         if let PollWorkParams {
             metadata: Some(metadata),
             num_free_slots,
@@ -160,10 +157,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         &self,
         request: Request<RegisterExecutorParams>,
     ) -> Result<Response<RegisterExecutorResult>, Status> {
-        let remote_addr = request
-            .extensions()
-            .get::<ConnectInfo<SocketAddr>>()
-            .cloned();
+        let remote_addr = extract_connect_info(&request);
         if let RegisterExecutorParams {
             metadata: Some(metadata),
         } = request.into_inner()
@@ -199,11 +193,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         &self,
         request: Request<HeartBeatParams>,
     ) -> Result<Response<HeartBeatResult>, Status> {
-        let remote_addr = request
-            .extensions()
-            .get::<ConnectInfo<SocketAddr>>()
-            .cloned();
-        println!("HEARTBEAT FROM {:?}", remote_addr);
+        let remote_addr = extract_connect_info(&request);
         let HeartBeatParams {
             executor_id,
             metrics,
@@ -644,6 +634,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             })?;
         Ok(Response::new(CleanJobDataResult {}))
     }
+}
+
+fn extract_connect_info<T>(request: &Request<T>) -> Option<ConnectInfo<SocketAddr>> {
+    request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .cloned()
 }
 
 #[cfg(all(test, feature = "sled"))]
