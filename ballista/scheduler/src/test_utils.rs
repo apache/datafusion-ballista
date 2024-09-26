@@ -950,7 +950,7 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
         .build()
         .unwrap();
 
-    let sort_expr = SortExpr::new(col("id"), false, false);
+    let sort_expr = Expr::Sort(SortExpr::new(Box::new(col("id")), false, false));
 
     let logical_plan = left_plan
         .join(right_plan, JoinType::Inner, (vec!["id"], vec!["id"]), None)

@@ -78,13 +78,15 @@ pub async fn start_server(
         FlightSqlServiceImpl::new(scheduler_server.clone()),
     ));
 
-    let tonic = tonic_builder.into_service().into_axum_router();
+    let tonic = tonic_builder.into_service().into_router();
 
     let axum = get_routes(Arc::new(scheduler_server));
     let merged = axum
         .merge(tonic)
         .into_make_service_with_connect_info::<SocketAddr>();
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, merged).await.map_err(Error::from)
+    axum::Server::bind(&addr)
+        .serve(merged)
+        .await
+        .map_err(Error::from)
 }

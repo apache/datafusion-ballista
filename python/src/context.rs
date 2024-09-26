@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::utils::to_pyerr;
+use datafusion::logical_expr::SortExpr;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::path::PathBuf;
@@ -199,7 +200,14 @@ impl PySessionContext {
         options.file_sort_order = file_sort_order
             .unwrap_or_default()
             .into_iter()
-            .map(|e| e.into_iter().map(|f| f.into()).collect())
+            .map(|e| {
+                e.into_iter()
+                    .map(|f| {
+                        let sort_expr: SortExpr = f.into();
+                        *sort_expr.expr
+                    })
+                    .collect()
+            })
             .collect();
 
         let result = self.ctx.read_parquet(path, options);
@@ -311,7 +319,14 @@ impl PySessionContext {
         options.file_sort_order = file_sort_order
             .unwrap_or_default()
             .into_iter()
-            .map(|e| e.into_iter().map(|f| f.into()).collect())
+            .map(|e| {
+                e.into_iter()
+                    .map(|f| {
+                        let sort_expr: SortExpr = f.into();
+                        *sort_expr.expr
+                    })
+                    .collect()
+            })
             .collect();
 
         let result = self.ctx.register_parquet(name, path, options);

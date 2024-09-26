@@ -592,6 +592,8 @@ order by
         Ok(())
     }
 
+    #[ignore]
+    // enable when upgrading Datafusion, a bug is fixed with https://github.com/apache/datafusion/pull/11926/
     #[tokio::test]
     async fn roundtrip_serde_aggregate() -> Result<(), BallistaError> {
         let ctx = datafusion_test_context("testdata").await?;

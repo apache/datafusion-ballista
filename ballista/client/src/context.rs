@@ -1003,6 +1003,8 @@ mod standalone_tests {
         ];
         assert_result_eq(expected, &res);
     }
+    // enable when upgrading Datafusion to > 42
+    #[ignore]
     #[tokio::test]
     async fn test_aggregate_approx_percentile() {
         let context = create_test_context().await;

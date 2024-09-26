@@ -47,8 +47,17 @@ mod config {
     ));
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_io()
+        .enable_time()
+        .thread_stack_size(32 * 1024 * 1024) // 32MB
+        .build()
+        .unwrap();
+
+    runtime.block_on(inner())
+}
+async fn inner() -> Result<()> {
     // parse options
     let (opt, _remaining_args) =
         Config::including_optional_config_files(&["/etc/ballista/scheduler.toml"])
