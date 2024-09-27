@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::utils::to_pyerr;
+use datafusion::logical_expr::SortExpr;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::path::PathBuf;
@@ -30,7 +31,7 @@ use datafusion_python::context::{
 };
 use datafusion_python::dataframe::PyDataFrame;
 use datafusion_python::errors::DataFusionError;
-use datafusion_python::expr::PyExpr;
+use datafusion_python::expr::sort_expr::PySortExpr;
 use datafusion_python::sql::logical::PyLogicalPlan;
 use datafusion_python::utils::wait_for_future;
 
@@ -187,7 +188,7 @@ impl PySessionContext {
         file_extension: &str,
         skip_metadata: bool,
         schema: Option<PyArrowType<Schema>>,
-        file_sort_order: Option<Vec<Vec<PyExpr>>>,
+        file_sort_order: Option<Vec<Vec<PySortExpr>>>,
         py: Python,
     ) -> PyResult<PyDataFrame> {
         let mut options = ParquetReadOptions::default()
@@ -199,7 +200,14 @@ impl PySessionContext {
         options.file_sort_order = file_sort_order
             .unwrap_or_default()
             .into_iter()
-            .map(|e| e.into_iter().map(|f| f.into()).collect())
+            .map(|e| {
+                e.into_iter()
+                    .map(|f| {
+                        let sort_expr: SortExpr = f.into();
+                        *sort_expr.expr
+                    })
+                    .collect()
+            })
             .collect();
 
         let result = self.ctx.read_parquet(path, options);
@@ -299,7 +307,7 @@ impl PySessionContext {
         file_extension: &str,
         skip_metadata: bool,
         schema: Option<PyArrowType<Schema>>,
-        file_sort_order: Option<Vec<Vec<PyExpr>>>,
+        file_sort_order: Option<Vec<Vec<PySortExpr>>>,
         py: Python,
     ) -> PyResult<()> {
         let mut options = ParquetReadOptions::default()
@@ -311,7 +319,14 @@ impl PySessionContext {
         options.file_sort_order = file_sort_order
             .unwrap_or_default()
             .into_iter()
-            .map(|e| e.into_iter().map(|f| f.into()).collect())
+            .map(|e| {
+                e.into_iter()
+                    .map(|f| {
+                        let sort_expr: SortExpr = f.into();
+                        *sort_expr.expr
+                    })
+                    .collect()
+            })
             .collect();
 
         let result = self.ctx.register_parquet(name, path, options);

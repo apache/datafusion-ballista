@@ -21,19 +21,23 @@ members = ["ballista-cli", "ballista/cache", "ballista/client", "ballista/core",
 resolver = "2"
 
 [workspace.dependencies]
-arrow = { version = "52.0.0", features = ["ipc_compression"] }
-arrow-flight = { version = "52.0.0", features = ["flight-sql-experimental"] }
-arrow-schema = { version = "52.0.0", default-features = false }
+arrow = { version = "52.2.0", features = ["ipc_compression"] }
+arrow-flight = { version = "52.2.0", features = ["flight-sql-experimental"] }
+arrow-schema = { version = "52.2.0", default-features = false }
+clap = { version = "3", features = ["derive", "cargo"] }
 configure_me = { version = "0.4.0" }
 configure_me_codegen = { version = "0.4.4" }
-datafusion = "39.0.0"
-datafusion-cli = "39.0.0"
-datafusion-proto = "39.0.0"
-datafusion-proto-common = "39.0.0"
-object_store = "0.10.1"
-sqlparser = "0.47.0"
-tonic = { version = "0.11" }
-tonic-build = { version = "0.11", default-features = false, features = [
+# bump directly to datafusion v43 to avoid the serde bug on v42 (https://github.com/apache/datafusion/pull/12626)
+datafusion = "41.0.0"
+datafusion-cli = "41.0.0"
+datafusion-proto = "41.0.0"
+datafusion-proto-common = "41.0.0"
+object_store = "0.10.2"
+prost = "0.12.0"
+prost-types = "0.12.0"
+sqlparser = "0.49.0"
+tonic = { version = "0.11.0" }
+tonic-build = { version = "0.11.0", default-features = false, features = [
     "transport",
     "prost"
 ] }

@@ -1694,7 +1694,9 @@ mod test {
 
     use crate::state::execution_graph::ExecutionGraph;
     use crate::test_utils::{
-        mock_completed_task, mock_executor, mock_failed_task, test_aggregation_plan,
+        mock_completed_task, mock_executor, mock_failed_task,
+        revive_graph_and_complete_next_stage,
+        revive_graph_and_complete_next_stage_with_executor, test_aggregation_plan,
         test_coalesce_plan, test_join_plan, test_two_aggregations_plan,
         test_union_all_plan, test_union_plan,
     };
@@ -1793,19 +1795,13 @@ mod test {
         join_graph.revive();
 
         assert_eq!(join_graph.stage_count(), 4);
-        assert_eq!(join_graph.available_tasks(), 2);
+        assert_eq!(join_graph.available_tasks(), 4);
 
         // Complete the first stage
-        if let Some(task) = join_graph.pop_next_task(&executor1.id)? {
-            let task_status = mock_completed_task(task, &executor1.id);
-            join_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
-        }
+        revive_graph_and_complete_next_stage_with_executor(&mut join_graph, &executor1)?;
 
         // Complete the second stage
-        if let Some(task) = join_graph.pop_next_task(&executor2.id)? {
-            let task_status = mock_completed_task(task, &executor2.id);
-            join_graph.update_task_status(&executor2, vec![task_status], 1, 1)?;
-        }
+        revive_graph_and_complete_next_stage_with_executor(&mut join_graph, &executor2)?;
 
         join_graph.revive();
         // There are 4 tasks pending schedule for the 3rd stage
@@ -1823,7 +1819,7 @@ mod test {
 
         // Two stages were reset, 1 Running stage rollback to Unresolved and 1 Completed stage move to Running
         assert_eq!(reset.0.len(), 2);
-        assert_eq!(join_graph.available_tasks(), 1);
+        assert_eq!(join_graph.available_tasks(), 2);
 
         drain_tasks(&mut join_graph)?;
         assert!(join_graph.is_successful(), "Failed to complete join plan");
@@ -1844,19 +1840,19 @@ mod test {
         join_graph.revive();
 
         assert_eq!(join_graph.stage_count(), 4);
-        assert_eq!(join_graph.available_tasks(), 2);
+        assert_eq!(join_graph.available_tasks(), 4);
 
         // Complete the first stage
-        if let Some(task) = join_graph.pop_next_task(&executor1.id)? {
-            let task_status = mock_completed_task(task, &executor1.id);
-            join_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
-        }
+        assert_eq!(revive_graph_and_complete_next_stage(&mut join_graph)?, 2);
 
         // Complete the second stage
-        if let Some(task) = join_graph.pop_next_task(&executor2.id)? {
-            let task_status = mock_completed_task(task, &executor2.id);
-            join_graph.update_task_status(&executor2, vec![task_status], 1, 1)?;
-        }
+        assert_eq!(
+            revive_graph_and_complete_next_stage_with_executor(
+                &mut join_graph,
+                &executor2
+            )?,
+            2
+        );
 
         // There are 0 tasks pending schedule now
         assert_eq!(join_graph.available_tasks(), 0);
@@ -1865,7 +1861,7 @@ mod test {
 
         // Two stages were reset, 1 Resolved stage rollback to Unresolved and 1 Completed stage move to Running
         assert_eq!(reset.0.len(), 2);
-        assert_eq!(join_graph.available_tasks(), 1);
+        assert_eq!(join_graph.available_tasks(), 2);
 
         drain_tasks(&mut join_graph)?;
         assert!(join_graph.is_successful(), "Failed to complete join plan");
@@ -1886,13 +1882,10 @@ mod test {
         agg_graph.revive();
 
         assert_eq!(agg_graph.stage_count(), 2);
-        assert_eq!(agg_graph.available_tasks(), 1);
+        assert_eq!(agg_graph.available_tasks(), 2);
 
         // Complete the first stage
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
-            let task_status = mock_completed_task(task, &executor1.id);
-            agg_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
-        }
+        revive_graph_and_complete_next_stage_with_executor(&mut agg_graph, &executor1)?;
 
         // 1st task in the second stage
         if let Some(task) = agg_graph.pop_next_task(&executor2.id)? {
@@ -1920,12 +1913,12 @@ mod test {
 
         // Two stages were reset, 1 Running stage rollback to Unresolved and 1 Completed stage move to Running
         assert_eq!(reset.0.len(), 2);
-        assert_eq!(agg_graph.available_tasks(), 1);
+        assert_eq!(agg_graph.available_tasks(), 2);
 
         // Call the reset again
         let reset = agg_graph.reset_stages_on_lost_executor(&executor1.id)?;
         assert_eq!(reset.0.len(), 0);
-        assert_eq!(agg_graph.available_tasks(), 1);
+        assert_eq!(agg_graph.available_tasks(), 2);
 
         drain_tasks(&mut agg_graph)?;
         assert!(agg_graph.is_successful(), "Failed to complete agg plan");
@@ -1935,24 +1928,20 @@ mod test {
 
     #[tokio::test]
     async fn test_do_not_retry_killed_task() -> Result<()> {
-        let executor1 = mock_executor("executor-id1".to_string());
-        let executor2 = mock_executor("executor-id2".to_string());
+        let executor = mock_executor("executor-id-123".to_string());
         let mut agg_graph = test_aggregation_plan(4).await;
         // Call revive to move the leaf Resolved stages to Running
         agg_graph.revive();
 
         // Complete the first stage
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
-            let task_status = mock_completed_task(task, &executor1.id);
-            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
-        }
+        revive_graph_and_complete_next_stage(&mut agg_graph)?;
 
         // 1st task in the second stage
-        let task1 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
-        let task_status1 = mock_completed_task(task1, &executor2.id);
+        let task1 = agg_graph.pop_next_task(&executor.id)?.unwrap();
+        let task_status1 = mock_completed_task(task1, &executor.id);
 
         // 2rd task in the second stage
-        let task2 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task2 = agg_graph.pop_next_task(&executor.id)?.unwrap();
         let task_status2 = mock_failed_task(
             task2,
             FailedTask {
@@ -1964,7 +1953,7 @@ mod test {
         );
 
         agg_graph.update_task_status(
-            &executor2,
+            &executor,
             vec![task_status1, task_status2],
             4,
             4,
@@ -1983,24 +1972,20 @@ mod test {
 
     #[tokio::test]
     async fn test_max_task_failed_count() -> Result<()> {
-        let executor1 = mock_executor("executor-id1".to_string());
-        let executor2 = mock_executor("executor-id2".to_string());
+        let executor = mock_executor("executor-id2".to_string());
         let mut agg_graph = test_aggregation_plan(2).await;
         // Call revive to move the leaf Resolved stages to Running
         agg_graph.revive();
 
         // Complete the first stage
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
-            let task_status = mock_completed_task(task, &executor1.id);
-            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
-        }
+        revive_graph_and_complete_next_stage(&mut agg_graph)?;
 
         // 1st task in the second stage
-        let task1 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
-        let task_status1 = mock_completed_task(task1, &executor2.id);
+        let task1 = agg_graph.pop_next_task(&executor.id)?.unwrap();
+        let task_status1 = mock_completed_task(task1, &executor.id);
 
         // 2rd task in the second stage, failed due to IOError
-        let task2 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
+        let task2 = agg_graph.pop_next_task(&executor.id)?.unwrap();
         let task_status2 = mock_failed_task(
             task2.clone(),
             FailedTask {
@@ -2012,7 +1997,7 @@ mod test {
         );
 
         agg_graph.update_task_status(
-            &executor2,
+            &executor,
             vec![task_status1, task_status2],
             4,
             4,
@@ -2023,7 +2008,7 @@ mod test {
         let mut last_attempt = 0;
         // 2rd task's attempts
         for attempt in 1..5 {
-            if let Some(task2_attempt) = agg_graph.pop_next_task(&executor2.id)? {
+            if let Some(task2_attempt) = agg_graph.pop_next_task(&executor.id)? {
                 assert_eq!(
                     task2_attempt.partition.partition_id,
                     task2.partition.partition_id
@@ -2041,7 +2026,7 @@ mod test {
                         )),
                     },
                 );
-                agg_graph.update_task_status(&executor2, vec![task_status], 4, 4)?;
+                agg_graph.update_task_status(&executor, vec![task_status], 4, 4)?;
             }
         }
 
@@ -2075,10 +2060,7 @@ mod test {
         agg_graph.revive();
 
         // Complete the Stage 1
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
-            let task_status = mock_completed_task(task, &executor1.id);
-            agg_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
-        }
+        revive_graph_and_complete_next_stage_with_executor(&mut agg_graph, &executor1)?;
 
         // 1st task in the Stage 2
         if let Some(task) = agg_graph.pop_next_task(&executor2.id)? {
@@ -2103,13 +2085,10 @@ mod test {
 
         // Two stages were reset, Stage 2 rollback to Unresolved and Stage 1 move to Running
         assert_eq!(reset.0.len(), 2);
-        assert_eq!(agg_graph.available_tasks(), 1);
+        assert_eq!(agg_graph.available_tasks(), 2);
 
         // Complete the Stage 1 again
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
-            let task_status = mock_completed_task(task, &executor1.id);
-            agg_graph.update_task_status(&executor1, vec![task_status], 1, 1)?;
-        }
+        revive_graph_and_complete_next_stage_with_executor(&mut agg_graph, &executor1)?;
 
         // Stage 2 move to Running
         agg_graph.revive();
@@ -2148,10 +2127,7 @@ mod test {
         agg_graph.revive();
 
         // Complete the Stage 1
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
-            let task_status = mock_completed_task(task, &executor1.id);
-            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
-        }
+        revive_graph_and_complete_next_stage(&mut agg_graph)?;
 
         // 1st task in the Stage 2
         let task1 = agg_graph.pop_next_task(&executor2.id)?.unwrap();
@@ -2198,7 +2174,7 @@ mod test {
         let running_stage = agg_graph.running_stages();
         assert_eq!(running_stage.len(), 1);
         assert_eq!(running_stage[0], 1);
-        assert_eq!(agg_graph.available_tasks(), 1);
+        assert_eq!(agg_graph.available_tasks(), 2);
 
         drain_tasks(&mut agg_graph)?;
         assert!(agg_graph.is_successful(), "Failed to complete agg plan");
@@ -2216,10 +2192,7 @@ mod test {
         assert_eq!(agg_graph.stage_count(), 3);
 
         // Complete the Stage 1
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
-            let task_status = mock_completed_task(task, &executor1.id);
-            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
-        }
+        revive_graph_and_complete_next_stage(&mut agg_graph)?;
 
         // Complete the Stage 2, 5 tasks run on executor_2 and 3 tasks run on executor_1
         for _i in 0..5 {
@@ -2283,10 +2256,7 @@ mod test {
         agg_graph.revive();
 
         for attempt in 0..6 {
-            if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
-                let task_status = mock_completed_task(task, &executor1.id);
-                agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
-            }
+            revive_graph_and_complete_next_stage(&mut agg_graph)?;
 
             // 1rd task in the Stage 2, failed due to FetchPartitionError
             if let Some(task1) = agg_graph.pop_next_task(&executor2.id)? {
@@ -2318,7 +2288,7 @@ mod test {
                     let running_stage = agg_graph.running_stages();
                     assert_eq!(running_stage.len(), 1);
                     assert_eq!(running_stage[0], 1);
-                    assert_eq!(agg_graph.available_tasks(), 1);
+                    assert_eq!(agg_graph.available_tasks(), 2);
                 } else {
                     // Job is failed after exceeds the max_stage_failures
                     assert_eq!(stage_events.len(), 1);
@@ -2355,10 +2325,7 @@ mod test {
         assert_eq!(agg_graph.stage_count(), 3);
 
         // Complete the Stage 1
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
-            let task_status = mock_completed_task(task, &executor1.id);
-            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
-        }
+        revive_graph_and_complete_next_stage(&mut agg_graph)?;
 
         // Complete the Stage 2, 5 tasks run on executor_2, 2 tasks run on executor_1, 1 task runs on executor_3
         for _i in 0..5 {
@@ -2559,10 +2526,7 @@ mod test {
         assert_eq!(agg_graph.stage_count(), 3);
 
         // Complete the Stage 1
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
-            let task_status = mock_completed_task(task, &executor1.id);
-            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
-        }
+        revive_graph_and_complete_next_stage(&mut agg_graph)?;
 
         // Complete the Stage 2, 5 tasks run on executor_2, 3 tasks run on executor_1
         for _i in 0..5 {
@@ -2662,10 +2626,7 @@ mod test {
         assert_eq!(agg_graph.stage_count(), 3);
 
         // Complete the Stage 1
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
-            let task_status = mock_completed_task(task, &executor1.id);
-            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
-        }
+        revive_graph_and_complete_next_stage(&mut agg_graph)?;
 
         // Complete the Stage 2, 5 tasks run on executor_2, 3 tasks run on executor_1
         for _i in 0..5 {
@@ -2735,7 +2696,7 @@ mod test {
         let running_stage = agg_graph.running_stages();
         assert_eq!(running_stage.len(), 1);
         assert_eq!(running_stage[0], 1);
-        assert_eq!(agg_graph.available_tasks(), 1);
+        assert_eq!(agg_graph.available_tasks(), 2);
 
         // There are two failed stage attempts: Stage 2 and Stage 3
         assert_eq!(agg_graph.failed_stage_attempts.len(), 2);
@@ -2759,14 +2720,9 @@ mod test {
         let executor1 = mock_executor("executor-id1".to_string());
         let executor2 = mock_executor("executor-id2".to_string());
         let mut agg_graph = test_aggregation_plan(4).await;
-        // Call revive to move the leaf Resolved stages to Running
-        agg_graph.revive();
 
         // Complete the Stage 1
-        if let Some(task) = agg_graph.pop_next_task(&executor1.id)? {
-            let task_status = mock_completed_task(task, &executor1.id);
-            agg_graph.update_task_status(&executor1, vec![task_status], 4, 4)?;
-        }
+        revive_graph_and_complete_next_stage(&mut agg_graph)?;
 
         // 1st task in the Stage 2
         let task1 = agg_graph.pop_next_task(&executor2.id)?.unwrap();

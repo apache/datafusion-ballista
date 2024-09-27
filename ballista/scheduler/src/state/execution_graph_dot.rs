@@ -432,13 +432,13 @@ mod tests {
         let expected = r#"digraph G {
 	subgraph cluster0 {
 		label = "Stage 1 [Resolved]";
-		stage_1_0 [shape=box, label="ShuffleWriter [0 partitions]"]
+		stage_1_0 [shape=box, label="ShuffleWriter [2 partitions]"]
 		stage_1_0_0 [shape=box, label="MemoryExec"]
 		stage_1_0_0 -> stage_1_0
 	}
 	subgraph cluster1 {
 		label = "Stage 2 [Resolved]";
-		stage_2_0 [shape=box, label="ShuffleWriter [0 partitions]"]
+		stage_2_0 [shape=box, label="ShuffleWriter [2 partitions]"]
 		stage_2_0_0 [shape=box, label="MemoryExec"]
 		stage_2_0_0 -> stage_2_0
 	}
@@ -462,7 +462,7 @@ filter_expr="]
 	}
 	subgraph cluster3 {
 		label = "Stage 4 [Resolved]";
-		stage_4_0 [shape=box, label="ShuffleWriter [0 partitions]"]
+		stage_4_0 [shape=box, label="ShuffleWriter [2 partitions]"]
 		stage_4_0_0 [shape=box, label="MemoryExec"]
 		stage_4_0_0 -> stage_4_0
 	}
@@ -531,19 +531,19 @@ filter_expr="]
         let expected = r#"digraph G {
 	subgraph cluster0 {
 		label = "Stage 1 [Resolved]";
-		stage_1_0 [shape=box, label="ShuffleWriter [0 partitions]"]
+		stage_1_0 [shape=box, label="ShuffleWriter [2 partitions]"]
 		stage_1_0_0 [shape=box, label="MemoryExec"]
 		stage_1_0_0 -> stage_1_0
 	}
 	subgraph cluster1 {
 		label = "Stage 2 [Resolved]";
-		stage_2_0 [shape=box, label="ShuffleWriter [0 partitions]"]
+		stage_2_0 [shape=box, label="ShuffleWriter [2 partitions]"]
 		stage_2_0_0 [shape=box, label="MemoryExec"]
 		stage_2_0_0 -> stage_2_0
 	}
 	subgraph cluster2 {
 		label = "Stage 3 [Resolved]";
-		stage_3_0 [shape=box, label="ShuffleWriter [0 partitions]"]
+		stage_3_0 [shape=box, label="ShuffleWriter [2 partitions]"]
 		stage_3_0_0 [shape=box, label="MemoryExec"]
 		stage_3_0_0 -> stage_3_0
 	}
@@ -635,7 +635,7 @@ filter_expr="]
             Field::new("a", DataType::UInt32, false),
             Field::new("b", DataType::UInt32, false),
         ]));
-        let table = Arc::new(MemTable::try_new(schema.clone(), vec![])?);
+        let table = Arc::new(MemTable::try_new(schema.clone(), vec![vec![], vec![]])?);
         ctx.register_table("foo", table.clone())?;
         ctx.register_table("bar", table.clone())?;
         ctx.register_table("baz", table)?;
@@ -660,7 +660,8 @@ filter_expr="]
         let ctx = SessionContext::new_with_config(config);
         let schema =
             Arc::new(Schema::new(vec![Field::new("a", DataType::UInt32, false)]));
-        let table = Arc::new(MemTable::try_new(schema.clone(), vec![])?);
+        // we specify the input partitions to be > 1 because of https://github.com/apache/datafusion/issues/12611
+        let table = Arc::new(MemTable::try_new(schema.clone(), vec![vec![], vec![]])?);
         ctx.register_table("foo", table.clone())?;
         ctx.register_table("bar", table.clone())?;
         ctx.register_table("baz", table)?;
