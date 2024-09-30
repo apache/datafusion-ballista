@@ -17,9 +17,9 @@
 
 [package]
 name = "kapot-executor"
+version = "0.1.0"
 description = "kapot Distributed Compute - Executor"
 license = "Apache-2.0"
-version = "0.12.0"
 homepage = "https://github.com/apache/arrow-kapot"
 repository = "https://github.com/apache/arrow-kapot"
 readme = "README.md"
@@ -41,7 +41,7 @@ anyhow = "1"
 arrow = { workspace = true }
 arrow-flight = { workspace = true }
 async-trait = "0.1.41"
-kapot-core = { path = "../core", version = "0.12.0", features = ["s3"] }
+kapot-core = { path = "../core", features = ["s3"] }
 chrono = { version = "0.4", default-features = false }
 configure_me = { workspace = true }
 dashmap = { workspace = true }

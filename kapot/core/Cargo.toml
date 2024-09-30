@@ -17,9 +17,9 @@
 
 [package]
 name = "kapot-core"
+version = "0.1.0"
 description = "kapot Distributed Compute"
 license = "Apache-2.0"
-version = "0.12.0"
 homepage = "https://github.com/apache/arrow-kapot"
 repository = "https://github.com/apache/arrow-kapot"
 readme = "README.md"
@@ -48,7 +48,7 @@ s3 = ["object_store/aws"]
 ahash = { version = "0.8", default-features = false }
 arrow-flight = { workspace = true }
 async-trait = "0.1.41"
-kapot-cache = { path = "../cache", version = "0.12.0" }
+kapot-cache = { path = "../cache" }
 bytes = "1.0"
 chrono = { version = "0.4", default-features = false }
 clap = { workspace = true }

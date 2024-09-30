@@ -20,6 +20,9 @@ exclude = ["python"]
 members = ["kapot-cli", "kapot/cache", "kapot/client", "kapot/core", "kapot/executor", "kapot/scheduler", "examples"]
 resolver = "2"
 
+[workspace.package]
+version = "0.1.0"
+
 [workspace.dependencies]
 clap = { version = "4.5", features = ["derive", "cargo"] }
 rustyline = {version = "14.0", features = ["derive"] }
