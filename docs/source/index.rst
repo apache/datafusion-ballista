@@ -16,7 +16,7 @@
 .. under the License.
 
 =====================
-Apache DataFusion Ballista
+Apache DataFusion kapot
 =====================
 
 Table of content
@@ -65,7 +65,7 @@ Table of content
    contributors-guide/architecture
    contributors-guide/code-organization
    contributors-guide/development
-   Source code <https://github.com/apache/datafusion-ballista/>
+   Source code <https://github.com/apache/datafusion-kapot/>
 
 .. _toc.community:
 
@@ -75,5 +75,5 @@ Table of content
 
    community/communication
 
-   Issue tracker <https://github.com/apache/datafusion-ballista/issues>
-   Code of conduct <https://github.com/apache/datafusion-ballista/blob/main/CODE_OF_CONDUCT.md>
+   Issue tracker <https://github.com/apache/datafusion-kapot/issues>
+   Code of conduct <https://github.com/apache/datafusion-kapot/blob/main/CODE_OF_CONDUCT.md>

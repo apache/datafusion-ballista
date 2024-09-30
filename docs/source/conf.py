@@ -33,7 +33,7 @@
 
 # -- Project information -----------------------------------------------------
 
-project = 'Apache DataFusion Ballista'
+project = 'Apache DataFusion kapot'
 copyright = '2019-2024, Apache Software Foundation'
 author = 'Apache Software Foundation'
 
@@ -90,7 +90,7 @@ html_theme_options = {
 
 html_context = {
     "github_user": "apache",
-    "github_repo": "datafusion-ballista",
+    "github_repo": "datafusion-kapot",
     "github_version": "main",
     "doc_path": "docs/source",
 }
@@ -100,7 +100,7 @@ html_context = {
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ['_static']
 
-html_logo = "_static/images/ballista-logo.png"
+html_logo = "_static/images/kapot-logo.png"
 
 html_css_files = ["theme_overrides.css"]
 

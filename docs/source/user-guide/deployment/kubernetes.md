@@ -17,17 +17,17 @@
   under the License.
 -->
 
-# Deploying Ballista with Kubernetes
+# Deploying kapot with Kubernetes
 
-Ballista can be deployed to any Kubernetes cluster using the following instructions. These instructions assume that
+kapot can be deployed to any Kubernetes cluster using the following instructions. These instructions assume that
 you are already comfortable managing Kubernetes deployments.
 
-The Ballista deployment consists of:
+The kapot deployment consists of:
 
 - k8s deployment for one or more scheduler processes
 - k8s deployment for one or more executor processes
 - k8s service to route traffic to the schedulers
-- k8s persistent volume and persistent volume claims to make local data accessible to Ballista
+- k8s persistent volume and persistent volume claims to make local data accessible to kapot
 - _(optional)_ a [keda](http://keda.sh) instance for autoscaling the number of executors
 
 ## Testing Locally
@@ -41,44 +41,44 @@ microk8s enable dns
 
 ## Build Docker Images
 
-Run the following commands to download the [official Docker image](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone):
+Run the following commands to download the [official Docker image](https://github.com/apache/datafusion-kapot/pkgs/container/datafusion-kapot-standalone):
 
 ```bash
-docker pull ghcr.io/apache/datafusion-ballista-standalone:0.12.0-rc4
+docker pull ghcr.io/apache/datafusion-kapot-standalone:0.12.0-rc4
 ```
 
 Altenatively run the following commands to clone the source repository and build the Docker images from source:
 
 ```bash
-git clone git@github.com:apache/datafusion-ballista.git -b 0.12.0
-cd datafusion-ballista
-./dev/build-ballista-docker.sh
+git clone git@github.com:apache/datafusion-kapot.git -b 0.12.0
+cd datafusion-kapot
+./dev/build-kapot-docker.sh
 ```
 
 This will create the following images:
 
-- `apache/datafusion-ballista-benchmarks:0.12.0`
-- `apache/datafusion-ballista-cli:0.12.0`
-- `apache/datafusion-ballista-executor:0.12.0`
-- `apache/datafusion-ballista-scheduler:0.12.0`
-- `apache/datafusion-ballista-standalone:0.12.0`
+- `apache/datafusion-kapot-benchmarks:0.12.0`
+- `apache/datafusion-kapot-cli:0.12.0`
+- `apache/datafusion-kapot-executor:0.12.0`
+- `apache/datafusion-kapot-scheduler:0.12.0`
+- `apache/datafusion-kapot-standalone:0.12.0`
 
 ## Publishing Docker Images
 
 Once the images have been built, you can retag them and can push them to your favourite Docker registry.
 
 ```bash
-docker tag apache/datafusion-ballista-scheduler:0.12.0 <your-repo>/datafusion-ballista-scheduler:0.12.0
-docker tag apache/datafusion-ballista-executor:0.12.0 <your-repo>/datafusion-ballista-executor:0.12.0
-docker push <your-repo>/datafusion-ballista-scheduler:0.12.0
-docker push <your-repo>/datafusion-ballista-executor:0.12.0
+docker tag apache/datafusion-kapot-scheduler:0.12.0 <your-repo>/datafusion-kapot-scheduler:0.12.0
+docker tag apache/datafusion-kapot-executor:0.12.0 <your-repo>/datafusion-kapot-executor:0.12.0
+docker push <your-repo>/datafusion-kapot-scheduler:0.12.0
+docker push <your-repo>/datafusion-kapot-executor:0.12.0
 ```
 
 ## Create Persistent Volume and Persistent Volume Claim
 
 Copy the following yaml to a `pv.yaml` file and apply to the cluster to create a persistent volume and a persistent
 volume claim so that the specified host directory is available to the containers. This is where any data should be
-located so that Ballista can execute queries against it.
+located so that kapot can execute queries against it.
 
 ```yaml
 apiVersion: v1
@@ -122,17 +122,17 @@ persistentvolume/data-pv created
 persistentvolumeclaim/data-pv-claim created
 ```
 
-## Deploying a Ballista Cluster
+## Deploying a kapot Cluster
 
-Copy the following yaml to a `cluster.yaml` file and change `<your-image>` with the name of your Ballista Docker image.
+Copy the following yaml to a `cluster.yaml` file and change `<your-image>` with the name of your kapot Docker image.
 
 ```yaml
 apiVersion: v1
 kind: Service
 metadata:
-  name: ballista-scheduler
+  name: kapot-scheduler
   labels:
-    app: ballista-scheduler
+    app: kapot-scheduler
 spec:
   ports:
     - port: 50050
@@ -140,26 +140,26 @@ spec:
     - port: 80
       name: scheduler-ui
   selector:
-    app: ballista-scheduler
+    app: kapot-scheduler
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ballista-scheduler
+  name: kapot-scheduler
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: ballista-scheduler
+      app: kapot-scheduler
   template:
     metadata:
       labels:
-        app: ballista-scheduler
-        ballista-cluster: ballista
+        app: kapot-scheduler
+        kapot-cluster: kapot
     spec:
       containers:
-        - name: ballista-scheduler
-          image: <your-repo>/datafusion-ballista-scheduler:0.12.0
+        - name: kapot-scheduler
+          image: <your-repo>/datafusion-kapot-scheduler:0.12.0
           args: ["--bind-port=50050"]
           ports:
             - containerPort: 50050
@@ -177,24 +177,24 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ballista-executor
+  name: kapot-executor
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: ballista-executor
+      app: kapot-executor
   template:
     metadata:
       labels:
-        app: ballista-executor
-        ballista-cluster: ballista
+        app: kapot-executor
+        kapot-cluster: kapot
     spec:
       containers:
-        - name: ballista-executor
-          image: <your-repo>/datafusion-ballista-executor:0.12.0
+        - name: kapot-executor
+          image: <your-repo>/datafusion-kapot-executor:0.12.0
           args:
             - "--bind-port=50051"
-            - "--scheduler-host=ballista-scheduler"
+            - "--scheduler-host=kapot-scheduler"
             - "--scheduler-port=50050"
           ports:
             - containerPort: 50051
@@ -215,9 +215,9 @@ $ kubectl apply -f cluster.yaml
 This should show the following output:
 
 ```
-service/ballista-scheduler created
-deployment.apps/ballista-scheduler created
-deployment.apps/ballista-executor created
+service/kapot-scheduler created
+deployment.apps/kapot-scheduler created
+deployment.apps/kapot-executor created
 ```
 
 You can also check status by running `kubectl get pods`:
@@ -225,18 +225,18 @@ You can also check status by running `kubectl get pods`:
 ```bash
 $ kubectl get pods
 NAME                                 READY   STATUS    RESTARTS   AGE
-ballista-executor-78cc5b6486-4rkn4   0/1     Pending   0          42s
-ballista-executor-78cc5b6486-7crdm   0/1     Pending   0          42s
-ballista-scheduler-879f874c5-rnbd6   0/1     Pending   0          42s
+kapot-executor-78cc5b6486-4rkn4   0/1     Pending   0          42s
+kapot-executor-78cc5b6486-7crdm   0/1     Pending   0          42s
+kapot-scheduler-879f874c5-rnbd6   0/1     Pending   0          42s
 ```
 
-You can view the scheduler logs with `kubectl logs ballista-scheduler-0`:
+You can view the scheduler logs with `kubectl logs kapot-scheduler-0`:
 
 ```
-$ kubectl logs ballista-scheduler-0
-[2021-02-19T00:24:01Z INFO  scheduler] Ballista v0.7.0 Scheduler listening on 0.0.0.0:50050
-[2021-02-19T00:24:16Z INFO  ballista::scheduler] Received register_executor request for ExecutorMetadata { id: "b5e81711-1c5c-46ec-8522-d8b359793188", host: "10.1.23.149", port: 50051 }
-[2021-02-19T00:24:17Z INFO  ballista::scheduler] Received register_executor request for ExecutorMetadata { id: "816e4502-a876-4ed8-b33f-86d243dcf63f", host: "10.1.23.150", port: 50051 }
+$ kubectl logs kapot-scheduler-0
+[2021-02-19T00:24:01Z INFO  scheduler] kapot v0.7.0 Scheduler listening on 0.0.0.0:50050
+[2021-02-19T00:24:16Z INFO  kapot::scheduler] Received register_executor request for ExecutorMetadata { id: "b5e81711-1c5c-46ec-8522-d8b359793188", host: "10.1.23.149", port: 50051 }
+[2021-02-19T00:24:17Z INFO  kapot::scheduler] Received register_executor request for ExecutorMetadata { id: "816e4502-a876-4ed8-b33f-86d243dcf63f", host: "10.1.23.150", port: 50051 }
 ```
 
 ## Port Forwarding
@@ -244,22 +244,22 @@ $ kubectl logs ballista-scheduler-0
 If you want to run applications outside of the cluster and have them connect to the scheduler then it is necessary to
 set up port forwarding.
 
-First, check that the `ballista-scheduler` service is running.
+First, check that the `kapot-scheduler` service is running.
 
 ```bash
 $ kubectl get services
 NAME                 TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)     AGE
 kubernetes           ClusterIP   10.152.183.1    <none>        443/TCP     26h
-ballista-scheduler   ClusterIP   10.152.183.21   <none>        50050/TCP   24m
+kapot-scheduler   ClusterIP   10.152.183.21   <none>        50050/TCP   24m
 ```
 
 Use the following command to set up port-forwarding.
 
 ```bash
-kubectl port-forward service/ballista-scheduler 50050:50050
+kubectl port-forward service/kapot-scheduler 50050:50050
 ```
 
-## Deleting the Ballista Cluster
+## Deleting the kapot Cluster
 
 Run the following kubectl command to delete the cluster.
 
@@ -269,8 +269,8 @@ kubectl delete -f cluster.yaml
 
 ## Autoscaling Executors
 
-Ballista supports autoscaling for executors through [Keda](http://keda.sh). Keda allows scaling a deployment
-through custom metrics which are exposed through the Ballista scheduler, and it can even scale the number of
+kapot supports autoscaling for executors through [Keda](http://keda.sh). Keda allows scaling a deployment
+through custom metrics which are exposed through the kapot scheduler, and it can even scale the number of
 executors down to 0 if there is no activity in the cluster.
 
 Keda can be installed in your kubernetes cluster through a single command line:
@@ -287,17 +287,17 @@ which will let Keda know how to scale your executors. In order to do that, copy 
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
-  name: ballista-executor
+  name: kapot-executor
 spec:
   scaleTargetRef:
-    name: ballista-executor
+    name: kapot-executor
   minReplicaCount: 0
   maxReplicaCount: 5
   triggers:
     - type: external
       metadata:
         # Change this DNS if the scheduler isn't deployed in the "default" namespace
-        scalerAddress: ballista-scheduler.default.svc.cluster.local:50050
+        scalerAddress: kapot-scheduler.default.svc.cluster.local:50050
 ```
 
 And then deploy it into the cluster:

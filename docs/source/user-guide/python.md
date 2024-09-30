@@ -17,20 +17,20 @@
   under the License.
 -->
 
-# Ballista Python Bindings
+# kapot Python Bindings
 
-Ballista provides Python bindings, allowing SQL and DataFrame queries to be executed from the Python shell.
+kapot provides Python bindings, allowing SQL and DataFrame queries to be executed from the Python shell.
 
 Like PySpark, it allows you to build a plan through SQL or a DataFrame API against Parquet, CSV, JSON, and other
 popular file formats files, run it in a distributed environment, and obtain the result back in Python.
 
 ## Connecting to a Cluster
 
-The following code demonstrates how to create a Ballista context and connect to a scheduler.
+The following code demonstrates how to create a kapot context and connect to a scheduler.
 
 ```text
->>> import ballista
->>> ctx = ballista.BallistaContext("localhost", 50050)
+>>> import kapot
+>>> ctx = kapot.kapotContext("localhost", 50050)
 ```
 
 ## SQL
@@ -100,17 +100,17 @@ The `explain` method can be used to show the logical and physical query plans fo
 
 ## DataFrame
 
-The following example demonstrates creating arrays with PyArrow and then creating a Ballista DataFrame.
+The following example demonstrates creating arrays with PyArrow and then creating a kapot DataFrame.
 
 ```python
-import ballista
+import kapot
 import pyarrow
 
 # an alias
-f = ballista.functions
+f = kapot.functions
 
 # create a context
-ctx = ballista.BallistaContext("localhost", 50050)
+ctx = kapot.kapotContext("localhost", 50050)
 
 # create a RecordBatch and a new DataFrame from it
 batch = pyarrow.RecordBatch.from_arrays(
@@ -135,4 +135,4 @@ assert result.column(1) == pyarrow.array([-3, -3, -3])
 ## User Defined Functions
 
 The underlying DataFusion query engine supports Python UDFs but this functionality has not yet been implemented in
-Ballista. It is planned for a future release. The tracking issue is [#173](https://github.com/apache/datafusion-ballista/issues/173).
+kapot. It is planned for a future release. The tracking issue is [#173](https://github.com/apache/datafusion-kapot/issues/173).

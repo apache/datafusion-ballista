@@ -17,13 +17,13 @@
   under the License.
 -->
 
-# Ballista Scheduler
+# kapot Scheduler
 
 ## Web User Interface
 
-The scheduler provides a web user interface that allows queries to be monitored. Details on how to start the ui is present [here](https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler/ui)
+The scheduler provides a web user interface that allows queries to be monitored. Details on how to start the ui is present [here](https://github.com/apache/datafusion-kapot/tree/main/kapot/scheduler/ui)
 
-![Ballista Scheduler Web UI](./images/ballista-web-ui.png)
+![kapot Scheduler Web UI](./images/kapot-web-ui.png)
 
 ## REST API
 

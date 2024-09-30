@@ -17,34 +17,34 @@
   under the License.
 -->
 
-# Ballista Command-line Interface
+# kapot Command-line Interface
 
-The Ballista CLI allows SQL queries to be executed against a Ballista cluster, or in standalone mode in a single
+The kapot CLI allows SQL queries to be executed against a kapot cluster, or in standalone mode in a single
 process.
 
 Use Cargo to install:
 
 ```bash
-cargo install ballista-cli
+cargo install kapot-cli
 ```
 
 ## Usage
 
 ```
 USAGE:
-    ballista-cli [OPTIONS]
+    kapot-cli [OPTIONS]
 
 OPTIONS:
-    -c, --batch-size <BATCH_SIZE>    The batch size of each query, or use Ballista default
+    -c, --batch-size <BATCH_SIZE>    The batch size of each query, or use kapot default
     -f, --file <FILE>...             Execute commands from file(s), then exit
         --format <FORMAT>            [default: table] [possible values: csv, tsv, table, json,
                                      nd-json]
     -h, --help                       Print help information
-        --host <HOST>                Ballista scheduler host
+        --host <HOST>                kapot scheduler host
     -p, --data-path <DATA_PATH>      Path to your data, default to current directory
-        --port <PORT>                Ballista scheduler port
+        --port <PORT>                kapot scheduler port
     -q, --quiet                      Reduce printing other than the results and work quietly
-    -r, --rc <RC>...                 Run the provided files on startup instead of ~/.ballistarc
+    -r, --rc <RC>...                 Run the provided files on startup instead of ~/.kapotrc
     -V, --version                    Print version information
 ```
 
@@ -56,22 +56,22 @@ Create a CSV file to query.
 $ echo "1,2" > data.csv
 ```
 
-## Run Ballista CLI in Distributed Mode
+## Run kapot CLI in Distributed Mode
 
-The CLI can connect to a Ballista scheduler for query execution.
+The CLI can connect to a kapot scheduler for query execution.
 
 ```bash
-ballista-cli --host localhost --port 50050
+kapot-cli --host localhost --port 50050
 ```
 
-## Run Ballista CLI in Standalone Mode
+## Run kapot CLI in Standalone Mode
 
 It is also possible to run the CLI in standalone mode, where it will create a scheduler and executor in-process.
 
 ```bash
-$ ballista-cli
+$ kapot-cli
 
-Ballista CLI v8.0.0
+kapot CLI v8.0.0
 
 > CREATE EXTERNAL TABLE foo (a INT, b INT) STORED AS CSV LOCATION 'data.csv';
 0 rows in set. Query took 0.001 seconds.
@@ -87,7 +87,7 @@ Ballista CLI v8.0.0
 
 ## Cli commands
 
-Available commands inside Ballista CLI are:
+Available commands inside kapot CLI are:
 
 - Quit
 

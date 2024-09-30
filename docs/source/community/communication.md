@@ -22,7 +22,7 @@
 We welcome participation from everyone and encourage you to join us, ask
 questions, and get involved.
 
-All participation in the Apache DataFusion Ballista project is governed by the
+All participation in the Apache DataFusion kapot project is governed by the
 Apache Software Foundation's [code of
 conduct](https://www.apache.org/foundation/policies/conduct.html).
 
@@ -33,9 +33,9 @@ We use the same communication channels as the main DataFusion project:
 ## Contributing
 
 Our source code is hosted on
-[GitHub](https://github.com/apache/datafusion-ballista). More information on contributing is in
-the [Contribution Guide](https://github.com/apache/datafusion-ballista/blob/main/CONTRIBUTING.md)
-, and we have curated a [good-first-issue](https://github.com/apache/datafusion-ballista/contribute)
+[GitHub](https://github.com/apache/datafusion-kapot). More information on contributing is in
+the [Contribution Guide](https://github.com/apache/datafusion-kapot/blob/main/CONTRIBUTING.md)
+, and we have curated a [good-first-issue](https://github.com/apache/datafusion-kapot/contribute)
 list to help you get started. You can find datafusion's major designs in docs/source/specification.
 
 We use GitHub issues for maintaining a queue of development work and as the

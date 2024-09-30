@@ -17,11 +17,11 @@
   under the License.
 -->
 
-# Ballista Architecture
+# kapot Architecture
 
 ## Overview
 
-Ballista allows queries to be executed in a distributed cluster. A cluster consists of one or
+kapot allows queries to be executed in a distributed cluster. A cluster consists of one or
 more scheduler processes and one or more executor processes.
 
 The scheduler accepts logical query plans and translates them into physical query plans using DataFusion and then
@@ -34,7 +34,7 @@ dependencies between query stages and these dependencies form a directionally-ac
 stage cannot start until its child query stages have completed.
 
 Each query stage has one or more partitions that can be processed in parallel by the available
-executors in the cluster. This is the basic unit of scalability in Ballista.
+executors in the cluster. This is the basic unit of scalability in kapot.
 
 The output of each query stage is persisted to disk and future query stages will request this data from the executors
 that produced it. The persisted output will be partitioned according to the partitioning scheme that was defined for
@@ -51,7 +51,7 @@ processes.
 ## Scheduler Process
 
 The scheduler process implements a gRPC interface (defined in
-[ballista.proto](../../ballista/core/proto/ballista.proto)). The interface provides the following methods:
+[kapot.proto](../../kapot/core/proto/kapot.proto)). The interface provides the following methods:
 
 | Method               | Description                                                          |
 | -------------------- | -------------------------------------------------------------------- |
@@ -74,7 +74,7 @@ The executor process implements the Apache Arrow Flight gRPC interface and is re
 
 ## Rust Client
 
-The Rust client provides a `BallistaContext` that allows queries to be built using DataFrames or SQL (or both).
+The Rust client provides a `kapotContext` that allows queries to be built using DataFrames or SQL (or both).
 
 The client executes the query plan by submitting an `ExecuteQuery` request to the scheduler and then calls
 `GetJobStatus` to check for completion. On completion, the client receives a list of locations for the Flights

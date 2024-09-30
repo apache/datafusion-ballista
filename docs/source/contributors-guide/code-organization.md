@@ -17,39 +17,39 @@
   under the License.
 -->
 
-## Ballista Code Organization
+## kapot Code Organization
 
 This section provides links to the source code for major areas of functionality.
 
-### ballista-core crate
+### kapot-core crate
 
-- [Crate Source](https://github.com/apache/datafusion-ballista/blob/main/ballista/core)
-- [Protocol Buffer Definition](https://github.com/apache/datafusion-ballista/blob/main/ballista/core/proto/ballista.proto)
-- [Execution Plans](https://github.com/apache/datafusion-ballista/tree/main/ballista/core/src/execution_plans)
-- [Ballista Client](https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/client.rs)
+- [Crate Source](https://github.com/apache/datafusion-kapot/blob/main/kapot/core)
+- [Protocol Buffer Definition](https://github.com/apache/datafusion-kapot/blob/main/kapot/core/proto/kapot.proto)
+- [Execution Plans](https://github.com/apache/datafusion-kapot/tree/main/kapot/core/src/execution_plans)
+- [kapot Client](https://github.com/apache/datafusion-kapot/blob/main/kapot/core/src/client.rs)
 
-### ballista-scheduler crate
+### kapot-scheduler crate
 
-- [Crate Source](https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler)
-- [Distributed Query Planner](https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/planner.rs)
-- [gRPC Service](https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/scheduler_server/grpc.rs)
-- [Flight SQL Service](https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/flight_sql.rs)
-- [REST API](https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler/src/api)
-- [Web UI](https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler/ui)
-- [Prometheus Integration](https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/metrics/prometheus.rs)
+- [Crate Source](https://github.com/apache/datafusion-kapot/tree/main/kapot/scheduler)
+- [Distributed Query Planner](https://github.com/apache/datafusion-kapot/blob/main/kapot/scheduler/src/planner.rs)
+- [gRPC Service](https://github.com/apache/datafusion-kapot/blob/main/kapot/scheduler/src/scheduler_server/grpc.rs)
+- [Flight SQL Service](https://github.com/apache/datafusion-kapot/blob/main/kapot/scheduler/src/flight_sql.rs)
+- [REST API](https://github.com/apache/datafusion-kapot/tree/main/kapot/scheduler/src/api)
+- [Web UI](https://github.com/apache/datafusion-kapot/tree/main/kapot/scheduler/ui)
+- [Prometheus Integration](https://github.com/apache/datafusion-kapot/blob/main/kapot/scheduler/src/metrics/prometheus.rs)
 
-### ballista-executor crate
+### kapot-executor crate
 
-- [Crate Source](https://github.com/apache/datafusion-ballista/tree/main/ballista/executor)
-- [Flight Service](https://github.com/apache/datafusion-ballista/blob/main/ballista/executor/src/flight_service.rs)
-- [Executor Server](https://github.com/apache/datafusion-ballista/blob/main/ballista/executor/src/executor_server.rs)
+- [Crate Source](https://github.com/apache/datafusion-kapot/tree/main/kapot/executor)
+- [Flight Service](https://github.com/apache/datafusion-kapot/blob/main/kapot/executor/src/flight_service.rs)
+- [Executor Server](https://github.com/apache/datafusion-kapot/blob/main/kapot/executor/src/executor_server.rs)
 
-### ballista crate
+### kapot crate
 
-- [Crate Source](https://github.com/apache/datafusion-ballista/tree/main/ballista/client)
-- [Context](https://github.com/apache/datafusion-ballista/blob/main/ballista/client/src/context.rs)
+- [Crate Source](https://github.com/apache/datafusion-kapot/tree/main/kapot/client)
+- [Context](https://github.com/apache/datafusion-kapot/blob/main/kapot/client/src/context.rs)
 
-### PyBallista
+### Pykapot
 
-- [Source](https://github.com/apache/datafusion-ballista/tree/main/python)
-- [Context](https://github.com/apache/datafusion-ballista/blob/main/python/src/context.rs)
+- [Source](https://github.com/apache/datafusion-kapot/tree/main/python)
+- [Context](https://github.com/apache/datafusion-kapot/blob/main/python/src/context.rs)

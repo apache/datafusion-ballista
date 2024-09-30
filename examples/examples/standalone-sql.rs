@@ -15,17 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista::prelude::{BallistaConfig, BallistaContext, Result};
-use ballista_examples::test_util;
+use kapot::prelude::{KapotConfig, KapotContext, Result};
+use kapot_examples::test_util;
 use datafusion::execution::options::ParquetReadOptions;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitions", "1")
+    let config = KapotConfig::builder()
+        .set("kapot.shuffle.partitions", "1")
         .build()?;
 
-    let ctx = BallistaContext::standalone(&config, 2).await?;
+    let ctx = KapotContext::standalone(&config, 2).await?;
 
     let testdata = test_util::examples_test_data();
 

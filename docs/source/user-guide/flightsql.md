@@ -17,14 +17,14 @@
   under the License.
 -->
 
-# Using FlightSQL to Connect to Ballista
+# Using FlightSQL to Connect to kapot
 
-One of the easiest ways to start with Ballista is to plug it into your existing data infrastructure using support for Arrow Flight SQL JDBC.
+One of the easiest ways to start with kapot is to plug it into your existing data infrastructure using support for Arrow Flight SQL JDBC.
 
 Getting started involves these main steps:
 
 1. [Installing prerequisites](#prereq)
-2. Run the [Ballista docker container](#docker)
+2. Run the [kapot docker container](#docker)
 3. Download the [Arrow Flight SQL JDBC Driver](#jdbc)
 4. [Install the driver](#tool) into your favorite JDBC tool
 5. Run a ["hello, world!"](#hello) query
@@ -54,7 +54,7 @@ choco install docker-desktop
 ## <a name="docker"/> Run Docker Container
 
 ```shell
-docker run -p 50050:50050 --rm ghcr.io/apache/datafusion-ballista-standalone:0.10.0
+docker run -p 50050:50050 --rm ghcr.io/apache/datafusion-kapot-standalone:0.10.0
 ```
 
 ## <a name="jdbc"/>Download the FlightSQL JDBC Driver
@@ -79,7 +79,7 @@ The important pieces of information:
 ## <a name="hello"/>Run a "Hello, World!" Query
 
 ```sql
-select 'Hello from DataFusion Ballista!' as greeting;
+select 'Hello from DataFusion kapot!' as greeting;
 ```
 
 ## <a name="complex"/>Run a Complex Query

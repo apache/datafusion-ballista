@@ -21,50 +21,50 @@ services:
     command: "etcd -advertise-client-urls http://etcd:2379 -listen-client-urls http://0.0.0.0:2379"
     ports:
       - "2379:2379"
-  ballista-scheduler:
-    image: ballista-scheduler
+  kapot-scheduler:
+    image: kapot-scheduler
     build:
-      dockerfile: dev/docker/ballista-scheduler.Dockerfile
+      dockerfile: dev/docker/kapot-scheduler.Dockerfile
       context: .
     command: "--cluster-backend etcd --etcd-urls etcd:2379 --bind-host 0.0.0.0"
     ports:
       - "80:80"
       - "50050:50050"
     environment:
-      - RUST_LOG=ballista=info
+      - RUST_LOG=kapot=info
     volumes:
       - ./benchmarks/data:/data
     depends_on:
       - etcd
     healthcheck:
-      test: ["CMD", "nc", "-z", "ballista-scheduler", "50050"]
+      test: ["CMD", "nc", "-z", "kapot-scheduler", "50050"]
       interval: 5s
       timeout: 5s
       retries: 5
-  ballista-executor:
-    image: ballista-executor
+  kapot-executor:
+    image: kapot-executor
     build:
-      dockerfile: dev/docker/ballista-executor.Dockerfile
+      dockerfile: dev/docker/kapot-executor.Dockerfile
       context: .
-    command: "--bind-host 0.0.0.0 --scheduler-host ballista-scheduler --scheduler-connect-timeout-seconds 15"
+    command: "--bind-host 0.0.0.0 --scheduler-host kapot-scheduler --scheduler-connect-timeout-seconds 15"
     deploy:
       replicas: 2
     restart: always
     environment:
-      - RUST_LOG=ballista=info
+      - RUST_LOG=kapot=info
     volumes:
       - ./benchmarks/data:/data
     depends_on:
-      - ballista-scheduler
+      - kapot-scheduler
     healthcheck:
-      test: ["CMD", "nc", "-z", "ballista-executor", "50051"]
+      test: ["CMD", "nc", "-z", "kapot-executor", "50051"]
       interval: 5s
       timeout: 5s
       retries: 5
-  ballista-client:
-    image: ballista-benchmarks
+  kapot-client:
+    image: kapot-benchmarks
     build:
-      dockerfile: dev/docker/ballista-benchmarks.Dockerfile
+      dockerfile: dev/docker/kapot-benchmarks.Dockerfile
       context: .
     command: ["/bin/bash", "-c", "sleep infinity"]
     ports:
@@ -74,5 +74,5 @@ services:
     volumes:
       - ./benchmarks/data:/data
     depends_on:
-      - ballista-scheduler
-      - ballista-executor
+      - kapot-scheduler
+      - kapot-executor

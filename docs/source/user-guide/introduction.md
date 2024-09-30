@@ -19,9 +19,9 @@
 
 # Overview
 
-Ballista is a distributed compute platform primarily implemented in Rust, and powered by Apache DataFusion.
+kapot is a distributed compute platform primarily implemented in Rust, and powered by Apache DataFusion.
 
-Ballista has a scheduler and an executor process that are standard Rust executables and can be executed directly, but
+kapot has a scheduler and an executor process that are standard Rust executables and can be executed directly, but
 Dockerfiles are provided to build images for use in containerized environments, such as Docker, Docker Compose, and
 Kubernetes. See the [deployment guide](deployment.md) for more information
 
@@ -31,15 +31,15 @@ or [tableau](tableau). For setup instructions, please see the [FlightSQL guide](
 
 The scheduler has a web user interface for monitoring query status as well as a REST API.
 
-![Ballista Scheduler Web UI](./images/ballista-web-ui.png)
+![kapot Scheduler Web UI](./images/kapot-web-ui.png)
 
 ## How does this compare to Apache Spark?
 
-Although Ballista is largely inspired by Apache Spark, there are some key differences.
+Although kapot is largely inspired by Apache Spark, there are some key differences.
 
 - The choice of Rust as the main execution language means that memory usage is deterministic and avoids the overhead
   of GC pauses.
-- Ballista is designed from the ground up to use columnar data, enabling a number of efficiencies such as vectorized
+- kapot is designed from the ground up to use columnar data, enabling a number of efficiencies such as vectorized
   processing (SIMD and GPU) and efficient compression. Although Spark does have some columnar support, it is still
   largely row-based today.
 - The combination of Rust and Arrow provides excellent memory efficiency and memory usage can be 5x - 10x lower than

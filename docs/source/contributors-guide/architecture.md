@@ -17,14 +17,14 @@
   under the License.
 -->
 
-# Ballista Architecture
+# kapot Architecture
 
 ## Overview
 
-Ballista’s primary purpose is to provide a distributed SQL query engine implemented in the Rust programming
+kapot’s primary purpose is to provide a distributed SQL query engine implemented in the Rust programming
 language and using the Apache Arrow memory model.
 
-Ballista also provides a DataFrame API (both in Rust and Python), suitable for constructing ETL pipelines and
+kapot also provides a DataFrame API (both in Rust and Python), suitable for constructing ETL pipelines and
 analytical queries. The DataFrame API is inspired by Apache Spark and is currently better suited for ETL/SQL work
 than for data science.
 
@@ -32,7 +32,7 @@ than for data science.
 
 ### Arrow-native
 
-Ballista uses the Apache Arrow memory format during query execution, and Apache Arrow IPC format on disk for
+kapot uses the Apache Arrow memory format during query execution, and Apache Arrow IPC format on disk for
 shuffle files and for exchanging data between executors. Queries can be submitted using the Arrow Flight SQL API
 and the Arrow Flight SQL JDBC Driver.
 
@@ -41,31 +41,31 @@ and the Arrow Flight SQL JDBC Driver.
 Although most of the implementation code is written in Rust, the scheduler and executor APIs are based on open
 standards, including protocol buffers, gRPC, Apache Arrow IPC, and Apache Arrow Flight SQL.
 
-This language agnostic approach will allow Ballista to eventually support UDFs in languages other than Rust,
+This language agnostic approach will allow kapot to eventually support UDFs in languages other than Rust,
 including Wasm.
 
 ### Extensible
 
-Many Ballista users have their own distributed query engines that use Ballista as a foundation, rather than
-using Ballista directly. This allows the scheduler and executor processes to be extended with support for
+Many kapot users have their own distributed query engines that use kapot as a foundation, rather than
+using kapot directly. This allows the scheduler and executor processes to be extended with support for
 additional data formats, operators, expressions, or custom SQL dialects or other DSLs.
 
-Ballista uses the DataFusion query engine for query execution, but it should be possible to plug in other execution
+kapot uses the DataFusion query engine for query execution, but it should be possible to plug in other execution
 engines.
 
 ## Deployment Architecture
 
 ### Cluster
 
-A Ballista cluster consists of one or more scheduler processes and one or more executor processes. These processes
+A kapot cluster consists of one or more scheduler processes and one or more executor processes. These processes
 can be run as native binaries and are also available as Docker Images, which can be easily deployed with
-[Docker Compose](https://datafusion.apache.org/ballista/user-guide/deployment/docker-compose.html) or
-[Kubernetes](https://datafusion.apache.org/ballista/user-guide/deployment/kubernetes.html).
+[Docker Compose](https://datafusion.apache.org/kapot/user-guide/deployment/docker-compose.html) or
+[Kubernetes](https://datafusion.apache.org/kapot/user-guide/deployment/kubernetes.html).
 
 The following diagram shows the interaction between clients and the scheduler for submitting jobs, and the interaction
 between the executor(s) and the scheduler for fetching tasks and reporting task status.
 
-![Ballista Cluster Diagram](ballista.drawio.png)
+![kapot Cluster Diagram](kapot.drawio.png)
 
 ### Scheduler
 
@@ -92,13 +92,13 @@ can execute multiple partitions of the same plan in parallel.
 
 ### Clients
 
-There are multiple clients available for submitting jobs to a Ballista cluster:
+There are multiple clients available for submitting jobs to a kapot cluster:
 
-- The [Ballista CLI](https://github.com/apache/datafusion-ballista/tree/main/ballista-cli) provides a SQL command-line
+- The [kapot CLI](https://github.com/apache/datafusion-kapot/tree/main/kapot-cli) provides a SQL command-line
   interface.
-- The Python bindings ([PyBallista](https://github.com/apache/datafusion-ballista/tree/main/python)) provide a session
+- The Python bindings ([Pykapot](https://github.com/apache/datafusion-kapot/tree/main/python)) provide a session
   context with support for SQL and DataFrame operations.
-- The [ballista crate](https://crates.io/crates/ballista) provides a native Rust session context with support for
+- The [kapot crate](https://crates.io/crates/kapot) provides a native Rust session context with support for
   SQL and DataFrame operations.
 - The [Flight SQL JDBC driver](https://arrow.apache.org/docs/java/flight_sql_jdbc_driver.html) can be used from
   popular SQL tools to execute SQL queries against a cluster.
@@ -201,5 +201,5 @@ Each executor will re-partition the output of the stage it is running so that it
 stage. This mechanism is known as an Exchange or a Shuffle. The logic for this can be found in the [ShuffleWriterExec]
 and [ShuffleReaderExec] operators.
 
-[shufflewriterexec]: https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/execution_plans/shuffle_writer.rs
-[shufflereaderexec]: https://github.com/apache/datafusion-ballista/blob/main/ballista/core/src/execution_plans/shuffle_reader.rs
+[shufflewriterexec]: https://github.com/apache/datafusion-kapot/blob/main/kapot/core/src/execution_plans/shuffle_writer.rs
+[shufflereaderexec]: https://github.com/apache/datafusion-kapot/blob/main/kapot/core/src/execution_plans/shuffle_reader.rs

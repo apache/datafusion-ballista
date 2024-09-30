@@ -17,17 +17,17 @@
   under the License.
 -->
 
-# Ballista Examples
+# kapot Examples
 
-This directory contains examples for executing distributed queries with Ballista.
+This directory contains examples for executing distributed queries with kapot.
 
 # Standalone Examples
 
-The standalone example is the easiest to get started with. Ballista supports a standalone mode where a scheduler
+The standalone example is the easiest to get started with. kapot supports a standalone mode where a scheduler
 and executor are started in-process.
 
 ```bash
-cargo run --example standalone_sql --features="ballista/standalone"
+cargo run --example standalone_sql --features="kapot/standalone"
 ```
 
 ### Source code for standalone SQL example
@@ -35,11 +35,11 @@ cargo run --example standalone_sql --features="ballista/standalone"
 ```rust
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitions", "1")
+    let config = kapotConfig::builder()
+        .set("kapot.shuffle.partitions", "1")
         .build()?;
 
-    let ctx = BallistaContext::standalone(&config, 2).await?;
+    let ctx = kapotContext::standalone(&config, 2).await?;
 
     ctx.register_csv(
         "test",
@@ -58,8 +58,8 @@ async fn main() -> Result<()> {
 
 # Distributed Examples
 
-For background information on the Ballista architecture, refer to
-the [Ballista README](../ballista/client/README.md).
+For background information on the kapot architecture, refer to
+the [kapot README](../kapot/client/README.md).
 
 ## Start a standalone cluster
 
@@ -69,18 +69,18 @@ From the root of the project, build release binaries.
 cargo build --release
 ```
 
-Start a Ballista scheduler process in a new terminal session.
+Start a kapot scheduler process in a new terminal session.
 
 ```bash
-RUST_LOG=info ./target/release/ballista-scheduler
+RUST_LOG=info ./target/release/kapot-scheduler
 ```
 
-Start one or more Ballista executor processes in new terminal sessions. When starting more than one
+Start one or more kapot executor processes in new terminal sessions. When starting more than one
 executor, a unique port number must be specified for each executor.
 
 ```bash
-RUST_LOG=info ./target/release/ballista-executor -c 2 -p 50051
-RUST_LOG=info ./target/release/ballista-executor -c 2 -p 50052
+RUST_LOG=info ./target/release/kapot-executor -c 2 -p 50051
+RUST_LOG=info ./target/release/kapot-executor -c 2 -p 50052
 ```
 
 ## Running the examples
@@ -96,17 +96,17 @@ cargo run --release --bin sql
 ### Source code for distributed SQL example
 
 ```rust
-use ballista::prelude::*;
+use kapot::prelude::*;
 use datafusion::prelude::CsvReadOptions;
 
 /// This example demonstrates executing a simple query against an Arrow data source (CSV) and
 /// fetching results, using SQL
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitions", "4")
+    let config = kapotConfig::builder()
+        .set("kapot.shuffle.partitions", "4")
         .build()?;
-    let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
+    let ctx = kapotContext::remote("localhost", 50050, &config).await?;
 
     // register csv file with the execution context
     ctx.register_csv(
@@ -144,10 +144,10 @@ cargo run --release --bin dataframe
 ```rust
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitions", "4")
+    let config = kapotConfig::builder()
+        .set("kapot.shuffle.partitions", "4")
         .build()?;
-    let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
+    let ctx = kapotContext::remote("localhost", 50050, &config).await?;
 
     let filename = "testdata/alltypes_plain.parquet";
 

@@ -15,17 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista::prelude::*;
+use kapot::prelude::*;
 use datafusion::prelude::CsvReadOptions;
 
 /// This example demonstrates executing a simple query against an Arrow data source (CSV) and
 /// fetching results, using SQL
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitions", "4")
+    let config = KapotConfig::builder()
+        .set("kapot.shuffle.partitions", "4")
         .build()?;
-    let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
+    let ctx = KapotContext::remote("localhost", 50050, &config).await?;
 
     // register csv file with the execution context
     ctx.register_csv(

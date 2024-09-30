@@ -15,7 +15,7 @@
 .. specific language governing permissions and limitations
 .. under the License.
 
-Start a Ballista Cluster
+Start a kapot Cluster
 ========================
 
 .. toctree::

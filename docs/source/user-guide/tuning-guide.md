@@ -24,28 +24,28 @@
 The goal of any distributed compute engine is to parallelize work as much as possible, allowing the work to scale
 by adding more compute resource.
 
-The basic unit of concurrency and parallelism in Ballista is the concept of a partition. The leaf nodes of a query
-are typically table scans that read from files on disk and Ballista currently treats each file within a table as a
-single partition (in the future, Ballista will support splitting files into partitions but this is not implemented yet).
+The basic unit of concurrency and parallelism in kapot is the concept of a partition. The leaf nodes of a query
+are typically table scans that read from files on disk and kapot currently treats each file within a table as a
+single partition (in the future, kapot will support splitting files into partitions but this is not implemented yet).
 
 For example, if there is a table "customer" that consists of 200 Parquet files, that table scan will naturally have
 200 partitions and the table scan and certain subsequent operations will also have 200 partitions. Conversely, if the
 table only has a single Parquet file then there will be a single partition and the work will not be able to scale even
-if the cluster has resource available. Ballista supports repartitioning within a query to improve parallelism.
-The configuration setting `ballista.shuffle.partitions`can be set to the desired number of partitions. This is
+if the cluster has resource available. kapot supports repartitioning within a query to improve parallelism.
+The configuration setting `kapot.shuffle.partitions`can be set to the desired number of partitions. This is
 currently a global setting for the entire context. The default value for this setting is 16.
 
-Note that Ballista will never decrease the number of partitions based on this setting and will only repartition if
+Note that kapot will never decrease the number of partitions based on this setting and will only repartition if
 the source operation has fewer partitions than this setting.
 
 Example: Setting the desired number of shuffle partitions when creating a context.
 
 ```rust
-let config = BallistaConfig::builder()
-    .set("ballista.shuffle.partitions", "200")
+let config = kapotConfig::builder()
+    .set("kapot.shuffle.partitions", "200")
     .build()?;
 
-let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
+let ctx = kapotContext::remote("localhost", 50050, &config).await?;
 ```
 
 ## Configuring Executor Concurrency Levels
@@ -57,12 +57,12 @@ Increasing this configuration setting will increase the number of tasks that eac
 this will also mean that the executor will use more memory. If executors are failing due to out-of-memory errors then
 decreasing the number of concurrent tasks may help.
 
-In the future, Ballista will have better support for tracking memory usage and allocating tasks based on available
+In the future, kapot will have better support for tracking memory usage and allocating tasks based on available
 memory, as well as supporting spill-to-disk to reduce memory pressure.
 
 ## Push-based vs Pull-based Task Scheduling
 
-Ballista supports both push-based and pull-based task scheduling. It is recommended that you try both to determine
+kapot supports both push-based and pull-based task scheduling. It is recommended that you try both to determine
 which is the best for your use case.
 
 Pull-based scheduling works in a similar way to Apache Spark and push-based scheduling can result in lower latency.

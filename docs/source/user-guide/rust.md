@@ -17,17 +17,17 @@
   under the License.
 -->
 
-# Ballista Rust Client
+# kapot Rust Client
 
-To connect to a Ballista cluster from Rust, first start by creating a `BallistaContext`.
+To connect to a kapot cluster from Rust, first start by creating a `kapotContext`.
 
 ```rust
-let config = BallistaConfig::builder()
-    .set("ballista.shuffle.partitions", "4")
+let config = kapotConfig::builder()
+    .set("kapot.shuffle.partitions", "4")
     .build()?;
 
-// connect to Ballista scheduler
-let ctx = BallistaContext::remote("localhost", 50050, &config);
+// connect to kapot scheduler
+let ctx = kapotContext::remote("localhost", 50050, &config);
 ```
 
 Here is a full example using the DataFrame API.
@@ -35,12 +35,12 @@ Here is a full example using the DataFrame API.
 ```rust
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitions", "4")
+    let config = kapotConfig::builder()
+        .set("kapot.shuffle.partitions", "4")
         .build()?;
 
-    // connect to Ballista scheduler
-    let ctx = BallistaContext::remote("localhost", 50050, &config);
+    // connect to kapot scheduler
+    let ctx = kapotContext::remote("localhost", 50050, &config);
 
     let testdata = datafusion::test_util::parquet_test_data();
 
@@ -64,12 +64,12 @@ Here is a full example demonstrating SQL usage.
 ```rust
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitions", "4")
+    let config = kapotConfig::builder()
+        .set("kapot.shuffle.partitions", "4")
         .build()?;
 
-    // connect to Ballista scheduler
-    let ctx = BallistaContext::remote("localhost", 50050, &config);
+    // connect to kapot scheduler
+    let ctx = kapotContext::remote("localhost", 50050, &config);
 
     let testdata = datafusion::test_util::arrow_test_data();
 

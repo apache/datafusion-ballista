@@ -17,12 +17,12 @@
   under the License.
 -->
 
-# Ballista Development
+# kapot Development
 
 We welcome participation from everyone and encourage you to join us, ask
 questions, and get involved.
 
-All participation in the Apache DataFusion Ballista project is governed by the
+All participation in the Apache DataFusion kapot project is governed by the
 Apache Software Foundation's [code of
 conduct](https://www.apache.org/foundation/policies/conduct.html).
 
@@ -63,5 +63,5 @@ cargo test
 
 ```shell
 cd examples
-cargo run --example standalone_sql --features=ballista/standalone
+cargo run --example standalone_sql --features=kapot/standalone
 ```

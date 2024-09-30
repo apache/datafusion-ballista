@@ -9,7 +9,7 @@ target/
 CHANGELOG.md
 **/tests
 **/data
-!target/release/ballista-scheduler
-!target/release/ballista-executor
-!target/release/ballista-cli
+!target/release/kapot-scheduler
+!target/release/kapot-executor
+!target/release/kapot-cli
 !target/release/tpch

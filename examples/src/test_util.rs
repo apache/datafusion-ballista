@@ -30,7 +30,7 @@ use std::path::PathBuf;
 ///
 /// Example:
 /// ```
-/// use ballista_examples::test_util;
+/// use kapot_examples::test_util;
 /// let testdata = test_util::examples_test_data();
 /// let filename = format!("{testdata}/aggregate_test_100.csv");
 /// assert!(std::path::PathBuf::from(filename).exists());

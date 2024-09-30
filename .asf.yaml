@@ -21,8 +21,8 @@ notifications:
   pullrequests: github@datafusion.apache.org
   jira_options: link label worklog
 github:
-  description: "Apache DataFusion Ballista Distributed Query Engine"
-  homepage: https://datafusion.apache.org/ballista
+  description: "Apache DataFusion kapot Distributed Query Engine"
+  homepage: https://datafusion.apache.org/kapot
   labels:
     - arrow
     - big-data
@@ -40,7 +40,7 @@ github:
   features:
     issues: true        
 # publishes the content of the `asf-site` branch to
-# https://datafusion.apache.org/ballista/
+# https://datafusion.apache.org/kapot/
 publish:
   whoami: asf-site
-  subdir: ballista
+  subdir: kapot
