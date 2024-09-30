@@ -17,30 +17,24 @@
   under the License.
 -->
 
-# Maintenance Status Notice
+# Kapôt: Distributed SQL Query Engine, built on Apache Arrow
 
-> [!NOTE]
-> The Apache DataFusion kapot subproject is not currently actively maintained.
+Kapôt is a distributed SQL query engine powered by the Rust implementation of [Apache Arrow][arrow] and
+[Apache Arrow DataFusion][datafusion]. It's based on [Apache Datafusion Ballista][https://datafusion.apache.org/ballista/], but it is being updated.
 
-> We encourage and welcome new contributors and maintainers to join the project. If you are passionate about distributed computing, Rust, or enhancing the performance of data processing frameworks, your contributions could make a significant impact on the future of kapot. Whether it's fixing bugs, adding new features, or improving documentation, any level of contribution is highly valued.
+Kapôt is designed to work primary on a kuberentes cluster, but is also able to work with a simple cluster joining instances. It's already designed to work primary on distributed file systems like S3 compatibles.
 
-> To get involved, please reach out through our mailing list or join the discussion on our GitHub Issues page. Together, we can continue to advance the project and ensure that kapot remains a valuable tool for the community.
+If you are looking for documentation for a released version of Kapôt, please refer to the
 
-# kapot: Distributed SQL Query Engine, built on Apache Arrow
-
-kapot is a distributed SQL query engine powered by the Rust implementation of [Apache Arrow][arrow] and
-[Apache Arrow DataFusion][datafusion].
-
-If you are looking for documentation for a released version of kapot, please refer to the
-[kapot User Guide][user-guide].
+[Kapôt User Guide][user-guide].
 
 ## Overview
 
-kapot implements a similar design to Apache Spark (particularly Spark SQL), but there are some key differences:
+Kapôt implements a similar design to Apache Spark (particularly Spark SQL), but there are some key differences:
 
 - The choice of Rust as the main execution language avoids the overhead of GC pauses and results in deterministic
   processing times.
-- kapot is designed from the ground up to use columnar data, enabling a number of efficiencies such as vectorized
+- Kapôt is designed from the ground up to use columnar data, enabling a number of efficiencies such as vectorized
   processing (SIMD) and efficient compression. Although Spark does have some columnar support, it is still
   largely row-based today.
 - The combination of Rust and Arrow provides excellent memory efficiency and memory usage can be 5x - 10x lower than
@@ -50,60 +44,13 @@ kapot implements a similar design to Apache Spark (particularly Spark SQL), but 
   executors using the [Flight Protocol][flight], and between clients and schedulers/executors using the
   [Flight SQL Protocol][flight-sql]
 
-## Architecture
-
-A kapot cluster consists of one or more scheduler processes and one or more executor processes. These processes
-can be run as native binaries and are also available as Docker Images, which can be easily deployed with
-[Docker Compose](https://datafusion.apache.org/kapot/user-guide/deployment/docker-compose.html) or
-[Kubernetes](https://datafusion.apache.org/kapot/user-guide/deployment/kubernetes.html).
-
-The following diagram shows the interaction between clients and the scheduler for submitting jobs, and the interaction
-between the executor(s) and the scheduler for fetching tasks and reporting task status.
-
-![kapot Cluster Diagram](docs/source/contributors-guide/kapot.drawio.png)
-
-See the [architecture guide](docs/source/contributors-guide/architecture.md) for more details.
 
 ## Features
 
 - Supports HDFS as well as cloud object stores. S3 is supported today and GCS and Azure support is planned.
 - DataFrame and SQL APIs available from Python and Rust.
-- Clients can connect to a kapot cluster using [Flight SQL][flight-sql].
+- Clients can connect to a Kapôt cluster using [Flight SQL][flight-sql].
 - JDBC support via Arrow Flight SQL JDBC Driver
 - Scheduler web interface and REST UI for monitoring query progress and viewing query plans and metrics.
 - Support for Docker, Docker Compose, and Kubernetes deployment, as well as manual deployment on bare metal.
 
-## Performance
-
-We run some simple benchmarks comparing kapot with Apache Spark to track progress with performance optimizations.
-These are benchmarks derived from TPC-H and not official TPC-H benchmarks. These results are from running individual
-queries at scale factor 10 (10 GB) on a single node with a single executor and 24 concurrent tasks.
-
-The tracking issue for improving these results is [#339](https://github.com/apache/arrow-kapot/issues/339).
-
-![benchmarks](docs/sqlbench-h-perf-0.12.png)
-
-# Getting Started
-
-The easiest way to get started is to run one of the standalone or distributed [examples](./examples/README.md). After
-that, refer to the [Getting Started Guide](kapot/client/README.md).
-
-## Project Status
-
-kapot supports a wide range of SQL, including CTEs, Joins, and Subqueries and can execute complex queries at scale.
-
-Refer to the [DataFusion SQL Reference](https://datafusion.apache.org/user-guide/sql/index.html) for more
-information on supported SQL.
-
-kapot is maturing quickly and is now working towards being production ready. See the [roadmap](ROADMAP.md) for more details.
-
-## Contribution Guide
-
-Please see the [Contribution Guide](CONTRIBUTING.md) for information about contributing to kapot.
-
-[arrow]: https://arrow.apache.org/
-[datafusion]: https://github.com/apache/arrow-datafusion
-[flight]: https://arrow.apache.org/blog/2019/10/13/introducing-arrow-flight/
-[flight-sql]: https://arrow.apache.org/blog/2022/02/16/introducing-arrow-flight-sql/
-[kapot-talk]: https://www.youtube.com/watch?v=ZZHQaOap9pQ
-[user-guide]: https://datafusion.apache.org/kapot/
