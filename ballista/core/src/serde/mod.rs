@@ -309,7 +309,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     Some(datafusion_proto::protobuf::PhysicalHashRepartition {
                         hash_expr: exprs
                             .iter()
-                            .map(|expr|datafusion_proto::physical_plan::to_proto::serialize_physical_expr(expr.clone(), &default_codec))
+                            .map(|expr|datafusion_proto::physical_plan::to_proto::serialize_physical_expr(&expr.clone(), &default_codec))
                             .collect::<Result<Vec<_>, DataFusionError>>()?,
                         partition_count: *partition_count as u64,
                     })

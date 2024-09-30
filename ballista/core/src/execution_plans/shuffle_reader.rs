@@ -416,12 +416,17 @@ async fn fetch_partition_local(
 fn fetch_partition_local_inner(
     path: &str,
 ) -> result::Result<StreamReader<BufReader<File>>, BallistaError> {
+    
     let file = File::open(path).map_err(|e| {
         BallistaError::General(format!("Failed to open partition file at {path}: {e:?}"))
     })?;
-    let reader = StreamReader::try_new(file, None).map_err(|e| {
+
+    let buff_reader = std::io::BufReader::new(file);
+
+    let reader = StreamReader::try_new(buff_reader, None).map_err(|e| {
         BallistaError::General(format!("Failed to new arrow FileReader at {path}: {e:?}"))
     })?;
+
     Ok(reader)
 }
 
