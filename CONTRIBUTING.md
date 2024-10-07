@@ -41,7 +41,6 @@ This section describes how you can get started with Ballista development.
 Ballista contains components implemented in the following programming languages:
 
 - Rust (Scheduler and Executor processes, Client library)
-- Python (Python bindings)
 - Javascript (Scheduler Web UI)
 
 ### Rust Environment
@@ -91,10 +90,6 @@ Environment variables are prefixed by `BALLISTA_EXECUTOR` or `BALLISTA_SCHEDULER
 respectively. Hyphens in command line arguments become underscores. For example, the `--scheduler-host` argument
 for the executor becomes `BALLISTA_EXECUTOR_SCHEDULER_HOST`
 
-### Python Environment
-
-Refer to the instructions in the Python Bindings [README](./python/README.md)
-
 ### Javascript Environment
 
 Refer to the instructions in the Scheduler Web UI [README](./ballista/scheduler/ui/README.md)
@@ -121,5 +116,5 @@ $ prettier --version
 After you've confirmed your prettier version, you can format all the `.md` files:
 
 ```bash
-prettier -w README.md {ballista,ballista-cli,benchmarks,dev,docs,examples,python}/**/*.md
+prettier -w README.md {ballista,ballista-cli,benchmarks,dev,docs,examples}/**/*.md
 ```
