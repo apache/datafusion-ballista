@@ -60,7 +60,6 @@ futures = "0.3"
 hashbrown = "0.14"
 
 itertools = "0.12"
-libloading = "0.8.0"
 log = "0.4"
 md-5 = { version = "^0.10.0" }
 object_store = { workspace = true }
