@@ -42,7 +42,7 @@ use log::{debug, info, warn};
 
 use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
 
-use crate::config::{ClusterStorageConfig, SchedulerConfig, TaskDistributionPolicy};
+use crate::config::{SchedulerConfig, TaskDistributionPolicy};
 use crate::scheduler_server::SessionBuilder;
 use crate::state::execution_graph::{create_task_info, ExecutionGraph, TaskDescription};
 use crate::state::task_manager::JobInfoCache;
@@ -105,12 +105,10 @@ impl BallistaCluster {
     pub async fn new_from_config(config: &SchedulerConfig) -> Result<Self> {
         let scheduler = config.scheduler_name();
 
-        match &config.cluster_storage {
-            ClusterStorageConfig::Memory => Ok(BallistaCluster::new_memory(
-                scheduler,
-                default_session_builder,
-            )),
-        }
+        Ok(BallistaCluster::new_memory(
+            scheduler,
+            default_session_builder,
+        ))
     }
 
     pub fn cluster_state(&self) -> Arc<dyn ClusterState> {

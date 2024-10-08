@@ -18,7 +18,6 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 use std::fmt::{Debug, Formatter};
-use std::iter::FromIterator;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -27,23 +26,18 @@ use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use datafusion::physical_plan::{ExecutionPlan, Metric};
-use datafusion::prelude::{SessionConfig, SessionContext};
-use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion::prelude::SessionConfig;
 use log::{debug, warn};
 
+use crate::display::DisplayableBallistaExecutionPlan;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::ShuffleWriterExec;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
-use ballista_core::serde::protobuf::{
-    self, task_info, FailedTask, GraphStageInput, OperatorMetricsSet, ResultLost,
-    SuccessfulTask, TaskStatus,
-};
 use ballista_core::serde::protobuf::{task_status, RunningTask};
+use ballista_core::serde::protobuf::{
+    FailedTask, OperatorMetricsSet, ResultLost, SuccessfulTask, TaskStatus,
+};
 use ballista_core::serde::scheduler::PartitionLocation;
-use ballista_core::serde::BallistaCodec;
-use datafusion_proto::physical_plan::AsExecutionPlan;
-
-use crate::display::DisplayableBallistaExecutionPlan;
 
 /// A stage in the ExecutionGraph,
 /// represents a set of tasks (one per each `partition`) which can be executed concurrently.
@@ -368,54 +362,6 @@ impl UnresolvedStage {
             self.last_attempt_failure_reasons.clone(),
         ))
     }
-
-    pub(super) fn decode<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
-        stage: protobuf::UnResolvedStage,
-        codec: &BallistaCodec<T, U>,
-        session_ctx: &SessionContext,
-    ) -> Result<UnresolvedStage> {
-        let plan_proto = U::try_decode(&stage.plan)?;
-        let plan = plan_proto.try_into_physical_plan(
-            session_ctx,
-            session_ctx.runtime_env().as_ref(),
-            codec.physical_extension_codec(),
-        )?;
-
-        let inputs = decode_inputs(stage.inputs)?;
-
-        Ok(UnresolvedStage {
-            stage_id: stage.stage_id as usize,
-            stage_attempt_num: stage.stage_attempt_num as usize,
-            output_links: stage.output_links.into_iter().map(|l| l as usize).collect(),
-            plan,
-            inputs,
-            last_attempt_failure_reasons: HashSet::from_iter(
-                stage.last_attempt_failure_reasons,
-            ),
-        })
-    }
-
-    pub(super) fn encode<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
-        stage: UnresolvedStage,
-        codec: &BallistaCodec<T, U>,
-    ) -> Result<protobuf::UnResolvedStage> {
-        let mut plan: Vec<u8> = vec![];
-        U::try_from_physical_plan(stage.plan, codec.physical_extension_codec())
-            .and_then(|proto| proto.try_encode(&mut plan))?;
-
-        let inputs = encode_inputs(stage.inputs)?;
-
-        Ok(protobuf::UnResolvedStage {
-            stage_id: stage.stage_id as u32,
-            stage_attempt_num: stage.stage_attempt_num as u32,
-            output_links: stage.output_links.into_iter().map(|l| l as u32).collect(),
-            inputs,
-            plan,
-            last_attempt_failure_reasons: Vec::from_iter(
-                stage.last_attempt_failure_reasons,
-            ),
-        })
-    }
 }
 
 impl Debug for UnresolvedStage {
@@ -481,56 +427,6 @@ impl ResolvedStage {
             self.last_attempt_failure_reasons.clone(),
         );
         Ok(unresolved)
-    }
-
-    pub(super) fn decode<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
-        stage: protobuf::ResolvedStage,
-        codec: &BallistaCodec<T, U>,
-        session_ctx: &SessionContext,
-    ) -> Result<ResolvedStage> {
-        let plan_proto = U::try_decode(&stage.plan)?;
-        let plan = plan_proto.try_into_physical_plan(
-            session_ctx,
-            session_ctx.runtime_env().as_ref(),
-            codec.physical_extension_codec(),
-        )?;
-
-        let inputs = decode_inputs(stage.inputs)?;
-
-        Ok(ResolvedStage {
-            stage_id: stage.stage_id as usize,
-            stage_attempt_num: stage.stage_attempt_num as usize,
-            partitions: stage.partitions as usize,
-            output_links: stage.output_links.into_iter().map(|l| l as usize).collect(),
-            inputs,
-            plan,
-            last_attempt_failure_reasons: HashSet::from_iter(
-                stage.last_attempt_failure_reasons,
-            ),
-        })
-    }
-
-    pub(super) fn encode<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
-        stage: ResolvedStage,
-        codec: &BallistaCodec<T, U>,
-    ) -> Result<protobuf::ResolvedStage> {
-        let mut plan: Vec<u8> = vec![];
-        U::try_from_physical_plan(stage.plan, codec.physical_extension_codec())
-            .and_then(|proto| proto.try_encode(&mut plan))?;
-
-        let inputs = encode_inputs(stage.inputs)?;
-
-        Ok(protobuf::ResolvedStage {
-            stage_id: stage.stage_id as u32,
-            stage_attempt_num: stage.stage_attempt_num as u32,
-            partitions: stage.partitions as u32,
-            output_links: stage.output_links.into_iter().map(|l| l as u32).collect(),
-            inputs,
-            plan,
-            last_attempt_failure_reasons: Vec::from_iter(
-                stage.last_attempt_failure_reasons,
-            ),
-        })
     }
 }
 
@@ -609,18 +505,6 @@ impl RunningStage {
             stage_metrics: self.stage_metrics.clone(),
             error_message,
         }
-    }
-
-    /// Change to the resolved state and bump the stage attempt number
-    pub(super) fn to_resolved(&self) -> ResolvedStage {
-        ResolvedStage::new(
-            self.stage_id,
-            self.stage_attempt_num + 1,
-            self.plan.clone(),
-            self.output_links.clone(),
-            self.inputs.clone(),
-            HashSet::new(),
-        )
     }
 
     /// Change to the unresolved state and bump the stage attempt number
@@ -952,80 +836,6 @@ impl SuccessfulStage {
         }
         reset
     }
-
-    pub(super) fn decode<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
-        stage: protobuf::SuccessfulStage,
-        codec: &BallistaCodec<T, U>,
-        session_ctx: &SessionContext,
-    ) -> Result<SuccessfulStage> {
-        let plan_proto = U::try_decode(&stage.plan)?;
-        let plan = plan_proto.try_into_physical_plan(
-            session_ctx,
-            session_ctx.runtime_env().as_ref(),
-            codec.physical_extension_codec(),
-        )?;
-
-        let inputs = decode_inputs(stage.inputs)?;
-        assert_eq!(
-            stage.task_infos.len(),
-            stage.partitions as usize,
-            "protobuf::SuccessfulStage task_infos len not equal to partitions."
-        );
-        let task_infos = stage.task_infos.into_iter().map(decode_taskinfo).collect();
-        let stage_metrics = stage
-            .stage_metrics
-            .into_iter()
-            .map(|m| m.try_into())
-            .collect::<Result<Vec<_>>>()?;
-
-        Ok(SuccessfulStage {
-            stage_id: stage.stage_id as usize,
-            stage_attempt_num: stage.stage_attempt_num as usize,
-            partitions: stage.partitions as usize,
-            output_links: stage.output_links.into_iter().map(|l| l as usize).collect(),
-            inputs,
-            plan,
-            task_infos,
-            stage_metrics,
-        })
-    }
-
-    pub(super) fn encode<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
-        _job_id: String,
-        stage: SuccessfulStage,
-        codec: &BallistaCodec<T, U>,
-    ) -> Result<protobuf::SuccessfulStage> {
-        let stage_id = stage.stage_id;
-
-        let mut plan: Vec<u8> = vec![];
-        U::try_from_physical_plan(stage.plan, codec.physical_extension_codec())
-            .and_then(|proto| proto.try_encode(&mut plan))?;
-
-        let inputs = encode_inputs(stage.inputs)?;
-        let task_infos = stage
-            .task_infos
-            .into_iter()
-            .enumerate()
-            .map(|(partition, task_info)| encode_taskinfo(task_info, partition))
-            .collect();
-
-        let stage_metrics = stage
-            .stage_metrics
-            .into_iter()
-            .map(|m| m.try_into())
-            .collect::<Result<Vec<_>>>()?;
-
-        Ok(protobuf::SuccessfulStage {
-            stage_id: stage_id as u32,
-            stage_attempt_num: stage.stage_attempt_num as u32,
-            partitions: stage.partitions as u32,
-            output_links: stage.output_links.into_iter().map(|l| l as u32).collect(),
-            inputs,
-            plan,
-            task_infos,
-            stage_metrics,
-        })
-    }
 }
 
 impl Debug for SuccessfulStage {
@@ -1070,85 +880,6 @@ impl FailedStage {
     /// return the number of tasks where the task status is not yet set.
     pub(super) fn available_tasks(&self) -> usize {
         self.task_infos.iter().filter(|s| s.is_none()).count()
-    }
-
-    pub(super) fn decode<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
-        stage: protobuf::FailedStage,
-        codec: &BallistaCodec<T, U>,
-        session_ctx: &SessionContext,
-    ) -> Result<FailedStage> {
-        let plan_proto = U::try_decode(&stage.plan)?;
-        let plan = plan_proto.try_into_physical_plan(
-            session_ctx,
-            session_ctx.runtime_env().as_ref(),
-            codec.physical_extension_codec(),
-        )?;
-
-        let mut task_infos: Vec<Option<TaskInfo>> = vec![None; stage.partitions as usize];
-        for info in stage.task_infos {
-            task_infos[info.partition_id as usize] = Some(decode_taskinfo(info.clone()));
-        }
-
-        let stage_metrics = if stage.stage_metrics.is_empty() {
-            None
-        } else {
-            let ms = stage
-                .stage_metrics
-                .into_iter()
-                .map(|m| m.try_into())
-                .collect::<Result<Vec<_>>>()?;
-            Some(ms)
-        };
-
-        Ok(FailedStage {
-            stage_id: stage.stage_id as usize,
-            stage_attempt_num: stage.stage_attempt_num as usize,
-            partitions: stage.partitions as usize,
-            output_links: stage.output_links.into_iter().map(|l| l as usize).collect(),
-            plan,
-            task_infos,
-            stage_metrics,
-            error_message: stage.error_message,
-        })
-    }
-
-    pub(super) fn encode<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
-        _job_id: String,
-        stage: FailedStage,
-        codec: &BallistaCodec<T, U>,
-    ) -> Result<protobuf::FailedStage> {
-        let stage_id = stage.stage_id;
-
-        let mut plan: Vec<u8> = vec![];
-        U::try_from_physical_plan(stage.plan, codec.physical_extension_codec())
-            .and_then(|proto| proto.try_encode(&mut plan))?;
-
-        let task_infos: Vec<protobuf::TaskInfo> = stage
-            .task_infos
-            .into_iter()
-            .enumerate()
-            .filter_map(|(partition, task_info)| {
-                task_info.map(|info| encode_taskinfo(info, partition))
-            })
-            .collect();
-
-        let stage_metrics = stage
-            .stage_metrics
-            .unwrap_or_default()
-            .into_iter()
-            .map(|m| m.try_into())
-            .collect::<Result<Vec<_>>>()?;
-
-        Ok(protobuf::FailedStage {
-            stage_id: stage_id as u32,
-            stage_attempt_num: stage.stage_attempt_num as u32,
-            partitions: stage.partitions as u32,
-            output_links: stage.output_links.into_iter().map(|l| l as u32).collect(),
-            plan,
-            task_infos,
-            stage_metrics,
-            error_message: stage.error_message,
-        })
     }
 }
 
@@ -1218,108 +949,5 @@ impl StageOutput {
 
     pub(super) fn is_complete(&self) -> bool {
         self.complete
-    }
-}
-
-fn decode_inputs(
-    stage_inputs: Vec<GraphStageInput>,
-) -> Result<HashMap<usize, StageOutput>> {
-    let mut inputs: HashMap<usize, StageOutput> = HashMap::new();
-    for input in stage_inputs {
-        let stage_id = input.stage_id as usize;
-
-        let outputs = input
-            .partition_locations
-            .into_iter()
-            .map(|loc| {
-                let partition = loc.partition as usize;
-                let locations = loc
-                    .partition_location
-                    .into_iter()
-                    .map(|l| l.try_into())
-                    .collect::<Result<Vec<_>>>()?;
-                Ok((partition, locations))
-            })
-            .collect::<Result<HashMap<usize, Vec<PartitionLocation>>>>()?;
-
-        inputs.insert(
-            stage_id,
-            StageOutput {
-                partition_locations: outputs,
-                complete: input.complete,
-            },
-        );
-    }
-    Ok(inputs)
-}
-
-fn encode_inputs(
-    stage_inputs: HashMap<usize, StageOutput>,
-) -> Result<Vec<GraphStageInput>> {
-    let mut inputs: Vec<protobuf::GraphStageInput> = vec![];
-    for (stage_id, output) in stage_inputs.into_iter() {
-        inputs.push(protobuf::GraphStageInput {
-            stage_id: stage_id as u32,
-            partition_locations: output
-                .partition_locations
-                .into_iter()
-                .map(|(partition, locations)| {
-                    Ok(protobuf::TaskInputPartitions {
-                        partition: partition as u32,
-                        partition_location: locations
-                            .into_iter()
-                            .map(|l| l.try_into())
-                            .collect::<Result<Vec<_>>>()?,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?,
-            complete: output.complete,
-        });
-    }
-    Ok(inputs)
-}
-
-fn decode_taskinfo(task_info: protobuf::TaskInfo) -> TaskInfo {
-    let task_info_status = match task_info.status {
-        Some(task_info::Status::Running(running)) => {
-            task_status::Status::Running(running)
-        }
-        Some(task_info::Status::Failed(failed)) => task_status::Status::Failed(failed),
-        Some(task_info::Status::Successful(success)) => {
-            task_status::Status::Successful(success)
-        }
-        _ => panic!(
-            "protobuf::TaskInfo status for task {} should not be none",
-            task_info.task_id
-        ),
-    };
-    TaskInfo {
-        task_id: task_info.task_id as usize,
-        scheduled_time: task_info.scheduled_time as u128,
-        launch_time: task_info.launch_time as u128,
-        start_exec_time: task_info.start_exec_time as u128,
-        end_exec_time: task_info.end_exec_time as u128,
-        finish_time: task_info.finish_time as u128,
-        task_status: task_info_status,
-    }
-}
-
-fn encode_taskinfo(task_info: TaskInfo, partition_id: usize) -> protobuf::TaskInfo {
-    let task_info_status = match task_info.task_status {
-        task_status::Status::Running(running) => task_info::Status::Running(running),
-        task_status::Status::Failed(failed) => task_info::Status::Failed(failed),
-        task_status::Status::Successful(success) => {
-            task_info::Status::Successful(success)
-        }
-    };
-    protobuf::TaskInfo {
-        task_id: task_info.task_id as u32,
-        partition_id: partition_id as u32,
-        scheduled_time: task_info.scheduled_time as u64,
-        launch_time: task_info.launch_time as u64,
-        start_exec_time: task_info.start_exec_time as u64,
-        end_exec_time: task_info.end_exec_time as u64,
-        finish_time: task_info.finish_time as u64,
-        status: Some(task_info_status),
     }
 }

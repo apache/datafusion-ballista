@@ -27,7 +27,7 @@ use ballista_core::config::LogRotationPolicy;
 use ballista_core::print_version;
 use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::config::{
-    ClusterStorageConfig, SchedulerConfig, TaskDistribution, TaskDistributionPolicy,
+    SchedulerConfig, TaskDistribution, TaskDistributionPolicy,
 };
 use ballista_scheduler::scheduler_process::start_server;
 use tracing_subscriber::EnvFilter;
@@ -115,8 +115,6 @@ async fn inner() -> Result<()> {
     let addr = format!("{}:{}", opt.bind_host, opt.bind_port);
     let addr = addr.parse()?;
 
-    let cluster_storage_config = ClusterStorageConfig::Memory;
-
     let task_distribution = match opt.task_distribution {
         TaskDistribution::Bias => TaskDistributionPolicy::Bias,
         TaskDistribution::RoundRobin => TaskDistributionPolicy::RoundRobin,
@@ -142,7 +140,6 @@ async fn inner() -> Result<()> {
         finished_job_state_clean_up_interval_seconds: opt
             .finished_job_state_clean_up_interval_seconds,
         advertise_flight_sql_endpoint: opt.advertise_flight_sql_endpoint,
-        cluster_storage: cluster_storage_config,
         job_resubmit_interval_ms: (opt.job_resubmit_interval_ms > 0)
             .then_some(opt.job_resubmit_interval_ms),
         executor_termination_grace_period: opt.executor_termination_grace_period,
