@@ -21,7 +21,7 @@
 
 ## User Documentation
 
-Documentation for the current published release can be found at https://datafusion.apache.org/ballista and the source
+Documentation for the current published release can be found at <https://datafusion.apache.org/ballista> and the source
 content is located [here](source/user-guide/introduction.md).
 
 ## Developer Documentation
@@ -37,7 +37,6 @@ inside a Python virtualenv.
 
 - Python
 - `pip install -r requirements.txt`
-- DataFusion python package. You can install the latest version by running `maturin develop` inside `../python` directory.
 
 ## Build
 
