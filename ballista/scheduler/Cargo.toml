@@ -68,7 +68,7 @@ prost-types = { workspace = true }
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1.0", features = ["full"] }
-tokio-stream = { version = "0.1", features = ["net"]  }
+tokio-stream = { version = "0.1", features = ["net"] }
 tonic = { workspace = true }
 # tonic 0.12.2 depends on tower 0.4.7
 tower = { version = "0.4.7", default-features = false, features = ["make", "util"] }
