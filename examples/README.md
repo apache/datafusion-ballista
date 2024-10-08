@@ -90,7 +90,7 @@ The examples can be run using the `cargo run --bin` syntax.
 ## Distributed SQL Example
 
 ```bash
-cargo run --release --bin sql
+cargo run --release --example sql
 ```
 
 ### Source code for distributed SQL example
@@ -136,7 +136,7 @@ async fn main() -> Result<()> {
 ## Distributed DataFrame Example
 
 ```bash
-cargo run --release --bin dataframe
+cargo run --release --example dataframe
 ```
 
 ### Source code for distributed DataFrame example
