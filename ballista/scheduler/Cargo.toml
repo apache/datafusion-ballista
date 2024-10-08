@@ -34,7 +34,7 @@ name = "ballista-scheduler"
 path = "src/bin/main.rs"
 
 [features]
-default = ["flight-sql"]
+default = []
 flight-sql = []
 prometheus-metrics = ["prometheus", "once_cell"]
 
