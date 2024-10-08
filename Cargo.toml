@@ -45,6 +45,21 @@ tracing = "0.1.36"
 tracing-appender = "0.2.2"
 tracing-subscriber = { version = "0.3.15", features = ["env-filter"] }
 
+tokio = { version = "1" }
+uuid = { version = "1.10", features = ["v4", "v7"] }
+rand = { version = "0.8" }
+env_logger = { version = "0.11" }
+futures = { version = "0.3" }
+log = { version = "0.4" }
+parking_lot = { version = "0.12" }
+tempfile = { version = "3" }
+dashmap = { version = "5.4.0" }
+async-trait = { version = "0.1.4" }
+serde = { version = "1.0.136" }
+num_cpus = { version = "1.13.0" }
+tokio-stream = { version = "0.1" }
+parse_arg = { version = "0.1" }
+
 # cargo build --profile release-lto
 [profile.release-lto]
 codegen-units = 1
