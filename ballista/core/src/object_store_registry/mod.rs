@@ -22,8 +22,6 @@ use datafusion::datasource::object_store::{
     DefaultObjectStoreRegistry, ObjectStoreRegistry,
 };
 use datafusion::execution::runtime_env::RuntimeConfig;
-#[cfg(any(feature = "hdfs", feature = "hdfs3"))]
-use datafusion_objectstore_hdfs::object_store::hdfs::HadoopFileSystem;
 #[cfg(feature = "s3")]
 use object_store::aws::AmazonS3Builder;
 #[cfg(feature = "azure")]
@@ -56,13 +54,6 @@ impl BallistaObjectStoreRegistry {
         &self,
         url: &Url,
     ) -> datafusion::error::Result<Arc<dyn ObjectStore>> {
-        #[cfg(any(feature = "hdfs", feature = "hdfs3"))]
-        {
-            if let Some(store) = HadoopFileSystem::new(url.as_str()) {
-                return Ok(Arc::new(store));
-            }
-        }
-
         #[cfg(feature = "s3")]
         {
             if url.as_str().starts_with("s3://") {

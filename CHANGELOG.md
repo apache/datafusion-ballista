@@ -82,7 +82,7 @@
 - docs: fix link [#799](https://github.com/apache/arrow-ballista/pull/799) (haoxins)
 - Implement the with_new_children for ShuffleReaderExec [#821](https://github.com/apache/arrow-ballista/pull/821) (yahoNanJing)
 - Update to point to the correct documentation [#838](https://github.com/apache/arrow-ballista/pull/838) (dadepo)
--  Remove ExecutorReservation and change the task assignment philosophy from executor first to task first [#823](https://github.com/apache/arrow-ballista/pull/823) (yahoNanJing)
+- Remove ExecutorReservation and change the task assignment philosophy from executor first to task first [#823](https://github.com/apache/arrow-ballista/pull/823) (yahoNanJing)
 - Upgrade DataFusion to 27.0.0 [#834](https://github.com/apache/arrow-ballista/pull/834) (r4ntix)
 - Reduce the number of calls to `create_logical_plan` [#842](https://github.com/apache/arrow-ballista/pull/842) (jonahgao)
 - Bump semver from 5.7.1 to 5.7.2 in /ballista/scheduler/ui [#843](https://github.com/apache/arrow-ballista/pull/843) (dependabot[bot])
@@ -101,7 +101,6 @@
 - Update etcd-client requirement from 0.10 to 0.11 [#845](https://github.com/apache/arrow-ballista/pull/845) (dependabot[bot])
 - Update hashbrown requirement from 0.13 to 0.14 [#846](https://github.com/apache/arrow-ballista/pull/846) (dependabot[bot])
 - Bump word-wrap from 1.2.3 to 1.2.4 in /ballista/scheduler/ui [#849](https://github.com/apache/arrow-ballista/pull/849) (dependabot[bot])
-- Update hdfs requirement from 0.1.1 to 0.1.4 [#856](https://github.com/apache/arrow-ballista/pull/856) (yahoNanJing)
 - Update to DataFusion 28 [#858](https://github.com/apache/arrow-ballista/pull/858) (Dandandan)
 - Upgrade datafusion to 30.0.0 [#866](https://github.com/apache/arrow-ballista/pull/866) (r4ntix)
 - refactor: port get_scan_files to Ballista [#877](https://github.com/apache/arrow-ballista/pull/877) (alamb)
@@ -127,7 +126,7 @@
 **Implemented enhancements:**
 
 - Remove `python` since it has been moved to its own repo, `arrow-ballista-python` [\#653](https://github.com/apache/arrow-ballista/issues/653)
--  Add executor self-registration mechanism in the heartbeat service [\#648](https://github.com/apache/arrow-ballista/issues/648)
+- Add executor self-registration mechanism in the heartbeat service [\#648](https://github.com/apache/arrow-ballista/issues/648)
 - Upgrade to DataFusion 17 [\#638](https://github.com/apache/arrow-ballista/issues/638)
 - Move Python bindings to separate repo? [\#635](https://github.com/apache/arrow-ballista/issues/635)
 - Implement new release process [\#622](https://github.com/apache/arrow-ballista/issues/622)
@@ -201,7 +200,6 @@
 - Bump actions/labeler from 4.0.2 to 4.1.0 [\#525](https://github.com/apache/arrow-ballista/pull/525) ([dependabot[bot]](https://github.com/apps/dependabot))
 - Provide a memory StateBackendClient [\#523](https://github.com/apache/arrow-ballista/pull/523) ([yahoNanJing](https://github.com/yahoNanJing))
 
-
 ## [0.10.0](https://github.com/apache/arrow-ballista/tree/0.10.0) (2022-11-18)
 
 [Full Changelog](https://github.com/apache/arrow-ballista/compare/0.9.0...0.10.0)
@@ -223,7 +221,6 @@
 - Replace Mutex\<HashMap\> by using DashMap [\#448](https://github.com/apache/arrow-ballista/issues/448)
 - Refine log level  [\#446](https://github.com/apache/arrow-ballista/issues/446)
 - Upgrade to DataFusion 14.0.0 [\#445](https://github.com/apache/arrow-ballista/issues/445)
-- Add a feature for hdfs3 [\#419](https://github.com/apache/arrow-ballista/issues/419)
 - Add optional flag which advertises host for Arrow Flight SQL [\#418](https://github.com/apache/arrow-ballista/issues/418)
 - Partitioning reasoning in DataFusion and Ballista [\#284](https://github.com/apache/arrow-ballista/issues/284)
 - Stop wasting time in CI on MIRI runs  [\#283](https://github.com/apache/arrow-ballista/issues/283)
@@ -264,7 +261,7 @@
 - Remove benchmark results from README [\#478](https://github.com/apache/arrow-ballista/pull/478) ([andygrove](https://github.com/andygrove))
 - Update `flightsql.md` to provide correct instruction [\#476](https://github.com/apache/arrow-ballista/pull/476) ([iajoiner](https://github.com/iajoiner))
 - Add support for Tableau [\#475](https://github.com/apache/arrow-ballista/pull/475) ([avantgardnerio](https://github.com/avantgardnerio))
--  Add SchedulerConfig for the scheduler configurations, like event\_loop\_buffer\_size, finished\_job\_data\_clean\_up\_interval\_seconds, finished\_job\_state\_clean\_up\_interval\_seconds [\#472](https://github.com/apache/arrow-ballista/pull/472) ([yahoNanJing](https://github.com/yahoNanJing))
+- Add SchedulerConfig for the scheduler configurations, like event\_loop\_buffer\_size, finished\_job\_data\_clean\_up\_interval\_seconds, finished\_job\_state\_clean\_up\_interval\_seconds [\#472](https://github.com/apache/arrow-ballista/pull/472) ([yahoNanJing](https://github.com/yahoNanJing))
 - Bump DataFusion [\#471](https://github.com/apache/arrow-ballista/pull/471) ([Dandandan](https://github.com/Dandandan))
 - Add some validation for remove\_job\_data in the executor server [\#468](https://github.com/apache/arrow-ballista/pull/468) ([yahoNanJing](https://github.com/yahoNanJing))
 - Update documentation to reflect the release of the FlightSQL JDBC Driver [\#461](https://github.com/apache/arrow-ballista/pull/461) ([avantgardnerio](https://github.com/avantgardnerio))
@@ -275,10 +272,8 @@
 - MINOR: Add `set -e` to scripts, fix a typo [\#444](https://github.com/apache/arrow-ballista/pull/444) ([andygrove](https://github.com/andygrove))
 - Add optional flag which advertises host for Arrow Flight SQL \#418 [\#442](https://github.com/apache/arrow-ballista/pull/442) ([DaltonModlin](https://github.com/DaltonModlin))
 - Reorder joins after resolving stage inputs [\#441](https://github.com/apache/arrow-ballista/pull/441) ([Dandandan](https://github.com/Dandandan))
-- Add a feature for hdfs3 [\#439](https://github.com/apache/arrow-ballista/pull/439) ([yahoNanJing](https://github.com/yahoNanJing))
 - Add Spark benchmarks [\#438](https://github.com/apache/arrow-ballista/pull/438) ([andygrove](https://github.com/andygrove))
 - scheduler now verifies that `file://` ListingTable URLs are accessible [\#414](https://github.com/apache/arrow-ballista/pull/414) ([andygrove](https://github.com/andygrove))
-
 
 ## [0.9.0](https://github.com/apache/arrow-ballista/tree/0.9.0) (2022-10-22)
 
@@ -310,7 +305,6 @@
 - Add REST API documentation to User Guide [\#272](https://github.com/apache/arrow-ballista/issues/272)
 - Graceful shutdown: Handle `SIGTERM` [\#266](https://github.com/apache/arrow-ballista/issues/266)
 - \[EPIC\] Scheduler UI [\#265](https://github.com/apache/arrow-ballista/issues/265)
-- Introduce the datafusion-objectstore-hdfs in datafusion-contrib as an object store feature [\#259](https://github.com/apache/arrow-ballista/issues/259)
 - Add a feature based object store provider [\#257](https://github.com/apache/arrow-ballista/issues/257)
 - Add docker build files [\#248](https://github.com/apache/arrow-ballista/issues/248)
 - Allow IDEs to recognize generated code  [\#246](https://github.com/apache/arrow-ballista/issues/246)
@@ -430,7 +424,6 @@
 - Store sessions so users can register tables and query them through flight [\#269](https://github.com/apache/arrow-ballista/pull/269) ([avantgardnerio](https://github.com/avantgardnerio))
 - Fix compose for Ian [\#268](https://github.com/apache/arrow-ballista/pull/268) ([avantgardnerio](https://github.com/avantgardnerio))
 - Task level retry and Stage level retry [\#261](https://github.com/apache/arrow-ballista/pull/261) ([mingmwang](https://github.com/mingmwang))
-- Introduce the datafusion-objectstore-hdfs in datafusion-contrib as an object store feature [\#260](https://github.com/apache/arrow-ballista/pull/260) ([yahoNanJing](https://github.com/yahoNanJing))
 - Add a feature based object store provider [\#258](https://github.com/apache/arrow-ballista/pull/258) ([yahoNanJing](https://github.com/yahoNanJing))
 - Make fetch shuffle partition data in parallel [\#256](https://github.com/apache/arrow-ballista/pull/256) ([yahoNanJing](https://github.com/yahoNanJing))
 - Add LaunchMultiTask rpc interface for executor [\#255](https://github.com/apache/arrow-ballista/pull/255) ([yahoNanJing](https://github.com/yahoNanJing))
@@ -445,7 +438,6 @@
 - Bump terser from 4.8.0 to 4.8.1 in /ballista/ui/scheduler [\#91](https://github.com/apache/arrow-ballista/pull/91) ([dependabot[bot]](https://github.com/apps/dependabot))
 - Bump jsdom from 16.4.0 to 16.7.0 in /ballista/ui/scheduler [\#74](https://github.com/apache/arrow-ballista/pull/74) ([dependabot[bot]](https://github.com/apps/dependabot))
 - Bump numpy from 1.21.3 to 1.22.0 in /python [\#72](https://github.com/apache/arrow-ballista/pull/72) ([dependabot[bot]](https://github.com/apps/dependabot))
-
 
 ## [0.8.0](https://github.com/apache/arrow-ballista/tree/0.8.0) (2022-09-16)
 
@@ -492,7 +484,6 @@
 - Query fails with "NULL is invalid as a DataFusion scalar value" [\#180](https://github.com/apache/arrow-ballista/issues/180)
 - Executor doesn't compile, missing `tokio::signal` [\#171](https://github.com/apache/arrow-ballista/issues/171)
 - Unable to build master [\#76](https://github.com/apache/arrow-ballista/issues/76)
-
 
 ## [ballista-0.7.0](https://github.com/apache/arrow-datafusion/tree/ballista-0.7.0) (2022-05-12)
 
@@ -598,7 +589,7 @@
 - split datafusion-object-store module [\#2065](https://github.com/apache/arrow-datafusion/pull/2065) ([yahoNanJing](https://github.com/yahoNanJing))
 - Change log level for noisy logs [\#2060](https://github.com/apache/arrow-datafusion/pull/2060) ([thinkharderdev](https://github.com/thinkharderdev))
 - Update to arrow/parquet 11.0 [\#2048](https://github.com/apache/arrow-datafusion/pull/2048) ([alamb](https://github.com/alamb))
-- minor: format comments \(`//` to `// `\) [\#2047](https://github.com/apache/arrow-datafusion/pull/2047) ([jackwener](https://github.com/jackwener))
+- minor: format comments \(`//` to `//`\) [\#2047](https://github.com/apache/arrow-datafusion/pull/2047) ([jackwener](https://github.com/jackwener))
 - use cargo-tomlfmt to check Cargo.toml formatting in CI [\#2033](https://github.com/apache/arrow-datafusion/pull/2033) ([WinkerDu](https://github.com/WinkerDu))
 - Refactor SessionContext, SessionState and SessionConfig to support multi-tenancy configurations - Part 2 [\#2029](https://github.com/apache/arrow-datafusion/pull/2029) ([mingmwang](https://github.com/mingmwang))
 - Simplify prerequisites for running examples [\#2028](https://github.com/apache/arrow-datafusion/pull/2028) ([doki23](https://github.com/doki23))
@@ -776,7 +767,6 @@
 
 [Full Changelog](https://github.com/apache/arrow-datafusion/compare/ballista-0.6.0...6.0.0)
 
-
 ## [ballista-0.6.0](https://github.com/apache/arrow-datafusion/tree/ballista-0.6.0) (2021-11-13)
 
 [Full Changelog](https://github.com/apache/arrow-datafusion/compare/ballista-0.5.0...ballista-0.6.0)
@@ -809,7 +799,7 @@
 - add digest\(utf8, method\) function and refactor all current hash digest functions [\#1090](https://github.com/apache/arrow-datafusion/pull/1090) ([Jimexist](https://github.com/Jimexist))
 - \[crypto\] add `blake3` algorithm to `digest` function [\#1086](https://github.com/apache/arrow-datafusion/pull/1086) ([Jimexist](https://github.com/Jimexist))
 - \[crypto\] add blake2b and blake2s functions [\#1081](https://github.com/apache/arrow-datafusion/pull/1081) ([Jimexist](https://github.com/Jimexist))
--  Update sqlparser-rs to 0.11 [\#1052](https://github.com/apache/arrow-datafusion/pull/1052) [[sql](https://github.com/apache/arrow-datafusion/labels/sql)] ([alamb](https://github.com/alamb))
+- Update sqlparser-rs to 0.11 [\#1052](https://github.com/apache/arrow-datafusion/pull/1052) [[sql](https://github.com/apache/arrow-datafusion/labels/sql)] ([alamb](https://github.com/alamb))
 - remove hard coded partition count in ballista logicalplan deserialization [\#1044](https://github.com/apache/arrow-datafusion/pull/1044) ([xudong963](https://github.com/xudong963))
 - Indexed field access for List [\#1006](https://github.com/apache/arrow-datafusion/pull/1006) [[sql](https://github.com/apache/arrow-datafusion/labels/sql)] ([Igosuki](https://github.com/Igosuki))
 - Update DataFusion to arrow 6.0 [\#984](https://github.com/apache/arrow-datafusion/pull/984) ([alamb](https://github.com/alamb))
@@ -861,7 +851,6 @@
 **Merged pull requests:**
 
 - \[nit\] simplify ballista executor `CollectExec` impl codes [\#1140](https://github.com/apache/arrow-datafusion/pull/1140) ([panarch](https://github.com/panarch))
-
 
 For older versions, see [apache/arrow/CHANGELOG.md](https://github.com/apache/arrow/blob/master/CHANGELOG.md)
 
@@ -1018,7 +1007,5 @@ For older versions, see [apache/arrow/CHANGELOG.md](https://github.com/apache/ar
 - Enable redundant\_field\_names clippy lint [\#261](https://github.com/apache/arrow-datafusion/pull/261) ([Dandandan](https://github.com/Dandandan))
 - Update arrow-rs deps \(to fix build due to flatbuffers update\) [\#224](https://github.com/apache/arrow-datafusion/pull/224) ([alamb](https://github.com/alamb))
 - update arrow-rs deps to latest master [\#216](https://github.com/apache/arrow-datafusion/pull/216) ([alamb](https://github.com/alamb))
-
-
 
 \* *This Changelog was automatically generated by [github_changelog_generator](https://github.com/github-changelog-generator/github-changelog-generator)*
