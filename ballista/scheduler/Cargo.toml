@@ -42,7 +42,6 @@ prometheus-metrics = ["prometheus", "once_cell"]
 [dependencies]
 anyhow = "1"
 arrow-flight = { workspace = true }
-async-recursion = "1.0.0"
 async-trait = "0.1.41"
 axum = "0.6.20"
 ballista-core = { path = "../core", version = "0.12.0", features = ["s3"] }
@@ -52,11 +51,9 @@ configure_me = { workspace = true }
 dashmap = "5.4.0"
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
-flatbuffers = { version = "23.5.26" }
 futures = "0.3"
 graphviz-rust = "0.8.0"
 http = "0.2.9"
-itertools = "0.12.0"
 log = "0.4"
 object_store = { workspace = true }
 once_cell = { version = "1.16.0", optional = true }
@@ -70,8 +67,6 @@ serde = { version = "1", features = ["derive"] }
 tokio = { version = "1.0", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = { workspace = true }
-# tonic 0.12.2 depends on tower 0.4.7
-tower = { version = "0.4.7", default-features = false, features = ["make", "util"] }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
