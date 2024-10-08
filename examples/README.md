@@ -21,7 +21,7 @@
 
 This directory contains examples for executing distributed queries with Ballista.
 
-# Standalone Examples
+## Standalone Examples
 
 The standalone example is the easiest to get started with. Ballista supports a standalone mode where a scheduler
 and executor are started in-process.
@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
 
 ```
 
-# Distributed Examples
+## Distributed Examples
 
 For background information on the Ballista architecture, refer to
 the [Ballista README](../ballista/client/README.md).
