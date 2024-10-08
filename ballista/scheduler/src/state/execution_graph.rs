@@ -990,6 +990,14 @@ impl ExecutionGraph {
         self.output_locations.clone()
     }
 
+    pub fn output_partitions(&self) -> usize {
+        self.output_partitions
+    }
+
+    pub fn scheduler_id(&self) -> Option<String> {
+        self.scheduler_id.clone()
+    }
+
     /// Reset running and successful stages on a given executor
     /// This will first check the unresolved/resolved/running stages and reset the running tasks and successful tasks.
     /// Then it will check the successful stage and whether there are running parent stages need to read shuffle from it.

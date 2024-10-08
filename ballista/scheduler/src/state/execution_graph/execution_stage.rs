@@ -201,6 +201,8 @@ pub(crate) struct FailedStage {
     pub(crate) partitions: usize,
     /// Stage ID of the stage that will take this stages outputs as inputs.
     /// If `output_links` is empty then this the final stage in the `ExecutionGraph`
+    #[allow(dead_code)]
+    // we definitely need this one but we're not using it currently
     pub(crate) output_links: Vec<usize>,
     /// `ExecutionPlan` for this stage
     pub(crate) plan: Arc<dyn ExecutionPlan>,
@@ -208,6 +210,8 @@ pub(crate) struct FailedStage {
     /// The index of the Vec is the task's partition id
     pub(crate) task_infos: Vec<Option<TaskInfo>>,
     /// Combined metrics of the already finished tasks in the stage, If it is None, no task is finished yet.
+    #[allow(dead_code)]
+    // we definitely need this one but we're not using it currently
     pub(crate) stage_metrics: Option<Vec<MetricsSet>>,
     /// Error message
     pub(crate) error_message: String,
@@ -220,12 +224,20 @@ pub(crate) struct TaskInfo {
     /// Task scheduled time
     pub(super) scheduled_time: u128,
     /// Task launch time
+    #[allow(dead_code)]
+    // we definitely need this one but we're not using it currently
     pub(super) launch_time: u128,
     /// Start execution time
+    #[allow(dead_code)]
+    // we definitely need this one but we're not using it currently
     pub(super) start_exec_time: u128,
     /// Finish execution time
+    #[allow(dead_code)]
+    // we definitely need this one but we're not using it currently
     pub(super) end_exec_time: u128,
     /// Task finish time
+    #[allow(dead_code)]
+    // we definitely need this one but we're not using it currently
     pub(super) finish_time: u128,
     /// Task Status
     pub(super) task_status: task_status::Status,
