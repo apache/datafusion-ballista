@@ -29,6 +29,7 @@ use std::{net::SocketAddr, sync::Arc};
 use crate::api::get_routes;
 use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
+#[cfg(feature = "flight-sql")]
 use crate::flight_sql::FlightSqlServiceImpl;
 use crate::metrics::default_metrics_collector;
 use crate::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
