@@ -36,6 +36,7 @@ path = "src/bin/main.rs"
 [features]
 default = []
 flight-sql = []
+keda-scaler = []
 prometheus-metrics = ["prometheus", "once_cell"]
 
 
