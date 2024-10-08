@@ -20,6 +20,15 @@ use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use ballista_core::config::BallistaConfig;
+use ballista_core::consistent_hash;
+use ballista_core::consistent_hash::ConsistentHash;
+use ballista_core::error::Result;
+use ballista_core::serde::protobuf::{
+    job_status, AvailableTaskSlots, ExecutorHeartbeat, JobStatus,
+};
+use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata, PartitionId};
+use ballista_core::utils::default_session_builder;
 use clap::ValueEnum;
 use datafusion::common::tree_node::TreeNode;
 use datafusion::common::tree_node::TreeNodeRecursion;
@@ -28,21 +37,8 @@ use datafusion::datasource::physical_plan::{AvroExec, CsvExec, NdJsonExec, Parqu
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
-use datafusion_proto::logical_plan::AsLogicalPlan;
-use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::Stream;
 use log::{debug, info, warn};
-
-use ballista_core::config::BallistaConfig;
-use ballista_core::consistent_hash;
-use ballista_core::consistent_hash::ConsistentHash;
-use ballista_core::error::{BallistaError, Result};
-use ballista_core::serde::protobuf::{
-    job_status, AvailableTaskSlots, ExecutorHeartbeat, JobStatus,
-};
-use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata, PartitionId};
-use ballista_core::serde::BallistaCodec;
-use ballista_core::utils::default_session_builder;
 
 use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
 

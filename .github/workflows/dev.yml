@@ -70,5 +70,4 @@ jobs:
             '!ballista/CHANGELOG.md' \
             README.md \
             CONTRIBUTING.md \
-            'ballista/**/*.{ts,tsx}'
           git diff --exit-code

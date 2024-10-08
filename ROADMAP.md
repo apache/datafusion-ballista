@@ -17,9 +17,9 @@
   under the License.
 -->
 
-## Ballista Roadmap
+# Ballista Roadmap
 
-There is an excellent discussion in https://github.com/apache/arrow-ballista/issues/30 about the future of the project,
+There is an excellent discussion in <https://github.com/apache/arrow-ballista/issues/30> about the future of the project,
 and we encourage you to participate and add your feedback there if you are interested in using or contributing to
 Ballista.
 
@@ -54,5 +54,3 @@ The current focus is on the following items:
   - Implement Adaptive Query Execution ([#387](https://github.com/apache/arrow-ballista/issues/387))
   - Implement bubble execution ([#408](https://github.com/apache/arrow-ballista/issues/408))
   - Improve benchmark results ([#339](https://github.com/apache/arrow-ballista/issues/339))
-- Python Support
-  - Support Python UDFs ([#173](https://github.com/apache/arrow-ballista/issues/173))

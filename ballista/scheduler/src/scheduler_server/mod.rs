@@ -337,7 +337,7 @@ pub fn timestamp_millis() -> u64 {
         .as_millis() as u64
 }
 
-#[cfg(all(test, feature = "sled"))]
+#[cfg(test)]
 mod test {
     use std::sync::Arc;
 
