@@ -38,7 +38,7 @@ use arrow_flight::{
 use datafusion::arrow::{error::ArrowError, record_batch::RecordBatch};
 use futures::{Stream, StreamExt, TryStreamExt};
 use log::{debug, info};
-use std::io::{Read, Seek};
+use std::io::{BufReader, Read, Seek};
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::error::SendError;
 use tokio::{sync::mpsc::Sender, task};
@@ -95,6 +95,7 @@ impl FlightService for BallistaFlightService {
                         ))
                     })
                     .map_err(|e| from_ballista_err(&e))?;
+                let file = BufReader::new(file);
                 let reader =
                     StreamReader::try_new(file, None).map_err(|e| from_arrow_err(&e))?;
 

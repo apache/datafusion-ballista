@@ -24,6 +24,6 @@ fn main() -> Result<(), String> {
 
     println!("cargo:rerun-if-changed=proto/keda.proto");
     tonic_build::configure()
-        .compile(&["proto/keda.proto"], &["proto"])
+        .compile_protos(&["proto/keda.proto"], &["proto"])
         .map_err(|e| format!("protobuf compilation failed: {e}"))
 }

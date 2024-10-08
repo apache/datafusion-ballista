@@ -58,7 +58,7 @@ struct Args {
     #[clap(
         short,
         long,
-        multiple_values = true,
+        num_args = 0..,
         help = "Execute commands from file(s), then exit",
         value_parser(parse_valid_file)
     )]
@@ -67,7 +67,7 @@ struct Args {
     #[clap(
         short = 'r',
         long,
-        multiple_values = true,
+        num_args = 0..,
         help = "Run the provided files on startup instead of ~/.ballistarc",
         value_parser(parse_valid_file),
         conflicts_with = "file"
