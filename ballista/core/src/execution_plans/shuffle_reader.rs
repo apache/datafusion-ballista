@@ -419,6 +419,7 @@ fn fetch_partition_local_inner(
     let file = File::open(path).map_err(|e| {
         BallistaError::General(format!("Failed to open partition file at {path}: {e:?}"))
     })?;
+    let file = BufReader::new(file);
     let reader = StreamReader::try_new(file, None).map_err(|e| {
         BallistaError::General(format!("Failed to new arrow FileReader at {path}: {e:?}"))
     })?;
