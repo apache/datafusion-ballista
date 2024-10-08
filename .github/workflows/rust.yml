@@ -214,8 +214,6 @@ jobs:
           export ARROW_TEST_DATA=$(pwd)/testing/data
           export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
           cd ballista
-          # snmalloc requires cmake so build without default features
-          cargo test --no-default-features --features sled
           # Ensure also compiles in standalone mode
           cargo test --no-default-features --features standalone
         env:
@@ -468,7 +466,6 @@ jobs:
         env:
           CARGO_HOME: "/github/home/.cargo"
           CARGO_TARGET_DIR: "/github/home/target"
-
 # Coverage job was failing. https://github.com/apache/arrow-datafusion/issues/590 tracks re-instating it
 
 # coverage:

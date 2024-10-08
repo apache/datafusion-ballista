@@ -30,25 +30,11 @@ type = "String"
 doc = "Route for proxying flight results via scheduler. Should be of the form 'IP:PORT'"
 
 [[param]]
-abbr = "b"
-name = "cluster_backend"
-type = "ballista_scheduler::cluster::ClusterStorage"
-doc = "The configuration backend for the scheduler cluster state, possible values: etcd, memory, sled. Default: sled"
-default = "ballista_scheduler::cluster::ClusterStorage::Sled"
-
-[[param]]
 abbr = "n"
 name = "namespace"
 type = "String"
 doc = "Namespace for the ballista cluster that this executor will join. Default: ballista"
 default = "std::string::String::from(\"ballista\")"
-
-[[param]]
-abbr = "e"
-name = "etcd_urls"
-type = "String"
-doc = "etcd urls for use when discovery mode is `etcd`. Default: localhost:2379"
-default = "std::string::String::from(\"localhost:2379\")"
 
 [[param]]
 name = "bind_host"
@@ -116,12 +102,6 @@ doc = "Tolerance of the consistent hashing policy for task scheduling. Default: 
 name = "plugin_dir"
 type = "String"
 doc = "plugin dir"
-default = "std::string::String::from(\"\")"
-
-[[param]]
-name = "sled_dir"
-type = "String"
-doc = "Sled dir: Opens a Db for saving schduler metadata at the specified path. This will create a new storage directory at the specified path if it does not already exist."
 default = "std::string::String::from(\"\")"
 
 [[param]]
