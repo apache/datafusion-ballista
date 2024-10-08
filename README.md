@@ -66,7 +66,7 @@ See the [architecture guide](docs/source/contributors-guide/architecture.md) for
 
 ## Features
 
-- Supports HDFS as well as cloud object stores. S3 is supported today and GCS and Azure support is planned.
+- Supports cloud object stores. S3 is supported today and GCS and Azure support is planned.
 - DataFrame and SQL APIs available from Python and Rust.
 - Clients can connect to a Ballista cluster using [Flight SQL][flight-sql].
 - JDBC support via Arrow Flight SQL JDBC Driver
