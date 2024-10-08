@@ -40,14 +40,8 @@ use uuid::Uuid;
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 
-#[cfg(not(windows))]
-use ballista_core::cache_layer::{
-    medium::local_disk::LocalDiskMedium, policy::file::FileCacheLayer, CacheLayer,
-};
 use ballista_core::config::{DataCachePolicy, LogRotationPolicy, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
-#[cfg(not(windows))]
-use ballista_core::object_store_registry::cache::CachedBasedObjectStoreRegistry;
 use ballista_core::object_store_registry::with_object_store_registry;
 use ballista_core::serde::protobuf::executor_resource::Resource;
 use ballista_core::serde::protobuf::executor_status::Status;
@@ -195,50 +189,12 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
         })?)
     };
 
-    // Set the object store registry
-    #[cfg(not(windows))]
-    let runtime_with_data_cache = {
-        let cache_dir = opt.cache_dir.clone();
-        let cache_capacity = opt.cache_capacity;
-        let cache_io_concurrency = opt.cache_io_concurrency;
-        let cache_layer =
-            opt.data_cache_policy
-                .map(|data_cache_policy| match data_cache_policy {
-                    DataCachePolicy::LocalDiskFile => {
-                        let cache_dir = cache_dir.unwrap();
-                        let cache_layer = FileCacheLayer::new(
-                            cache_capacity as usize,
-                            cache_io_concurrency,
-                            LocalDiskMedium::new(cache_dir),
-                        );
-                        CacheLayer::LocalDiskFile(Arc::new(cache_layer))
-                    }
-                });
-        if let Some(cache_layer) = cache_layer {
-            let registry = Arc::new(CachedBasedObjectStoreRegistry::new(
-                runtime.object_store_registry.clone(),
-                cache_layer,
-            ));
-            Some(Arc::new(RuntimeEnv {
-                memory_pool: runtime.memory_pool.clone(),
-                disk_manager: runtime.disk_manager.clone(),
-                cache_manager: runtime.cache_manager.clone(),
-                object_store_registry: registry,
-            }))
-        } else {
-            None
-        }
-    };
-    #[cfg(windows)]
-    let runtime_with_data_cache = { None };
-
     let metrics_collector = Arc::new(LoggingMetricsCollector::default());
 
     let executor = Arc::new(Executor::new(
         executor_meta,
         &work_dir,
         runtime,
-        runtime_with_data_cache,
         metrics_collector,
         concurrent_tasks,
         opt.execution_engine.clone(),

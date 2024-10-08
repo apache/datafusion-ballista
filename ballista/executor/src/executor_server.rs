@@ -28,7 +28,6 @@ use log::{debug, error, info, warn};
 use tonic::transport::Channel;
 use tonic::{Request, Response, Status};
 
-use ballista_core::config::BALLISTA_DATA_CACHE_ENABLED;
 use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf::{
     executor_grpc_server::{ExecutorGrpc, ExecutorGrpcServer},
@@ -344,10 +343,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
 
         let task_context = {
             let task_props = task.props;
-            let data_cache = task_props
-                .get(BALLISTA_DATA_CACHE_ENABLED)
-                .map(|data_cache| data_cache.parse().unwrap_or(false))
-                .unwrap_or(false);
             let mut config = ConfigOptions::new();
             for (k, v) in task_props.iter() {
                 if let Err(e) = config.set(k, v) {
@@ -357,10 +352,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             let session_config = SessionConfig::from(config);
 
             let function_registry = task.function_registry;
-            if data_cache {
-                info!("Data cache will be enabled for {}", task_identity);
-            }
-            let runtime = self.executor.get_runtime(data_cache);
+            let runtime = self.executor.get_runtime();
 
             Arc::new(TaskContext::new(
                 Some(task_identity.clone()),
@@ -649,7 +641,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                     scheduler_id: scheduler_id.clone(),
                     task: get_task_definition(
                         task,
-                        self.executor.get_runtime(false),
+                        self.executor.get_runtime(),
                         self.executor.scalar_functions.clone(),
                         self.executor.aggregate_functions.clone(),
                         self.executor.window_functions.clone(),
@@ -677,7 +669,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         for multi_task in multi_tasks {
             let multi_task: Vec<TaskDefinition> = get_task_definition_vec(
                 multi_task,
-                self.executor.get_runtime(false),
+                self.executor.get_runtime(),
                 self.executor.scalar_functions.clone(),
                 self.executor.aggregate_functions.clone(),
                 self.executor.window_functions.clone(),

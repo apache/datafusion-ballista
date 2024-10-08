@@ -23,7 +23,7 @@ pub fn print_version() {
 }
 
 #[cfg(not(windows))]
-pub mod cache_layer;
+//pub mod cache_layer;
 pub mod client;
 pub mod config;
 pub mod consistent_hash;

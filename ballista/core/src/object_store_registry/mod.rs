@@ -16,8 +16,7 @@
 // under the License.
 
 #[cfg(not(windows))]
-pub mod cache;
-
+//pub mod cache;
 use datafusion::common::DataFusionError;
 use datafusion::datasource::object_store::{
     DefaultObjectStoreRegistry, ObjectStoreRegistry,
