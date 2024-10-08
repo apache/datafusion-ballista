@@ -42,7 +42,6 @@ arrow = { workspace = true }
 arrow-flight = { workspace = true }
 async-trait = "0.1.41"
 ballista-core = { path = "../core", version = "0.12.0", features = ["s3"] }
-chrono = { version = "0.4", default-features = false }
 configure_me = { workspace = true }
 dashmap = "5.4.0"
 datafusion = { workspace = true }
