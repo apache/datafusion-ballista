@@ -67,10 +67,8 @@ Run `docker logs CONTAINER_ID` to check the output from the process:
 
 ```
 $ docker logs a756055576f3
-Starting nginx to serve Ballista Scheduler web UI on port 80
 2024-02-03T14:49:47.904571Z  INFO main ThreadId(01) ballista_scheduler::cluster: Initializing Sled database in temp directory
-nginx: [warn] duplicate value "error" in /etc/nginx/sites-enabled/default:49
-nginx: [warn] duplicate value "non_idempotent" in /etc/nginx/sites-enabled/default:49
+
 2024-02-03T14:49:47.924679Z  INFO main ThreadId(01) ballista_scheduler::scheduler_process: Ballista v0.12.0 Scheduler listening on 0.0.0.0:50050
 2024-02-03T14:49:47.924709Z  INFO main ThreadId(01) ballista_scheduler::scheduler_process: Starting Scheduler grpc server with task scheduling policy of PullStaged
 2024-02-03T14:49:47.925261Z  INFO main ThreadId(01) ballista_scheduler::cluster::kv: Initializing heartbeat listener

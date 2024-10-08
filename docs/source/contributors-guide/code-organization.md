@@ -35,7 +35,6 @@ This section provides links to the source code for major areas of functionality.
 - [gRPC Service](https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/scheduler_server/grpc.rs)
 - [Flight SQL Service](https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/flight_sql.rs)
 - [REST API](https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler/src/api)
-- [Web UI](https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler/ui)
 - [Prometheus Integration](https://github.com/apache/datafusion-ballista/blob/main/ballista/scheduler/src/metrics/prometheus.rs)
 
 ### ballista-executor crate

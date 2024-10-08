@@ -72,7 +72,7 @@ processes. The default is `pull-based`.
 
 ## Viewing Query Plans and Metrics
 
-The scheduler provides a web user interface as well as a REST API for monitoring jobs. See the
+The scheduler provides a REST API for monitoring jobs. See the
 [scheduler documentation](scheduler.md) for more information.
 
 To download a query plan in dot format from the scheduler, submit a request to the following API endpoint

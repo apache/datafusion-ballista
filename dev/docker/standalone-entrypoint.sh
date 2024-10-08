@@ -19,9 +19,6 @@
 
 set -e
 
-echo "Starting nginx web UI..."
-nohup nginx -g "daemon off;" &
-
 echo "Starting for scheduler..."
 /root/ballista-scheduler &
 while ! nc -z 127.0.0.1 50050; do

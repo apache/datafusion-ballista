@@ -72,44 +72,6 @@ jobs:
             /github/home/target/release/ballista-scheduler
             /github/home/target/release/ballista-executor
 
-  react-build:
-    name: React build
-    runs-on: ubuntu-latest # proprietary github image, not ubuntu:latest
-    container:
-      image: ubuntu:latest # actual ubuntu:latest that ubuntu publishes
-      env:
-        DEBIAN_FRONTEND: "noninteractive"
-    steps:
-      - uses: actions/checkout@v3
-      - name: Install dependencies
-        run: |
-          cat /etc/*-release
-          apt-get -qq update
-          apt-get -qq upgrade
-          apt-get -qq install -y curl
-          curl -fsSL https://deb.nodesource.com/setup_18.x | bash
-          apt-get -qq update
-          apt-get -qq install -y nodejs
-          npm install -g yarn
-          which node
-          which npm
-          which yarn
-          node --version
-          npm --version
-          yarn --version
-      - name: Run yarn build
-        run: |
-          cd ballista/scheduler/ui
-          pwd
-          yarn install
-          yarn build
-      - name: Save artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: react-artifacts
-          path: |
-            ballista/scheduler/ui/build
-
   # test the crate
   linux-test:
     name: Test Workspace on AMD64 Rust ${{ matrix.rust }}
@@ -338,7 +300,7 @@ jobs:
 
   docker:
     name: Docker
-    needs: [linux-build-lib, react-build]
+    needs: [linux-build-lib]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -350,11 +312,6 @@ jobs:
         with:
           name: rust-artifacts
           path: target/release
-      - name: Restore react artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: react-artifacts
-          path: ballista/scheduler/ui/build
       - name: Build and push Docker image
         run: |
           echo "github user is $DOCKER_USER"
@@ -468,7 +425,6 @@ jobs:
         env:
           CARGO_HOME: "/github/home/.cargo"
           CARGO_TARGET_DIR: "/github/home/target"
-
 # Coverage job was failing. https://github.com/apache/arrow-datafusion/issues/590 tracks re-instating it
 
 # coverage:

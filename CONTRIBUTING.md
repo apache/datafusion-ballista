@@ -41,8 +41,6 @@ This section describes how you can get started with Ballista development.
 Ballista contains components implemented in the following programming languages:
 
 - Rust (Scheduler and Executor processes, Client library)
-- Python (Python bindings)
-- Javascript (Scheduler Web UI)
 
 ### Rust Environment
 
@@ -94,10 +92,6 @@ for the executor becomes `BALLISTA_EXECUTOR_SCHEDULER_HOST`
 ### Python Environment
 
 Refer to the instructions in the Python Bindings [README](./python/README.md)
-
-### Javascript Environment
-
-Refer to the instructions in the Scheduler Web UI [README](./ballista/scheduler/ui/README.md)
 
 ## Integration Tests
 
