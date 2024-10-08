@@ -910,7 +910,6 @@ impl ExecutionGraph {
                     stage_attempt_num: stage.stage_attempt_num,
                     task_id,
                     task_attempt,
-                    data_cache: false,
                     plan: stage.plan.clone(),
                 })
             } else {
@@ -1617,7 +1616,6 @@ pub struct TaskDescription {
     pub stage_attempt_num: usize,
     pub task_id: usize,
     pub task_attempt: usize,
-    pub data_cache: bool,
     pub plan: Arc<dyn ExecutionPlan>,
 }
 
@@ -1626,7 +1624,7 @@ impl Debug for TaskDescription {
         let plan = DisplayableExecutionPlan::new(self.plan.as_ref()).indent(false);
         write!(
             f,
-            "TaskDescription[session_id: {},job: {}, stage: {}.{}, partition: {} task_id {}, task attempt {}, data cache {}]\n{}",
+            "TaskDescription[session_id: {},job: {}, stage: {}.{}, partition: {} task_id {}, task attempt {}]\n{}",
             self.session_id,
             self.partition.job_id,
             self.partition.stage_id,
@@ -1634,7 +1632,6 @@ impl Debug for TaskDescription {
             self.partition.partition_id,
             self.task_id,
             self.task_attempt,
-            self.data_cache,
             plan
         )
     }

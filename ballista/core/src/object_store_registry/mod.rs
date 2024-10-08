@@ -15,9 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#[cfg(not(windows))]
-pub mod cache;
-
 use datafusion::common::DataFusionError;
 use datafusion::datasource::object_store::{
     DefaultObjectStoreRegistry, ObjectStoreRegistry,

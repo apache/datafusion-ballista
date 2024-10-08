@@ -22,8 +22,6 @@ pub fn print_version() {
     println!("Ballista version: {BALLISTA_VERSION}")
 }
 
-#[cfg(not(windows))]
-pub mod cache_layer;
 pub mod client;
 pub mod config;
 pub mod consistent_hash;

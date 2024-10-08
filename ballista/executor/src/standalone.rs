@@ -82,7 +82,6 @@ pub async fn new_standalone_executor<
         executor_meta,
         &work_dir,
         Arc::new(RuntimeEnv::new(config).unwrap()),
-        None,
         Arc::new(LoggingMetricsCollector::default()),
         concurrent_tasks,
         None,
