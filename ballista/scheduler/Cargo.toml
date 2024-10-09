@@ -37,8 +37,8 @@ path = "src/bin/main.rs"
 default = []
 flight-sql = []
 keda-scaler = []
-rest-api = []
 prometheus-metrics = ["prometheus", "once_cell"]
+rest-api = []
 
 [dependencies]
 anyhow = "1"
