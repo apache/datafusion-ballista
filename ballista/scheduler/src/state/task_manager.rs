@@ -275,6 +275,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     /// Get the execution graph of of a job. First look in the active cache.
     /// If no one found, then in the Active/Completed jobs.
+    #[allow(dead_code)] // used by rest-api feature
     pub(crate) async fn get_job_execution_graph(
         &self,
         job_id: &str,

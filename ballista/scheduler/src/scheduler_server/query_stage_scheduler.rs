@@ -57,7 +57,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> QueryStageSchedul
             config,
         }
     }
-
+    #[allow(dead_code)] // used by rest-api feature
     pub(crate) fn metrics_collector(&self) -> &dyn SchedulerMetricsCollector {
         self.metrics_collector.as_ref()
     }
