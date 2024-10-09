@@ -64,6 +64,7 @@ pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     pub start_time: u128,
     pub state: Arc<SchedulerState<T, U>>,
     pub(crate) query_stage_event_loop: EventLoop<QueryStageSchedulerEvent>,
+    #[cfg(feature = "rest-api")]
     query_stage_scheduler: Arc<QueryStageScheduler<T, U>>,
     config: Arc<SchedulerConfig>,
 }
@@ -98,6 +99,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             start_time: timestamp_millis() as u128,
             state,
             query_stage_event_loop,
+            #[cfg(feature = "rest-api")]
             query_stage_scheduler,
             config,
         }
@@ -135,6 +137,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             start_time: timestamp_millis() as u128,
             state,
             query_stage_event_loop,
+            #[cfg(feature = "rest-api")]
             query_stage_scheduler,
             config,
         }
@@ -155,7 +158,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     pub fn running_job_number(&self) -> usize {
         self.state.task_manager.running_job_number()
     }
-
+    #[cfg(feature = "rest-api")]
     pub(crate) fn metrics_collector(&self) -> &dyn SchedulerMetricsCollector {
         self.query_stage_scheduler.metrics_collector()
     }
