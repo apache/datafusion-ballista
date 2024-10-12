@@ -24,15 +24,9 @@ ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y nginx netcat
+RUN apt-get update && apt-get install -y netcat
 
 COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
-
-COPY ballista/scheduler/ui/build /var/www/html
-COPY dev/docker/nginx.conf /etc/nginx/sites-enabled/default
-
-# Expose Ballista Scheduler web UI port
-EXPOSE 80
 
 # Expose Ballista Scheduler gRPC port
 EXPOSE 50050

@@ -70,7 +70,7 @@ See the [architecture guide](docs/source/contributors-guide/architecture.md) for
 - DataFrame and SQL APIs available from Python and Rust.
 - Clients can connect to a Ballista cluster using [Flight SQL][flight-sql].
 - JDBC support via Arrow Flight SQL JDBC Driver
-- Scheduler web interface and REST UI for monitoring query progress and viewing query plans and metrics.
+- Scheduler REST UI for monitoring query progress and viewing query plans and metrics.
 - Support for Docker, Docker Compose, and Kubernetes deployment, as well as manual deployment on bare metal.
 
 ## Performance
@@ -105,5 +105,4 @@ Please see the [Contribution Guide](CONTRIBUTING.md) for information about contr
 [datafusion]: https://github.com/apache/arrow-datafusion
 [flight]: https://arrow.apache.org/blog/2019/10/13/introducing-arrow-flight/
 [flight-sql]: https://arrow.apache.org/blog/2022/02/16/introducing-arrow-flight-sql/
-[ballista-talk]: https://www.youtube.com/watch?v=ZZHQaOap9pQ
 [user-guide]: https://datafusion.apache.org/ballista/

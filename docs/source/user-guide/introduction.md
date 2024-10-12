@@ -29,10 +29,6 @@ SQL and DataFrame queries can be submitted from Python and Rust, and SQL queries
 Flight SQL JDBC driver, supporting your favorite JDBC compliant tools such as [DataGrip](datagrip)
 or [tableau](tableau). For setup instructions, please see the [FlightSQL guide](flightsql.md).
 
-The scheduler has a web user interface for monitoring query status as well as a REST API.
-
-![Ballista Scheduler Web UI](./images/ballista-web-ui.png)
-
 ## How does this compare to Apache Spark?
 
 Although Ballista is largely inspired by Apache Spark, there are some key differences.

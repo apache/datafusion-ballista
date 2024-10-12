@@ -41,7 +41,6 @@ This section describes how you can get started with Ballista development.
 Ballista contains components implemented in the following programming languages:
 
 - Rust (Scheduler and Executor processes, Client library)
-- Javascript (Scheduler Web UI)
 
 ### Rust Environment
 
@@ -89,10 +88,6 @@ specify a config file use the `--config-file` argument.
 Environment variables are prefixed by `BALLISTA_EXECUTOR` or `BALLISTA_SCHEDULER` for the executor and scheduler
 respectively. Hyphens in command line arguments become underscores. For example, the `--scheduler-host` argument
 for the executor becomes `BALLISTA_EXECUTOR_SCHEDULER_HOST`
-
-### Javascript Environment
-
-Refer to the instructions in the Scheduler Web UI [README](./ballista/scheduler/ui/README.md)
 
 ## Integration Tests
 

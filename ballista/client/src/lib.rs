@@ -17,6 +17,5 @@
 
 #![doc = include_str!("../README.md")]
 
-pub mod columnar_batch;
 pub mod context;
 pub mod prelude;

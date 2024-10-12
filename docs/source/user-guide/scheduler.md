@@ -19,12 +19,6 @@
 
 # Ballista Scheduler
 
-## Web User Interface
-
-The scheduler provides a web user interface that allows queries to be monitored. Details on how to start the ui is present [here](https://github.com/apache/datafusion-ballista/tree/main/ballista/scheduler/ui)
-
-![Ballista Scheduler Web UI](./images/ballista-web-ui.png)
-
 ## REST API
 
 The scheduler also provides a REST API that allows jobs to be monitored.

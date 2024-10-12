@@ -24,8 +24,8 @@ Apache Spark
 
 ## Pre-requisites
 
-- Download Apache Maven from https://maven.apache.org/download.cgi
-- Download Apache Spark 3.3.0 from https://spark.apache.org/downloads.html
+- Download Apache Maven from <https://maven.apache.org/download.cgi>
+- Download Apache Spark 3.3.0 from <https://spark.apache.org/downloads.html>
 
 Untar these downloads and set `MAVEN_HOME` and `SPARK_HOME` environment variables to point to the
 install location.
@@ -38,7 +38,7 @@ $MAVEN_HOME/bin/mvn package
 
 ## Generating TPC-H data
 
-Use https://crates.io/crates/tpctools
+Use <https://crates.io/crates/tpctools>
 
 ## Converting TPC-H data from CSV to Parquet
 
@@ -86,7 +86,7 @@ $SPARK_HOME/sbin/start-master.sh
 $SPARK_HOME/sbin/start-slave.sh spark://localhost:7077
 ```
 
-Monitor progress via the Spark UI at http://localhost:8080
+Monitor progress via the Spark UI at <http://localhost:8080>
 
 ## Shut down the cluster
 

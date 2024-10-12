@@ -51,16 +51,6 @@ RUST_LOG=info ./target/release/ballista-executor -c 2 -p 50051
 RUST_LOG=info ./target/release/ballista-executor -c 2 -p 50052
 ```
 
-Start the Ballista UI in a new terminal session.
-
-```shell
-cd ballista/scheduler/ui
-yarn
-yarn start
-```
-
-You can now access the UI at http://localhost:3000/
-
 ## Running the examples
 
 The examples can be run using the `cargo run --bin` syntax. Open a new terminal session and run the following commands.
