@@ -51,7 +51,7 @@ dashmap = { workspace = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 futures = { workspace = true }
-graphviz-rust = "0.8.0"
+graphviz-rust = "0.9.0"
 http = "0.2.9"
 log = { workspace = true }
 object_store = { workspace = true }
