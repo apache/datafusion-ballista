@@ -28,7 +28,7 @@ ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get -qq update && apt-get install -qq -y nginx netcat wget
+RUN apt-get -qq update && apt-get install -qq -y netcat wget
 
 COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
 COPY target/$RELEASE_FLAG/ballista-executor /root/ballista-executor
@@ -41,12 +41,6 @@ RUN mkdir -p /data && \
     wget -q https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2022-01.parquet -P /data/
 ENV DATAFUSION_CATALOG_LOCATION=/data
 ENV DATAFUSION_CATALOG_TYPE=csv
-
-COPY ballista/scheduler/ui/build /var/www/html
-COPY dev/docker/nginx.conf /etc/nginx/sites-enabled/default
-
-# Expose Ballista Scheduler web UI port
-EXPOSE 80
 
 # Expose Ballista Scheduler gRPC port
 EXPOSE 50050

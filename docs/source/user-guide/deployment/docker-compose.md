@@ -72,8 +72,6 @@ ballista-executor_1   | [2021-08-28T15:55:22Z INFO  ballista_executor] Ballista 
 
 The scheduler listens on port 50050 and this is the port that clients will need to connect to.
 
-The scheduler web UI is available on port 80 in the scheduler.
-
 ## Connect from the Ballista CLI
 
 ```shell
