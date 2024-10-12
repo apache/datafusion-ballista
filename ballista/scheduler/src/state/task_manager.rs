@@ -27,8 +27,7 @@ use ballista_core::error::Result;
 
 use crate::cluster::JobState;
 use ballista_core::serde::protobuf::{
-    job_status, JobStatus, KeyValuePair, MultiTaskDefinition, TaskDefinition, TaskId,
-    TaskStatus,
+    job_status, JobStatus, MultiTaskDefinition, TaskDefinition, TaskId, TaskStatus,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use ballista_core::serde::BallistaCodec;
@@ -47,7 +46,6 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
-use ballista_core::config::BALLISTA_DATA_CACHE_ENABLED;
 use tracing::trace;
 
 type ActiveJobCache = Arc<DashMap<String, JobInfoCache>>;
@@ -496,13 +494,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 plan_buf
             };
 
-            let mut props = vec![];
-            if task.data_cache {
-                props.push(KeyValuePair {
-                    key: BALLISTA_DATA_CACHE_ENABLED.to_string(),
-                    value: "true".to_string(),
-                });
-            }
+            let props = vec![];
 
             let task_definition = TaskDefinition {
                 task_id: task.task_id as u32,
@@ -596,53 +588,26 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     .unwrap()
                     .as_millis() as u64;
 
-                let (tasks_with_data_cache, tasks_without_data_cache): (Vec<_>, Vec<_>) =
-                    tasks.into_iter().partition(|task| task.data_cache);
-
                 let mut multi_tasks = vec![];
-                if !tasks_with_data_cache.is_empty() {
-                    let task_ids = tasks_with_data_cache
-                        .into_iter()
-                        .map(|task| TaskId {
-                            task_id: task.task_id as u32,
-                            task_attempt_num: task.task_attempt as u32,
-                            partition_id: task.partition.partition_id as u32,
-                        })
-                        .collect();
-                    multi_tasks.push(MultiTaskDefinition {
-                        task_ids,
-                        job_id: job_id.clone(),
-                        stage_id: stage_id as u32,
-                        stage_attempt_num: stage_attempt_num as u32,
-                        plan: plan.clone(),
-                        session_id: session_id.clone(),
-                        launch_time,
-                        props: vec![KeyValuePair {
-                            key: BALLISTA_DATA_CACHE_ENABLED.to_string(),
-                            value: "true".to_string(),
-                        }],
-                    });
-                }
-                if !tasks_without_data_cache.is_empty() {
-                    let task_ids = tasks_without_data_cache
-                        .into_iter()
-                        .map(|task| TaskId {
-                            task_id: task.task_id as u32,
-                            task_attempt_num: task.task_attempt as u32,
-                            partition_id: task.partition.partition_id as u32,
-                        })
-                        .collect();
-                    multi_tasks.push(MultiTaskDefinition {
-                        task_ids,
-                        job_id,
-                        stage_id: stage_id as u32,
-                        stage_attempt_num: stage_attempt_num as u32,
-                        plan,
-                        session_id,
-                        launch_time,
-                        props: vec![],
-                    });
-                }
+
+                let task_ids = tasks
+                    .into_iter()
+                    .map(|task| TaskId {
+                        task_id: task.task_id as u32,
+                        task_attempt_num: task.task_attempt as u32,
+                        partition_id: task.partition.partition_id as u32,
+                    })
+                    .collect();
+                multi_tasks.push(MultiTaskDefinition {
+                    task_ids,
+                    job_id,
+                    stage_id: stage_id as u32,
+                    stage_attempt_num: stage_attempt_num as u32,
+                    plan,
+                    session_id,
+                    launch_time,
+                    props: vec![],
+                });
 
                 Ok(multi_tasks)
             } else {
