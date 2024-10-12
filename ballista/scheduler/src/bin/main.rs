@@ -26,7 +26,6 @@ use crate::config::{Config, ResultExt};
 use ballista_core::config::LogRotationPolicy;
 use ballista_core::print_version;
 use ballista_scheduler::cluster::BallistaCluster;
-use ballista_scheduler::cluster::ClusterStorage;
 use ballista_scheduler::config::{
     ClusterStorageConfig, SchedulerConfig, TaskDistribution, TaskDistributionPolicy,
 };
@@ -116,22 +115,7 @@ async fn inner() -> Result<()> {
     let addr = format!("{}:{}", opt.bind_host, opt.bind_port);
     let addr = addr.parse()?;
 
-    let cluster_storage_config = match opt.cluster_backend {
-        ClusterStorage::Memory => ClusterStorageConfig::Memory,
-        ClusterStorage::Etcd => ClusterStorageConfig::Etcd(
-            opt.etcd_urls
-                .split_whitespace()
-                .map(|s| s.to_string())
-                .collect(),
-        ),
-        ClusterStorage::Sled => {
-            if opt.sled_dir.is_empty() {
-                ClusterStorageConfig::Sled(None)
-            } else {
-                ClusterStorageConfig::Sled(Some(opt.sled_dir))
-            }
-        }
-    };
+    let cluster_storage_config = ClusterStorageConfig::Memory;
 
     let task_distribution = match opt.task_distribution {
         TaskDistribution::Bias => TaskDistributionPolicy::Bias,

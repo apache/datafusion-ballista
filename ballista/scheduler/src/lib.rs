@@ -25,7 +25,6 @@ pub mod metrics;
 pub mod planner;
 pub mod scheduler_process;
 pub mod scheduler_server;
-#[cfg(feature = "sled")]
 pub mod standalone;
 pub mod state;
 
