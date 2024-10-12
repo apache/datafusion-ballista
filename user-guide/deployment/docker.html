@@ -374,10 +374,8 @@ a756055576f3   apache/datafusion-ballista-scheduler:0.12.0   &quot;/root/schedul
 </div>
 <p>Run <code class="docutils literal notranslate"><span class="pre">docker</span> <span class="pre">logs</span> <span class="pre">CONTAINER_ID</span></code> to check the output from the process:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ docker logs a756055576f3
-Starting nginx to serve Ballista Scheduler web UI on port 80
 2024-02-03T14:49:47.904571Z  INFO main ThreadId(01) ballista_scheduler::cluster: Initializing Sled database in temp directory
-nginx: [warn] duplicate value &quot;error&quot; in /etc/nginx/sites-enabled/default:49
-nginx: [warn] duplicate value &quot;non_idempotent&quot; in /etc/nginx/sites-enabled/default:49
+
 2024-02-03T14:49:47.924679Z  INFO main ThreadId(01) ballista_scheduler::scheduler_process: Ballista v0.12.0 Scheduler listening on 0.0.0.0:50050
 2024-02-03T14:49:47.924709Z  INFO main ThreadId(01) ballista_scheduler::scheduler_process: Starting Scheduler grpc server with task scheduling policy of PullStaged
 2024-02-03T14:49:47.925261Z  INFO main ThreadId(01) ballista_scheduler::cluster::kv: Initializing heartbeat listener
@@ -477,7 +475,7 @@ recommended.</p>
     
     <div class="footer-item">
       <p class="sphinx-version">
-Created using <a href="http://sphinx-doc.org/">Sphinx</a> 8.1.0.<br>
+Created using <a href="http://sphinx-doc.org/">Sphinx</a> 8.1.1.<br>
 </p>
     </div>
     

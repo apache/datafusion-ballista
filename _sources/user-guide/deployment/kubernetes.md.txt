@@ -164,8 +164,6 @@ spec:
           ports:
             - containerPort: 50050
               name: flight
-            - containerPort: 80
-              name: webui
           volumeMounts:
             - mountPath: /mnt
               name: data
@@ -209,7 +207,7 @@ spec:
 ```
 
 ```bash
-$ kubectl apply -f cluster.yaml
+kubectl apply -f cluster.yaml
 ```
 
 This should show the following output:

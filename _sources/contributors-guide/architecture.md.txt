@@ -74,7 +74,6 @@ The scheduler provides the following interfaces:
 - gRPC service for submitting and managing jobs
 - Flight SQL API
 - REST API for monitoring jobs
-- Web user interface for monitoring jobs
 
 Jobs are submitted to the scheduler's gRPC service from a client context, either in the form of a logical query
 plan or a SQL string. The scheduler then creates an execution graph, which contains a physical plan broken down into
