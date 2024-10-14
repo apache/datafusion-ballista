@@ -22,6 +22,7 @@ use crate::execution_plans::{
 };
 use crate::object_store_registry::with_object_store_registry;
 use crate::serde::scheduler::PartitionStats;
+use crate::serde::BallistaLogicalExtensionCodec;
 
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::Schema;
@@ -47,9 +48,7 @@ use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{metrics, ExecutionPlan, RecordBatchStream};
-use datafusion_proto::logical_plan::{
-    AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
-};
+use datafusion_proto::logical_plan::{AsLogicalPlan, LogicalExtensionCodec};
 use futures::StreamExt;
 use log::error;
 use std::io::{BufWriter, Write};
@@ -248,12 +247,18 @@ pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
     session_id: String,
     config: &BallistaConfig,
 ) -> SessionContext {
+    // TODO: put ballista configuration as part of sessions state
+    //       planner can get it from there.
+    //       This would make it changeable during run time
+    //       using SQL SET statement
     let planner: Arc<BallistaQueryPlanner<T>> =
         Arc::new(BallistaQueryPlanner::new(scheduler_url, config.clone()));
 
     let session_config = SessionConfig::new()
         .with_target_partitions(config.default_shuffle_partitions())
-        .with_information_schema(true);
+        .with_information_schema(true)
+        .with_option_extension(config.clone());
+
     let session_state = SessionStateBuilder::new()
         .with_default_features()
         .with_config(session_config)
@@ -280,7 +285,7 @@ impl<T: 'static + AsLogicalPlan> BallistaQueryPlanner<T> {
         Self {
             scheduler_url,
             config,
-            extension_codec: Arc::new(DefaultLogicalExtensionCodec {}),
+            extension_codec: Arc::new(BallistaLogicalExtensionCodec::default()),
             plan_repr: PhantomData,
         }
     }
@@ -320,19 +325,30 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
         logical_plan: &LogicalPlan,
         session_state: &SessionState,
     ) -> std::result::Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+        log::debug!(
+            "create_physical_plan - called for a plan: {:?}",
+            logical_plan
+        );
         match logical_plan {
-            LogicalPlan::Ddl(DdlStatement::CreateExternalTable(_)) => {
-                // table state is managed locally in the BallistaContext, not in the scheduler
+            LogicalPlan::Ddl(DdlStatement::CreateExternalTable(_t)) => {
+                log::debug!("create_physical_plan - handling ddl statement");
                 Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))))
             }
-            _ => Ok(Arc::new(DistributedQueryExec::with_repr(
-                self.scheduler_url.clone(),
-                self.config.clone(),
-                logical_plan.clone(),
-                self.extension_codec.clone(),
-                self.plan_repr,
-                session_state.session_id().to_string(),
-            ))),
+            LogicalPlan::EmptyRelation(_) => {
+                log::debug!("create_physical_plan - handling empty exec");
+                Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))))
+            }
+            _ => {
+                log::debug!("create_physical_plan - handling general statement");
+                Ok(Arc::new(DistributedQueryExec::with_repr(
+                    self.scheduler_url.clone(),
+                    self.config.clone(),
+                    logical_plan.clone(),
+                    self.extension_codec.clone(),
+                    self.plan_repr,
+                    session_state.session_id().to_string(),
+                )))
+            }
         }
     }
 }
