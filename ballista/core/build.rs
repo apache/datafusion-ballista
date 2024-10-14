@@ -44,7 +44,7 @@ fn main() -> Result<(), String> {
             .extern_path(".datafusion_common", "::datafusion_proto_common")
             .extern_path(".datafusion", "::datafusion_proto::protobuf")
             .protoc_arg("--experimental_allow_proto3_optional")
-            .compile(&["proto/ballista.proto"], &["proto"])
+            .compile_protos(&["proto/ballista.proto"], &["proto"])
             .map_err(|e| format!("protobuf compilation failed: {e}"))?;
         let generated_source_path = out.join("ballista.protobuf.rs");
         let code = std::fs::read_to_string(generated_source_path).unwrap();

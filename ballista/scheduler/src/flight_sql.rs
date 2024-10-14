@@ -64,7 +64,9 @@ use datafusion::arrow;
 use datafusion::arrow::array::{ArrayRef, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::error::ArrowError;
-use datafusion::arrow::ipc::writer::{IpcDataGenerator, IpcWriteOptions};
+use datafusion::arrow::ipc::writer::{
+    DictionaryTracker, IpcDataGenerator, IpcWriteOptions,
+};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DFSchemaRef;
 use datafusion::logical_expr::LogicalPlan;
@@ -368,7 +370,15 @@ impl FlightSqlServiceImpl {
         let options = IpcWriteOptions::default();
         let pair = SchemaAsIpc::new(&arrow_schema, &options);
         let data_gen = IpcDataGenerator::default();
-        let encoded_data = data_gen.schema_to_bytes(pair.0, pair.1);
+        let mut dictionary_tracker = DictionaryTracker::new_with_preserve_dict_id(
+            false,
+            pair.1.preserve_dict_id(),
+        );
+        let encoded_data = data_gen.schema_to_bytes_with_dictionary_tracker(
+            pair.0,
+            &mut dictionary_tracker,
+            pair.1,
+        );
         let mut schema_bytes = vec![];
         arrow::ipc::writer::write_message(&mut schema_bytes, encoded_data, pair.1)
             .map_err(|e| Status::internal(format!("Error encoding schema: {e}")))?;
