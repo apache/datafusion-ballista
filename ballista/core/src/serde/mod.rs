@@ -128,11 +128,11 @@ impl BallistaLogicalExtensionCodec {
     fn try_any<T>(
         &self,
         mut f: impl FnMut(&dyn LogicalExtensionCodec) -> Result<T>,
-    ) -> Result<T> {
+    ) -> Result<(u8, T)> {
         let mut last_err = None;
-        for codec in &self.file_format_codecs {
+        for (position, codec) in self.file_format_codecs.iter().enumerate() {
             match f(codec.as_ref()) {
-                Ok(node) => return Ok(node),
+                Ok(node) => return Ok((position as u8, node)),
                 Err(err) => last_err = Some(err),
             }
         }
@@ -202,7 +202,18 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         buf: &[u8],
         ctx: &datafusion::prelude::SessionContext,
     ) -> Result<Arc<dyn datafusion::datasource::file_format::FileFormatFactory>> {
-        self.try_any(|codec| codec.try_decode_file_format(buf, ctx))
+        if !buf.is_empty() {
+            let codec_number = buf[0];
+            let codec = self.file_format_codecs.get(codec_number as usize).ok_or(
+                DataFusionError::NotImplemented("Can't find required codex".to_owned()),
+            )?;
+
+            codec.try_decode_file_format(&buf[1..], ctx)
+        } else {
+            Err(DataFusionError::NotImplemented(
+                "File format blob should have more than 0 bytes".to_owned(),
+            ))
+        }
     }
 
     fn try_encode_file_format(
@@ -210,7 +221,15 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         buf: &mut Vec<u8>,
         node: Arc<dyn datafusion::datasource::file_format::FileFormatFactory>,
     ) -> Result<()> {
-        self.try_any(|codec| codec.try_encode_file_format(buf, node.clone()))
+        let mut encoded_format = vec![];
+        let (codec_number, _) = self.try_any(|codec| {
+            codec.try_encode_file_format(&mut encoded_format, node.clone())
+        })?;
+
+        buf.push(codec_number);
+        buf.append(&mut encoded_format);
+
+        Ok(())
     }
 }
 
@@ -395,5 +414,53 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 "unsupported plan type: {node:?}"
             )))
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use datafusion::{
+        common::DFSchema,
+        datasource::file_format::{parquet::ParquetFormatFactory, DefaultFileType},
+        logical_expr::{dml::CopyTo, EmptyRelation, LogicalPlan},
+        prelude::SessionContext,
+    };
+    use datafusion_proto::{logical_plan::AsLogicalPlan, protobuf::LogicalPlanNode};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn file_format_serialization_roundtrip() {
+        let ctx = SessionContext::new();
+        let empty = EmptyRelation {
+            produce_one_row: false,
+            schema: Arc::new(DFSchema::empty()),
+        };
+        let file_type =
+            Arc::new(DefaultFileType::new(Arc::new(ParquetFormatFactory::new())));
+        let original_plan = LogicalPlan::Copy(CopyTo {
+            input: Arc::new(LogicalPlan::EmptyRelation(empty)),
+            output_url: "/tmp/file".to_string(),
+            partition_by: vec![],
+            file_type,
+            options: Default::default(),
+        });
+
+        let codec = crate::serde::BallistaLogicalExtensionCodec::default();
+        let plan_message =
+            LogicalPlanNode::try_from_logical_plan(&original_plan, &codec).unwrap();
+
+        let mut buf: Vec<u8> = vec![];
+        plan_message.try_encode(&mut buf).unwrap();
+        println!("{}", original_plan.display_indent());
+
+        let decoded_message = LogicalPlanNode::try_decode(&buf).unwrap();
+        let decoded_plan = decoded_message.try_into_logical_plan(&ctx, &codec).unwrap();
+
+        println!("{}", decoded_plan.display_indent());
+        let o = original_plan.display_indent();
+        let d = decoded_plan.display_indent();
+
+        assert_eq!(o.to_string(), d.to_string())
+        //logical_plan.
     }
 }
