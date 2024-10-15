@@ -204,7 +204,7 @@ impl PySessionContext {
                 e.into_iter()
                     .map(|f| {
                         let sort_expr: SortExpr = f.into();
-                        *sort_expr.expr
+                        sort_expr
                     })
                     .collect()
             })
@@ -323,7 +323,7 @@ impl PySessionContext {
                 e.into_iter()
                     .map(|f| {
                         let sort_expr: SortExpr = f.into();
-                        *sort_expr.expr
+                        sort_expr
                     })
                     .collect()
             })
