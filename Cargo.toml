@@ -53,7 +53,7 @@ futures = { version = "0.3" }
 log = { version = "0.4" }
 parking_lot = { version = "0.12" }
 tempfile = { version = "3" }
-dashmap = { version = "5.4.0" }
+dashmap = { version = "6.1.0" }
 async-trait = { version = "0.1.4" }
 serde = { version = "1.0.136" }
 num_cpus = { version = "1.13.0" }
