@@ -30,6 +30,7 @@ pub trait SessionContextExt {
     #[cfg(feature = "standalone")]
     async fn standalone(
         config: &BallistaConfig,
+        concurrent_tasks: usize,
     ) -> datafusion::error::Result<SessionContext>;
     // To be added at the later stage
     // #[cfg(feature = "standalone")]
@@ -106,7 +107,10 @@ impl SessionContextExt for SessionContext {
     }
 
     #[cfg(feature = "standalone")]
-    async fn standalone(config: &BallistaConfig) -> datafusion::error::Result<Self> {
+    async fn standalone(
+        config: &BallistaConfig,
+        concurrent_tasks: usize,
+    ) -> datafusion::error::Result<Self> {
         use ballista_core::serde::BallistaCodec;
         use datafusion_proto::protobuf::PhysicalPlanNode;
 
@@ -159,13 +163,17 @@ impl SessionContextExt for SessionContext {
         let default_codec: BallistaCodec<LogicalPlanNode, PhysicalPlanNode> =
             BallistaCodec::default();
 
-        let parallelism = std::thread::available_parallelism()
-            .map(|v| v.get())
-            .unwrap_or(2);
+        // let parallelism = std::thread::available_parallelism()
+        //     .map(|v| v.get())
+        //     .unwrap_or(2);
 
-        ballista_executor::new_standalone_executor(scheduler, parallelism, default_codec)
-            .await
-            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+        ballista_executor::new_standalone_executor(
+            scheduler,
+            concurrent_tasks,
+            default_codec,
+        )
+        .await
+        .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
         Ok(ctx)
     }
