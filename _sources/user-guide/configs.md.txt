@@ -46,7 +46,6 @@ let ctx = BallistaContext::remote("localhost", 50050, & config).await?;
 | ballista.repartition.windows      | Boolean | true    | When set to true, Ballista will repartition data using the partition keys to execute window functions in parallel using the provided `ballista.shuffle.partitions` level. |
 | ballista.parquet.pruning          | Boolean | true    | Determines whether Parquet pruning should be enabled or not.                                                                                                              |
 | ballista.with_information_schema  | Boolean | true    | Determines whether the `information_schema` should be created in the context. This is necessary for supporting DDL commands such as `SHOW TABLES`.                        |
-| ballista.plugin_dir               | Boolean | true    | Specified a path for plugin files. Dynamic library files in this directory will be loaded when scheduler state initializes.                                               |
 
 ### DataFusion Configuration Settings
 
