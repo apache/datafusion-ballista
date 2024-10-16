@@ -39,8 +39,7 @@ pub const BALLISTA_PARQUET_PRUNING: &str = "ballista.parquet.pruning";
 pub const BALLISTA_COLLECT_STATISTICS: &str = "ballista.collect_statistics";
 
 pub const BALLISTA_WITH_INFORMATION_SCHEMA: &str = "ballista.with_information_schema";
-/// give a plugin files dir, and then the dynamic library files in this dir will be load when scheduler state init.
-pub const BALLISTA_PLUGIN_DIR: &str = "ballista.plugin_dir";
+
 /// max message size for gRPC clients
 pub const BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE: &str =
     "ballista.grpc_client_max_message_size";
@@ -205,9 +204,7 @@ impl BallistaConfig {
                 "Configuration for collecting statistics during scan".to_string(),
                 DataType::Boolean, Some("false".to_string())
             ),
-            ConfigEntry::new(BALLISTA_PLUGIN_DIR.to_string(),
-                             "Sets the plugin dir".to_string(),
-                             DataType::Utf8, Some("".to_string())),
+
             ConfigEntry::new(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE.to_string(),
                              "Configuration for max message size in gRPC clients".to_string(),
                              DataType::UInt64,
@@ -225,10 +222,6 @@ impl BallistaConfig {
 
     pub fn default_shuffle_partitions(&self) -> usize {
         self.get_usize_setting(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS)
-    }
-
-    pub fn default_plugin_dir(&self) -> String {
-        self.get_string_setting(BALLISTA_PLUGIN_DIR)
     }
 
     pub fn default_batch_size(&self) -> usize {
@@ -290,6 +283,7 @@ impl BallistaConfig {
             v.parse::<bool>().unwrap()
         }
     }
+    #[allow(dead_code)]
     fn get_string_setting(&self, key: &str) -> String {
         if let Some(v) = self.settings.get(key) {
             // infallible because we validate all configs in the constructor
@@ -403,7 +397,6 @@ mod tests {
     fn custom_config_invalid() -> Result<()> {
         let config = BallistaConfig::builder()
             .set(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "true")
-            .set(BALLISTA_PLUGIN_DIR, "test_dir")
             .build();
         assert!(config.is_err());
         assert_eq!("General(\"Failed to parse user-supplied value 'ballista.shuffle.partitions' for configuration setting 'true': ParseIntError { kind: InvalidDigit }\")", format!("{:?}", config.unwrap_err()));
