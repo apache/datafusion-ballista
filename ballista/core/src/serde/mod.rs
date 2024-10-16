@@ -125,6 +125,14 @@ pub struct BallistaLogicalExtensionCodec {
 }
 
 impl BallistaLogicalExtensionCodec {
+    // looks for a codec which can operate on this node
+    // returns a position of codec in the list.
+    //
+    // position is important with encoding process
+    // as there is a need to remember which codec
+    // in the list was used to encode message,
+    // so we can use it for decoding as well
+
     fn try_any<T>(
         &self,
         mut f: impl FnMut(&dyn LogicalExtensionCodec) -> Result<T>,
@@ -203,6 +211,7 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         ctx: &datafusion::prelude::SessionContext,
     ) -> Result<Arc<dyn datafusion::datasource::file_format::FileFormatFactory>> {
         if !buf.is_empty() {
+            // gets codec id from input buffer
             let codec_number = buf[0];
             let codec = self.file_format_codecs.get(codec_number as usize).ok_or(
                 DataFusionError::NotImplemented("Can't find required codex".to_owned()),
@@ -225,8 +234,11 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         let (codec_number, _) = self.try_any(|codec| {
             codec.try_encode_file_format(&mut encoded_format, node.clone())
         })?;
-
+        // we need to remember which codec in the list was used to
+        // encode this node.
         buf.push(codec_number);
+
+        // save actual encoded node
         buf.append(&mut encoded_format);
 
         Ok(())

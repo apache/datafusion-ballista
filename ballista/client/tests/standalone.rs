@@ -33,7 +33,7 @@ mod standalone {
         let config = BallistaConfig::new()
             .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
-        let ctx: SessionContext = SessionContext::standalone(&config).await?;
+        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
         ctx.register_parquet(
             "test",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -62,13 +62,96 @@ mod standalone {
     }
 
     #[tokio::test]
-    async fn should_execute_sql_create_table() -> datafusion::error::Result<()> {
+    #[ignore = "Error serializing custom table - NotImplemented(LogicalExtensionCodec is not provided))"]
+    async fn should_execute_sql_list_config() -> datafusion::error::Result<()> {
         let test_data = crate::common::example_test_data();
 
         let config = BallistaConfig::new()
             .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
-        let ctx: SessionContext = SessionContext::standalone(&config).await?;
+        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        let result = ctx
+            .sql("select * from information_schema.df_settings")
+            .await?
+            .collect()
+            .await?;
+        //
+        let expected = vec![""];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
+    //
+    // TODO: It calls scheduler to generate the plan, but no
+    //       but there is no ShuffleRead/Write in physical_plan
+    //
+    // ShuffleWriterExec: None, metrics=[output_rows=2, input_rows=2, write_time=1.782295ms, repart_time=1ns]
+    //   ExplainExec, metrics=[]
+    //
+    #[tokio::test]
+    #[ignore = "It uses local files, will fail in CI"]
+    async fn should_execute_sql_explain() -> datafusion::error::Result<()> {
+        let test_data = crate::common::example_test_data();
+
+        let config = BallistaConfig::new()
+            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+
+        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        let result = ctx
+            .sql("EXPLAIN select count(*), id from test where id > 4 group by id")
+            .await?
+            .collect()
+            .await?;
+
+        let expected = vec![
+            "+---------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+",
+            "| plan_type     | plan                                                                                                                                                                                                                                                                                             |",
+            "+---------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+",
+            "| logical_plan  | Projection: count(*), test.id                                                                                                                                                                                                                                                                    |",
+            "|               |   Aggregate: groupBy=[[test.id]], aggr=[[count(Int64(1)) AS count(*)]]                                                                                                                                                                                                                           |",
+            "|               |     Filter: test.id > Int32(4)                                                                                                                                                                                                                                                                   |",
+            "|               |       TableScan: test projection=[id], partial_filters=[test.id > Int32(4)]                                                                                                                                                                                                                      |",
+            "| physical_plan | ProjectionExec: expr=[count(*)@1 as count(*), id@0 as id]                                                                                                                                                                                                                                        |",
+            "|               |   AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[count(*)]                                                                                                                                                                                                                        |",
+            "|               |     CoalesceBatchesExec: target_batch_size=8192                                                                                                                                                                                                                                                  |",
+            "|               |       RepartitionExec: partitioning=Hash([id@0], 16), input_partitions=1                                                                                                                                                                                                                         |",
+            "|               |         AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[count(*)]                                                                                                                                                                                                                           |",
+            "|               |           CoalesceBatchesExec: target_batch_size=8192                                                                                                                                                                                                                                            |",
+            "|               |             FilterExec: id@0 > 4                                                                                                                                                                                                                                                                 |",
+            "|               |               ParquetExec: file_groups={1 group: [[Users/ballista/git/arrow-ballista/ballista/client/testdata/alltypes_plain.parquet]]}, projection=[id], predicate=id@0 > 4, pruning_predicate=CASE WHEN id_null_count@1 = id_row_count@2 THEN false ELSE id_max@0 > 4 END, required_guarantees=[] |",
+            "|               |                                                                                                                                                                                                                                                                                                  |",
+            "+---------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+",        
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_execute_sql_create_external_table() -> datafusion::error::Result<()> {
+        let test_data = crate::common::example_test_data();
+
+        let config = BallistaConfig::new()
+            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+
+        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
         ctx.sql(&format!("CREATE EXTERNAL TABLE tbl_test STORED AS PARQUET LOCATION '{}/alltypes_plain.parquet'", test_data, )).await?.show().await?;
 
         let result = ctx
@@ -92,13 +175,35 @@ mod standalone {
     }
 
     #[tokio::test]
+    #[ignore = "Error serializing custom table - NotImplemented(LogicalExtensionCodec is not provided))"]
+    async fn should_execute_sql_create_table() -> datafusion::error::Result<()> {
+        let config = BallistaConfig::new()
+            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+
+        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+        ctx.sql(&format!("CREATE TABLE tbl_test (id INT, value INT)"))
+            .await?
+            .show()
+            .await?;
+
+        // it does create table but it can't be queried
+        let _result = ctx
+            .sql("select * from tbl_test where id > 0")
+            .await?
+            .collect()
+            .await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn should_execute_dataframe() -> datafusion::error::Result<()> {
         let test_data = crate::common::example_test_data();
 
         let config = BallistaConfig::new()
             .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
-        let ctx: SessionContext = SessionContext::standalone(&config).await?;
+        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
 
         let df = ctx
             .read_parquet(
@@ -126,13 +231,51 @@ mod standalone {
     }
 
     #[tokio::test]
-    async fn should_execute_sql_write() -> datafusion::error::Result<()> {
+    #[ignore = "Error serializing custom table - NotImplemented(LogicalExtensionCodec is not provided))"]
+    async fn should_execute_dataframe_cache() -> datafusion::error::Result<()> {
         let test_data = crate::common::example_test_data();
 
         let config = BallistaConfig::new()
             .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
-        let ctx: SessionContext = SessionContext::standalone(&config).await?;
+        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+
+        let df = ctx
+            .read_parquet(
+                &format!("{test_data}/alltypes_plain.parquet"),
+                Default::default(),
+            )
+            .await?
+            .select_columns(&["id", "bool_col", "timestamp_col"])?
+            .filter(col("id").gt(lit(5)))?;
+
+        let cached_df = df.cache().await?;
+        let result = cached_df.collect().await?;
+
+        let expected = vec![
+            "+----+----------+---------------------+",
+            "| id | bool_col | timestamp_col       |",
+            "+----+----------+---------------------+",
+            "| 6  | true     | 2009-04-01T00:00:00 |",
+            "| 7  | false    | 2009-04-01T00:01:00 |",
+            "+----+----------+---------------------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "Error: Internal(failed to serialize logical plan: Internal(LogicalPlan serde is not yet implemented for Dml))"]
+    async fn should_execute_sql_insert() -> datafusion::error::Result<()> {
+        let test_data = crate::common::example_test_data();
+
+        let config = BallistaConfig::new()
+            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+
+        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+
         ctx.register_parquet(
             "test",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -149,19 +292,64 @@ mod standalone {
             .await?
             .write_parquet(&write_dir_path, Default::default(), Default::default())
             .await?;
-        // there is discrepancy between logical plan encoded and decoded
-        // for some reason decoded format is csv instead of parquet.
-        //
-        // client encoded:
-        // CopyTo: format=parquet output_url=/var/folders/82/9qj_ms4d4cx01xzxjcdf1_f80000gn/T/.tmpNl0TDp options: ()
-        //   TableScan: test projection=[id, bool_col, tinyint_col, smallint_col, int_col, bigint_col, float_col, double_col, date_string_col, string_col, timestamp_col]
-        //
-        // scheduler decoded:
-        // CopyTo: format=csv output_url=/var/folders/82/9qj_ms4d4cx01xzxjcdf1_f80000gn/T/.tmpNl0TDp options: ()
-        //   TableScan: test projection=[id, bool_col, tinyint_col, smallint_col, int_col, bigint_col, float_col, double_col, date_string_col, string_col, timestamp_col]
-        //
-        // on scheduler side file type is decoded as:
-        // file_type Some(DefaultFileType { file_format_factory: CsvFormatFactory { options: Some(CsvOptions { has_header: None, delimiter: 44, quote: 34, terminator: None, escape: None, double_quote: None, newlines_in_values: None, compression: GZIP, schema_infer_max_rec: 0, date_format: None, datetime_format: None, timestamp_format: None, timestamp_tz_format: None, time_format: None, null_value: None, comment: None }) } })
+
+        ctx.register_parquet("written_table", &write_dir_path, Default::default())
+            .await?;
+
+        let _ = ctx
+            .sql("INSERT INTO written_table select * from written_table")
+            .await?
+            .collect()
+            .await?;
+
+        let result = ctx
+            .sql("select id, string_col, timestamp_col from written_table where id > 4 order by id")
+            .await?
+            .collect()
+            .await?;
+
+        let expected = vec![
+            "+----+------------+---------------------+",
+            "| id | string_col | timestamp_col       |",
+            "+----+------------+---------------------+",
+            "| 5  | 31         | 2009-03-01T00:01:00 |",
+            "| 5  | 31         | 2009-03-01T00:01:00 |",
+            "| 6  | 30         | 2009-04-01T00:00:00 |",
+            "| 6  | 30         | 2009-04-01T00:00:00 |",
+            "| 7  | 31         | 2009-04-01T00:01:00 |",
+            "| 7  | 31         | 2009-04-01T00:01:00 |",
+            "+----+------------+---------------------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_execute_sql_write() -> datafusion::error::Result<()> {
+        let test_data = crate::common::example_test_data();
+
+        let config = BallistaConfig::new()
+            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+
+        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+        let write_dir = tempfile::tempdir().expect("temporary directory to be created");
+        let write_dir_path = write_dir
+            .path()
+            .to_str()
+            .expect("path to be converted to str");
+
+        ctx.sql("select * from test")
+            .await?
+            .write_parquet(&write_dir_path, Default::default(), Default::default())
+            .await?;
         ctx.register_parquet("written_table", &write_dir_path, Default::default())
             .await?;
 

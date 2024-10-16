@@ -325,10 +325,7 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
         logical_plan: &LogicalPlan,
         session_state: &SessionState,
     ) -> std::result::Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        log::debug!(
-            "create_physical_plan - called for a plan: {:?}",
-            logical_plan
-        );
+        log::debug!("create_physical_plan - plan: {:?}", logical_plan);
         match logical_plan {
             LogicalPlan::Ddl(DdlStatement::CreateExternalTable(_t)) => {
                 log::debug!("create_physical_plan - handling ddl statement");
