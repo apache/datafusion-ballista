@@ -25,7 +25,9 @@ use std::result;
 
 use crate::error::{BallistaError, Result};
 
-use datafusion::{arrow::datatypes::DataType, common::config_err};
+use datafusion::{
+    arrow::datatypes::DataType, common::config_err, config::ConfigExtension,
+};
 
 // TODO: to be revisited, do we need all of them or
 //       we can reuse datafusion properties
@@ -317,9 +319,10 @@ impl datafusion::config::ExtensionOptions for BallistaConfig {
         // TODO: this is just temporary until i figure it out
         //       what to do with it
         let entries = Self::valid_entries();
+        let k = format!("{}.{key}", BallistaConfig::PREFIX);
 
-        if entries.contains_key(key) {
-            self.settings.insert(key.to_string(), value.to_string());
+        if entries.contains_key(&k) {
+            self.settings.insert(k, value.to_string());
             Ok(())
         } else {
             config_err!("configuration key `{}` does not exist", key)
@@ -327,11 +330,11 @@ impl datafusion::config::ExtensionOptions for BallistaConfig {
     }
 
     fn entries(&self) -> Vec<datafusion::config::ConfigEntry> {
-        self.settings
-            .iter()
+        Self::valid_entries()
+            .into_iter()
             .map(|(key, value)| datafusion::config::ConfigEntry {
                 key: key.clone(),
-                value: Some(value.clone()),
+                value: self.settings.get(&key).cloned().or(value.default_value),
                 description: "",
             })
             .collect()
