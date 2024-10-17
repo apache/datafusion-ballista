@@ -25,7 +25,12 @@ use std::result;
 
 use crate::error::{BallistaError, Result};
 
-use datafusion::arrow::datatypes::DataType;
+use datafusion::{
+    arrow::datatypes::DataType, common::config_err, config::ConfigExtension,
+};
+
+// TODO: to be revisited, do we need all of them or
+//       we can reuse datafusion properties
 
 pub const BALLISTA_JOB_NAME: &str = "ballista.job.name";
 pub const BALLISTA_DEFAULT_SHUFFLE_PARTITIONS: &str = "ballista.shuffle.partitions";
@@ -295,6 +300,49 @@ impl BallistaConfig {
             v.to_string()
         }
     }
+}
+
+impl datafusion::config::ExtensionOptions for BallistaConfig {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn cloned(&self) -> Box<dyn datafusion::config::ExtensionOptions> {
+        Box::new(self.clone())
+    }
+
+    fn set(&mut self, key: &str, value: &str) -> datafusion::error::Result<()> {
+        // TODO: this is just temporary until i figure it out
+        //       what to do with it
+        let entries = Self::valid_entries();
+        let k = format!("{}.{key}", BallistaConfig::PREFIX);
+
+        if entries.contains_key(&k) {
+            self.settings.insert(k, value.to_string());
+            Ok(())
+        } else {
+            config_err!("configuration key `{}` does not exist", key)
+        }
+    }
+
+    fn entries(&self) -> Vec<datafusion::config::ConfigEntry> {
+        Self::valid_entries()
+            .into_iter()
+            .map(|(key, value)| datafusion::config::ConfigEntry {
+                key: key.clone(),
+                value: self.settings.get(&key).cloned().or(value.default_value),
+                description: "",
+            })
+            .collect()
+    }
+}
+
+impl datafusion::config::ConfigExtension for BallistaConfig {
+    const PREFIX: &'static str = "ballista";
 }
 
 // an enum used to configure the scheduler policy
