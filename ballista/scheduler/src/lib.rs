@@ -16,7 +16,7 @@
 // under the License.
 
 #![doc = include_str ! ("../README.md")]
-
+#[cfg(feature = "rest-api")]
 pub mod api;
 pub mod cluster;
 pub mod config;
