@@ -30,6 +30,7 @@ use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::tree_node::{TreeNode, TreeNodeVisitor};
 use datafusion::datasource::physical_plan::{CsvExec, ParquetExec};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::{
@@ -37,7 +38,7 @@ use datafusion::execution::context::{
 };
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::execution::session_state::SessionStateBuilder;
-use datafusion::logical_expr::{DdlStatement, LogicalPlan};
+use datafusion::logical_expr::{DdlStatement, LogicalPlan, TableScan};
 use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
@@ -48,6 +49,7 @@ use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{metrics, ExecutionPlan, RecordBatchStream};
+use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use datafusion_proto::logical_plan::{AsLogicalPlan, LogicalExtensionCodec};
 use futures::StreamExt;
 use log::error;
@@ -277,6 +279,7 @@ pub struct BallistaQueryPlanner<T: AsLogicalPlan> {
     scheduler_url: String,
     config: BallistaConfig,
     extension_codec: Arc<dyn LogicalExtensionCodec>,
+    local_planner: DefaultPhysicalPlanner,
     plan_repr: PhantomData<T>,
 }
 
@@ -286,6 +289,7 @@ impl<T: 'static + AsLogicalPlan> BallistaQueryPlanner<T> {
             scheduler_url,
             config,
             extension_codec: Arc::new(BallistaLogicalExtensionCodec::default()),
+            local_planner: DefaultPhysicalPlanner::default(),
             plan_repr: PhantomData,
         }
     }
@@ -299,6 +303,7 @@ impl<T: 'static + AsLogicalPlan> BallistaQueryPlanner<T> {
             scheduler_url,
             config,
             extension_codec,
+            local_planner: DefaultPhysicalPlanner::default(),
             plan_repr: PhantomData,
         }
     }
@@ -314,6 +319,7 @@ impl<T: 'static + AsLogicalPlan> BallistaQueryPlanner<T> {
             config,
             extension_codec,
             plan_repr,
+            local_planner: DefaultPhysicalPlanner::default(),
         }
     }
 }
@@ -326,25 +332,41 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
         session_state: &SessionState,
     ) -> std::result::Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         log::debug!("create_physical_plan - plan: {:?}", logical_plan);
-        match logical_plan {
-            LogicalPlan::Ddl(DdlStatement::CreateExternalTable(_t)) => {
-                log::debug!("create_physical_plan - handling ddl statement");
-                Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))))
-            }
-            LogicalPlan::EmptyRelation(_) => {
-                log::debug!("create_physical_plan - handling empty exec");
-                Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))))
-            }
-            _ => {
-                log::debug!("create_physical_plan - handling general statement");
-                Ok(Arc::new(DistributedQueryExec::with_repr(
-                    self.scheduler_url.clone(),
-                    self.config.clone(),
-                    logical_plan.clone(),
-                    self.extension_codec.clone(),
-                    self.plan_repr,
-                    session_state.session_id().to_string(),
-                )))
+        // we inspect if plan scans local tables only,
+        // like tables located in information_schema,
+        // if that is the case, we run that plan
+        // on this same context, not on cluster
+        let mut local_run = LocalRun::default();
+        let _ = logical_plan.visit(&mut local_run);
+
+        if local_run.can_be_local {
+            log::debug!("create_physical_plan - local run");
+
+            self.local_planner
+                .create_physical_plan(logical_plan, session_state)
+                .await
+        } else {
+            match logical_plan {
+                LogicalPlan::Ddl(DdlStatement::CreateExternalTable(_t)) => {
+                    log::debug!("create_physical_plan - handling ddl statement");
+                    Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))))
+                }
+                LogicalPlan::EmptyRelation(_) => {
+                    log::debug!("create_physical_plan - handling empty exec");
+                    Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))))
+                }
+                _ => {
+                    log::debug!("create_physical_plan - handling general statement");
+
+                    Ok(Arc::new(DistributedQueryExec::with_repr(
+                        self.scheduler_url.clone(),
+                        self.config.clone(),
+                        logical_plan.clone(),
+                        self.extension_codec.clone(),
+                        self.plan_repr,
+                        session_state.session_id().to_string(),
+                    )))
+                }
             }
         }
     }
@@ -401,4 +423,131 @@ pub fn get_time_before(interval_seconds: u64) -> u64 {
         .checked_sub(Duration::from_secs(interval_seconds))
         .unwrap_or_else(|| Duration::from_secs(0))
         .as_secs()
+}
+
+/// A Visitor which detect if query is using local tables,
+/// such as tables located in `information_schema` and returns true
+/// only if all scans are in from local tables
+#[derive(Debug, Default)]
+struct LocalRun {
+    can_be_local: bool,
+}
+
+impl<'n> TreeNodeVisitor<'n> for LocalRun {
+    type Node = LogicalPlan;
+
+    fn f_down(
+        &mut self,
+        node: &'n Self::Node,
+    ) -> datafusion::error::Result<datafusion::common::tree_node::TreeNodeRecursion> {
+        match node {
+            LogicalPlan::TableScan(TableScan { table_name, .. }) => match table_name {
+                datafusion::sql::TableReference::Partial { schema, .. }
+                | datafusion::sql::TableReference::Full { schema, .. }
+                    if schema.as_ref() == "information_schema" =>
+                {
+                    self.can_be_local = true;
+                    Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
+                }
+                _ => {
+                    self.can_be_local = false;
+                    Ok(datafusion::common::tree_node::TreeNodeRecursion::Stop)
+                }
+            },
+            _ => Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue),
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use datafusion::{
+        common::tree_node::TreeNode,
+        error::Result,
+        execution::{
+            runtime_env::{RuntimeConfig, RuntimeEnv},
+            SessionStateBuilder,
+        },
+        prelude::{SessionConfig, SessionContext},
+    };
+
+    use crate::utils::LocalRun;
+
+    fn context() -> SessionContext {
+        let runtime_environment = RuntimeEnv::new(RuntimeConfig::new()).unwrap();
+
+        let session_config = SessionConfig::new().with_information_schema(true);
+
+        let state = SessionStateBuilder::new()
+            .with_config(session_config)
+            .with_runtime_env(runtime_environment.into())
+            .with_default_features()
+            .build();
+
+        let ctx = SessionContext::new_with_state(state);
+
+        ctx
+    }
+
+    #[tokio::test]
+    async fn should_detect_show_table_as_local_plan() -> Result<()> {
+        let ctx = context();
+        let df = ctx.sql("SHOW TABLES").await?;
+        let lp = df.logical_plan();
+        let mut local_run = LocalRun::default();
+
+        lp.visit(&mut local_run).unwrap();
+
+        assert!(local_run.can_be_local);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_detect_select_from_information_schema_as_local_plan() -> Result<()> {
+        let ctx = context();
+        let df = ctx.sql("SELECT * FROM information_schema.df_settings WHERE NAME LIKE 'ballista%'").await?;
+        let lp = df.logical_plan();
+        let mut local_run = LocalRun::default();
+
+        lp.visit(&mut local_run).unwrap();
+
+        assert!(local_run.can_be_local);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_not_detect_local_table() -> Result<()> {
+        let ctx = context();
+        ctx.sql("CREATE TABLE tt (c0 INT, c1 INT)")
+            .await?
+            .show()
+            .await?;
+        let df = ctx.sql("SELECT * FROM tt").await?;
+        let lp = df.logical_plan();
+        let mut local_run = LocalRun::default();
+
+        lp.visit(&mut local_run).unwrap();
+
+        assert!(!local_run.can_be_local);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_not_detect_external_table() -> Result<()> {
+        let ctx = context();
+        ctx.register_csv("tt", "tests/customer.csv", Default::default())
+            .await?;
+        let df = ctx.sql("SELECT * FROM tt").await?;
+        let lp = df.logical_plan();
+        let mut local_run = LocalRun::default();
+
+        lp.visit(&mut local_run).unwrap();
+
+        assert!(!local_run.can_be_local);
+
+        Ok(())
+    }
 }

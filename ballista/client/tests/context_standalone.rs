@@ -121,14 +121,17 @@ mod standalone_tests {
         // assert!(df.is_err());
         assert!(df.is_ok());
 
-        // TODO: this part does not work
-        //       but it did not work with `BallistaContext`.
-        //       to be addressed at some point
-        //
-        // let result = df.unwrap().collect().await.unwrap();
-        //
-        // let expected = vec![""];
-        // datafusion::assert_batches_eq!(expected, &result);
+        let result = df.unwrap().collect().await.unwrap();
+
+        let expected = vec![
+            "+---------------+--------------+---------------------+-------------+-----------------------------+-------------+",
+            "| table_catalog | table_schema | table_name          | column_name | data_type                   | is_nullable |",
+            "+---------------+--------------+---------------------+-------------+-----------------------------+-------------+",
+            "| datafusion    | public       | csv_with_timestamps | name        | Utf8                        | YES         |",
+            "| datafusion    | public       | csv_with_timestamps | ts          | Timestamp(Nanosecond, None) | YES         |",
+            "+---------------+--------------+---------------------+-------------+-----------------------------+-------------+",
+        ];
+        datafusion::assert_batches_eq!(expected, &result);
     }
 
     #[tokio::test]

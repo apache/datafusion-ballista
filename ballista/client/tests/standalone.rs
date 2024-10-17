@@ -62,8 +62,108 @@ mod standalone {
     }
 
     #[tokio::test]
-    #[ignore = "Error serializing custom table - NotImplemented(LogicalExtensionCodec is not provided))"]
-    async fn should_execute_sql_list_config() -> datafusion::error::Result<()> {
+    async fn should_execute_sql_show_configs() -> datafusion::error::Result<()> {
+        let config = BallistaConfig::new()
+            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+
+        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+
+        let result = ctx
+            .sql("select name from information_schema.df_settings where name like 'datafusion.%' order by name limit 5")
+            .await?
+            .collect()
+            .await?;
+        //
+        let expected = vec![
+            "+------------------------------------------------------+",
+            "| name                                                 |",
+            "+------------------------------------------------------+",
+            "| datafusion.catalog.create_default_catalog_and_schema |",
+            "| datafusion.catalog.default_catalog                   |",
+            "| datafusion.catalog.default_schema                    |",
+            "| datafusion.catalog.format                            |",
+            "| datafusion.catalog.has_header                        |",
+            "+------------------------------------------------------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_execute_sql_show_configs_ballista() -> datafusion::error::Result<()> {
+        let config = BallistaConfig::new()
+            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+
+        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+        let state = ctx.state();
+        let ballista_config_extension =
+            state.config().options().extensions.get::<BallistaConfig>();
+
+        // ballista configuration should be registered with
+        // session state
+        assert!(ballista_config_extension.is_some());
+
+        let result = ctx
+            .sql("select name, value from information_schema.df_settings where name like 'ballista.%' order by name limit 5")
+            .await?
+            .collect()
+            .await?;
+
+        let expected = vec![
+            "+---------------------------------------------------------+----------+",
+            "| name                                                    | value    |",
+            "+---------------------------------------------------------+----------+",
+            "| ballista.batch.size                                     | 8192     |",
+            "| ballista.collect_statistics                             | false    |",
+            "| ballista.grpc_client_max_message_size                   | 16777216 |",
+            "| ballista.job.name                                       |          |",
+            "| ballista.optimizer.hash_join_single_partition_threshold | 1048576  |",
+            "+---------------------------------------------------------+----------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_execute_sql_set_configs() -> datafusion::error::Result<()> {
+        let config = BallistaConfig::new()
+            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+
+        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+
+        ctx.sql("SET ballista.job.name = 'Super Cool Ballista App'")
+            .await?
+            .show()
+            .await?;
+
+        let result = ctx
+            .sql("select name, value from information_schema.df_settings where name like 'ballista.job.name' order by name limit 1")
+            .await?
+            .collect()
+            .await?;
+
+        let expected = vec![
+            "+-------------------+-------------------------+",
+            "| name              | value                   |",
+            "+-------------------+-------------------------+",
+            "| ballista.job.name | Super Cool Ballista App |",
+            "+-------------------+-------------------------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
+    // select from ballista config
+    // check for SET =
+
+    #[tokio::test]
+    async fn should_execute_show_tables() -> datafusion::error::Result<()> {
         let test_data = crate::common::example_test_data();
 
         let config = BallistaConfig::new()
@@ -77,13 +177,20 @@ mod standalone {
         )
         .await?;
 
-        let result = ctx
-            .sql("select * from information_schema.df_settings")
-            .await?
-            .collect()
-            .await?;
+        let result = ctx.sql("show tables").await?.collect().await?;
         //
-        let expected = vec![""];
+        let expected = vec![
+            "+---------------+--------------------+-------------+------------+",
+            "| table_catalog | table_schema       | table_name  | table_type |",
+            "+---------------+--------------------+-------------+------------+",
+            "| datafusion    | public             | test        | BASE TABLE |",
+            "| datafusion    | information_schema | tables      | VIEW       |",
+            "| datafusion    | information_schema | views       | VIEW       |",
+            "| datafusion    | information_schema | columns     | VIEW       |",
+            "| datafusion    | information_schema | df_settings | VIEW       |",
+            "| datafusion    | information_schema | schemata    | VIEW       |",
+            "+---------------+--------------------+-------------+------------+",
+        ];
 
         assert_batches_eq!(expected, &result);
 
