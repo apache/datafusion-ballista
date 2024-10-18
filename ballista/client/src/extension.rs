@@ -28,10 +28,13 @@ use datafusion_proto::protobuf::LogicalPlanNode;
 #[async_trait::async_trait]
 pub trait SessionContextExt {
     #[cfg(feature = "standalone")]
-    async fn standalone(
+    async fn standalone_with_config(
         config: &BallistaConfig,
-        concurrent_tasks: usize,
     ) -> datafusion::error::Result<SessionContext>;
+
+    #[cfg(feature = "standalone")]
+    async fn standalone() -> datafusion::error::Result<SessionContext>;
+
     // To be added at the later stage
     // #[cfg(feature = "standalone")]
     // async fn standalone_with_state(
@@ -39,11 +42,14 @@ pub trait SessionContextExt {
     //     session_state: SessionState,
     // ) -> datafusion::error::Result<SessionContext>;
 
-    async fn remote(
+    async fn remote_with_config(
         host: &str,
         port: u16,
         config: &BallistaConfig,
     ) -> datafusion::error::Result<SessionContext>;
+
+    async fn remote(host: &str, port: u16) -> datafusion::error::Result<SessionContext>;
+
     // To be added at the later stage
     // async fn remote_with_state(
     //     host: &str,
@@ -55,7 +61,7 @@ pub trait SessionContextExt {
 
 #[async_trait::async_trait]
 impl SessionContextExt for SessionContext {
-    async fn remote(
+    async fn remote_with_config(
         host: &str,
         port: u16,
         config: &BallistaConfig,
@@ -106,10 +112,16 @@ impl SessionContextExt for SessionContext {
         Ok(ctx)
     }
 
+    async fn remote(host: &str, port: u16) -> datafusion::error::Result<SessionContext> {
+        let config = BallistaConfig::builder()
+            .build()
+            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+        Self::remote_with_config(host, port, &config).await
+    }
+
     #[cfg(feature = "standalone")]
-    async fn standalone(
+    async fn standalone_with_config(
         config: &BallistaConfig,
-        concurrent_tasks: usize,
     ) -> datafusion::error::Result<Self> {
         use ballista_core::serde::BallistaCodec;
         use datafusion_proto::protobuf::PhysicalPlanNode;
@@ -163,10 +175,7 @@ impl SessionContextExt for SessionContext {
         let default_codec: BallistaCodec<LogicalPlanNode, PhysicalPlanNode> =
             BallistaCodec::default();
 
-        // let parallelism = std::thread::available_parallelism()
-        //     .map(|v| v.get())
-        //     .unwrap_or(2);
-
+        let concurrent_tasks = config.default_standalone_parallelism();
         ballista_executor::new_standalone_executor(
             scheduler,
             concurrent_tasks,
@@ -176,5 +185,14 @@ impl SessionContextExt for SessionContext {
         .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
         Ok(ctx)
+    }
+
+    #[cfg(feature = "standalone")]
+    async fn standalone() -> datafusion::error::Result<Self> {
+        let config = BallistaConfig::builder()
+            .build()
+            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+
+        Self::standalone_with_config(&config).await
     }
 }

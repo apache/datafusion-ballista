@@ -42,6 +42,7 @@ pub const BALLISTA_REPARTITION_AGGREGATIONS: &str = "ballista.repartition.aggreg
 pub const BALLISTA_REPARTITION_WINDOWS: &str = "ballista.repartition.windows";
 pub const BALLISTA_PARQUET_PRUNING: &str = "ballista.parquet.pruning";
 pub const BALLISTA_COLLECT_STATISTICS: &str = "ballista.collect_statistics";
+pub const BALLISTA_STANDALONE_PARALLELISM: &str = "ballista.standalone.parallelism";
 
 pub const BALLISTA_WITH_INFORMATION_SCHEMA: &str = "ballista.with_information_schema";
 
@@ -203,13 +204,14 @@ impl BallistaConfig {
                              "Sets whether enable information_schema".to_string(),
                              DataType::Boolean, Some("false".to_string())),
             ConfigEntry::new(BALLISTA_HASH_JOIN_SINGLE_PARTITION_THRESHOLD.to_string(),
-                "Sets threshold in bytes for collecting the smaller side of the hash join in memory".to_string(),
-                DataType::UInt64, Some((1024 * 1024).to_string())),
+                            "Sets threshold in bytes for collecting the smaller side of the hash join in memory".to_string(),
+                            DataType::UInt64, Some((1024 * 1024).to_string())),
             ConfigEntry::new(BALLISTA_COLLECT_STATISTICS.to_string(),
-                "Configuration for collecting statistics during scan".to_string(),
-                DataType::Boolean, Some("false".to_string())
-            ),
-
+                            "Configuration for collecting statistics during scan".to_string(),
+                            DataType::Boolean, Some("false".to_string())),
+            ConfigEntry::new(BALLISTA_STANDALONE_PARALLELISM.to_string(),
+                            "Standalone processing parallelism ".to_string(),
+                            DataType::UInt16, Some(std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1).to_string())),
             ConfigEntry::new(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE.to_string(),
                              "Configuration for max message size in gRPC clients".to_string(),
                              DataType::UInt64,
@@ -259,6 +261,10 @@ impl BallistaConfig {
 
     pub fn collect_statistics(&self) -> bool {
         self.get_bool_setting(BALLISTA_COLLECT_STATISTICS)
+    }
+
+    pub fn default_standalone_parallelism(&self) -> usize {
+        self.get_usize_setting(BALLISTA_STANDALONE_PARALLELISM)
     }
 
     pub fn default_with_information_schema(&self) -> bool {
