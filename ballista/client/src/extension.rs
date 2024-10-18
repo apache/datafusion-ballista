@@ -25,13 +25,19 @@ use ballista_core::{
 use datafusion::{error::DataFusionError, prelude::SessionContext};
 use datafusion_proto::protobuf::LogicalPlanNode;
 
+/// [SessionContext] extension which provides Ballista distribution
+/// support to DataFusion
 #[async_trait::async_trait]
 pub trait SessionContextExt {
+    /// Create a context for executing queries against a standalone Ballista scheduler instance
+    /// It wills start local ballista cluster with scheduler and executor.
     #[cfg(feature = "standalone")]
     async fn standalone_with_config(
         config: &BallistaConfig,
     ) -> datafusion::error::Result<SessionContext>;
 
+    /// Create a context for executing queries against a standalone Ballista scheduler instance
+    /// It wills start local ballista cluster with scheduler and executor.
     #[cfg(feature = "standalone")]
     async fn standalone() -> datafusion::error::Result<SessionContext>;
 
@@ -42,12 +48,14 @@ pub trait SessionContextExt {
     //     session_state: SessionState,
     // ) -> datafusion::error::Result<SessionContext>;
 
+    /// Create a context for executing queries against a remote Ballista scheduler instance
     async fn remote_with_config(
         host: &str,
         port: u16,
         config: &BallistaConfig,
     ) -> datafusion::error::Result<SessionContext>;
 
+    /// Create a context for executing queries against a remote Ballista scheduler instance
     async fn remote(host: &str, port: u16) -> datafusion::error::Result<SessionContext>;
 
     // To be added at the later stage

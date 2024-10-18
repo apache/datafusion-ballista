@@ -484,9 +484,7 @@ mod test {
             .with_default_features()
             .build();
 
-        let ctx = SessionContext::new_with_state(state);
-
-        ctx
+        SessionContext::new_with_state(state)
     }
 
     #[tokio::test]

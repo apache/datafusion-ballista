@@ -47,6 +47,7 @@ env_logger = { workspace = true }
 
 [features]
 azure = ["ballista-core/azure"]
+# default = []
 default = ["standalone"]
 s3 = ["ballista-core/s3"]
 standalone = ["ballista-executor", "ballista-scheduler"]

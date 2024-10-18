@@ -75,7 +75,7 @@ impl BallistaContextState {
         &self.config
     }
 }
-// to be deprecated soon
+
 // #[deprecated]
 pub struct BallistaContext {
     state: Arc<Mutex<BallistaContextState>>,
