@@ -25,7 +25,12 @@ use std::result;
 
 use crate::error::{BallistaError, Result};
 
-use datafusion::arrow::datatypes::DataType;
+use datafusion::{
+    arrow::datatypes::DataType, common::config_err, config::ConfigExtension,
+};
+
+// TODO: to be revisited, do we need all of them or
+//       we can reuse datafusion properties
 
 pub const BALLISTA_JOB_NAME: &str = "ballista.job.name";
 pub const BALLISTA_DEFAULT_SHUFFLE_PARTITIONS: &str = "ballista.shuffle.partitions";
@@ -37,6 +42,7 @@ pub const BALLISTA_REPARTITION_AGGREGATIONS: &str = "ballista.repartition.aggreg
 pub const BALLISTA_REPARTITION_WINDOWS: &str = "ballista.repartition.windows";
 pub const BALLISTA_PARQUET_PRUNING: &str = "ballista.parquet.pruning";
 pub const BALLISTA_COLLECT_STATISTICS: &str = "ballista.collect_statistics";
+pub const BALLISTA_STANDALONE_PARALLELISM: &str = "ballista.standalone.parallelism";
 
 pub const BALLISTA_WITH_INFORMATION_SCHEMA: &str = "ballista.with_information_schema";
 
@@ -198,13 +204,14 @@ impl BallistaConfig {
                              "Sets whether enable information_schema".to_string(),
                              DataType::Boolean, Some("false".to_string())),
             ConfigEntry::new(BALLISTA_HASH_JOIN_SINGLE_PARTITION_THRESHOLD.to_string(),
-                "Sets threshold in bytes for collecting the smaller side of the hash join in memory".to_string(),
-                DataType::UInt64, Some((1024 * 1024).to_string())),
+                            "Sets threshold in bytes for collecting the smaller side of the hash join in memory".to_string(),
+                            DataType::UInt64, Some((1024 * 1024).to_string())),
             ConfigEntry::new(BALLISTA_COLLECT_STATISTICS.to_string(),
-                "Configuration for collecting statistics during scan".to_string(),
-                DataType::Boolean, Some("false".to_string())
-            ),
-
+                            "Configuration for collecting statistics during scan".to_string(),
+                            DataType::Boolean, Some("false".to_string())),
+            ConfigEntry::new(BALLISTA_STANDALONE_PARALLELISM.to_string(),
+                            "Standalone processing parallelism ".to_string(),
+                            DataType::UInt16, Some(std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1).to_string())),
             ConfigEntry::new(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE.to_string(),
                              "Configuration for max message size in gRPC clients".to_string(),
                              DataType::UInt64,
@@ -256,6 +263,10 @@ impl BallistaConfig {
         self.get_bool_setting(BALLISTA_COLLECT_STATISTICS)
     }
 
+    pub fn default_standalone_parallelism(&self) -> usize {
+        self.get_usize_setting(BALLISTA_STANDALONE_PARALLELISM)
+    }
+
     pub fn default_with_information_schema(&self) -> bool {
         self.get_bool_setting(BALLISTA_WITH_INFORMATION_SCHEMA)
     }
@@ -295,6 +306,49 @@ impl BallistaConfig {
             v.to_string()
         }
     }
+}
+
+impl datafusion::config::ExtensionOptions for BallistaConfig {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn cloned(&self) -> Box<dyn datafusion::config::ExtensionOptions> {
+        Box::new(self.clone())
+    }
+
+    fn set(&mut self, key: &str, value: &str) -> datafusion::error::Result<()> {
+        // TODO: this is just temporary until i figure it out
+        //       what to do with it
+        let entries = Self::valid_entries();
+        let k = format!("{}.{key}", BallistaConfig::PREFIX);
+
+        if entries.contains_key(&k) {
+            self.settings.insert(k, value.to_string());
+            Ok(())
+        } else {
+            config_err!("configuration key `{}` does not exist", key)
+        }
+    }
+
+    fn entries(&self) -> Vec<datafusion::config::ConfigEntry> {
+        Self::valid_entries()
+            .into_iter()
+            .map(|(key, value)| datafusion::config::ConfigEntry {
+                key: key.clone(),
+                value: self.settings.get(&key).cloned().or(value.default_value),
+                description: "",
+            })
+            .collect()
+    }
+}
+
+impl datafusion::config::ConfigExtension for BallistaConfig {
+    const PREFIX: &'static str = "ballista";
 }
 
 // an enum used to configure the scheduler policy

@@ -23,7 +23,7 @@ pub use ballista_core::{
         BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE,
         BALLISTA_JOB_NAME, BALLISTA_PARQUET_PRUNING, BALLISTA_REPARTITION_AGGREGATIONS,
         BALLISTA_REPARTITION_JOINS, BALLISTA_REPARTITION_WINDOWS,
-        BALLISTA_WITH_INFORMATION_SCHEMA,
+        BALLISTA_STANDALONE_PARALLELISM, BALLISTA_WITH_INFORMATION_SCHEMA,
     },
     error::{BallistaError, Result},
 };
@@ -31,3 +31,4 @@ pub use ballista_core::{
 pub use futures::StreamExt;
 
 pub use crate::context::BallistaContext;
+pub use crate::extension::SessionContextExt;
