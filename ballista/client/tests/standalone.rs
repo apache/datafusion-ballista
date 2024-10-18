@@ -33,7 +33,7 @@ mod standalone {
         let config = BallistaConfig::new()
             .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
-        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+        let ctx: SessionContext = SessionContext::standalone_with_config(&config).await?;
         ctx.register_parquet(
             "test",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -66,7 +66,7 @@ mod standalone {
         let config = BallistaConfig::new()
             .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
-        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+        let ctx: SessionContext = SessionContext::standalone_with_config(&config).await?;
 
         let result = ctx
             .sql("select name from information_schema.df_settings where name like 'datafusion.%' order by name limit 5")
@@ -96,7 +96,7 @@ mod standalone {
         let config = BallistaConfig::new()
             .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
-        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+        let ctx: SessionContext = SessionContext::standalone_with_config(&config).await?;
         let state = ctx.state();
         let ballista_config_extension =
             state.config().options().extensions.get::<BallistaConfig>();
@@ -133,7 +133,7 @@ mod standalone {
         let config = BallistaConfig::new()
             .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
-        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+        let ctx: SessionContext = SessionContext::standalone_with_config(&config).await?;
 
         ctx.sql("SET ballista.job.name = 'Super Cool Ballista App'")
             .await?
@@ -169,7 +169,7 @@ mod standalone {
         let config = BallistaConfig::new()
             .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
-        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+        let ctx: SessionContext = SessionContext::standalone_with_config(&config).await?;
         ctx.register_parquet(
             "test",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -212,7 +212,7 @@ mod standalone {
         let config = BallistaConfig::new()
             .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
-        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+        let ctx: SessionContext = SessionContext::standalone_with_config(&config).await?;
         ctx.register_parquet(
             "test",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -258,7 +258,7 @@ mod standalone {
         let config = BallistaConfig::new()
             .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
-        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+        let ctx: SessionContext = SessionContext::standalone_with_config(&config).await?;
         ctx.sql(&format!("CREATE EXTERNAL TABLE tbl_test STORED AS PARQUET LOCATION '{}/alltypes_plain.parquet'", test_data, )).await?.show().await?;
 
         let result = ctx
@@ -287,7 +287,7 @@ mod standalone {
         let config = BallistaConfig::new()
             .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
-        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+        let ctx: SessionContext = SessionContext::standalone_with_config(&config).await?;
         ctx.sql(&format!("CREATE TABLE tbl_test (id INT, value INT)"))
             .await?
             .show()
@@ -307,10 +307,7 @@ mod standalone {
     async fn should_execute_dataframe() -> datafusion::error::Result<()> {
         let test_data = crate::common::example_test_data();
 
-        let config = BallistaConfig::new()
-            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
-
-        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+        let ctx: SessionContext = SessionContext::standalone().await?;
 
         let df = ctx
             .read_parquet(
@@ -345,7 +342,7 @@ mod standalone {
         let config = BallistaConfig::new()
             .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
-        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+        let ctx: SessionContext = SessionContext::standalone_with_config(&config).await?;
 
         let df = ctx
             .read_parquet(
@@ -381,7 +378,7 @@ mod standalone {
         let config = BallistaConfig::new()
             .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
-        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+        let ctx: SessionContext = SessionContext::standalone_with_config(&config).await?;
 
         ctx.register_parquet(
             "test",
@@ -440,7 +437,7 @@ mod standalone {
         let config = BallistaConfig::new()
             .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
-        let ctx: SessionContext = SessionContext::standalone(&config, 1).await?;
+        let ctx: SessionContext = SessionContext::standalone_with_config(&config).await?;
         ctx.register_parquet(
             "test",
             &format!("{test_data}/alltypes_plain.parquet"),

@@ -27,7 +27,8 @@ mod standalone_tests {
     use ballista::extension::SessionContextExt;
     use ballista::prelude::BallistaConfig;
     use ballista_core::config::{
-        BallistaConfigBuilder, BALLISTA_WITH_INFORMATION_SCHEMA,
+        BallistaConfigBuilder, BALLISTA_STANDALONE_PARALLELISM,
+        BALLISTA_WITH_INFORMATION_SCHEMA,
     };
     use ballista_core::error::Result;
     use datafusion::arrow;
@@ -42,9 +43,10 @@ mod standalone_tests {
 
     #[tokio::test]
     async fn test_standalone_mode() {
-        let context = SessionContext::standalone(&BallistaConfig::new().unwrap(), 1)
-            .await
-            .unwrap();
+        let context =
+            SessionContext::standalone_with_config(&BallistaConfig::new().unwrap())
+                .await
+                .unwrap();
         let df = context.sql("SELECT 1;").await.unwrap();
         df.collect().await.unwrap();
     }
@@ -52,7 +54,8 @@ mod standalone_tests {
     #[tokio::test]
     async fn test_write_parquet() -> Result<()> {
         let context =
-            SessionContext::standalone(&BallistaConfig::new().unwrap(), 1).await?;
+            SessionContext::standalone_with_config(&BallistaConfig::new().unwrap())
+                .await?;
         let df = context.sql("SELECT 1;").await?;
         let tmp_dir = TempDir::new().unwrap();
         let file_path = format!(
@@ -71,7 +74,8 @@ mod standalone_tests {
     #[tokio::test]
     async fn test_write_csv() -> Result<()> {
         let context =
-            SessionContext::standalone(&BallistaConfig::new().unwrap(), 1).await?;
+            SessionContext::standalone_with_config(&BallistaConfig::new().unwrap())
+                .await?;
         let df = context.sql("SELECT 1;").await?;
         let tmp_dir = TempDir::new().unwrap();
         let file_path =
@@ -83,9 +87,10 @@ mod standalone_tests {
 
     #[tokio::test]
     async fn test_ballista_show_tables() {
-        let context = SessionContext::standalone(&BallistaConfig::new().unwrap(), 1)
-            .await
-            .unwrap();
+        let context =
+            SessionContext::standalone_with_config(&BallistaConfig::new().unwrap())
+                .await
+                .unwrap();
 
         let data = "Jorge,2018-12-13T12:12:10.011Z\n\
                     Andrew,2018-11-13T17:11:10.011Z";
@@ -140,7 +145,9 @@ mod standalone_tests {
             .set(BALLISTA_WITH_INFORMATION_SCHEMA, "true")
             .build()
             .unwrap();
-        let context = SessionContext::standalone(&config, 1).await.unwrap();
+        let context = SessionContext::standalone_with_config(&config)
+            .await
+            .unwrap();
 
         let data = "Jorge,2018-12-13T12:12:10.011Z\n\
                     Andrew,2018-11-13T17:11:10.011Z";
@@ -177,7 +184,9 @@ mod standalone_tests {
             .set(BALLISTA_WITH_INFORMATION_SCHEMA, "true")
             .build()
             .unwrap();
-        let context = SessionContext::standalone(&config, 1).await.unwrap();
+        let context = SessionContext::standalone_with_config(&config)
+            .await
+            .unwrap();
 
         let sql = "select EXTRACT(year FROM to_timestamp('2020-09-08T12:13:14+00:00'));";
 
@@ -191,7 +200,9 @@ mod standalone_tests {
             .set(BALLISTA_WITH_INFORMATION_SCHEMA, "true")
             .build()
             .unwrap();
-        let context = SessionContext::standalone(&config, 1).await.unwrap();
+        let context = SessionContext::standalone_with_config(&config)
+            .await
+            .unwrap();
 
         let df = context
             .sql("SELECT 1 as NUMBER union SELECT 1 as NUMBER;")
@@ -511,9 +522,12 @@ mod standalone_tests {
     async fn create_test_context() -> SessionContext {
         let config = BallistaConfigBuilder::default()
             .set(BALLISTA_WITH_INFORMATION_SCHEMA, "true")
+            .set(BALLISTA_STANDALONE_PARALLELISM, "4")
             .build()
             .unwrap();
-        let context = SessionContext::standalone(&config, 4).await.unwrap();
+        let context = SessionContext::standalone_with_config(&config)
+            .await
+            .unwrap();
 
         context
             .register_parquet(
