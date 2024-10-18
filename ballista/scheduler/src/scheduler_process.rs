@@ -26,6 +26,7 @@ use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use log::info;
 use std::{net::SocketAddr, sync::Arc};
 
+#[cfg(feature = "rest-api")]
 use crate::api::get_routes;
 use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
@@ -82,13 +83,21 @@ pub async fn start_server(
 
     let tonic = tonic_builder.into_service().into_axum_router();
 
+    #[cfg(feature = "rest-api")]
     let axum = get_routes(Arc::new(scheduler_server));
-    let merged = axum
+    #[cfg(feature = "rest-api")]
+    let final_route = axum
         .merge(tonic)
         .into_make_service_with_connect_info::<SocketAddr>();
+
+    #[cfg(not(feature = "rest-api"))]
+    let final_route = tonic;
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .map_err(Error::from)?;
-    axum::serve(listener, merged).await.map_err(Error::from)
+
+    axum::serve(listener, final_route)
+        .await
+        .map_err(Error::from)
 }
