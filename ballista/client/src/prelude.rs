@@ -31,3 +31,4 @@ pub use ballista_core::{
 pub use futures::StreamExt;
 
 pub use crate::context::BallistaContext;
+pub use crate::extension::SessionContextExt;

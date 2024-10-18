@@ -19,6 +19,15 @@ use std::env;
 use std::error::Error;
 use std::path::PathBuf;
 
+use ballista::prelude::BallistaConfig;
+use ballista_core::serde::{
+    protobuf::scheduler_grpc_client::SchedulerGrpcClient, BallistaCodec,
+};
+
+// /// Remote ballista cluster to be used for local testing.
+// static BALLISTA_CLUSTER: tokio::sync::OnceCell<(String, u16)> =
+//     tokio::sync::OnceCell::const_new();
+
 /// Returns the parquet test data directory, which is by default
 /// stored in a git submodule rooted at
 /// `examples/testdata`.
@@ -88,6 +97,43 @@ fn get_data_dir(udf_env: &str, submodule_data: &str) -> Result<PathBuf, Box<dyn 
             pb.display(),
         ).into())
     }
+}
+
+/// starts a ballista cluster for integration tests
+#[allow(dead_code)]
+pub async fn setup_test_cluster() -> (String, u16) {
+    let config = BallistaConfig::builder().build().unwrap();
+    let default_codec = BallistaCodec::default();
+
+    let addr = ballista_scheduler::standalone::new_standalone_scheduler()
+        .await
+        .expect("scheduler to be created");
+
+    let host = "localhost".to_string();
+
+    let scheduler_url = format!("http://{}:{}", host, addr.port());
+
+    let scheduler = loop {
+        match SchedulerGrpcClient::connect(scheduler_url.clone()).await {
+            Err(_) => {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                log::info!("Attempting to connect to test scheduler...");
+            }
+            Ok(scheduler) => break scheduler,
+        }
+    };
+
+    ballista_executor::new_standalone_executor(
+        scheduler,
+        config.default_standalone_parallelism(),
+        default_codec,
+    )
+    .await
+    .expect("executor to be created");
+
+    log::info!("test scheduler created at: {}:{}", host, addr.port());
+
+    (host, addr.port())
 }
 
 #[ctor::ctor]
