@@ -21,6 +21,7 @@ filtered_rat.txt
 arrow-src.tar
 arrow-src.tar.gz
 CHANGELOG.md.bak
+Cargo.toml.bak
 
 # Compiled source
 *.a
