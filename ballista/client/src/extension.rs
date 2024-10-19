@@ -24,6 +24,9 @@ use ballista_core::{
 };
 use datafusion::{error::DataFusionError, prelude::SessionContext};
 use datafusion_proto::protobuf::LogicalPlanNode;
+use url::Url;
+
+const DEFAULT_SCHEDULER_PORT: u16 = 50050;
 
 /// Module provides [SessionContextExt] which adds `standalone*` and `remote*`
 /// methods to [SessionContext].
@@ -37,7 +40,7 @@ use datafusion_proto::protobuf::LogicalPlanNode;
 ///
 /// # #[tokio::main]
 /// # async fn main() -> datafusion::error::Result<()> {
-/// let ctx: SessionContext = SessionContext::remote("localhost",  50050).await?;
+/// let ctx: SessionContext = SessionContext::remote("df://localhost:50050").await?;
 /// # Ok(())
 /// # }
 ///```
@@ -76,22 +79,26 @@ pub trait SessionContextExt {
 
     /// Create a context for executing queries against a remote Ballista scheduler instance
     async fn remote_with_config(
-        host: &str,
-        port: u16,
+        url: &str,
         config: &BallistaConfig,
     ) -> datafusion::error::Result<SessionContext>;
-    // TODO: it may make more sense to have Url instead of host, port tuple
+
     /// Create a context for executing queries against a remote Ballista scheduler instance
-    async fn remote(host: &str, port: u16) -> datafusion::error::Result<SessionContext>;
+    async fn remote(url: &str) -> datafusion::error::Result<SessionContext>;
 }
 
 #[async_trait::async_trait]
 impl SessionContextExt for SessionContext {
     async fn remote_with_config(
-        host: &str,
-        port: u16,
+        url: &str,
         config: &BallistaConfig,
     ) -> datafusion::error::Result<SessionContext> {
+        let url =
+            Url::parse(url).map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+        let host = url.host().ok_or(DataFusionError::Configuration(
+            "hostname should be provided".to_string(),
+        ))?;
+        let port = url.port().unwrap_or(DEFAULT_SCHEDULER_PORT);
         let scheduler_url = format!("http://{}:{}", &host, port);
         log::info!(
             "Connecting to Ballista scheduler at {}",
@@ -138,11 +145,11 @@ impl SessionContextExt for SessionContext {
         Ok(ctx)
     }
 
-    async fn remote(host: &str, port: u16) -> datafusion::error::Result<SessionContext> {
+    async fn remote(url: &str) -> datafusion::error::Result<SessionContext> {
         let config = BallistaConfig::builder()
             .build()
             .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
-        Self::remote_with_config(host, port, &config).await
+        Self::remote_with_config(url, &config).await
     }
 
     #[cfg(feature = "standalone")]

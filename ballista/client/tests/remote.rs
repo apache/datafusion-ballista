@@ -25,8 +25,10 @@ mod remote {
     #[tokio::test]
     async fn should_execute_sql_show() -> datafusion::error::Result<()> {
         let (host, port) = crate::common::setup_test_cluster().await;
+        let url = format!("df://{host}:{port}");
+
         let test_data = crate::common::example_test_data();
-        let ctx: SessionContext = SessionContext::remote(&host, port).await?;
+        let ctx: SessionContext = SessionContext::remote(&url).await?;
 
         ctx.register_parquet(
             "test",
@@ -59,7 +61,9 @@ mod remote {
     async fn should_execute_sql_write() -> datafusion::error::Result<()> {
         let test_data = crate::common::example_test_data();
         let (host, port) = crate::common::setup_test_cluster().await;
-        let ctx: SessionContext = SessionContext::remote(&host, port).await?;
+        let url = format!("df://{host}:{port}");
+
+        let ctx: SessionContext = SessionContext::remote(&url).await?;
 
         ctx.register_parquet(
             "test",
@@ -104,7 +108,9 @@ mod remote {
         let test_data = crate::common::example_test_data();
 
         let (host, port) = crate::common::setup_test_cluster().await;
-        let ctx: SessionContext = SessionContext::remote(&host, port).await?;
+        let url = format!("df://{host}:{port}");
+
+        let ctx: SessionContext = SessionContext::remote(&url).await?;
 
         ctx.register_parquet(
             "test",
