@@ -188,9 +188,9 @@ impl Display for BallistaError {
             BallistaError::General(ref desc) => write!(f, "General error: {desc}"),
             BallistaError::ArrowError(ref desc) => write!(f, "Arrow error: {desc}"),
             BallistaError::DataFusionError(ref desc) => {
-                write!(f, "DataFusion error: {desc:?}")
+                write!(f, "DataFusion error: {desc}")
             }
-            BallistaError::SqlError(ref desc) => write!(f, "SQL error: {desc:?}"),
+            BallistaError::SqlError(ref desc) => write!(f, "SQL error: {desc}"),
             BallistaError::IoError(ref desc) => write!(f, "IO error: {desc}"),
             // BallistaError::ReqwestError(ref desc) => write!(f, "Reqwest error: {}", desc),
             // BallistaError::HttpError(ref desc) => write!(f, "HTTP error: {}", desc),
