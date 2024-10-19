@@ -68,20 +68,7 @@ pub trait SessionContextExt {
     /// Create a context for executing queries against a standalone Ballista scheduler instance
     /// It wills start local ballista cluster with scheduler and executor.
     #[cfg(feature = "standalone")]
-    async fn standalone_with_config(
-        config: &BallistaConfig,
-    ) -> datafusion::error::Result<SessionContext>;
-
-    /// Create a context for executing queries against a standalone Ballista scheduler instance
-    /// It wills start local ballista cluster with scheduler and executor.
-    #[cfg(feature = "standalone")]
     async fn standalone() -> datafusion::error::Result<SessionContext>;
-
-    /// Create a context for executing queries against a remote Ballista scheduler instance
-    async fn remote_with_config(
-        url: &str,
-        config: &BallistaConfig,
-    ) -> datafusion::error::Result<SessionContext>;
 
     /// Create a context for executing queries against a remote Ballista scheduler instance
     async fn remote(url: &str) -> datafusion::error::Result<SessionContext>;
@@ -89,10 +76,7 @@ pub trait SessionContextExt {
 
 #[async_trait::async_trait]
 impl SessionContextExt for SessionContext {
-    async fn remote_with_config(
-        url: &str,
-        config: &BallistaConfig,
-    ) -> datafusion::error::Result<SessionContext> {
+    async fn remote(url: &str) -> datafusion::error::Result<SessionContext> {
         let url =
             Url::parse(url).map_err(|e| DataFusionError::Configuration(e.to_string()))?;
         let host = url.host().ok_or(DataFusionError::Configuration(
@@ -107,6 +91,10 @@ impl SessionContextExt for SessionContext {
         let connection = create_grpc_client_connection(scheduler_url.clone())
             .await
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+
+        let config = BallistaConfig::builder()
+            .build()
+            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
         let limit = config.default_grpc_client_max_message_size();
         let mut scheduler = SchedulerGrpcClient::new(connection)
@@ -145,17 +133,8 @@ impl SessionContextExt for SessionContext {
         Ok(ctx)
     }
 
-    async fn remote(url: &str) -> datafusion::error::Result<SessionContext> {
-        let config = BallistaConfig::builder()
-            .build()
-            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
-        Self::remote_with_config(url, &config).await
-    }
-
     #[cfg(feature = "standalone")]
-    async fn standalone_with_config(
-        config: &BallistaConfig,
-    ) -> datafusion::error::Result<Self> {
+    async fn standalone() -> datafusion::error::Result<Self> {
         use ballista_core::serde::BallistaCodec;
         use datafusion_proto::protobuf::PhysicalPlanNode;
 
@@ -175,7 +154,9 @@ impl SessionContextExt for SessionContext {
                 Ok(scheduler) => break scheduler,
             }
         };
-
+        let config = BallistaConfig::builder()
+            .build()
+            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
         let remote_session_id = scheduler
             .create_session(CreateSessionParams {
                 settings: config
@@ -218,14 +199,5 @@ impl SessionContextExt for SessionContext {
         .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
         Ok(ctx)
-    }
-
-    #[cfg(feature = "standalone")]
-    async fn standalone() -> datafusion::error::Result<Self> {
-        let config = BallistaConfig::builder()
-            .build()
-            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
-
-        Self::standalone_with_config(&config).await
     }
 }
