@@ -42,15 +42,13 @@ mod remote {
             .await?
             .collect()
             .await?;
-        let expected = vec![
-            "+------------+---------------------+",
+        let expected = ["+------------+---------------------+",
             "| string_col | timestamp_col       |",
             "+------------+---------------------+",
             "| 31         | 2009-03-01T00:01:00 |",
             "| 30         | 2009-04-01T00:00:00 |",
             "| 31         | 2009-04-01T00:01:00 |",
-            "+------------+---------------------+",
-        ];
+            "+------------+---------------------+"];
 
         assert_batches_eq!(expected, &result);
 
@@ -81,11 +79,11 @@ mod remote {
         log::info!("writing to parquet .. {}", write_dir_path);
         ctx.sql("select * from test")
             .await?
-            .write_parquet(&write_dir_path, Default::default(), Default::default())
+            .write_parquet(write_dir_path, Default::default(), Default::default())
             .await?;
 
         log::info!("registering parquet .. {}", write_dir_path);
-        ctx.register_parquet("written_table", &write_dir_path, Default::default())
+        ctx.register_parquet("written_table", write_dir_path, Default::default())
             .await?;
         log::info!("reading from written parquet ..");
         let result = ctx
@@ -93,15 +91,13 @@ mod remote {
             .await?
             .collect()
             .await?;
-        let expected = vec![
-            "+----+------------+---------------------+",
+        let expected = ["+----+------------+---------------------+",
             "| id | string_col | timestamp_col       |",
             "+----+------------+---------------------+",
             "| 5  | 31         | 2009-03-01T00:01:00 |",
             "| 6  | 30         | 2009-04-01T00:00:00 |",
             "| 7  | 31         | 2009-04-01T00:01:00 |",
-            "+----+------------+---------------------+",
-        ];
+            "+----+------------+---------------------+"];
         log::info!("reading from written parquet .. DONE");
         assert_batches_eq!(expected, &result);
         Ok(())
@@ -125,8 +121,7 @@ mod remote {
 
         let result = ctx.sql("show tables").await?.collect().await?;
         //
-        let expected = vec![
-            "+---------------+--------------------+-------------+------------+",
+        let expected = ["+---------------+--------------------+-------------+------------+",
             "| table_catalog | table_schema       | table_name  | table_type |",
             "+---------------+--------------------+-------------+------------+",
             "| datafusion    | public             | test        | BASE TABLE |",
@@ -135,8 +130,7 @@ mod remote {
             "| datafusion    | information_schema | columns     | VIEW       |",
             "| datafusion    | information_schema | df_settings | VIEW       |",
             "| datafusion    | information_schema | schemata    | VIEW       |",
-            "+---------------+--------------------+-------------+------------+",
-        ];
+            "+---------------+--------------------+-------------+------------+"];
 
         assert_batches_eq!(expected, &result);
 

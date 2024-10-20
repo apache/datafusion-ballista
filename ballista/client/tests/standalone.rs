@@ -41,7 +41,7 @@ mod standalone {
             .await?
             .collect()
             .await?;
-        let expected = vec![
+        let expected = [
             "+------------+---------------------+",
             "| string_col | timestamp_col       |",
             "+------------+---------------------+",
@@ -66,7 +66,7 @@ mod standalone {
             .collect()
             .await?;
         //
-        let expected = vec![
+        let expected = [
             "+------------------------------------------------------+",
             "| name                                                 |",
             "+------------------------------------------------------+",
@@ -100,7 +100,7 @@ mod standalone {
             .collect()
             .await?;
 
-        let expected = vec![
+        let expected = [
             "+---------------------------------------------------------+----------+",
             "| name                                                    | value    |",
             "+---------------------------------------------------------+----------+",
@@ -132,7 +132,7 @@ mod standalone {
             .collect()
             .await?;
 
-        let expected = vec![
+        let expected = [
             "+-------------------+-------------------------+",
             "| name              | value                   |",
             "+-------------------+-------------------------+",
@@ -162,7 +162,7 @@ mod standalone {
 
         let result = ctx.sql("show tables").await?.collect().await?;
         //
-        let expected = vec![
+        let expected = [
             "+---------------+--------------------+-------------+------------+",
             "| table_catalog | table_schema       | table_name  | table_type |",
             "+---------------+--------------------+-------------+------------+",
@@ -243,7 +243,7 @@ mod standalone {
             .await?
             .collect()
             .await?;
-        let expected = vec![
+        let expected = [
             "+----+------------+---------------------+",
             "| id | string_col | timestamp_col       |",
             "+----+------------+---------------------+",
@@ -262,7 +262,7 @@ mod standalone {
     #[ignore = "Error serializing custom table - NotImplemented(LogicalExtensionCodec is not provided))"]
     async fn should_execute_sql_create_table() -> datafusion::error::Result<()> {
         let ctx: SessionContext = SessionContext::standalone().await?;
-        ctx.sql(&format!("CREATE TABLE tbl_test (id INT, value INT)"))
+        ctx.sql("CREATE TABLE tbl_test (id INT, value INT)")
             .await?
             .show()
             .await?;
@@ -294,7 +294,7 @@ mod standalone {
 
         let result = df.collect().await?;
 
-        let expected = vec![
+        let expected = [
             "+----+----------+---------------------+",
             "| id | bool_col | timestamp_col       |",
             "+----+----------+---------------------+",
@@ -327,7 +327,7 @@ mod standalone {
         let cached_df = df.cache().await?;
         let result = cached_df.collect().await?;
 
-        let expected = vec![
+        let expected = [
             "+----+----------+---------------------+",
             "| id | bool_col | timestamp_col       |",
             "+----+----------+---------------------+",
@@ -362,10 +362,10 @@ mod standalone {
 
         ctx.sql("select * from test")
             .await?
-            .write_parquet(&write_dir_path, Default::default(), Default::default())
+            .write_parquet(write_dir_path, Default::default(), Default::default())
             .await?;
 
-        ctx.register_parquet("written_table", &write_dir_path, Default::default())
+        ctx.register_parquet("written_table", write_dir_path, Default::default())
             .await?;
 
         let _ = ctx
@@ -380,7 +380,7 @@ mod standalone {
             .collect()
             .await?;
 
-        let expected = vec![
+        let expected = [
             "+----+------------+---------------------+",
             "| id | string_col | timestamp_col       |",
             "+----+------------+---------------------+",
@@ -418,9 +418,9 @@ mod standalone {
 
         ctx.sql("select * from test")
             .await?
-            .write_parquet(&write_dir_path, Default::default(), Default::default())
+            .write_parquet(write_dir_path, Default::default(), Default::default())
             .await?;
-        ctx.register_parquet("written_table", &write_dir_path, Default::default())
+        ctx.register_parquet("written_table", write_dir_path, Default::default())
             .await?;
 
         let result = ctx
@@ -428,7 +428,7 @@ mod standalone {
             .await?
             .collect()
             .await?;
-        let expected = vec![
+        let expected = [
             "+----+------------+---------------------+",
             "| id | string_col | timestamp_col       |",
             "+----+------------+---------------------+",
