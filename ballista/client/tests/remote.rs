@@ -42,13 +42,15 @@ mod remote {
             .await?
             .collect()
             .await?;
-        let expected = ["+------------+---------------------+",
+        let expected = [
+            "+------------+---------------------+",
             "| string_col | timestamp_col       |",
             "+------------+---------------------+",
             "| 31         | 2009-03-01T00:01:00 |",
             "| 30         | 2009-04-01T00:00:00 |",
             "| 31         | 2009-04-01T00:01:00 |",
-            "+------------+---------------------+"];
+            "+------------+---------------------+",
+        ];
 
         assert_batches_eq!(expected, &result);
 
@@ -91,13 +93,15 @@ mod remote {
             .await?
             .collect()
             .await?;
-        let expected = ["+----+------------+---------------------+",
+        let expected = [
+            "+----+------------+---------------------+",
             "| id | string_col | timestamp_col       |",
             "+----+------------+---------------------+",
             "| 5  | 31         | 2009-03-01T00:01:00 |",
             "| 6  | 30         | 2009-04-01T00:00:00 |",
             "| 7  | 31         | 2009-04-01T00:01:00 |",
-            "+----+------------+---------------------+"];
+            "+----+------------+---------------------+",
+        ];
         log::info!("reading from written parquet .. DONE");
         assert_batches_eq!(expected, &result);
         Ok(())
@@ -121,7 +125,8 @@ mod remote {
 
         let result = ctx.sql("show tables").await?.collect().await?;
         //
-        let expected = ["+---------------+--------------------+-------------+------------+",
+        let expected = [
+            "+---------------+--------------------+-------------+------------+",
             "| table_catalog | table_schema       | table_name  | table_type |",
             "+---------------+--------------------+-------------+------------+",
             "| datafusion    | public             | test        | BASE TABLE |",
@@ -130,7 +135,8 @@ mod remote {
             "| datafusion    | information_schema | columns     | VIEW       |",
             "| datafusion    | information_schema | df_settings | VIEW       |",
             "| datafusion    | information_schema | schemata    | VIEW       |",
-            "+---------------+--------------------+-------------+------------+"];
+            "+---------------+--------------------+-------------+------------+",
+        ];
 
         assert_batches_eq!(expected, &result);
 
