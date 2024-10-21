@@ -245,7 +245,7 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct BallistaPhysicalExtensionCodec {}
 
 impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
