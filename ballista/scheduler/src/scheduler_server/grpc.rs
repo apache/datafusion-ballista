@@ -512,7 +512,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 }
             };
 
-            debug!("Received plan for execution: {:?}", plan);
+            debug!(
+                "Decoded logical plan for execution:\n{}",
+                plan.display_indent()
+            );
 
             let job_id = self.state.task_manager.generate_job_id();
             let job_name = query_settings

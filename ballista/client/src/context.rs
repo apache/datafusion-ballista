@@ -76,6 +76,7 @@ impl BallistaContextState {
     }
 }
 
+// #[deprecated]
 pub struct BallistaContext {
     state: Arc<Mutex<BallistaContextState>>,
     context: Arc<SessionContext>,
