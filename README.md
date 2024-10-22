@@ -17,15 +17,6 @@
   under the License.
 -->
 
-# Maintenance Status Notice
-
-> [!NOTE]
-> The Apache DataFusion Ballista subproject is not currently actively maintained.
-
-> We encourage and welcome new contributors and maintainers to join the project. If you are passionate about distributed computing, Rust, or enhancing the performance of data processing frameworks, your contributions could make a significant impact on the future of Ballista. Whether it's fixing bugs, adding new features, or improving documentation, any level of contribution is highly valued.
-
-> To get involved, please reach out through our mailing list or join the discussion on our GitHub Issues page. Together, we can continue to advance the project and ensure that Ballista remains a valuable tool for the community.
-
 # Ballista: Distributed SQL Query Engine, built on Apache Arrow
 
 Ballista is a distributed SQL query engine powered by the Rust implementation of [Apache Arrow][arrow] and
