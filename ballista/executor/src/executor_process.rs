@@ -25,6 +25,8 @@ use std::{env, io};
 
 use anyhow::{Context, Result};
 use arrow_flight::flight_service_server::FlightServiceServer;
+use datafusion::execution::SessionState;
+use datafusion::prelude::SessionConfig;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use log::{error, info, warn};
@@ -38,11 +40,11 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
-use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 
-use ballista_core::config::{DataCachePolicy, LogRotationPolicy, TaskSchedulingPolicy};
+use ballista_core::config::{
+    BallistaConfig, DataCachePolicy, LogRotationPolicy, TaskSchedulingPolicy,
+};
 use ballista_core::error::BallistaError;
-use ballista_core::object_store_registry::with_object_store_registry;
 use ballista_core::serde::protobuf::executor_resource::Resource;
 use ballista_core::serde::protobuf::executor_status::Status;
 use ballista_core::serde::protobuf::{
@@ -96,6 +98,10 @@ pub struct ExecutorProcessConfig {
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.
     pub execution_engine: Option<Arc<dyn ExecutionEngine>>,
+    /// SessionState which will be used to configure executor
+    /// if not provided system will configure itself from
+    /// sensible defaults
+    pub session_state: Option<SessionState>,
 }
 
 pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<()> {
@@ -181,24 +187,44 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
         }),
     };
 
-    let config = RuntimeConfig::new().with_temp_file_path(work_dir.clone());
-    let runtime = {
-        let config = with_object_store_registry(config.clone());
-        Arc::new(RuntimeEnv::new(config).map_err(|_| {
-            BallistaError::Internal("Failed to init Executor RuntimeEnv".to_owned())
-        })?)
-    };
-
+    // put them to session config
     let metrics_collector = Arc::new(LoggingMetricsCollector::default());
 
-    let executor = Arc::new(Executor::new(
-        executor_meta,
-        &work_dir,
-        runtime,
-        metrics_collector,
-        concurrent_tasks,
-        opt.execution_engine.clone(),
-    ));
+    let (session_config, executor, default_codec) = match &opt.session_state {
+        Some(state) => {
+            let executor = Arc::new(Executor::new_from_state(
+                executor_meta,
+                &work_dir,
+                state,
+                metrics_collector,
+                concurrent_tasks,
+                opt.execution_engine.clone(),
+            ));
+            // TODO MM: read codec from configuration when #1096
+            //       is merged.
+            let default_codec = BallistaCodec::default();
+            (state.config().clone(), executor, default_codec)
+        }
+        None => {
+            let config = RuntimeConfig::new().with_temp_file_path(work_dir.clone());
+            let runtime = Arc::new(RuntimeEnv::new(config)?);
+            let session_config = SessionConfig::new()
+                .with_option_extension(BallistaConfig::new().unwrap());
+
+            let executor = Arc::new(Executor::new_from_runtime(
+                executor_meta,
+                &work_dir,
+                runtime,
+                metrics_collector,
+                concurrent_tasks,
+                opt.execution_engine.clone(),
+            ));
+
+            let default_codec = BallistaCodec::default();
+
+            (session_config, executor, default_codec)
+        }
+    };
 
     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;
     let connection = if connect_timeout == 0 {
@@ -243,9 +269,6 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
     let mut scheduler = SchedulerGrpcClient::new(connection)
         .max_encoding_message_size(opt.grpc_max_encoding_message_size as usize)
         .max_decoding_message_size(opt.grpc_max_decoding_message_size as usize);
-
-    let default_codec: BallistaCodec<LogicalPlanNode, PhysicalPlanNode> =
-        BallistaCodec::default();
 
     let scheduler_policy = opt.task_scheduling_policy;
     let job_data_ttl_seconds = opt.job_data_ttl_seconds;
@@ -309,6 +332,7 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
                 scheduler.clone(),
                 executor.clone(),
                 default_codec,
+                session_config,
             )));
         }
     };

@@ -15,46 +15,38 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::config::ConfigOptions;
-use datafusion::physical_plan::ExecutionPlan;
-
-use ballista_core::serde::protobuf::{
-    scheduler_grpc_client::SchedulerGrpcClient, PollWorkParams, PollWorkResult,
-    TaskDefinition, TaskStatus,
-};
-use datafusion::prelude::SessionConfig;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
 use crate::{as_task_status, TaskExecutionTimes};
 use ballista_core::error::BallistaError;
+use ballista_core::serde::protobuf::{
+    scheduler_grpc_client::SchedulerGrpcClient, PollWorkParams, PollWorkResult,
+    TaskDefinition, TaskStatus,
+};
 use ballista_core::serde::scheduler::{ExecutorSpecification, PartitionId};
 use ballista_core::serde::BallistaCodec;
 use datafusion::execution::context::TaskContext;
-use datafusion::functions::datetime::date_part;
-use datafusion::functions::unicode::substr;
-use datafusion::functions_aggregate::covariance::{covar_pop_udaf, covar_samp_udaf};
-use datafusion::functions_aggregate::sum::sum_udaf;
-use datafusion::functions_aggregate::variance::var_samp_udaf;
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion::prelude::SessionConfig;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::FutureExt;
 use log::{debug, error, info, warn};
 use std::any::Any;
-use std::collections::HashMap;
 use std::convert::TryInto;
 use std::error::Error;
 use std::ops::Deref;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{sync::Arc, time::Duration};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tonic::transport::Channel;
 
 pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     mut scheduler: SchedulerGrpcClient<Channel>,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
+    session_config: SessionConfig,
 ) -> Result<(), BallistaError> {
     let executor_specification: ExecutorSpecification = executor
         .metadata
@@ -116,6 +108,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         task,
                         &codec,
                         &dedicated_executor,
+                        session_config.clone(),
                     )
                     .await
                     {
@@ -157,6 +150,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     task: TaskDefinition,
     codec: &BallistaCodec<T, U>,
     dedicated_executor: &DedicatedExecutor,
+    session_config: SessionConfig,
 ) -> Result<(), BallistaError> {
     let task_id = task.task_id;
     let task_attempt_num = task.task_attempt_num;
@@ -172,42 +166,19 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     let task_identity = format!(
         "TID {task_id} {job_id}/{stage_id}.{stage_attempt_num}/{partition_id}.{task_attempt_num}"
     );
-    info!("Received task {}", task_identity);
-
-    let mut task_props = HashMap::new();
+    info!(
+        "Received task: {}, task_properties: {:?}",
+        task_identity, task.props
+    );
+    let mut session_config = session_config;
     for kv_pair in task.props {
-        task_props.insert(kv_pair.key, kv_pair.value);
+        session_config = session_config.set_str(&kv_pair.key, &kv_pair.value);
     }
-    let mut config = ConfigOptions::new();
-    for (k, v) in task_props {
-        config.set(&k, &v)?;
-    }
-    let session_config = SessionConfig::from(config);
 
-    let mut task_scalar_functions = HashMap::new();
-    let mut task_aggregate_functions = HashMap::new();
-    let mut task_window_functions = HashMap::new();
-    // TODO combine the functions from Executor's functions and TaskDefintion's function resources
-    for scalar_func in executor.scalar_functions.clone() {
-        task_scalar_functions.insert(scalar_func.0.clone(), scalar_func.1);
-    }
-    for agg_func in executor.aggregate_functions.clone() {
-        task_aggregate_functions.insert(agg_func.0, agg_func.1);
-    }
-    // since DataFusion 38 some internal functions were converted to UDAF, so
-    // we have to register them manually
-    task_aggregate_functions.insert("var".to_string(), var_samp_udaf());
-    task_aggregate_functions.insert("covar_samp".to_string(), covar_samp_udaf());
-    task_aggregate_functions.insert("covar_pop".to_string(), covar_pop_udaf());
-    task_aggregate_functions.insert("SUM".to_string(), sum_udaf());
+    let task_scalar_functions = executor.scalar_functions.clone();
+    let task_aggregate_functions = executor.aggregate_functions.clone();
+    let task_window_functions = executor.window_functions.clone();
 
-    // TODO which other functions need adding here?
-    task_scalar_functions.insert("date_part".to_string(), date_part());
-    task_scalar_functions.insert("substr".to_string(), substr());
-
-    for window_func in executor.window_functions.clone() {
-        task_window_functions.insert(window_func.0, window_func.1);
-    }
     let runtime = executor.get_runtime();
     let session_id = task.session_id.clone();
     let task_context = Arc::new(TaskContext::new(

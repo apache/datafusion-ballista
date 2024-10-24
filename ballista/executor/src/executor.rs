@@ -28,8 +28,10 @@ use ballista_core::serde::scheduler::PartitionId;
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::execution::SessionState;
 use datafusion::functions::all_default_functions;
 use datafusion::functions_aggregate::all_default_aggregate_functions;
+use datafusion::functions_window::all_default_window_functions;
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use futures::future::AbortHandle;
 use std::collections::HashMap;
@@ -90,8 +92,9 @@ pub struct Executor {
 }
 
 impl Executor {
-    /// Create a new executor instance
-    pub fn new(
+    /// Create a new executor instance with given [RuntimeEnv]
+    /// It will use default scalar, aggregate and window functions
+    pub fn new_from_runtime(
         metadata: ExecutorRegistration,
         work_dir: &str,
         runtime: Arc<RuntimeEnv>,
@@ -109,13 +112,44 @@ impl Executor {
             .map(|f| (f.name().to_string(), f))
             .collect();
 
+        let window_functions = all_default_window_functions()
+            .into_iter()
+            .map(|f| (f.name().to_string(), f))
+            .collect();
+
+        Self::new(
+            metadata,
+            work_dir,
+            runtime,
+            scalar_functions,
+            aggregate_functions,
+            window_functions,
+            metrics_collector,
+            concurrent_tasks,
+            execution_engine,
+        )
+    }
+
+    /// Create a new executor instance with given [RuntimeEnv],
+    /// [ScalarUDF], [AggregateUDF] and [WindowUDF]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        metadata: ExecutorRegistration,
+        work_dir: &str,
+        runtime: Arc<RuntimeEnv>,
+        scalar_functions: HashMap<String, Arc<ScalarUDF>>,
+        aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
+        window_functions: HashMap<String, Arc<WindowUDF>>,
+        metrics_collector: Arc<dyn ExecutorMetricsCollector>,
+        concurrent_tasks: usize,
+        execution_engine: Option<Arc<dyn ExecutionEngine>>,
+    ) -> Self {
         Self {
             metadata,
             work_dir: work_dir.to_owned(),
             scalar_functions,
             aggregate_functions,
-            // TODO: set to default window functions when they are moved to udwf
-            window_functions: HashMap::new(),
+            window_functions,
             runtime,
             metrics_collector,
             concurrent_tasks,
@@ -123,6 +157,33 @@ impl Executor {
             execution_engine: execution_engine
                 .unwrap_or_else(|| Arc::new(DefaultExecutionEngine {})),
         }
+    }
+    /// Create a new executor instance from [SessionState].
+    /// [ScalarUDF], [AggregateUDF] and [WindowUDF]
+    pub fn new_from_state(
+        metadata: ExecutorRegistration,
+        work_dir: &str,
+        state: &SessionState,
+        metrics_collector: Arc<dyn ExecutorMetricsCollector>,
+        concurrent_tasks: usize,
+        execution_engine: Option<Arc<dyn ExecutionEngine>>,
+    ) -> Self {
+        let scalar_functions = state.scalar_functions().clone();
+        let aggregate_functions = state.aggregate_functions().clone();
+        let window_functions = state.window_functions().clone();
+        let runtime = state.runtime_env().clone();
+
+        Self::new(
+            metadata,
+            work_dir,
+            runtime,
+            scalar_functions,
+            aggregate_functions,
+            window_functions,
+            metrics_collector,
+            concurrent_tasks,
+            execution_engine,
+        )
     }
 }
 
@@ -344,7 +405,7 @@ mod test {
 
         let ctx = SessionContext::new();
 
-        let executor = Executor::new(
+        let executor = Executor::new_from_runtime(
             executor_registration,
             &work_dir,
             ctx.runtime_env(),

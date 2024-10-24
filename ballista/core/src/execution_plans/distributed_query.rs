@@ -194,7 +194,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     fn execute(
         &self,
         partition: usize,
-        _context: Arc<TaskContext>,
+        context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         assert_eq!(0, partition);
 
@@ -210,17 +210,22 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             DataFusionError::Execution(format!("failed to encode logical plan: {e:?}"))
         })?;
 
+        let settings = context
+            .session_config()
+            .options()
+            .entries()
+            .iter()
+            .map(
+                |datafusion::config::ConfigEntry { key, value, .. }| KeyValuePair {
+                    key: key.to_owned(),
+                    value: value.clone().unwrap_or_else(|| String::from("")),
+                },
+            )
+            .collect();
+
         let query = ExecuteQueryParams {
             query: Some(Query::LogicalPlan(buf)),
-            settings: self
-                .config
-                .settings()
-                .iter()
-                .map(|(k, v)| KeyValuePair {
-                    key: k.to_owned(),
-                    value: v.to_owned(),
-                })
-                .collect::<Vec<_>>(),
+            settings,
             optional_session_id: Some(OptionalSessionId::SessionId(
                 self.session_id.clone(),
             )),

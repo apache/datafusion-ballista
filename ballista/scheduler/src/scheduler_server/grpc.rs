@@ -424,6 +424,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         } = query_params
         {
             let mut query_settings = HashMap::new();
+            log::trace!("received query settings: {:?}", settings);
             for kv_pair in settings {
                 query_settings.insert(kv_pair.key, kv_pair.value);
             }
@@ -523,6 +524,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .cloned()
                 .unwrap_or_else(|| "None".to_string());
 
+            log::trace!("setting job name: {}", job_name);
             self.submit_job(&job_id, &job_name, session_ctx, &plan)
                 .await
                 .map_err(|e| {

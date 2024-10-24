@@ -32,6 +32,7 @@ mod cpu_bound_executor;
 mod standalone;
 
 pub use standalone::new_standalone_executor;
+pub use standalone::new_standalone_executor_from_state;
 
 use log::info;
 
