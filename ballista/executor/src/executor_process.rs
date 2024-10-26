@@ -55,6 +55,7 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{
     create_grpc_client_connection, create_grpc_server, get_time_before,
+    BallistaSessionConfigExt,
 };
 use ballista_core::BALLISTA_VERSION;
 
@@ -200,9 +201,11 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
                 concurrent_tasks,
                 opt.execution_engine.clone(),
             ));
-            // TODO MM: read codec from configuration when #1096
-            //       is merged.
-            let default_codec = BallistaCodec::default();
+
+            let logical = state.config().ballista_logical_extension_codec();
+            let physical = state.config().ballista_physical_extension_codec();
+            let default_codec = BallistaCodec::new(logical, physical);
+
             (state.config().clone(), executor, default_codec)
         }
         None => {
