@@ -43,11 +43,6 @@ pub const BALLISTA_REPARTITION_WINDOWS: &str = "ballista.repartition.windows";
 pub const BALLISTA_PARQUET_PRUNING: &str = "ballista.parquet.pruning";
 pub const BALLISTA_COLLECT_STATISTICS: &str = "ballista.collect_statistics";
 pub const BALLISTA_STANDALONE_PARALLELISM: &str = "ballista.standalone.parallelism";
-/// If set to false, planner will not be overridden by ballista.
-/// This allows user to replace ballista planner
-// this is a bit of a hack, as we can't detect if there is a
-// custom planner provided
-pub const BALLISTA_PLANNER_OVERRIDE: &str = "ballista.planner.override";
 
 pub const BALLISTA_WITH_INFORMATION_SCHEMA: &str = "ballista.with_information_schema";
 
@@ -221,10 +216,6 @@ impl BallistaConfig {
                              "Configuration for max message size in gRPC clients".to_string(),
                              DataType::UInt64,
                              Some((16 * 1024 * 1024).to_string())),
-            ConfigEntry::new(BALLISTA_PLANNER_OVERRIDE.to_string(),
-                             "Disable overriding provided planner".to_string(),
-                             DataType::Boolean,
-                             Some((true).to_string())),
         ];
         entries
             .iter()
@@ -278,10 +269,6 @@ impl BallistaConfig {
 
     pub fn default_with_information_schema(&self) -> bool {
         self.get_bool_setting(BALLISTA_WITH_INFORMATION_SCHEMA)
-    }
-
-    pub fn planner_override(&self) -> bool {
-        self.get_bool_setting(BALLISTA_PLANNER_OVERRIDE)
     }
 
     fn get_usize_setting(&self, key: &str) -> usize {

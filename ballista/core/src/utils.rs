@@ -334,6 +334,7 @@ impl BallistaSessionStateExt for SessionState {
         session_id: String,
     ) -> datafusion::error::Result<SessionState> {
         let codec_logical = self.config().ballista_logical_extension_codec();
+        let planner_override = self.config().ballista_query_planner();
 
         let new_config = self
             .config()
@@ -348,30 +349,20 @@ impl BallistaSessionStateExt for SessionState {
             .clone()
             .with_option_extension(new_config.clone());
 
-        // at the moment we don't have a way to detect if
-        // user set planner so we provide a configuration to
-        // user to disable planner override
-        let planner_override = self
-            .config()
-            .options()
-            .extensions
-            .get::<BallistaConfig>()
-            .map(|config| config.planner_override())
-            .unwrap_or(true);
-
         let builder = SessionStateBuilder::new_from_existing(self)
             .with_config(session_config)
             .with_session_id(session_id);
 
-        let builder = if planner_override {
-            let query_planner = BallistaQueryPlanner::<LogicalPlanNode>::with_extension(
-                scheduler_url,
-                new_config,
-                codec_logical,
-            );
-            builder.with_query_planner(Arc::new(query_planner))
-        } else {
-            builder
+        let builder = match planner_override {
+            Some(planner) => builder.with_query_planner(planner),
+            None => {
+                let planner = BallistaQueryPlanner::<LogicalPlanNode>::with_extension(
+                    scheduler_url,
+                    new_config,
+                    codec_logical,
+                );
+                builder.with_query_planner(Arc::new(planner))
+            }
         };
 
         Ok(builder.build())
@@ -402,6 +393,17 @@ pub trait BallistaSessionConfigExt {
     /// returns [PhysicalExtensionCodec] if set
     /// or default ballista codec if not
     fn ballista_physical_extension_codec(&self) -> Arc<dyn PhysicalExtensionCodec>;
+
+    /// Overrides ballista's [QueryPlanner]
+    fn with_ballista_query_planner(
+        self,
+        planner: Arc<dyn QueryPlanner + Send + Sync + 'static>,
+    ) -> SessionConfig;
+
+    /// Returns ballista's [QueryPlanner] if overriden
+    fn ballista_query_planner(
+        &self,
+    ) -> Option<Arc<dyn QueryPlanner + Send + Sync + 'static>>;
 }
 
 impl BallistaSessionConfigExt for SessionConfig {
@@ -433,6 +435,21 @@ impl BallistaSessionConfigExt for SessionConfig {
             .map(|c| c.codec())
             .unwrap_or_else(|| Arc::new(BallistaPhysicalExtensionCodec::default()))
     }
+
+    fn with_ballista_query_planner(
+        self,
+        planner: Arc<dyn QueryPlanner + Send + Sync + 'static>,
+    ) -> SessionConfig {
+        let extension = BallistaQueryPlannerExtension::new(planner);
+        self.with_extension(Arc::new(extension))
+    }
+
+    fn ballista_query_planner(
+        &self,
+    ) -> Option<Arc<dyn QueryPlanner + Send + Sync + 'static>> {
+        self.get_extension::<BallistaQueryPlannerExtension>()
+            .map(|c| c.planner())
+    }
 }
 
 /// Wrapper for [SessionConfig] extension
@@ -462,6 +479,21 @@ impl BallistaConfigExtensionPhysicalCodec {
     }
     fn codec(&self) -> Arc<dyn PhysicalExtensionCodec> {
         self.codec.clone()
+    }
+}
+
+/// Wrapper for [SessionConfig] extension
+/// holding overridden [QueryPlanner]
+struct BallistaQueryPlannerExtension {
+    planner: Arc<dyn QueryPlanner + Send + Sync + 'static>,
+}
+
+impl BallistaQueryPlannerExtension {
+    fn new(planner: Arc<dyn QueryPlanner + Send + Sync + 'static>) -> Self {
+        Self { planner }
+    }
+    fn planner(&self) -> Arc<dyn QueryPlanner + Send + Sync + 'static> {
+        self.planner.clone()
     }
 }
 
