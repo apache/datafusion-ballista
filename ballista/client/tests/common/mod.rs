@@ -18,14 +18,12 @@
 use std::env;
 use std::error::Error;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use ballista::prelude::BallistaConfig;
 use ballista_core::serde::{
     protobuf::scheduler_grpc_client::SchedulerGrpcClient, BallistaCodec,
 };
-use datafusion::execution::{SessionState, SessionStateBuilder};
-use datafusion::prelude::SessionConfig;
+use datafusion::execution::SessionState;
 use object_store::aws::AmazonS3Builder;
 use testcontainers_modules::minio::MinIO;
 use testcontainers_modules::testcontainers::core::{CmdWaitFor, ExecCommand};
@@ -189,17 +187,10 @@ pub async fn setup_test_cluster() -> (String, u16) {
 #[allow(dead_code)]
 pub async fn setup_test_cluster_with_state(session_state: SessionState) -> (String, u16) {
     let config = BallistaConfig::builder().build().unwrap();
-    let default_codec = BallistaCodec::default();
+    //let default_codec = BallistaCodec::default();
 
-    let state = session_state.clone();
-    let builder = move |c: SessionConfig| {
-        SessionStateBuilder::new_from_existing(state.clone())
-            .with_config(c)
-            .build()
-    };
-
-    let addr = ballista_scheduler::standalone::new_standalone_scheduler_from_builder(
-        Arc::new(builder),
+    let addr = ballista_scheduler::standalone::new_standalone_scheduler_from_state(
+        &session_state,
     )
     .await
     .expect("scheduler to be created");
@@ -218,11 +209,13 @@ pub async fn setup_test_cluster_with_state(session_state: SessionState) -> (Stri
         }
     };
 
-    ballista_executor::new_standalone_executor_from_state(
+    ballista_executor::new_standalone_executor_from_state::<
+        datafusion_proto::protobuf::LogicalPlanNode,
+        datafusion_proto::protobuf::PhysicalPlanNode,
+    >(
         scheduler,
         config.default_standalone_parallelism(),
         &session_state,
-        default_codec,
     )
     .await
     .expect("executor to be created");

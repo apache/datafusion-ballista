@@ -145,14 +145,8 @@ impl SessionContextExt for SessionContext {
     ) -> datafusion::error::Result<SessionContext> {
         let config = state.ballista_config();
 
-        let codec_logical = state.config().ballista_logical_extension_codec();
-        let codec_physical = state.config().ballista_physical_extension_codec();
-
-        let ballista_codec =
-            ballista_core::serde::BallistaCodec::new(codec_logical, codec_physical);
-
         let (remote_session_id, scheduler_url) =
-            Extension::setup_standalone(config, ballista_codec, Some(&state)).await?;
+            Extension::setup_standalone(config, Some(&state)).await?;
 
         let session_state =
             state.upgrade_for_ballista(scheduler_url, remote_session_id.clone())?;
@@ -171,10 +165,8 @@ impl SessionContextExt for SessionContext {
         let config = BallistaConfig::new()
             .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
-        let ballista_codec = ballista_core::serde::BallistaCodec::default();
-
         let (remote_session_id, scheduler_url) =
-            Extension::setup_standalone(config, ballista_codec, None).await?;
+            Extension::setup_standalone(config, None).await?;
 
         let session_state =
             SessionState::new_ballista_state(scheduler_url, remote_session_id.clone())?;
@@ -206,29 +198,17 @@ impl Extension {
     #[cfg(feature = "standalone")]
     async fn setup_standalone(
         config: BallistaConfig,
-        ballista_codec: ballista_core::serde::BallistaCodec<
-            datafusion_proto::protobuf::LogicalPlanNode,
-            datafusion_proto::protobuf::PhysicalPlanNode,
-        >,
         session_state: Option<&SessionState>,
     ) -> datafusion::error::Result<(String, String)> {
-        use std::sync::Arc;
-
-        use datafusion::{execution::SessionStateBuilder, prelude::SessionConfig};
+        use ballista_core::serde::BallistaCodec;
 
         let addr = match session_state {
             None => ballista_scheduler::standalone::new_standalone_scheduler()
                 .await
                 .map_err(|e| DataFusionError::Configuration(e.to_string()))?,
             Some(session_state) => {
-                let session_state = session_state.clone();
-                let builder = move |c: SessionConfig| {
-                    SessionStateBuilder::new_from_existing(session_state.clone())
-                        .with_config(c)
-                        .build()
-                };
-                ballista_scheduler::standalone::new_standalone_scheduler_from_builder(
-                    Arc::new(builder),
+                ballista_scheduler::standalone::new_standalone_scheduler_from_state(
+                    session_state,
                 )
                 .await
                 .map_err(|e| DataFusionError::Configuration(e.to_string()))?
@@ -270,18 +250,16 @@ impl Extension {
                 ballista_executor::new_standalone_executor(
                     scheduler,
                     concurrent_tasks,
-                    ballista_codec,
+                    BallistaCodec::default(),
                 )
                 .await
                 .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
             }
             Some(session_state) => {
-                ballista_executor::new_standalone_executor_from_state(
-                    scheduler,
-                    concurrent_tasks,
-                    session_state,
-                    ballista_codec,
-                )
+                ballista_executor::new_standalone_executor_from_state::<
+                    datafusion_proto::protobuf::LogicalPlanNode,
+                    datafusion_proto::protobuf::PhysicalPlanNode,
+                >(scheduler, concurrent_tasks, session_state)
                 .await
                 .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
             }

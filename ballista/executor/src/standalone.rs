@@ -19,6 +19,7 @@ use crate::metrics::LoggingMetricsCollector;
 use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightService};
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::config::BallistaConfig;
+use ballista_core::utils::BallistaSessionConfigExt;
 use ballista_core::{
     error::Result,
     object_store_registry::with_object_store_registry,
@@ -53,8 +54,14 @@ pub async fn new_standalone_executor_from_state<
     scheduler: SchedulerGrpcClient<Channel>,
     concurrent_tasks: usize,
     session_state: &SessionState,
-    codec: BallistaCodec<T, U>,
 ) -> Result<()> {
+    let logical = session_state.config().ballista_logical_extension_codec();
+    let physical = session_state.config().ballista_physical_extension_codec();
+    let codec: BallistaCodec<
+        datafusion_proto::protobuf::LogicalPlanNode,
+        datafusion_proto::protobuf::PhysicalPlanNode,
+    > = BallistaCodec::new(logical, physical);
+
     // Let the OS assign a random, free port
     let listener = TcpListener::bind("localhost:0").await?;
     let addr = listener.local_addr()?;
