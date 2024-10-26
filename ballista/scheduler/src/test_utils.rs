@@ -124,7 +124,7 @@ pub async fn await_condition<Fut: Future<Output = Result<bool>>, F: Fn() -> Fut>
 }
 
 pub fn test_cluster_context() -> BallistaCluster {
-    BallistaCluster::new_memory(TEST_SCHEDULER_NAME, default_session_builder)
+    BallistaCluster::new_memory(TEST_SCHEDULER_NAME, Arc::new(default_session_builder))
 }
 
 pub async fn datafusion_test_context(path: &str) -> Result<SessionContext> {

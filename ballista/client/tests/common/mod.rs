@@ -18,11 +18,60 @@
 use std::env;
 use std::error::Error;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use ballista::prelude::BallistaConfig;
 use ballista_core::serde::{
     protobuf::scheduler_grpc_client::SchedulerGrpcClient, BallistaCodec,
 };
+use datafusion::execution::{SessionState, SessionStateBuilder};
+use datafusion::prelude::SessionConfig;
+use object_store::aws::AmazonS3Builder;
+use testcontainers_modules::minio::MinIO;
+use testcontainers_modules::testcontainers::core::{CmdWaitFor, ExecCommand};
+use testcontainers_modules::testcontainers::ContainerRequest;
+use testcontainers_modules::{minio, testcontainers::ImageExt};
+
+pub const REGION: &str = "eu-west-1";
+pub const BUCKET: &str = "ballista";
+pub const ACCESS_KEY_ID: &str = "MINIO";
+pub const SECRET_KEY: &str = "MINIOMINIO";
+
+#[allow(dead_code)]
+pub fn create_s3_store(
+    port: u16,
+) -> std::result::Result<object_store::aws::AmazonS3, object_store::Error> {
+    AmazonS3Builder::new()
+        .with_endpoint(format!("http://localhost:{port}"))
+        .with_region(REGION)
+        .with_bucket_name(BUCKET)
+        .with_access_key_id(ACCESS_KEY_ID)
+        .with_secret_access_key(SECRET_KEY)
+        .with_allow_http(true)
+        .build()
+}
+
+#[allow(dead_code)]
+pub fn create_minio_container() -> ContainerRequest<minio::MinIO> {
+    MinIO::default()
+        .with_env_var("MINIO_ACCESS_KEY", ACCESS_KEY_ID)
+        .with_env_var("MINIO_SECRET_KEY", SECRET_KEY)
+}
+
+#[allow(dead_code)]
+pub fn create_bucket_command() -> ExecCommand {
+    // this is hack to create a bucket without creating s3 client.
+    // this works with current testcontainer (and image) version 'RELEASE.2022-02-07T08-17-33Z'.
+    // (testcontainer  does not await properly on latest image version)
+    //
+    // if testcontainer image version change to something newer we should use "mc mb /data/ballista"
+    // to crate a bucket.
+    ExecCommand::new(vec![
+        "mkdir".to_string(),
+        format!("/data/{}", crate::common::BUCKET),
+    ])
+    .with_cmd_ready_condition(CmdWaitFor::seconds(1))
+}
 
 // /// Remote ballista cluster to be used for local testing.
 // static BALLISTA_CLUSTER: tokio::sync::OnceCell<(String, u16)> =
@@ -126,6 +175,53 @@ pub async fn setup_test_cluster() -> (String, u16) {
     ballista_executor::new_standalone_executor(
         scheduler,
         config.default_standalone_parallelism(),
+        default_codec,
+    )
+    .await
+    .expect("executor to be created");
+
+    log::info!("test scheduler created at: {}:{}", host, addr.port());
+
+    (host, addr.port())
+}
+
+/// starts a ballista cluster for integration tests
+#[allow(dead_code)]
+pub async fn setup_test_cluster_with_state(session_state: SessionState) -> (String, u16) {
+    let config = BallistaConfig::builder().build().unwrap();
+    let default_codec = BallistaCodec::default();
+
+    let state = session_state.clone();
+    let builder = move |c: SessionConfig| {
+        SessionStateBuilder::new_from_existing(state.clone())
+            .with_config(c)
+            .build()
+    };
+
+    let addr = ballista_scheduler::standalone::new_standalone_scheduler_from_builder(
+        Arc::new(builder),
+    )
+    .await
+    .expect("scheduler to be created");
+
+    let host = "localhost".to_string();
+
+    let scheduler_url = format!("http://{}:{}", host, addr.port());
+
+    let scheduler = loop {
+        match SchedulerGrpcClient::connect(scheduler_url.clone()).await {
+            Err(_) => {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                log::info!("Attempting to connect to test scheduler...");
+            }
+            Ok(scheduler) => break scheduler,
+        }
+    };
+
+    ballista_executor::new_standalone_executor_from_state(
+        scheduler,
+        config.default_standalone_parallelism(),
+        &session_state,
         default_codec,
     )
     .await

@@ -212,9 +212,28 @@ impl Extension {
         >,
         session_state: Option<&SessionState>,
     ) -> datafusion::error::Result<(String, String)> {
-        let addr = ballista_scheduler::standalone::new_standalone_scheduler()
-            .await
-            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+        use std::sync::Arc;
+
+        use datafusion::{execution::SessionStateBuilder, prelude::SessionConfig};
+
+        let addr = match session_state {
+            None => ballista_scheduler::standalone::new_standalone_scheduler()
+                .await
+                .map_err(|e| DataFusionError::Configuration(e.to_string()))?,
+            Some(session_state) => {
+                let session_state = session_state.clone();
+                let builder = move |c: SessionConfig| {
+                    SessionStateBuilder::new_from_existing(session_state.clone())
+                        .with_config(c)
+                        .build()
+                };
+                ballista_scheduler::standalone::new_standalone_scheduler_from_builder(
+                    Arc::new(builder),
+                )
+                .await
+                .map_err(|e| DataFusionError::Configuration(e.to_string()))?
+            }
+        };
 
         let scheduler_url = format!("http://localhost:{}", addr.port());
 

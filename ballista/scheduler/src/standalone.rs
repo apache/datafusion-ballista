@@ -33,9 +33,15 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
-    let metrics_collector = default_metrics_collector()?;
+    new_standalone_scheduler_from_builder(Arc::new(default_session_builder)).await
+}
 
-    let cluster = BallistaCluster::new_memory("localhost:50050", default_session_builder);
+pub async fn new_standalone_scheduler_from_builder(
+    session_builder: crate::scheduler_server::SessionBuilder,
+) -> Result<SocketAddr> {
+    let cluster = BallistaCluster::new_memory("localhost:50050", session_builder);
+
+    let metrics_collector = default_metrics_collector()?;
 
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
         SchedulerServer::new(
