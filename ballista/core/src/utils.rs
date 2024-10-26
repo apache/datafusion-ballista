@@ -22,7 +22,7 @@ use crate::execution_plans::{
 };
 use crate::object_store_registry::with_object_store_registry;
 use crate::serde::scheduler::PartitionStats;
-use crate::serde::BallistaLogicalExtensionCodec;
+use crate::serde::{BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec};
 
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::Schema;
@@ -51,6 +51,8 @@ use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{metrics, ExecutionPlan, RecordBatchStream};
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use datafusion_proto::logical_plan::{AsLogicalPlan, LogicalExtensionCodec};
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+use datafusion_proto::protobuf::LogicalPlanNode;
 use futures::StreamExt;
 use log::error;
 use std::io::{BufWriter, Write};
@@ -273,6 +275,194 @@ pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
         .build();
     // the SessionContext created here is the client side context, but the session_id is from server side.
     SessionContext::new_with_state(session_state)
+}
+
+pub trait BallistaSessionStateExt {
+    fn new_ballista_state(
+        scheduler_url: String,
+        session_id: String,
+    ) -> datafusion::error::Result<SessionState>;
+    fn upgrade_for_ballista(
+        self,
+        scheduler_url: String,
+        session_id: String,
+    ) -> datafusion::error::Result<SessionState>;
+
+    fn ballista_config(&self) -> BallistaConfig;
+}
+
+impl BallistaSessionStateExt for SessionState {
+    fn ballista_config(&self) -> BallistaConfig {
+        self.config()
+            .options()
+            .extensions
+            .get::<BallistaConfig>()
+            .cloned()
+            .unwrap_or_else(|| BallistaConfig::new().unwrap())
+    }
+
+    fn new_ballista_state(
+        scheduler_url: String,
+        session_id: String,
+    ) -> datafusion::error::Result<SessionState> {
+        let config = BallistaConfig::new()
+            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+
+        let planner =
+            BallistaQueryPlanner::<LogicalPlanNode>::new(scheduler_url, config.clone());
+
+        let session_config = SessionConfig::new()
+            .with_information_schema(true)
+            .with_option_extension(config.clone());
+
+        let runtime_config = RuntimeConfig::default();
+        let runtime_env = RuntimeEnv::new(runtime_config)?;
+        let session_state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(session_config)
+            .with_runtime_env(Arc::new(runtime_env))
+            .with_query_planner(Arc::new(planner))
+            .with_session_id(session_id)
+            .build();
+
+        Ok(session_state)
+    }
+
+    fn upgrade_for_ballista(
+        self,
+        scheduler_url: String,
+        session_id: String,
+    ) -> datafusion::error::Result<SessionState> {
+        let codec_logical = self.config().ballista_logical_extension_codec();
+
+        let new_config = self
+            .config()
+            .options()
+            .extensions
+            .get::<BallistaConfig>()
+            .cloned()
+            .unwrap_or_else(|| BallistaConfig::new().unwrap());
+
+        let session_config = self
+            .config()
+            .clone()
+            .with_option_extension(new_config.clone());
+
+        // at the moment we don't have a way to detect if
+        // user set planner so we provide a configuration to
+        // user to disable planner override
+        let planner_override = self
+            .config()
+            .options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|config| config.planner_override())
+            .unwrap_or(true);
+
+        let builder = SessionStateBuilder::new_from_existing(self)
+            .with_config(session_config)
+            .with_session_id(session_id);
+
+        let builder = if planner_override {
+            let query_planner = BallistaQueryPlanner::<LogicalPlanNode>::with_extension(
+                scheduler_url,
+                new_config,
+                codec_logical,
+            );
+            builder.with_query_planner(Arc::new(query_planner))
+        } else {
+            builder
+        };
+
+        Ok(builder.build())
+    }
+}
+
+pub trait BallistaSessionConfigExt {
+    /// Creates session config which has
+    /// ballista configuration initialized
+    fn new_with_ballista() -> SessionConfig;
+
+    /// Overrides ballista's [LogicalExtensionCodec]
+    fn with_ballista_logical_extension_codec(
+        self,
+        codec: Arc<dyn LogicalExtensionCodec>,
+    ) -> SessionConfig;
+
+    /// Overrides ballista's [PhysicalExtensionCodec]
+    fn with_ballista_physical_extension_codec(
+        self,
+        codec: Arc<dyn PhysicalExtensionCodec>,
+    ) -> SessionConfig;
+
+    /// returns [LogicalExtensionCodec] if set
+    /// or default ballista codec if not
+    fn ballista_logical_extension_codec(&self) -> Arc<dyn LogicalExtensionCodec>;
+
+    /// returns [PhysicalExtensionCodec] if set
+    /// or default ballista codec if not
+    fn ballista_physical_extension_codec(&self) -> Arc<dyn PhysicalExtensionCodec>;
+}
+
+impl BallistaSessionConfigExt for SessionConfig {
+    fn new_with_ballista() -> SessionConfig {
+        SessionConfig::new().with_option_extension(BallistaConfig::new().unwrap())
+    }
+    fn with_ballista_logical_extension_codec(
+        self,
+        codec: Arc<dyn LogicalExtensionCodec>,
+    ) -> SessionConfig {
+        let extension = BallistaConfigExtensionLogicalCodec::new(codec);
+        self.with_extension(Arc::new(extension))
+    }
+    fn with_ballista_physical_extension_codec(
+        self,
+        codec: Arc<dyn PhysicalExtensionCodec>,
+    ) -> SessionConfig {
+        let extension = BallistaConfigExtensionPhysicalCodec::new(codec);
+        self.with_extension(Arc::new(extension))
+    }
+
+    fn ballista_logical_extension_codec(&self) -> Arc<dyn LogicalExtensionCodec> {
+        self.get_extension::<BallistaConfigExtensionLogicalCodec>()
+            .map(|c| c.codec())
+            .unwrap_or_else(|| Arc::new(BallistaLogicalExtensionCodec::default()))
+    }
+    fn ballista_physical_extension_codec(&self) -> Arc<dyn PhysicalExtensionCodec> {
+        self.get_extension::<BallistaConfigExtensionPhysicalCodec>()
+            .map(|c| c.codec())
+            .unwrap_or_else(|| Arc::new(BallistaPhysicalExtensionCodec::default()))
+    }
+}
+
+/// Wrapper for [SessionConfig] extension
+/// holding [LogicalExtensionCodec] if overridden
+struct BallistaConfigExtensionLogicalCodec {
+    codec: Arc<dyn LogicalExtensionCodec>,
+}
+
+impl BallistaConfigExtensionLogicalCodec {
+    fn new(codec: Arc<dyn LogicalExtensionCodec>) -> Self {
+        Self { codec }
+    }
+    fn codec(&self) -> Arc<dyn LogicalExtensionCodec> {
+        self.codec.clone()
+    }
+}
+
+/// Wrapper for [SessionConfig] extension
+/// holding [PhysicalExtensionCodec] if overridden
+struct BallistaConfigExtensionPhysicalCodec {
+    codec: Arc<dyn PhysicalExtensionCodec>,
+}
+
+impl BallistaConfigExtensionPhysicalCodec {
+    fn new(codec: Arc<dyn PhysicalExtensionCodec>) -> Self {
+        Self { codec }
+    }
+    fn codec(&self) -> Arc<dyn PhysicalExtensionCodec> {
+        self.codec.clone()
+    }
 }
 
 pub struct BallistaQueryPlanner<T: AsLogicalPlan> {
