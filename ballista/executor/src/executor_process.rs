@@ -54,8 +54,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{
-    create_grpc_client_connection, create_grpc_server, get_time_before,
-    BallistaSessionConfigExt,
+    create_grpc_client_connection, create_grpc_server, get_time_before, SessionConfigExt,
 };
 use ballista_core::{ConfigProducer, RuntimeProducer, BALLISTA_VERSION};
 

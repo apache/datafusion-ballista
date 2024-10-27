@@ -15,13 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub use ballista_core::utils::BallistaSessionConfigExt;
+pub use ballista_core::utils::SessionConfigExt;
 use ballista_core::{
     config::BallistaConfig,
     serde::protobuf::{
         scheduler_grpc_client::SchedulerGrpcClient, CreateSessionParams, KeyValuePair,
     },
-    utils::{create_grpc_client_connection, BallistaSessionStateExt},
+    utils::{create_grpc_client_connection, SessionStateExt},
 };
 use datafusion::{
     error::DataFusionError, execution::SessionState, prelude::SessionContext,

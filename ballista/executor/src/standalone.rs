@@ -19,7 +19,7 @@ use crate::metrics::LoggingMetricsCollector;
 use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightService};
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::config::BallistaConfig;
-use ballista_core::utils::BallistaSessionConfigExt;
+use ballista_core::utils::SessionConfigExt;
 use ballista_core::{
     error::Result,
     object_store_registry::with_object_store_registry,

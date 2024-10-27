@@ -20,7 +20,7 @@ mod common;
 #[cfg(test)]
 mod remote {
     use ballista::{
-        extension::{BallistaSessionConfigExt, SessionContextExt},
+        extension::{SessionConfigExt, SessionContextExt},
         prelude::BALLISTA_JOB_NAME,
     };
     use datafusion::{
@@ -109,7 +109,7 @@ mod standalone {
     use std::sync::{atomic::AtomicBool, Arc};
 
     use ballista::{
-        extension::{BallistaSessionConfigExt, SessionContextExt},
+        extension::{SessionConfigExt, SessionContextExt},
         prelude::BALLISTA_JOB_NAME,
     };
     use ballista_core::serde::BallistaPhysicalExtensionCodec;

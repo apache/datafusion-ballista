@@ -21,7 +21,7 @@ use crate::metrics::default_metrics_collector;
 use crate::scheduler_server::SchedulerServer;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{
-    create_grpc_server, default_session_builder, BallistaSessionConfigExt,
+    create_grpc_server, default_session_builder, SessionConfigExt,
 };
 use ballista_core::{
     error::Result, serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer,

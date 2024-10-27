@@ -277,7 +277,7 @@ pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
     SessionContext::new_with_state(session_state)
 }
 
-pub trait BallistaSessionStateExt {
+pub trait SessionStateExt {
     fn new_ballista_state(
         scheduler_url: String,
         session_id: String,
@@ -291,7 +291,7 @@ pub trait BallistaSessionStateExt {
     fn ballista_config(&self) -> BallistaConfig;
 }
 
-impl BallistaSessionStateExt for SessionState {
+impl SessionStateExt for SessionState {
     fn ballista_config(&self) -> BallistaConfig {
         self.config()
             .options()
@@ -369,7 +369,7 @@ impl BallistaSessionStateExt for SessionState {
     }
 }
 
-pub trait BallistaSessionConfigExt {
+pub trait SessionConfigExt {
     /// Creates session config which has
     /// ballista configuration initialized
     fn new_with_ballista() -> SessionConfig;
@@ -406,7 +406,7 @@ pub trait BallistaSessionConfigExt {
     ) -> Option<Arc<dyn QueryPlanner + Send + Sync + 'static>>;
 }
 
-impl BallistaSessionConfigExt for SessionConfig {
+impl SessionConfigExt for SessionConfig {
     fn new_with_ballista() -> SessionConfig {
         SessionConfig::new().with_option_extension(BallistaConfig::new().unwrap())
     }
