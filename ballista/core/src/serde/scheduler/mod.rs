@@ -29,6 +29,7 @@ use datafusion::logical_expr::planner::ExprPlanner;
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::Partitioning;
+use datafusion::prelude::SessionConfig;
 use serde::Serialize;
 
 use crate::error::BallistaError;
@@ -288,7 +289,7 @@ pub struct TaskDefinition {
     pub plan: Arc<dyn ExecutionPlan>,
     pub launch_time: u64,
     pub session_id: String,
-    pub props: Arc<HashMap<String, String>>,
+    pub session_config: SessionConfig,
     pub function_registry: Arc<SimpleFunctionRegistry>,
 }
 

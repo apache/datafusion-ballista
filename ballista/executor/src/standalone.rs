@@ -30,6 +30,7 @@ use ballista_core::{
     utils::create_grpc_server,
     BALLISTA_VERSION,
 };
+use ballista_core::{ConfigProducer, RuntimeProducer};
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::execution::SessionState;
 use datafusion::prelude::SessionConfig;
@@ -90,9 +91,20 @@ pub async fn new_standalone_executor_from_state<
         .unwrap();
     info!("work_dir: {}", work_dir);
 
+    let config = session_state
+        .config()
+        .clone()
+        .with_option_extension(BallistaConfig::new().unwrap());
+    let runtime = session_state.runtime_env().clone();
+
+    let config_producer: ConfigProducer = Arc::new(move || config.clone());
+    let runtime_producer: RuntimeProducer = Arc::new(move |_| Ok(runtime.clone()));
+
     let executor = Arc::new(Executor::new_from_state(
         executor_meta,
         &work_dir,
+        runtime_producer,
+        config_producer,
         session_state,
         Arc::new(LoggingMetricsCollector::default()),
         concurrent_tasks,
@@ -109,14 +121,7 @@ pub async fn new_standalone_executor_from_state<
             )),
     );
 
-    let config = session_state
-        .config()
-        .clone()
-        .with_option_extension(BallistaConfig::new().unwrap());
-
-    tokio::spawn(execution_loop::poll_loop(
-        scheduler, executor, codec, config,
-    ));
+    tokio::spawn(execution_loop::poll_loop(scheduler, executor, codec));
     Ok(())
 }
 
@@ -158,14 +163,22 @@ pub async fn new_standalone_executor<
         .unwrap();
     info!("work_dir: {}", work_dir);
 
-    let config = with_object_store_registry(
-        RuntimeConfig::new().with_temp_file_path(work_dir.clone()),
-    );
+    let config_producer = Arc::new(|| {
+        SessionConfig::new().with_option_extension(BallistaConfig::new().unwrap())
+    });
+    let wd = work_dir.clone();
+    let runtime_producer: RuntimeProducer = Arc::new(move |_: &SessionConfig| {
+        let config = with_object_store_registry(
+            RuntimeConfig::new().with_temp_file_path(wd.clone()),
+        );
+        Ok(Arc::new(RuntimeEnv::new(config)?))
+    });
 
     let executor = Arc::new(Executor::new_from_runtime(
         executor_meta,
         &work_dir,
-        Arc::new(RuntimeEnv::new(config).unwrap()),
+        runtime_producer,
+        config_producer,
         Arc::new(LoggingMetricsCollector::default()),
         concurrent_tasks,
         None,
@@ -180,10 +193,7 @@ pub async fn new_standalone_executor<
                 listener,
             )),
     );
-    let config =
-        SessionConfig::new().with_option_extension(BallistaConfig::new().unwrap());
-    tokio::spawn(execution_loop::poll_loop(
-        scheduler, executor, codec, config,
-    ));
+
+    tokio::spawn(execution_loop::poll_loop(scheduler, executor, codec));
     Ok(())
 }

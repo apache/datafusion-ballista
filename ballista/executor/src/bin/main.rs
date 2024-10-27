@@ -88,6 +88,8 @@ async fn main() -> Result<()> {
         cache_io_concurrency: opt.cache_io_concurrency,
         execution_engine: None,
         session_state: None,
+        config_producer: None,
+        runtime_producer: None,
     };
 
     start_executor_process(Arc::new(config)).await

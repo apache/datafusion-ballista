@@ -25,6 +25,8 @@ use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::ExecutorRegistration;
 use ballista_core::serde::scheduler::PartitionId;
+use ballista_core::ConfigProducer;
+use ballista_core::RuntimeProducer;
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -33,6 +35,7 @@ use datafusion::functions::all_default_functions;
 use datafusion::functions_aggregate::all_default_aggregate_functions;
 use datafusion::functions_window::all_default_window_functions;
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
+use datafusion::prelude::SessionConfig;
 use futures::future::AbortHandle;
 use std::collections::HashMap;
 use std::future::Future;
@@ -74,8 +77,9 @@ pub struct Executor {
     /// Window functions registered in the Executor
     pub window_functions: HashMap<String, Arc<WindowUDF>>,
 
-    /// Runtime environment for Executor
-    runtime: Arc<RuntimeEnv>,
+    pub runtime_producer: RuntimeProducer,
+
+    pub config_producer: ConfigProducer,
 
     /// Collector for runtime execution metrics
     pub metrics_collector: Arc<dyn ExecutorMetricsCollector>,
@@ -97,7 +101,8 @@ impl Executor {
     pub fn new_from_runtime(
         metadata: ExecutorRegistration,
         work_dir: &str,
-        runtime: Arc<RuntimeEnv>,
+        runtime_producer: RuntimeProducer,
+        config_producer: ConfigProducer,
         metrics_collector: Arc<dyn ExecutorMetricsCollector>,
         concurrent_tasks: usize,
         execution_engine: Option<Arc<dyn ExecutionEngine>>,
@@ -120,7 +125,8 @@ impl Executor {
         Self::new(
             metadata,
             work_dir,
-            runtime,
+            runtime_producer,
+            config_producer,
             scalar_functions,
             aggregate_functions,
             window_functions,
@@ -136,7 +142,8 @@ impl Executor {
     fn new(
         metadata: ExecutorRegistration,
         work_dir: &str,
-        runtime: Arc<RuntimeEnv>,
+        runtime_producer: RuntimeProducer,
+        config_producer: ConfigProducer,
         scalar_functions: HashMap<String, Arc<ScalarUDF>>,
         aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
         window_functions: HashMap<String, Arc<WindowUDF>>,
@@ -150,7 +157,8 @@ impl Executor {
             scalar_functions,
             aggregate_functions,
             window_functions,
-            runtime,
+            runtime_producer,
+            config_producer,
             metrics_collector,
             concurrent_tasks,
             abort_handles: Default::default(),
@@ -160,10 +168,13 @@ impl Executor {
     }
     /// Create a new executor instance from [SessionState].
     /// [ScalarUDF], [AggregateUDF] and [WindowUDF]
+    #[allow(clippy::too_many_arguments)]
     pub fn new_from_state(
         metadata: ExecutorRegistration,
         work_dir: &str,
-        state: &SessionState,
+        runtime_producer: RuntimeProducer,
+        config_producer: ConfigProducer,
+        state: &SessionState, // TODO MM narrow state down
         metrics_collector: Arc<dyn ExecutorMetricsCollector>,
         concurrent_tasks: usize,
         execution_engine: Option<Arc<dyn ExecutionEngine>>,
@@ -171,12 +182,12 @@ impl Executor {
         let scalar_functions = state.scalar_functions().clone();
         let aggregate_functions = state.aggregate_functions().clone();
         let window_functions = state.window_functions().clone();
-        let runtime = state.runtime_env().clone();
 
         Self::new(
             metadata,
             work_dir,
-            runtime,
+            runtime_producer,
+            config_producer,
             scalar_functions,
             aggregate_functions,
             window_functions,
@@ -188,8 +199,15 @@ impl Executor {
 }
 
 impl Executor {
-    pub fn get_runtime(&self) -> Arc<RuntimeEnv> {
-        self.runtime.clone()
+    pub fn produce_runtime(
+        &self,
+        config: &SessionConfig,
+    ) -> datafusion::error::Result<Arc<RuntimeEnv>> {
+        (self.runtime_producer)(config)
+    }
+
+    pub fn produce_config(&self) -> SessionConfig {
+        (self.config_producer)()
     }
 
     /// Execute one partition of a query stage and persist the result to disk in IPC format. On
@@ -261,9 +279,11 @@ mod test {
     use crate::metrics::LoggingMetricsCollector;
     use arrow::datatypes::{Schema, SchemaRef};
     use arrow::record_batch::RecordBatch;
+    use ballista_core::config::BallistaConfig;
     use ballista_core::execution_plans::ShuffleWriterExec;
     use ballista_core::serde::protobuf::ExecutorRegistration;
     use ballista_core::serde::scheduler::PartitionId;
+    use ballista_core::RuntimeProducer;
     use datafusion::error::{DataFusionError, Result};
     use datafusion::execution::context::TaskContext;
 
@@ -271,7 +291,7 @@ mod test {
         DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
         RecordBatchStream, SendableRecordBatchStream, Statistics,
     };
-    use datafusion::prelude::SessionContext;
+    use datafusion::prelude::{SessionConfig, SessionContext};
     use futures::Stream;
     use std::any::Any;
     use std::pin::Pin;
@@ -402,13 +422,19 @@ mod test {
             specification: None,
             optional_host: None,
         };
-
+        let config_producer = Arc::new(|| {
+            SessionConfig::new().with_option_extension(BallistaConfig::new().unwrap())
+        });
         let ctx = SessionContext::new();
+        let runtime_env = ctx.runtime_env().clone();
+        let runtime_producer: RuntimeProducer =
+            Arc::new(move |_| Ok(runtime_env.clone()));
 
         let executor = Executor::new_from_runtime(
             executor_registration,
             &work_dir,
-            ctx.runtime_env(),
+            runtime_producer,
+            config_producer,
             Arc::new(LoggingMetricsCollector {}),
             2,
             None,

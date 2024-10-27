@@ -57,7 +57,7 @@ use ballista_core::utils::{
     create_grpc_client_connection, create_grpc_server, get_time_before,
     BallistaSessionConfigExt,
 };
-use ballista_core::BALLISTA_VERSION;
+use ballista_core::{ConfigProducer, RuntimeProducer, BALLISTA_VERSION};
 
 use crate::execution_engine::ExecutionEngine;
 use crate::executor::{Executor, TasksDrainedFuture};
@@ -103,6 +103,9 @@ pub struct ExecutorProcessConfig {
     /// if not provided system will configure itself from
     /// sensible defaults
     pub session_state: Option<SessionState>,
+
+    pub runtime_producer: Option<RuntimeProducer>,
+    pub config_producer: Option<ConfigProducer>,
 }
 
 pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<()> {
@@ -190,12 +193,24 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
 
     // put them to session config
     let metrics_collector = Arc::new(LoggingMetricsCollector::default());
+    let config_producer = opt.config_producer.clone().unwrap_or_else(|| {
+        Arc::new(|| {
+            SessionConfig::new().with_option_extension(BallistaConfig::new().unwrap())
+        })
+    });
+    let wd = work_dir.clone();
+    let runtime_producer: RuntimeProducer = Arc::new(move |_| {
+        let config = RuntimeConfig::new().with_temp_file_path(wd.clone());
+        Ok(Arc::new(RuntimeEnv::new(config)?))
+    });
 
-    let (session_config, executor, default_codec) = match &opt.session_state {
+    let (executor, default_codec) = match &opt.session_state {
         Some(state) => {
             let executor = Arc::new(Executor::new_from_state(
                 executor_meta,
                 &work_dir,
+                runtime_producer,
+                config_producer,
                 state,
                 metrics_collector,
                 concurrent_tasks,
@@ -206,18 +221,14 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
             let physical = state.config().ballista_physical_extension_codec();
             let default_codec = BallistaCodec::new(logical, physical);
 
-            (state.config().clone(), executor, default_codec)
+            (executor, default_codec)
         }
         None => {
-            let config = RuntimeConfig::new().with_temp_file_path(work_dir.clone());
-            let runtime = Arc::new(RuntimeEnv::new(config)?);
-            let session_config = SessionConfig::new()
-                .with_option_extension(BallistaConfig::new().unwrap());
-
             let executor = Arc::new(Executor::new_from_runtime(
                 executor_meta,
                 &work_dir,
-                runtime,
+                runtime_producer,
+                config_producer,
                 metrics_collector,
                 concurrent_tasks,
                 opt.execution_engine.clone(),
@@ -225,7 +236,7 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
 
             let default_codec = BallistaCodec::default();
 
-            (session_config, executor, default_codec)
+            (executor, default_codec)
         }
     };
 
@@ -335,7 +346,6 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
                 scheduler.clone(),
                 executor.clone(),
                 default_codec,
-                session_config,
             )));
         }
     };

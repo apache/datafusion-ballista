@@ -27,7 +27,6 @@ use ballista_core::serde::scheduler::{ExecutorSpecification, PartitionId};
 use ballista_core::serde::BallistaCodec;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::SessionConfig;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::FutureExt;
@@ -46,7 +45,6 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     mut scheduler: SchedulerGrpcClient<Channel>,
     executor: Arc<Executor>,
     codec: BallistaCodec<T, U>,
-    session_config: SessionConfig,
 ) -> Result<(), BallistaError> {
     let executor_specification: ExecutorSpecification = executor
         .metadata
@@ -108,7 +106,6 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         task,
                         &codec,
                         &dedicated_executor,
-                        session_config.clone(),
                     )
                     .await
                     {
@@ -150,7 +147,6 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     task: TaskDefinition,
     codec: &BallistaCodec<T, U>,
     dedicated_executor: &DedicatedExecutor,
-    session_config: SessionConfig,
 ) -> Result<(), BallistaError> {
     let task_id = task.task_id;
     let task_attempt_num = task.task_attempt_num;
@@ -170,7 +166,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         "Received task: {}, task_properties: {:?}",
         task_identity, task.props
     );
-    let mut session_config = session_config;
+    let mut session_config = executor.produce_config();
     for kv_pair in task.props {
         session_config = session_config.set_str(&kv_pair.key, &kv_pair.value);
     }
@@ -179,7 +175,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     let task_aggregate_functions = executor.aggregate_functions.clone();
     let task_window_functions = executor.window_functions.clone();
 
-    let runtime = executor.get_runtime();
+    let runtime = executor.produce_runtime(&session_config)?;
     let session_id = task.session_id.clone();
     let task_context = Arc::new(TaskContext::new(
         Some(task_identity.clone()),
