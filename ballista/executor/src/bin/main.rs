@@ -90,6 +90,8 @@ async fn main() -> Result<()> {
         function_registry: None,
         config_producer: None,
         runtime_producer: None,
+        logical_codec: None,
+        physical_codec: None,
     };
 
     start_executor_process(Arc::new(config)).await
