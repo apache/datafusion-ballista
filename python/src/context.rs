@@ -21,8 +21,8 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::path::PathBuf;
 
-use ballista::prelude::*;
 use ballista::context::BallistaContext;
+use ballista::prelude::*;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::pyarrow::PyArrowType;
 use datafusion::prelude::*;
@@ -59,23 +59,31 @@ impl PySessionContext {
     /// Create a new SessionContext by connecting to a Ballista scheduler process.
     #[new]
     #[pyo3(signature = (mode, concurrent_tasks, host=None, port=None))]
-    pub fn new(mode: BallistaMode, concurrent_tasks: usize, host: Option<&str>, port: Option<u16>, py: Python) -> PyResult<Self> {
+    pub fn new(
+        mode: BallistaMode,
+        concurrent_tasks: usize,
+        host: Option<&str>,
+        port: Option<u16>,
+        py: Python,
+    ) -> PyResult<Self> {
         match mode {
             BallistaMode::Standalone => {
                 let config = BallistaConfig::new().unwrap();
-                let ballista_context = BallistaContext::standalone(&config, concurrent_tasks);
+                let ballista_context =
+                    BallistaContext::standalone(&config, concurrent_tasks);
                 let ctx = wait_for_future(py, ballista_context).map_err(to_pyerr)?;
                 Ok(Self { ctx })
             }
             BallistaMode::Remote => {
                 let config = BallistaConfig::new().unwrap();
-                let ballista_context = BallistaContext::remote(host.unwrap(), port.unwrap(), &config);
+                let ballista_context =
+                    BallistaContext::remote(host.unwrap(), port.unwrap(), &config);
                 let ctx = wait_for_future(py, ballista_context).map_err(to_pyerr)?;
                 Ok(Self { ctx })
             }
         }
     }
-    
+
     pub fn sql(&mut self, query: &str, py: Python) -> PyResult<PyDataFrame> {
         let result = self.ctx.sql(query);
         let df = wait_for_future(py, result)?;
