@@ -171,9 +171,9 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         session_config = session_config.set_str(&kv_pair.key, &kv_pair.value);
     }
 
-    let task_scalar_functions = executor.scalar_functions.clone();
-    let task_aggregate_functions = executor.aggregate_functions.clone();
-    let task_window_functions = executor.window_functions.clone();
+    let task_scalar_functions = executor.function_registry.scalar_functions.clone();
+    let task_aggregate_functions = executor.function_registry.aggregate_functions.clone();
+    let task_window_functions = executor.function_registry.window_functions.clone();
 
     let runtime = executor.produce_runtime(&session_config)?;
     let session_id = task.session_id.clone();

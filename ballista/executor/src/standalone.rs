@@ -100,12 +100,12 @@ pub async fn new_standalone_executor_from_state<
     let config_producer: ConfigProducer = Arc::new(move || config.clone());
     let runtime_producer: RuntimeProducer = Arc::new(move |_| Ok(runtime.clone()));
 
-    let executor = Arc::new(Executor::new_from_state(
+    let executor = Arc::new(Executor::new(
         executor_meta,
         &work_dir,
         runtime_producer,
         config_producer,
-        session_state,
+        Arc::new(session_state.into()),
         Arc::new(LoggingMetricsCollector::default()),
         concurrent_tasks,
         None,
@@ -174,14 +174,12 @@ pub async fn new_standalone_executor<
         Ok(Arc::new(RuntimeEnv::new(config)?))
     });
 
-    let executor = Arc::new(Executor::new_from_runtime(
+    let executor = Arc::new(Executor::new_basic(
         executor_meta,
         &work_dir,
         runtime_producer,
         config_producer,
-        Arc::new(LoggingMetricsCollector::default()),
         concurrent_tasks,
-        None,
     ));
 
     let service = BallistaFlightService::new();

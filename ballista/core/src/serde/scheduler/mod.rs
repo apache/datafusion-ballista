@@ -24,7 +24,10 @@ use datafusion::arrow::array::{
 };
 use datafusion::arrow::datatypes::{DataType, Field};
 use datafusion::common::DataFusionError;
-use datafusion::execution::FunctionRegistry;
+use datafusion::execution::{FunctionRegistry, SessionState};
+use datafusion::functions::all_default_functions;
+use datafusion::functions_aggregate::all_default_aggregate_functions;
+use datafusion::functions_window::all_default_window_functions;
 use datafusion::logical_expr::planner::ExprPlanner;
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use datafusion::physical_plan::ExecutionPlan;
@@ -290,17 +293,42 @@ pub struct TaskDefinition {
     pub launch_time: u64,
     pub session_id: String,
     pub session_config: SessionConfig,
-    pub function_registry: Arc<SimpleFunctionRegistry>,
+    pub function_registry: Arc<BallistaFunctionRegistry>,
 }
 
 #[derive(Debug)]
-pub struct SimpleFunctionRegistry {
+pub struct BallistaFunctionRegistry {
     pub scalar_functions: HashMap<String, Arc<ScalarUDF>>,
     pub aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
     pub window_functions: HashMap<String, Arc<WindowUDF>>,
 }
 
-impl FunctionRegistry for SimpleFunctionRegistry {
+impl Default for BallistaFunctionRegistry {
+    fn default() -> Self {
+        let scalar_functions = all_default_functions()
+            .into_iter()
+            .map(|f| (f.name().to_string(), f))
+            .collect();
+
+        let aggregate_functions = all_default_aggregate_functions()
+            .into_iter()
+            .map(|f| (f.name().to_string(), f))
+            .collect();
+
+        let window_functions = all_default_window_functions()
+            .into_iter()
+            .map(|f| (f.name().to_string(), f))
+            .collect();
+
+        Self {
+            scalar_functions,
+            aggregate_functions,
+            window_functions,
+        }
+    }
+}
+
+impl FunctionRegistry for BallistaFunctionRegistry {
     fn expr_planners(&self) -> Vec<Arc<dyn ExprPlanner>> {
         vec![]
     }
@@ -337,5 +365,19 @@ impl FunctionRegistry for SimpleFunctionRegistry {
                 "There is no UDWF named \"{name}\" in the TaskContext"
             ))
         })
+    }
+}
+
+impl From<&SessionState> for BallistaFunctionRegistry {
+    fn from(state: &SessionState) -> Self {
+        let scalar_functions = state.scalar_functions().clone();
+        let aggregate_functions = state.aggregate_functions().clone();
+        let window_functions = state.window_functions().clone();
+
+        Self {
+            scalar_functions,
+            aggregate_functions,
+            window_functions,
+        }
     }
 }

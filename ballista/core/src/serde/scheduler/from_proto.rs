@@ -33,8 +33,9 @@ use std::time::Duration;
 
 use crate::error::BallistaError;
 use crate::serde::scheduler::{
-    Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, PartitionId,
-    PartitionLocation, PartitionStats, SimpleFunctionRegistry, TaskDefinition,
+    Action, BallistaFunctionRegistry, ExecutorData, ExecutorMetadata,
+    ExecutorSpecification, PartitionId, PartitionLocation, PartitionStats,
+    TaskDefinition,
 };
 
 use crate::serde::{protobuf, BallistaCodec};
@@ -308,7 +309,7 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     for agg_func in window_functions {
         task_window_functions.insert(agg_func.0, agg_func.1);
     }
-    let function_registry = Arc::new(SimpleFunctionRegistry {
+    let function_registry = Arc::new(BallistaFunctionRegistry {
         scalar_functions: task_scalar_functions,
         aggregate_functions: task_aggregate_functions,
         window_functions: task_window_functions,
@@ -377,7 +378,7 @@ pub fn get_task_definition_vec<
     for agg_func in window_functions {
         task_window_functions.insert(agg_func.0, agg_func.1);
     }
-    let function_registry = Arc::new(SimpleFunctionRegistry {
+    let function_registry = Arc::new(BallistaFunctionRegistry {
         scalar_functions: task_scalar_functions,
         aggregate_functions: task_aggregate_functions,
         window_functions: task_window_functions,

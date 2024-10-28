@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
         cache_capacity: opt.cache_capacity,
         cache_io_concurrency: opt.cache_io_concurrency,
         execution_engine: None,
-        session_state: None,
+        function_registry: None,
         config_producer: None,
         runtime_producer: None,
     };

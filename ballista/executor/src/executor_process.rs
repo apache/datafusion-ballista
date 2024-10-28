@@ -25,7 +25,7 @@ use std::{env, io};
 
 use anyhow::{Context, Result};
 use arrow_flight::flight_service_server::FlightServiceServer;
-use datafusion::execution::SessionState;
+use ballista_core::serde::scheduler::BallistaFunctionRegistry;
 use datafusion::prelude::SessionConfig;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -54,7 +54,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{
-    create_grpc_client_connection, create_grpc_server, get_time_before, SessionConfigExt,
+    create_grpc_client_connection, create_grpc_server, get_time_before,
 };
 use ballista_core::{ConfigProducer, RuntimeProducer, BALLISTA_VERSION};
 
@@ -98,10 +98,8 @@ pub struct ExecutorProcessConfig {
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.
     pub execution_engine: Option<Arc<dyn ExecutionEngine>>,
-    /// SessionState which will be used to configure executor
-    /// if not provided system will configure itself from
-    /// sensible defaults
-    pub session_state: Option<SessionState>,
+    /// Overrides default function registry
+    pub function_registry: Option<Arc<BallistaFunctionRegistry>>,
 
     pub runtime_producer: Option<RuntimeProducer>,
     pub config_producer: Option<ConfigProducer>,
@@ -202,42 +200,23 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
         let config = RuntimeConfig::new().with_temp_file_path(wd.clone());
         Ok(Arc::new(RuntimeEnv::new(config)?))
     });
+    // TODO MM
+    //         let logical = state.config().ballista_logical_extension_codec();
+    //         let physical = state.config().ballista_physical_extension_codec();
+    //         let default_codec = BallistaCodec::new(logical, physical);
 
-    let (executor, default_codec) = match &opt.session_state {
-        Some(state) => {
-            let executor = Arc::new(Executor::new_from_state(
-                executor_meta,
-                &work_dir,
-                runtime_producer,
-                config_producer,
-                state,
-                metrics_collector,
-                concurrent_tasks,
-                opt.execution_engine.clone(),
-            ));
+    let executor = Arc::new(Executor::new(
+        executor_meta,
+        &work_dir,
+        runtime_producer,
+        config_producer,
+        opt.function_registry.clone().unwrap_or_default(),
+        metrics_collector,
+        concurrent_tasks,
+        opt.execution_engine.clone(),
+    ));
 
-            let logical = state.config().ballista_logical_extension_codec();
-            let physical = state.config().ballista_physical_extension_codec();
-            let default_codec = BallistaCodec::new(logical, physical);
-
-            (executor, default_codec)
-        }
-        None => {
-            let executor = Arc::new(Executor::new_from_runtime(
-                executor_meta,
-                &work_dir,
-                runtime_producer,
-                config_producer,
-                metrics_collector,
-                concurrent_tasks,
-                opt.execution_engine.clone(),
-            ));
-
-            let default_codec = BallistaCodec::default();
-
-            (executor, default_codec)
-        }
-    };
+    let default_codec = BallistaCodec::default();
 
     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;
     let connection = if connect_timeout == 0 {
