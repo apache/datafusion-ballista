@@ -16,6 +16,7 @@
 // under the License.
 
 //! Distributed execution context.
+#![allow(deprecated)] // TO BE REMOVED
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::context::DataFilePaths;
@@ -76,7 +77,7 @@ impl BallistaContextState {
     }
 }
 
-// #[deprecated]
+#[deprecated]
 pub struct BallistaContext {
     state: Arc<Mutex<BallistaContextState>>,
     context: Arc<SessionContext>,

@@ -23,7 +23,8 @@ use std::io::BufReader;
 use std::sync::Arc;
 use std::time::Instant;
 
-use ballista::prelude::{BallistaContext, Result};
+use ballista::prelude::Result;
+use datafusion::prelude::SessionContext;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 
@@ -35,7 +36,7 @@ use crate::{
 
 /// run and execute SQL statements and commands from a file, against a context with the given print options
 pub async fn exec_from_lines(
-    ctx: &BallistaContext,
+    ctx: &SessionContext,
     reader: &mut BufReader<File>,
     print_options: &PrintOptions,
 ) {
@@ -80,7 +81,7 @@ pub async fn exec_from_lines(
 
 pub async fn exec_from_files(
     files: Vec<String>,
-    ctx: &BallistaContext,
+    ctx: &SessionContext,
     print_options: &PrintOptions,
 ) {
     let files = files
@@ -94,15 +95,10 @@ pub async fn exec_from_files(
 }
 
 /// run and execute SQL statements and commands against a context with the given print options
-pub async fn exec_from_repl(ctx: &BallistaContext, print_options: &mut PrintOptions) {
+pub async fn exec_from_repl(ctx: &SessionContext, print_options: &mut PrintOptions) {
     let mut rl = Editor::new().expect("created editor");
     rl.set_helper(Some(CliHelper::new(
-        &ctx.context()
-            .task_ctx()
-            .session_config()
-            .options()
-            .sql_parser
-            .dialect,
+        &ctx.task_ctx().session_config().options().sql_parser.dialect,
         print_options.color,
     )));
     rl.load_history(".history").ok();
@@ -171,7 +167,7 @@ pub async fn exec_from_repl(ctx: &BallistaContext, print_options: &mut PrintOpti
 }
 
 async fn exec_and_print(
-    ctx: &BallistaContext,
+    ctx: &SessionContext,
     print_options: &PrintOptions,
     sql: String,
 ) -> Result<()> {

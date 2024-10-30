@@ -15,27 +15,36 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista::prelude::*;
-use datafusion::prelude::CsvReadOptions;
+use ballista::{extension::BallistaSessionConfigExt, prelude::*};
+use ballista_examples::test_util;
+use datafusion::{
+    execution::SessionStateBuilder,
+    prelude::{CsvReadOptions, SessionConfig, SessionContext},
+};
 
 /// This example demonstrates executing a simple query against an Arrow data source (CSV) and
 /// fetching results, using SQL
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitions", "4")
-        .build()?;
-    let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
+    let config = SessionConfig::new_with_ballista()
+        .set_str(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4");
 
-    // register csv file with the execution context
+    let state = SessionStateBuilder::new()
+        .with_config(config)
+        .with_default_features()
+        .build();
+
+    let ctx = SessionContext::remote_with_state("df://localhost:50050", state).await?;
+
+    let test_data = test_util::examples_test_data();
+
     ctx.register_csv(
         "test",
-        "testdata/aggregate_test_100.csv",
+        &format!("{test_data}/aggregate_test_100.csv"),
         CsvReadOptions::new(),
     )
     .await?;
 
-    // execute the query
     let df = ctx
         .sql(
             "SELECT c1, MIN(c12), MAX(c12) \
@@ -45,7 +54,6 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-    // print the results
     df.show().await?;
 
     Ok(())

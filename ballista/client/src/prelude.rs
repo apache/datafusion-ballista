@@ -28,7 +28,7 @@ pub use ballista_core::{
     error::{BallistaError, Result},
 };
 
-pub use futures::StreamExt;
-
+#[allow(deprecated)] // TO BE REMOVED
 pub use crate::context::BallistaContext;
 pub use crate::extension::SessionContextExt;
+pub use futures::StreamExt;
