@@ -313,7 +313,9 @@ impl SessionStateExt for SessionState {
 
         let session_config = SessionConfig::new()
             .with_information_schema(true)
-            .with_option_extension(config.clone());
+            .with_option_extension(config.clone())
+            // Ballista disables this option
+            .with_round_robin_repartition(false);
 
         let runtime_config = RuntimeConfig::default();
         let runtime_env = RuntimeEnv::new(runtime_config)?;
@@ -347,7 +349,9 @@ impl SessionStateExt for SessionState {
         let session_config = self
             .config()
             .clone()
-            .with_option_extension(new_config.clone());
+            .with_option_extension(new_config.clone())
+            // Ballista disables this option
+            .with_round_robin_repartition(false);
 
         let builder = SessionStateBuilder::new_from_existing(self)
             .with_config(session_config)
@@ -688,12 +692,12 @@ mod test {
         error::Result,
         execution::{
             runtime_env::{RuntimeConfig, RuntimeEnv},
-            SessionStateBuilder,
+            SessionState, SessionStateBuilder,
         },
         prelude::{SessionConfig, SessionContext},
     };
 
-    use crate::utils::LocalRun;
+    use crate::utils::{LocalRun, SessionStateExt};
 
     fn context() -> SessionContext {
         let runtime_environment = RuntimeEnv::new(RuntimeConfig::new()).unwrap();
@@ -769,5 +773,26 @@ mod test {
         assert!(!local_run.can_be_local);
 
         Ok(())
+    }
+
+    // Ballista disables round robin repatriations
+    #[tokio::test]
+    async fn should_disable_round_robin_repartition() {
+        let state = SessionState::new_ballista_state(
+            "scheduler_url".to_string(),
+            "session_id".to_string(),
+        )
+        .unwrap();
+
+        assert!(!state.config().round_robin_repartition());
+
+        let state = SessionStateBuilder::new().build();
+
+        assert!(state.config().round_robin_repartition());
+        let state = state
+            .upgrade_for_ballista("scheduler_url".to_string(), "session_id".to_string())
+            .unwrap();
+
+        assert!(!state.config().round_robin_repartition());
     }
 }
