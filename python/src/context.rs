@@ -47,41 +47,25 @@ pub struct PySessionContext {
     ctx: BallistaContext,
 }
 
-#[pyclass(name = "BallistaMode", module = "pyballista", eq, eq_int)]
-#[derive(Clone, PartialEq)]
-pub enum BallistaMode {
-    Standalone,
-    Remote,
-}
-
 #[pymethods]
 impl PySessionContext {
-    /// Create a new SessionContext by connecting to a Ballista scheduler process.
-    #[new]
-    #[pyo3(signature = (mode, concurrent_tasks, host=None, port=None))]
-    pub fn new(
-        mode: BallistaMode,
-        concurrent_tasks: usize,
-        host: Option<&str>,
-        port: Option<u16>,
-        py: Python,
-    ) -> PyResult<Self> {
-        match mode {
-            BallistaMode::Standalone => {
-                let config = BallistaConfig::new().unwrap();
-                let ballista_context =
-                    BallistaContext::standalone(&config, concurrent_tasks);
-                let ctx = wait_for_future(py, ballista_context).map_err(to_pyerr)?;
-                Ok(Self { ctx })
-            }
-            BallistaMode::Remote => {
-                let config = BallistaConfig::new().unwrap();
-                let ballista_context =
-                    BallistaContext::remote(host.unwrap(), port.unwrap(), &config);
-                let ctx = wait_for_future(py, ballista_context).map_err(to_pyerr)?;
-                Ok(Self { ctx })
-            }
-        }
+    #[staticmethod]
+    #[pyo3(signature = (host="0.0.0.0", port=50500))]
+    pub fn remote(host: Option<&str>, port: Option<u16>, py: Python) -> PyResult<Self> {
+        let config = BallistaConfig::new().unwrap();
+        let ballista_context =
+            BallistaContext::remote(host.unwrap(), port.unwrap(), &config);
+        let ctx = wait_for_future(py, ballista_context).map_err(to_pyerr)?;
+        Ok(Self { ctx })
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (concurrent_tasks=4))]
+    pub fn standalone(concurrent_tasks: usize, py: Python) -> PyResult<Self> {
+        let config = BallistaConfig::new().unwrap();
+        let ballista_context = BallistaContext::standalone(&config, concurrent_tasks);
+        let ctx = wait_for_future(py, ballista_context).map_err(to_pyerr)?;
+        Ok(Self { ctx })
     }
 
     pub fn sql(&mut self, query: &str, py: Python) -> PyResult<PyDataFrame> {

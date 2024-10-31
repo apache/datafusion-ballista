@@ -30,9 +30,13 @@ from datafusion import SessionContext
 
 
 class BallistaContext:
-    def __init__(self, df_ctx: SessionContext):
-        self.df_ctx = df_ctx
-        self.ctx = BallistaContext(df_ctx)
+    def remote(self, host: str, port: int):
+        ballista = self.remote(host, port)
+        self.ctx = BallistaContext()
+        
+    def standalone(self, concurrent_tasks: int):
+        ballista = self.standalone(concurrent_tasks)
+        self.ctx = BallistaContext()
         
     def register_csv(self, table_name: str, path: str, has_header: bool):
         self.ctx.register_csv(table_name, path, has_header)
