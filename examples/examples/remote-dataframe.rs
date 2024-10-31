@@ -25,16 +25,13 @@ async fn main() -> Result<()> {
     let config = BallistaConfig::builder()
         .set("ballista.shuffle.partitions", "4")
         .build()?;
-    let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
+    let ctx = BallistaContext::remote("10.103.0.25", 50050, &config).await?;
 
     let filename = "testdata/alltypes_plain.parquet";
 
     // define the query using the DataFrame trait
     let df = ctx
-        .read_parquet(filename, ParquetReadOptions::default())
-        .await?
-        .select_columns(&["id", "bool_col", "timestamp_col"])?
-        .filter(col("id").gt(lit(1)))?;
+        .sql("SELECT 1").await?;
 
     // print the results
     df.show().await?;

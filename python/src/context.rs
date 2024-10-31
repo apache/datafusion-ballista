@@ -20,6 +20,7 @@ use datafusion::logical_expr::SortExpr;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use ballista::context::BallistaContext;
 use ballista::prelude::*;
@@ -36,6 +37,8 @@ use datafusion_python::expr::sort_expr::PySortExpr;
 use datafusion_python::sql::logical::PyLogicalPlan;
 use datafusion_python::utils::wait_for_future;
 
+use ballista_core::utils::create_df_ctx_with_ballista_query_planner;
+
 /// PyBallista session context. This is largely a duplicate of
 /// DataFusion's PySessionContext, with the main difference being
 /// that this operates on a BallistaContext instead of DataFusion's
@@ -49,6 +52,15 @@ pub struct PySessionContext {
 
 #[pymethods]
 impl PySessionContext {
+    #[new]
+    #[pyo3(signature = (concurrent_tasks=4))]
+    pub fn new(concurrent_tasks: usize, py: Python) -> PyResult<Self> {
+        let config = BallistaConfig::new().unwrap();
+        let ballista_context = BallistaContext::standalone(&config, concurrent_tasks);
+        let ctx = wait_for_future(py, ballista_context).map_err(to_pyerr)?;
+        Ok(Self { ctx })
+    }
+    
     #[staticmethod]
     #[pyo3(signature = (host="0.0.0.0", port=50500))]
     pub fn remote(host: Option<&str>, port: Option<u16>, py: Python) -> PyResult<Self> {

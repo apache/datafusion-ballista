@@ -24,22 +24,23 @@ from typing import Iterable
 import pyarrow as pa
 
 import pyballista
-from pyballista import BallistaContext
-from typing import List, Any
-from datafusion import SessionContext
 
+from typing import List, Any
 
 class BallistaContext:
-    def remote(self, host: str, port: int):
-        ballista = self.remote(host, port)
-        self.ctx = BallistaContext()
-        
-    def standalone(self, concurrent_tasks: int):
-        ballista = self.standalone(concurrent_tasks)
-        self.ctx = BallistaContext()
-        
-    def register_csv(self, table_name: str, path: str, has_header: bool):
-        self.ctx.register_csv(table_name, path, has_header)
+    def __init__(self, mode: str = "standalone", host: str = "0.0.0.0", port: int = 50050, concurrent_tasks: int = 4):
+        if mode == "standalone":
+            self.ctx = pyballista.BallistaContext().standalone(concurrent_tasks)
+        else:
+            self.ctx = pyballista.BallistaContext().remote(host, port)
+            
+    def sql(self, sql: str) -> pa.RecordBatch:
+            # TODO we should parse sql and inspect the plan rather than
+            # perform a string comparison here
+            sql_str = sql.lower()
+            if "create view" in sql_str or "drop view" in sql_str:
+                self.ctx.sql(sql)
+                return []
     
-    def register_parquet(self, table_name: str, path: str):
-        self.ctx.register_parquet(table_name, path)
+            df = self.ctx.sql(sql)
+            return df
