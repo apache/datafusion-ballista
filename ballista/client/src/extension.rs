@@ -15,13 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub use ballista_core::utils::BallistaSessionConfigExt;
+pub use ballista_core::utils::SessionConfigExt;
 use ballista_core::{
     config::BallistaConfig,
     serde::protobuf::{
         scheduler_grpc_client::SchedulerGrpcClient, CreateSessionParams, KeyValuePair,
     },
-    utils::{create_grpc_client_connection, BallistaSessionStateExt},
+    utils::{create_grpc_client_connection, SessionStateExt},
 };
 use datafusion::{
     error::DataFusionError, execution::SessionState, prelude::SessionContext,
@@ -65,6 +65,7 @@ const DEFAULT_SCHEDULER_PORT: u16 = 50050;
 /// There are still few limitations on query distribution, thus not all
 /// [SessionContext] functionalities are supported.
 ///
+
 #[async_trait::async_trait]
 pub trait SessionContextExt {
     /// Creates a context for executing queries against a standalone Ballista scheduler instance
@@ -144,14 +145,8 @@ impl SessionContextExt for SessionContext {
     ) -> datafusion::error::Result<SessionContext> {
         let config = state.ballista_config();
 
-        let codec_logical = state.config().ballista_logical_extension_codec();
-        let codec_physical = state.config().ballista_physical_extension_codec();
-
-        let ballista_codec =
-            ballista_core::serde::BallistaCodec::new(codec_logical, codec_physical);
-
         let (remote_session_id, scheduler_url) =
-            Extension::setup_standalone(config, ballista_codec).await?;
+            Extension::setup_standalone(config, Some(&state)).await?;
 
         let session_state =
             state.upgrade_for_ballista(scheduler_url, remote_session_id.clone())?;
@@ -170,10 +165,8 @@ impl SessionContextExt for SessionContext {
         let config = BallistaConfig::new()
             .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
 
-        let ballista_codec = ballista_core::serde::BallistaCodec::default();
-
         let (remote_session_id, scheduler_url) =
-            Extension::setup_standalone(config, ballista_codec).await?;
+            Extension::setup_standalone(config, None).await?;
 
         let session_state =
             SessionState::new_ballista_state(scheduler_url, remote_session_id.clone())?;
@@ -205,14 +198,22 @@ impl Extension {
     #[cfg(feature = "standalone")]
     async fn setup_standalone(
         config: BallistaConfig,
-        ballista_codec: ballista_core::serde::BallistaCodec<
-            datafusion_proto::protobuf::LogicalPlanNode,
-            datafusion_proto::protobuf::PhysicalPlanNode,
-        >,
+        session_state: Option<&SessionState>,
     ) -> datafusion::error::Result<(String, String)> {
-        let addr = ballista_scheduler::standalone::new_standalone_scheduler()
-            .await
-            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+        use ballista_core::serde::BallistaCodec;
+
+        let addr = match session_state {
+            None => ballista_scheduler::standalone::new_standalone_scheduler()
+                .await
+                .map_err(|e| DataFusionError::Configuration(e.to_string()))?,
+            Some(session_state) => {
+                ballista_scheduler::standalone::new_standalone_scheduler_from_state(
+                    session_state,
+                )
+                .await
+                .map_err(|e| DataFusionError::Configuration(e.to_string()))?
+            }
+        };
 
         let scheduler_url = format!("http://localhost:{}", addr.port());
 
@@ -243,13 +244,26 @@ impl Extension {
             .session_id;
 
         let concurrent_tasks = config.default_standalone_parallelism();
-        ballista_executor::new_standalone_executor(
-            scheduler,
-            concurrent_tasks,
-            ballista_codec,
-        )
-        .await
-        .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+
+        match session_state {
+            None => {
+                ballista_executor::new_standalone_executor(
+                    scheduler,
+                    concurrent_tasks,
+                    BallistaCodec::default(),
+                )
+                .await
+                .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+            }
+            Some(session_state) => {
+                ballista_executor::new_standalone_executor_from_state::<
+                    datafusion_proto::protobuf::LogicalPlanNode,
+                    datafusion_proto::protobuf::PhysicalPlanNode,
+                >(scheduler, concurrent_tasks, session_state)
+                .await
+                .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+            }
+        }
 
         Ok((remote_session_id, scheduler_url))
     }

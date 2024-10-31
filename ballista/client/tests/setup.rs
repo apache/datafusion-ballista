@@ -20,7 +20,7 @@ mod common;
 #[cfg(test)]
 mod remote {
     use ballista::{
-        extension::{BallistaSessionConfigExt, SessionContextExt},
+        extension::{SessionConfigExt, SessionContextExt},
         prelude::BALLISTA_JOB_NAME,
     };
     use datafusion::{
@@ -109,12 +109,10 @@ mod standalone {
     use std::sync::{atomic::AtomicBool, Arc};
 
     use ballista::{
-        extension::{BallistaSessionConfigExt, SessionContextExt},
+        extension::{SessionConfigExt, SessionContextExt},
         prelude::BALLISTA_JOB_NAME,
     };
-    use ballista_core::{
-        config::BALLISTA_PLANNER_OVERRIDE, serde::BallistaPhysicalExtensionCodec,
-    };
+    use ballista_core::serde::BallistaPhysicalExtensionCodec;
     use datafusion::{
         assert_batches_eq,
         common::exec_err,
@@ -243,12 +241,11 @@ mod standalone {
     async fn should_override_planner() -> datafusion::error::Result<()> {
         let session_config = SessionConfig::new_with_ballista()
             .with_information_schema(true)
-            .set_str(BALLISTA_PLANNER_OVERRIDE, "false");
+            .with_ballista_query_planner(Arc::new(BadPlanner::default()));
 
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(session_config)
-            .with_query_planner(Arc::new(BadPlanner::default()))
             .build();
 
         let ctx: SessionContext = SessionContext::standalone_with_state(state).await?;
@@ -257,14 +254,12 @@ mod standalone {
 
         assert!(result.is_err());
 
-        let session_config = SessionConfig::new_with_ballista()
-            .with_information_schema(true)
-            .set_str(BALLISTA_PLANNER_OVERRIDE, "true");
+        let session_config =
+            SessionConfig::new_with_ballista().with_information_schema(true);
 
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(session_config)
-            .with_query_planner(Arc::new(BadPlanner::default()))
             .build();
 
         let ctx: SessionContext = SessionContext::standalone_with_state(state).await?;

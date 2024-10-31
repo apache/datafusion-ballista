@@ -47,9 +47,12 @@ ballista-executor = { path = "../executor", version = "0.12.0" }
 ballista-scheduler = { path = "../scheduler", version = "0.12.0" }
 ctor = { version = "0.2" }
 env_logger = { workspace = true }
+object_store = { workspace = true, features = ["aws"] }
+testcontainers-modules = { version = "0.11", features = ["minio"] }
 
 [features]
 azure = ["ballista-core/azure"]
 default = []
 s3 = ["ballista-core/s3"]
 standalone = ["ballista-executor", "ballista-scheduler"]
+testcontainers = []

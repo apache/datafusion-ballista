@@ -46,9 +46,7 @@ use ballista_core::serde::scheduler::TaskDefinition;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{create_grpc_client_connection, create_grpc_server};
 use dashmap::DashMap;
-use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
-use datafusion::prelude::SessionConfig;
 use datafusion_proto::{logical_plan::AsLogicalPlan, physical_plan::AsExecutionPlan};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
@@ -342,22 +340,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             .unwrap();
 
         let task_context = {
-            let task_props = task.props;
-            let mut config = ConfigOptions::new();
-            for (k, v) in task_props.iter() {
-                if let Err(e) = config.set(k, v) {
-                    debug!("Fail to set session config for ({},{}): {:?}", k, v, e);
-                }
-            }
-            let session_config = SessionConfig::from(config);
-
             let function_registry = task.function_registry;
-            let runtime = self.executor.get_runtime();
+            let runtime = self.executor.produce_runtime(&task.session_config).unwrap();
 
             Arc::new(TaskContext::new(
                 Some(task_identity.clone()),
                 task.session_id,
-                session_config,
+                task.session_config,
                 function_registry.scalar_functions.clone(),
                 function_registry.aggregate_functions.clone(),
                 function_registry.window_functions.clone(),
@@ -641,10 +630,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                     scheduler_id: scheduler_id.clone(),
                     task: get_task_definition(
                         task,
-                        self.executor.get_runtime(),
-                        self.executor.scalar_functions.clone(),
-                        self.executor.aggregate_functions.clone(),
-                        self.executor.window_functions.clone(),
+                        self.executor.runtime_producer.clone(),
+                        self.executor.produce_config(),
+                        self.executor.function_registry.scalar_functions.clone(),
+                        self.executor.function_registry.aggregate_functions.clone(),
+                        self.executor.function_registry.window_functions.clone(),
                         self.codec.clone(),
                     )
                     .map_err(|e| Status::invalid_argument(format!("{e}")))?,
@@ -669,10 +659,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
         for multi_task in multi_tasks {
             let multi_task: Vec<TaskDefinition> = get_task_definition_vec(
                 multi_task,
-                self.executor.get_runtime(),
-                self.executor.scalar_functions.clone(),
-                self.executor.aggregate_functions.clone(),
-                self.executor.window_functions.clone(),
+                self.executor.runtime_producer.clone(),
+                self.executor.produce_config(),
+                self.executor.function_registry.scalar_functions.clone(),
+                self.executor.function_registry.aggregate_functions.clone(),
+                self.executor.function_registry.window_functions.clone(),
                 self.codec.clone(),
             )
             .map_err(|e| Status::invalid_argument(format!("{e}")))?;

@@ -21,18 +21,19 @@ use crate::execution_engine::DefaultExecutionEngine;
 use crate::execution_engine::ExecutionEngine;
 use crate::execution_engine::QueryStageExecutor;
 use crate::metrics::ExecutorMetricsCollector;
+use crate::metrics::LoggingMetricsCollector;
 use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::ExecutorRegistration;
+use ballista_core::serde::scheduler::BallistaFunctionRegistry;
 use ballista_core::serde::scheduler::PartitionId;
+use ballista_core::ConfigProducer;
+use ballista_core::RuntimeProducer;
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
-use datafusion::functions::all_default_functions;
-use datafusion::functions_aggregate::all_default_aggregate_functions;
-use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
+use datafusion::prelude::SessionConfig;
 use futures::future::AbortHandle;
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -63,17 +64,14 @@ pub struct Executor {
     /// Directory for storing partial results
     pub work_dir: String,
 
-    /// Scalar functions that are registered in the Executor
-    pub scalar_functions: HashMap<String, Arc<ScalarUDF>>,
+    /// Function registry
+    pub function_registry: Arc<BallistaFunctionRegistry>,
 
-    /// Aggregate functions registered in the Executor
-    pub aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
+    /// Creates [RuntimeEnv] based on [SessionConfig]
+    pub runtime_producer: RuntimeProducer,
 
-    /// Window functions registered in the Executor
-    pub window_functions: HashMap<String, Arc<WindowUDF>>,
-
-    /// Runtime environment for Executor
-    runtime: Arc<RuntimeEnv>,
+    /// Creates default [SessionConfig]
+    pub config_producer: ConfigProducer,
 
     /// Collector for runtime execution metrics
     pub metrics_collector: Arc<dyn ExecutorMetricsCollector>,
@@ -90,33 +88,47 @@ pub struct Executor {
 }
 
 impl Executor {
-    /// Create a new executor instance
+    /// Create a new executor instance with given [RuntimeEnv]
+    /// It will use default scalar, aggregate and window functions
+    pub fn new_basic(
+        metadata: ExecutorRegistration,
+        work_dir: &str,
+        runtime_producer: RuntimeProducer,
+        config_producer: ConfigProducer,
+        concurrent_tasks: usize,
+    ) -> Self {
+        Self::new(
+            metadata,
+            work_dir,
+            runtime_producer,
+            config_producer,
+            Arc::new(BallistaFunctionRegistry::default()),
+            Arc::new(LoggingMetricsCollector::default()),
+            concurrent_tasks,
+            None,
+        )
+    }
+
+    /// Create a new executor instance with given [RuntimeEnv],
+    /// [ScalarUDF], [AggregateUDF] and [WindowUDF]
+
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         metadata: ExecutorRegistration,
         work_dir: &str,
-        runtime: Arc<RuntimeEnv>,
+        runtime_producer: RuntimeProducer,
+        config_producer: ConfigProducer,
+        function_registry: Arc<BallistaFunctionRegistry>,
         metrics_collector: Arc<dyn ExecutorMetricsCollector>,
         concurrent_tasks: usize,
         execution_engine: Option<Arc<dyn ExecutionEngine>>,
     ) -> Self {
-        let scalar_functions = all_default_functions()
-            .into_iter()
-            .map(|f| (f.name().to_string(), f))
-            .collect();
-
-        let aggregate_functions = all_default_aggregate_functions()
-            .into_iter()
-            .map(|f| (f.name().to_string(), f))
-            .collect();
-
         Self {
             metadata,
             work_dir: work_dir.to_owned(),
-            scalar_functions,
-            aggregate_functions,
-            // TODO: set to default window functions when they are moved to udwf
-            window_functions: HashMap::new(),
-            runtime,
+            function_registry,
+            runtime_producer,
+            config_producer,
             metrics_collector,
             concurrent_tasks,
             abort_handles: Default::default(),
@@ -127,8 +139,15 @@ impl Executor {
 }
 
 impl Executor {
-    pub fn get_runtime(&self) -> Arc<RuntimeEnv> {
-        self.runtime.clone()
+    pub fn produce_runtime(
+        &self,
+        config: &SessionConfig,
+    ) -> datafusion::error::Result<Arc<RuntimeEnv>> {
+        (self.runtime_producer)(config)
+    }
+
+    pub fn produce_config(&self) -> SessionConfig {
+        (self.config_producer)()
     }
 
     /// Execute one partition of a query stage and persist the result to disk in IPC format. On
@@ -197,12 +216,13 @@ impl Executor {
 mod test {
     use crate::execution_engine::DefaultQueryStageExec;
     use crate::executor::Executor;
-    use crate::metrics::LoggingMetricsCollector;
     use arrow::datatypes::{Schema, SchemaRef};
     use arrow::record_batch::RecordBatch;
+    use ballista_core::config::BallistaConfig;
     use ballista_core::execution_plans::ShuffleWriterExec;
     use ballista_core::serde::protobuf::ExecutorRegistration;
     use ballista_core::serde::scheduler::PartitionId;
+    use ballista_core::RuntimeProducer;
     use datafusion::error::{DataFusionError, Result};
     use datafusion::execution::context::TaskContext;
 
@@ -210,7 +230,7 @@ mod test {
         DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
         RecordBatchStream, SendableRecordBatchStream, Statistics,
     };
-    use datafusion::prelude::SessionContext;
+    use datafusion::prelude::{SessionConfig, SessionContext};
     use futures::Stream;
     use std::any::Any;
     use std::pin::Pin;
@@ -341,16 +361,20 @@ mod test {
             specification: None,
             optional_host: None,
         };
-
+        let config_producer = Arc::new(|| {
+            SessionConfig::new().with_option_extension(BallistaConfig::new().unwrap())
+        });
         let ctx = SessionContext::new();
+        let runtime_env = ctx.runtime_env().clone();
+        let runtime_producer: RuntimeProducer =
+            Arc::new(move |_| Ok(runtime_env.clone()));
 
-        let executor = Executor::new(
+        let executor = Executor::new_basic(
             executor_registration,
             &work_dir,
-            ctx.runtime_env(),
-            Arc::new(LoggingMetricsCollector {}),
+            runtime_producer,
+            config_producer,
             2,
-            None,
         );
 
         let (sender, receiver) = tokio::sync::oneshot::channel();
