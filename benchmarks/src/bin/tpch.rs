@@ -18,7 +18,7 @@
 //! Benchmark derived from TPC-H. This is not an official TPC-H benchmark.
 
 use arrow_schema::SchemaBuilder;
-use ballista::extension::BallistaSessionConfigExt;
+use ballista::extension::SessionConfigExt;
 use ballista::prelude::{
     SessionContextExt, BALLISTA_COLLECT_STATISTICS, BALLISTA_DEFAULT_BATCH_SIZE,
     BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, BALLISTA_JOB_NAME,

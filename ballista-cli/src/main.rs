@@ -19,7 +19,7 @@ use std::env;
 use std::path::Path;
 
 use ballista::{
-    extension::BallistaSessionConfigExt,
+    extension::SessionConfigExt,
     prelude::{
         Result, SessionContextExt, BALLISTA_DEFAULT_BATCH_SIZE,
         BALLISTA_STANDALONE_PARALLELISM, BALLISTA_WITH_INFORMATION_SCHEMA,
