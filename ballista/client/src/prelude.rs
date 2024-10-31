@@ -30,5 +30,5 @@ pub use ballista_core::{
 
 #[allow(deprecated)] // TO BE REMOVED
 pub use crate::context::BallistaContext;
-pub use crate::extension::SessionContextExt;
+pub use crate::extension::{SessionConfigExt, SessionContextExt};
 pub use futures::StreamExt;

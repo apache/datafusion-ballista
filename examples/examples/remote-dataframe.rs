@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista::{extension::BallistaSessionConfigExt, prelude::*};
+use ballista::{extension::SessionConfigExt, prelude::*};
 use ballista_examples::test_util;
 use datafusion::{
     execution::SessionStateBuilder,

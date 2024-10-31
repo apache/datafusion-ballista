@@ -16,7 +16,7 @@
 // under the License.
 
 use ballista::{
-    extension::BallistaSessionConfigExt,
+    extension::SessionConfigExt,
     prelude::{
         Result, SessionContextExt, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
         BALLISTA_STANDALONE_PARALLELISM,
