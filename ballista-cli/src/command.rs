@@ -21,11 +21,12 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use ballista::prelude::{BallistaContext, BallistaError, Result};
+use ballista::prelude::{BallistaError, Result};
 
 use datafusion::arrow::array::{ArrayRef, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::prelude::SessionContext;
 
 use crate::functions::{display_all_functions, Function};
 use crate::print_format::PrintFormat;
@@ -51,7 +52,7 @@ pub enum OutputFormat {
 impl Command {
     pub async fn execute(
         &self,
-        ctx: &BallistaContext,
+        ctx: &SessionContext,
         print_options: &mut PrintOptions,
     ) -> Result<()> {
         let now = Instant::now();
