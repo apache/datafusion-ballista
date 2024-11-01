@@ -15,18 +15,47 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use ballista::prelude::*;
+use datafusion::prelude::*;
+use datafusion_python::context::PySessionContext as DataFusionPythonSessionContext;
+use datafusion_python::utils::wait_for_future;
 use pyo3::prelude::*;
-pub mod context;
 mod utils;
-
-pub use crate::context::PySessionContext;
 
 #[pymodule]
 fn pyballista_internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     pyo3_log::init();
     // Ballista structs
-    m.add_class::<PySessionContext>()?;
+    m.add_class::<PyStandaloneBallista>()?;
+    m.add_class::<PyRemoteBallista>()?;
     // DataFusion structs
     m.add_class::<datafusion_python::dataframe::PyDataFrame>()?;
     Ok(())
+}
+
+#[pyclass(name = "StandaloneBallista", module = "pyballista", subclass)]
+pub struct PyStandaloneBallista;
+
+#[pymethods]
+impl PyStandaloneBallista {
+    #[staticmethod]
+    pub fn build(py: Python) -> PyResult<DataFusionPythonSessionContext> {
+        let session_context = SessionContext::standalone();
+        let ctx = wait_for_future(py, session_context)?;
+        Ok(ctx.into())
+    }
+}
+
+#[pyclass(name = "RemoteBallista", module = "pyballista", subclass)]
+pub struct PyRemoteBallista;
+
+#[pymethods]
+impl PyRemoteBallista {
+    #[staticmethod]
+    pub fn build(url: &str, py: Python) -> PyResult<DataFusionPythonSessionContext> {
+        let session_context = SessionContext::remote(url);
+        let ctx = wait_for_future(py, session_context)?;
+
+        Ok(ctx.into())
+    }
 }
