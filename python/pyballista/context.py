@@ -182,5 +182,8 @@ class BallistaContext:
             schema,
             file_sort_order,
         )
+        
+    def functions(self):
+        self.ctx.functions
     
     

@@ -15,14 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from datafusion import col
 from pyballista.context import BallistaContext
-import pyarrow as pa
-
-import csv
-from datafusion.object_store import AmazonS3
-from datafusion.context import SessionContext
-import os
 
 # Create the Ballista Context [standalone or remote]
 ctx = BallistaContext().standalone()
