@@ -26,11 +26,11 @@ except ImportError:
 import pyarrow as pa
 
 from .pyballista_internal import (
-    BallistaContext,
+    SessionContext,
 )
 
 __version__ = importlib_metadata.version(__name__)
 
 __all__ = [
-    "BallistaContext",
+    "SessionContext",
 ]

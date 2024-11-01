@@ -16,7 +16,6 @@
 // under the License.
 
 use ballista::prelude::*;
-use datafusion::prelude::{col, lit, ParquetReadOptions};
 
 /// This example demonstrates executing a simple query against an Arrow data source (Parquet) and
 /// fetching results, using the DataFrame trait
@@ -30,8 +29,7 @@ async fn main() -> Result<()> {
     let filename = "testdata/alltypes_plain.parquet";
 
     // define the query using the DataFrame trait
-    let df = ctx
-        .sql("SELECT 1").await?;
+    let df = ctx.sql("SELECT 1").await?;
 
     // print the results
     df.show().await?;
