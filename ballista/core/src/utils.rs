@@ -21,6 +21,7 @@ use crate::execution_plans::{
     DistributedQueryExec, ShuffleWriterExec, UnresolvedShuffleExec,
 };
 use crate::object_store_registry::with_object_store_registry;
+use crate::serde::protobuf::KeyValuePair;
 use crate::serde::scheduler::PartitionStats;
 use crate::serde::{BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec};
 
@@ -287,7 +288,7 @@ pub trait SessionStateExt {
         scheduler_url: String,
         session_id: String,
     ) -> datafusion::error::Result<SessionState>;
-
+    #[deprecated]
     fn ballista_config(&self) -> BallistaConfig;
 }
 
@@ -404,10 +405,16 @@ pub trait SessionConfigExt {
         planner: Arc<dyn QueryPlanner + Send + Sync + 'static>,
     ) -> SessionConfig;
 
-    /// Returns ballista's [QueryPlanner] if overriden
+    /// Returns ballista's [QueryPlanner] if overridden
     fn ballista_query_planner(
         &self,
     ) -> Option<Arc<dyn QueryPlanner + Send + Sync + 'static>>;
+
+    fn ballista_standalone_parallelism(&self) -> usize;
+
+    fn ballista_grpc_client_max_message_size(&self) -> usize;
+
+    fn to_key_value_pairs(&self) -> Vec<KeyValuePair>;
 }
 
 impl SessionConfigExt for SessionConfig {
@@ -453,6 +460,37 @@ impl SessionConfigExt for SessionConfig {
     ) -> Option<Arc<dyn QueryPlanner + Send + Sync + 'static>> {
         self.get_extension::<BallistaQueryPlannerExtension>()
             .map(|c| c.planner())
+    }
+
+    fn ballista_standalone_parallelism(&self) -> usize {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.default_standalone_parallelism())
+            .unwrap_or_else(|| BallistaConfig::default().default_standalone_parallelism())
+    }
+
+    fn ballista_grpc_client_max_message_size(&self) -> usize {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.default_grpc_client_max_message_size())
+            .unwrap_or_else(|| {
+                BallistaConfig::default().default_grpc_client_max_message_size()
+            })
+    }
+
+    fn to_key_value_pairs(&self) -> Vec<KeyValuePair> {
+        self.options()
+            .entries()
+            .iter()
+            .map(
+                |datafusion::config::ConfigEntry { key, value, .. }| KeyValuePair {
+                    key: key.to_owned(),
+                    value: value.clone().unwrap_or_else(|| String::from("")),
+                },
+            )
+            .collect()
     }
 }
 
@@ -697,7 +735,12 @@ mod test {
         prelude::{SessionConfig, SessionContext},
     };
 
-    use crate::utils::{LocalRun, SessionStateExt};
+    use crate::{
+        config::BALLISTA_JOB_NAME,
+        utils::{LocalRun, SessionStateExt},
+    };
+
+    use super::SessionConfigExt;
 
     fn context() -> SessionContext {
         let runtime_environment = RuntimeEnv::new(RuntimeConfig::new()).unwrap();
@@ -794,5 +837,18 @@ mod test {
             .unwrap();
 
         assert!(!state.config().round_robin_repartition());
+    }
+    #[test]
+    fn should_convert_to_key_value_pairs() {
+        // key value pairs should contain datafusion and ballista values
+
+        let config = SessionConfig::new_with_ballista();
+        let pairs = config.to_key_value_pairs();
+
+        assert!(pairs.iter().find(|p| p.key == BALLISTA_JOB_NAME).is_some());
+        assert!(pairs
+            .iter()
+            .find(|p| p.key == "datafusion.catalog.information_schema")
+            .is_some())
     }
 }

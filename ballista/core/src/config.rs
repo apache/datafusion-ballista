@@ -51,6 +51,53 @@ pub const BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE: &str =
     "ballista.grpc_client_max_message_size";
 
 pub type ParseResult<T> = result::Result<T, String>;
+use std::sync::LazyLock;
+
+static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(|| {
+    let entries = vec![
+        ConfigEntry::new(BALLISTA_JOB_NAME.to_string(),
+                         "Sets the job name that will appear in the web user interface for any submitted jobs".to_string(),
+                         DataType::Utf8, None),
+        ConfigEntry::new(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS.to_string(),
+                         "Sets the default number of partitions to create when repartitioning query stages".to_string(),
+                         DataType::UInt16, Some("16".to_string())),
+        ConfigEntry::new(BALLISTA_DEFAULT_BATCH_SIZE.to_string(),
+                         "Sets the default batch size".to_string(),
+                         DataType::UInt16, Some("8192".to_string())),
+        ConfigEntry::new(BALLISTA_REPARTITION_JOINS.to_string(),
+                         "Configuration for repartition joins".to_string(),
+                         DataType::Boolean, Some("true".to_string())),
+        ConfigEntry::new(BALLISTA_REPARTITION_AGGREGATIONS.to_string(),
+                         "Configuration for repartition aggregations".to_string(),
+                         DataType::Boolean, Some("true".to_string())),
+        ConfigEntry::new(BALLISTA_REPARTITION_WINDOWS.to_string(),
+                         "Configuration for repartition windows".to_string(),
+                         DataType::Boolean, Some("true".to_string())),
+        ConfigEntry::new(BALLISTA_PARQUET_PRUNING.to_string(),
+                         "Configuration for parquet prune".to_string(),
+                         DataType::Boolean, Some("true".to_string())),
+        ConfigEntry::new(BALLISTA_WITH_INFORMATION_SCHEMA.to_string(),
+                         "Sets whether enable information_schema".to_string(),
+                         DataType::Boolean, Some("false".to_string())),
+        ConfigEntry::new(BALLISTA_HASH_JOIN_SINGLE_PARTITION_THRESHOLD.to_string(),
+                        "Sets threshold in bytes for collecting the smaller side of the hash join in memory".to_string(),
+                        DataType::UInt64, Some((1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_COLLECT_STATISTICS.to_string(),
+                        "Configuration for collecting statistics during scan".to_string(),
+                        DataType::Boolean, Some("false".to_string())),
+        ConfigEntry::new(BALLISTA_STANDALONE_PARALLELISM.to_string(),
+                        "Standalone processing parallelism ".to_string(),
+                        DataType::UInt16, Some(std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1).to_string())),
+        ConfigEntry::new(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE.to_string(),
+                         "Configuration for max message size in gRPC clients".to_string(),
+                         DataType::UInt64,
+                         Some((16 * 1024 * 1024).to_string())),
+    ];
+    entries
+        .into_iter()
+        .map(|e| (e.name.clone(), e))
+        .collect::<HashMap<_, _>>()
+});
 
 /// Configuration option meta-data
 #[derive(Debug, Clone)]
@@ -111,13 +158,21 @@ pub struct BallistaConfig {
     settings: HashMap<String, String>,
 }
 
+impl Default for BallistaConfig {
+    fn default() -> Self {
+        Self::new().unwrap()
+    }
+}
+
 impl BallistaConfig {
     /// Create a default configuration
+    #[deprecated]
     pub fn new() -> Result<Self> {
         Self::with_settings(HashMap::new())
     }
 
     /// Create a configuration builder
+    #[deprecated]
     pub fn builder() -> BallistaConfigBuilder {
         BallistaConfigBuilder::default()
     }
@@ -125,7 +180,7 @@ impl BallistaConfig {
     /// Create a new configuration based on key-value pairs
     pub fn with_settings(settings: HashMap<String, String>) -> Result<Self> {
         let supported_entries = BallistaConfig::valid_entries();
-        for (name, entry) in &supported_entries {
+        for (name, entry) in supported_entries {
             if let Some(v) = settings.get(name) {
                 // validate that we can parse the user-supplied value
                 Self::parse_value(v.as_str(), entry._data_type.clone()).map_err(|e| BallistaError::General(format!("Failed to parse user-supplied value '{name}' for configuration setting '{v}': {e}")))?;
@@ -176,51 +231,9 @@ impl BallistaConfig {
         Ok(())
     }
 
-    /// All available configuration options
-    pub fn valid_entries() -> HashMap<String, ConfigEntry> {
-        let entries = vec![
-            ConfigEntry::new(BALLISTA_JOB_NAME.to_string(),
-                             "Sets the job name that will appear in the web user interface for any submitted jobs".to_string(),
-                             DataType::Utf8, None),
-            ConfigEntry::new(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS.to_string(),
-                             "Sets the default number of partitions to create when repartitioning query stages".to_string(),
-                             DataType::UInt16, Some("16".to_string())),
-            ConfigEntry::new(BALLISTA_DEFAULT_BATCH_SIZE.to_string(),
-                             "Sets the default batch size".to_string(),
-                             DataType::UInt16, Some("8192".to_string())),
-            ConfigEntry::new(BALLISTA_REPARTITION_JOINS.to_string(),
-                             "Configuration for repartition joins".to_string(),
-                             DataType::Boolean, Some("true".to_string())),
-            ConfigEntry::new(BALLISTA_REPARTITION_AGGREGATIONS.to_string(),
-                             "Configuration for repartition aggregations".to_string(),
-                             DataType::Boolean, Some("true".to_string())),
-            ConfigEntry::new(BALLISTA_REPARTITION_WINDOWS.to_string(),
-                             "Configuration for repartition windows".to_string(),
-                             DataType::Boolean, Some("true".to_string())),
-            ConfigEntry::new(BALLISTA_PARQUET_PRUNING.to_string(),
-                             "Configuration for parquet prune".to_string(),
-                             DataType::Boolean, Some("true".to_string())),
-            ConfigEntry::new(BALLISTA_WITH_INFORMATION_SCHEMA.to_string(),
-                             "Sets whether enable information_schema".to_string(),
-                             DataType::Boolean, Some("false".to_string())),
-            ConfigEntry::new(BALLISTA_HASH_JOIN_SINGLE_PARTITION_THRESHOLD.to_string(),
-                            "Sets threshold in bytes for collecting the smaller side of the hash join in memory".to_string(),
-                            DataType::UInt64, Some((1024 * 1024).to_string())),
-            ConfigEntry::new(BALLISTA_COLLECT_STATISTICS.to_string(),
-                            "Configuration for collecting statistics during scan".to_string(),
-                            DataType::Boolean, Some("false".to_string())),
-            ConfigEntry::new(BALLISTA_STANDALONE_PARALLELISM.to_string(),
-                            "Standalone processing parallelism ".to_string(),
-                            DataType::UInt16, Some(std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1).to_string())),
-            ConfigEntry::new(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE.to_string(),
-                             "Configuration for max message size in gRPC clients".to_string(),
-                             DataType::UInt64,
-                             Some((16 * 1024 * 1024).to_string())),
-        ];
-        entries
-            .iter()
-            .map(|e| (e.name.clone(), e.clone()))
-            .collect::<HashMap<_, _>>()
+    // All available configuration options
+    pub fn valid_entries() -> &'static HashMap<String, ConfigEntry> {
+        &CONFIG_ENTRIES
     }
 
     pub fn settings(&self) -> &HashMap<String, String> {
@@ -340,8 +353,12 @@ impl datafusion::config::ExtensionOptions for BallistaConfig {
             .into_iter()
             .map(|(key, value)| datafusion::config::ConfigEntry {
                 key: key.clone(),
-                value: self.settings.get(&key).cloned().or(value.default_value),
-                description: "",
+                value: self
+                    .settings
+                    .get(key)
+                    .cloned()
+                    .or(value.default_value.clone()),
+                description: &value._description,
             })
             .collect()
     }
