@@ -32,7 +32,6 @@ use crate::scheduler_server::{timestamp_millis, SchedulerServer};
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::task_manager::TaskLauncher;
 
-use ballista_core::config::{BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS};
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
     task_status, FailedTask, JobStatus, MultiTaskDefinition, ShuffleWritePartition,

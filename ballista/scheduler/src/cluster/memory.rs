@@ -22,7 +22,6 @@ use crate::cluster::{
 };
 use crate::state::execution_graph::ExecutionGraph;
 use async_trait::async_trait;
-use ballista_core::config::BallistaConfig;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::{
     executor_status, AvailableTaskSlots, ExecutorHeartbeat, ExecutorStatus, FailedJob,

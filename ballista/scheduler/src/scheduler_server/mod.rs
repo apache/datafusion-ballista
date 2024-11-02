@@ -356,9 +356,7 @@ mod test {
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
 
-    use ballista_core::config::{
-        BallistaConfig, TaskSchedulingPolicy, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
-    };
+    use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
 
     use crate::config::SchedulerConfig;
@@ -716,15 +714,5 @@ mod test {
             .unwrap()
             .build()
             .unwrap()
-    }
-
-    fn test_session(partitions: usize) -> BallistaConfig {
-        BallistaConfig::builder()
-            .set(
-                BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
-                format!("{partitions}").as_str(),
-            )
-            .build()
-            .expect("creating BallistaConfig")
     }
 }

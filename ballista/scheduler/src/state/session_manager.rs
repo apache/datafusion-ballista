@@ -16,7 +16,6 @@
 // under the License.
 
 use crate::scheduler_server::SessionBuilder;
-use ballista_core::config::BallistaConfig;
 use ballista_core::error::Result;
 use datafusion::prelude::{SessionConfig, SessionContext};
 

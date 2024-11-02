@@ -93,7 +93,7 @@ pub async fn new_standalone_executor_from_state<
     let config = session_state
         .config()
         .clone()
-        .with_option_extension(BallistaConfig::new().unwrap());
+        .with_option_extension(BallistaConfig::default());
     let runtime = session_state.runtime_env().clone();
 
     let config_producer: ConfigProducer = Arc::new(move || config.clone());
@@ -162,9 +162,7 @@ pub async fn new_standalone_executor<
         .unwrap();
     info!("work_dir: {}", work_dir);
 
-    let config_producer = Arc::new(|| {
-        SessionConfig::new().with_option_extension(BallistaConfig::new().unwrap())
-    });
+    let config_producer = Arc::new(|| SessionConfig::new_with_ballista());
     let wd = work_dir.clone();
     let runtime_producer: RuntimeProducer = Arc::new(move |_: &SessionConfig| {
         let config = with_object_store_registry(

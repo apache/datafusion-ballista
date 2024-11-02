@@ -29,7 +29,7 @@ use datafusion::{
     arrow::datatypes::DataType, common::config_err, config::ConfigExtension,
 };
 
-// TODO: to be revisited, do we need all of them or
+// TODO MM to be revisited, do we need all of them or
 //       we can reuse datafusion properties
 
 pub const BALLISTA_JOB_NAME: &str = "ballista.job.name";

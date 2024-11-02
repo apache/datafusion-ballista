@@ -16,10 +16,9 @@
 // under the License.
 
 use axum::extract::ConnectInfo;
-use ballista_core::config::{BallistaConfig, BALLISTA_JOB_NAME};
+use ballista_core::config::BALLISTA_JOB_NAME;
 use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
 use ballista_core::utils::SessionConfigExt;
-use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
