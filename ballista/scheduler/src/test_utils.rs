@@ -57,7 +57,7 @@ use crate::cluster::BallistaCluster;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
 use crate::state::execution_graph::{ExecutionGraph, ExecutionStage, TaskDescription};
-use ballista_core::utils::default_session_builder;
+use ballista_core::utils::{default_session_builder, SessionConfigExt};
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use parking_lot::Mutex;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
@@ -374,7 +374,7 @@ impl TaskLauncher for VirtualTaskLauncher {
 
 pub struct SchedulerTest {
     scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
-    ballista_config: BallistaConfig,
+    session_config: SessionConfig,
     status_receiver: Option<Receiver<(String, Vec<TaskStatus>)>>,
 }
 
@@ -388,15 +388,11 @@ impl SchedulerTest {
     ) -> Result<Self> {
         let cluster = BallistaCluster::new_from_config(&config).await?;
 
-        let ballista_config = if num_executors > 0 && task_slots_per_executor > 0 {
-            BallistaConfig::builder()
-                .set(
-                    BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
-                    format!("{}", num_executors * task_slots_per_executor).as_str(),
-                )
-                .build()?
+        let session_config = if num_executors > 0 && task_slots_per_executor > 0 {
+            SessionConfig::new_with_ballista()
+                .with_target_partitions(num_executors * task_slots_per_executor)
         } else {
-            BallistaConfig::builder().build()?
+            SessionConfig::new_with_ballista()
         };
 
         let runner = runner.unwrap_or_else(|| Arc::new(default_task_runner()));
@@ -457,7 +453,7 @@ impl SchedulerTest {
 
         Ok(Self {
             scheduler,
-            ballista_config,
+            session_config,
             status_receiver: Some(status_receiver),
         })
     }
@@ -474,7 +470,7 @@ impl SchedulerTest {
         self.scheduler
             .state
             .session_manager
-            .create_session(&self.ballista_config)
+            .create_session(&self.session_config)
             .await
     }
 
@@ -484,12 +480,12 @@ impl SchedulerTest {
         job_name: &str,
         plan: &LogicalPlan,
     ) -> Result<()> {
-        println!("{:?}", self.ballista_config);
+        println!("{:?}", self.session_config);
         let ctx = self
             .scheduler
             .state
             .session_manager
-            .create_session(&self.ballista_config)
+            .create_session(&self.session_config)
             .await?;
 
         self.scheduler
@@ -614,7 +610,7 @@ impl SchedulerTest {
             .scheduler
             .state
             .session_manager
-            .create_session(&self.ballista_config)
+            .create_session(&self.session_config)
             .await?;
 
         self.scheduler

@@ -43,9 +43,7 @@ use uuid::Uuid;
 
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 
-use ballista_core::config::{
-    BallistaConfig, DataCachePolicy, LogRotationPolicy, TaskSchedulingPolicy,
-};
+use ballista_core::config::{DataCachePolicy, LogRotationPolicy, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf::executor_resource::Resource;
 use ballista_core::serde::protobuf::executor_status::Status;
@@ -57,7 +55,7 @@ use ballista_core::serde::{
     BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
 };
 use ballista_core::utils::{
-    create_grpc_client_connection, create_grpc_server, get_time_before,
+    create_grpc_client_connection, create_grpc_server, get_time_before, SessionConfigExt,
 };
 use ballista_core::{ConfigProducer, RuntimeProducer, BALLISTA_VERSION};
 
@@ -195,11 +193,10 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
 
     // put them to session config
     let metrics_collector = Arc::new(LoggingMetricsCollector::default());
-    let config_producer = opt.config_producer.clone().unwrap_or_else(|| {
-        Arc::new(|| {
-            SessionConfig::new().with_option_extension(BallistaConfig::new().unwrap())
-        })
-    });
+    let config_producer = opt
+        .config_producer
+        .clone()
+        .unwrap_or_else(|| Arc::new(|| SessionConfig::new_with_ballista()));
     let wd = work_dir.clone();
     let runtime_producer: RuntimeProducer = Arc::new(move |_| {
         let config = RuntimeConfig::new().with_temp_file_path(wd.clone());

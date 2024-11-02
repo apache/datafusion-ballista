@@ -18,6 +18,7 @@
 use axum::extract::ConnectInfo;
 use ballista_core::config::{BallistaConfig, BALLISTA_JOB_NAME};
 use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
+use ballista_core::utils::SessionConfigExt;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
@@ -43,6 +44,7 @@ use std::ops::Deref;
 use crate::cluster::{bind_task_bias, bind_task_round_robin};
 use crate::config::TaskDistributionPolicy;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use datafusion::prelude::{SessionConfig, SessionContext};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
@@ -272,21 +274,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         request: Request<CreateSessionParams>,
     ) -> Result<Response<CreateSessionResult>, Status> {
         let session_params = request.into_inner();
-        // parse config
-        let mut config_builder = BallistaConfig::builder();
-        for kv_pair in &session_params.settings {
-            config_builder = config_builder.set(&kv_pair.key, &kv_pair.value);
-        }
-        let config = config_builder.build().map_err(|e| {
-            let msg = format!("Could not parse configs: {e}");
-            error!("{}", msg);
-            Status::internal(msg)
-        })?;
+        // TODO MM: this one should be from a factory
+        let session_config = SessionConfig::new_with_ballista();
+        let session_config = session_config.from_key_value_pair(&session_params.settings);
 
         let ctx = self
             .state
             .session_manager
-            .create_session(&config)
+            .create_session(&session_config)
             .await
             .map_err(|e| {
                 Status::internal(format!("Failed to create SessionContext: {e:?}"))
@@ -303,19 +298,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
     ) -> Result<Response<UpdateSessionResult>, Status> {
         let session_params = request.into_inner();
         // parse config
-        let mut config_builder = BallistaConfig::builder();
-        for kv_pair in &session_params.settings {
-            config_builder = config_builder.set(&kv_pair.key, &kv_pair.value);
-        }
-        let config = config_builder.build().map_err(|e| {
-            let msg = format!("Could not parse configs: {e}");
-            error!("{}", msg);
-            Status::internal(msg)
-        })?;
+        // TODO MM: this one should be from a factory
+        let session_config = SessionConfig::new_with_ballista();
+        let session_config = session_config.from_key_value_pair(&session_params.settings);
 
         self.state
             .session_manager
-            .update_session(&session_params.session_id, &config)
+            .update_session(&session_params.session_id, &session_config)
             .await
             .map_err(|e| {
                 Status::internal(format!("Failed to create SessionContext: {e:?}"))
@@ -354,14 +343,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             settings,
         } = query_params
         {
-            let mut query_settings = HashMap::new();
-            log::trace!("received query settings: {:?}", settings);
-            for kv_pair in settings {
-                query_settings.insert(kv_pair.key, kv_pair.value);
-            }
+            let job_name = settings
+                .iter()
+                .find(|s| s.key == BALLISTA_JOB_NAME)
+                .map(|s| s.value.clone())
+                .unwrap_or_else(|| "None".to_string());
 
             let (session_id, session_ctx) = match optional_session_id {
                 Some(OptionalSessionId::SessionId(session_id)) => {
+                    // TODO MM: should update session config
                     match self.state.session_manager.get_session(&session_id).await {
                         Ok(ctx) => (session_id, ctx),
                         Err(e) => {
@@ -379,15 +369,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 }
                 _ => {
                     // Create default config
-                    let config = BallistaConfig::builder().build().map_err(|e| {
-                        let msg = format!("Could not parse configs: {e}");
-                        error!("{}", msg);
-                        Status::internal(msg)
-                    })?;
+                    // TODO MM: this one should be from a factory
+                    let session_config = SessionConfig::new_with_ballista();
+                    let session_config = session_config.from_key_value_pair(&settings);
+
                     let ctx = self
                         .state
                         .session_manager
-                        .create_session(&config)
+                        .create_session(&session_config)
                         .await
                         .map_err(|e| {
                             Status::internal(format!(
@@ -450,10 +439,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             );
 
             let job_id = self.state.task_manager.generate_job_id();
-            let job_name = query_settings
-                .get(BALLISTA_JOB_NAME)
-                .cloned()
-                .unwrap_or_else(|| "None".to_string());
 
             log::trace!("setting job name: {}", job_name);
             self.submit_job(&job_id, &job_name, session_ctx, &plan)

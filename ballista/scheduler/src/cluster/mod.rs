@@ -27,7 +27,7 @@ use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{AvroExec, CsvExec, NdJsonExec, ParquetExec};
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::Stream;
 use log::{debug, info, warn};
 
@@ -279,16 +279,14 @@ pub trait JobState: Send + Sync {
     async fn get_session(&self, session_id: &str) -> Result<Arc<SessionContext>>;
 
     /// Create a new saved session
-    async fn create_session(
-        &self,
-        config: &BallistaConfig,
-    ) -> Result<Arc<SessionContext>>;
+    async fn create_session(&self, config: &SessionConfig)
+        -> Result<Arc<SessionContext>>;
 
     // Update a new saved session. If the session does not exist, a new one will be created
     async fn update_session(
         &self,
         session_id: &str,
-        config: &BallistaConfig,
+        config: &SessionConfig,
     ) -> Result<Arc<SessionContext>>;
 
     async fn remove_session(

@@ -19,11 +19,12 @@ use std::env;
 use std::error::Error;
 use std::path::PathBuf;
 
-use ballista::prelude::BallistaConfig;
+use ballista::prelude::SessionConfigExt;
 use ballista_core::serde::{
     protobuf::scheduler_grpc_client::SchedulerGrpcClient, BallistaCodec,
 };
 use datafusion::execution::SessionState;
+use datafusion::prelude::SessionConfig;
 use object_store::aws::AmazonS3Builder;
 use testcontainers_modules::minio::MinIO;
 use testcontainers_modules::testcontainers::core::{CmdWaitFor, ExecCommand};
@@ -149,7 +150,7 @@ fn get_data_dir(udf_env: &str, submodule_data: &str) -> Result<PathBuf, Box<dyn 
 /// starts a ballista cluster for integration tests
 #[allow(dead_code)]
 pub async fn setup_test_cluster() -> (String, u16) {
-    let config = BallistaConfig::builder().build().unwrap();
+    let config = SessionConfig::new_with_ballista();
     let default_codec = BallistaCodec::default();
 
     let addr = ballista_scheduler::standalone::new_standalone_scheduler()
@@ -172,7 +173,7 @@ pub async fn setup_test_cluster() -> (String, u16) {
 
     ballista_executor::new_standalone_executor(
         scheduler,
-        config.default_standalone_parallelism(),
+        config.ballista_standalone_parallelism(),
         default_codec,
     )
     .await
@@ -186,7 +187,7 @@ pub async fn setup_test_cluster() -> (String, u16) {
 /// starts a ballista cluster for integration tests
 #[allow(dead_code)]
 pub async fn setup_test_cluster_with_state(session_state: SessionState) -> (String, u16) {
-    let config = BallistaConfig::builder().build().unwrap();
+    let config = SessionConfig::new_with_ballista();
     //let default_codec = BallistaCodec::default();
 
     let addr = ballista_scheduler::standalone::new_standalone_scheduler_from_state(
@@ -214,7 +215,7 @@ pub async fn setup_test_cluster_with_state(session_state: SessionState) -> (Stri
         datafusion_proto::protobuf::PhysicalPlanNode,
     >(
         scheduler,
-        config.default_standalone_parallelism(),
+        config.ballista_standalone_parallelism(),
         &session_state,
     )
     .await

@@ -346,10 +346,12 @@ pub fn timestamp_millis() -> u64 {
 mod test {
     use std::sync::Arc;
 
+    use ballista_core::utils::SessionConfigExt;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::functions_aggregate::sum::sum;
     use datafusion::logical_expr::{col, LogicalPlan};
 
+    use datafusion::prelude::SessionConfig;
     use datafusion::test_util::scan_empty_with_partitions;
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
@@ -395,7 +397,8 @@ mod test {
                 .await?;
         }
 
-        let config = test_session(task_slots);
+        let config =
+            SessionConfig::new_with_ballista().with_target_partitions(task_slots);
 
         let ctx = scheduler
             .state

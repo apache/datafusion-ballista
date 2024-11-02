@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::config::BallistaConfig;
+use crate::config::{
+    BallistaConfig, BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, BALLISTA_JOB_NAME,
+};
 use crate::error::{BallistaError, Result};
 use crate::execution_plans::{
     DistributedQueryExec, ShuffleWriterExec, UnresolvedShuffleExec,
@@ -299,15 +301,14 @@ impl SessionStateExt for SessionState {
             .extensions
             .get::<BallistaConfig>()
             .cloned()
-            .unwrap_or_else(|| BallistaConfig::new().unwrap())
+            .unwrap_or_else(|| BallistaConfig::default())
     }
 
     fn new_ballista_state(
         scheduler_url: String,
         session_id: String,
     ) -> datafusion::error::Result<SessionState> {
-        let config = BallistaConfig::new()
-            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+        let config = BallistaConfig::default();
 
         let planner =
             BallistaQueryPlanner::<LogicalPlanNode>::new(scheduler_url, config.clone());
@@ -345,7 +346,7 @@ impl SessionStateExt for SessionState {
             .extensions
             .get::<BallistaConfig>()
             .cloned()
-            .unwrap_or_else(|| BallistaConfig::new().unwrap());
+            .unwrap_or_else(|| BallistaConfig::default());
 
         let session_config = self
             .config()
@@ -415,11 +416,19 @@ pub trait SessionConfigExt {
     fn ballista_grpc_client_max_message_size(&self) -> usize;
 
     fn to_key_value_pairs(&self) -> Vec<KeyValuePair>;
+
+    fn from_key_value_pair(self, key_value_pairs: &[KeyValuePair]) -> Self;
+
+    fn with_ballista_job_name(self, job_name: &str) -> Self;
+
+    fn with_grpc_client_max_message_size(self, max_size: usize) -> Self;
 }
 
 impl SessionConfigExt for SessionConfig {
     fn new_with_ballista() -> SessionConfig {
-        SessionConfig::new().with_option_extension(BallistaConfig::new().unwrap())
+        SessionConfig::new()
+            .with_option_extension(BallistaConfig::default())
+            .with_round_robin_repartition(false)
     }
     fn with_ballista_logical_extension_codec(
         self,
@@ -484,13 +493,50 @@ impl SessionConfigExt for SessionConfig {
         self.options()
             .entries()
             .iter()
+            .filter(|v| v.value.is_some())
             .map(
+                // TODO MM make value optional
                 |datafusion::config::ConfigEntry { key, value, .. }| KeyValuePair {
                     key: key.to_owned(),
-                    value: value.clone().unwrap_or_else(|| String::from("")),
+                    value: value.clone().unwrap(),
                 },
             )
             .collect()
+    }
+
+    fn from_key_value_pair(self, key_value_pairs: &[KeyValuePair]) -> Self {
+        let mut s = self;
+        for KeyValuePair { key, value } in key_value_pairs {
+            log::trace!("setting up configuration key: `{}`, value`{}`", key, value);
+            match s.options_mut().set(key, value) {
+                Err(e) => log::warn!(
+                    "issue with configuration key: `{}`, value: `{}`, reason: {}",
+                    key,
+                    value,
+                    e.to_string()
+                ),
+                _ => (),
+            }
+        }
+        s
+    }
+
+    fn with_ballista_job_name(self, job_name: &str) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_str(BALLISTA_JOB_NAME, job_name)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_str(BALLISTA_JOB_NAME, job_name)
+        }
+    }
+
+    fn with_grpc_client_max_message_size(self, max_size: usize) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_usize(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, max_size)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_usize(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, max_size)
+        }
     }
 }
 
@@ -842,7 +888,8 @@ mod test {
     fn should_convert_to_key_value_pairs() {
         // key value pairs should contain datafusion and ballista values
 
-        let config = SessionConfig::new_with_ballista();
+        let config =
+            SessionConfig::new_with_ballista().with_ballista_job_name("job_name");
         let pairs = config.to_key_value_pairs();
 
         assert!(pairs.iter().find(|p| p.key == BALLISTA_JOB_NAME).is_some());

@@ -43,14 +43,14 @@ impl SessionManager {
     pub async fn update_session(
         &self,
         session_id: &str,
-        config: &BallistaConfig,
+        config: &SessionConfig,
     ) -> Result<Arc<SessionContext>> {
         self.state.update_session(session_id, config).await
     }
 
     pub async fn create_session(
         &self,
-        config: &BallistaConfig,
+        config: &SessionConfig,
     ) -> Result<Arc<SessionContext>> {
         self.state.create_session(config).await
     }
@@ -62,24 +62,19 @@ impl SessionManager {
 
 /// Create a DataFusion session context that is compatible with Ballista Configuration
 pub fn create_datafusion_context(
-    ballista_config: &BallistaConfig,
+    session_config: &SessionConfig,
     session_builder: SessionBuilder,
 ) -> Arc<SessionContext> {
-    let config =
-        SessionConfig::from_string_hash_map(&ballista_config.settings().clone()).unwrap();
-    let config = config
-        .with_target_partitions(ballista_config.default_shuffle_partitions())
-        .with_batch_size(ballista_config.default_batch_size())
-        .with_repartition_joins(ballista_config.repartition_joins())
-        .with_repartition_aggregations(ballista_config.repartition_aggregations())
-        .with_repartition_windows(ballista_config.repartition_windows())
-        .with_collect_statistics(ballista_config.collect_statistics())
-        .with_parquet_pruning(ballista_config.parquet_pruning())
-        .set_usize(
-            "datafusion.optimizer.hash_join_single_partition_threshold",
-            ballista_config.hash_join_single_partition_threshold(),
-        )
-        .set_bool("datafusion.optimizer.enable_round_robin_repartition", false);
-    let session_state = session_builder(config);
+    let session_state = if session_config.round_robin_repartition() {
+        let session_config = session_config
+            .clone()
+            .set_bool("datafusion.optimizer.enable_round_robin_repartition", false);
+
+        log::warn!("session manager will override `datafusion.optimizer.enable_round_robin_repartition` to `false` ");
+        session_builder(session_config)
+    } else {
+        session_builder(session_config.clone())
+    };
+
     Arc::new(SessionContext::new_with_state(session_state))
 }
