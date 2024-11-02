@@ -350,9 +350,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
             let (session_id, session_ctx) = match optional_session_id {
                 Some(OptionalSessionId::SessionId(session_id)) => {
-                    // TODO MM: should update session config
                     match self.state.session_manager.get_session(&session_id).await {
-                        Ok(ctx) => (session_id, ctx),
+                        Ok(ctx) => {
+                            // [SessionConfig] will be updated from received properties
+                            // TODO MM can we do something better here
+
+                            let state = ctx.state_ref();
+                            let mut state = state.write();
+                            let config = state.config_mut();
+                            config.from_key_value_pair_mut(&settings);
+
+                            (session_id, ctx)
+                        }
                         Err(e) => {
                             let msg = format!("Failed to load SessionContext for session ID {session_id}: {e}");
                             error!("{}", msg);

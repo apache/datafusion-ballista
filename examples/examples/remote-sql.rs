@@ -27,7 +27,8 @@ use datafusion::{
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = SessionConfig::new_with_ballista()
-        .set_str(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4");
+        .set_str(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4")
+        .with_ballista_job_name("Remote SQL Example");
 
     let state = SessionStateBuilder::new()
         .with_config(config)

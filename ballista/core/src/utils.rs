@@ -422,6 +422,8 @@ pub trait SessionConfigExt {
     fn with_ballista_job_name(self, job_name: &str) -> Self;
 
     fn with_grpc_client_max_message_size(self, max_size: usize) -> Self;
+
+    fn from_key_value_pair_mut(&mut self, key_value_pairs: &[KeyValuePair]);
 }
 
 impl SessionConfigExt for SessionConfig {
@@ -496,9 +498,16 @@ impl SessionConfigExt for SessionConfig {
             .filter(|v| v.value.is_some())
             .map(
                 // TODO MM make value optional
-                |datafusion::config::ConfigEntry { key, value, .. }| KeyValuePair {
-                    key: key.to_owned(),
-                    value: value.clone().unwrap(),
+                |datafusion::config::ConfigEntry { key, value, .. }| {
+                    log::trace!(
+                        "sending configuration key: `{}`, value`{:?}`",
+                        key,
+                        value
+                    );
+                    KeyValuePair {
+                        key: key.to_owned(),
+                        value: value.clone().unwrap(),
+                    }
                 },
             )
             .collect()
@@ -507,10 +516,14 @@ impl SessionConfigExt for SessionConfig {
     fn from_key_value_pair(self, key_value_pairs: &[KeyValuePair]) -> Self {
         let mut s = self;
         for KeyValuePair { key, value } in key_value_pairs {
-            log::trace!("setting up configuration key: `{}`, value`{}`", key, value);
+            log::trace!(
+                "setting up configuration key: `{}`, value: `{}`",
+                key,
+                value
+            );
             match s.options_mut().set(key, value) {
                 Err(e) => log::warn!(
-                    "issue with configuration key: `{}`, value: `{}`, reason: {}",
+                    "could not set configuration key: `{}`, value: `{}`, reason: {}",
                     key,
                     value,
                     e.to_string()
@@ -519,6 +532,25 @@ impl SessionConfigExt for SessionConfig {
             }
         }
         s
+    }
+
+    fn from_key_value_pair_mut(&mut self, key_value_pairs: &[KeyValuePair]) {
+        for KeyValuePair { key, value } in key_value_pairs {
+            log::trace!(
+                "setting up configuration key : `{}`, value: `{}`",
+                key,
+                value
+            );
+            match self.options_mut().set(key, value) {
+                Err(e) => log::warn!(
+                    "could not set configuration key: `{}`, value: `{}`, reason: {}",
+                    key,
+                    value,
+                    e.to_string()
+                ),
+                _ => (),
+            }
+        }
     }
 
     fn with_ballista_job_name(self, job_name: &str) -> Self {
