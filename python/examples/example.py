@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from pyballista import StandaloneBallista, RemoteBallista
+from ballista import StandaloneBallista, RemoteBallista
 from datafusion.context import SessionContext
 
 # Create the Ballista Context [standalone or remote]

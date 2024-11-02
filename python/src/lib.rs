@@ -23,7 +23,7 @@ use pyo3::prelude::*;
 mod utils;
 
 #[pymodule]
-fn pyballista_internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
+fn ballista_internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     pyo3_log::init();
     // Ballista structs
     m.add_class::<PyStandaloneBallista>()?;
@@ -33,7 +33,7 @@ fn pyballista_internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-#[pyclass(name = "StandaloneBallista", module = "pyballista", subclass)]
+#[pyclass(name = "StandaloneBallista", module = "ballista", subclass)]
 pub struct PyStandaloneBallista;
 
 #[pymethods]
@@ -46,7 +46,7 @@ impl PyStandaloneBallista {
     }
 }
 
-#[pyclass(name = "RemoteBallista", module = "pyballista", subclass)]
+#[pyclass(name = "RemoteBallista", module = "ballista", subclass)]
 pub struct PyRemoteBallista;
 
 #[pymethods]

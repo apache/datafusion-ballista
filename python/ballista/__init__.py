@@ -25,7 +25,7 @@ except ImportError:
 
 import pyarrow as pa
 
-from .pyballista_internal import (
+from .ballista_internal import (
     StandaloneBallista,
     RemoteBallista
 )

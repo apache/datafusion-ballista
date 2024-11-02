@@ -16,20 +16,20 @@
 # under the License.
 
 from datafusion import SessionContext
-import pyballista
+import ballista
 
 from typing import List, Any
 
 class StandaloneBallista:
     def __init__(self):
-        self.ctx = pyballista.StandaloneBallista
+        self.ctx = ballista.StandaloneBallista
     
     def build(self):
         return self.ctx.build()
         
 class RemoteBallista:
     def __init__(self):
-        self.ctx = pyballista.RemoteBallista
+        self.ctx = ballista.RemoteBallista
     
     def build(self, url: str):
         return self.ctx.build(url)

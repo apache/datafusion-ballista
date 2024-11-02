@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from pyballista import SessionContext
+from ballista import SessionContext
 import pytest
 
 def test_create_context():
