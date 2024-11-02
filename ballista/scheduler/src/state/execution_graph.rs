@@ -24,6 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{accept, ExecutionPlan, ExecutionPlanVisitor};
+use datafusion::prelude::SessionConfig;
 use log::{error, info, warn};
 
 use ballista_core::error::{BallistaError, Result};
@@ -125,6 +126,8 @@ pub struct ExecutionGraph {
     /// Failed stage attempts, record the failed stage attempts to limit the retry times.
     /// Map from Stage ID -> Set<Stage_ATTPMPT_NUM>
     failed_stage_attempts: HashMap<usize, HashSet<usize>>,
+    /// Session config for this job
+    session_config: Arc<SessionConfig>,
 }
 
 #[derive(Clone, Debug)]
@@ -144,6 +147,7 @@ impl ExecutionGraph {
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
         queued_at: u64,
+        session_config: Arc<SessionConfig>,
     ) -> Result<Self> {
         let mut planner = DistributedPlanner::new();
 
@@ -151,7 +155,7 @@ impl ExecutionGraph {
 
         let shuffle_stages = planner.plan_query_stages(job_id, plan)?;
 
-        let builder = ExecutionStageBuilder::new();
+        let builder = ExecutionStageBuilder::new(session_config.clone());
         let stages = builder.build(shuffle_stages)?;
 
         let started_at = timestamp_millis();
@@ -161,6 +165,7 @@ impl ExecutionGraph {
             job_id: job_id.to_string(),
             job_name: job_name.to_string(),
             session_id: session_id.to_string(),
+
             status: JobStatus {
                 job_id: job_id.to_string(),
                 job_name: job_name.to_string(),
@@ -178,6 +183,7 @@ impl ExecutionGraph {
             output_locations: vec![],
             task_id_gen: 0,
             failed_stage_attempts: HashMap::new(),
+            session_config,
         })
     }
 
@@ -907,6 +913,7 @@ impl ExecutionGraph {
                     task_id,
                     task_attempt,
                     plan: stage.plan.clone(),
+                    session_config: self.session_config.clone()
                 })
             } else {
                 Err(BallistaError::General(format!("Stage {stage_id} is not a running stage")))
@@ -1355,14 +1362,16 @@ struct ExecutionStageBuilder {
     stage_dependencies: HashMap<usize, Vec<usize>>,
     /// Map from Stage ID -> output link
     output_links: HashMap<usize, Vec<usize>>,
+    session_config: Arc<SessionConfig>,
 }
 
 impl ExecutionStageBuilder {
-    pub fn new() -> Self {
+    pub fn new(session_config: Arc<SessionConfig>) -> Self {
         Self {
             current_stage_id: 0,
             stage_dependencies: HashMap::new(),
             output_links: HashMap::new(),
+            session_config,
         }
     }
 
@@ -1394,6 +1403,7 @@ impl ExecutionStageBuilder {
                     output_links,
                     HashMap::new(),
                     HashSet::new(),
+                    self.session_config.clone(),
                 ))
             } else {
                 ExecutionStage::UnResolved(UnresolvedStage::new(
@@ -1401,6 +1411,7 @@ impl ExecutionStageBuilder {
                     stage,
                     output_links,
                     child_stages,
+                    self.session_config.clone(),
                 ))
             };
             execution_stages.insert(stage_id, stage);
@@ -1456,6 +1467,7 @@ pub struct TaskDescription {
     pub task_id: usize,
     pub task_attempt: usize,
     pub plan: Arc<dyn ExecutionPlan>,
+    pub session_config: Arc<SessionConfig>,
 }
 
 impl Debug for TaskDescription {

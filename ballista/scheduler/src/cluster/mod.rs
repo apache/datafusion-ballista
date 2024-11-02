@@ -370,6 +370,7 @@ pub(crate) async fn bind_task_bias(
                     task_id,
                     task_attempt: running_stage.task_failure_numbers[partition_id],
                     plan: running_stage.plan.clone(),
+                    session_config: running_stage.session_config.clone(),
                 };
                 schedulable_tasks.push((executor_id, task_desc));
 
@@ -458,6 +459,7 @@ pub(crate) async fn bind_task_round_robin(
                     task_id,
                     task_attempt: running_stage.task_failure_numbers[partition_id],
                     plan: running_stage.plan.clone(),
+                    session_config: running_stage.session_config.clone(),
                 };
                 schedulable_tasks.push((executor_id, task_desc));
 
@@ -569,6 +571,7 @@ pub(crate) async fn bind_task_consistent_hash(
                             task_attempt: running_stage.task_failure_numbers
                                 [partition_id],
                             plan: running_stage.plan.clone(),
+                            session_config: running_stage.session_config.clone(),
                         };
                         schedulable_tasks.push((executor_id, task_desc));
 
@@ -689,7 +692,6 @@ mod test {
         let mut available_slots = mock_available_slots();
         let available_slots_ref: Vec<&mut AvailableTaskSlots> =
             available_slots.iter_mut().collect();
-
         let bound_tasks =
             bind_task_bias(available_slots_ref, Arc::new(active_jobs), |_| false).await;
         assert_eq!(9, bound_tasks.len());
@@ -742,7 +744,6 @@ mod test {
         let mut available_slots = mock_available_slots();
         let available_slots_ref: Vec<&mut AvailableTaskSlots> =
             available_slots.iter_mut().collect();
-
         let bound_tasks =
             bind_task_round_robin(available_slots_ref, Arc::new(active_jobs), |_| false)
                 .await;
