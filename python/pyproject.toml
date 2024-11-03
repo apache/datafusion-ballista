@@ -20,7 +20,7 @@ requires = ["maturin>=0.15,<0.16"]
 build-backend = "maturin"
 
 [project]
-name = "pyballista"
+name = "ballista"
 description = "Python client for Apache Arrow Ballista Distributed SQL Query Engine"
 readme = "README.md"
 license = {file = "LICENSE.txt"}
@@ -55,7 +55,7 @@ repository = "https://github.com/apache/arrow-ballista"
 profile = "black"
 
 [tool.maturin]
-module-name = "pyballista.pyballista_internal"
+module-name = "ballista.ballista_internal"
 include = [
     { path = "Cargo.lock", format = "sdist" }
 ]
