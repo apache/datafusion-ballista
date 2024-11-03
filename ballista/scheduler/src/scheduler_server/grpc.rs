@@ -275,7 +275,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let session_params = request.into_inner();
 
         let session_config = self.state.session_manager.produce_config();
-        let session_config = session_config.from_key_value_pair(&session_params.settings);
+        let session_config =
+            session_config.update_from_key_value_pair(&session_params.settings);
 
         let ctx = self
             .state
@@ -298,7 +299,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let session_params = request.into_inner();
 
         let session_config = self.state.session_manager.produce_config();
-        let session_config = session_config.from_key_value_pair(&session_params.settings);
+        let session_config =
+            session_config.update_from_key_value_pair(&session_params.settings);
 
         self.state
             .session_manager
@@ -357,7 +359,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                             let state = ctx.state_ref();
                             let mut state = state.write();
                             let config = state.config_mut();
-                            config.from_key_value_pair_mut(&settings);
+                            config.update_from_key_value_pair_mut(&settings);
 
                             (session_id, ctx)
                         }
@@ -378,7 +380,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     // Create default config
                     // TODO MM: this one should be from a factory
                     let session_config = SessionConfig::new_with_ballista();
-                    let session_config = session_config.from_key_value_pair(&settings);
+                    let session_config =
+                        session_config.update_from_key_value_pair(&settings);
 
                     let ctx = self
                         .state

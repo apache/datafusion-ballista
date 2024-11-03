@@ -179,6 +179,7 @@ impl BallistaConfig {
         }
     }
 
+    #[allow(dead_code)]
     fn get_bool_setting(&self, key: &str) -> bool {
         if let Some(v) = self.settings.get(key) {
             // infallible because we validate all configs in the constructor
@@ -231,7 +232,7 @@ impl datafusion::config::ExtensionOptions for BallistaConfig {
 
     fn entries(&self) -> Vec<datafusion::config::ConfigEntry> {
         Self::valid_entries()
-            .into_iter()
+            .iter()
             .map(|(key, value)| datafusion::config::ConfigEntry {
                 key: key.clone(),
                 value: self

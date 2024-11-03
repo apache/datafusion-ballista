@@ -209,7 +209,7 @@ impl Extension {
         };
         let config = session_state
             .map(|s| s.config().clone())
-            .unwrap_or_else(|| default_config_producer());
+            .unwrap_or_else(default_config_producer);
 
         let scheduler_url = format!("http://localhost:{}", addr.port());
 

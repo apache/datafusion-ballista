@@ -292,7 +292,7 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     window_functions: HashMap<String, Arc<WindowUDF>>,
     codec: BallistaCodec<T, U>,
 ) -> Result<TaskDefinition, BallistaError> {
-    let session_config = session_config.from_key_value_pair(&task.props);
+    let session_config = session_config.update_from_key_value_pair(&task.props);
 
     let mut task_scalar_functions = HashMap::new();
     let mut task_aggregate_functions = HashMap::new();
@@ -358,7 +358,7 @@ pub fn get_task_definition_vec<
     window_functions: HashMap<String, Arc<WindowUDF>>,
     codec: BallistaCodec<T, U>,
 ) -> Result<Vec<TaskDefinition>, BallistaError> {
-    let session_config = session_config.from_key_value_pair(&multi_task.props);
+    let session_config = session_config.update_from_key_value_pair(&multi_task.props);
 
     let mut task_scalar_functions = HashMap::new();
     let mut task_aggregate_functions = HashMap::new();

@@ -305,7 +305,7 @@ impl SessionStateExt for SessionState {
             .extensions
             .get::<BallistaConfig>()
             .cloned()
-            .unwrap_or_else(|| BallistaConfig::default())
+            .unwrap_or_else(BallistaConfig::default)
     }
 
     fn new_ballista_state(
@@ -350,7 +350,7 @@ impl SessionStateExt for SessionState {
             .extensions
             .get::<BallistaConfig>()
             .cloned()
-            .unwrap_or_else(|| BallistaConfig::default());
+            .unwrap_or_else(BallistaConfig::default);
 
         let session_config = self
             .config()
@@ -421,7 +421,7 @@ pub trait SessionConfigExt {
 
     fn to_key_value_pairs(&self) -> Vec<KeyValuePair>;
 
-    fn from_key_value_pair(self, key_value_pairs: &[KeyValuePair]) -> Self;
+    fn update_from_key_value_pair(self, key_value_pairs: &[KeyValuePair]) -> Self;
 
     fn with_ballista_job_name(self, job_name: &str) -> Self;
 
@@ -429,7 +429,7 @@ pub trait SessionConfigExt {
 
     fn with_ballista_standalone_parallelism(self, parallelism: usize) -> Self;
 
-    fn from_key_value_pair_mut(&mut self, key_value_pairs: &[KeyValuePair]);
+    fn update_from_key_value_pair_mut(&mut self, key_value_pairs: &[KeyValuePair]);
 }
 
 impl SessionConfigExt for SessionConfig {
@@ -520,7 +520,7 @@ impl SessionConfigExt for SessionConfig {
             .collect()
     }
 
-    fn from_key_value_pair(self, key_value_pairs: &[KeyValuePair]) -> Self {
+    fn update_from_key_value_pair(self, key_value_pairs: &[KeyValuePair]) -> Self {
         let mut s = self;
         for KeyValuePair { key, value } in key_value_pairs {
             log::trace!(
@@ -528,34 +528,32 @@ impl SessionConfigExt for SessionConfig {
                 key,
                 value
             );
-            match s.options_mut().set(key, value) {
-                Err(e) => log::warn!(
+            if let Err(e) = s.options_mut().set(key, value) {
+                log::warn!(
                     "could not set configuration key: `{}`, value: `{}`, reason: {}",
                     key,
                     value,
                     e.to_string()
-                ),
-                _ => (),
+                )
             }
         }
         s
     }
 
-    fn from_key_value_pair_mut(&mut self, key_value_pairs: &[KeyValuePair]) {
+    fn update_from_key_value_pair_mut(&mut self, key_value_pairs: &[KeyValuePair]) {
         for KeyValuePair { key, value } in key_value_pairs {
             log::trace!(
                 "setting up configuration key : `{}`, value: `{}`",
                 key,
                 value
             );
-            match self.options_mut().set(key, value) {
-                Err(e) => log::warn!(
+            if let Err(e) = self.options_mut().set(key, value) {
+                log::warn!(
                     "could not set configuration key: `{}`, value: `{}`, reason: {}",
                     key,
                     value,
                     e.to_string()
-                ),
-                _ => (),
+                )
             }
         }
     }
@@ -940,10 +938,9 @@ mod test {
             SessionConfig::new_with_ballista().with_ballista_job_name("job_name");
         let pairs = config.to_key_value_pairs();
 
-        assert!(pairs.iter().find(|p| p.key == BALLISTA_JOB_NAME).is_some());
+        assert!(pairs.iter().any(|p| p.key == BALLISTA_JOB_NAME));
         assert!(pairs
             .iter()
-            .find(|p| p.key == "datafusion.catalog.information_schema")
-            .is_some())
+            .any(|p| p.key == "datafusion.catalog.information_schema"))
     }
 }
