@@ -101,15 +101,13 @@ mod standalone {
             .await?;
 
         let expected = [
-            "+---------------------------------------------------------+----------+",
-            "| name                                                    | value    |",
-            "+---------------------------------------------------------+----------+",
-            "| ballista.batch.size                                     | 8192     |",
-            "| ballista.collect_statistics                             | false    |",
-            "| ballista.grpc_client_max_message_size                   | 16777216 |",
-            "| ballista.job.name                                       |          |",
-            "| ballista.optimizer.hash_join_single_partition_threshold | 1048576  |",
-            "+---------------------------------------------------------+----------+",
+            "+---------------------------------------+----------+",
+            "| name                                  | value    |",
+            "+---------------------------------------+----------+",
+            "| ballista.grpc_client_max_message_size | 16777216 |",
+            "| ballista.job.name                     |          |",
+            "| ballista.standalone.parallelism       | 8        |",
+            "+---------------------------------------+----------+",
         ];
 
         assert_batches_eq!(expected, &result);
