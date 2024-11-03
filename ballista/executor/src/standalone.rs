@@ -19,6 +19,7 @@ use crate::metrics::LoggingMetricsCollector;
 use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightService};
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::config::BallistaConfig;
+use ballista_core::serde::scheduler::BallistaFunctionRegistry;
 use ballista_core::utils::{default_config_producer, SessionConfigExt};
 use ballista_core::{
     error::Result,
@@ -62,6 +63,34 @@ pub async fn new_standalone_executor_from_state<
         datafusion_proto::protobuf::PhysicalPlanNode,
     > = BallistaCodec::new(logical, physical);
 
+    let config = session_state
+        .config()
+        .clone()
+        .with_option_extension(BallistaConfig::default());
+    let runtime = session_state.runtime_env().clone();
+
+    let config_producer: ConfigProducer = Arc::new(move || config.clone());
+    let runtime_producer: RuntimeProducer = Arc::new(move |_| Ok(runtime.clone()));
+
+    new_standalone_executor_from_builder(
+        scheduler,
+        concurrent_tasks,
+        config_producer,
+        runtime_producer,
+        codec,
+        session_state.into(),
+    )
+    .await
+}
+
+pub async fn new_standalone_executor_from_builder(
+    scheduler: SchedulerGrpcClient<Channel>,
+    concurrent_tasks: usize,
+    config_producer: ConfigProducer,
+    runtime_producer: RuntimeProducer,
+    codec: BallistaCodec,
+    function_registry: BallistaFunctionRegistry,
+) -> Result<()> {
     // Let the OS assign a random, free port
     let listener = TcpListener::bind("localhost:0").await?;
     let addr = listener.local_addr()?;
@@ -83,28 +112,21 @@ pub async fn new_standalone_executor_from_state<
             .into(),
         ),
     };
+
     let work_dir = TempDir::new()?
         .into_path()
         .into_os_string()
         .into_string()
         .unwrap();
+
     info!("work_dir: {}", work_dir);
-
-    let config = session_state
-        .config()
-        .clone()
-        .with_option_extension(BallistaConfig::default());
-    let runtime = session_state.runtime_env().clone();
-
-    let config_producer: ConfigProducer = Arc::new(move || config.clone());
-    let runtime_producer: RuntimeProducer = Arc::new(move |_| Ok(runtime.clone()));
 
     let executor = Arc::new(Executor::new(
         executor_meta,
         &work_dir,
         runtime_producer,
         config_producer,
-        Arc::new(session_state.into()),
+        Arc::new(function_registry),
         Arc::new(LoggingMetricsCollector::default()),
         concurrent_tasks,
         None,

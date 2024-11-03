@@ -199,3 +199,394 @@ mod remote {
         Ok(())
     }
 }
+
+// this test shows how to configure external ObjectStoreRegistry and configure it
+
+#[cfg(test)]
+#[cfg(feature = "testcontainers")]
+mod custom_s3_config {
+
+    use ballista::extension::SessionContextExt;
+    use ballista::prelude::SessionConfigExt;
+    use ballista_core::RuntimeProducer;
+    use datafusion::common::{config_err, exec_err};
+    use datafusion::config::{
+        ConfigEntry, ConfigExtension, ConfigField, ExtensionOptions, Visit,
+    };
+    use datafusion::error::Result;
+    use datafusion::execution::object_store::ObjectStoreRegistry;
+    use datafusion::execution::SessionState;
+    use datafusion::prelude::SessionConfig;
+    use datafusion::{assert_batches_eq, prelude::SessionContext};
+    use datafusion::{
+        error::DataFusionError,
+        execution::{
+            runtime_env::{RuntimeConfig, RuntimeEnv},
+            SessionStateBuilder,
+        },
+    };
+    use object_store::aws::AmazonS3Builder;
+    use object_store::local::LocalFileSystem;
+    use object_store::ObjectStore;
+    use parking_lot::RwLock;
+    use std::any::Any;
+    use std::fmt::Display;
+    use std::sync::Arc;
+    use testcontainers_modules::testcontainers::runners::AsyncRunner;
+    use url::Url;
+
+    use crate::common::{ACCESS_KEY_ID, SECRET_KEY};
+
+    #[tokio::test]
+    async fn should_execute_sql_write() -> datafusion::error::Result<()> {
+        let test_data = crate::common::example_test_data();
+
+        let container = crate::common::create_minio_container();
+        let node = container.start().await.unwrap();
+
+        node.exec(crate::common::create_bucket_command())
+            .await
+            .unwrap();
+
+        let endpoint_port = node.get_host_port_ipv4(9000).await.unwrap();
+
+        let config_producer = Arc::new(|| {
+            SessionConfig::new_with_ballista()
+                .with_information_schema(true)
+                .with_option_extension(S3Options::default())
+        });
+        let runtime_producer: RuntimeProducer =
+            Arc::new(|session_config: &SessionConfig| {
+                let s3options = session_config
+                    .options()
+                    .extensions
+                    .get::<S3Options>()
+                    .ok_or(DataFusionError::Configuration(
+                        "S3 Options not set".to_string(),
+                    ))?;
+
+                let config = RuntimeConfig::new().with_object_store_registry(Arc::new(
+                    CustomObjectStoreRegistry::new(s3options.clone()),
+                ));
+
+                Ok(Arc::new(RuntimeEnv::new(config)?))
+            });
+
+        let session_builder = Arc::new(produce_state);
+
+        let state = session_builder(config_producer());
+
+        let (host, port) = crate::common::setup_test_cluster_with_builders(
+            config_producer,
+            runtime_producer,
+            session_builder,
+        )
+        .await;
+        let url = format!("df://{host}:{port}");
+
+        let ctx: SessionContext = SessionContext::remote_with_state(&url, state).await?;
+        ctx.sql("SET s3.allow_http = true").await?.show().await?;
+        ctx.sql(&format!("SET s3.access_key_id = '{}'", ACCESS_KEY_ID))
+            .await?
+            .show()
+            .await?;
+        ctx.sql(&format!("SET s3.secret_access_key = '{}'", SECRET_KEY))
+            .await?
+            .show()
+            .await?;
+        ctx.sql(&format!(
+            "SET s3.endpoint = 'http://localhost:{}'",
+            endpoint_port
+        ))
+        .await?
+        .show()
+        .await?;
+        ctx.sql("SET s3.allow_http = true").await?.show().await?;
+
+        ctx.sql("select name, value from information_schema.df_settings where name like 's3.%'").await?.show().await?;
+
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        let write_dir_path =
+            &format!("s3://{}/write_test.parquet", crate::common::BUCKET);
+
+        ctx.sql("select * from test")
+            .await?
+            .write_parquet(write_dir_path, Default::default(), Default::default())
+            .await?;
+
+        ctx.register_parquet("written_table", write_dir_path, Default::default())
+            .await?;
+
+        let result = ctx
+            .sql("select id, string_col, timestamp_col from written_table where id > 4")
+            .await?
+            .collect()
+            .await?;
+        let expected = [
+            "+----+------------+---------------------+",
+            "| id | string_col | timestamp_col       |",
+            "+----+------------+---------------------+",
+            "| 5  | 31         | 2009-03-01T00:01:00 |",
+            "| 6  | 30         | 2009-04-01T00:00:00 |",
+            "| 7  | 31         | 2009-04-01T00:01:00 |",
+            "+----+------------+---------------------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+        Ok(())
+    }
+
+    fn produce_state(session_config: SessionConfig) -> SessionState {
+        let s3options = session_config
+            .options()
+            .extensions
+            .get::<S3Options>()
+            .ok_or(DataFusionError::Configuration(
+                "S3 Options not set".to_string(),
+            ))
+            .unwrap();
+
+        let config = RuntimeConfig::new().with_object_store_registry(Arc::new(
+            CustomObjectStoreRegistry::new(s3options.clone()),
+        ));
+        let runtime_env = RuntimeEnv::new(config).unwrap();
+
+        SessionStateBuilder::new()
+            .with_runtime_env(runtime_env.into())
+            .with_config(session_config)
+            .build()
+    }
+
+    #[derive(Debug)]
+    pub struct CustomObjectStoreRegistry {
+        local: Arc<LocalFileSystem>,
+        s3options: S3Options,
+    }
+
+    impl CustomObjectStoreRegistry {
+        fn new(s3options: S3Options) -> Self {
+            Self {
+                s3options,
+                local: Arc::new(LocalFileSystem::new()),
+            }
+        }
+    }
+
+    impl ObjectStoreRegistry for CustomObjectStoreRegistry {
+        fn register_store(
+            &self,
+            _url: &Url,
+            _store: Arc<dyn ObjectStore>,
+        ) -> Option<Arc<dyn ObjectStore>> {
+            unreachable!("register_store not supported ")
+        }
+
+        fn get_store(&self, url: &Url) -> Result<Arc<dyn ObjectStore>> {
+            let scheme = url.scheme();
+            log::info!("get_store: {:?}", &self.s3options.config.read());
+            match scheme {
+                "" | "file" => Ok(self.local.clone()),
+                "s3" => {
+                    let s3store = Self::s3_object_store_builder(
+                        url,
+                        &self.s3options.config.read(),
+                    )?
+                    .build()?;
+
+                    Ok(Arc::new(s3store))
+                }
+
+                _ => exec_err!("get_store - store not supported, url {}", url),
+            }
+        }
+    }
+
+    impl CustomObjectStoreRegistry {
+        pub fn s3_object_store_builder(
+            url: &Url,
+            aws_options: &S3RegistryConfiguration,
+        ) -> Result<AmazonS3Builder> {
+            let S3RegistryConfiguration {
+                access_key_id,
+                secret_access_key,
+                session_token,
+                region,
+                endpoint,
+                allow_http,
+            } = aws_options;
+
+            let bucket_name = Self::get_bucket_name(url)?;
+            let mut builder = AmazonS3Builder::from_env().with_bucket_name(bucket_name);
+
+            if let (Some(access_key_id), Some(secret_access_key)) =
+                (access_key_id, secret_access_key)
+            {
+                builder = builder
+                    .with_access_key_id(access_key_id)
+                    .with_secret_access_key(secret_access_key);
+
+                if let Some(session_token) = session_token {
+                    builder = builder.with_token(session_token);
+                }
+            } else {
+                return config_err!(
+                    "'s3.access_key_id' & 's3.secret_access_key' must be configured"
+                );
+            }
+
+            if let Some(region) = region {
+                builder = builder.with_region(region);
+            }
+
+            if let Some(endpoint) = endpoint {
+                if let Ok(endpoint_url) = Url::try_from(endpoint.as_str()) {
+                    if !matches!(allow_http, Some(true))
+                        && endpoint_url.scheme() == "http"
+                    {
+                        return config_err!("Invalid endpoint: {endpoint}. HTTP is not allowed for S3 endpoints. To allow HTTP, set 's3.allow_http' to true");
+                    }
+                }
+
+                builder = builder.with_endpoint(endpoint);
+            }
+
+            if let Some(allow_http) = allow_http {
+                builder = builder.with_allow_http(*allow_http);
+            }
+
+            Ok(builder)
+        }
+
+        fn get_bucket_name(url: &Url) -> Result<&str> {
+            url.host_str().ok_or_else(|| {
+                DataFusionError::Execution(format!(
+                    "Not able to parse bucket name from url: {}",
+                    url.as_str()
+                ))
+            })
+        }
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub struct S3Options {
+        config: Arc<RwLock<S3RegistryConfiguration>>,
+    }
+
+    impl ExtensionOptions for S3Options {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+
+        fn cloned(&self) -> Box<dyn ExtensionOptions> {
+            Box::new(self.clone())
+        }
+
+        fn set(&mut self, key: &str, value: &str) -> Result<()> {
+            log::debug!("set config, key:{},  value:{}", key, value);
+            match key {
+                "access_key_id" => {
+                    let mut c = self.config.write();
+                    c.access_key_id.set(key, value)?;
+                }
+                "secret_access_key" => {
+                    let mut c = self.config.write();
+                    c.secret_access_key.set(key, value)?;
+                }
+                "session_token" => {
+                    let mut c = self.config.write();
+                    c.session_token.set(key, value)?;
+                }
+                "region" => {
+                    let mut c = self.config.write();
+                    c.region.set(key, value)?;
+                }
+                "endpoint" => {
+                    let mut c = self.config.write();
+                    c.endpoint.set(key, value)?;
+                }
+                "allow_http" => {
+                    let mut c = self.config.write();
+                    c.allow_http.set(key, value)?;
+                }
+                _ => {
+                    log::warn!("Config value {} cant be set to {}", key, value);
+                    return config_err!(
+                        "Config value \"{}\" not found in S3Options",
+                        key
+                    );
+                }
+            }
+            Ok(())
+        }
+
+        fn entries(&self) -> Vec<ConfigEntry> {
+            struct Visitor(Vec<ConfigEntry>);
+
+            impl Visit for Visitor {
+                fn some<V: Display>(
+                    &mut self,
+                    key: &str,
+                    value: V,
+                    description: &'static str,
+                ) {
+                    self.0.push(ConfigEntry {
+                        key: format!("{}.{}", S3Options::PREFIX, key),
+                        value: Some(value.to_string()),
+                        description,
+                    })
+                }
+
+                fn none(&mut self, key: &str, description: &'static str) {
+                    self.0.push(ConfigEntry {
+                        key: format!("{}.{}", S3Options::PREFIX, key),
+                        value: None,
+                        description,
+                    })
+                }
+            }
+            let c = self.config.read();
+
+            let mut v = Visitor(vec![]);
+            c.access_key_id
+                .visit(&mut v, "access_key_id", "S3 Access Key");
+            c.secret_access_key
+                .visit(&mut v, "secret_access_key", "S3 Secret Key");
+            c.session_token
+                .visit(&mut v, "session_token", "S3 Session token");
+            c.region.visit(&mut v, "region", "S3 region");
+            c.endpoint.visit(&mut v, "endpoint", "S3 Endpoint");
+            c.allow_http.visit(&mut v, "allow_http", "S3 Allow Http");
+
+            v.0
+        }
+    }
+
+    impl ConfigExtension for S3Options {
+        const PREFIX: &'static str = "s3";
+    }
+    #[derive(Default, Debug, Clone)]
+    pub struct S3RegistryConfiguration {
+        /// Access Key ID
+        pub access_key_id: Option<String>,
+        /// Secret Access Key
+        pub secret_access_key: Option<String>,
+        /// Session token
+        pub session_token: Option<String>,
+        /// AWS Region
+        pub region: Option<String>,
+        /// OSS or COS Endpoint
+        pub endpoint: Option<String>,
+        /// Allow HTTP (otherwise will always use https)
+        pub allow_http: Option<bool>,
+    }
+}

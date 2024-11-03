@@ -56,7 +56,7 @@ mod external_scaler;
 mod grpc;
 pub(crate) mod query_stage_scheduler;
 
-pub(crate) type SessionBuilder = Arc<dyn Fn(SessionConfig) -> SessionState + Send + Sync>;
+pub type SessionBuilder = Arc<dyn Fn(SessionConfig) -> SessionState + Send + Sync>;
 
 #[derive(Clone)]
 pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
