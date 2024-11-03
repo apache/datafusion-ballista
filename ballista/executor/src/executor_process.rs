@@ -26,7 +26,6 @@ use std::{env, io};
 use anyhow::{Context, Result};
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::serde::scheduler::BallistaFunctionRegistry;
-use datafusion::prelude::SessionConfig;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use futures::stream::FuturesUnordered;
@@ -55,7 +54,8 @@ use ballista_core::serde::{
     BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
 };
 use ballista_core::utils::{
-    create_grpc_client_connection, create_grpc_server, get_time_before, SessionConfigExt,
+    create_grpc_client_connection, create_grpc_server, default_config_producer,
+    get_time_before,
 };
 use ballista_core::{ConfigProducer, RuntimeProducer, BALLISTA_VERSION};
 
@@ -196,7 +196,8 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
     let config_producer = opt
         .config_producer
         .clone()
-        .unwrap_or_else(|| Arc::new(|| SessionConfig::new_with_ballista()));
+        .unwrap_or_else(|| Arc::new(default_config_producer));
+
     let wd = work_dir.clone();
     let runtime_producer: RuntimeProducer = Arc::new(move |_| {
         let config = RuntimeConfig::new().with_temp_file_path(wd.clone());

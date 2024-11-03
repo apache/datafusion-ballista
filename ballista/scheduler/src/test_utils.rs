@@ -56,7 +56,9 @@ use crate::cluster::BallistaCluster;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
 use crate::state::execution_graph::{ExecutionGraph, ExecutionStage, TaskDescription};
-use ballista_core::utils::{default_session_builder, SessionConfigExt};
+use ballista_core::utils::{
+    default_config_producer, default_session_builder, SessionConfigExt,
+};
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use parking_lot::Mutex;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
@@ -123,7 +125,11 @@ pub async fn await_condition<Fut: Future<Output = Result<bool>>, F: Fn() -> Fut>
 }
 
 pub fn test_cluster_context() -> BallistaCluster {
-    BallistaCluster::new_memory(TEST_SCHEDULER_NAME, Arc::new(default_session_builder))
+    BallistaCluster::new_memory(
+        TEST_SCHEDULER_NAME,
+        Arc::new(default_session_builder),
+        Arc::new(default_config_producer),
+    )
 }
 
 pub async fn datafusion_test_context(path: &str) -> Result<SessionContext> {

@@ -193,7 +193,7 @@ impl Extension {
     async fn setup_standalone(
         session_state: Option<&SessionState>,
     ) -> datafusion::error::Result<(String, String)> {
-        use ballista_core::serde::BallistaCodec;
+        use ballista_core::{serde::BallistaCodec, utils::default_config_producer};
 
         let addr = match session_state {
             None => ballista_scheduler::standalone::new_standalone_scheduler()
@@ -209,7 +209,7 @@ impl Extension {
         };
         let config = session_state
             .map(|s| s.config().clone())
-            .unwrap_or_else(|| SessionConfig::new_with_ballista());
+            .unwrap_or_else(|| default_config_producer());
 
         let scheduler_url = format!("http://localhost:{}", addr.port());
 

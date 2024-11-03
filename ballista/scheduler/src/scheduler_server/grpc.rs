@@ -273,8 +273,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         request: Request<CreateSessionParams>,
     ) -> Result<Response<CreateSessionResult>, Status> {
         let session_params = request.into_inner();
-        // TODO MM: this one should be from a factory
-        let session_config = SessionConfig::new_with_ballista();
+
+        let session_config = self.state.session_manager.produce_config();
         let session_config = session_config.from_key_value_pair(&session_params.settings);
 
         let ctx = self
@@ -296,9 +296,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         request: Request<UpdateSessionParams>,
     ) -> Result<Response<UpdateSessionResult>, Status> {
         let session_params = request.into_inner();
-        // parse config
-        // TODO MM: this one should be from a factory
-        let session_config = SessionConfig::new_with_ballista();
+
+        let session_config = self.state.session_manager.produce_config();
         let session_config = session_config.from_key_value_pair(&session_params.settings);
 
         self.state

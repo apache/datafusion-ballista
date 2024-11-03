@@ -57,6 +57,10 @@ impl SessionManager {
     pub async fn get_session(&self, session_id: &str) -> Result<Arc<SessionContext>> {
         self.state.get_session(session_id).await
     }
+
+    pub(crate) fn produce_config(&self) -> SessionConfig {
+        self.state.produce_config()
+    }
 }
 
 /// Create a DataFusion session context that is compatible with Ballista Configuration
@@ -67,7 +71,8 @@ pub fn create_datafusion_context(
     let session_state = if session_config.round_robin_repartition() {
         let session_config = session_config
             .clone()
-            .set_bool("datafusion.optimizer.enable_round_robin_repartition", false);
+            // TODO MM should we disable catalog on the scheduler side
+            .with_round_robin_repartition(false);
 
         log::warn!("session manager will override `datafusion.optimizer.enable_round_robin_repartition` to `false` ");
         session_builder(session_config)

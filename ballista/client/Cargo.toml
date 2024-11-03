@@ -51,7 +51,7 @@ testcontainers-modules = { version = "0.11", features = ["minio"] }
 
 [features]
 azure = ["ballista-core/azure"]
-default = ["standalone"]
+default = ["standalone", "testcontainers"]
 s3 = ["ballista-core/s3"]
 standalone = ["ballista-executor", "ballista-scheduler"]
 testcontainers = []

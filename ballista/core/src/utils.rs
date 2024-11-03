@@ -79,6 +79,10 @@ pub fn default_session_builder(config: SessionConfig) -> SessionState {
         .build()
 }
 
+pub fn default_config_producer() -> SessionConfig {
+    SessionConfig::new_with_ballista()
+}
+
 /// Stream data to disk in Arrow IPC format
 pub async fn write_stream_to_disk(
     stream: &mut Pin<Box<dyn RecordBatchStream + Send>>,

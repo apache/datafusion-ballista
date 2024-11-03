@@ -19,7 +19,7 @@ use crate::metrics::LoggingMetricsCollector;
 use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightService};
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::config::BallistaConfig;
-use ballista_core::utils::SessionConfigExt;
+use ballista_core::utils::{default_config_producer, SessionConfigExt};
 use ballista_core::{
     error::Result,
     object_store_registry::with_object_store_registry,
@@ -162,7 +162,7 @@ pub async fn new_standalone_executor<
         .unwrap();
     info!("work_dir: {}", work_dir);
 
-    let config_producer = Arc::new(|| SessionConfig::new_with_ballista());
+    let config_producer = Arc::new(default_config_producer);
     let wd = work_dir.clone();
     let runtime_producer: RuntimeProducer = Arc::new(move |_: &SessionConfig| {
         let config = with_object_store_registry(
