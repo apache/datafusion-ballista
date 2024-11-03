@@ -18,10 +18,7 @@
 //! Benchmark derived from TPC-H. This is not an official TPC-H benchmark.
 
 use ballista::extension::SessionConfigExt;
-use ballista::prelude::{
-    SessionContextExt, BALLISTA_COLLECT_STATISTICS, BALLISTA_DEFAULT_BATCH_SIZE,
-    BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, BALLISTA_JOB_NAME,
-};
+use ballista::prelude::SessionContextExt;
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::SchemaBuilder;
 use datafusion::arrow::util::display::array_value_to_string;
@@ -356,16 +353,11 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
     let mut benchmark_run = BenchmarkRun::new(opt.query);
 
     let config = SessionConfig::new_with_ballista()
-        .set_str(
-            BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
-            &format!("{}", opt.partitions),
-        )
-        .set_str(
-            BALLISTA_JOB_NAME,
-            &format!("Query derived from TPC-H q{}", opt.query),
-        )
-        .set_str(BALLISTA_DEFAULT_BATCH_SIZE, &format!("{}", opt.batch_size))
-        .set_str(BALLISTA_COLLECT_STATISTICS, "true");
+        .with_target_partitions(opt.partitions)
+        .with_ballista_job_name(&format!("Query derived from TPC-H q{}", opt.query))
+        .with_batch_size(opt.batch_size)
+        .with_collect_statistics(true);
+
     let state = SessionStateBuilder::new()
         .with_default_features()
         .with_config(config)
@@ -459,11 +451,8 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
     println!("Running loadtest_ballista with the following options: {opt:?}");
 
     let config = SessionConfig::new_with_ballista()
-        .set_str(
-            BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
-            &format!("{}", opt.partitions),
-        )
-        .set_str(BALLISTA_DEFAULT_BATCH_SIZE, &format!("{}", opt.batch_size));
+        .with_target_partitions(opt.partitions)
+        .with_batch_size(opt.batch_size);
 
     let state = SessionStateBuilder::new()
         .with_default_features()

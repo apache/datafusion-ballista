@@ -20,10 +20,7 @@ use std::path::Path;
 
 use ballista::{
     extension::SessionConfigExt,
-    prelude::{
-        Result, SessionContextExt, BALLISTA_DEFAULT_BATCH_SIZE,
-        BALLISTA_STANDALONE_PARALLELISM, BALLISTA_WITH_INFORMATION_SCHEMA,
-    },
+    prelude::{Result, SessionContextExt},
 };
 use ballista_cli::{
     exec, print_format::PrintFormat, print_options::PrintOptions, BALLISTA_CLI_VERSION,
@@ -118,12 +115,11 @@ pub async fn main() -> Result<()> {
         env::set_current_dir(p).unwrap();
     };
 
-    let mut ballista_config = SessionConfig::new_with_ballista()
-        .set_str(BALLISTA_WITH_INFORMATION_SCHEMA, "true");
+    let mut ballista_config =
+        SessionConfig::new_with_ballista().with_information_schema(true);
 
     if let Some(batch_size) = args.batch_size {
-        ballista_config =
-            ballista_config.set_str(BALLISTA_DEFAULT_BATCH_SIZE, &batch_size.to_string());
+        ballista_config = ballista_config.with_batch_size(batch_size);
     };
 
     let ctx = match (args.host, args.port) {
@@ -139,10 +135,8 @@ pub async fn main() -> Result<()> {
         }
         _ => {
             if let Some(concurrent_tasks) = args.concurrent_tasks {
-                ballista_config = ballista_config.set_str(
-                    BALLISTA_STANDALONE_PARALLELISM,
-                    &concurrent_tasks.to_string(),
-                );
+                ballista_config =
+                    ballista_config.with_target_partitions(concurrent_tasks);
             };
             let state = SessionStateBuilder::new()
                 .with_config(ballista_config)

@@ -17,6 +17,7 @@
 
 use crate::config::{
     BallistaConfig, BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, BALLISTA_JOB_NAME,
+    BALLISTA_STANDALONE_PARALLELISM,
 };
 use crate::error::{BallistaError, Result};
 use crate::execution_plans::{
@@ -425,7 +426,9 @@ pub trait SessionConfigExt {
 
     fn with_ballista_job_name(self, job_name: &str) -> Self;
 
-    fn with_grpc_client_max_message_size(self, max_size: usize) -> Self;
+    fn with_ballista_grpc_client_max_message_size(self, max_size: usize) -> Self;
+
+    fn with_ballista_standalone_parallelism(self, parallelism: usize) -> Self;
 
     fn from_key_value_pair_mut(&mut self, key_value_pairs: &[KeyValuePair]);
 }
@@ -566,12 +569,21 @@ impl SessionConfigExt for SessionConfig {
         }
     }
 
-    fn with_grpc_client_max_message_size(self, max_size: usize) -> Self {
+    fn with_ballista_grpc_client_max_message_size(self, max_size: usize) -> Self {
         if self.options().extensions.get::<BallistaConfig>().is_some() {
             self.set_usize(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, max_size)
         } else {
             self.with_option_extension(BallistaConfig::default())
                 .set_usize(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, max_size)
+        }
+    }
+
+    fn with_ballista_standalone_parallelism(self, parallelism: usize) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_usize(BALLISTA_STANDALONE_PARALLELISM, parallelism)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_usize(BALLISTA_STANDALONE_PARALLELISM, parallelism)
         }
     }
 }
