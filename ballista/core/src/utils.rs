@@ -266,8 +266,7 @@ pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
     let planner: Arc<BallistaQueryPlanner<T>> =
         Arc::new(BallistaQueryPlanner::new(scheduler_url, config.clone()));
 
-    let session_config = SessionConfig::new()
-        .with_target_partitions(config.default_shuffle_partitions())
+    let session_config = SessionConfig::new_with_ballista()
         .with_information_schema(true)
         .with_option_extension(config.clone());
 
@@ -437,6 +436,7 @@ impl SessionConfigExt for SessionConfig {
     fn new_with_ballista() -> SessionConfig {
         SessionConfig::new()
             .with_option_extension(BallistaConfig::default())
+            .with_target_partitions(16)
             .with_round_robin_repartition(false)
     }
     fn with_ballista_logical_extension_codec(
