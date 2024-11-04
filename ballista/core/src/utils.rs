@@ -504,7 +504,7 @@ impl SessionConfigExt for SessionConfig {
             .iter()
             .filter(|v| v.value.is_some())
             .map(
-                // TODO MM make value optional
+                // TODO MM make `value` optional value
                 |datafusion::config::ConfigEntry { key, value, .. }| {
                     log::trace!(
                         "sending configuration key: `{}`, value`{:?}`",

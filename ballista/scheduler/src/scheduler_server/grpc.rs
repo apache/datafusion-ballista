@@ -43,7 +43,7 @@ use std::ops::Deref;
 use crate::cluster::{bind_task_bias, bind_task_round_robin};
 use crate::config::TaskDistributionPolicy;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::prelude::SessionContext;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
@@ -354,7 +354,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     match self.state.session_manager.get_session(&session_id).await {
                         Ok(ctx) => {
                             // [SessionConfig] will be updated from received properties
-                            // TODO MM can we do something better here
+
+                            // TODO MM can we do something better here?
+                            // move this to update session and use .update_session(&session_params.session_id, &session_config)
+                            // instead of get_session
 
                             let state = ctx.state_ref();
                             let mut state = state.write();
@@ -378,8 +381,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 }
                 _ => {
                     // Create default config
-                    // TODO MM: this one should be from a factory
-                    let session_config = SessionConfig::new_with_ballista();
+                    let session_config = self.state.session_manager.produce_config();
                     let session_config =
                         session_config.update_from_key_value_pair(&settings);
 

@@ -71,7 +71,7 @@ pub fn create_datafusion_context(
     let session_state = if session_config.round_robin_repartition() {
         let session_config = session_config
             .clone()
-            // TODO MM should we disable catalog on the scheduler side
+            // should we disable catalog on the scheduler side
             .with_round_robin_repartition(false);
 
         log::warn!("session manager will override `datafusion.optimizer.enable_round_robin_repartition` to `false` ");

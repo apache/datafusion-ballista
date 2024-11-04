@@ -200,7 +200,11 @@ mod remote {
     }
 }
 
-// this test shows how to configure external ObjectStoreRegistry and configure it
+// this test shows how to register external ObjectStoreRegistry and configure it
+// using infrastructure provided by ballista.
+//
+// it relies on ballista configuration integration with SessionConfig, and
+// SessionConfig propagation across ballista cluster.
 
 #[cfg(test)]
 #[cfg(feature = "testcontainers")]
@@ -238,9 +242,13 @@ mod custom_s3_config {
     use crate::common::{ACCESS_KEY_ID, SECRET_KEY};
 
     #[tokio::test]
-    async fn should_execute_sql_write() -> datafusion::error::Result<()> {
+    async fn should_configure_s3_execute_sql_write_remote(
+    ) -> datafusion::error::Result<()> {
         let test_data = crate::common::example_test_data();
 
+        //
+        // Minio cluster setup
+        //
         let container = crate::common::create_minio_container();
         let node = container.start().await.unwrap();
 
@@ -250,11 +258,24 @@ mod custom_s3_config {
 
         let endpoint_port = node.get_host_port_ipv4(9000).await.unwrap();
 
+        //
+        // Session Context and Ballista cluster setup
+        //
+
+        // Setting up configuration producer
+        //
+        // configuration producer registers user defined config extension
+        // S3Option with relevant S3 configuration
         let config_producer = Arc::new(|| {
             SessionConfig::new_with_ballista()
                 .with_information_schema(true)
                 .with_option_extension(S3Options::default())
         });
+        // Setting up runtime producer
+        //
+        // Runtime producer creates object store registry
+        // which can create object store connecter based on
+        // S3Option configuration.
         let runtime_producer: RuntimeProducer =
             Arc::new(|session_config: &SessionConfig| {
                 let s3options = session_config
@@ -272,10 +293,16 @@ mod custom_s3_config {
                 Ok(Arc::new(RuntimeEnv::new(config)?))
             });
 
-        let session_builder = Arc::new(produce_state);
+        // Session builder creates SessionState
+        //
+        // which is configured using runtime and configuration producer,
+        // producing same runtime environment, and providing same
+        // object store registry.
 
+        let session_builder = Arc::new(produce_state);
         let state = session_builder(config_producer());
 
+        // setting up ballista cluster with new runtime, configuration, and session state producers
         let (host, port) = crate::common::setup_test_cluster_with_builders(
             config_producer,
             runtime_producer,
@@ -284,7 +311,10 @@ mod custom_s3_config {
         .await;
         let url = format!("df://{host}:{port}");
 
+        // establishing cluster connection,
         let ctx: SessionContext = SessionContext::remote_with_state(&url, state).await?;
+
+        // setting up relevant S3 options
         ctx.sql("SET s3.allow_http = true").await?.show().await?;
         ctx.sql(&format!("SET s3.access_key_id = '{}'", ACCESS_KEY_ID))
             .await?
@@ -303,6 +333,121 @@ mod custom_s3_config {
         .await?;
         ctx.sql("SET s3.allow_http = true").await?.show().await?;
 
+        // verifying that we have set S3Options
+        ctx.sql("select name, value from information_schema.df_settings where name like 's3.%'").await?.show().await?;
+
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        let write_dir_path =
+            &format!("s3://{}/write_test.parquet", crate::common::BUCKET);
+
+        ctx.sql("select * from test")
+            .await?
+            .write_parquet(write_dir_path, Default::default(), Default::default())
+            .await?;
+
+        ctx.register_parquet("written_table", write_dir_path, Default::default())
+            .await?;
+
+        let result = ctx
+            .sql("select id, string_col, timestamp_col from written_table where id > 4")
+            .await?
+            .collect()
+            .await?;
+        let expected = [
+            "+----+------------+---------------------+",
+            "| id | string_col | timestamp_col       |",
+            "+----+------------+---------------------+",
+            "| 5  | 31         | 2009-03-01T00:01:00 |",
+            "| 6  | 30         | 2009-04-01T00:00:00 |",
+            "| 7  | 31         | 2009-04-01T00:01:00 |",
+            "+----+------------+---------------------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+        Ok(())
+    }
+
+    // this test shows how to register external ObjectStoreRegistry and configure it
+    // using infrastructure provided by ballista standalone.
+    //
+    // it relies on ballista configuration integration with SessionConfig, and
+    // SessionConfig propagation across ballista cluster.
+
+    #[tokio::test]
+    #[cfg(feature = "standalone")]
+    async fn should_configure_s3_execute_sql_write_standalone(
+    ) -> datafusion::error::Result<()> {
+        let test_data = crate::common::example_test_data();
+
+        //
+        // Minio cluster setup
+        //
+        let container = crate::common::create_minio_container();
+        let node = container.start().await.unwrap();
+
+        node.exec(crate::common::create_bucket_command())
+            .await
+            .unwrap();
+
+        let endpoint_port = node.get_host_port_ipv4(9000).await.unwrap();
+
+        //
+        // Session Context and Ballista cluster setup
+        //
+
+        // Setting up configuration producer
+        //
+        // configuration producer registers user defined config extension
+        // S3Option with relevant S3 configuration
+        let config_producer = Arc::new(|| {
+            SessionConfig::new_with_ballista()
+                .with_information_schema(true)
+                .with_option_extension(S3Options::default())
+        });
+
+        // Session builder creates SessionState
+        //
+        // which is configured using runtime and configuration producer,
+        // producing same runtime environment, and providing same
+        // object store registry.
+
+        let session_builder = Arc::new(produce_state);
+        let state = session_builder(config_producer());
+
+        // // setting up ballista cluster with new runtime, configuration, and session state producers
+        // let (host, port) =
+        //     crate::common::setup_test_cluster_with_state(state.clone()).await;
+        // let url = format!("df://{host}:{port}");
+
+        // // establishing cluster connection,
+        let ctx: SessionContext = SessionContext::standalone_with_state(state).await?;
+
+        // setting up relevant S3 options
+        ctx.sql("SET s3.allow_http = true").await?.show().await?;
+        ctx.sql(&format!("SET s3.access_key_id = '{}'", ACCESS_KEY_ID))
+            .await?
+            .show()
+            .await?;
+        ctx.sql(&format!("SET s3.secret_access_key = '{}'", SECRET_KEY))
+            .await?
+            .show()
+            .await?;
+        ctx.sql(&format!(
+            "SET s3.endpoint = 'http://localhost:{}'",
+            endpoint_port
+        ))
+        .await?
+        .show()
+        .await?;
+        ctx.sql("SET s3.allow_http = true").await?.show().await?;
+
+        // verifying that we have set S3Options
         ctx.sql("select name, value from information_schema.df_settings where name like 's3.%'").await?.show().await?;
 
         ctx.register_parquet(

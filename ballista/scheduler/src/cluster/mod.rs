@@ -300,7 +300,7 @@ pub trait JobState: Send + Sync {
         session_id: &str,
     ) -> Result<Option<Arc<SessionContext>>>;
 
-    // TODO MM not sure this is the best place
+    // TODO MM not sure this is the best place to put config producer
     fn produce_config(&self) -> SessionConfig;
 }
 
