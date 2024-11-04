@@ -64,8 +64,7 @@ sqlparser = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true, features = ["net"] }
 tonic = { workspace = true }
-url = "2.2"
-
+url = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
