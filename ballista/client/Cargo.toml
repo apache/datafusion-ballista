@@ -37,10 +37,9 @@ datafusion-proto = { workspace = true }
 futures = { workspace = true }
 log = { workspace = true }
 parking_lot = { workspace = true }
-sqlparser = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
-url = { version = "2.5" }
+url = { workspace = true }
 
 [dev-dependencies]
 ballista-executor = { path = "../executor", version = "0.12.0" }

@@ -170,7 +170,7 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
 
     let concurrent_tasks = if opt.concurrent_tasks == 0 {
         // use all available cores if no concurrency level is specified
-        num_cpus::get()
+        std::thread::available_parallelism().unwrap().get()
     } else {
         opt.concurrent_tasks
     };

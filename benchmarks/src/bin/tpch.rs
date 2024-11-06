@@ -17,13 +17,13 @@
 
 //! Benchmark derived from TPC-H. This is not an official TPC-H benchmark.
 
-use arrow_schema::SchemaBuilder;
 use ballista::extension::SessionConfigExt;
 use ballista::prelude::{
     SessionContextExt, BALLISTA_COLLECT_STATISTICS, BALLISTA_DEFAULT_BATCH_SIZE,
     BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, BALLISTA_JOB_NAME,
 };
 use datafusion::arrow::array::*;
+use datafusion::arrow::datatypes::SchemaBuilder;
 use datafusion::arrow::util::display::array_value_to_string;
 use datafusion::common::{DEFAULT_CSV_EXTENSION, DEFAULT_PARQUET_EXTENSION};
 use datafusion::datasource::listing::ListingTableUrl;
@@ -987,7 +987,7 @@ impl BenchmarkRun {
         Self {
             benchmark_version: env!("CARGO_PKG_VERSION").to_owned(),
             datafusion_version: DATAFUSION_VERSION.to_owned(),
-            num_cpus: num_cpus::get(),
+            num_cpus: std::thread::available_parallelism().unwrap().get(),
             start_time: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .expect("current time is later than UNIX_EPOCH")

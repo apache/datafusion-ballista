@@ -25,10 +25,9 @@ use std::{
 
 use crate::serde::protobuf::failed_task::FailedReason;
 use crate::serde::protobuf::{ExecutionError, FailedTask, FetchPartitionError, IoError};
-use datafusion::arrow::error::ArrowError;
 use datafusion::error::DataFusionError;
+use datafusion::{arrow::error::ArrowError, sql::sqlparser::parser};
 use futures::future::Aborted;
-use sqlparser::parser;
 
 pub type Result<T> = result::Result<T, BallistaError>;
 

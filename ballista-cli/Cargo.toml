@@ -37,7 +37,6 @@ datafusion-cli = { workspace = true }
 dirs = "5.0.1"
 env_logger = { workspace = true }
 mimalloc = { version = "0.1", default-features = false }
-num_cpus = { workspace = true }
 rustyline = "14.0.0"
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "parking_lot"] }
 
