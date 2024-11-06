@@ -19,17 +19,13 @@ from datafusion import SessionContext
 import ballista
 
 from typing import List, Any
-
-class StandaloneBallista:
-    def __init__(self):
-        self.ctx = ballista.StandaloneBallista
-    
-    def build(self):
-        return self.ctx.build()
         
-class RemoteBallista:
+class Ballista:
     def __init__(self):
-        self.ctx = ballista.RemoteBallista
+        self.ctx = ballista.Ballista
     
-    def build(self, url: str):
-        return self.ctx.build(url)
+    def standalone(self):
+        return self.ctx.standalone()
+        
+    def remote(self, url: str):
+        return self.ctx.remote(url)

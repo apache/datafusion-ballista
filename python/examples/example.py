@@ -15,11 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from ballista import StandaloneBallista, RemoteBallista
+from ballista import StandaloneBallista, RemoteBallista, Ballista
 from datafusion.context import SessionContext
 
 # Create the Ballista Context [standalone or remote]
-ctx: SessionContext = StandaloneBallista.build()
+ctx: SessionContext = Ballista.standalone() # Ballista.remote()
 
 # Register our parquet file to perform SQL operations
 ctx.register_parquet("test_parquet", "./testdata/test.parquet")
@@ -30,7 +30,7 @@ test_parquet = ctx.sql("SELECT * FROM test_parquet")
 # Show our test parquet data
 print(test_parquet.show())
 
-# To perform daatframe operations, read in data
+# To perform dataframe operations, read in data
 test_csv = ctx.read_csv("./testdata/test.csv", has_header=False)
 
 # Show the dataframe

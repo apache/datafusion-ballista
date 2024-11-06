@@ -26,13 +26,11 @@ except ImportError:
 import pyarrow as pa
 
 from .ballista_internal import (
-    StandaloneBallista,
-    RemoteBallista
+    Ballista
 )
 
 __version__ = importlib_metadata.version(__name__)
 
 __all__ = [
-    "StandaloneBallista",
-    "RemoteBallista"
+    "Ballista"
 ]

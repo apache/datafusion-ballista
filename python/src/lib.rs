@@ -26,36 +26,36 @@ mod utils;
 fn ballista_internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     pyo3_log::init();
     // Ballista structs
-    m.add_class::<PyStandaloneBallista>()?;
-    m.add_class::<PyRemoteBallista>()?;
+    m.add_class::<PyBallista>()?;
     // DataFusion structs
     m.add_class::<datafusion_python::dataframe::PyDataFrame>()?;
     Ok(())
 }
 
-#[pyclass(name = "StandaloneBallista", module = "ballista", subclass)]
-pub struct PyStandaloneBallista;
+#[pyclass(name = "Ballista", module = "ballista", subclass)]
+pub struct PyBallista;
 
 #[pymethods]
-impl PyStandaloneBallista {
+impl PyBallista { 
     #[staticmethod]
-    pub fn build(py: Python) -> PyResult<DataFusionPythonSessionContext> {
+    /// Construct the standalone instance from the SessionContext
+    pub fn standalone(py: Python) -> PyResult<DataFusionPythonSessionContext> {
+        // Define the SessionContext
         let session_context = SessionContext::standalone();
-        let ctx = wait_for_future(py, session_context)?;
+        // SessionContext is an async function
+        let ctx = wait_for_future(py, session_context).unwrap();
+        
+        // Convert the SessionContext into a Python SessionContext
         Ok(ctx.into())
     }
-}
-
-#[pyclass(name = "RemoteBallista", module = "ballista", subclass)]
-pub struct PyRemoteBallista;
-
-#[pymethods]
-impl PyRemoteBallista {
+    
     #[staticmethod]
-    pub fn build(url: &str, py: Python) -> PyResult<DataFusionPythonSessionContext> {
+    /// Construct the remote instance from the SessionContext
+    pub fn remote(url: &str, py: Python) -> PyResult<DataFusionPythonSessionContext> {
         let session_context = SessionContext::remote(url);
         let ctx = wait_for_future(py, session_context)?;
-
+        
+        // Convert the SessionContext into a Python SessionContext
         Ok(ctx.into())
     }
 }
