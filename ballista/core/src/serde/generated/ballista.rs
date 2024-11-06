@@ -804,6 +804,7 @@ pub mod execute_query_params {
     pub enum Query {
         #[prost(bytes, tag = "1")]
         LogicalPlan(::prost::alloc::vec::Vec<u8>),
+        /// I'd suggest to remove this, if SQL needed use `flight-sql`
         #[prost(string, tag = "2")]
         Sql(::prost::alloc::string::String),
     }
