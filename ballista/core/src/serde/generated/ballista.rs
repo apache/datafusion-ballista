@@ -435,31 +435,20 @@ pub struct ExecutorMetadata {
     #[prost(message, optional, tag = "5")]
     pub specification: ::core::option::Option<ExecutorSpecification>,
 }
-/// Used by grpc
+/// Used for scheduler-executor
+/// communication
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorRegistration {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "2")]
+    pub host: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(uint32, tag = "3")]
     pub port: u32,
     #[prost(uint32, tag = "4")]
     pub grpc_port: u32,
     #[prost(message, optional, tag = "5")]
     pub specification: ::core::option::Option<ExecutorSpecification>,
-    /// "optional" keyword is stable in protoc 3.15 but prost is still on 3.14 (see <https://github.com/tokio-rs/prost/issues/430> and <https://github.com/tokio-rs/prost/pull/455>)
-    /// this syntax is ugly but is binary compatible with the "optional" keyword (see <https://stackoverflow.com/questions/42622015/how-to-define-an-optional-field-in-protobuf-3>)
-    #[prost(oneof = "executor_registration::OptionalHost", tags = "2")]
-    pub optional_host: ::core::option::Option<executor_registration::OptionalHost>,
-}
-/// Nested message and enum types in `ExecutorRegistration`.
-pub mod executor_registration {
-    /// "optional" keyword is stable in protoc 3.15 but prost is still on 3.14 (see <https://github.com/tokio-rs/prost/issues/430> and <https://github.com/tokio-rs/prost/pull/455>)
-    /// this syntax is ugly but is binary compatible with the "optional" keyword (see <https://stackoverflow.com/questions/42622015/how-to-define-an-optional-field-in-protobuf-3>)
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum OptionalHost {
-        #[prost(string, tag = "2")]
-        Host(::prost::alloc::string::String),
-    }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecutorHeartbeat {
@@ -815,6 +804,7 @@ pub mod execute_query_params {
     pub enum Query {
         #[prost(bytes, tag = "1")]
         LogicalPlan(::prost::alloc::vec::Vec<u8>),
+        /// I'd suggest to remove this, if SQL needed use `flight-sql`
         #[prost(string, tag = "2")]
         Sql(::prost::alloc::string::String),
     }
@@ -969,18 +959,6 @@ pub mod job_status {
 pub struct GetJobStatusResult {
     #[prost(message, optional, tag = "1")]
     pub status: ::core::option::Option<JobStatus>,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetFileMetadataParams {
-    #[prost(string, tag = "1")]
-    pub path: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub file_type: ::prost::alloc::string::String,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetFileMetadataResult {
-    #[prost(message, optional, tag = "1")]
-    pub schema: ::core::option::Option<::datafusion_proto_common::Schema>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FilePartitionMetadata {
@@ -1259,32 +1237,6 @@ pub mod scheduler_grpc_client {
                         "ballista.protobuf.SchedulerGrpc",
                         "UpdateTaskStatus",
                     ),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn get_file_metadata(
-            &mut self,
-            request: impl tonic::IntoRequest<super::GetFileMetadataParams>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetFileMetadataResult>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/ballista.protobuf.SchedulerGrpc/GetFileMetadata",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("ballista.protobuf.SchedulerGrpc", "GetFileMetadata"),
                 );
             self.inner.unary(req, path, codec).await
         }
@@ -1756,13 +1708,6 @@ pub mod scheduler_grpc_server {
             tonic::Response<super::UpdateTaskStatusResult>,
             tonic::Status,
         >;
-        async fn get_file_metadata(
-            &self,
-            request: tonic::Request<super::GetFileMetadataParams>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetFileMetadataResult>,
-            tonic::Status,
-        >;
         async fn create_session(
             &self,
             request: tonic::Request<super::CreateSessionParams>,
@@ -2065,52 +2010,6 @@ pub mod scheduler_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = UpdateTaskStatusSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/ballista.protobuf.SchedulerGrpc/GetFileMetadata" => {
-                    #[allow(non_camel_case_types)]
-                    struct GetFileMetadataSvc<T: SchedulerGrpc>(pub Arc<T>);
-                    impl<
-                        T: SchedulerGrpc,
-                    > tonic::server::UnaryService<super::GetFileMetadataParams>
-                    for GetFileMetadataSvc<T> {
-                        type Response = super::GetFileMetadataResult;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::GetFileMetadataParams>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as SchedulerGrpc>::get_file_metadata(&inner, request)
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = GetFileMetadataSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

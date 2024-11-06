@@ -289,14 +289,11 @@ message ExecutorMetadata {
 }
 
 
-// Used by grpc
+// Used for scheduler-executor 
+// communication
 message ExecutorRegistration {
   string id = 1;
-  // "optional" keyword is stable in protoc 3.15 but prost is still on 3.14 (see https://github.com/tokio-rs/prost/issues/430 and https://github.com/tokio-rs/prost/pull/455)
-  // this syntax is ugly but is binary compatible with the "optional" keyword (see https://stackoverflow.com/questions/42622015/how-to-define-an-optional-field-in-protobuf-3)
-  oneof optional_host {
-    string host = 2;
-  }
+  optional string host = 2;
   uint32 port = 3;
   uint32 grpc_port = 4;
   ExecutorSpecification specification = 5;
@@ -527,7 +524,7 @@ message UpdateTaskStatusResult {
 message ExecuteQueryParams {
   oneof query {
     bytes logical_plan = 1;
-    string sql = 2;
+    string sql = 2 [deprecated=true]; // I'd suggest to remove this, if SQL needed use `flight-sql`
   }
   oneof optional_session_id {
     string session_id = 3;
@@ -629,15 +626,6 @@ message GetJobStatusResult {
   JobStatus status = 1;
 }
 
-message GetFileMetadataParams {
-  string path = 1;
-  string file_type = 2;
-}
-
-message GetFileMetadataResult {
-  datafusion_common.Schema schema = 1;
-}
-
 message FilePartitionMetadata {
   repeated string filename = 1;
 }
@@ -712,8 +700,6 @@ service SchedulerGrpc {
   rpc HeartBeatFromExecutor (HeartBeatParams) returns (HeartBeatResult) {}
 
   rpc UpdateTaskStatus (UpdateTaskStatusParams) returns (UpdateTaskStatusResult) {}
-
-  rpc GetFileMetadata (GetFileMetadataParams) returns (GetFileMetadataResult) {}
 
   rpc CreateSession (CreateSessionParams) returns (CreateSessionResult) {}
 
