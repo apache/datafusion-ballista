@@ -629,15 +629,6 @@ message GetJobStatusResult {
   JobStatus status = 1;
 }
 
-message GetFileMetadataParams {
-  string path = 1;
-  string file_type = 2;
-}
-
-message GetFileMetadataResult {
-  datafusion_common.Schema schema = 1;
-}
-
 message FilePartitionMetadata {
   repeated string filename = 1;
 }
@@ -712,8 +703,6 @@ service SchedulerGrpc {
   rpc HeartBeatFromExecutor (HeartBeatParams) returns (HeartBeatResult) {}
 
   rpc UpdateTaskStatus (UpdateTaskStatusParams) returns (UpdateTaskStatusResult) {}
-
-  rpc GetFileMetadata (GetFileMetadataParams) returns (GetFileMetadataResult) {}
 
   rpc CreateSession (CreateSessionParams) returns (CreateSessionResult) {}
 

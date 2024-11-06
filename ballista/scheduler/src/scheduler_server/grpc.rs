@@ -19,7 +19,6 @@ use axum::extract::ConnectInfo;
 use ballista_core::config::{BallistaConfig, BALLISTA_JOB_NAME};
 use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
 use std::collections::HashMap;
-use std::convert::TryInto;
 use std::net::SocketAddr;
 
 use ballista_core::serde::protobuf::executor_registration::OptionalHost;
@@ -29,30 +28,22 @@ use ballista_core::serde::protobuf::{
     CancelJobParams, CancelJobResult, CleanJobDataParams, CleanJobDataResult,
     CreateSessionParams, CreateSessionResult, ExecuteQueryFailureResult,
     ExecuteQueryParams, ExecuteQueryResult, ExecuteQuerySuccessResult, ExecutorHeartbeat,
-    ExecutorStoppedParams, ExecutorStoppedResult, GetFileMetadataParams,
-    GetFileMetadataResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
-    HeartBeatResult, PollWorkParams, PollWorkResult, RegisterExecutorParams,
-    RegisterExecutorResult, RemoveSessionParams, RemoveSessionResult,
-    UpdateSessionParams, UpdateSessionResult, UpdateTaskStatusParams,
-    UpdateTaskStatusResult,
+    ExecutorStoppedParams, ExecutorStoppedResult, GetJobStatusParams, GetJobStatusResult,
+    HeartBeatParams, HeartBeatResult, PollWorkParams, PollWorkResult,
+    RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
+    RemoveSessionResult, UpdateSessionParams, UpdateSessionResult,
+    UpdateTaskStatusParams, UpdateTaskStatusResult,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
-
-use datafusion::datasource::file_format::parquet::ParquetFormat;
-use datafusion::datasource::file_format::FileFormat;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
-use futures::TryStreamExt;
 use log::{debug, error, info, trace, warn};
-use object_store::{local::LocalFileSystem, path::Path, ObjectStore};
 
 use std::ops::Deref;
-use std::sync::Arc;
 
 use crate::cluster::{bind_task_bias, bind_task_round_robin};
 use crate::config::TaskDistributionPolicy;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use datafusion::prelude::SessionContext;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
@@ -284,56 +275,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             })?;
 
         Ok(Response::new(UpdateTaskStatusResult { success: true }))
-    }
-
-    async fn get_file_metadata(
-        &self,
-        request: Request<GetFileMetadataParams>,
-    ) -> Result<Response<GetFileMetadataResult>, Status> {
-        // Here, we use the default config, since we don't know the session id
-        let session_ctx = SessionContext::new();
-        let state = session_ctx.state();
-
-        // TODO support multiple object stores
-        let obj_store: Arc<dyn ObjectStore> = Arc::new(LocalFileSystem::new());
-        // TODO shouldn't this take a ListingOption object as input?
-
-        let GetFileMetadataParams { path, file_type } = request.into_inner();
-        let file_format: Arc<dyn FileFormat> = match file_type.as_str() {
-            "parquet" => Ok(Arc::new(ParquetFormat::default())),
-            // TODO implement for CSV
-            _ => Err(tonic::Status::unimplemented(
-                "get_file_metadata unsupported file type",
-            )),
-        }?;
-
-        let path = Path::from(path.as_str());
-        let file_metas: Vec<_> = obj_store
-            .list(Some(&path))
-            .try_collect()
-            .await
-            .map_err(|e| {
-                let msg = format!("Error listing files: {e}");
-                error!("{}", msg);
-                tonic::Status::internal(msg)
-            })?;
-
-        let schema = file_format
-            .infer_schema(&state, &obj_store, &file_metas)
-            .await
-            .map_err(|e| {
-                let msg = format!("Error inferring schema: {e}");
-                error!("{}", msg);
-                tonic::Status::internal(msg)
-            })?;
-
-        Ok(Response::new(GetFileMetadataResult {
-            schema: Some(schema.as_ref().try_into().map_err(|e| {
-                let msg = format!("Error inferring schema: {e}");
-                error!("{}", msg);
-                tonic::Status::internal(msg)
-            })?),
-        }))
     }
 
     async fn create_session(
