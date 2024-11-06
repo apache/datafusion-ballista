@@ -361,7 +361,7 @@ impl FlightSqlServiceImpl {
     }
 
     fn df_schema_to_arrow(&self, schema: &DFSchemaRef) -> Result<Vec<u8>, Status> {
-        let arrow_schema: Schema = (&**schema).into();
+        let Schema = (&**schema).into();
         let schema_bytes = self.schema_to_arrow(Arc::new(arrow_schema))?;
         Ok(schema_bytes)
     }

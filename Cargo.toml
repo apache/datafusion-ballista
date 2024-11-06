@@ -23,7 +23,6 @@ resolver = "2"
 [workspace.dependencies]
 arrow = { version = "53", features = ["ipc_compression"] }
 arrow-flight = { version = "53", features = ["flight-sql-experimental"] }
-arrow-schema = { version = "53", default-features = false }
 clap = { version = "3", features = ["derive", "cargo"] }
 configure_me = { version = "0.4.0" }
 configure_me_codegen = { version = "0.4.4" }
@@ -35,7 +34,6 @@ datafusion-proto-common = "42.0.0"
 object_store = "0.11"
 prost = "0.13"
 prost-types = "0.13"
-sqlparser = "0.50"
 tonic = { version = "0.12" }
 tonic-build = { version = "0.12", default-features = false, features = [
     "transport",
