@@ -987,7 +987,7 @@ impl BenchmarkRun {
         Self {
             benchmark_version: env!("CARGO_PKG_VERSION").to_owned(),
             datafusion_version: DATAFUSION_VERSION.to_owned(),
-            num_cpus: num_cpus::get(),
+            num_cpus: std::thread::available_parallelism().unwrap().get(),
             start_time: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .expect("current time is later than UNIX_EPOCH")
