@@ -21,7 +21,6 @@ use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Qu
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
     execute_query_failure_result, execute_query_result, AvailableTaskSlots,
@@ -79,10 +78,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 let metadata = ExecutorMetadata {
                     id: metadata.id,
                     host: metadata
-                        .optional_host
-                        .map(|h| match h {
-                            OptionalHost::Host(host) => host,
-                        })
+                        .host
                         .unwrap_or_else(|| remote_addr.unwrap().ip().to_string()),
                     port: metadata.port as u16,
                     grpc_port: metadata.grpc_port as u16,
@@ -157,10 +153,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             let metadata = ExecutorMetadata {
                 id: metadata.id,
                 host: metadata
-                    .optional_host
-                    .map(|h| match h {
-                        OptionalHost::Host(host) => host,
-                    })
+                    .host
                     .unwrap_or_else(|| remote_addr.unwrap().ip().to_string()),
                 port: metadata.port as u16,
                 grpc_port: metadata.grpc_port as u16,
@@ -205,10 +198,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 let metadata = ExecutorMetadata {
                     id: metadata.id,
                     host: metadata
-                        .optional_host
-                        .map(|h| match h {
-                            OptionalHost::Host(host) => host,
-                        })
+                        .host
                         .unwrap_or_else(|| remote_addr.unwrap().ip().to_string()),
                     port: metadata.port as u16,
                     grpc_port: metadata.grpc_port as u16,
@@ -602,9 +592,8 @@ mod test {
     use crate::metrics::default_metrics_collector;
     use ballista_core::error::BallistaError;
     use ballista_core::serde::protobuf::{
-        executor_registration::OptionalHost, executor_status, ExecutorRegistration,
-        ExecutorStatus, ExecutorStoppedParams, HeartBeatParams, PollWorkParams,
-        RegisterExecutorParams,
+        executor_status, ExecutorRegistration, ExecutorStatus, ExecutorStoppedParams,
+        HeartBeatParams, PollWorkParams, RegisterExecutorParams,
     };
     use ballista_core::serde::scheduler::ExecutorSpecification;
     use ballista_core::serde::BallistaCodec;
@@ -631,7 +620,7 @@ mod test {
         scheduler.init().await?;
         let exec_meta = ExecutorRegistration {
             id: "abc".to_owned(),
-            optional_host: Some(OptionalHost::Host("http://localhost:8080".to_owned())),
+            host: Some("http://localhost:8080".to_owned()),
             port: 0,
             grpc_port: 0,
             specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
@@ -719,7 +708,7 @@ mod test {
 
         let exec_meta = ExecutorRegistration {
             id: "abc".to_owned(),
-            optional_host: Some(OptionalHost::Host("http://localhost:8080".to_owned())),
+            host: Some("http://localhost:8080".to_owned()),
             port: 0,
             grpc_port: 0,
             specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
@@ -804,7 +793,7 @@ mod test {
 
         let exec_meta = ExecutorRegistration {
             id: "abc".to_owned(),
-            optional_host: Some(OptionalHost::Host("http://localhost:8080".to_owned())),
+            host: Some("http://localhost:8080".to_owned()),
             port: 0,
             grpc_port: 0,
             specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
@@ -857,7 +846,7 @@ mod test {
 
         let exec_meta = ExecutorRegistration {
             id: "abc".to_owned(),
-            optional_host: Some(OptionalHost::Host("http://localhost:8080".to_owned())),
+            host: Some("http://localhost:8080".to_owned()),
             port: 0,
             grpc_port: 0,
             specification: Some(ExecutorSpecification { task_slots: 2 }.into()),

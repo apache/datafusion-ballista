@@ -23,7 +23,6 @@ use ballista_core::utils::SessionConfigExt;
 use ballista_core::{
     error::Result,
     object_store_registry::with_object_store_registry,
-    serde::protobuf::executor_registration::OptionalHost,
     serde::protobuf::{scheduler_grpc_client::SchedulerGrpcClient, ExecutorRegistration},
     serde::scheduler::ExecutorSpecification,
     serde::BallistaCodec,
@@ -73,7 +72,7 @@ pub async fn new_standalone_executor_from_state<
 
     let executor_meta = ExecutorRegistration {
         id: Uuid::new_v4().to_string(), // assign this executor a unique ID
-        optional_host: Some(OptionalHost::Host("localhost".to_string())),
+        host: Some("localhost".to_string()),
         port: addr.port() as u32,
         // TODO Make it configurable
         grpc_port: 50020,
@@ -145,7 +144,7 @@ pub async fn new_standalone_executor<
 
     let executor_meta = ExecutorRegistration {
         id: Uuid::new_v4().to_string(), // assign this executor a unique ID
-        optional_host: Some(OptionalHost::Host("localhost".to_string())),
+        host: Some("localhost".to_string()),
         port: addr.port() as u32,
         // TODO Make it configurable
         grpc_port: 50020,

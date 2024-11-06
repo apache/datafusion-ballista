@@ -359,7 +359,7 @@ mod test {
             port: 0,
             grpc_port: 0,
             specification: None,
-            optional_host: None,
+            host: None,
         };
         let config_producer = Arc::new(|| {
             SessionConfig::new().with_option_extension(BallistaConfig::new().unwrap())
