@@ -19,7 +19,6 @@ use ballista::prelude::*;
 use datafusion::prelude::*;
 use datafusion_python::context::PySessionContext as DataFusionPythonSessionContext;
 use datafusion_python::utils::wait_for_future;
-use pyo3::types::{IntoPyDict, PyDict};
 use std::collections::HashMap;
 
 use pyo3::prelude::*;
@@ -49,7 +48,7 @@ impl PyBallista {
             Self(None)
         }
     }
-    
+
     #[staticmethod]
     /// Construct the standalone instance from the SessionContext
     pub fn standalone(py: Python) -> PyResult<DataFusionPythonSessionContext> {
@@ -57,17 +56,17 @@ impl PyBallista {
         let session_context = SessionContext::standalone();
         // SessionContext is an async function
         let ctx = wait_for_future(py, session_context).unwrap();
-        
+
         // Convert the SessionContext into a Python SessionContext
         Ok(ctx.into())
     }
-    
+
     #[staticmethod]
     /// Construct the remote instance from the SessionContext
     pub fn remote(url: &str, py: Python) -> PyResult<DataFusionPythonSessionContext> {
         let session_context = SessionContext::remote(url);
         let ctx = wait_for_future(py, session_context)?;
-        
+
         // Convert the SessionContext into a Python SessionContext
         Ok(ctx.into())
     }
