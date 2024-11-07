@@ -19,6 +19,9 @@ use ballista::prelude::*;
 use datafusion::prelude::*;
 use datafusion_python::context::PySessionContext as DataFusionPythonSessionContext;
 use datafusion_python::utils::wait_for_future;
+use pyo3::types::{IntoPyDict, PyDict};
+use std::collections::HashMap;
+
 use pyo3::prelude::*;
 mod utils;
 
@@ -33,10 +36,20 @@ fn ballista_internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 #[pyclass(name = "Ballista", module = "ballista", subclass)]
-pub struct PyBallista;
+pub struct PyBallista(pub Option<HashMap<String, String>>);
 
 #[pymethods]
-impl PyBallista { 
+impl PyBallista {
+    #[staticmethod]
+    #[pyo3(signature = (config=None))]
+    pub fn config(config: Option<HashMap<String, String>>) -> Self {
+        if let Some(conf) = config {
+            Self(Some(conf))
+        } else {
+            Self(None)
+        }
+    }
+    
     #[staticmethod]
     /// Construct the standalone instance from the SessionContext
     pub fn standalone(py: Python) -> PyResult<DataFusionPythonSessionContext> {

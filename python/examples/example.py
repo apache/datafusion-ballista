@@ -15,11 +15,15 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from ballista import StandaloneBallista, RemoteBallista, Ballista
+from ballista import Ballista
 from datafusion.context import SessionContext
 
+# Define the Ballista configuration
+conf = {"example": "example"}
+ballista = Ballista.config(conf)
+
 # Create the Ballista Context [standalone or remote]
-ctx: SessionContext = Ballista.standalone() # Ballista.remote()
+ctx: SessionContext  = ballista.standalone() # Ballista.remote()
 
 # Register our parquet file to perform SQL operations
 ctx.register_parquet("test_parquet", "./testdata/test.parquet")

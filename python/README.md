@@ -29,8 +29,8 @@ part of the default Cargo workspace so that it doesn't cause overhead for mainta
 Creates a new context and connects to a Ballista scheduler process.
 
 ```python
-from ballista import RemoteBallista, StandaloneBallista
->>> ctx = SessionContext("localhost", 50050)
+from ballista import Ballista
+>>> ctx = Ballista.standalone()
 ```
 
 ## Example SQL Usage
