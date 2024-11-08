@@ -21,12 +21,11 @@ import ballista
 from typing import List, Any
         
 class Ballista:
-    def __init__(self):
-        self.ctx = ballista.Ballista
-        self.conf = {}
+    def __new__(self, conf = None):
+        self.ctx = ballista.Ballista(conf)
         
-    def config(self, conf: dict = {}):
-        self.conf = conf
+    def config(self, conf = None):
+        self.ctx = ballista.Ballista(conf)
     
     def standalone(self):
         return self.ctx.standalone()

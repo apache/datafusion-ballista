@@ -35,17 +35,24 @@ fn ballista_internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 #[pyclass(name = "Ballista", module = "ballista", subclass)]
-pub struct PyBallista(pub Option<HashMap<String, String>>);
+pub struct PyBallista(pub Option<Vec<(String, String)>>);
 
 #[pymethods]
 impl PyBallista {
-    #[staticmethod]
+    #[new]
     #[pyo3(signature = (config=None))]
-    pub fn config(config: Option<HashMap<String, String>>) -> Self {
-        if let Some(conf) = config {
-            Self(Some(conf))
-        } else {
-            Self(None)
+    pub fn new(config: Option<Vec<(String, String)>>) -> Self {
+        match config {
+            Some(config) => Self(Some(config)),
+            None => Self(Some(vec![(String::from(""), String::from(""))]))
+        }
+    }
+    
+    #[pyo3(signature = (config=None))]
+    pub fn config(&mut self, config: Option<Vec<(String, String)>>) -> Self {
+        match config {
+            Some(config) => Self(Some(config)),
+            None => Self(Some(vec![(String::from(""), String::from(""))]))
         }
     }
 

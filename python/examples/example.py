@@ -18,9 +18,12 @@
 from ballista import Ballista
 from datafusion.context import SessionContext
 
-# Define the Ballista configuration
-conf = {"example": "example"}
-ballista = Ballista.config(conf)
+# Ballista will initiate with an empty config
+ballista = Ballista()
+
+# But you can also set your own config
+conf = [("example", "example")]
+ballista.config(conf)
 
 # Create the Ballista Context [standalone or remote]
 ctx: SessionContext  = ballista.standalone() # Ballista.remote()
