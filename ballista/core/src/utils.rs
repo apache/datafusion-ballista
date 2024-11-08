@@ -71,7 +71,7 @@ pub fn default_session_builder(config: SessionConfig) -> SessionState {
         .with_default_features()
         .with_config(config)
         .with_runtime_env(Arc::new(
-            RuntimeEnv::new(with_object_store_registry(RuntimeConfig::default()))
+            RuntimeEnv::try_new(with_object_store_registry(RuntimeConfig::default()))
                 .unwrap(),
         ))
         .build()
@@ -268,7 +268,7 @@ pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
         .with_default_features()
         .with_config(session_config)
         .with_runtime_env(Arc::new(
-            RuntimeEnv::new(with_object_store_registry(RuntimeConfig::default()))
+            RuntimeEnv::try_new(with_object_store_registry(RuntimeConfig::default()))
                 .unwrap(),
         ))
         .with_query_planner(planner)
@@ -319,7 +319,7 @@ impl SessionStateExt for SessionState {
             .with_round_robin_repartition(false);
 
         let runtime_config = RuntimeConfig::default();
-        let runtime_env = RuntimeEnv::new(runtime_config)?;
+        let runtime_env = RuntimeEnv::try_new(runtime_config)?;
         let session_state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(session_config)
@@ -709,7 +709,7 @@ mod test {
     use crate::utils::{LocalRun, SessionStateExt};
 
     fn context() -> SessionContext {
-        let runtime_environment = RuntimeEnv::new(RuntimeConfig::new()).unwrap();
+        let runtime_environment = RuntimeEnv::try_new(RuntimeConfig::new()).unwrap();
 
         let session_config = SessionConfig::new().with_information_schema(true);
 

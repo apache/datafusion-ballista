@@ -170,7 +170,7 @@ pub async fn new_standalone_executor<
         let config = with_object_store_registry(
             RuntimeConfig::new().with_temp_file_path(wd.clone()),
         );
-        Ok(Arc::new(RuntimeEnv::new(config)?))
+        Ok(Arc::new(RuntimeEnv::try_new(config)?))
     });
 
     let executor = Arc::new(Executor::new_basic(
