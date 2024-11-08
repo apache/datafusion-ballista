@@ -71,6 +71,7 @@ const TEST_SCHEDULER_NAME: &str = "localhost:50050";
 /// Sometimes we need to construct logical plans that will produce errors
 /// when we try and create physical plan. A scan using `ExplodingTableProvider`
 /// will do the trick
+#[derive(Debug)]
 pub struct ExplodingTableProvider;
 
 #[async_trait]
@@ -139,7 +140,7 @@ pub async fn datafusion_test_context(path: &str) -> Result<SessionContext> {
             .has_header(false)
             .file_extension(".tbl");
         let dir = format!("{path}/{table}");
-        ctx.register_csv(table, &dir, options).await?;
+        ctx.register_csv(*table, &dir, options).await?;
     }
     Ok(ctx)
 }

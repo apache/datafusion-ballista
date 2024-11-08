@@ -386,7 +386,7 @@ mod standalone {
         }
     }
 
-    #[derive(Default)]
+    #[derive(Default, Debug)]
     struct BadPlanner {}
 
     #[async_trait::async_trait]

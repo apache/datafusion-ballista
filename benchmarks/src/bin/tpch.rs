@@ -589,7 +589,7 @@ async fn register_tables(
                         "Registering table '{table}' using TBL files at path {path}"
                     );
                 }
-                ctx.register_csv(table, &path, options)
+                ctx.register_csv(*table, &path, options)
                     .await
                     .map_err(|e| DataFusionError::Plan(format!("{e:?}")))?;
             }
@@ -602,7 +602,7 @@ async fn register_tables(
                         "Registering table '{table}' using CSV files at path {path}"
                     );
                 }
-                ctx.register_csv(table, &path, options)
+                ctx.register_csv(*table, &path, options)
                     .await
                     .map_err(|e| DataFusionError::Plan(format!("{e:?}")))?;
             }
@@ -613,7 +613,7 @@ async fn register_tables(
                         "Registering table '{table}' using Parquet files at path {path}"
                     );
                 }
-                ctx.register_parquet(table, &path, ParquetReadOptions::default())
+                ctx.register_parquet(*table, &path, ParquetReadOptions::default())
                     .await
                     .map_err(|e| DataFusionError::Plan(format!("{e:?}")))?;
             }

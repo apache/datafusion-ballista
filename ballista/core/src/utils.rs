@@ -55,6 +55,7 @@ use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::protobuf::LogicalPlanNode;
 use futures::StreamExt;
 use log::error;
+use std::fmt::Debug;
 use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -507,6 +508,14 @@ pub struct BallistaQueryPlanner<T: AsLogicalPlan> {
     extension_codec: Arc<dyn LogicalExtensionCodec>,
     local_planner: DefaultPhysicalPlanner,
     plan_repr: PhantomData<T>,
+}
+
+impl<T: AsLogicalPlan> Debug for BallistaQueryPlanner<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BallistaQueryPlanner")
+            .field("scheduler_url", &self.scheduler_url)
+            .finish()
+    }
 }
 
 impl<T: 'static + AsLogicalPlan> BallistaQueryPlanner<T> {
