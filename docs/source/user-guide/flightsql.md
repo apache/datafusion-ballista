@@ -21,6 +21,8 @@
 
 One of the easiest ways to start with Ballista is to plug it into your existing data infrastructure using support for Arrow Flight SQL JDBC.
 
+> This is optional scheduler feature which should be enabled with `flight-sql` feature
+
 Getting started involves these main steps:
 
 1. [Installing prerequisites](#prereq)
