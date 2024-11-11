@@ -148,12 +148,6 @@ impl DistributedPlanner {
                     Ok((children[0].clone(), stages))
                 }
             }
-        } else if let Some(window) =
-            execution_plan.as_any().downcast_ref::<WindowAggExec>()
-        {
-            Err(BallistaError::NotImplemented(format!(
-                "WindowAggExec with window {window:?}"
-            )))
         } else {
             Ok((
                 with_new_children_if_necessary(execution_plan, children)?,
