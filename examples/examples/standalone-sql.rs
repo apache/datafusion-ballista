@@ -15,10 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista::{
-    extension::SessionConfigExt,
-    prelude::{Result, SessionContextExt},
-};
+use ballista::prelude::{Result, SessionConfigExt, SessionContextExt};
 use ballista_examples::test_util;
 use datafusion::{
     execution::{options::ParquetReadOptions, SessionStateBuilder},
