@@ -26,11 +26,15 @@ except ImportError:
 import pyarrow as pa
 
 from .ballista_internal import (
-    Ballista
+    Ballista,
+    BallistaConfig,
+    BallistaConfigBuilder
 )
 
 __version__ = importlib_metadata.version(__name__)
 
 __all__ = [
-    "Ballista"
+    "Ballista",
+    "BallistaConfig",
+    "BallistaConfigBuilder"
 ]

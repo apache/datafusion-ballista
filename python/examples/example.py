@@ -15,16 +15,26 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from ballista import Ballista
+from ballista import Ballista, BallistaConfig, BallistaConfigBuilder
 from datafusion.context import SessionContext
 
 # Ballista will initiate with an empty config
 ballista = Ballista()
+config = BallistaConfig()
+
+# Define custom settings
+job_settings = {
+    "BALLISTA_JOB_NAME": "Example Ballista Job",
+    "DEFAULT_SHUFFLE_PARTITIONS": "2"
+}
+
+ballista.configuration(job_settings)
 
 # But you can also set your own config
-conf = [("example", "example")]
-ballista.config(conf)
+print("New Ballista Config: ", ballista.settings())
 
+# Or you can check default settings in BallistaConfig
+print("Default Shuffle Partitions: ", ballista.default_shuffle_partitions())
 # Create the Ballista Context [standalone or remote]
 ctx: SessionContext  = ballista.standalone() # Ballista.remote()
 
