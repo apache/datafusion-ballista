@@ -15,28 +15,36 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista::prelude::*;
-use datafusion::prelude::{col, lit, ParquetReadOptions};
+use ballista::{extension::SessionConfigExt, prelude::*};
+use ballista_examples::test_util;
+use datafusion::{
+    execution::SessionStateBuilder,
+    prelude::{col, lit, ParquetReadOptions, SessionConfig, SessionContext},
+};
 
 /// This example demonstrates executing a simple query against an Arrow data source (Parquet) and
 /// fetching results, using the DataFrame trait
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitions", "4")
-        .build()?;
-    let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
+    let config = SessionConfig::new_with_ballista()
+        .set_str(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4");
 
-    let filename = "testdata/alltypes_plain.parquet";
+    let state = SessionStateBuilder::new()
+        .with_config(config)
+        .with_default_features()
+        .build();
 
-    // define the query using the DataFrame trait
+    let ctx = SessionContext::remote_with_state("df://localhost:50050", state).await?;
+
+    let test_data = test_util::examples_test_data();
+    let filename = format!("{test_data}/alltypes_plain.parquet");
+
     let df = ctx
         .read_parquet(filename, ParquetReadOptions::default())
         .await?
         .select_columns(&["id", "bool_col", "timestamp_col"])?
         .filter(col("id").gt(lit(1)))?;
 
-    // print the results
     df.show().await?;
 
     Ok(())

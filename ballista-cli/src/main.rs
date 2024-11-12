@@ -18,11 +18,21 @@
 use std::env;
 use std::path::Path;
 
-use ballista::prelude::{BallistaConfig, BallistaContext, Result};
+use ballista::{
+    extension::SessionConfigExt,
+    prelude::{
+        Result, SessionContextExt, BALLISTA_DEFAULT_BATCH_SIZE,
+        BALLISTA_STANDALONE_PARALLELISM, BALLISTA_WITH_INFORMATION_SCHEMA,
+    },
+};
 use ballista_cli::{
     exec, print_format::PrintFormat, print_options::PrintOptions, BALLISTA_CLI_VERSION,
 };
 use clap::Parser;
+use datafusion::{
+    execution::SessionStateBuilder,
+    prelude::{SessionConfig, SessionContext},
+};
 use datafusion_cli::print_options::MaxRows;
 use mimalloc::MiMalloc;
 
@@ -108,29 +118,39 @@ pub async fn main() -> Result<()> {
         env::set_current_dir(p).unwrap();
     };
 
-    let mut ballista_config_builder =
-        BallistaConfig::builder().set("ballista.with_information_schema", "true");
+    let mut ballista_config = SessionConfig::new_with_ballista()
+        .set_str(BALLISTA_WITH_INFORMATION_SCHEMA, "true");
 
     if let Some(batch_size) = args.batch_size {
-        ballista_config_builder =
-            ballista_config_builder.set("ballista.batch.size", &batch_size.to_string());
+        ballista_config =
+            ballista_config.set_str(BALLISTA_DEFAULT_BATCH_SIZE, &batch_size.to_string());
     };
-
-    let ballista_config = ballista_config_builder.build()?;
 
     let ctx = match (args.host, args.port) {
         (Some(ref host), Some(port)) => {
+            let address = format!("df://{}:{}", host, port);
+            let state = SessionStateBuilder::new()
+                .with_config(ballista_config)
+                .with_default_features()
+                .build();
+
             // Distributed execution with Ballista Remote
-            BallistaContext::remote(host, port, &ballista_config).await?
+            SessionContext::remote_with_state(&address, state).await?
         }
         _ => {
-            let concurrent_tasks = if let Some(concurrent_tasks) = args.concurrent_tasks {
-                concurrent_tasks
-            } else {
-                num_cpus::get()
+            if let Some(concurrent_tasks) = args.concurrent_tasks {
+                ballista_config = ballista_config.set_str(
+                    BALLISTA_STANDALONE_PARALLELISM,
+                    &concurrent_tasks.to_string(),
+                );
             };
+            let state = SessionStateBuilder::new()
+                .with_config(ballista_config)
+                .with_default_features()
+                .build();
+
             // In-process execution with Ballista Standalone
-            BallistaContext::standalone(&ballista_config, concurrent_tasks).await?
+            SessionContext::standalone_with_state(state).await?
         }
     };
 

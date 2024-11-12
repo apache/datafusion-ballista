@@ -19,40 +19,30 @@ use axum::extract::ConnectInfo;
 use ballista_core::config::{BallistaConfig, BALLISTA_JOB_NAME};
 use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
 use std::collections::HashMap;
-use std::convert::TryInto;
 use std::net::SocketAddr;
 
-use ballista_core::serde::protobuf::executor_registration::OptionalHost;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
     execute_query_failure_result, execute_query_result, AvailableTaskSlots,
     CancelJobParams, CancelJobResult, CleanJobDataParams, CleanJobDataResult,
     CreateSessionParams, CreateSessionResult, ExecuteQueryFailureResult,
     ExecuteQueryParams, ExecuteQueryResult, ExecuteQuerySuccessResult, ExecutorHeartbeat,
-    ExecutorStoppedParams, ExecutorStoppedResult, GetFileMetadataParams,
-    GetFileMetadataResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
-    HeartBeatResult, PollWorkParams, PollWorkResult, RegisterExecutorParams,
-    RegisterExecutorResult, RemoveSessionParams, RemoveSessionResult,
-    UpdateSessionParams, UpdateSessionResult, UpdateTaskStatusParams,
-    UpdateTaskStatusResult,
+    ExecutorStoppedParams, ExecutorStoppedResult, GetJobStatusParams, GetJobStatusResult,
+    HeartBeatParams, HeartBeatResult, PollWorkParams, PollWorkResult,
+    RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
+    RemoveSessionResult, UpdateSessionParams, UpdateSessionResult,
+    UpdateTaskStatusParams, UpdateTaskStatusResult,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
-
-use datafusion::datasource::file_format::parquet::ParquetFormat;
-use datafusion::datasource::file_format::FileFormat;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
-use futures::TryStreamExt;
 use log::{debug, error, info, trace, warn};
-use object_store::{local::LocalFileSystem, path::Path, ObjectStore};
 
 use std::ops::Deref;
-use std::sync::Arc;
 
 use crate::cluster::{bind_task_bias, bind_task_round_robin};
 use crate::config::TaskDistributionPolicy;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use datafusion::prelude::SessionContext;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
@@ -88,10 +78,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 let metadata = ExecutorMetadata {
                     id: metadata.id,
                     host: metadata
-                        .optional_host
-                        .map(|h| match h {
-                            OptionalHost::Host(host) => host,
-                        })
+                        .host
                         .unwrap_or_else(|| remote_addr.unwrap().ip().to_string()),
                     port: metadata.port as u16,
                     grpc_port: metadata.grpc_port as u16,
@@ -166,10 +153,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             let metadata = ExecutorMetadata {
                 id: metadata.id,
                 host: metadata
-                    .optional_host
-                    .map(|h| match h {
-                        OptionalHost::Host(host) => host,
-                    })
+                    .host
                     .unwrap_or_else(|| remote_addr.unwrap().ip().to_string()),
                 port: metadata.port as u16,
                 grpc_port: metadata.grpc_port as u16,
@@ -214,10 +198,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 let metadata = ExecutorMetadata {
                     id: metadata.id,
                     host: metadata
-                        .optional_host
-                        .map(|h| match h {
-                            OptionalHost::Host(host) => host,
-                        })
+                        .host
                         .unwrap_or_else(|| remote_addr.unwrap().ip().to_string()),
                     port: metadata.port as u16,
                     grpc_port: metadata.grpc_port as u16,
@@ -284,56 +265,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             })?;
 
         Ok(Response::new(UpdateTaskStatusResult { success: true }))
-    }
-
-    async fn get_file_metadata(
-        &self,
-        request: Request<GetFileMetadataParams>,
-    ) -> Result<Response<GetFileMetadataResult>, Status> {
-        // Here, we use the default config, since we don't know the session id
-        let session_ctx = SessionContext::new();
-        let state = session_ctx.state();
-
-        // TODO support multiple object stores
-        let obj_store: Arc<dyn ObjectStore> = Arc::new(LocalFileSystem::new());
-        // TODO shouldn't this take a ListingOption object as input?
-
-        let GetFileMetadataParams { path, file_type } = request.into_inner();
-        let file_format: Arc<dyn FileFormat> = match file_type.as_str() {
-            "parquet" => Ok(Arc::new(ParquetFormat::default())),
-            // TODO implement for CSV
-            _ => Err(tonic::Status::unimplemented(
-                "get_file_metadata unsupported file type",
-            )),
-        }?;
-
-        let path = Path::from(path.as_str());
-        let file_metas: Vec<_> = obj_store
-            .list(Some(&path))
-            .try_collect()
-            .await
-            .map_err(|e| {
-                let msg = format!("Error listing files: {e}");
-                error!("{}", msg);
-                tonic::Status::internal(msg)
-            })?;
-
-        let schema = file_format
-            .infer_schema(&state, &obj_store, &file_metas)
-            .await
-            .map_err(|e| {
-                let msg = format!("Error inferring schema: {e}");
-                error!("{}", msg);
-                tonic::Status::internal(msg)
-            })?;
-
-        Ok(Response::new(GetFileMetadataResult {
-            schema: Some(schema.as_ref().try_into().map_err(|e| {
-                let msg = format!("Error inferring schema: {e}");
-                error!("{}", msg);
-                tonic::Status::internal(msg)
-            })?),
-        }))
     }
 
     async fn create_session(
@@ -424,6 +355,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         } = query_params
         {
             let mut query_settings = HashMap::new();
+            log::trace!("received query settings: {:?}", settings);
             for kv_pair in settings {
                 query_settings.insert(kv_pair.key, kv_pair.value);
             }
@@ -523,6 +455,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .cloned()
                 .unwrap_or_else(|| "None".to_string());
 
+            log::trace!("setting job name: {}", job_name);
             self.submit_job(&job_id, &job_name, session_ctx, &plan)
                 .await
                 .map_err(|e| {
@@ -659,9 +592,8 @@ mod test {
     use crate::metrics::default_metrics_collector;
     use ballista_core::error::BallistaError;
     use ballista_core::serde::protobuf::{
-        executor_registration::OptionalHost, executor_status, ExecutorRegistration,
-        ExecutorStatus, ExecutorStoppedParams, HeartBeatParams, PollWorkParams,
-        RegisterExecutorParams,
+        executor_status, ExecutorRegistration, ExecutorStatus, ExecutorStoppedParams,
+        HeartBeatParams, PollWorkParams, RegisterExecutorParams,
     };
     use ballista_core::serde::scheduler::ExecutorSpecification;
     use ballista_core::serde::BallistaCodec;
@@ -688,7 +620,7 @@ mod test {
         scheduler.init().await?;
         let exec_meta = ExecutorRegistration {
             id: "abc".to_owned(),
-            optional_host: Some(OptionalHost::Host("http://localhost:8080".to_owned())),
+            host: Some("http://localhost:8080".to_owned()),
             port: 0,
             grpc_port: 0,
             specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
@@ -776,7 +708,7 @@ mod test {
 
         let exec_meta = ExecutorRegistration {
             id: "abc".to_owned(),
-            optional_host: Some(OptionalHost::Host("http://localhost:8080".to_owned())),
+            host: Some("http://localhost:8080".to_owned()),
             port: 0,
             grpc_port: 0,
             specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
@@ -861,7 +793,7 @@ mod test {
 
         let exec_meta = ExecutorRegistration {
             id: "abc".to_owned(),
-            optional_host: Some(OptionalHost::Host("http://localhost:8080".to_owned())),
+            host: Some("http://localhost:8080".to_owned()),
             port: 0,
             grpc_port: 0,
             specification: Some(ExecutorSpecification { task_slots: 2 }.into()),
@@ -914,7 +846,7 @@ mod test {
 
         let exec_meta = ExecutorRegistration {
             id: "abc".to_owned(),
-            optional_host: Some(OptionalHost::Host("http://localhost:8080".to_owned())),
+            host: Some("http://localhost:8080".to_owned()),
             port: 0,
             grpc_port: 0,
             specification: Some(ExecutorSpecification { task_slots: 2 }.into()),

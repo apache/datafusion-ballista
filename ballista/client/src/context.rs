@@ -16,13 +16,14 @@
 // under the License.
 
 //! Distributed execution context.
+#![allow(deprecated)] // TO BE REMOVED
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::context::DataFilePaths;
+use datafusion::sql::sqlparser::ast::Statement;
 use datafusion::sql::TableReference;
 use log::info;
 use parking_lot::Mutex;
-use sqlparser::ast::Statement;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -76,7 +77,7 @@ impl BallistaContextState {
     }
 }
 
-// #[deprecated]
+#[deprecated]
 pub struct BallistaContext {
     state: Arc<Mutex<BallistaContextState>>,
     context: Arc<SessionContext>,

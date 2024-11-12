@@ -17,19 +17,20 @@
 
 //! Benchmark derived from TPC-H. This is not an official TPC-H benchmark.
 
-use arrow_schema::SchemaBuilder;
-use ballista::context::BallistaContext;
+use ballista::extension::SessionConfigExt;
 use ballista::prelude::{
-    BallistaConfig, BALLISTA_COLLECT_STATISTICS, BALLISTA_DEFAULT_BATCH_SIZE,
+    SessionContextExt, BALLISTA_COLLECT_STATISTICS, BALLISTA_DEFAULT_BATCH_SIZE,
     BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, BALLISTA_JOB_NAME,
 };
 use datafusion::arrow::array::*;
+use datafusion::arrow::datatypes::SchemaBuilder;
 use datafusion::arrow::util::display::array_value_to_string;
 use datafusion::common::{DEFAULT_CSV_EXTENSION, DEFAULT_PARQUET_EXTENSION};
 use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::SessionState;
+use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::logical_expr::{expr::Cast, Expr};
 use datafusion::parquet::basic::Compression;
@@ -354,24 +355,27 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
     println!("Running benchmarks with the following options: {opt:?}");
     let mut benchmark_run = BenchmarkRun::new(opt.query);
 
-    let config = BallistaConfig::builder()
-        .set(
+    let config = SessionConfig::new_with_ballista()
+        .set_str(
             BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
             &format!("{}", opt.partitions),
         )
-        .set(
+        .set_str(
             BALLISTA_JOB_NAME,
             &format!("Query derived from TPC-H q{}", opt.query),
         )
-        .set(BALLISTA_DEFAULT_BATCH_SIZE, &format!("{}", opt.batch_size))
-        .set(BALLISTA_COLLECT_STATISTICS, "true")
-        .build()
-        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-
-    let ctx =
-        BallistaContext::remote(opt.host.unwrap().as_str(), opt.port.unwrap(), &config)
-            .await
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+        .set_str(BALLISTA_DEFAULT_BATCH_SIZE, &format!("{}", opt.batch_size))
+        .set_str(BALLISTA_COLLECT_STATISTICS, "true");
+    let state = SessionStateBuilder::new()
+        .with_default_features()
+        .with_config(config)
+        .build();
+    let address = format!(
+        "df://{}:{}",
+        opt.host.clone().unwrap().as_str(),
+        opt.port.unwrap()
+    );
+    let ctx = SessionContext::remote_with_state(&address, state).await?;
 
     // register tables with Ballista context
     let path = opt.path.to_str().unwrap();
@@ -454,29 +458,29 @@ fn write_summary_json(benchmark_run: &mut BenchmarkRun, path: &Path) -> Result<(
 async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
     println!("Running loadtest_ballista with the following options: {opt:?}");
 
-    let config = BallistaConfig::builder()
-        .set(
+    let config = SessionConfig::new_with_ballista()
+        .set_str(
             BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
             &format!("{}", opt.partitions),
         )
-        .set(BALLISTA_DEFAULT_BATCH_SIZE, &format!("{}", opt.batch_size))
-        .build()
-        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+        .set_str(BALLISTA_DEFAULT_BATCH_SIZE, &format!("{}", opt.batch_size));
+
+    let state = SessionStateBuilder::new()
+        .with_default_features()
+        .with_config(config)
+        .build();
 
     let concurrency = opt.concurrency;
     let request_amount = opt.requests;
     let mut clients = vec![];
 
     for _num in 0..concurrency {
-        clients.push(
-            BallistaContext::remote(
-                opt.host.clone().unwrap().as_str(),
-                opt.port.unwrap(),
-                &config,
-            )
-            .await
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?,
+        let address = format!(
+            "df://{}:{}",
+            opt.host.clone().unwrap().as_str(),
+            opt.port.unwrap()
         );
+        clients.push(SessionContext::remote_with_state(&address, state.clone()).await?);
     }
 
     // register tables with Ballista context
@@ -566,7 +570,7 @@ fn get_query_sql_by_path(query: usize, mut sql_path: String) -> Result<String> {
 async fn register_tables(
     path: &str,
     file_format: &str,
-    ctx: &BallistaContext,
+    ctx: &SessionContext,
     debug: bool,
 ) -> Result<()> {
     for table in TABLES {
@@ -983,7 +987,7 @@ impl BenchmarkRun {
         Self {
             benchmark_version: env!("CARGO_PKG_VERSION").to_owned(),
             datafusion_version: DATAFUSION_VERSION.to_owned(),
-            num_cpus: num_cpus::get(),
+            num_cpus: std::thread::available_parallelism().unwrap().get(),
             start_time: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .expect("current time is later than UNIX_EPOCH")

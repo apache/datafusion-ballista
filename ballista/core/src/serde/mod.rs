@@ -89,7 +89,7 @@ impl Default for BallistaCodec {
     fn default() -> Self {
         Self {
             logical_extension_codec: Arc::new(BallistaLogicalExtensionCodec::default()),
-            physical_extension_codec: Arc::new(BallistaPhysicalExtensionCodec {}),
+            physical_extension_codec: Arc::new(BallistaPhysicalExtensionCodec::default()),
             logical_plan_repr: PhantomData,
             physical_plan_repr: PhantomData,
         }
@@ -245,7 +245,7 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct BallistaPhysicalExtensionCodec {}
 
 impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {

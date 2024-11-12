@@ -91,7 +91,7 @@ pub async fn start_server(
         .into_make_service_with_connect_info::<SocketAddr>();
 
     #[cfg(not(feature = "rest-api"))]
-    let final_route = tonic;
+    let final_route = tonic.into_make_service_with_connect_info::<SocketAddr>();
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await

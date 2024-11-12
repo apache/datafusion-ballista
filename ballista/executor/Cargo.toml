@@ -41,7 +41,7 @@ anyhow = "1"
 arrow = { workspace = true }
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
-ballista-core = { path = "../core", version = "0.12.0", features = ["s3"] }
+ballista-core = { path = "../core", version = "0.12.0" }
 configure_me = { workspace = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }
@@ -49,7 +49,6 @@ datafusion-proto = { workspace = true }
 futures = { workspace = true }
 log = { workspace = true }
 mimalloc = { version = "0.1", default-features = false, optional = true }
-num_cpus ={ workspace = true }
 parking_lot = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = [

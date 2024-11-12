@@ -20,11 +20,15 @@ use crate::config::SchedulerConfig;
 use crate::metrics::default_metrics_collector;
 use crate::scheduler_server::SchedulerServer;
 use ballista_core::serde::BallistaCodec;
-use ballista_core::utils::{create_grpc_server, default_session_builder};
+use ballista_core::utils::{
+    create_grpc_server, default_session_builder, SessionConfigExt,
+};
 use ballista_core::{
     error::Result, serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer,
     BALLISTA_VERSION,
 };
+use datafusion::execution::{SessionState, SessionStateBuilder};
+use datafusion::prelude::SessionConfig;
 use datafusion_proto::protobuf::LogicalPlanNode;
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use log::info;
@@ -33,15 +37,39 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
-    let metrics_collector = default_metrics_collector()?;
+    let codec = BallistaCodec::default();
+    new_standalone_scheduler_with_builder(Arc::new(default_session_builder), codec).await
+}
 
-    let cluster = BallistaCluster::new_memory("localhost:50050", default_session_builder);
+pub async fn new_standalone_scheduler_from_state(
+    session_state: &SessionState,
+) -> Result<SocketAddr> {
+    let logical = session_state.config().ballista_logical_extension_codec();
+    let physical = session_state.config().ballista_physical_extension_codec();
+    let codec = BallistaCodec::new(logical, physical);
+
+    let session_state = session_state.clone();
+    let session_builder = Arc::new(move |c: SessionConfig| {
+        SessionStateBuilder::new_from_existing(session_state.clone())
+            .with_config(c)
+            .build()
+    });
+
+    new_standalone_scheduler_with_builder(session_builder, codec).await
+}
+
+async fn new_standalone_scheduler_with_builder(
+    session_builder: crate::scheduler_server::SessionBuilder,
+    codec: BallistaCodec,
+) -> Result<SocketAddr> {
+    let cluster = BallistaCluster::new_memory("localhost:50050", session_builder);
+    let metrics_collector = default_metrics_collector()?;
 
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
         SchedulerServer::new(
             "localhost:50050".to_owned(),
             cluster,
-            BallistaCodec::default(),
+            codec,
             Arc::new(SchedulerConfig::default()),
             metrics_collector,
         );

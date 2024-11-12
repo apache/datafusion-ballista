@@ -25,6 +25,10 @@ use std::{env, io};
 
 use anyhow::{Context, Result};
 use arrow_flight::flight_service_server::FlightServiceServer;
+use ballista_core::serde::scheduler::BallistaFunctionRegistry;
+use datafusion::prelude::SessionConfig;
+use datafusion_proto::logical_plan::LogicalExtensionCodec;
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use log::{error, info, warn};
@@ -38,23 +42,24 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
-use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 
-use ballista_core::config::{DataCachePolicy, LogRotationPolicy, TaskSchedulingPolicy};
+use ballista_core::config::{
+    BallistaConfig, DataCachePolicy, LogRotationPolicy, TaskSchedulingPolicy,
+};
 use ballista_core::error::BallistaError;
-use ballista_core::object_store_registry::with_object_store_registry;
 use ballista_core::serde::protobuf::executor_resource::Resource;
 use ballista_core::serde::protobuf::executor_status::Status;
 use ballista_core::serde::protobuf::{
-    executor_registration, scheduler_grpc_client::SchedulerGrpcClient,
-    ExecutorRegistration, ExecutorResource, ExecutorSpecification, ExecutorStatus,
-    ExecutorStoppedParams, HeartBeatParams,
+    scheduler_grpc_client::SchedulerGrpcClient, ExecutorRegistration, ExecutorResource,
+    ExecutorSpecification, ExecutorStatus, ExecutorStoppedParams, HeartBeatParams,
 };
-use ballista_core::serde::BallistaCodec;
+use ballista_core::serde::{
+    BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
+};
 use ballista_core::utils::{
     create_grpc_client_connection, create_grpc_server, get_time_before,
 };
-use ballista_core::BALLISTA_VERSION;
+use ballista_core::{ConfigProducer, RuntimeProducer, BALLISTA_VERSION};
 
 use crate::execution_engine::ExecutionEngine;
 use crate::executor::{Executor, TasksDrainedFuture};
@@ -96,6 +101,16 @@ pub struct ExecutorProcessConfig {
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.
     pub execution_engine: Option<Arc<dyn ExecutionEngine>>,
+    /// Overrides default function registry
+    pub function_registry: Option<Arc<BallistaFunctionRegistry>>,
+    /// [RuntimeProducer] override option
+    pub runtime_producer: Option<RuntimeProducer>,
+    /// [ConfigProducer] override option
+    pub config_producer: Option<ConfigProducer>,
+    /// [PhysicalExtensionCodec] override option
+    pub logical_codec: Option<Arc<dyn LogicalExtensionCodec>>,
+    /// [PhysicalExtensionCodec] override option
+    pub physical_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
 }
 
 pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<()> {
@@ -155,7 +170,7 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
 
     let concurrent_tasks = if opt.concurrent_tasks == 0 {
         // use all available cores if no concurrency level is specified
-        num_cpus::get()
+        std::thread::available_parallelism().unwrap().get()
     } else {
         opt.concurrent_tasks
     };
@@ -168,10 +183,7 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
     let executor_id = Uuid::new_v4().to_string();
     let executor_meta = ExecutorRegistration {
         id: executor_id.clone(),
-        optional_host: opt
-            .external_host
-            .clone()
-            .map(executor_registration::OptionalHost::Host),
+        host: opt.external_host.clone(),
         port: opt.port as u32,
         grpc_port: opt.grpc_port as u32,
         specification: Some(ExecutorSpecification {
@@ -181,20 +193,40 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
         }),
     };
 
-    let config = RuntimeConfig::new().with_temp_file_path(work_dir.clone());
-    let runtime = {
-        let config = with_object_store_registry(config.clone());
-        Arc::new(RuntimeEnv::new(config).map_err(|_| {
-            BallistaError::Internal("Failed to init Executor RuntimeEnv".to_owned())
-        })?)
-    };
-
+    // put them to session config
     let metrics_collector = Arc::new(LoggingMetricsCollector::default());
+    let config_producer = opt.config_producer.clone().unwrap_or_else(|| {
+        Arc::new(|| {
+            SessionConfig::new().with_option_extension(BallistaConfig::new().unwrap())
+        })
+    });
+    let wd = work_dir.clone();
+    let runtime_producer: RuntimeProducer = Arc::new(move |_| {
+        let config = RuntimeConfig::new().with_temp_file_path(wd.clone());
+        Ok(Arc::new(RuntimeEnv::new(config)?))
+    });
+
+    let logical = opt
+        .logical_codec
+        .clone()
+        .unwrap_or_else(|| Arc::new(BallistaLogicalExtensionCodec::default()));
+
+    let physical = opt
+        .physical_codec
+        .clone()
+        .unwrap_or_else(|| Arc::new(BallistaPhysicalExtensionCodec::default()));
+
+    let default_codec: BallistaCodec<
+        datafusion_proto::protobuf::LogicalPlanNode,
+        datafusion_proto::protobuf::PhysicalPlanNode,
+    > = BallistaCodec::new(logical, physical);
 
     let executor = Arc::new(Executor::new(
         executor_meta,
         &work_dir,
-        runtime,
+        runtime_producer,
+        config_producer,
+        opt.function_registry.clone().unwrap_or_default(),
         metrics_collector,
         concurrent_tasks,
         opt.execution_engine.clone(),
@@ -243,9 +275,6 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
     let mut scheduler = SchedulerGrpcClient::new(connection)
         .max_encoding_message_size(opt.grpc_max_encoding_message_size as usize)
         .max_decoding_message_size(opt.grpc_max_decoding_message_size as usize);
-
-    let default_codec: BallistaCodec<LogicalPlanNode, PhysicalPlanNode> =
-        BallistaCodec::default();
 
     let scheduler_policy = opt.task_scheduling_policy;
     let job_data_ttl_seconds = opt.job_data_ttl_seconds;
@@ -359,10 +388,7 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
                 }),
                 metadata: Some(ExecutorRegistration {
                     id: executor_id.clone(),
-                    optional_host: opt
-                        .external_host
-                        .clone()
-                        .map(executor_registration::OptionalHost::Host),
+                    host: opt.external_host.clone(),
                     port: opt.port as u32,
                     grpc_port: opt.grpc_port as u32,
                     specification: Some(ExecutorSpecification {

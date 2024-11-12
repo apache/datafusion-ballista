@@ -22,7 +22,7 @@ use crate::execution_plans::{
 };
 use crate::object_store_registry::with_object_store_registry;
 use crate::serde::scheduler::PartitionStats;
-use crate::serde::BallistaLogicalExtensionCodec;
+use crate::serde::{BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec};
 
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::Schema;
@@ -51,6 +51,8 @@ use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{metrics, ExecutionPlan, RecordBatchStream};
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use datafusion_proto::logical_plan::{AsLogicalPlan, LogicalExtensionCodec};
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+use datafusion_proto::protobuf::LogicalPlanNode;
 use futures::StreamExt;
 use log::error;
 use std::io::{BufWriter, Write};
@@ -275,6 +277,230 @@ pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
     SessionContext::new_with_state(session_state)
 }
 
+pub trait SessionStateExt {
+    fn new_ballista_state(
+        scheduler_url: String,
+        session_id: String,
+    ) -> datafusion::error::Result<SessionState>;
+    fn upgrade_for_ballista(
+        self,
+        scheduler_url: String,
+        session_id: String,
+    ) -> datafusion::error::Result<SessionState>;
+
+    fn ballista_config(&self) -> BallistaConfig;
+}
+
+impl SessionStateExt for SessionState {
+    fn ballista_config(&self) -> BallistaConfig {
+        self.config()
+            .options()
+            .extensions
+            .get::<BallistaConfig>()
+            .cloned()
+            .unwrap_or_else(|| BallistaConfig::new().unwrap())
+    }
+
+    fn new_ballista_state(
+        scheduler_url: String,
+        session_id: String,
+    ) -> datafusion::error::Result<SessionState> {
+        let config = BallistaConfig::new()
+            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+
+        let planner =
+            BallistaQueryPlanner::<LogicalPlanNode>::new(scheduler_url, config.clone());
+
+        let session_config = SessionConfig::new()
+            .with_information_schema(true)
+            .with_option_extension(config.clone())
+            // Ballista disables this option
+            .with_round_robin_repartition(false);
+
+        let runtime_config = RuntimeConfig::default();
+        let runtime_env = RuntimeEnv::new(runtime_config)?;
+        let session_state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_config(session_config)
+            .with_runtime_env(Arc::new(runtime_env))
+            .with_query_planner(Arc::new(planner))
+            .with_session_id(session_id)
+            .build();
+
+        Ok(session_state)
+    }
+
+    fn upgrade_for_ballista(
+        self,
+        scheduler_url: String,
+        session_id: String,
+    ) -> datafusion::error::Result<SessionState> {
+        let codec_logical = self.config().ballista_logical_extension_codec();
+        let planner_override = self.config().ballista_query_planner();
+
+        let new_config = self
+            .config()
+            .options()
+            .extensions
+            .get::<BallistaConfig>()
+            .cloned()
+            .unwrap_or_else(|| BallistaConfig::new().unwrap());
+
+        let session_config = self
+            .config()
+            .clone()
+            .with_option_extension(new_config.clone())
+            // Ballista disables this option
+            .with_round_robin_repartition(false);
+
+        let builder = SessionStateBuilder::new_from_existing(self)
+            .with_config(session_config)
+            .with_session_id(session_id);
+
+        let builder = match planner_override {
+            Some(planner) => builder.with_query_planner(planner),
+            None => {
+                let planner = BallistaQueryPlanner::<LogicalPlanNode>::with_extension(
+                    scheduler_url,
+                    new_config,
+                    codec_logical,
+                );
+                builder.with_query_planner(Arc::new(planner))
+            }
+        };
+
+        Ok(builder.build())
+    }
+}
+
+pub trait SessionConfigExt {
+    /// Creates session config which has
+    /// ballista configuration initialized
+    fn new_with_ballista() -> SessionConfig;
+
+    /// Overrides ballista's [LogicalExtensionCodec]
+    fn with_ballista_logical_extension_codec(
+        self,
+        codec: Arc<dyn LogicalExtensionCodec>,
+    ) -> SessionConfig;
+
+    /// Overrides ballista's [PhysicalExtensionCodec]
+    fn with_ballista_physical_extension_codec(
+        self,
+        codec: Arc<dyn PhysicalExtensionCodec>,
+    ) -> SessionConfig;
+
+    /// returns [LogicalExtensionCodec] if set
+    /// or default ballista codec if not
+    fn ballista_logical_extension_codec(&self) -> Arc<dyn LogicalExtensionCodec>;
+
+    /// returns [PhysicalExtensionCodec] if set
+    /// or default ballista codec if not
+    fn ballista_physical_extension_codec(&self) -> Arc<dyn PhysicalExtensionCodec>;
+
+    /// Overrides ballista's [QueryPlanner]
+    fn with_ballista_query_planner(
+        self,
+        planner: Arc<dyn QueryPlanner + Send + Sync + 'static>,
+    ) -> SessionConfig;
+
+    /// Returns ballista's [QueryPlanner] if overriden
+    fn ballista_query_planner(
+        &self,
+    ) -> Option<Arc<dyn QueryPlanner + Send + Sync + 'static>>;
+}
+
+impl SessionConfigExt for SessionConfig {
+    fn new_with_ballista() -> SessionConfig {
+        SessionConfig::new().with_option_extension(BallistaConfig::new().unwrap())
+    }
+    fn with_ballista_logical_extension_codec(
+        self,
+        codec: Arc<dyn LogicalExtensionCodec>,
+    ) -> SessionConfig {
+        let extension = BallistaConfigExtensionLogicalCodec::new(codec);
+        self.with_extension(Arc::new(extension))
+    }
+    fn with_ballista_physical_extension_codec(
+        self,
+        codec: Arc<dyn PhysicalExtensionCodec>,
+    ) -> SessionConfig {
+        let extension = BallistaConfigExtensionPhysicalCodec::new(codec);
+        self.with_extension(Arc::new(extension))
+    }
+
+    fn ballista_logical_extension_codec(&self) -> Arc<dyn LogicalExtensionCodec> {
+        self.get_extension::<BallistaConfigExtensionLogicalCodec>()
+            .map(|c| c.codec())
+            .unwrap_or_else(|| Arc::new(BallistaLogicalExtensionCodec::default()))
+    }
+    fn ballista_physical_extension_codec(&self) -> Arc<dyn PhysicalExtensionCodec> {
+        self.get_extension::<BallistaConfigExtensionPhysicalCodec>()
+            .map(|c| c.codec())
+            .unwrap_or_else(|| Arc::new(BallistaPhysicalExtensionCodec::default()))
+    }
+
+    fn with_ballista_query_planner(
+        self,
+        planner: Arc<dyn QueryPlanner + Send + Sync + 'static>,
+    ) -> SessionConfig {
+        let extension = BallistaQueryPlannerExtension::new(planner);
+        self.with_extension(Arc::new(extension))
+    }
+
+    fn ballista_query_planner(
+        &self,
+    ) -> Option<Arc<dyn QueryPlanner + Send + Sync + 'static>> {
+        self.get_extension::<BallistaQueryPlannerExtension>()
+            .map(|c| c.planner())
+    }
+}
+
+/// Wrapper for [SessionConfig] extension
+/// holding [LogicalExtensionCodec] if overridden
+struct BallistaConfigExtensionLogicalCodec {
+    codec: Arc<dyn LogicalExtensionCodec>,
+}
+
+impl BallistaConfigExtensionLogicalCodec {
+    fn new(codec: Arc<dyn LogicalExtensionCodec>) -> Self {
+        Self { codec }
+    }
+    fn codec(&self) -> Arc<dyn LogicalExtensionCodec> {
+        self.codec.clone()
+    }
+}
+
+/// Wrapper for [SessionConfig] extension
+/// holding [PhysicalExtensionCodec] if overridden
+struct BallistaConfigExtensionPhysicalCodec {
+    codec: Arc<dyn PhysicalExtensionCodec>,
+}
+
+impl BallistaConfigExtensionPhysicalCodec {
+    fn new(codec: Arc<dyn PhysicalExtensionCodec>) -> Self {
+        Self { codec }
+    }
+    fn codec(&self) -> Arc<dyn PhysicalExtensionCodec> {
+        self.codec.clone()
+    }
+}
+
+/// Wrapper for [SessionConfig] extension
+/// holding overridden [QueryPlanner]
+struct BallistaQueryPlannerExtension {
+    planner: Arc<dyn QueryPlanner + Send + Sync + 'static>,
+}
+
+impl BallistaQueryPlannerExtension {
+    fn new(planner: Arc<dyn QueryPlanner + Send + Sync + 'static>) -> Self {
+        Self { planner }
+    }
+    fn planner(&self) -> Arc<dyn QueryPlanner + Send + Sync + 'static> {
+        self.planner.clone()
+    }
+}
+
 pub struct BallistaQueryPlanner<T: AsLogicalPlan> {
     scheduler_url: String,
     config: BallistaConfig,
@@ -466,12 +692,12 @@ mod test {
         error::Result,
         execution::{
             runtime_env::{RuntimeConfig, RuntimeEnv},
-            SessionStateBuilder,
+            SessionState, SessionStateBuilder,
         },
         prelude::{SessionConfig, SessionContext},
     };
 
-    use crate::utils::LocalRun;
+    use crate::utils::{LocalRun, SessionStateExt};
 
     fn context() -> SessionContext {
         let runtime_environment = RuntimeEnv::new(RuntimeConfig::new()).unwrap();
@@ -547,5 +773,26 @@ mod test {
         assert!(!local_run.can_be_local);
 
         Ok(())
+    }
+
+    // Ballista disables round robin repatriations
+    #[tokio::test]
+    async fn should_disable_round_robin_repartition() {
+        let state = SessionState::new_ballista_state(
+            "scheduler_url".to_string(),
+            "session_id".to_string(),
+        )
+        .unwrap();
+
+        assert!(!state.config().round_robin_repartition());
+
+        let state = SessionStateBuilder::new().build();
+
+        assert!(state.config().round_robin_repartition());
+        let state = state
+            .upgrade_for_ballista("scheduler_url".to_string(), "session_id".to_string())
+            .unwrap();
+
+        assert!(!state.config().round_robin_repartition());
     }
 }

@@ -109,7 +109,7 @@ impl BallistaCluster {
         match &config.cluster_storage {
             ClusterStorageConfig::Memory => Ok(BallistaCluster::new_memory(
                 scheduler,
-                default_session_builder,
+                Arc::new(default_session_builder),
             )),
         }
     }

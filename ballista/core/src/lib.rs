@@ -16,6 +16,10 @@
 // under the License.
 
 #![doc = include_str!("../README.md")]
+
+use std::sync::Arc;
+
+use datafusion::{execution::runtime_env::RuntimeEnv, prelude::SessionConfig};
 pub const BALLISTA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn print_version() {
@@ -33,3 +37,23 @@ pub mod utils;
 
 #[macro_use]
 pub mod serde;
+
+///
+/// [RuntimeProducer] is a factory which creates runtime [RuntimeEnv]
+/// from [SessionConfig]. As [SessionConfig] will be propagated
+/// from client to executors, this provides possibility to
+/// create [RuntimeEnv] components and configure them according to
+/// [SessionConfig] or some of its config extension
+///
+/// It is intended to be used with executor configuration
+///
+pub type RuntimeProducer = Arc<
+    dyn Fn(&SessionConfig) -> datafusion::error::Result<Arc<RuntimeEnv>> + Send + Sync,
+>;
+///
+/// [ConfigProducer] is a factory which can create [SessionConfig], with
+/// additional extension or configuration codecs
+///
+/// It is intended to be used with executor configuration
+///
+pub type ConfigProducer = Arc<dyn Fn() -> SessionConfig + Send + Sync>;

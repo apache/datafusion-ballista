@@ -17,12 +17,13 @@
 
 use chrono::{TimeZone, Utc};
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
-use datafusion::execution::runtime_env::RuntimeEnv;
+
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use datafusion::physical_plan::metrics::{
     Count, Gauge, MetricValue, MetricsSet, Time, Timestamp,
 };
 use datafusion::physical_plan::{ExecutionPlan, Metric};
+use datafusion::prelude::SessionConfig;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use std::collections::HashMap;
@@ -32,11 +33,13 @@ use std::time::Duration;
 
 use crate::error::BallistaError;
 use crate::serde::scheduler::{
-    Action, ExecutorData, ExecutorMetadata, ExecutorSpecification, PartitionId,
-    PartitionLocation, PartitionStats, SimpleFunctionRegistry, TaskDefinition,
+    Action, BallistaFunctionRegistry, ExecutorData, ExecutorMetadata,
+    ExecutorSpecification, PartitionId, PartitionLocation, PartitionStats,
+    TaskDefinition,
 };
 
 use crate::serde::{protobuf, BallistaCodec};
+use crate::RuntimeProducer;
 use protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
 
 impl TryInto<Action> for protobuf::Action {
@@ -281,17 +284,17 @@ impl Into<ExecutorData> for protobuf::ExecutorData {
 
 pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     task: protobuf::TaskDefinition,
-    runtime: Arc<RuntimeEnv>,
+    produce_runtime: RuntimeProducer,
+    session_config: SessionConfig,
     scalar_functions: HashMap<String, Arc<ScalarUDF>>,
     aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
     window_functions: HashMap<String, Arc<WindowUDF>>,
     codec: BallistaCodec<T, U>,
 ) -> Result<TaskDefinition, BallistaError> {
-    let mut props = HashMap::new();
+    let mut session_config = session_config;
     for kv_pair in task.props {
-        props.insert(kv_pair.key, kv_pair.value);
+        session_config = session_config.set_str(&kv_pair.key, &kv_pair.value);
     }
-    let props = Arc::new(props);
 
     let mut task_scalar_functions = HashMap::new();
     let mut task_aggregate_functions = HashMap::new();
@@ -306,12 +309,12 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     for agg_func in window_functions {
         task_window_functions.insert(agg_func.0, agg_func.1);
     }
-    let function_registry = Arc::new(SimpleFunctionRegistry {
+    let function_registry = Arc::new(BallistaFunctionRegistry {
         scalar_functions: task_scalar_functions,
         aggregate_functions: task_aggregate_functions,
         window_functions: task_window_functions,
     });
-
+    let runtime = produce_runtime(&session_config)?;
     let encoded_plan = task.plan.as_slice();
     let plan: Arc<dyn ExecutionPlan> = U::try_decode(encoded_plan).and_then(|proto| {
         proto.try_into_physical_plan(
@@ -340,7 +343,7 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         plan,
         launch_time,
         session_id,
-        props,
+        session_config,
         function_registry,
     })
 }
@@ -350,17 +353,17 @@ pub fn get_task_definition_vec<
     U: 'static + AsExecutionPlan,
 >(
     multi_task: protobuf::MultiTaskDefinition,
-    runtime: Arc<RuntimeEnv>,
+    runtime_producer: RuntimeProducer,
+    session_config: SessionConfig,
     scalar_functions: HashMap<String, Arc<ScalarUDF>>,
     aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
     window_functions: HashMap<String, Arc<WindowUDF>>,
     codec: BallistaCodec<T, U>,
 ) -> Result<Vec<TaskDefinition>, BallistaError> {
-    let mut props = HashMap::new();
+    let mut session_config = session_config;
     for kv_pair in multi_task.props {
-        props.insert(kv_pair.key, kv_pair.value);
+        session_config = session_config.set_str(&kv_pair.key, &kv_pair.value);
     }
-    let props = Arc::new(props);
 
     let mut task_scalar_functions = HashMap::new();
     let mut task_aggregate_functions = HashMap::new();
@@ -375,11 +378,13 @@ pub fn get_task_definition_vec<
     for agg_func in window_functions {
         task_window_functions.insert(agg_func.0, agg_func.1);
     }
-    let function_registry = Arc::new(SimpleFunctionRegistry {
+    let function_registry = Arc::new(BallistaFunctionRegistry {
         scalar_functions: task_scalar_functions,
         aggregate_functions: task_aggregate_functions,
         window_functions: task_window_functions,
     });
+
+    let runtime = runtime_producer(&session_config)?;
 
     let encoded_plan = multi_task.plan.as_slice();
     let plan: Arc<dyn ExecutionPlan> = U::try_decode(encoded_plan).and_then(|proto| {
@@ -410,7 +415,7 @@ pub fn get_task_definition_vec<
                 plan: reset_metrics_for_execution_plan(plan.clone())?,
                 launch_time,
                 session_id: session_id.clone(),
-                props: props.clone(),
+                session_config: session_config.clone(),
                 function_registry: function_registry.clone(),
             })
         })

@@ -31,6 +31,7 @@ use std::sync::Arc;
 use url::Url;
 
 /// Get a RuntimeConfig with specific ObjectStoreRegistry
+// TODO: #[deprecated] this method
 pub fn with_object_store_registry(config: RuntimeConfig) -> RuntimeConfig {
     let registry = Arc::new(BallistaObjectStoreRegistry::default());
     config.with_object_store_registry(registry)

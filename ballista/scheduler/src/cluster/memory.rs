@@ -401,7 +401,7 @@ impl JobState for InMemoryJobState {
         &self,
         config: &BallistaConfig,
     ) -> Result<Arc<SessionContext>> {
-        let session = create_datafusion_context(config, self.session_builder);
+        let session = create_datafusion_context(config, self.session_builder.clone());
         self.sessions.insert(session.session_id(), session.clone());
 
         Ok(session)
@@ -412,7 +412,7 @@ impl JobState for InMemoryJobState {
         session_id: &str,
         config: &BallistaConfig,
     ) -> Result<Arc<SessionContext>> {
-        let session = create_datafusion_context(config, self.session_builder);
+        let session = create_datafusion_context(config, self.session_builder.clone());
         self.sessions
             .insert(session_id.to_string(), session.clone());
 
@@ -486,6 +486,8 @@ impl JobState for InMemoryJobState {
 
 #[cfg(test)]
 mod test {
+    use std::sync::Arc;
+
     use crate::cluster::memory::InMemoryJobState;
     use crate::cluster::test_util::{test_job_lifecycle, test_job_planning_failure};
     use crate::test_utils::{
@@ -497,17 +499,17 @@ mod test {
     #[tokio::test]
     async fn test_in_memory_job_lifecycle() -> Result<()> {
         test_job_lifecycle(
-            InMemoryJobState::new("", default_session_builder),
+            InMemoryJobState::new("", Arc::new(default_session_builder)),
             test_aggregation_plan(4).await,
         )
         .await?;
         test_job_lifecycle(
-            InMemoryJobState::new("", default_session_builder),
+            InMemoryJobState::new("", Arc::new(default_session_builder)),
             test_two_aggregations_plan(4).await,
         )
         .await?;
         test_job_lifecycle(
-            InMemoryJobState::new("", default_session_builder),
+            InMemoryJobState::new("", Arc::new(default_session_builder)),
             test_join_plan(4).await,
         )
         .await?;
@@ -518,17 +520,17 @@ mod test {
     #[tokio::test]
     async fn test_in_memory_job_planning_failure() -> Result<()> {
         test_job_planning_failure(
-            InMemoryJobState::new("", default_session_builder),
+            InMemoryJobState::new("", Arc::new(default_session_builder)),
             test_aggregation_plan(4).await,
         )
         .await?;
         test_job_planning_failure(
-            InMemoryJobState::new("", default_session_builder),
+            InMemoryJobState::new("", Arc::new(default_session_builder)),
             test_two_aggregations_plan(4).await,
         )
         .await?;
         test_job_planning_failure(
-            InMemoryJobState::new("", default_session_builder),
+            InMemoryJobState::new("", Arc::new(default_session_builder)),
             test_join_plan(4).await,
         )
         .await?;

@@ -15,24 +15,38 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista::prelude::{BallistaConfig, BallistaContext, Result};
+use ballista::{
+    extension::SessionConfigExt,
+    prelude::{
+        Result, SessionContextExt, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
+        BALLISTA_STANDALONE_PARALLELISM,
+    },
+};
 use ballista_examples::test_util;
-use datafusion::execution::options::ParquetReadOptions;
+use datafusion::{
+    execution::{options::ParquetReadOptions, SessionStateBuilder},
+    prelude::{SessionConfig, SessionContext},
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitions", "1")
-        .build()?;
+    let config = SessionConfig::new_with_ballista()
+        .set_str(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "1")
+        .set_str(BALLISTA_STANDALONE_PARALLELISM, "2");
 
-    let ctx = BallistaContext::standalone(&config, 2).await?;
+    let state = SessionStateBuilder::new()
+        .with_config(config)
+        .with_default_features()
+        .build();
 
-    let testdata = test_util::examples_test_data();
+    let ctx = SessionContext::standalone_with_state(state).await?;
+
+    let test_data = test_util::examples_test_data();
 
     // register parquet file with the execution context
     ctx.register_parquet(
         "test",
-        &format!("{testdata}/alltypes_plain.parquet"),
+        &format!("{test_data}/alltypes_plain.parquet"),
         ParquetReadOptions::default(),
     )
     .await?;
