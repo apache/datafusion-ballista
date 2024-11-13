@@ -15,13 +15,25 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from ballista import Ballista, BallistaConfig, BallistaConfigBuilder
+from ballista import Ballista, SessionConfig, SessionStateBuilder
 from datafusion.context import SessionContext
 
 # Ballista will initiate with an empty config
 ballista = Ballista()
-config = BallistaConfig()
+config = SessionConfig()\
+    .set_str("BALLISTA_DEFAULT_SHUFFLE_PARTITIONS", "4")
+    
+# Build the state
+state = SessionStateBuilder()\
+    .with_config(config)\
+    .build()
 
+# Create the context
+ctx: SessionContext = Ballista().standalone()
+
+ctx.sql("SELECT 1").show()
+
+"""
 # Define custom settings
 job_settings = {
     "BALLISTA_JOB_NAME": "Example Ballista Job",
@@ -52,3 +64,4 @@ test_csv = ctx.read_csv("./testdata/test.csv", has_header=False)
 
 # Show the dataframe
 test_csv.show()
+"""

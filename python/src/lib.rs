@@ -17,10 +17,13 @@
 
 use ballista::extension::SessionConfigExt;
 use ballista::prelude::*;
-use datafusion::execution::SessionStateBuilder;
+use ballista_core::utils::SessionStateExt;
+use datafusion::catalog::Session;
+use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::prelude::*;
 use datafusion_python::context::PySessionContext as DataFusionPythonSessionContext;
 use datafusion_python::utils::wait_for_future;
+use std::borrow::BorrowMut;
 use std::cell::RefCell;
 
 use pyo3::prelude::*;
@@ -35,6 +38,7 @@ fn ballista_internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<datafusion_python::dataframe::PyDataFrame>()?;
     // Ballista Config
     m.add_class::<PySessionStateBuilder>()?;
+    m.add_class::<PySessionState>()?;
     m.add_class::<PySessionConfig>()?;
     Ok(())
 }
@@ -76,8 +80,18 @@ impl PySessionStateBuilder {
         }
     }
 
-    pub fn with_config(slf: PyRefMut<'_, Self>, config: PySessionConfig) {
-        slf.state.take().with_config(config.session_config);
+    pub fn with_config(&mut self, config: PySessionConfig) -> PySessionStateBuilder {
+        let state = self.state.take().with_config(config.session_config);
+        
+        PySessionStateBuilder {
+            state: state.into()
+        }
+    }
+    
+    pub fn build(&mut self) -> PySessionStateBuilder {
+        PySessionStateBuilder {
+            state: RefCell::new(self.state.take())
+        }
     }
 }
 
@@ -94,13 +108,18 @@ impl PyBallista {
             state: RefCell::new(SessionStateBuilder::new()),
         }
     }
+    
+    pub fn update_state(&mut self, state: &PyCell<PySessionStateBuilder>) {
+        self.state = state.borrow_mut().state
+    }
 
     /// Construct the standalone instance from the SessionContext
     pub fn standalone(
         slf: PyRef<'_, Self>,
+        state: PySessionStateBuilder,
         py: Python,
     ) -> PyResult<DataFusionPythonSessionContext> {
-        let take_state = slf.state.take().build();
+        let take_state = state.take().build();
         // Define the SessionContext
         let session_context = SessionContext::standalone_with_state(take_state);
         // SessionContext is an async function

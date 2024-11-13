@@ -17,115 +17,45 @@
 
 from _typeshed import Self
 from datafusion import SessionContext
-from ballista import Ballista, BallistaConfig, BallistaConfigBuilder
+from ballista import SessionConfig, SessionStateBuilder, SessionState, Ballista
 
 from typing import List, Any
        
-class BallistaConfigBuilder:
-    def __init__(self) -> None:
-        pass
-    
-    def set(self, k: str, v: str):
-        BallistaConfigBuilder.set(self, k, v)
+class SessionConfig:
+    def __new__(cls):
+        return super().__new__(cls)
         
-    def build() -> BallistaConfig:
-        BallistaConfig()
-       
-class BallistaConfig:
     def __init__(self):
-        self.config = self.with_settings({})
+        self.session_config = SessionConfig()
         
-    def builder(self) -> BallistaConfig:
-        builder = self.builder()
+    def set_str(self, key: str, value: str):
+        self.session_config.set_str(key, value)
         
-        return builder
-    
-    def with_settings(self, settings: dict) -> BallistaConfig:
-        self.with_settings(settings)
+class SessionStateBuilder:
+    def __new__(cls):
+        return super().__new__(cls)
+        
+    def __init__(self) -> None:
+        self.state = SessionStateBuilder()
+        
+    def with_config(self, config: SessionConfig) -> SessionStateBuilder:
+        self.with_config(config)
         
         return self
         
-    def settings(self) -> None:
-        self.settings()
+    def build(self) -> SessionState:
+        self.build()
         
-    def default_shuffle_partitions(self):
-        self.default_shuffle_partitions()
-    
-    def default_batch_size(self):
-        self.default_batch_size()
-        
-    def hash_join_single_partition_threshold(self):
-        self.hash_join_single_partition_threshold()
-        
-    def default_grpc_client_max_message_size(self):
-        self.default_grpc_client_max_message_size()
-        
-    def repartition_joins(self):
-        self.repartition_joins()
-        
-    def repartition_aggregations(self):
-        self.repartition_aggregations()
-        
-    def repartition_windows(self):
-        self.repartition_windows()
-        
-    def parquet_pruning(self):
-        self.parquet_pruning()
-        
-    def collect_statistics(self):
-        self.collect_statistics()
-        
-    def default_standalone_parallelism(self):
-        self.default_standalone_parallelism()
-        
-    def default_with_information_schema(self):
-        self.default_with_information_schema()
+class SessionState:
+    def __new__(cls):
+        return super().__new__(cls)
         
 class Ballista:
-    def __init__(self):
-        self.config = BallistaConfig()
-    
-    def configuration(self, settings: dict):
-        self.config = BallistaConfig().builder().with_settings(settings)
-    
-    def standalone(self) -> SessionContext:
-        return self.standalone()
+    def __new__(cls):
+        return super().__new__(cls)
         
-    def remote(self, url: str) -> SessionContext:
-        return self.remote(url)
+    def __init__(self) -> None:
+        self.state = Ballista()
         
-    def settings(self):
-        self.config.settings()
-        
-    def default_shuffle_partitions(self):
-        self.config.default_shuffle_partitions()
-        
-    def default_batch_size(self):
-        self.config.default_batch_size()
-        
-    def hash_join_single_partition_threshold(self):
-        self.config.hash_join_single_partition_threshold()
-        
-    def default_grpc_client_max_message_size(self):
-        self.config.default_grpc_client_max_message_size()
-        
-    def repartition_joins(self):
-        self.config.repartition_joins()
-        
-    def repartion_aggregations(self):
-        self.config.repartition_aggregations()
-        
-    def repartition_windows(self):
-        self.config.repartition_windows()
-        
-    def parquet_pruning(self):
-        self.config.parquet_pruning()
-        
-    def collect_statistics(self):
-        self.config.collect_statistics()
-    
-    def default_standalone_parallelism(self):
-        self.config.default_standalone_parallelism()
-        
-    def default_with_information_schema(self):
-        self.config.default_with_information_schema()
+    def standalone(self):
+        self.standalone()
