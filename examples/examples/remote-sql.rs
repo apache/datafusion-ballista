@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista::{extension::SessionConfigExt, prelude::*};
+use ballista::prelude::*;
 use ballista_examples::test_util;
 use datafusion::{
     execution::SessionStateBuilder,
@@ -27,7 +27,8 @@ use datafusion::{
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = SessionConfig::new_with_ballista()
-        .set_str(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4");
+        .with_target_partitions(4)
+        .with_ballista_job_name("Remote SQL Example");
 
     let state = SessionStateBuilder::new()
         .with_config(config)

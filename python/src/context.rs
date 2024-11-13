@@ -51,7 +51,7 @@ impl PySessionContext {
     /// Create a new SessionContext by connecting to a Ballista scheduler process.
     #[new]
     pub fn new(host: &str, port: u16, py: Python) -> PyResult<Self> {
-        let config = BallistaConfig::new().unwrap();
+        let config = BallistaConfig::default();
         let ballista_context = BallistaContext::remote(host, port, &config);
         let ctx = wait_for_future(py, ballista_context).map_err(to_pyerr)?;
         Ok(Self { ctx })

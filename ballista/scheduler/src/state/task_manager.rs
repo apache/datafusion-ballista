@@ -24,6 +24,8 @@ use crate::state::executor_manager::ExecutorManager;
 
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
+use ballista_core::utils::SessionConfigExt;
+use datafusion::prelude::SessionConfig;
 
 use crate::cluster::JobState;
 use ballista_core::serde::protobuf::{
@@ -205,6 +207,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         session_id: &str,
         plan: Arc<dyn ExecutionPlan>,
         queued_at: u64,
+        session_config: Arc<SessionConfig>,
     ) -> Result<()> {
         let mut graph = ExecutionGraph::new(
             &self.scheduler_id,
@@ -213,6 +216,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             session_id,
             plan,
             queued_at,
+            session_config,
         )?;
         info!("Submitting execution graph: {:?}", graph);
 
@@ -495,8 +499,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 plan_buf
             };
 
-            let props = vec![];
-
             let task_definition = TaskDefinition {
                 task_id: task.task_id as u32,
                 task_attempt_num: task.task_attempt as u32,
@@ -510,7 +512,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_millis() as u64,
-                props,
+                props: task.session_config.to_key_value_pairs(),
             };
             Ok(task_definition)
         } else {

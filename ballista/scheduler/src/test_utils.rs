@@ -32,7 +32,6 @@ use crate::scheduler_server::{timestamp_millis, SchedulerServer};
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::task_manager::TaskLauncher;
 
-use ballista_core::config::{BallistaConfig, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS};
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
     task_status, FailedTask, JobStatus, MultiTaskDefinition, ShuffleWritePartition,
@@ -57,7 +56,9 @@ use crate::cluster::BallistaCluster;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
 use crate::state::execution_graph::{ExecutionGraph, ExecutionStage, TaskDescription};
-use ballista_core::utils::default_session_builder;
+use ballista_core::utils::{
+    default_config_producer, default_session_builder, SessionConfigExt,
+};
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use parking_lot::Mutex;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
@@ -124,7 +125,11 @@ pub async fn await_condition<Fut: Future<Output = Result<bool>>, F: Fn() -> Fut>
 }
 
 pub fn test_cluster_context() -> BallistaCluster {
-    BallistaCluster::new_memory(TEST_SCHEDULER_NAME, Arc::new(default_session_builder))
+    BallistaCluster::new_memory(
+        TEST_SCHEDULER_NAME,
+        Arc::new(default_session_builder),
+        Arc::new(default_config_producer),
+    )
 }
 
 pub async fn datafusion_test_context(path: &str) -> Result<SessionContext> {
@@ -374,7 +379,7 @@ impl TaskLauncher for VirtualTaskLauncher {
 
 pub struct SchedulerTest {
     scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
-    ballista_config: BallistaConfig,
+    session_config: SessionConfig,
     status_receiver: Option<Receiver<(String, Vec<TaskStatus>)>>,
 }
 
@@ -388,15 +393,11 @@ impl SchedulerTest {
     ) -> Result<Self> {
         let cluster = BallistaCluster::new_from_config(&config).await?;
 
-        let ballista_config = if num_executors > 0 && task_slots_per_executor > 0 {
-            BallistaConfig::builder()
-                .set(
-                    BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
-                    format!("{}", num_executors * task_slots_per_executor).as_str(),
-                )
-                .build()?
+        let session_config = if num_executors > 0 && task_slots_per_executor > 0 {
+            SessionConfig::new_with_ballista()
+                .with_target_partitions(num_executors * task_slots_per_executor)
         } else {
-            BallistaConfig::builder().build()?
+            SessionConfig::new_with_ballista()
         };
 
         let runner = runner.unwrap_or_else(|| Arc::new(default_task_runner()));
@@ -457,7 +458,7 @@ impl SchedulerTest {
 
         Ok(Self {
             scheduler,
-            ballista_config,
+            session_config,
             status_receiver: Some(status_receiver),
         })
     }
@@ -474,7 +475,7 @@ impl SchedulerTest {
         self.scheduler
             .state
             .session_manager
-            .create_session(&self.ballista_config)
+            .create_session(&self.session_config)
             .await
     }
 
@@ -484,12 +485,12 @@ impl SchedulerTest {
         job_name: &str,
         plan: &LogicalPlan,
     ) -> Result<()> {
-        println!("{:?}", self.ballista_config);
+        println!("{:?}", self.session_config);
         let ctx = self
             .scheduler
             .state
             .session_manager
-            .create_session(&self.ballista_config)
+            .create_session(&self.session_config)
             .await?;
 
         self.scheduler
@@ -614,7 +615,7 @@ impl SchedulerTest {
             .scheduler
             .state
             .session_manager
-            .create_session(&self.ballista_config)
+            .create_session(&self.session_config)
             .await?;
 
         self.scheduler
@@ -861,7 +862,16 @@ pub async fn test_aggregation_plan_with_job_id(
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
 
-    ExecutionGraph::new("localhost:50050", job_id, "", "session", plan, 0).unwrap()
+    ExecutionGraph::new(
+        "localhost:50050",
+        job_id,
+        "",
+        "session",
+        plan,
+        0,
+        Arc::new(SessionConfig::new_with_ballista()),
+    )
+    .unwrap()
 }
 
 pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
@@ -897,7 +907,16 @@ pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
 
-    ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap()
+    ExecutionGraph::new(
+        "localhost:50050",
+        "job",
+        "",
+        "session",
+        plan,
+        0,
+        Arc::new(SessionConfig::new_with_ballista()),
+    )
+    .unwrap()
 }
 
 pub async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
@@ -925,7 +944,16 @@ pub async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
         .await
         .unwrap();
 
-    ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap()
+    ExecutionGraph::new(
+        "localhost:50050",
+        "job",
+        "",
+        "session",
+        plan,
+        0,
+        Arc::new(SessionConfig::new_with_ballista()),
+    )
+    .unwrap()
 }
 
 pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
@@ -974,8 +1002,16 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
 
-    let graph =
-        ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap();
+    let graph = ExecutionGraph::new(
+        "localhost:50050",
+        "job",
+        "",
+        "session",
+        plan,
+        0,
+        Arc::new(SessionConfig::new_with_ballista()),
+    )
+    .unwrap();
 
     println!("{graph:?}");
 
@@ -1006,8 +1042,16 @@ pub async fn test_union_all_plan(partition: usize) -> ExecutionGraph {
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
 
-    let graph =
-        ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap();
+    let graph = ExecutionGraph::new(
+        "localhost:50050",
+        "job",
+        "",
+        "session",
+        plan,
+        0,
+        Arc::new(SessionConfig::new_with_ballista()),
+    )
+    .unwrap();
 
     println!("{graph:?}");
 
@@ -1038,8 +1082,16 @@ pub async fn test_union_plan(partition: usize) -> ExecutionGraph {
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
 
-    let graph =
-        ExecutionGraph::new("localhost:50050", "job", "", "session", plan, 0).unwrap();
+    let graph = ExecutionGraph::new(
+        "localhost:50050",
+        "job",
+        "",
+        "session",
+        plan,
+        0,
+        Arc::new(SessionConfig::new_with_ballista()),
+    )
+    .unwrap();
 
     println!("{graph:?}");
 

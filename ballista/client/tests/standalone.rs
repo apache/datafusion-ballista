@@ -95,21 +95,18 @@ mod standalone {
         assert!(ballista_config_extension.is_some());
 
         let result = ctx
-            .sql("select name, value from information_schema.df_settings where name like 'ballista.%' order by name limit 5")
+            .sql("select name, value from information_schema.df_settings where name like 'ballista.%' order by name limit 2")
             .await?
             .collect()
             .await?;
 
         let expected = [
-            "+---------------------------------------------------------+----------+",
-            "| name                                                    | value    |",
-            "+---------------------------------------------------------+----------+",
-            "| ballista.batch.size                                     | 8192     |",
-            "| ballista.collect_statistics                             | false    |",
-            "| ballista.grpc_client_max_message_size                   | 16777216 |",
-            "| ballista.job.name                                       |          |",
-            "| ballista.optimizer.hash_join_single_partition_threshold | 1048576  |",
-            "+---------------------------------------------------------+----------+",
+            "+---------------------------------------+----------+",
+            "| name                                  | value    |",
+            "+---------------------------------------+----------+",
+            "| ballista.grpc_client_max_message_size | 16777216 |",
+            "| ballista.job.name                     |          |",
+            "+---------------------------------------+----------+",
         ];
 
         assert_batches_eq!(expected, &result);
@@ -439,6 +436,43 @@ mod standalone {
         ];
 
         assert_batches_eq!(expected, &result);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn should_execute_sql_app_name_show() -> datafusion::error::Result<()> {
+        let test_data = crate::common::example_test_data();
+        let ctx: SessionContext = SessionContext::standalone().await?;
+
+        ctx.sql("SET ballista.job.name = 'Super Cool Ballista App'")
+            .await?
+            .show()
+            .await?;
+
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        let result = ctx
+            .sql("select string_col, timestamp_col from test where id > 4")
+            .await?
+            .collect()
+            .await?;
+        let expected = [
+            "+------------+---------------------+",
+            "| string_col | timestamp_col       |",
+            "+------------+---------------------+",
+            "| 31         | 2009-03-01T00:01:00 |",
+            "| 30         | 2009-04-01T00:00:00 |",
+            "| 31         | 2009-04-01T00:01:00 |",
+            "+------------+---------------------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
         Ok(())
     }
 }

@@ -25,6 +25,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::{ExecutorSpecification, PartitionId};
 use ballista_core::serde::BallistaCodec;
+use ballista_core::utils::SessionConfigExt;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -166,10 +167,8 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         "Received task: {}, task_properties: {:?}",
         task_identity, task.props
     );
-    let mut session_config = executor.produce_config();
-    for kv_pair in task.props {
-        session_config = session_config.set_str(&kv_pair.key, &kv_pair.value);
-    }
+    let session_config = executor.produce_config();
+    let session_config = session_config.update_from_key_value_pair(&task.props);
 
     let task_scalar_functions = executor.function_registry.scalar_functions.clone();
     let task_aggregate_functions = executor.function_registry.aggregate_functions.clone();

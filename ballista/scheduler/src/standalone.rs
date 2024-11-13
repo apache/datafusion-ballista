@@ -21,8 +21,10 @@ use crate::metrics::default_metrics_collector;
 use crate::scheduler_server::SchedulerServer;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{
-    create_grpc_server, default_session_builder, SessionConfigExt,
+    create_grpc_server, default_config_producer, default_session_builder,
+    SessionConfigExt,
 };
+use ballista_core::ConfigProducer;
 use ballista_core::{
     error::Result, serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer,
     BALLISTA_VERSION,
@@ -38,7 +40,12 @@ use tokio::net::TcpListener;
 
 pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
     let codec = BallistaCodec::default();
-    new_standalone_scheduler_with_builder(Arc::new(default_session_builder), codec).await
+    new_standalone_scheduler_with_builder(
+        Arc::new(default_session_builder),
+        Arc::new(default_config_producer),
+        codec,
+    )
+    .await
 }
 
 pub async fn new_standalone_scheduler_from_state(
@@ -47,7 +54,7 @@ pub async fn new_standalone_scheduler_from_state(
     let logical = session_state.config().ballista_logical_extension_codec();
     let physical = session_state.config().ballista_physical_extension_codec();
     let codec = BallistaCodec::new(logical, physical);
-
+    let session_config = session_state.config().clone();
     let session_state = session_state.clone();
     let session_builder = Arc::new(move |c: SessionConfig| {
         SessionStateBuilder::new_from_existing(session_state.clone())
@@ -55,14 +62,18 @@ pub async fn new_standalone_scheduler_from_state(
             .build()
     });
 
-    new_standalone_scheduler_with_builder(session_builder, codec).await
+    let config_producer = Arc::new(move || session_config.clone());
+
+    new_standalone_scheduler_with_builder(session_builder, config_producer, codec).await
 }
 
-async fn new_standalone_scheduler_with_builder(
+pub async fn new_standalone_scheduler_with_builder(
     session_builder: crate::scheduler_server::SessionBuilder,
+    config_producer: ConfigProducer,
     codec: BallistaCodec,
 ) -> Result<SocketAddr> {
-    let cluster = BallistaCluster::new_memory("localhost:50050", session_builder);
+    let cluster =
+        BallistaCluster::new_memory("localhost:50050", session_builder, config_producer);
     let metrics_collector = default_metrics_collector()?;
 
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =

@@ -56,7 +56,7 @@ mod external_scaler;
 mod grpc;
 pub(crate) mod query_stage_scheduler;
 
-pub(crate) type SessionBuilder = Arc<dyn Fn(SessionConfig) -> SessionState + Send + Sync>;
+pub type SessionBuilder = Arc<dyn Fn(SessionConfig) -> SessionState + Send + Sync>;
 
 #[derive(Clone)]
 pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
@@ -346,17 +346,17 @@ pub fn timestamp_millis() -> u64 {
 mod test {
     use std::sync::Arc;
 
+    use ballista_core::utils::SessionConfigExt;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::functions_aggregate::sum::sum;
     use datafusion::logical_expr::{col, LogicalPlan};
 
+    use datafusion::prelude::SessionConfig;
     use datafusion::test_util::scan_empty_with_partitions;
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
 
-    use ballista_core::config::{
-        BallistaConfig, TaskSchedulingPolicy, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
-    };
+    use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
 
     use crate::config::SchedulerConfig;
@@ -395,7 +395,8 @@ mod test {
                 .await?;
         }
 
-        let config = test_session(task_slots);
+        let config =
+            SessionConfig::new_with_ballista().with_target_partitions(task_slots);
 
         let ctx = scheduler
             .state
@@ -713,15 +714,5 @@ mod test {
             .unwrap()
             .build()
             .unwrap()
-    }
-
-    fn test_session(partitions: usize) -> BallistaConfig {
-        BallistaConfig::builder()
-            .set(
-                BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
-                format!("{partitions}").as_str(),
-            )
-            .build()
-            .expect("creating BallistaConfig")
     }
 }

@@ -218,10 +218,10 @@ mod test {
     use crate::executor::Executor;
     use arrow::datatypes::{Schema, SchemaRef};
     use arrow::record_batch::RecordBatch;
-    use ballista_core::config::BallistaConfig;
     use ballista_core::execution_plans::ShuffleWriterExec;
     use ballista_core::serde::protobuf::ExecutorRegistration;
     use ballista_core::serde::scheduler::PartitionId;
+    use ballista_core::utils::default_config_producer;
     use ballista_core::RuntimeProducer;
     use datafusion::error::{DataFusionError, Result};
     use datafusion::execution::context::TaskContext;
@@ -230,7 +230,7 @@ mod test {
         DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
         RecordBatchStream, SendableRecordBatchStream, Statistics,
     };
-    use datafusion::prelude::{SessionConfig, SessionContext};
+    use datafusion::prelude::SessionContext;
     use futures::Stream;
     use std::any::Any;
     use std::pin::Pin;
@@ -361,9 +361,7 @@ mod test {
             specification: None,
             host: None,
         };
-        let config_producer = Arc::new(|| {
-            SessionConfig::new().with_option_extension(BallistaConfig::new().unwrap())
-        });
+        let config_producer = Arc::new(default_config_producer);
         let ctx = SessionContext::new();
         let runtime_env = ctx.runtime_env().clone();
         let runtime_producer: RuntimeProducer =
