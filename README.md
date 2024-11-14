@@ -79,7 +79,7 @@ can be run as native binaries and are also available as Docker Images, which can
 The following diagram shows the interaction between clients and the scheduler for submitting jobs, and the interaction
 between the executor(s) and the scheduler for fetching tasks and reporting task status.
 
-![Ballista Cluster Diagram](docs/source/contributors-guide/ballista.drawio.png)
+![Ballista Cluster Diagram](docs/source/contributors-guide/ballista_architecture.excalidraw.svg)
 
 See the [architecture guide](docs/source/contributors-guide/architecture.md) for more details.
 
