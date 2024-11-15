@@ -77,7 +77,7 @@ use datafusion::{
 #[tokio::main]
 async fn main() -> Result<()> {
     // creating SessionContext with default settings
-    let ctx = SessionContext::remote("df://localhost:50050".await?;
+    let ctx = SessionContext::remote("df://localhost:50050").await?;
 
     let test_data = test_util::examples_test_data();
     let filename = format!("{test_data}/alltypes_plain.parquet");
