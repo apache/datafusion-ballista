@@ -17,10 +17,41 @@
 
 from _typeshed import Self
 from datafusion import SessionContext
-from ballista import SessionConfig, SessionStateBuilder, SessionState, Ballista
+from ballista import Ballista, BallistaBuilder
 
 from typing import List, Any
        
+
+class BallistaBuilder:
+    def __new__(cls):
+        return super().__new__(cls)
+        
+    def __init__(self) -> None:
+        self = {}
+        
+    def set(self, k, v) -> Self:
+        return self.set(k, v)
+
+        
+class Ballista:
+    def __new__(cls):
+        return super().__new__(cls)
+        
+    def __init__(self) -> None:
+        self.state = Ballista()
+        
+    def standalone(self):
+        self.standalone()
+        
+    def builder(self) -> BallistaBuilder:
+        return BallistaBuilder()
+        
+"""
+### Future State Implementation
+class SessionState:
+    def __new__(cls):
+        return super().__new__(cls)
+
 class SessionConfig:
     def __new__(cls):
         return super().__new__(cls)
@@ -45,17 +76,4 @@ class SessionStateBuilder:
         
     def build(self) -> SessionState:
         self.build()
-        
-class SessionState:
-    def __new__(cls):
-        return super().__new__(cls)
-        
-class Ballista:
-    def __new__(cls):
-        return super().__new__(cls)
-        
-    def __init__(self) -> None:
-        self.state = Ballista()
-        
-    def standalone(self):
-        self.standalone()
+"""

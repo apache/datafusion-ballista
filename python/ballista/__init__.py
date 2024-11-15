@@ -27,16 +27,18 @@ import pyarrow as pa
 
 from .ballista_internal import (
     Ballista,
-    SessionConfig,
-    SessionStateBuilder,
-    SessionState
+    BallistaBuilder,
+    #SessionConfig,
+    #SessionStateBuilder,
+    #SessionState
 )
 
 __version__ = importlib_metadata.version(__name__)
 
 __all__ = [
     "Ballista",
-    "SessionConfig",
-    "SessionStateBuilder",
-    "SessionState"
+    "BallistaBuilder",
+    #"SessionConfig",
+    #"SessionStateBuilder",
+    #"SessionState"
 ]

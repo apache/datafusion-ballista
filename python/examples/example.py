@@ -15,25 +15,26 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from ballista import Ballista, SessionConfig, SessionStateBuilder
+from ballista import Ballista, BallistaBuilder
 from datafusion.context import SessionContext
 
 # Ballista will initiate with an empty config
-ballista = Ballista()
-config = SessionConfig()\
-    .set_str("BALLISTA_DEFAULT_SHUFFLE_PARTITIONS", "4")
-    
-# Build the state
-state = SessionStateBuilder()\
-    .with_config(config)\
+ballista = BallistaBuilder()\
+    .set("ballista.job.name", "example ballista")\
+    .set("ballista.shuffle.partitions", "4")\
+    .set("ballista.executor.cpus", "4")\
     .build()
+    
+print(ballista)
+print(ballista.show_config())
 
+"""
 # Create the context
 ctx: SessionContext = Ballista().standalone()
 
 ctx.sql("SELECT 1").show()
 
-"""
+
 # Define custom settings
 job_settings = {
     "BALLISTA_JOB_NAME": "Example Ballista Job",
