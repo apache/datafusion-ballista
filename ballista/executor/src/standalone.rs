@@ -23,7 +23,6 @@ use ballista_core::serde::scheduler::BallistaFunctionRegistry;
 use ballista_core::utils::{default_config_producer, SessionConfigExt};
 use ballista_core::{
     error::Result,
-    object_store_registry::with_object_store_registry,
     serde::protobuf::{scheduler_grpc_client::SchedulerGrpcClient, ExecutorRegistration},
     serde::scheduler::ExecutorSpecification,
     serde::BallistaCodec,
@@ -187,9 +186,7 @@ pub async fn new_standalone_executor<
     let config_producer = Arc::new(default_config_producer);
     let wd = work_dir.clone();
     let runtime_producer: RuntimeProducer = Arc::new(move |_: &SessionConfig| {
-        let config = with_object_store_registry(
-            RuntimeConfig::new().with_temp_file_path(wd.clone()),
-        );
+        let config = RuntimeConfig::new().with_temp_file_path(wd.clone());
         Ok(Arc::new(RuntimeEnv::new(config)?))
     });
 

@@ -34,12 +34,10 @@ exclude = ["*.proto"]
 rustc-args = ["--cfg", "docsrs"]
 
 [features]
-azure = ["object_store/azure"]
 docsrs = []
 # Used for testing ONLY: causes all values to hash to the same value (test for collisions)
 force_hash_collisions = ["datafusion/force_hash_collisions"]
-gcs = ["object_store/gcp"]
-s3 = ["object_store/aws"]
+
 
 [dependencies]
 arrow-flight = { workspace = true }
@@ -54,7 +52,6 @@ futures = { workspace = true }
 itertools = "0.13"
 log = { workspace = true }
 md-5 = { version = "^0.10.0" }
-object_store = { workspace = true }
 parse_arg = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
