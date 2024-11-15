@@ -31,12 +31,22 @@ The following code demonstrates how to create a Ballista context and connect to 
 If you are running a standalone cluster (runs locally), all you need to do is call the stand alone cluster method `standalone()` or your BallistaContext. If you are running a cluster in remote mode, you need to provide the URL `Ballista.remote("http://my-remote-ip:50050")`.
 
 ```text
->>> from ballista import Ballista
+>>> from ballista import Ballista, BallistaBuilder
 >>> # for a standalone instance
->>> ctx = Ballista.standalone()
+>>> # Ballista will initiate with an empty config
+>>> # set config variables with `set()`
+>>> ballista = BallistaBuilder()\
+>>>    .set("ballista.job.name", "example ballista")\
+>>>    .set("ballista.shuffle.partitions", "16")\
+>>>    .set("ballista.executor.cpus", "4")\
+>>>    .build()
+>>> 
+>>> # Show the Ballista Config
+>>> print(ballista.show_config())
+>>> ctx = ballista.standalone()
 >>>
 >>> # for a remote instance provide the URL
->>> ctx = Ballista.remote("http://url-path-to-scheduler:50050")
+>>> ctx = ballista.remote("df://url-path-to-scheduler:50050")
 ```
 
 ## SQL
@@ -109,7 +119,7 @@ The `explain` method can be used to show the logical and physical query plans fo
 The following example demonstrates creating arrays with PyArrow and then creating a Ballista DataFrame.
 
 ```python
-from ballista import Ballista
+from ballista import Ballista, BallistaBuilder
 import pyarrow
 
 # an alias
