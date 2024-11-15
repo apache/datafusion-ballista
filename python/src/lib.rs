@@ -59,25 +59,30 @@ impl PyBallistaBuilder {
     pub fn new() -> Self {
         Self(HashMap::new())
     }
-    
-    pub fn set(mut slf: PyRefMut<'_, Self>, k: &str, v: &str, py: Python) -> PyResult<PyObject> {
+
+    pub fn set(
+        mut slf: PyRefMut<'_, Self>,
+        k: &str,
+        v: &str,
+        py: Python,
+    ) -> PyResult<PyObject> {
         slf.0.insert(k.into(), v.into());
-        
+
         Ok(slf.into_py(py))
     }
-    
+
     pub fn show_config(&self) {
         println!("Ballista Config:");
         for ele in self.0.iter() {
             println!("    {}: {}", ele.0, ele.1)
         }
     }
-    
+
     pub fn build(slf: PyRef<'_, Self>) -> PyBallista {
         PyBallista {
-            conf: PyBallistaBuilder(slf.0.clone())
+            conf: PyBallistaBuilder(slf.0.clone()),
         }
-    } 
+    }
 }
 
 #[pyclass(name = "Ballista", module = "ballista", subclass)]
@@ -93,7 +98,7 @@ impl PyBallista {
             conf: PyBallistaBuilder::new(),
         }
     }
-    
+
     pub fn show_config(&self) {
         println!("Ballista Config:");
         for ele in self.conf.0.clone() {
@@ -108,16 +113,20 @@ impl PyBallista {
         py: Python,
     ) -> PyResult<DataFusionPythonSessionContext> {
         // Build the config
-        let config = BallistaConfig::with_settings(self.conf.0).unwrap();
+        let config = BallistaConfig::with_settings(self.conf.0.clone()).unwrap();
         // Define the SessionContext
         let session_context = BallistaContext::standalone(&config, concurrent_tasks);
         // SessionContext is an async function
-        let ctx = wait_for_future(py, session_context).unwrap();
+        let ctx = wait_for_future(py, session_context)
+            .unwrap()
+            .context()
+            .clone();
 
         // Convert the SessionContext into a Python SessionContext
-        Ok(ctx.context().into())
+        Ok(ctx.into())
     }
 
+    /*
     /// Construct the remote instance from the SessionContext
     pub fn remote(url: &str, py: Python) -> PyResult<DataFusionPythonSessionContext> {
         let session_context = SessionContext::remote(url);
@@ -126,8 +135,8 @@ impl PyBallista {
         // Convert the SessionContext into a Python SessionContext
         Ok(ctx.into())
     }
+    */
 }
-
 
 /*
 Plan to implement Session Config and State in a future issue
@@ -171,12 +180,12 @@ impl PySessionStateBuilder {
 
     pub fn with_config(&mut self, config: PySessionConfig) -> PySessionStateBuilder {
         let state = self.state.take().with_config(config.session_config);
-        
+
         PySessionStateBuilder {
             state: state.into()
         }
     }
-    
+
     pub fn build(&mut self) -> PySessionStateBuilder {
         PySessionStateBuilder {
             state: RefCell::new(self.state.take())

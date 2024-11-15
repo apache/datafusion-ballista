@@ -40,7 +40,7 @@ class Ballista:
     def __init__(self) -> None:
         self.state = Ballista()
         
-    def standalone(self):
+    def standalone(self, concurrent_tasks: int = 4):
         self.standalone()
         
     def builder(self) -> BallistaBuilder:
