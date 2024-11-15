@@ -19,50 +19,21 @@ from ballista import Ballista, BallistaBuilder
 from datafusion.context import SessionContext
 
 # Ballista will initiate with an empty config
+# set config variables with `set()`
 ballista = BallistaBuilder()\
     .set("ballista.job.name", "example ballista")\
-    .set("ballista.shuffle.partitions", "4")\
+    .set("ballista.shuffle.partitions", "16")\
     .set("ballista.executor.cpus", "4")\
     .build()
     
-print(ballista)
+# Show the Ballista Config
 print(ballista.show_config())
 
-"""
-# Create the context
-ctx: SessionContext = Ballista().standalone()
+# Build a standalone Cluster (use `remote()`)
+# for remote cluster
+ctx: SessionContext = ballista.standalone()
+#ctx_remote: SessionContext = ballista.remote("remote_ip", 50050)
 
+# Select 1 to verify its working
 ctx.sql("SELECT 1").show()
-
-
-# Define custom settings
-job_settings = {
-    "BALLISTA_JOB_NAME": "Example Ballista Job",
-    "DEFAULT_SHUFFLE_PARTITIONS": "2"
-}
-
-ballista.configuration(job_settings)
-
-# But you can also set your own config
-print("New Ballista Config: ", ballista.settings())
-
-# Or you can check default settings in BallistaConfig
-print("Default Shuffle Partitions: ", ballista.default_shuffle_partitions())
-# Create the Ballista Context [standalone or remote]
-ctx: SessionContext  = ballista.standalone() # Ballista.remote()
-
-# Register our parquet file to perform SQL operations
-ctx.register_parquet("test_parquet", "./testdata/test.parquet")
-
-# Select the data from our test parquet file
-test_parquet = ctx.sql("SELECT * FROM test_parquet")
-
-# Show our test parquet data
-print(test_parquet.show())
-
-# To perform dataframe operations, read in data
-test_csv = ctx.read_csv("./testdata/test.csv", has_header=False)
-
-# Show the dataframe
-test_csv.show()
-"""
+#ctx_remote.sql("SELECT 2").show()

@@ -15,21 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista::extension::SessionConfigExt;
 use ballista::prelude::*;
-use ballista_core::utils::SessionStateExt;
-use datafusion::catalog::Session;
-use datafusion::execution::{SessionState, SessionStateBuilder};
-use datafusion::prelude::*;
 use datafusion_python::context::PySessionContext as DataFusionPythonSessionContext;
 use datafusion_python::utils::wait_for_future;
 
 use std::collections::HashMap;
-use std::fmt::Formatter;
-use std::path::Display;
 
 use pyo3::prelude::*;
 mod utils;
+use utils::to_pyerr;
 
 #[pymodule]
 fn ballista_internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
@@ -51,13 +45,15 @@ fn ballista_internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
 
 // Ballista Builder will take a HasMap/Dict Cionfg
 #[pyclass(name = "BallistaBuilder", module = "ballista", subclass)]
-pub struct PyBallistaBuilder(HashMap<String, String>);
+pub struct PyBallistaBuilder {
+    conf: HashMap<String, String>,
+}
 
 #[pymethods]
 impl PyBallistaBuilder {
     #[new]
     pub fn new() -> Self {
-        Self(HashMap::new())
+        Self { conf: HashMap::new() }
     }
 
     pub fn set(
@@ -66,21 +62,23 @@ impl PyBallistaBuilder {
         v: &str,
         py: Python,
     ) -> PyResult<PyObject> {
-        slf.0.insert(k.into(), v.into());
+        slf.conf.insert(k.into(), v.into());
 
         Ok(slf.into_py(py))
     }
 
     pub fn show_config(&self) {
         println!("Ballista Config:");
-        for ele in self.0.iter() {
-            println!("    {}: {}", ele.0, ele.1)
+        for ele in self.conf.iter() {
+            println!("\t{}: {}", ele.0, ele.1)
         }
     }
 
     pub fn build(slf: PyRef<'_, Self>) -> PyBallista {
         PyBallista {
-            conf: PyBallistaBuilder(slf.0.clone()),
+            conf: PyBallistaBuilder {
+                conf: slf.conf.clone(),
+            },
         }
     }
 }
@@ -101,24 +99,25 @@ impl PyBallista {
 
     pub fn show_config(&self) {
         println!("Ballista Config:");
-        for ele in self.conf.0.clone() {
+        for ele in self.conf.conf.clone() {
             println!("{:4}: {}", ele.0, ele.1)
         }
     }
 
     /// Construct the standalone instance from the SessionContext
+    #[pyo3(signature = (concurrent_tasks = 4))]
     pub fn standalone(
         &self,
         concurrent_tasks: usize,
         py: Python,
     ) -> PyResult<DataFusionPythonSessionContext> {
         // Build the config
-        let config = BallistaConfig::with_settings(self.conf.0.clone()).unwrap();
+        let config = &BallistaConfig::with_settings(self.conf.conf.clone()).unwrap();
         // Define the SessionContext
         let session_context = BallistaContext::standalone(&config, concurrent_tasks);
         // SessionContext is an async function
         let ctx = wait_for_future(py, session_context)
-            .unwrap()
+            .map_err(to_pyerr)?
             .context()
             .clone();
 
@@ -126,16 +125,25 @@ impl PyBallista {
         Ok(ctx.into())
     }
 
-    /*
     /// Construct the remote instance from the SessionContext
-    pub fn remote(url: &str, py: Python) -> PyResult<DataFusionPythonSessionContext> {
-        let session_context = SessionContext::remote(url);
-        let ctx = wait_for_future(py, session_context)?;
+    pub fn remote(
+        &self,
+        host: &str,
+        port: u16,
+        py: Python,
+    ) -> PyResult<DataFusionPythonSessionContext> {
+        // Build the config
+        let config = &BallistaConfig::with_settings(self.conf.conf.clone()).unwrap();
+        // Create the BallistaContext
+        let session_context = BallistaContext::remote(host, port, config);
+        let ctx = wait_for_future(py, session_context)
+            .map_err(to_pyerr)?
+            .context()
+            .clone();
 
         // Convert the SessionContext into a Python SessionContext
         Ok(ctx.into())
     }
-    */
 }
 
 /*
