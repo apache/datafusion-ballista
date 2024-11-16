@@ -23,7 +23,6 @@ use crate::error::{BallistaError, Result};
 use crate::execution_plans::{
     DistributedQueryExec, ShuffleWriterExec, UnresolvedShuffleExec,
 };
-use crate::object_store_registry::with_object_store_registry;
 use crate::serde::protobuf::KeyValuePair;
 use crate::serde::scheduler::PartitionStats;
 use crate::serde::{BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec};
@@ -73,10 +72,7 @@ pub fn default_session_builder(config: SessionConfig) -> SessionState {
     SessionStateBuilder::new()
         .with_default_features()
         .with_config(config)
-        .with_runtime_env(Arc::new(
-            RuntimeEnv::new(with_object_store_registry(RuntimeConfig::default()))
-                .unwrap(),
-        ))
+        .with_runtime_env(Arc::new(RuntimeEnv::new(RuntimeConfig::default()).unwrap()))
         .build()
 }
 
@@ -273,10 +269,7 @@ pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
     let session_state = SessionStateBuilder::new()
         .with_default_features()
         .with_config(session_config)
-        .with_runtime_env(Arc::new(
-            RuntimeEnv::new(with_object_store_registry(RuntimeConfig::default()))
-                .unwrap(),
-        ))
+        .with_runtime_env(Arc::new(RuntimeEnv::new(RuntimeConfig::default()).unwrap()))
         .with_query_planner(planner)
         .with_session_id(session_id)
         .build();
