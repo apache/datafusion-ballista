@@ -24,7 +24,7 @@ ctx: SessionContext = BallistaBuilder()\
     .config("ballista.job.name", "example ballista")\
     .config("ballista.shuffle.partitions", "16")\
     .config("ballista.executor.cpus", "4")\
-    .remote("http://10.103.0.25:50050")
+    .standalone()
     
 #ctx_remote: SessionContext = ballista.remote("remote_ip", 50050)
 
