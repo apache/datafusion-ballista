@@ -15,23 +15,17 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from ballista import Ballista, BallistaBuilder
+from ballista import BallistaBuilder
 from datafusion.context import SessionContext
 
 # Ballista will initiate with an empty config
 # set config variables with `set()`
-ballista = BallistaBuilder()\
-    .set("ballista.job.name", "example ballista")\
-    .set("ballista.shuffle.partitions", "16")\
-    .set("ballista.executor.cpus", "4")\
-    .build()
+ctx: SessionContext = BallistaBuilder()\
+    .config("ballista.job.name", "example ballista")\
+    .config("ballista.shuffle.partitions", "16")\
+    .config("ballista.executor.cpus", "4")\
+    .remote("http://10.103.0.25:50050")
     
-# Show the Ballista Config
-print(ballista.show_config())
-
-# Build a standalone Cluster (use `remote()`)
-# for remote cluster
-ctx: SessionContext = ballista.standalone()
 #ctx_remote: SessionContext = ballista.remote("remote_ip", 50050)
 
 # Select 1 to verify its working

@@ -17,7 +17,7 @@
 
 from _typeshed import Self
 from datafusion import SessionContext
-from ballista import Ballista, BallistaBuilder
+from ballista import BallistaBuilder
 
 from typing import List, Any
        
@@ -29,51 +29,8 @@ class BallistaBuilder:
     def __init__(self) -> None:
         self = {}
         
-    def set(self, k, v) -> Self:
-        return self.set(k, v)
-
-        
-class Ballista:
-    def __new__(cls):
-        return super().__new__(cls)
-        
-    def __init__(self) -> None:
-        self.state = Ballista()
+    def config(self, k, v) -> Self:
+        return self.config(k, v)
         
     def standalone(self, concurrent_tasks: int = 4):
         self.standalone()
-        
-    def builder(self) -> BallistaBuilder:
-        return BallistaBuilder()
-        
-"""
-### Future State Implementation
-class SessionState:
-    def __new__(cls):
-        return super().__new__(cls)
-
-class SessionConfig:
-    def __new__(cls):
-        return super().__new__(cls)
-        
-    def __init__(self):
-        self.session_config = SessionConfig()
-        
-    def set_str(self, key: str, value: str):
-        self.session_config.set_str(key, value)
-        
-class SessionStateBuilder:
-    def __new__(cls):
-        return super().__new__(cls)
-        
-    def __init__(self) -> None:
-        self.state = SessionStateBuilder()
-        
-    def with_config(self, config: SessionConfig) -> SessionStateBuilder:
-        self.with_config(config)
-        
-        return self
-        
-    def build(self) -> SessionState:
-        self.build()
-"""

@@ -26,7 +26,6 @@ except ImportError:
 import pyarrow as pa
 
 from .ballista_internal import (
-    Ballista,
     BallistaBuilder,
     #SessionConfig,
     #SessionStateBuilder,
@@ -36,7 +35,6 @@ from .ballista_internal import (
 __version__ = importlib_metadata.version(__name__)
 
 __all__ = [
-    "Ballista",
     "BallistaBuilder",
     #"SessionConfig",
     #"SessionStateBuilder",
