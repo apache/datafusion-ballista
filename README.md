@@ -19,7 +19,7 @@
 
 # Ballista: Making DataFusion Applications Distributed
 
-Ballista is a library which makes [Apache DataFusion](https://github.com/apache/datafusion) applications distributed.
+Ballista is a distributed execution engine which makes [Apache DataFusion](https://github.com/apache/datafusion) applications distributed.
 
 Existing DataFusion application:
 
@@ -74,7 +74,8 @@ If you are looking for documentation or more examples, please refer to the [Ball
 
 A Ballista cluster consists of one or more scheduler processes and one or more executor processes. These processes
 can be run as native binaries and are also available as Docker Images, which can be easily deployed with
-[Docker Compose](https://datafusion.apache.org/ballista/user-guide/deployment/docker-compose.html).
+[Docker Compose](https://datafusion.apache.org/ballista/user-guide/deployment/docker-compose.html) or
+[Kubernetes](https://datafusion.apache.org/ballista/user-guide/deployment/kubernetes.html).
 
 The following diagram shows the interaction between clients and the scheduler for submitting jobs, and the interaction
 between the executor(s) and the scheduler for fetching tasks and reporting task status.

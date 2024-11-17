@@ -21,7 +21,7 @@
 
 ## Ballista Configuration Settings
 
-Configuring Ballista is like configuring DataFusion. Apart from a few Ballista specific configurations all others are the same like DataFusion.
+Configuring Ballista is quite similar to configuring DataFusion. Most settings are identical, with only a few configurations specific to Ballista.
 
 _Example: Specifying configuration options when creating a context_
 
