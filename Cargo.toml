@@ -21,6 +21,7 @@ members = ["ballista-cli", "ballista/client", "ballista/core", "ballista/executo
 resolver = "2"
 
 [workspace.dependencies]
+anyhow = "1"
 arrow = { version = "53", features = ["ipc_compression"] }
 arrow-flight = { version = "53", features = ["flight-sql-experimental"] }
 clap = { version = "3", features = ["derive", "cargo"] }

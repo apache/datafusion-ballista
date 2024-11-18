@@ -18,12 +18,20 @@
 
 //! Ballista scheduler specific configuration
 
-use ballista_core::config::TaskSchedulingPolicy;
+use crate::SessionBuilder;
+use ballista_core::{config::TaskSchedulingPolicy, error::BallistaError, ConfigProducer};
 use clap::ValueEnum;
-use std::fmt;
+use datafusion_proto::logical_plan::LogicalExtensionCodec;
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
+use std::{fmt, sync::Arc};
+
+include!(concat!(
+    env!("OUT_DIR"),
+    "/scheduler_configure_me_config.rs"
+));
 
 /// Configurations for the ballista scheduler of scheduling jobs and tasks
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SchedulerConfig {
     /// Namespace of this scheduler. Schedulers using the same cluster storage and namespace
     /// will share global cluster state.
@@ -62,6 +70,65 @@ pub struct SchedulerConfig {
     pub executor_timeout_seconds: u64,
     /// The interval to check expired or dead executors
     pub expire_dead_executor_interval_seconds: u64,
+
+    /// [ConfigProducer] override option
+    pub override_config_producer: Option<ConfigProducer>,
+    /// [SessionBuilder] override option
+    pub override_session_builder: Option<SessionBuilder>,
+    /// [PhysicalExtensionCodec] override option
+    pub override_logical_codec: Option<Arc<dyn LogicalExtensionCodec>>,
+    /// [PhysicalExtensionCodec] override option
+    pub override_physical_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
+}
+
+impl std::fmt::Debug for SchedulerConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SchedulerConfig")
+            .field("namespace", &self.namespace)
+            .field("external_host", &self.external_host)
+            .field("bind_port", &self.bind_port)
+            .field("scheduling_policy", &self.scheduling_policy)
+            .field("event_loop_buffer_size", &self.event_loop_buffer_size)
+            .field("task_distribution", &self.task_distribution)
+            .field(
+                "finished_job_data_clean_up_interval_seconds",
+                &self.finished_job_data_clean_up_interval_seconds,
+            )
+            .field(
+                "finished_job_state_clean_up_interval_seconds",
+                &self.finished_job_state_clean_up_interval_seconds,
+            )
+            .field(
+                "advertise_flight_sql_endpoint",
+                &self.advertise_flight_sql_endpoint,
+            )
+            .field("job_resubmit_interval_ms", &self.job_resubmit_interval_ms)
+            .field("cluster_storage", &self.cluster_storage)
+            .field(
+                "executor_termination_grace_period",
+                &self.executor_termination_grace_period,
+            )
+            .field(
+                "scheduler_event_expected_processing_duration",
+                &self.scheduler_event_expected_processing_duration,
+            )
+            .field(
+                "grpc_server_max_decoding_message_size",
+                &self.grpc_server_max_decoding_message_size,
+            )
+            .field(
+                "grpc_server_max_encoding_message_size",
+                &self.grpc_server_max_encoding_message_size,
+            )
+            .field("executor_timeout_seconds", &self.executor_timeout_seconds)
+            .field(
+                "expire_dead_executor_interval_seconds",
+                &self.expire_dead_executor_interval_seconds,
+            )
+            .field("override_logical_codec", &self.override_logical_codec)
+            .field("override_physical_codec", &self.override_physical_codec)
+            .finish()
+    }
 }
 
 impl Default for SchedulerConfig {
@@ -84,6 +151,10 @@ impl Default for SchedulerConfig {
             grpc_server_max_encoding_message_size: 16777216,
             executor_timeout_seconds: 180,
             expire_dead_executor_interval_seconds: 15,
+            override_config_producer: None,
+            override_session_builder: None,
+            override_logical_codec: None,
+            override_physical_codec: None,
         }
     }
 }
@@ -230,4 +301,56 @@ pub enum TaskDistributionPolicy {
         num_replicas: usize,
         tolerance: usize,
     },
+}
+
+impl TryFrom<Config> for SchedulerConfig {
+    type Error = BallistaError;
+
+    fn try_from(opt: Config) -> Result<Self, Self::Error> {
+        let task_distribution = match opt.task_distribution {
+            TaskDistribution::Bias => TaskDistributionPolicy::Bias,
+            TaskDistribution::RoundRobin => TaskDistributionPolicy::RoundRobin,
+            TaskDistribution::ConsistentHash => {
+                let num_replicas = opt.consistent_hash_num_replicas as usize;
+                let tolerance = opt.consistent_hash_tolerance as usize;
+                TaskDistributionPolicy::ConsistentHash {
+                    num_replicas,
+                    tolerance,
+                }
+            }
+        };
+
+        let config = SchedulerConfig {
+            namespace: opt.namespace,
+            external_host: opt.external_host,
+            bind_port: opt.bind_port,
+            scheduling_policy: opt.scheduler_policy,
+            event_loop_buffer_size: opt.event_loop_buffer_size,
+            task_distribution,
+            finished_job_data_clean_up_interval_seconds: opt
+                .finished_job_data_clean_up_interval_seconds,
+            finished_job_state_clean_up_interval_seconds: opt
+                .finished_job_state_clean_up_interval_seconds,
+            advertise_flight_sql_endpoint: opt.advertise_flight_sql_endpoint,
+            cluster_storage: ClusterStorageConfig::Memory,
+            job_resubmit_interval_ms: (opt.job_resubmit_interval_ms > 0)
+                .then_some(opt.job_resubmit_interval_ms),
+            executor_termination_grace_period: opt.executor_termination_grace_period,
+            scheduler_event_expected_processing_duration: opt
+                .scheduler_event_expected_processing_duration,
+            grpc_server_max_decoding_message_size: opt
+                .grpc_server_max_decoding_message_size,
+            grpc_server_max_encoding_message_size: opt
+                .grpc_server_max_encoding_message_size,
+            executor_timeout_seconds: opt.executor_timeout_seconds,
+            expire_dead_executor_interval_seconds: opt
+                .expire_dead_executor_interval_seconds,
+            override_config_producer: None,
+            override_logical_codec: None,
+            override_physical_codec: None,
+            override_session_builder: None,
+        };
+
+        Ok(config)
+    }
 }

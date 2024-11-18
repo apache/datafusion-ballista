@@ -15,4 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+/// Provides required structures and methods to
+/// integrate with S3 object store
+pub mod object_store;
 pub mod test_util;

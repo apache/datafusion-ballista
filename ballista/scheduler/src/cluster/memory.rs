@@ -290,7 +290,7 @@ pub struct InMemoryJobState {
     session_builder: SessionBuilder,
     /// Sender of job events
     job_event_sender: ClusterEventSender<JobStateEvent>,
-
+    /// Config producer
     config_producer: ConfigProducer,
 }
 
