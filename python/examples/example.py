@@ -19,11 +19,10 @@ from ballista import BallistaBuilder
 from datafusion.context import SessionContext
 
 # Ballista will initiate with an empty config
-# set config variables with `set()`
+# set config variables with `config`
 ctx: SessionContext = BallistaBuilder()\
     .config("ballista.job.name", "example ballista")\
     .config("ballista.shuffle.partitions", "16")\
-    .config("ballista.executor.cpus", "4")\
     .standalone()
     
 #ctx_remote: SessionContext = ballista.remote("remote_ip", 50050)

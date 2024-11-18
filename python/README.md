@@ -29,8 +29,8 @@ part of the default Cargo workspace so that it doesn't cause overhead for mainta
 Creates a new context and connects to a Ballista scheduler process.
 
 ```python
-from ballista import Ballista
->>> ctx = Ballista.standalone()
+from ballista import BallistaBuilder
+>>> ctx = BallistaBuilder().standalone()
 ```
 
 ## Example SQL Usage

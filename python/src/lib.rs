@@ -18,7 +18,7 @@
 use ballista::prelude::*;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::*;
-use datafusion_python::context::PySessionContext as DataFusionPythonSessionContext;
+use datafusion_python::context::PySessionContext;
 use datafusion_python::utils::wait_for_future;
 
 use std::collections::HashMap;
@@ -30,17 +30,10 @@ use utils::to_pyerr;
 #[pymodule]
 fn ballista_internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     pyo3_log::init();
-    // Ballista structs
+    // BallistaBuilder struct
     m.add_class::<PyBallistaBuilder>()?;
-    // DataFusion structs
+    // DataFusion struct
     m.add_class::<datafusion_python::dataframe::PyDataFrame>()?;
-    // Ballista Config
-    /*
-    // Future implementation will include more state and config options
-    m.add_class::<PySessionStateBuilder>()?;
-    m.add_class::<PySessionState>()?;
-    m.add_class::<PySessionConfig>()?;
-    */
     Ok(())
 }
 
@@ -70,15 +63,8 @@ impl PyBallistaBuilder {
         Ok(slf.into_py(py))
     }
 
-    pub fn show_config(&self) {
-        println!("Ballista Config:");
-        for ele in self.conf.iter() {
-            println!("\t{}: {}", ele.0, ele.1)
-        }
-    }
-
     /// Construct the standalone instance from the SessionContext
-    pub fn standalone(&self, py: Python) -> PyResult<DataFusionPythonSessionContext> {
+    pub fn standalone(&self, py: Python) -> PyResult<PySessionContext> {
         // Build the config
         let config: SessionConfig = SessionConfig::from_string_hash_map(&self.conf)?;
         // Build the state
@@ -101,7 +87,7 @@ impl PyBallistaBuilder {
         &self,
         url: &str,
         py: Python,
-    ) -> PyResult<DataFusionPythonSessionContext> {
+    ) -> PyResult<PySessionContext> {
         // Build the config
         let config: SessionConfig = SessionConfig::from_string_hash_map(&self.conf)?;
         // Build the state
