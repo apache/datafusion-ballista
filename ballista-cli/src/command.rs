@@ -21,11 +21,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use ballista::prelude::{BallistaError, Result};
-
 use datafusion::arrow::array::{ArrayRef, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::Result;
+use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
 
 use crate::functions::{display_all_functions, Function};
@@ -60,25 +60,23 @@ impl Command {
             Self::Help =>
             // TODO need to provide valid schema
             {
-                print_options
-                    .print_batches(Arc::new(Schema::empty()), &[all_commands_info()], now)
-                    .map_err(BallistaError::DataFusionError)
+                print_options.print_batches(
+                    Arc::new(Schema::empty()),
+                    &[all_commands_info()],
+                    now,
+                )
             }
             Self::ListTables => {
                 let df = ctx.sql("SHOW TABLES").await?;
                 let schema = Arc::new(df.schema().as_arrow().clone());
                 let batches = df.collect().await?;
-                print_options
-                    .print_batches(schema, &batches, now)
-                    .map_err(BallistaError::DataFusionError)
+                print_options.print_batches(schema, &batches, now)
             }
             Self::DescribeTable(name) => {
                 let df = ctx.sql(&format!("SHOW COLUMNS FROM {name}")).await?;
                 let schema = Arc::new(df.schema().as_arrow().clone());
                 let batches = df.collect().await?;
-                print_options
-                    .print_batches(schema, &batches, now)
-                    .map_err(BallistaError::DataFusionError)
+                print_options.print_batches(schema, &batches, now)
             }
             Self::QuietMode(quiet) => {
                 if let Some(quiet) = quiet {
@@ -95,12 +93,10 @@ impl Command {
                 }
                 Ok(())
             }
-            Self::Quit => Err(BallistaError::Internal(
+            Self::Quit => Err(DataFusionError::Internal(
                 "Unexpected quit, this should be handled outside".to_string(),
             )),
-            Self::ListFunctions => {
-                display_all_functions().map_err(BallistaError::DataFusionError)
-            }
+            Self::ListFunctions => display_all_functions(),
             Self::SearchFunctions(function) => {
                 if let Ok(func) = function.parse::<Function>() {
                     let details = func.function_details()?;
@@ -108,10 +104,10 @@ impl Command {
                     Ok(())
                 } else {
                     let msg = format!("{function} is not a supported function");
-                    Err(BallistaError::NotImplemented(msg))
+                    Err(DataFusionError::NotImplemented(msg))
                 }
             }
-            Self::OutputFormat(_) => Err(BallistaError::Internal(
+            Self::OutputFormat(_) => Err(DataFusionError::Internal(
                 "Unexpected change output format, this should be handled outside"
                     .to_string(),
             )),
@@ -221,7 +217,7 @@ impl OutputFormat {
                     println!("Output format is {:?}.", print_options.format);
                     Ok(())
                 } else {
-                    Err(BallistaError::General(format!(
+                    Err(DataFusionError::Execution(format!(
                         "{:?} is not a valid format type [possible values: {:?}]",
                         format,
                         "TO BE FIXED", //PrintFormat::value_variants()

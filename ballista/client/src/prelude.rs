@@ -17,12 +17,10 @@
 
 //! Ballista Prelude (common imports)
 
-pub use ballista_core::{
-    config::BallistaConfig,
-    error::{BallistaError, Result},
-};
+// pub use ballista_core::{
+//     config::BallistaConfig,
+//     error::{BallistaError, Result},
+// };
 
-#[allow(deprecated)] // TO BE REMOVED
-pub use crate::context::BallistaContext;
 pub use crate::extension::{SessionConfigExt, SessionContextExt};
-pub use futures::StreamExt;
+//pub use futures::StreamExt;

@@ -24,10 +24,10 @@ mod common;
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod standalone_tests {
-    use ballista::extension::SessionContextExt;
-    use ballista_core::error::Result;
+    use ballista::prelude::SessionContextExt;
     use datafusion::arrow;
     use datafusion::arrow::util::pretty::pretty_format_batches;
+    use datafusion::common::Result;
     use datafusion::config::TableParquetOptions;
     use datafusion::dataframe::DataFrameWriteOptions;
     use datafusion::prelude::ParquetReadOptions;

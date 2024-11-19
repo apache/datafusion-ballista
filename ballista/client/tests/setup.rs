@@ -19,7 +19,7 @@ mod common;
 
 #[cfg(test)]
 mod remote {
-    use ballista::extension::{SessionConfigExt, SessionContextExt};
+    use ballista::prelude::{SessionConfigExt, SessionContextExt};
     use datafusion::{
         assert_batches_eq,
         execution::SessionStateBuilder,

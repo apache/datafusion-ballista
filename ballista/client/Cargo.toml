@@ -50,6 +50,6 @@ object_store = { workspace = true, features = ["aws"] }
 testcontainers-modules = { version = "0.11", features = ["minio"] }
 
 [features]
-default = []
+default = ["standalone"]
 standalone = ["ballista-executor", "ballista-scheduler"]
 testcontainers = []

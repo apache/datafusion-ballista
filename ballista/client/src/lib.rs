@@ -17,6 +17,5 @@
 
 #![doc = include_str!("../README.md")]
 
-pub mod context;
 pub mod extension;
 pub mod prelude;

@@ -20,7 +20,8 @@ mod common;
 #[cfg(test)]
 #[cfg(feature = "standalone")]
 mod standalone {
-    use ballista::{extension::SessionContextExt, prelude::*};
+    use ballista::prelude::SessionContextExt;
+    use ballista_core::config::BallistaConfig;
     use datafusion::prelude::*;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
 
