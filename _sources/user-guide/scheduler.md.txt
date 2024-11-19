@@ -23,6 +23,8 @@
 
 The scheduler also provides a REST API that allows jobs to be monitored.
 
+> This is optional scheduler feature which should be enabled with `rest-api` feature
+
 | API                   | Method | Description                                                 |
 | --------------------- | ------ | ----------------------------------------------------------- |
 | /api/jobs             | GET    | Get a list of jobs that have been submitted to the cluster. |

@@ -5,7 +5,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Ballista Rust Client &#8212; Apache DataFusion Ballista  documentation</title>
+    <title>Distributing DataFusion with Ballista &#8212; Apache DataFusion Ballista  documentation</title>
     
     <link href="../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
 <link href="../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
@@ -296,72 +296,116 @@
   specific language governing permissions and limitations
   under the License.
 -->
-<section id="ballista-rust-client">
-<h1>Ballista Rust Client<a class="headerlink" href="#ballista-rust-client" title="Link to this heading">¶</a></h1>
-<p>To connect to a Ballista cluster from Rust, first start by creating a <code class="docutils literal notranslate"><span class="pre">BallistaContext</span></code>.</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">BallistaConfig</span><span class="p">::</span><span class="n">builder</span><span class="p">()</span>
-<span class="w">    </span><span class="p">.</span><span class="n">set</span><span class="p">(</span><span class="s">&quot;ballista.shuffle.partitions&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;4&quot;</span><span class="p">)</span>
-<span class="w">    </span><span class="p">.</span><span class="n">build</span><span class="p">()</span><span class="o">?</span><span class="p">;</span>
+<section id="distributing-datafusion-with-ballista">
+<h1>Distributing DataFusion with Ballista<a class="headerlink" href="#distributing-datafusion-with-ballista" title="Link to this heading">¶</a></h1>
+<p>To connect to a Ballista cluster from Rust, first start by creating a <code class="docutils literal notranslate"><span class="pre">SessionContext</span></code> connected to remote scheduler server.</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">ballista</span><span class="p">::</span><span class="n">prelude</span><span class="p">::</span><span class="o">*</span><span class="p">;</span>
+<span class="k">use</span><span class="w"> </span><span class="n">datafusion</span><span class="p">::{</span>
+<span class="w">    </span><span class="n">execution</span><span class="p">::</span><span class="n">SessionStateBuilder</span><span class="p">,</span>
+<span class="w">    </span><span class="n">prelude</span><span class="p">::{</span><span class="n">SessionConfig</span><span class="p">,</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">},</span>
+<span class="p">};</span>
 
-<span class="c1">// connect to Ballista scheduler</span>
-<span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">BallistaContext</span><span class="p">::</span><span class="n">remote</span><span class="p">(</span><span class="s">&quot;localhost&quot;</span><span class="p">,</span><span class="w"> </span><span class="mi">50050</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">config</span><span class="p">);</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">::</span><span class="n">new_with_ballista</span><span class="p">()</span>
+<span class="w">    </span><span class="p">.</span><span class="n">with_target_partitions</span><span class="p">(</span><span class="mi">4</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">with_ballista_job_name</span><span class="p">(</span><span class="s">&quot;Remote SQL Example&quot;</span><span class="p">);</span>
+
+<span class="kd">let</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionStateBuilder</span><span class="p">::</span><span class="n">new</span><span class="p">()</span>
+<span class="w">    </span><span class="p">.</span><span class="n">with_config</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">with_default_features</span><span class="p">()</span>
+<span class="w">    </span><span class="p">.</span><span class="n">build</span><span class="p">();</span>
+
+<span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote_with_state</span><span class="p">(</span><span class="s">&quot;df://localhost:50050&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 </pre></div>
 </div>
-<p>Here is a full example using the DataFrame API.</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[tokio::main]</span>
+<p>For testing purposes, standalone, in process cluster could be started with:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">ballista</span><span class="p">::</span><span class="n">prelude</span><span class="p">::</span><span class="o">*</span><span class="p">;</span>
+<span class="k">use</span><span class="w"> </span><span class="n">datafusion</span><span class="p">::{</span>
+<span class="w">    </span><span class="n">execution</span><span class="p">::</span><span class="n">SessionStateBuilder</span><span class="p">,</span>
+<span class="w">    </span><span class="n">prelude</span><span class="p">::{</span><span class="n">SessionConfig</span><span class="p">,</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">},</span>
+<span class="p">};</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">::</span><span class="n">new_with_ballista</span><span class="p">()</span>
+<span class="w">    </span><span class="p">.</span><span class="n">with_target_partitions</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">with_ballista_standalone_parallelism</span><span class="p">(</span><span class="mi">2</span><span class="p">);</span>
+
+<span class="kd">let</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionStateBuilder</span><span class="p">::</span><span class="n">new</span><span class="p">()</span>
+<span class="w">    </span><span class="p">.</span><span class="n">with_config</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">with_default_features</span><span class="p">()</span>
+<span class="w">    </span><span class="p">.</span><span class="n">build</span><span class="p">();</span>
+
+<span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">standalone_with_state</span><span class="p">(</span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>Following examples require running remove scheduler and executor nodes.</p>
+<p>Full example using the DataFrame API.</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">ballista</span><span class="p">::</span><span class="n">prelude</span><span class="p">::</span><span class="o">*</span><span class="p">;</span>
+<span class="k">use</span><span class="w"> </span><span class="n">ballista_examples</span><span class="p">::</span><span class="n">test_util</span><span class="p">;</span>
+<span class="k">use</span><span class="w"> </span><span class="n">datafusion</span><span class="p">::{</span>
+<span class="w">    </span><span class="n">prelude</span><span class="p">::{</span><span class="n">col</span><span class="p">,</span><span class="w"> </span><span class="n">lit</span><span class="p">,</span><span class="w"> </span><span class="n">ParquetReadOptions</span><span class="p">,</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">},</span>
+<span class="p">};</span>
+
+<span class="sd">/// This example demonstrates executing a simple query against an Arrow data source (Parquet) and</span>
+<span class="sd">/// fetching results, using the DataFrame trait</span>
+<span class="cp">#[tokio::main]</span>
 <span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">()</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">BallistaConfig</span><span class="p">::</span><span class="n">builder</span><span class="p">()</span>
-<span class="w">        </span><span class="p">.</span><span class="n">set</span><span class="p">(</span><span class="s">&quot;ballista.shuffle.partitions&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;4&quot;</span><span class="p">)</span>
-<span class="w">        </span><span class="p">.</span><span class="n">build</span><span class="p">()</span><span class="o">?</span><span class="p">;</span>
+<span class="w">    </span><span class="c1">// creating SessionContext with default settings</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote</span><span class="p">(</span><span class="s">&quot;df://localhost:50050&quot;</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
-<span class="w">    </span><span class="c1">// connect to Ballista scheduler</span>
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">BallistaContext</span><span class="p">::</span><span class="n">remote</span><span class="p">(</span><span class="s">&quot;localhost&quot;</span><span class="p">,</span><span class="w"> </span><span class="mi">50050</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">config</span><span class="p">);</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">test_data</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">test_util</span><span class="p">::</span><span class="n">examples_test_data</span><span class="p">();</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">filename</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="fm">format!</span><span class="p">(</span><span class="s">&quot;{test_data}/alltypes_plain.parquet&quot;</span><span class="p">);</span>
 
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">testdata</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">datafusion</span><span class="p">::</span><span class="n">test_util</span><span class="p">::</span><span class="n">parquet_test_data</span><span class="p">();</span>
-
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">filename</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">&amp;</span><span class="fm">format!</span><span class="p">(</span><span class="s">&quot;{}/alltypes_plain.parquet&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">testdata</span><span class="p">);</span>
-
-<span class="w">    </span><span class="c1">// define the query using the DataFrame trait</span>
 <span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">df</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ctx</span>
-<span class="w">        </span><span class="p">.</span><span class="n">read_parquet</span><span class="p">(</span><span class="n">filename</span><span class="p">)</span><span class="o">?</span>
+<span class="w">        </span><span class="p">.</span><span class="n">read_parquet</span><span class="p">(</span><span class="n">filename</span><span class="p">,</span><span class="w"> </span><span class="n">ParquetReadOptions</span><span class="p">::</span><span class="n">default</span><span class="p">())</span>
+<span class="w">        </span><span class="p">.</span><span class="k">await</span><span class="o">?</span>
 <span class="w">        </span><span class="p">.</span><span class="n">select_columns</span><span class="p">(</span><span class="o">&amp;</span><span class="p">[</span><span class="s">&quot;id&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;bool_col&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;timestamp_col&quot;</span><span class="p">])</span><span class="o">?</span>
 <span class="w">        </span><span class="p">.</span><span class="n">filter</span><span class="p">(</span><span class="n">col</span><span class="p">(</span><span class="s">&quot;id&quot;</span><span class="p">).</span><span class="n">gt</span><span class="p">(</span><span class="n">lit</span><span class="p">(</span><span class="mi">1</span><span class="p">)))</span><span class="o">?</span><span class="p">;</span>
 
-<span class="w">    </span><span class="c1">// print the results</span>
 <span class="w">    </span><span class="n">df</span><span class="p">.</span><span class="n">show</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
 <span class="w">    </span><span class="nb">Ok</span><span class="p">(())</span>
 <span class="p">}</span>
 </pre></div>
 </div>
-<p>Here is a full example demonstrating SQL usage.</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[tokio::main]</span>
+<p>Here is a full example demonstrating SQL usage, with user specific <code class="docutils literal notranslate"><span class="pre">SessionConfig</span></code>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">ballista</span><span class="p">::</span><span class="n">prelude</span><span class="p">::</span><span class="o">*</span><span class="p">;</span>
+<span class="k">use</span><span class="w"> </span><span class="n">ballista_examples</span><span class="p">::</span><span class="n">test_util</span><span class="p">;</span>
+<span class="k">use</span><span class="w"> </span><span class="n">datafusion</span><span class="p">::{</span>
+<span class="w">    </span><span class="n">execution</span><span class="p">::</span><span class="n">SessionStateBuilder</span><span class="p">,</span>
+<span class="w">    </span><span class="n">prelude</span><span class="p">::{</span><span class="n">CsvReadOptions</span><span class="p">,</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">,</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">},</span>
+<span class="p">};</span>
+
+<span class="sd">/// This example demonstrates executing a simple query against an Arrow data source (CSV) and</span>
+<span class="sd">/// fetching results, using SQL</span>
+<span class="cp">#[tokio::main]</span>
 <span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">()</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">BallistaConfig</span><span class="p">::</span><span class="n">builder</span><span class="p">()</span>
-<span class="w">        </span><span class="p">.</span><span class="n">set</span><span class="p">(</span><span class="s">&quot;ballista.shuffle.partitions&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;4&quot;</span><span class="p">)</span>
-<span class="w">        </span><span class="p">.</span><span class="n">build</span><span class="p">()</span><span class="o">?</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">::</span><span class="n">new_with_ballista</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="n">with_target_partitions</span><span class="p">(</span><span class="mi">4</span><span class="p">)</span>
+<span class="w">        </span><span class="p">.</span><span class="n">with_ballista_job_name</span><span class="p">(</span><span class="s">&quot;Remote SQL Example&quot;</span><span class="p">);</span>
 
-<span class="w">    </span><span class="c1">// connect to Ballista scheduler</span>
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">BallistaContext</span><span class="p">::</span><span class="n">remote</span><span class="p">(</span><span class="s">&quot;localhost&quot;</span><span class="p">,</span><span class="w"> </span><span class="mi">50050</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">config</span><span class="p">);</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionStateBuilder</span><span class="p">::</span><span class="n">new</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="n">with_config</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+<span class="w">        </span><span class="p">.</span><span class="n">with_default_features</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="n">build</span><span class="p">();</span>
 
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">testdata</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">datafusion</span><span class="p">::</span><span class="n">test_util</span><span class="p">::</span><span class="n">arrow_test_data</span><span class="p">();</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote_with_state</span><span class="p">(</span><span class="s">&quot;df://localhost:50050&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
-<span class="w">    </span><span class="c1">// register csv file with the execution context</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">test_data</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">test_util</span><span class="p">::</span><span class="n">examples_test_data</span><span class="p">();</span>
+
 <span class="w">    </span><span class="n">ctx</span><span class="p">.</span><span class="n">register_csv</span><span class="p">(</span>
-<span class="w">        </span><span class="s">&quot;aggregate_test_100&quot;</span><span class="p">,</span>
-<span class="w">        </span><span class="o">&amp;</span><span class="fm">format!</span><span class="p">(</span><span class="s">&quot;{}/csv/aggregate_test_100.csv&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">testdata</span><span class="p">),</span>
+<span class="w">        </span><span class="s">&quot;test&quot;</span><span class="p">,</span>
+<span class="w">        </span><span class="o">&amp;</span><span class="fm">format!</span><span class="p">(</span><span class="s">&quot;{test_data}/aggregate_test_100.csv&quot;</span><span class="p">),</span>
 <span class="w">        </span><span class="n">CsvReadOptions</span><span class="p">::</span><span class="n">new</span><span class="p">(),</span>
-<span class="w">    </span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
-<span class="w">    </span><span class="c1">// execute the query</span>
-<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">df</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ctx</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span>
-<span class="w">        </span><span class="s">&quot;SELECT c1, MIN(c12), MAX(c12) \</span>
-<span class="s">        FROM aggregate_test_100 \</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">df</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ctx</span>
+<span class="w">        </span><span class="p">.</span><span class="n">sql</span><span class="p">(</span>
+<span class="w">            </span><span class="s">&quot;SELECT c1, MIN(c12), MAX(c12) \</span>
+<span class="s">        FROM test \</span>
 <span class="s">        WHERE c11 &gt; 0.1 AND c11 &lt; 0.9 \</span>
 <span class="s">        GROUP BY c1&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+<span class="w">        </span><span class="p">)</span>
+<span class="w">        </span><span class="p">.</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
-<span class="w">    </span><span class="c1">// print the results</span>
 <span class="w">    </span><span class="n">df</span><span class="p">.</span><span class="n">show</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 
 <span class="w">    </span><span class="nb">Ok</span><span class="p">(())</span>
