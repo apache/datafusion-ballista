@@ -32,3 +32,5 @@ pub mod state;
 pub mod flight_sql;
 #[cfg(test)]
 pub mod test_utils;
+
+pub use scheduler_server::SessionBuilder;

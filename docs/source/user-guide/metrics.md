@@ -21,6 +21,8 @@
 
 ## Prometheus
 
+> This is optional scheduler feature which should be enabled with `prometheus-metrics` feature
+
 Built with default features, the ballista scheduler will automatically collect and expose a standard set of prometheus metrics.
 The metrics currently collected automatically include:
 

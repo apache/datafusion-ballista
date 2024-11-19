@@ -111,6 +111,8 @@ pub(crate) struct UnresolvedStage {
     pub(crate) plan: Arc<dyn ExecutionPlan>,
     /// Record last attempt's failure reasons to avoid duplicate resubmits
     pub(crate) last_attempt_failure_reasons: HashSet<String>,
+
+    pub(crate) session_config: Arc<SessionConfig>,
 }
 
 /// For a stage, if it has no inputs or all of its input stages are completed,
@@ -133,6 +135,8 @@ pub(crate) struct ResolvedStage {
     pub(crate) plan: Arc<dyn ExecutionPlan>,
     /// Record last attempt's failure reasons to avoid duplicate resubmits
     pub(crate) last_attempt_failure_reasons: HashSet<String>,
+
+    pub(crate) session_config: Arc<SessionConfig>,
 }
 
 /// Different from the resolved stage, a running stage will
@@ -164,6 +168,8 @@ pub(crate) struct RunningStage {
     pub(crate) task_failure_numbers: Vec<usize>,
     /// Combined metrics of the already finished tasks in the stage, If it is None, no task is finished yet.
     pub(crate) stage_metrics: Option<Vec<MetricsSet>>,
+
+    pub(crate) session_config: Arc<SessionConfig>,
 }
 
 /// If a stage finishes successfully, its task statuses and metrics will be finalized
@@ -188,6 +194,8 @@ pub(crate) struct SuccessfulStage {
     pub(crate) task_infos: Vec<TaskInfo>,
     /// Combined metrics of the already finished tasks in the stage.
     pub(crate) stage_metrics: Vec<MetricsSet>,
+
+    pub(crate) session_config: Arc<SessionConfig>,
 }
 
 /// If a stage fails, it will be with an error message
@@ -233,6 +241,7 @@ pub(crate) struct TaskInfo {
     pub(super) finish_time: u128,
     /// Task Status
     pub(super) task_status: task_status::Status,
+    //pub(crate) session_config: Arc<SessionConfig>,
 }
 
 impl UnresolvedStage {
@@ -241,6 +250,7 @@ impl UnresolvedStage {
         plan: Arc<dyn ExecutionPlan>,
         output_links: Vec<usize>,
         child_stage_ids: Vec<usize>,
+        session_config: Arc<SessionConfig>,
     ) -> Self {
         let mut inputs: HashMap<usize, StageOutput> = HashMap::new();
         for input_stage_id in child_stage_ids {
@@ -254,6 +264,7 @@ impl UnresolvedStage {
             inputs,
             plan,
             last_attempt_failure_reasons: Default::default(),
+            session_config,
         }
     }
 
@@ -264,6 +275,7 @@ impl UnresolvedStage {
         output_links: Vec<usize>,
         inputs: HashMap<usize, StageOutput>,
         last_attempt_failure_reasons: HashSet<String>,
+        session_config: Arc<SessionConfig>,
     ) -> Self {
         Self {
             stage_id,
@@ -272,6 +284,7 @@ impl UnresolvedStage {
             inputs,
             plan,
             last_attempt_failure_reasons,
+            session_config,
         }
     }
 
@@ -364,6 +377,7 @@ impl UnresolvedStage {
             self.output_links.clone(),
             self.inputs.clone(),
             self.last_attempt_failure_reasons.clone(),
+            self.session_config.clone(),
         ))
     }
 }
@@ -392,6 +406,7 @@ impl ResolvedStage {
         output_links: Vec<usize>,
         inputs: HashMap<usize, StageOutput>,
         last_attempt_failure_reasons: HashSet<String>,
+        session_config: Arc<SessionConfig>,
     ) -> Self {
         let partitions = get_stage_partitions(plan.clone());
 
@@ -403,6 +418,7 @@ impl ResolvedStage {
             inputs,
             plan,
             last_attempt_failure_reasons,
+            session_config,
         }
     }
 
@@ -415,6 +431,7 @@ impl ResolvedStage {
             self.partitions,
             self.output_links.clone(),
             self.inputs.clone(),
+            self.session_config.clone(),
         )
     }
 
@@ -429,6 +446,7 @@ impl ResolvedStage {
             self.output_links.clone(),
             self.inputs.clone(),
             self.last_attempt_failure_reasons.clone(),
+            self.session_config.clone(),
         );
         Ok(unresolved)
     }
@@ -454,6 +472,7 @@ impl RunningStage {
         partitions: usize,
         output_links: Vec<usize>,
         inputs: HashMap<usize, StageOutput>,
+        session_config: Arc<SessionConfig>,
     ) -> Self {
         Self {
             stage_id,
@@ -465,6 +484,7 @@ impl RunningStage {
             task_infos: vec![None; partitions],
             task_failure_numbers: vec![0; partitions],
             stage_metrics: None,
+            session_config,
         }
     }
 
@@ -495,6 +515,7 @@ impl RunningStage {
             plan: self.plan.clone(),
             task_infos,
             stage_metrics,
+            session_config: self.session_config.clone(),
         }
     }
 
@@ -525,6 +546,7 @@ impl RunningStage {
             self.output_links.clone(),
             self.inputs.clone(),
             failure_reasons,
+            self.session_config.clone(),
         );
         Ok(unresolved)
     }
@@ -800,6 +822,7 @@ impl SuccessfulStage {
             // It is Ok to forget the previous task failure attempts
             task_failure_numbers: vec![0; self.partitions],
             stage_metrics,
+            session_config: self.session_config.clone(),
         }
     }
 

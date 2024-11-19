@@ -98,9 +98,7 @@ use datafusion::functions_aggregate::{min_max::min, min_max::max, sum::sum, aver
 #[tokio::main]
 async fn main() -> Result<()> {
     // create configuration
-    let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitions", "4")
-        .build()?;
+    let config = BallistaConfig::default();
 
     // connect to Ballista scheduler
     let ctx = BallistaContext::remote("localhost", 50050, &config).await?;

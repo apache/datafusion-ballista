@@ -21,7 +21,7 @@
 
 This directory contains examples for executing distributed queries with Ballista.
 
-# Standalone Examples
+## Standalone Examples
 
 The standalone example is the easiest to get started with. Ballista supports a standalone mode where a scheduler
 and executor are started in-process.
@@ -33,18 +33,35 @@ cargo run --example standalone_sql --features="ballista/standalone"
 ### Source code for standalone SQL example
 
 ```rust
+use ballista::{
+    extension::SessionConfigExt,
+    prelude::*
+};
+use datafusion::{
+    execution::{options::ParquetReadOptions, SessionStateBuilder},
+    prelude::{SessionConfig, SessionContext},
+};
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitions", "1")
-        .build()?;
+    let config = SessionConfig::new_with_ballista()
+        .with_target_partitions(1)
+        .with_ballista_standalone_parallelism(2);
 
-    let ctx = BallistaContext::standalone(&config, 2).await?;
+    let state = SessionStateBuilder::new()
+        .with_config(config)
+        .with_default_features()
+        .build();
 
-    ctx.register_csv(
+    let ctx = SessionContext::standalone_with_state(state).await?;
+
+    let test_data = test_util::examples_test_data();
+
+    // register parquet file with the execution context
+    ctx.register_parquet(
         "test",
-        "testdata/aggregate_test_100.csv",
-        CsvReadOptions::new(),
+        &format!("{test_data}/alltypes_plain.parquet"),
+        ParquetReadOptions::default(),
     )
     .await?;
 
@@ -56,12 +73,12 @@ async fn main() -> Result<()> {
 
 ```
 
-# Distributed Examples
+## Distributed Examples
 
 For background information on the Ballista architecture, refer to
 the [Ballista README](../ballista/client/README.md).
 
-## Start a standalone cluster
+### Start a standalone cluster
 
 From the root of the project, build release binaries.
 
@@ -83,40 +100,49 @@ RUST_LOG=info ./target/release/ballista-executor -c 2 -p 50051
 RUST_LOG=info ./target/release/ballista-executor -c 2 -p 50052
 ```
 
-## Running the examples
+### Running the examples
 
 The examples can be run using the `cargo run --bin` syntax.
 
-## Distributed SQL Example
+### Distributed SQL Example
 
 ```bash
 cargo run --release --example remote-sql
 ```
 
-### Source code for distributed SQL example
+#### Source code for distributed SQL example
 
 ```rust
-use ballista::prelude::*;
-use datafusion::prelude::CsvReadOptions;
+use ballista::{extension::SessionConfigExt, prelude::*};
+use datafusion::{
+    execution::SessionStateBuilder,
+    prelude::{CsvReadOptions, SessionConfig, SessionContext},
+};
 
 /// This example demonstrates executing a simple query against an Arrow data source (CSV) and
 /// fetching results, using SQL
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitions", "4")
-        .build()?;
-    let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
+    let config = SessionConfig::new_with_ballista()
+        .with_target_partitions(4)
+        .with_ballista_job_name("Remote SQL Example");
 
-    // register csv file with the execution context
+    let state = SessionStateBuilder::new()
+        .with_config(config)
+        .with_default_features()
+        .build();
+
+    let ctx = SessionContext::remote_with_state("df://localhost:50050", state).await?;
+
+    let test_data = test_util::examples_test_data();
+
     ctx.register_csv(
         "test",
-        "testdata/aggregate_test_100.csv",
+        &format!("{test_data}/aggregate_test_100.csv"),
         CsvReadOptions::new(),
     )
     .await?;
 
-    // execute the query
     let df = ctx
         .sql(
             "SELECT c1, MIN(c12), MAX(c12) \
@@ -126,39 +152,49 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-    // print the results
     df.show().await?;
 
     Ok(())
 }
 ```
 
-## Distributed DataFrame Example
+### Distributed DataFrame Example
 
 ```bash
 cargo run --release --example remote-dataframe
 ```
 
-### Source code for distributed DataFrame example
+#### Source code for distributed DataFrame example
 
 ```rust
+use ballista::{extension::SessionConfigExt, prelude::*};
+use datafusion::{
+    execution::SessionStateBuilder,
+    prelude::{col, lit, ParquetReadOptions, SessionConfig, SessionContext},
+};
+
+/// This example demonstrates executing a simple query against an Arrow data source (Parquet) and
+/// fetching results, using the DataFrame trait
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitions", "4")
-        .build()?;
-    let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
+    let config = SessionConfig::new_with_ballista().with_target_partitions(4);
 
-    let filename = "testdata/alltypes_plain.parquet";
+    let state = SessionStateBuilder::new()
+        .with_config(config)
+        .with_default_features()
+        .build();
 
-    // define the query using the DataFrame trait
+    let ctx = SessionContext::remote_with_state("df://localhost:50050", state).await?;
+
+    let test_data = test_util::examples_test_data();
+    let filename = format!("{test_data}/alltypes_plain.parquet");
+
     let df = ctx
         .read_parquet(filename, ParquetReadOptions::default())
         .await?
         .select_columns(&["id", "bool_col", "timestamp_col"])?
         .filter(col("id").gt(lit(1)))?;
 
-    // print the results
     df.show().await?;
 
     Ok(())

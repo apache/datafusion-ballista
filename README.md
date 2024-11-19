@@ -17,29 +17,58 @@
   under the License.
 -->
 
-# Ballista: Distributed SQL Query Engine, built on Apache Arrow
+# Ballista: Making DataFusion Applications Distributed
 
-Ballista is a distributed SQL query engine powered by the Rust implementation of [Apache Arrow][arrow] and
-[Apache Arrow DataFusion][datafusion].
+Ballista is a distributed execution engine which makes [Apache DataFusion](https://github.com/apache/datafusion) applications distributed.
 
-If you are looking for documentation for a released version of Ballista, please refer to the
-[Ballista User Guide][user-guide].
+Existing DataFusion application:
 
-## Overview
+```rust
+use datafusion::prelude::*;
 
-Ballista implements a similar design to Apache Spark (particularly Spark SQL), but there are some key differences:
+#[tokio::main]
+async fn main() -> datafusion::error::Result<()> {
+  let ctx = SessionContext::new();
 
-- The choice of Rust as the main execution language avoids the overhead of GC pauses and results in deterministic
-  processing times.
-- Ballista is designed from the ground up to use columnar data, enabling a number of efficiencies such as vectorized
-  processing (SIMD) and efficient compression. Although Spark does have some columnar support, it is still
-  largely row-based today.
-- The combination of Rust and Arrow provides excellent memory efficiency and memory usage can be 5x - 10x lower than
-  Apache Spark in some cases, which means that more processing can fit on a single node, reducing the overhead of
-  distributed compute.
-- The use of Apache Arrow as the memory model and network protocol means that data can be exchanged efficiently between
-  executors using the [Flight Protocol][flight], and between clients and schedulers/executors using the
-  [Flight SQL Protocol][flight-sql]
+  // register the table
+  ctx.register_csv("example", "tests/data/example.csv", CsvReadOptions::new()).await?;
+
+  // create a plan to run a SQL query
+  let df = ctx.sql("SELECT a, MIN(b) FROM example WHERE a <= b GROUP BY a LIMIT 100").await?;
+
+  // execute and print results
+  df.show().await?;
+  Ok(())
+}
+```
+
+can be distributed with few lines of code changed:
+
+> [!IMPORTANT]  
+> There is a gap between DataFusion and Ballista, which may bring incompatibilities. The community is working hard to close this gap
+
+```rust
+use ballista::prelude::*;
+use datafusion::prelude::*;
+
+#[tokio::main]
+async fn main() -> datafusion::error::Result<()> {
+  // create DataFusion SessionContext with ballista standalone cluster started
+  let ctx = SessionContext::standalone();
+
+  // register the table
+  ctx.register_csv("example", "tests/data/example.csv", CsvReadOptions::new()).await?;
+
+  // create a plan to run a SQL query
+  let df = ctx.sql("SELECT a, MIN(b) FROM example WHERE a <= b GROUP BY a LIMIT 100").await?;
+
+  // execute and print results
+  df.show().await?;
+  Ok(())
+}
+```
+
+If you are looking for documentation or more examples, please refer to the [Ballista User Guide][user-guide].
 
 ## Architecture
 
@@ -51,18 +80,9 @@ can be run as native binaries and are also available as Docker Images, which can
 The following diagram shows the interaction between clients and the scheduler for submitting jobs, and the interaction
 between the executor(s) and the scheduler for fetching tasks and reporting task status.
 
-![Ballista Cluster Diagram](docs/source/contributors-guide/ballista.drawio.png)
+![Ballista Cluster Diagram](docs/source/contributors-guide/ballista_architecture.excalidraw.svg)
 
 See the [architecture guide](docs/source/contributors-guide/architecture.md) for more details.
-
-## Features
-
-- Supports cloud object stores. S3 is supported today and GCS and Azure support is planned.
-- DataFrame and SQL APIs available from Python and Rust.
-- Clients can connect to a Ballista cluster using [Flight SQL][flight-sql].
-- JDBC support via Arrow Flight SQL JDBC Driver
-- Scheduler REST UI for monitoring query progress and viewing query plans and metrics.
-- Support for Docker, Docker Compose, and Kubernetes deployment, as well as manual deployment on bare metal.
 
 ## Performance
 
@@ -81,19 +101,14 @@ that, refer to the [Getting Started Guide](ballista/client/README.md).
 
 ## Project Status
 
-Ballista supports a wide range of SQL, including CTEs, Joins, and Subqueries and can execute complex queries at scale.
+Ballista supports a wide range of SQL, including CTEs, Joins, and subqueries and can execute complex queries at scale,
+but still there is a gap between DataFusion and Ballista which we want to bridge in near future.
 
 Refer to the [DataFusion SQL Reference](https://datafusion.apache.org/user-guide/sql/index.html) for more
 information on supported SQL.
-
-Ballista is maturing quickly and is now working towards being production ready. See the [roadmap](ROADMAP.md) for more details.
 
 ## Contribution Guide
 
 Please see the [Contribution Guide](CONTRIBUTING.md) for information about contributing to Ballista.
 
-[arrow]: https://arrow.apache.org/
-[datafusion]: https://github.com/apache/arrow-datafusion
-[flight]: https://arrow.apache.org/blog/2019/10/13/introducing-arrow-flight/
-[flight-sql]: https://arrow.apache.org/blog/2022/02/16/introducing-arrow-flight-sql/
 [user-guide]: https://datafusion.apache.org/ballista/

@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista::{extension::SessionConfigExt, prelude::*};
+use ballista::prelude::*;
 use ballista_examples::test_util;
 use datafusion::{
     execution::SessionStateBuilder,
@@ -26,8 +26,7 @@ use datafusion::{
 /// fetching results, using the DataFrame trait
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = SessionConfig::new_with_ballista()
-        .set_str(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "4");
+    let config = SessionConfig::new_with_ballista().with_target_partitions(4);
 
     let state = SessionStateBuilder::new()
         .with_config(config)

@@ -27,19 +27,19 @@ use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{AvroExec, CsvExec, NdJsonExec, ParquetExec};
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::Stream;
 use log::{debug, info, warn};
 
 use ballista_core::config::BallistaConfig;
-use ballista_core::consistent_hash;
 use ballista_core::consistent_hash::ConsistentHash;
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf::{
     job_status, AvailableTaskSlots, ExecutorHeartbeat, JobStatus,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata, PartitionId};
-use ballista_core::utils::default_session_builder;
+use ballista_core::utils::{default_config_producer, default_session_builder};
+use ballista_core::{consistent_hash, ConfigProducer};
 
 use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
 
@@ -96,10 +96,15 @@ impl BallistaCluster {
     pub fn new_memory(
         scheduler: impl Into<String>,
         session_builder: SessionBuilder,
+        config_producer: ConfigProducer,
     ) -> Self {
         Self {
             cluster_state: Arc::new(InMemoryClusterState::default()),
-            job_state: Arc::new(InMemoryJobState::new(scheduler, session_builder)),
+            job_state: Arc::new(InMemoryJobState::new(
+                scheduler,
+                session_builder,
+                config_producer,
+            )),
         }
     }
 
@@ -110,6 +115,7 @@ impl BallistaCluster {
             ClusterStorageConfig::Memory => Ok(BallistaCluster::new_memory(
                 scheduler,
                 Arc::new(default_session_builder),
+                Arc::new(default_config_producer),
             )),
         }
     }
@@ -279,22 +285,23 @@ pub trait JobState: Send + Sync {
     async fn get_session(&self, session_id: &str) -> Result<Arc<SessionContext>>;
 
     /// Create a new saved session
-    async fn create_session(
-        &self,
-        config: &BallistaConfig,
-    ) -> Result<Arc<SessionContext>>;
+    async fn create_session(&self, config: &SessionConfig)
+        -> Result<Arc<SessionContext>>;
 
-    // Update a new saved session. If the session does not exist, a new one will be created
+    /// Update a new saved session. If the session does not exist, a new one will be created
     async fn update_session(
         &self,
         session_id: &str,
-        config: &BallistaConfig,
+        config: &SessionConfig,
     ) -> Result<Arc<SessionContext>>;
 
     async fn remove_session(
         &self,
         session_id: &str,
     ) -> Result<Option<Arc<SessionContext>>>;
+
+    // TODO MM not sure this is the best place to put config producer
+    fn produce_config(&self) -> SessionConfig;
 }
 
 pub(crate) async fn bind_task_bias(
@@ -372,6 +379,7 @@ pub(crate) async fn bind_task_bias(
                     task_id,
                     task_attempt: running_stage.task_failure_numbers[partition_id],
                     plan: running_stage.plan.clone(),
+                    session_config: running_stage.session_config.clone(),
                 };
                 schedulable_tasks.push((executor_id, task_desc));
 
@@ -460,6 +468,7 @@ pub(crate) async fn bind_task_round_robin(
                     task_id,
                     task_attempt: running_stage.task_failure_numbers[partition_id],
                     plan: running_stage.plan.clone(),
+                    session_config: running_stage.session_config.clone(),
                 };
                 schedulable_tasks.push((executor_id, task_desc));
 
@@ -571,6 +580,7 @@ pub(crate) async fn bind_task_consistent_hash(
                             task_attempt: running_stage.task_failure_numbers
                                 [partition_id],
                             plan: running_stage.plan.clone(),
+                            session_config: running_stage.session_config.clone(),
                         };
                         schedulable_tasks.push((executor_id, task_desc));
 
@@ -691,7 +701,6 @@ mod test {
         let mut available_slots = mock_available_slots();
         let available_slots_ref: Vec<&mut AvailableTaskSlots> =
             available_slots.iter_mut().collect();
-
         let bound_tasks =
             bind_task_bias(available_slots_ref, Arc::new(active_jobs), |_| false).await;
         assert_eq!(9, bound_tasks.len());
@@ -744,7 +753,6 @@ mod test {
         let mut available_slots = mock_available_slots();
         let available_slots_ref: Vec<&mut AvailableTaskSlots> =
             available_slots.iter_mut().collect();
-
         let bound_tasks =
             bind_task_round_robin(available_slots_ref, Arc::new(active_jobs), |_| false)
                 .await;
