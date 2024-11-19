@@ -17,78 +17,126 @@
   under the License.
 -->
 
-# Ballista Rust Client
+# Distributing DataFusion with Ballista
 
-To connect to a Ballista cluster from Rust, first start by creating a `BallistaContext`.
+To connect to a Ballista cluster from Rust, first start by creating a `SessionContext` connected to remote scheduler server.
 
 ```rust
-let config = BallistaConfig::builder()
-    .set("ballista.shuffle.partitions", "4")
-    .build()?;
+use ballista::prelude::*;
+use datafusion::{
+    execution::SessionStateBuilder,
+    prelude::{SessionConfig, SessionContext},
+};
 
-// connect to Ballista scheduler
-let ctx = BallistaContext::remote("localhost", 50050, &config);
+let config = SessionConfig::new_with_ballista()
+    .with_target_partitions(4)
+    .with_ballista_job_name("Remote SQL Example");
+
+let state = SessionStateBuilder::new()
+    .with_config(config)
+    .with_default_features()
+    .build();
+
+let ctx = SessionContext::remote_with_state("df://localhost:50050", state).await?;
 ```
 
-Here is a full example using the DataFrame API.
+For testing purposes, standalone, in process cluster could be started with:
 
 ```rust
+use ballista::prelude::*;
+use datafusion::{
+    execution::SessionStateBuilder,
+    prelude::{SessionConfig, SessionContext},
+};
+let config = SessionConfig::new_with_ballista()
+    .with_target_partitions(1)
+    .with_ballista_standalone_parallelism(2);
+
+let state = SessionStateBuilder::new()
+    .with_config(config)
+    .with_default_features()
+    .build();
+
+let ctx = SessionContext::standalone_with_state(state).await?;
+
+```
+
+Following examples require running remove scheduler and executor nodes.
+
+Full example using the DataFrame API.
+
+```rust
+use ballista::prelude::*;
+use ballista_examples::test_util;
+use datafusion::{
+    prelude::{col, lit, ParquetReadOptions, SessionContext},
+};
+
+/// This example demonstrates executing a simple query against an Arrow data source (Parquet) and
+/// fetching results, using the DataFrame trait
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitions", "4")
-        .build()?;
+    // creating SessionContext with default settings
+    let ctx = SessionContext::remote("df://localhost:50050").await?;
 
-    // connect to Ballista scheduler
-    let ctx = BallistaContext::remote("localhost", 50050, &config);
+    let test_data = test_util::examples_test_data();
+    let filename = format!("{test_data}/alltypes_plain.parquet");
 
-    let testdata = datafusion::test_util::parquet_test_data();
-
-    let filename = &format!("{}/alltypes_plain.parquet", testdata);
-
-    // define the query using the DataFrame trait
     let df = ctx
-        .read_parquet(filename)?
+        .read_parquet(filename, ParquetReadOptions::default())
+        .await?
         .select_columns(&["id", "bool_col", "timestamp_col"])?
         .filter(col("id").gt(lit(1)))?;
 
-    // print the results
     df.show().await?;
 
     Ok(())
 }
 ```
 
-Here is a full example demonstrating SQL usage.
+Here is a full example demonstrating SQL usage, with user specific `SessionConfig`:
 
 ```rust
+use ballista::prelude::*;
+use ballista_examples::test_util;
+use datafusion::{
+    execution::SessionStateBuilder,
+    prelude::{CsvReadOptions, SessionConfig, SessionContext},
+};
+
+/// This example demonstrates executing a simple query against an Arrow data source (CSV) and
+/// fetching results, using SQL
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitions", "4")
-        .build()?;
+    let config = SessionConfig::new_with_ballista()
+        .with_target_partitions(4)
+        .with_ballista_job_name("Remote SQL Example");
 
-    // connect to Ballista scheduler
-    let ctx = BallistaContext::remote("localhost", 50050, &config);
+    let state = SessionStateBuilder::new()
+        .with_config(config)
+        .with_default_features()
+        .build();
 
-    let testdata = datafusion::test_util::arrow_test_data();
+    let ctx = SessionContext::remote_with_state("df://localhost:50050", state).await?;
 
-    // register csv file with the execution context
+    let test_data = test_util::examples_test_data();
+
     ctx.register_csv(
-        "aggregate_test_100",
-        &format!("{}/csv/aggregate_test_100.csv", testdata),
+        "test",
+        &format!("{test_data}/aggregate_test_100.csv"),
         CsvReadOptions::new(),
-    )?;
+    )
+    .await?;
 
-    // execute the query
-    let df = ctx.sql(
-        "SELECT c1, MIN(c12), MAX(c12) \
-        FROM aggregate_test_100 \
+    let df = ctx
+        .sql(
+            "SELECT c1, MIN(c12), MAX(c12) \
+        FROM test \
         WHERE c11 > 0.1 AND c11 < 0.9 \
         GROUP BY c1",
-    )?;
+        )
+        .await?;
 
-    // print the results
     df.show().await?;
 
     Ok(())

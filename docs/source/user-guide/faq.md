@@ -25,4 +25,4 @@ DataFusion is a library for executing queries in-process using the Apache Arrow 
 model and computational kernels. It is designed to run within a single process, using threads
 for parallel query execution.
 
-Ballista is a distributed compute platform built on DataFusion.
+Ballista is a distributed compute platform for DataFusion workloads.
