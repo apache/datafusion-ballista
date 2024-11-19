@@ -34,10 +34,10 @@ If you are running a standalone cluster (runs locally), all you need to do is ca
 >>> from ballista import BallistaBuilder
 >>> # for a standalone instance
 >>> # Ballista will initiate with an empty config
->>> # set config variables with `set()`
+>>> # set config variables with `config()`
 >>> ballista = BallistaBuilder()\
 >>>    .config("ballista.job.name", "example ballista")
->>> 
+>>>
 >>> ctx = ballista.standalone()
 >>>
 >>> # for a remote instance provide the URL
