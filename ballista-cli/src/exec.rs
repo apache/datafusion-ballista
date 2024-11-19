@@ -23,7 +23,7 @@ use std::io::BufReader;
 use std::sync::Arc;
 use std::time::Instant;
 
-use ballista::prelude::Result;
+use datafusion::common::Result;
 use datafusion::prelude::SessionContext;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;

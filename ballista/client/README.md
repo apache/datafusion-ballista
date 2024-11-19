@@ -92,16 +92,16 @@ data set. Download the file and add it to the `testdata` folder before running t
 
 ```rust,no_run
 use ballista::prelude::*;
-use datafusion::prelude::{col, ParquetReadOptions};
+use datafusion::common::Result;
+use datafusion::prelude::{col, SessionContext, ParquetReadOptions};
 use datafusion::functions_aggregate::{min_max::min, min_max::max, sum::sum, average::avg};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // create configuration
-    let config = BallistaConfig::default();
+
 
     // connect to Ballista scheduler
-    let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
+    let ctx = SessionContext::remote("df://localhost:50050").await?;
 
     let filename = "testdata/yellow_tripdata_2022-01.parquet";
 
@@ -154,4 +154,4 @@ The output should look similar to the following table.
 +-----------------+--------------------------+--------------------------+--------------------------+--------------------------+
 ```
 
-More [examples](https://github.com/apache/arrow-ballista/tree/main/examples) can be found in the arrow-ballista repository.
+More [examples](../../examples/examples/) can be found in the arrow-ballista repository.

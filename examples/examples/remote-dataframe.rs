@@ -18,6 +18,7 @@
 use ballista::prelude::*;
 use ballista_examples::test_util;
 use datafusion::{
+    common::Result,
     execution::SessionStateBuilder,
     prelude::{col, lit, ParquetReadOptions, SessionConfig, SessionContext},
 };

@@ -18,15 +18,13 @@
 use std::env;
 use std::path::Path;
 
-use ballista::{
-    extension::SessionConfigExt,
-    prelude::{Result, SessionContextExt},
-};
+use ballista::{extension::SessionConfigExt, prelude::SessionContextExt};
 use ballista_cli::{
     exec, print_format::PrintFormat, print_options::PrintOptions, BALLISTA_CLI_VERSION,
 };
 use clap::Parser;
 use datafusion::{
+    common::Result,
     execution::SessionStateBuilder,
     prelude::{SessionConfig, SessionContext},
 };
