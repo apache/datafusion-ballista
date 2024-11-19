@@ -356,8 +356,18 @@ popular file formats files, run it in a distributed environment, and obtain the 
 <section id="connecting-to-a-cluster">
 <h2>Connecting to a Cluster<a class="headerlink" href="#connecting-to-a-cluster" title="Link to this heading">¶</a></h2>
 <p>The following code demonstrates how to create a Ballista context and connect to a scheduler.</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>&gt;&gt;&gt; import ballista
-&gt;&gt;&gt; ctx = ballista.BallistaContext(&quot;localhost&quot;, 50050)
+<p>If you are running a standalone cluster (runs locally), all you need to do is call the stand alone cluster method <code class="docutils literal notranslate"><span class="pre">standalone()</span></code> or your BallistaContext. If you are running a cluster in remote mode, you need to provide the URL <code class="docutils literal notranslate"><span class="pre">Ballista.remote(&quot;http://my-remote-ip:50050&quot;)</span></code>.</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>&gt;&gt;&gt; from ballista import BallistaBuilder
+&gt;&gt;&gt; # for a standalone instance
+&gt;&gt;&gt; # Ballista will initiate with an empty config
+&gt;&gt;&gt; # set config variables with `config()`
+&gt;&gt;&gt; ballista = BallistaBuilder()\
+&gt;&gt;&gt;    .config(&quot;ballista.job.name&quot;, &quot;example ballista&quot;)
+&gt;&gt;&gt;
+&gt;&gt;&gt; ctx = ballista.standalone()
+&gt;&gt;&gt;
+&gt;&gt;&gt; # for a remote instance provide the URL
+&gt;&gt;&gt; ctx = ballista.remote(&quot;df://url-path-to-scheduler:50050&quot;)
 </pre></div>
 </div>
 </section>
@@ -424,14 +434,15 @@ COUNT(UInt8(1)): int64]
 <section id="dataframe">
 <h2>DataFrame<a class="headerlink" href="#dataframe" title="Link to this heading">¶</a></h2>
 <p>The following example demonstrates creating arrays with PyArrow and then creating a Ballista DataFrame.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span> <span class="nn">ballista</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">ballista</span> <span class="kn">import</span> <span class="n">BallistaBuilder</span>
 <span class="kn">import</span> <span class="nn">pyarrow</span>
 
 <span class="c1"># an alias</span>
+<span class="c1"># TODO implement Functions</span>
 <span class="n">f</span> <span class="o">=</span> <span class="n">ballista</span><span class="o">.</span><span class="n">functions</span>
 
 <span class="c1"># create a context</span>
-<span class="n">ctx</span> <span class="o">=</span> <span class="n">ballista</span><span class="o">.</span><span class="n">BallistaContext</span><span class="p">(</span><span class="s2">&quot;localhost&quot;</span><span class="p">,</span> <span class="mi">50050</span><span class="p">)</span>
+<span class="n">ctx</span> <span class="o">=</span> <span class="n">Ballista</span><span class="p">()</span><span class="o">.</span><span class="n">standalone</span><span class="p">()</span>
 
 <span class="c1"># create a RecordBatch and a new DataFrame from it</span>
 <span class="n">batch</span> <span class="o">=</span> <span class="n">pyarrow</span><span class="o">.</span><span class="n">RecordBatch</span><span class="o">.</span><span class="n">from_arrays</span><span class="p">(</span>
