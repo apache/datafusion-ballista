@@ -83,11 +83,7 @@ impl PyBallistaBuilder {
     }
 
     /// Construct the remote instance from the SessionContext
-    pub fn remote(
-        &self,
-        url: &str,
-        py: Python,
-    ) -> PyResult<PySessionContext> {
+    pub fn remote(&self, url: &str, py: Python) -> PyResult<PySessionContext> {
         // Build the config
         let config: SessionConfig = SessionConfig::from_string_hash_map(&self.conf)?;
         // Build the state
