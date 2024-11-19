@@ -357,7 +357,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         queued_at: u64,
     ) -> Result<()> {
         let start = Instant::now();
-
+        let session_config = Arc::new(session_ctx.copied_config());
         if log::max_level() >= log::Level::Debug {
             // optimizing the plan here is redundant because the physical planner will do this again
             // but it is helpful to see what the optimized plan will be
@@ -431,6 +431,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 &session_ctx.session_id(),
                 plan.data,
                 queued_at,
+                session_config,
             )
             .await?;
 

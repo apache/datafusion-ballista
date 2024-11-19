@@ -22,15 +22,15 @@ use crate::cluster::{
 };
 use crate::state::execution_graph::ExecutionGraph;
 use async_trait::async_trait;
-use ballista_core::config::BallistaConfig;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::{
     executor_status, AvailableTaskSlots, ExecutorHeartbeat, ExecutorStatus, FailedJob,
     QueuedJob,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
+use ballista_core::ConfigProducer;
 use dashmap::DashMap;
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{SessionConfig, SessionContext};
 
 use crate::cluster::event::ClusterEventSender;
 use crate::scheduler_server::{timestamp_millis, timestamp_secs, SessionBuilder};
@@ -290,10 +290,16 @@ pub struct InMemoryJobState {
     session_builder: SessionBuilder,
     /// Sender of job events
     job_event_sender: ClusterEventSender<JobStateEvent>,
+
+    config_producer: ConfigProducer,
 }
 
 impl InMemoryJobState {
-    pub fn new(scheduler: impl Into<String>, session_builder: SessionBuilder) -> Self {
+    pub fn new(
+        scheduler: impl Into<String>,
+        session_builder: SessionBuilder,
+        config_producer: ConfigProducer,
+    ) -> Self {
         Self {
             scheduler: scheduler.into(),
             completed_jobs: Default::default(),
@@ -302,6 +308,7 @@ impl InMemoryJobState {
             sessions: Default::default(),
             session_builder,
             job_event_sender: ClusterEventSender::new(100),
+            config_producer,
         }
     }
 }
@@ -399,7 +406,7 @@ impl JobState for InMemoryJobState {
 
     async fn create_session(
         &self,
-        config: &BallistaConfig,
+        config: &SessionConfig,
     ) -> Result<Arc<SessionContext>> {
         let session = create_datafusion_context(config, self.session_builder.clone());
         self.sessions.insert(session.session_id(), session.clone());
@@ -410,7 +417,7 @@ impl JobState for InMemoryJobState {
     async fn update_session(
         &self,
         session_id: &str,
-        config: &BallistaConfig,
+        config: &SessionConfig,
     ) -> Result<Arc<SessionContext>> {
         let session = create_datafusion_context(config, self.session_builder.clone());
         self.sessions
@@ -482,6 +489,10 @@ impl JobState for InMemoryJobState {
             )))
         }
     }
+
+    fn produce_config(&self) -> SessionConfig {
+        (self.config_producer)()
+    }
 }
 
 #[cfg(test)]
@@ -494,22 +505,34 @@ mod test {
         test_aggregation_plan, test_join_plan, test_two_aggregations_plan,
     };
     use ballista_core::error::Result;
-    use ballista_core::utils::default_session_builder;
+    use ballista_core::utils::{default_config_producer, default_session_builder};
 
     #[tokio::test]
     async fn test_in_memory_job_lifecycle() -> Result<()> {
         test_job_lifecycle(
-            InMemoryJobState::new("", Arc::new(default_session_builder)),
+            InMemoryJobState::new(
+                "",
+                Arc::new(default_session_builder),
+                Arc::new(default_config_producer),
+            ),
             test_aggregation_plan(4).await,
         )
         .await?;
         test_job_lifecycle(
-            InMemoryJobState::new("", Arc::new(default_session_builder)),
+            InMemoryJobState::new(
+                "",
+                Arc::new(default_session_builder),
+                Arc::new(default_config_producer),
+            ),
             test_two_aggregations_plan(4).await,
         )
         .await?;
         test_job_lifecycle(
-            InMemoryJobState::new("", Arc::new(default_session_builder)),
+            InMemoryJobState::new(
+                "",
+                Arc::new(default_session_builder),
+                Arc::new(default_config_producer),
+            ),
             test_join_plan(4).await,
         )
         .await?;
@@ -520,17 +543,29 @@ mod test {
     #[tokio::test]
     async fn test_in_memory_job_planning_failure() -> Result<()> {
         test_job_planning_failure(
-            InMemoryJobState::new("", Arc::new(default_session_builder)),
+            InMemoryJobState::new(
+                "",
+                Arc::new(default_session_builder),
+                Arc::new(default_config_producer),
+            ),
             test_aggregation_plan(4).await,
         )
         .await?;
         test_job_planning_failure(
-            InMemoryJobState::new("", Arc::new(default_session_builder)),
+            InMemoryJobState::new(
+                "",
+                Arc::new(default_session_builder),
+                Arc::new(default_config_producer),
+            ),
             test_two_aggregations_plan(4).await,
         )
         .await?;
         test_job_planning_failure(
-            InMemoryJobState::new("", Arc::new(default_session_builder)),
+            InMemoryJobState::new(
+                "",
+                Arc::new(default_session_builder),
+                Arc::new(default_config_producer),
+            ),
             test_join_plan(4).await,
         )
         .await?;

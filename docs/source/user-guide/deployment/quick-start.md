@@ -19,16 +19,14 @@
 
 # Ballista Quickstart
 
-A simple way to start a local cluster for testing purposes is to use cargo to build the project and then run the scheduler and executor binaries directly along with the Ballista UI.
+A simple way to start a local cluster for testing purposes is to use cargo to build the project and then run the scheduler and executor binaries directly.
 
 Project Requirements:
 
 - [Rust](https://www.rust-lang.org/tools/install)
 - [Protobuf Compiler](https://protobuf.dev/downloads/)
-- [Node.js](https://nodejs.org/en/download)
-- [Yarn](https://classic.yarnpkg.com/lang/en/docs/install)
 
-### Build the project
+## Build the project
 
 From the root of the project, build release binaries.
 
@@ -55,39 +53,47 @@ RUST_LOG=info ./target/release/ballista-executor -c 2 -p 50052
 
 The examples can be run using the `cargo run --bin` syntax. Open a new terminal session and run the following commands.
 
-## Running the examples
-
-## Distributed SQL Example
+### Distributed SQL Example
 
 ```bash
 cd examples
 cargo run --release --example remote-sql
 ```
 
-### Source code for distributed SQL example
+#### Source code for distributed SQL example
 
 ```rust
 use ballista::prelude::*;
-use datafusion::prelude::CsvReadOptions;
+use ballista_examples::test_util;
+use datafusion::{
+    execution::SessionStateBuilder,
+    prelude::{CsvReadOptions, SessionConfig, SessionContext},
+};
 
 /// This example demonstrates executing a simple query against an Arrow data source (CSV) and
 /// fetching results, using SQL
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitions", "4")
-        .build()?;
-    let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
+    let config = SessionConfig::new_with_ballista()
+        .with_target_partitions(4)
+        .with_ballista_job_name("Remote SQL Example");
 
-    // register csv file with the execution context
+    let state = SessionStateBuilder::new()
+        .with_config(config)
+        .with_default_features()
+        .build();
+
+    let ctx = SessionContext::remote_with_state("df://localhost:50050", state).await?;
+
+    let test_data = test_util::examples_test_data();
+
     ctx.register_csv(
         "test",
-        "testdata/aggregate_test_100.csv",
+        &format!("{test_data}/aggregate_test_100.csv"),
         CsvReadOptions::new(),
     )
     .await?;
 
-    // execute the query
     let df = ctx
         .sql(
             "SELECT c1, MIN(c12), MAX(c12) \
@@ -97,40 +103,42 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-    // print the results
     df.show().await?;
 
     Ok(())
 }
 ```
 
-## Distributed DataFrame Example
+### Distributed DataFrame Example
 
 ```bash
 cd examples
 cargo run --release --example remote-dataframe
 ```
 
-### Source code for distributed DataFrame example
+#### Source code for distributed DataFrame example
 
 ```rust
+use ballista::prelude::*;
+use ballista_examples::test_util;
+use datafusion::{
+    prelude::{col, lit, ParquetReadOptions, SessionContext},
+};
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = BallistaConfig::builder()
-        .set("ballista.shuffle.partitions", "4")
-        .build()?;
-    let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
+    // creating SessionContext with default settings
+    let ctx = SessionContext::remote("df://localhost:50050".await?;
 
-    let filename = "testdata/alltypes_plain.parquet";
+    let test_data = test_util::examples_test_data();
+    let filename = format!("{test_data}/alltypes_plain.parquet");
 
-    // define the query using the DataFrame trait
     let df = ctx
         .read_parquet(filename, ParquetReadOptions::default())
         .await?
         .select_columns(&["id", "bool_col", "timestamp_col"])?
         .filter(col("id").gt(lit(1)))?;
 
-    // print the results
     df.show().await?;
 
     Ok(())

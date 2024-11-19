@@ -52,7 +52,6 @@ use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::sql::ProstMessageExt;
 use arrow_flight::utils::batches_to_flight_data;
 use arrow_flight::SchemaAsIpc;
-use ballista_core::config::BallistaConfig;
 use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::action::ActionType::FetchPartition;
 use ballista_core::serde::protobuf::job_status;
@@ -147,10 +146,7 @@ impl FlightSqlServiceImpl {
     }
 
     async fn create_ctx(&self) -> Result<Uuid, Status> {
-        let config_builder = BallistaConfig::builder();
-        let config = config_builder
-            .build()
-            .map_err(|e| Status::internal(format!("Error building config: {e}")))?;
+        let config = self.server.state.session_manager.produce_config();
         let ctx = self
             .server
             .state

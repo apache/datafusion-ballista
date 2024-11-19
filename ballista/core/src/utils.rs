@@ -15,12 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::config::BallistaConfig;
+use crate::config::{
+    BallistaConfig, BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, BALLISTA_JOB_NAME,
+    BALLISTA_STANDALONE_PARALLELISM,
+};
 use crate::error::{BallistaError, Result};
 use crate::execution_plans::{
     DistributedQueryExec, ShuffleWriterExec, UnresolvedShuffleExec,
 };
-use crate::object_store_registry::with_object_store_registry;
+use crate::serde::protobuf::KeyValuePair;
 use crate::serde::scheduler::PartitionStats;
 use crate::serde::{BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec};
 
@@ -69,11 +72,12 @@ pub fn default_session_builder(config: SessionConfig) -> SessionState {
     SessionStateBuilder::new()
         .with_default_features()
         .with_config(config)
-        .with_runtime_env(Arc::new(
-            RuntimeEnv::new(with_object_store_registry(RuntimeConfig::default()))
-                .unwrap(),
-        ))
+        .with_runtime_env(Arc::new(RuntimeEnv::new(RuntimeConfig::default()).unwrap()))
         .build()
+}
+
+pub fn default_config_producer() -> SessionConfig {
+    SessionConfig::new_with_ballista()
 }
 
 /// Stream data to disk in Arrow IPC format
@@ -258,18 +262,14 @@ pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
     let planner: Arc<BallistaQueryPlanner<T>> =
         Arc::new(BallistaQueryPlanner::new(scheduler_url, config.clone()));
 
-    let session_config = SessionConfig::new()
-        .with_target_partitions(config.default_shuffle_partitions())
+    let session_config = SessionConfig::new_with_ballista()
         .with_information_schema(true)
         .with_option_extension(config.clone());
 
     let session_state = SessionStateBuilder::new()
         .with_default_features()
         .with_config(session_config)
-        .with_runtime_env(Arc::new(
-            RuntimeEnv::new(with_object_store_registry(RuntimeConfig::default()))
-                .unwrap(),
-        ))
+        .with_runtime_env(Arc::new(RuntimeEnv::new(RuntimeConfig::default()).unwrap()))
         .with_query_planner(planner)
         .with_session_id(session_id)
         .build();
@@ -287,7 +287,7 @@ pub trait SessionStateExt {
         scheduler_url: String,
         session_id: String,
     ) -> datafusion::error::Result<SessionState>;
-
+    #[deprecated]
     fn ballista_config(&self) -> BallistaConfig;
 }
 
@@ -298,15 +298,14 @@ impl SessionStateExt for SessionState {
             .extensions
             .get::<BallistaConfig>()
             .cloned()
-            .unwrap_or_else(|| BallistaConfig::new().unwrap())
+            .unwrap_or_else(BallistaConfig::default)
     }
 
     fn new_ballista_state(
         scheduler_url: String,
         session_id: String,
     ) -> datafusion::error::Result<SessionState> {
-        let config = BallistaConfig::new()
-            .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
+        let config = BallistaConfig::default();
 
         let planner =
             BallistaQueryPlanner::<LogicalPlanNode>::new(scheduler_url, config.clone());
@@ -344,7 +343,7 @@ impl SessionStateExt for SessionState {
             .extensions
             .get::<BallistaConfig>()
             .cloned()
-            .unwrap_or_else(|| BallistaConfig::new().unwrap());
+            .unwrap_or_else(BallistaConfig::default);
 
         let session_config = self
             .config()
@@ -404,15 +403,34 @@ pub trait SessionConfigExt {
         planner: Arc<dyn QueryPlanner + Send + Sync + 'static>,
     ) -> SessionConfig;
 
-    /// Returns ballista's [QueryPlanner] if overriden
+    /// Returns ballista's [QueryPlanner] if overridden
     fn ballista_query_planner(
         &self,
     ) -> Option<Arc<dyn QueryPlanner + Send + Sync + 'static>>;
+
+    fn ballista_standalone_parallelism(&self) -> usize;
+
+    fn ballista_grpc_client_max_message_size(&self) -> usize;
+
+    fn to_key_value_pairs(&self) -> Vec<KeyValuePair>;
+
+    fn update_from_key_value_pair(self, key_value_pairs: &[KeyValuePair]) -> Self;
+
+    fn with_ballista_job_name(self, job_name: &str) -> Self;
+
+    fn with_ballista_grpc_client_max_message_size(self, max_size: usize) -> Self;
+
+    fn with_ballista_standalone_parallelism(self, parallelism: usize) -> Self;
+
+    fn update_from_key_value_pair_mut(&mut self, key_value_pairs: &[KeyValuePair]);
 }
 
 impl SessionConfigExt for SessionConfig {
     fn new_with_ballista() -> SessionConfig {
-        SessionConfig::new().with_option_extension(BallistaConfig::new().unwrap())
+        SessionConfig::new()
+            .with_option_extension(BallistaConfig::default())
+            .with_target_partitions(16)
+            .with_round_robin_repartition(false)
     }
     fn with_ballista_logical_extension_codec(
         self,
@@ -453,6 +471,111 @@ impl SessionConfigExt for SessionConfig {
     ) -> Option<Arc<dyn QueryPlanner + Send + Sync + 'static>> {
         self.get_extension::<BallistaQueryPlannerExtension>()
             .map(|c| c.planner())
+    }
+
+    fn ballista_standalone_parallelism(&self) -> usize {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.default_standalone_parallelism())
+            .unwrap_or_else(|| BallistaConfig::default().default_standalone_parallelism())
+    }
+
+    fn ballista_grpc_client_max_message_size(&self) -> usize {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.default_grpc_client_max_message_size())
+            .unwrap_or_else(|| {
+                BallistaConfig::default().default_grpc_client_max_message_size()
+            })
+    }
+
+    fn to_key_value_pairs(&self) -> Vec<KeyValuePair> {
+        self.options()
+            .entries()
+            .iter()
+            .filter(|v| v.value.is_some())
+            .map(
+                // TODO MM make `value` optional value
+                |datafusion::config::ConfigEntry { key, value, .. }| {
+                    log::trace!(
+                        "sending configuration key: `{}`, value`{:?}`",
+                        key,
+                        value
+                    );
+                    KeyValuePair {
+                        key: key.to_owned(),
+                        value: value.clone().unwrap(),
+                    }
+                },
+            )
+            .collect()
+    }
+
+    fn update_from_key_value_pair(self, key_value_pairs: &[KeyValuePair]) -> Self {
+        let mut s = self;
+        for KeyValuePair { key, value } in key_value_pairs {
+            log::trace!(
+                "setting up configuration key: `{}`, value: `{}`",
+                key,
+                value
+            );
+            if let Err(e) = s.options_mut().set(key, value) {
+                log::warn!(
+                    "could not set configuration key: `{}`, value: `{}`, reason: {}",
+                    key,
+                    value,
+                    e.to_string()
+                )
+            }
+        }
+        s
+    }
+
+    fn update_from_key_value_pair_mut(&mut self, key_value_pairs: &[KeyValuePair]) {
+        for KeyValuePair { key, value } in key_value_pairs {
+            log::trace!(
+                "setting up configuration key : `{}`, value: `{}`",
+                key,
+                value
+            );
+            if let Err(e) = self.options_mut().set(key, value) {
+                log::warn!(
+                    "could not set configuration key: `{}`, value: `{}`, reason: {}",
+                    key,
+                    value,
+                    e.to_string()
+                )
+            }
+        }
+    }
+
+    fn with_ballista_job_name(self, job_name: &str) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_str(BALLISTA_JOB_NAME, job_name)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_str(BALLISTA_JOB_NAME, job_name)
+        }
+    }
+
+    fn with_ballista_grpc_client_max_message_size(self, max_size: usize) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_usize(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, max_size)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_usize(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, max_size)
+        }
+    }
+
+    fn with_ballista_standalone_parallelism(self, parallelism: usize) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_usize(BALLISTA_STANDALONE_PARALLELISM, parallelism)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_usize(BALLISTA_STANDALONE_PARALLELISM, parallelism)
+        }
     }
 }
 
@@ -697,7 +820,12 @@ mod test {
         prelude::{SessionConfig, SessionContext},
     };
 
-    use crate::utils::{LocalRun, SessionStateExt};
+    use crate::{
+        config::BALLISTA_JOB_NAME,
+        utils::{LocalRun, SessionStateExt},
+    };
+
+    use super::SessionConfigExt;
 
     fn context() -> SessionContext {
         let runtime_environment = RuntimeEnv::new(RuntimeConfig::new()).unwrap();
@@ -794,5 +922,18 @@ mod test {
             .unwrap();
 
         assert!(!state.config().round_robin_repartition());
+    }
+    #[test]
+    fn should_convert_to_key_value_pairs() {
+        // key value pairs should contain datafusion and ballista values
+
+        let config =
+            SessionConfig::new_with_ballista().with_ballista_job_name("job_name");
+        let pairs = config.to_key_value_pairs();
+
+        assert!(pairs.iter().any(|p| p.key == BALLISTA_JOB_NAME));
+        assert!(pairs
+            .iter()
+            .any(|p| p.key == "datafusion.catalog.information_schema"))
     }
 }

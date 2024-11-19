@@ -19,10 +19,7 @@ mod common;
 
 #[cfg(test)]
 mod remote {
-    use ballista::{
-        extension::{SessionConfigExt, SessionContextExt},
-        prelude::BALLISTA_JOB_NAME,
-    };
+    use ballista::extension::{SessionConfigExt, SessionContextExt};
     use datafusion::{
         assert_batches_eq,
         execution::SessionStateBuilder,
@@ -73,7 +70,7 @@ mod remote {
 
         let session_config = SessionConfig::new_with_ballista()
             .with_information_schema(true)
-            .set_str(BALLISTA_JOB_NAME, "Super Cool Ballista App");
+            .with_ballista_job_name("Super Cool Ballista App");
 
         let state = SessionStateBuilder::new()
             .with_default_features()
@@ -108,10 +105,7 @@ mod standalone {
 
     use std::sync::{atomic::AtomicBool, Arc};
 
-    use ballista::{
-        extension::{SessionConfigExt, SessionContextExt},
-        prelude::BALLISTA_JOB_NAME,
-    };
+    use ballista::extension::{SessionConfigExt, SessionContextExt};
     use ballista_core::serde::BallistaPhysicalExtensionCodec;
     use datafusion::{
         assert_batches_eq,
@@ -129,7 +123,7 @@ mod standalone {
     async fn should_execute_sql_set_configs() -> datafusion::error::Result<()> {
         let session_config = SessionConfig::new_with_ballista()
             .with_information_schema(true)
-            .set_str(BALLISTA_JOB_NAME, "Super Cool Ballista App");
+            .with_ballista_job_name("Super Cool Ballista App");
 
         let state = SessionStateBuilder::new()
             .with_default_features()

@@ -15,13 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista::{
-    extension::SessionConfigExt,
-    prelude::{
-        Result, SessionContextExt, BALLISTA_DEFAULT_SHUFFLE_PARTITIONS,
-        BALLISTA_STANDALONE_PARALLELISM,
-    },
-};
+use ballista::prelude::{Result, SessionConfigExt, SessionContextExt};
 use ballista_examples::test_util;
 use datafusion::{
     execution::{options::ParquetReadOptions, SessionStateBuilder},
@@ -31,8 +25,8 @@ use datafusion::{
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = SessionConfig::new_with_ballista()
-        .set_str(BALLISTA_DEFAULT_SHUFFLE_PARTITIONS, "1")
-        .set_str(BALLISTA_STANDALONE_PARALLELISM, "2");
+        .with_target_partitions(1)
+        .with_ballista_standalone_parallelism(2);
 
     let state = SessionStateBuilder::new()
         .with_config(config)

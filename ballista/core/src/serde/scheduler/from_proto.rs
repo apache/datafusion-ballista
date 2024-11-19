@@ -39,6 +39,7 @@ use crate::serde::scheduler::{
 };
 
 use crate::serde::{protobuf, BallistaCodec};
+use crate::utils::SessionConfigExt;
 use crate::RuntimeProducer;
 use protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
 
@@ -291,10 +292,7 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     window_functions: HashMap<String, Arc<WindowUDF>>,
     codec: BallistaCodec<T, U>,
 ) -> Result<TaskDefinition, BallistaError> {
-    let mut session_config = session_config;
-    for kv_pair in task.props {
-        session_config = session_config.set_str(&kv_pair.key, &kv_pair.value);
-    }
+    let session_config = session_config.update_from_key_value_pair(&task.props);
 
     let mut task_scalar_functions = HashMap::new();
     let mut task_aggregate_functions = HashMap::new();
@@ -360,10 +358,7 @@ pub fn get_task_definition_vec<
     window_functions: HashMap<String, Arc<WindowUDF>>,
     codec: BallistaCodec<T, U>,
 ) -> Result<Vec<TaskDefinition>, BallistaError> {
-    let mut session_config = session_config;
-    for kv_pair in multi_task.props {
-        session_config = session_config.set_str(&kv_pair.key, &kv_pair.value);
-    }
+    let session_config = session_config.update_from_key_value_pair(&multi_task.props);
 
     let mut task_scalar_functions = HashMap::new();
     let mut task_aggregate_functions = HashMap::new();

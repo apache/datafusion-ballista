@@ -418,6 +418,7 @@ mod tests {
     use crate::state::execution_graph::ExecutionGraph;
     use crate::state::execution_graph_dot::ExecutionGraphDot;
     use ballista_core::error::{BallistaError, Result};
+    use ballista_core::utils::SessionConfigExt;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::MemTable;
     use datafusion::prelude::{SessionConfig, SessionContext};
@@ -644,7 +645,15 @@ filter_expr="]
             .await?;
         let plan = df.into_optimized_plan()?;
         let plan = ctx.state().create_physical_plan(&plan).await?;
-        ExecutionGraph::new("scheduler_id", "job_id", "job_name", "session_id", plan, 0)
+        ExecutionGraph::new(
+            "scheduler_id",
+            "job_id",
+            "job_name",
+            "session_id",
+            plan,
+            0,
+            Arc::new(SessionConfig::new_with_ballista()),
+        )
     }
 
     // With the improvement of https://github.com/apache/arrow-datafusion/pull/4122,
@@ -670,6 +679,14 @@ filter_expr="]
             .await?;
         let plan = df.into_optimized_plan()?;
         let plan = ctx.state().create_physical_plan(&plan).await?;
-        ExecutionGraph::new("scheduler_id", "job_id", "job_name", "session_id", plan, 0)
+        ExecutionGraph::new(
+            "scheduler_id",
+            "job_id",
+            "job_name",
+            "session_id",
+            plan,
+            0,
+            Arc::new(SessionConfig::new_with_ballista()),
+        )
     }
 }

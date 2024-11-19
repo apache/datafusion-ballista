@@ -19,46 +19,74 @@
 
 # Configuration
 
-## BallistaContext Configuration Settings
+## Ballista Configuration Settings
 
-Ballista has a number of configuration settings that can be specified when creating a BallistaContext.
+Configuring Ballista is quite similar to configuring DataFusion. Most settings are identical, with only a few configurations specific to Ballista.
 
 _Example: Specifying configuration options when creating a context_
 
 ```rust
-let config = BallistaConfig::builder()
-.set("ballista.shuffle.partitions", "200")
-.set("ballista.batch.size", "16384")
-.build() ?;
+use ballista::extension::{SessionConfigExt, SessionContextExt};
 
-let ctx = BallistaContext::remote("localhost", 50050, & config).await?;
+let session_config = SessionConfig::new_with_ballista()
+    .with_information_schema(true)
+    .with_ballista_job_name("Super Cool Ballista App");
+
+let state = SessionStateBuilder::new()
+    .with_default_features()
+    .with_config(session_config)
+    .build();
+
+let ctx: SessionContext = SessionContext::remote_with_state(&url,state).await?;
 ```
 
-### Ballista Configuration Settings
+`SessionConfig::new_with_ballista()` will setup `SessionConfig` for use with ballista. This is not required, `SessionConfig::new` could be used, but it's advised as it will set up some sensible configuration defaults .
 
-| key                               | type    | default | description                                                                                                                                                               |
-| --------------------------------- | ------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ballista.job.name                 | Utf8    | N/A     | Sets the job name that will appear in the web user interface for any submitted jobs.                                                                                      |
-| ballista.shuffle.partitions       | UInt16  | 16      | Sets the default number of partitions to create when repartitioning query stages.                                                                                         |
-| ballista.batch.size               | UInt16  | 8192    | Sets the default batch size.                                                                                                                                              |
-| ballista.repartition.joins        | Boolean | true    | When set to true, Ballista will repartition data using the join keys to execute joins in parallel using the provided `ballista.shuffle.partitions` level.                 |
-| ballista.repartition.aggregations | Boolean | true    | When set to true, Ballista will repartition data using the aggregate keys to execute aggregates in parallel using the provided `ballista.shuffle.partitions` level.       |
-| ballista.repartition.windows      | Boolean | true    | When set to true, Ballista will repartition data using the partition keys to execute window functions in parallel using the provided `ballista.shuffle.partitions` level. |
-| ballista.parquet.pruning          | Boolean | true    | Determines whether Parquet pruning should be enabled or not.                                                                                                              |
-| ballista.with_information_schema  | Boolean | true    | Determines whether the `information_schema` should be created in the context. This is necessary for supporting DDL commands such as `SHOW TABLES`.                        |
+`SessionConfigExt` expose set of `SessionConfigExt::with_ballista_` and `SessionConfigExt::ballista_` methods which can tune retrieve ballista specific options.
 
-### DataFusion Configuration Settings
+Notable `SessionConfigExt` configuration methods would be:
 
-In addition to Ballista-specific configuration settings, the following DataFusion settings can also be specified.
+```rust
+/// Overrides ballista's [LogicalExtensionCodec]
+fn with_ballista_logical_extension_codec(
+    self,
+    codec: Arc<dyn LogicalExtensionCodec>,
+) -> SessionConfig;
 
-| key                                             | type    | default | description                                                                                                                                                                                                                                                                                                                                                   |
-| ----------------------------------------------- | ------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| datafusion.execution.coalesce_batches           | Boolean | true    | When set to true, record batches will be examined between each operator and small batches will be coalesced into larger batches. This is helpful when there are highly selective filters or joins that could produce tiny output batches. The target batch size is determined by the configuration setting 'datafusion.execution.coalesce_target_batch_size'. |
-| datafusion.execution.coalesce_target_batch_size | UInt64  | 4096    | Target batch size when coalescing batches. Uses in conjunction with the configuration setting 'datafusion.execution.coalesce_batches'.                                                                                                                                                                                                                        |
-| datafusion.explain.logical_plan_only            | Boolean | false   | When set to true, the explain statement will only print logical plans.                                                                                                                                                                                                                                                                                        |
-| datafusion.explain.physical_plan_only           | Boolean | false   | When set to true, the explain statement will only print physical plans.                                                                                                                                                                                                                                                                                       |
-| datafusion.optimizer.filter_null_join_keys      | Boolean | false   | When set to true, the optimizer will insert filters before a join between a nullable and non-nullable column to filter out nulls on the nullable side. This filter can add additional overhead when the file format does not fully support predicate push down.                                                                                               |
-| datafusion.optimizer.skip_failed_rules          | Boolean | true    | When set to true, the logical plan optimizer will produce warning messages if any optimization rules produce errors and then proceed to the next rule. When set to false, any rules that produce errors will cause the query to fail.                                                                                                                         |
+/// Overrides ballista's [PhysicalExtensionCodec]
+fn with_ballista_physical_extension_codec(
+    self,
+    codec: Arc<dyn PhysicalExtensionCodec>,
+) -> SessionConfig;
+
+/// Overrides ballista's [QueryPlanner]
+fn with_ballista_query_planner(
+    self,
+    planner: Arc<dyn QueryPlanner + Send + Sync + 'static>,
+) -> SessionConfig;
+```
+
+which could be used to change default ballista behavior.
+
+If information schema is enabled all configuration parameters could be retrieved or set using SQL;
+
+```rust
+let ctx: SessionContext = SessionContext::remote_with_state(&url, state).await?;
+
+let result = ctx
+    .sql("select name, value from information_schema.df_settings where name like 'ballista'")
+    .await?
+    .collect()
+    .await?;
+
+let expected = [
+    "+-------------------+-------------------------+",
+    "| name              | value                   |",
+    "+-------------------+-------------------------+",
+    "| ballista.job.name | Super Cool Ballista App |",
+    "+-------------------+-------------------------+",
+];
+```
 
 ## Ballista Scheduler Configuration Settings
 
