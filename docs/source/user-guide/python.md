@@ -28,9 +28,20 @@ popular file formats files, run it in a distributed environment, and obtain the 
 
 The following code demonstrates how to create a Ballista context and connect to a scheduler.
 
+If you are running a standalone cluster (runs locally), all you need to do is call the stand alone cluster method `standalone()` or your BallistaContext. If you are running a cluster in remote mode, you need to provide the URL `Ballista.remote("http://my-remote-ip:50050")`.
+
 ```text
->>> import ballista
->>> ctx = ballista.BallistaContext("localhost", 50050)
+>>> from ballista import BallistaBuilder
+>>> # for a standalone instance
+>>> # Ballista will initiate with an empty config
+>>> # set config variables with `config()`
+>>> ballista = BallistaBuilder()\
+>>>    .config("ballista.job.name", "example ballista")
+>>>
+>>> ctx = ballista.standalone()
+>>>
+>>> # for a remote instance provide the URL
+>>> ctx = ballista.remote("df://url-path-to-scheduler:50050")
 ```
 
 ## SQL
@@ -103,14 +114,15 @@ The `explain` method can be used to show the logical and physical query plans fo
 The following example demonstrates creating arrays with PyArrow and then creating a Ballista DataFrame.
 
 ```python
-import ballista
+from ballista import BallistaBuilder
 import pyarrow
 
 # an alias
+# TODO implement Functions
 f = ballista.functions
 
 # create a context
-ctx = ballista.BallistaContext("localhost", 50050)
+ctx = Ballista().standalone()
 
 # create a RecordBatch and a new DataFrame from it
 batch = pyarrow.RecordBatch.from_arrays(

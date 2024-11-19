@@ -15,22 +15,18 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from abc import ABCMeta, abstractmethod
-from typing import List
+from ballista import BallistaBuilder
+from datafusion.context import SessionContext
 
-try:
-    import importlib.metadata as importlib_metadata
-except ImportError:
-    import importlib_metadata
+# Ballista will initiate with an empty config
+# set config variables with `config`
+ctx: SessionContext = BallistaBuilder()\
+    .config("ballista.job.name", "example ballista")\
+    .config("ballista.shuffle.partitions", "16")\
+    .standalone()
+    
+#ctx_remote: SessionContext = ballista.remote("remote_ip", 50050)
 
-import pyarrow as pa
-
-from .pyballista_internal import (
-    SessionContext,
-)
-
-__version__ = importlib_metadata.version(__name__)
-
-__all__ = [
-    "SessionContext",
-]
+# Select 1 to verify its working
+ctx.sql("SELECT 1").show()
+#ctx_remote.sql("SELECT 2").show()
