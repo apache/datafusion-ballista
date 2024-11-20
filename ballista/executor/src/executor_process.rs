@@ -201,7 +201,7 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
     let wd = work_dir.clone();
     let runtime_producer: RuntimeProducer = Arc::new(move |_| {
         let config = RuntimeConfig::new().with_temp_file_path(wd.clone());
-        Ok(Arc::new(RuntimeEnv::new(config)?))
+        Ok(Arc::new(RuntimeEnv::try_new(config)?))
     });
 
     let logical = opt
