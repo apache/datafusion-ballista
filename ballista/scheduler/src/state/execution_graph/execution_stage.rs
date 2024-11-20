@@ -22,6 +22,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use datafusion::physical_optimizer::aggregate_statistics::AggregateStatistics;
+use datafusion::physical_optimizer::join_selection::JoinSelection;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
@@ -359,12 +360,9 @@ impl UnresolvedStage {
             &input_locations,
         )?;
 
-        // TODO reinstate this logic once https://github.com/apache/datafusion/issues/10978
-        // is fixed
-        // Optimize join order and statistics based on new resolved statistics
-        // let optimize_join = JoinSelection::new();
-        // let config = SessionConfig::default();
-        // let plan = optimize_join.optimize(plan, config.options())?;
+        let optimize_join = JoinSelection::new();
+        let config = SessionConfig::default();
+        let plan = optimize_join.optimize(plan, config.options())?;
 
         let optimize_aggregate = AggregateStatistics::new();
         let plan =
