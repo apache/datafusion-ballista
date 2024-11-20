@@ -59,7 +59,7 @@ mod standalone {
 
         let test_data = crate::common::example_test_data();
         let config = RuntimeConfig::new();
-        let runtime_env = RuntimeEnv::new(config)?;
+        let runtime_env = RuntimeEnv::try_new(config)?;
 
         runtime_env.register_object_store(
             &format!("s3://{}", crate::common::BUCKET)
@@ -144,7 +144,7 @@ mod remote {
             .map_err(|e| DataFusionError::External(e.into()))?;
 
         let config = RuntimeConfig::new();
-        let runtime_env = RuntimeEnv::new(config)?;
+        let runtime_env = RuntimeEnv::try_new(config)?;
 
         runtime_env.register_object_store(
             &format!("s3://{}", crate::common::BUCKET)
@@ -290,7 +290,7 @@ mod custom_s3_config {
                     CustomObjectStoreRegistry::new(s3options.clone()),
                 ));
 
-                Ok(Arc::new(RuntimeEnv::new(config)?))
+                Ok(Arc::new(RuntimeEnv::try_new(config)?))
             });
 
         // Session builder creates SessionState
@@ -500,7 +500,7 @@ mod custom_s3_config {
         let config = RuntimeConfig::new().with_object_store_registry(Arc::new(
             CustomObjectStoreRegistry::new(s3options.clone()),
         ));
-        let runtime_env = RuntimeEnv::new(config).unwrap();
+        let runtime_env = RuntimeEnv::try_new(config).unwrap();
 
         SessionStateBuilder::new()
             .with_runtime_env(runtime_env.into())

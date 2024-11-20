@@ -562,7 +562,7 @@ async fn register_tables(
     ctx: &SessionContext,
     debug: bool,
 ) -> Result<()> {
-    for table in TABLES {
+    for &table in TABLES {
         match file_format {
             // dbgen creates .tbl ('|' delimited) files without header
             "tbl" => {
