@@ -88,11 +88,25 @@ See the [architecture guide](docs/source/contributors-guide/architecture.md) for
 
 We run some simple benchmarks comparing Ballista with Apache Spark to track progress with performance optimizations.
 These are benchmarks derived from TPC-H and not official TPC-H benchmarks. These results are from running individual
-queries at scale factor 10 (10 GB) on a single node with a single executor and 24 concurrent tasks.
+queries at scale factor 100 (100 GB) on a single node with a single executor and 8 concurrent tasks.
 
-The tracking issue for improving these results is [#339](https://github.com/apache/arrow-ballista/issues/339).
+### Overall Speedup
 
-![benchmarks](docs/sqlbench-h-perf-0.12.png)
+The overall speedup is 2.9x
+
+![benchmarks](docs/source/_static/images/tpch_allqueries.png)
+
+### Per Query Comparison
+
+![benchmarks](docs/source/_static/images/tpch_queries_compare.png)
+
+### Relative Speedup
+
+![benchmarks](docs/source/_static/images/tpch_queries_speedup_rel.png)
+
+### Absolute Speedup
+
+![benchmarks](docs/source/_static/images/tpch_queries_speedup_abs.png)
 
 # Getting Started
 
