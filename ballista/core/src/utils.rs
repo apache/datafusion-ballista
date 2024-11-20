@@ -72,7 +72,9 @@ pub fn default_session_builder(config: SessionConfig) -> SessionState {
     SessionStateBuilder::new()
         .with_default_features()
         .with_config(config)
-        .with_runtime_env(Arc::new(RuntimeEnv::try_new(RuntimeConfig::default()).unwrap()))
+        .with_runtime_env(Arc::new(
+            RuntimeEnv::try_new(RuntimeConfig::default()).unwrap(),
+        ))
         .build()
 }
 
@@ -269,7 +271,9 @@ pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
     let session_state = SessionStateBuilder::new()
         .with_default_features()
         .with_config(session_config)
-        .with_runtime_env(Arc::new(RuntimeEnv::try_new(RuntimeConfig::default()).unwrap()))
+        .with_runtime_env(Arc::new(
+            RuntimeEnv::try_new(RuntimeConfig::default()).unwrap(),
+        ))
         .with_query_planner(planner)
         .with_session_id(session_id)
         .build();
@@ -632,9 +636,14 @@ pub struct BallistaQueryPlanner<T: AsLogicalPlan> {
     plan_repr: PhantomData<T>,
 }
 
-impl <T: AsLogicalPlan> std::fmt::Debug for BallistaQueryPlanner<T> {
+impl<T: AsLogicalPlan> std::fmt::Debug for BallistaQueryPlanner<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BallistaQueryPlanner").field("scheduler_url", &self.scheduler_url).field("config", &self.config).field("extension_codec", &self.extension_codec).field("plan_repr", &self.plan_repr).finish()
+        f.debug_struct("BallistaQueryPlanner")
+            .field("scheduler_url", &self.scheduler_url)
+            .field("config", &self.config)
+            .field("extension_codec", &self.extension_codec)
+            .field("plan_repr", &self.plan_repr)
+            .finish()
     }
 }
 
