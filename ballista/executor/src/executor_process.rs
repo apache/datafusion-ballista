@@ -21,7 +21,6 @@ use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
-use std::{env, io};
 
 use anyhow::{Context, Result};
 use arrow_flight::flight_service_server::FlightServiceServer;
@@ -37,7 +36,6 @@ use tokio::signal;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::{fs, time};
-use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
@@ -98,57 +96,20 @@ pub struct ExecutorProcessConfig {
     pub executor_heartbeat_interval_seconds: u64,
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.
-    pub execution_engine: Option<Arc<dyn ExecutionEngine>>,
+    pub override_execution_engine: Option<Arc<dyn ExecutionEngine>>,
     /// Overrides default function registry
-    pub function_registry: Option<Arc<BallistaFunctionRegistry>>,
+    pub override_function_registry: Option<Arc<BallistaFunctionRegistry>>,
     /// [RuntimeProducer] override option
-    pub runtime_producer: Option<RuntimeProducer>,
+    pub override_runtime_producer: Option<RuntimeProducer>,
     /// [ConfigProducer] override option
-    pub config_producer: Option<ConfigProducer>,
+    pub override_config_producer: Option<ConfigProducer>,
     /// [PhysicalExtensionCodec] override option
-    pub logical_codec: Option<Arc<dyn LogicalExtensionCodec>>,
+    pub override_logical_codec: Option<Arc<dyn LogicalExtensionCodec>>,
     /// [PhysicalExtensionCodec] override option
-    pub physical_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
+    pub override_physical_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
 }
 
 pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<()> {
-    let rust_log = env::var(EnvFilter::DEFAULT_ENV);
-    let log_filter =
-        EnvFilter::new(rust_log.unwrap_or(opt.special_mod_log_level.clone()));
-    // File layer
-    if let Some(log_dir) = opt.log_dir.clone() {
-        let log_file = match opt.log_rotation_policy {
-            LogRotationPolicy::Minutely => {
-                tracing_appender::rolling::minutely(log_dir, &opt.log_file_name_prefix)
-            }
-            LogRotationPolicy::Hourly => {
-                tracing_appender::rolling::hourly(log_dir, &opt.log_file_name_prefix)
-            }
-            LogRotationPolicy::Daily => {
-                tracing_appender::rolling::daily(log_dir, &opt.log_file_name_prefix)
-            }
-            LogRotationPolicy::Never => {
-                tracing_appender::rolling::never(log_dir, &opt.log_file_name_prefix)
-            }
-        };
-        tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_thread_names(opt.print_thread_info)
-            .with_thread_ids(opt.print_thread_info)
-            .with_writer(log_file)
-            .with_env_filter(log_filter)
-            .init();
-    } else {
-        // Console layer
-        tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_thread_names(opt.print_thread_info)
-            .with_thread_ids(opt.print_thread_info)
-            .with_writer(io::stdout)
-            .with_env_filter(log_filter)
-            .init();
-    }
-
     let addr = format!("{}:{}", opt.bind_host, opt.port);
     let addr = addr
         .parse()
@@ -194,23 +155,26 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
     // put them to session config
     let metrics_collector = Arc::new(LoggingMetricsCollector::default());
     let config_producer = opt
-        .config_producer
+        .override_config_producer
         .clone()
         .unwrap_or_else(|| Arc::new(default_config_producer));
 
     let wd = work_dir.clone();
-    let runtime_producer: RuntimeProducer = Arc::new(move |_| {
-        let config = RuntimeConfig::new().with_temp_file_path(wd.clone());
-        Ok(Arc::new(RuntimeEnv::new(config)?))
-    });
+    let runtime_producer: RuntimeProducer =
+        opt.override_runtime_producer.clone().unwrap_or_else(|| {
+            Arc::new(move |_| {
+                let config = RuntimeConfig::new().with_temp_file_path(wd.clone());
+                Ok(Arc::new(RuntimeEnv::new(config)?))
+            })
+        });
 
     let logical = opt
-        .logical_codec
+        .override_logical_codec
         .clone()
         .unwrap_or_else(|| Arc::new(BallistaLogicalExtensionCodec::default()));
 
     let physical = opt
-        .physical_codec
+        .override_physical_codec
         .clone()
         .unwrap_or_else(|| Arc::new(BallistaPhysicalExtensionCodec::default()));
 
@@ -224,10 +188,10 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
         &work_dir,
         runtime_producer,
         config_producer,
-        opt.function_registry.clone().unwrap_or_default(),
+        opt.override_function_registry.clone().unwrap_or_default(),
         metrics_collector,
         concurrent_tasks,
-        opt.execution_engine.clone(),
+        opt.override_execution_engine.clone(),
     ));
 
     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;

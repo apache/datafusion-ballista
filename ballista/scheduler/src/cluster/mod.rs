@@ -111,11 +111,21 @@ impl BallistaCluster {
     pub async fn new_from_config(config: &SchedulerConfig) -> Result<Self> {
         let scheduler = config.scheduler_name();
 
+        let session_builder = config
+            .override_session_builder
+            .clone()
+            .unwrap_or_else(|| Arc::new(default_session_builder));
+
+        let config_producer = config
+            .override_config_producer
+            .clone()
+            .unwrap_or_else(|| Arc::new(default_config_producer));
+
         match &config.cluster_storage {
             ClusterStorageConfig::Memory => Ok(BallistaCluster::new_memory(
                 scheduler,
-                Arc::new(default_session_builder),
-                Arc::new(default_config_producer),
+                session_builder,
+                config_producer,
             )),
         }
     }
