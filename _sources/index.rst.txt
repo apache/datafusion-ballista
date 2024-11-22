@@ -55,6 +55,7 @@ Table of content
    user-guide/tuning-guide
    user-guide/metrics
    user-guide/faq
+   user-guide/extending-components
 
 .. _toc.contributors:
 
