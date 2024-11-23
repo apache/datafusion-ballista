@@ -392,6 +392,7 @@ mod custom_s3_config {
             .await
             .unwrap();
 
+        let endpoint_host = node.get_host().await.unwrap();
         let endpoint_port = node.get_host_port_ipv4(9000).await.unwrap();
 
         //
@@ -431,8 +432,8 @@ mod custom_s3_config {
             .show()
             .await?;
         ctx.sql(&format!(
-            "SET s3.endpoint = 'http://localhost:{}'",
-            endpoint_port
+            "SET s3.endpoint = 'http://{}:{}'",
+            endpoint_host, endpoint_port
         ))
         .await?
         .show()
