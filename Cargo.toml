@@ -43,6 +43,7 @@ tonic-build = { version = "0.12", default-features = false, features = [
 tracing = "0.1.36"
 tracing-appender = "0.2.2"
 tracing-subscriber = { version = "0.3.15", features = ["env-filter"] }
+ctor = { version = "0.2" }
 
 tokio = { version = "1" }
 uuid = { version = "1.10", features = ["v4", "v7"] }

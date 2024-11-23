@@ -47,10 +47,7 @@ use uuid::Uuid;
 ///
 /// This provides flexible way of configuring underlying
 /// components.
-pub async fn new_standalone_executor_from_state<
-    T: 'static + AsLogicalPlan,
-    U: 'static + AsExecutionPlan,
->(
+pub async fn new_standalone_executor_from_state(
     scheduler: SchedulerGrpcClient<Channel>,
     concurrent_tasks: usize,
     session_state: &SessionState,
