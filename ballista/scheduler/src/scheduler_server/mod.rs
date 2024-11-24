@@ -346,7 +346,7 @@ pub fn timestamp_millis() -> u64 {
 mod test {
     use std::sync::Arc;
 
-    use ballista_core::utils::SessionConfigExt;
+    use ballista_core::extension::SessionConfigExt;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::functions_aggregate::sum::sum;
     use datafusion::logical_expr::{col, LogicalPlan};

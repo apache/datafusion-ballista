@@ -418,7 +418,7 @@ mod tests {
     use crate::state::execution_graph::ExecutionGraph;
     use crate::state::execution_graph_dot::ExecutionGraphDot;
     use ballista_core::error::{BallistaError, Result};
-    use ballista_core::utils::SessionConfigExt;
+    use ballista_core::extension::SessionConfigExt;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::MemTable;
     use datafusion::prelude::{SessionConfig, SessionContext};

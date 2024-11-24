@@ -17,6 +17,7 @@
 
 use axum::extract::ConnectInfo;
 use ballista_core::config::BALLISTA_JOB_NAME;
+use ballista_core::extension::SessionConfigHelperExt;
 use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
@@ -31,7 +32,6 @@ use ballista_core::serde::protobuf::{
     UpdateTaskStatusParams, UpdateTaskStatusResult,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
-use ballista_core::utils::SessionConfigExt;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info, trace, warn};
