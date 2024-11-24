@@ -19,10 +19,10 @@ use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
 use crate::metrics::default_metrics_collector;
 use crate::scheduler_server::SchedulerServer;
+use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{
     create_grpc_server, default_config_producer, default_session_builder,
-    SessionConfigExt,
 };
 use ballista_core::ConfigProducer;
 use ballista_core::{

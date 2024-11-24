@@ -24,7 +24,7 @@ use crate::state::executor_manager::ExecutorManager;
 
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
-use ballista_core::utils::SessionConfigExt;
+use ballista_core::extension::SessionConfigHelperExt;
 use datafusion::prelude::SessionConfig;
 
 use crate::cluster::JobState;

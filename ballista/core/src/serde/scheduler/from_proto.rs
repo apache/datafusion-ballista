@@ -32,6 +32,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::error::BallistaError;
+use crate::extension::SessionConfigHelperExt;
 use crate::serde::scheduler::{
     Action, BallistaFunctionRegistry, ExecutorData, ExecutorMetadata,
     ExecutorSpecification, PartitionId, PartitionLocation, PartitionStats,
@@ -39,7 +40,6 @@ use crate::serde::scheduler::{
 };
 
 use crate::serde::{protobuf, BallistaCodec};
-use crate::utils::SessionConfigExt;
 use crate::RuntimeProducer;
 use protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
 
