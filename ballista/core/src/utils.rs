@@ -34,9 +34,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{TreeNode, TreeNodeVisitor};
 use datafusion::datasource::physical_plan::{CsvExec, ParquetExec};
 use datafusion::error::DataFusionError;
-use datafusion::execution::context::{
-    QueryPlanner, SessionConfig, SessionContext, SessionState,
-};
+use datafusion::execution::context::{QueryPlanner, SessionConfig, SessionState};
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::logical_expr::{DdlStatement, LogicalPlan, TableScan};
@@ -242,35 +240,6 @@ fn build_exec_plan_diagram(
         }
     }
     Ok(node_id)
-}
-
-/// Create a client DataFusion context that uses the BallistaQueryPlanner to send logical plans
-/// to a Ballista scheduler
-pub fn create_df_ctx_with_ballista_query_planner<T: 'static + AsLogicalPlan>(
-    scheduler_url: String,
-    session_id: String,
-    config: &BallistaConfig,
-) -> SessionContext {
-    // TODO: put ballista configuration as part of sessions state
-    //       planner can get it from there.
-    //       This would make it changeable during run time
-    //       using SQL SET statement
-    let planner: Arc<BallistaQueryPlanner<T>> =
-        Arc::new(BallistaQueryPlanner::new(scheduler_url, config.clone()));
-
-    let session_config = SessionConfig::new_with_ballista()
-        .with_information_schema(true)
-        .with_option_extension(config.clone());
-
-    let session_state = SessionStateBuilder::new()
-        .with_default_features()
-        .with_config(session_config)
-        .with_runtime_env(Arc::new(RuntimeEnv::new(RuntimeConfig::default()).unwrap()))
-        .with_query_planner(planner)
-        .with_session_id(session_id)
-        .build();
-    // the SessionContext created here is the client side context, but the session_id is from server side.
-    SessionContext::new_with_state(session_state)
 }
 
 pub struct BallistaQueryPlanner<T: AsLogicalPlan> {
