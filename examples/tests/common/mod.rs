@@ -15,116 +15,61 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::env;
-use std::error::Error;
-use std::path::PathBuf;
-
-use ballista::prelude::{SessionConfigExt, SessionContextExt};
+use ballista::prelude::SessionConfigExt;
 use ballista_core::serde::{
     protobuf::scheduler_grpc_client::SchedulerGrpcClient, BallistaCodec,
 };
 use ballista_core::{ConfigProducer, RuntimeProducer};
 use ballista_scheduler::SessionBuilder;
 use datafusion::execution::SessionState;
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::prelude::SessionConfig;
+use object_store::aws::AmazonS3Builder;
+use testcontainers_modules::minio::MinIO;
+use testcontainers_modules::testcontainers::core::{CmdWaitFor, ExecCommand};
+use testcontainers_modules::testcontainers::ContainerRequest;
+use testcontainers_modules::{minio, testcontainers::ImageExt};
 
-/// Returns the parquet test data directory, which is by default
-/// stored in a git submodule rooted at
-/// `examples/testdata`.
-///
-/// The default can be overridden by the optional environment variable
-/// `EXAMPLES_TEST_DATA`
-///
-/// panics when the directory can not be found.
-///
-/// Example:
-/// ```
-/// use ballista_examples::test_util;
-/// let testdata = test_util::examples_test_data();
-/// let filename = format!("{testdata}/aggregate_test_100.csv");
-/// assert!(std::path::PathBuf::from(filename).exists());
-/// ```
+pub const REGION: &str = "eu-west-1";
+pub const BUCKET: &str = "ballista";
+pub const ACCESS_KEY_ID: &str = "MINIO";
+pub const SECRET_KEY: &str = "MINIOMINIO";
+
 #[allow(dead_code)]
-pub fn example_test_data() -> String {
-    match get_data_dir("EXAMPLES_TEST_DATA", "testdata") {
-        Ok(pb) => pb.display().to_string(),
-        Err(err) => panic!("failed to get examples test data dir: {err}"),
-    }
+pub fn create_s3_store(
+    host: &str,
+    port: u16,
+) -> std::result::Result<object_store::aws::AmazonS3, object_store::Error> {
+    log::info!("create S3 client: host: {}, port: {}", host, port);
+    AmazonS3Builder::new()
+        .with_endpoint(format!("http://{host}:{port}"))
+        .with_region(REGION)
+        .with_bucket_name(BUCKET)
+        .with_access_key_id(ACCESS_KEY_ID)
+        .with_secret_access_key(SECRET_KEY)
+        .with_allow_http(true)
+        .build()
 }
 
-/// Returns a directory path for finding test data.
-///
-/// udf_env: name of an environment variable
-///
-/// submodule_dir: fallback path (relative to CARGO_MANIFEST_DIR)
-///
-///  Returns either:
-/// The path referred to in `udf_env` if that variable is set and refers to a directory
-/// The submodule_data directory relative to CARGO_MANIFEST_PATH
 #[allow(dead_code)]
-fn get_data_dir(udf_env: &str, submodule_data: &str) -> Result<PathBuf, Box<dyn Error>> {
-    // Try user defined env.
-    if let Ok(dir) = env::var(udf_env) {
-        let trimmed = dir.trim().to_string();
-        if !trimmed.is_empty() {
-            let pb = PathBuf::from(trimmed);
-            if pb.is_dir() {
-                return Ok(pb);
-            } else {
-                return Err(format!(
-                    "the data dir `{}` defined by env {udf_env} not found",
-                    pb.display()
-                )
-                .into());
-            }
-        }
-    }
-
-    // The env is undefined or its value is trimmed to empty, let's try default dir.
-
-    // env "CARGO_MANIFEST_DIR" is "the directory containing the manifest of your package",
-    // set by `cargo run` or `cargo test`, see:
-    // https://doc.rust-lang.org/cargo/reference/environment-variables.html
-    let dir = env!("CARGO_MANIFEST_DIR");
-
-    let pb = PathBuf::from(dir).join(submodule_data);
-    if pb.is_dir() {
-        Ok(pb)
-    } else {
-        Err(format!(
-            "env `{udf_env}` is undefined or has empty value, and the pre-defined data dir `{}` not found\n\
-             HINT: try running `git submodule update --init`",
-            pb.display(),
-        ).into())
-    }
+pub fn create_minio_container() -> ContainerRequest<minio::MinIO> {
+    MinIO::default()
+        .with_env_var("MINIO_ACCESS_KEY", ACCESS_KEY_ID)
+        .with_env_var("MINIO_SECRET_KEY", SECRET_KEY)
 }
 
-/// starts a ballista cluster for integration tests
 #[allow(dead_code)]
-pub async fn setup_test_cluster() -> (String, u16) {
-    let config = SessionConfig::new_with_ballista();
-    let default_codec = BallistaCodec::default();
-
-    let addr = ballista_scheduler::standalone::new_standalone_scheduler()
-        .await
-        .expect("scheduler to be created");
-
-    let host = "localhost".to_string();
-
-    let scheduler =
-        connect_to_scheduler(format!("http://{}:{}", host, addr.port())).await;
-
-    ballista_executor::new_standalone_executor(
-        scheduler,
-        config.ballista_standalone_parallelism(),
-        default_codec,
-    )
-    .await
-    .expect("executor to be created");
-
-    log::info!("test scheduler created at: {}:{}", host, addr.port());
-
-    (host, addr.port())
+pub fn create_bucket_command() -> ExecCommand {
+    // this is hack to create a bucket without creating s3 client.
+    // this works with current testcontainer (and image) version 'RELEASE.2022-02-07T08-17-33Z'.
+    // (testcontainer  does not await properly on latest image version)
+    //
+    // if testcontainer image version change to something newer we should use "mc mb /data/ballista"
+    // to crate a bucket.
+    ExecCommand::new(vec![
+        "mkdir".to_string(),
+        format!("/data/{}", crate::common::BUCKET),
+    ])
+    .with_cmd_ready_condition(CmdWaitFor::seconds(1))
 }
 
 /// starts a ballista cluster for integration tests
@@ -166,10 +111,7 @@ pub async fn setup_test_cluster_with_builders(
 
     let logical = config.ballista_logical_extension_codec();
     let physical = config.ballista_physical_extension_codec();
-    let codec: BallistaCodec<
-        datafusion_proto::protobuf::LogicalPlanNode,
-        datafusion_proto::protobuf::PhysicalPlanNode,
-    > = BallistaCodec::new(logical, physical);
+    let codec = BallistaCodec::new(logical, physical);
 
     let addr = ballista_scheduler::standalone::new_standalone_scheduler_with_builder(
         session_builder,
@@ -219,19 +161,6 @@ async fn connect_to_scheduler(
             Ok(scheduler) => break scheduler,
         }
     }
-}
-
-#[allow(dead_code)]
-pub async fn standalone_context() -> SessionContext {
-    SessionContext::standalone().await.unwrap()
-}
-
-#[allow(dead_code)]
-pub async fn remote_context() -> SessionContext {
-    let (host, port) = setup_test_cluster().await;
-    SessionContext::remote(&format!("df://{host}:{port}"))
-        .await
-        .unwrap()
 }
 
 #[ctor::ctor]

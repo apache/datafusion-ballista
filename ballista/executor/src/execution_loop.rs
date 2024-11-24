@@ -163,9 +163,12 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     let task_identity = format!(
         "TID {task_id} {job_id}/{stage_id}.{stage_attempt_num}/{partition_id}.{task_attempt_num}"
     );
-    info!(
-        "Received task: {}, task_properties: {:?}",
-        task_identity, task.props
+    info!("Received task: [{}]", task_identity);
+
+    log::trace!(
+        "Received task: [{}], task_properties: {:?}",
+        task_identity,
+        task.props
     );
     let session_config = executor.produce_config();
     let session_config = session_config.update_from_key_value_pair(&task.props);

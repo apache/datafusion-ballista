@@ -23,7 +23,7 @@ mod common;
 //
 #[cfg(test)]
 #[cfg(feature = "standalone")]
-mod standalone_tests {
+mod basic {
     use ballista::prelude::SessionContextExt;
     use datafusion::arrow;
     use datafusion::arrow::util::pretty::pretty_format_batches;
