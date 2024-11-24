@@ -30,14 +30,13 @@ readme = "README.md"
 
 [dependencies]
 ballista = { path = "../ballista/client", version = "0.12.0", features = ["standalone"] }
-# datafusion-cli uses 4.5 clap, thus it does not depend on workspace
-clap = { version = "4.5", features = ["derive", "cargo"] }
+clap = { workspace = true, features = ["derive", "cargo"] }
 datafusion = { workspace = true }
 datafusion-cli = { workspace = true }
 dirs = "5.0.1"
 env_logger = { workspace = true }
 mimalloc = { version = "0.1", default-features = false }
-rustyline = "14.0.0"
+rustyline = "15.0.0"
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "parking_lot"] }
 
 [features]
