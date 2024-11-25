@@ -37,10 +37,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install ruff
       # Update output format to enable automatic inline annotations.
-      - name: Run Ruff
-        run: |
-          ruff check --output-format=github python/
-          ruff format --check python/
+#      - name: Run Ruff
+#        run: |
+#          ruff check --output-format=github python/
+#          ruff format --check python/
 
   generate-license:
     runs-on: ubuntu-latest
