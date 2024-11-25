@@ -162,7 +162,7 @@ jobs:
       - name: Build Python package
         run: cd python && maturin build --release --strip
       - name: List Mac wheels
-        run: python/target/wheels/
+        run: cd python/target/wheels/
 
       - name: Archive wheels
         uses: actions/upload-artifact@v4
