@@ -98,7 +98,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Python package
-        run: maturin build --release --strip --features substrait
+        run: cd python && maturin build --release --strip
 
       - name: List Windows wheels
         if: matrix.os == 'windows-latest'
@@ -115,7 +115,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.os  }}
-          path: target/wheels/*
+          path: python/target/wheels/*
 
   build-macos-x86_64:
     needs: [generate-license]
@@ -156,15 +156,15 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Python package
-        run: maturin build --release --strip --features substrait
+        run: cd python && maturin build --release --strip
       - name: List Mac wheels
-        run: find target/wheels/
+        run: python/target/wheels/
 
       - name: Archive wheels
         uses: actions/upload-artifact@v4
         with:
           name: dist-macos-aarch64
-          path: target/wheels/*
+          path: python/target/wheels/*
 
   build-manylinux-x86_64:
     needs: [generate-license]
@@ -188,12 +188,12 @@ jobs:
           target: x86_64
           manylinux: auto
           rustup-components: rust-std rustfmt # Keep them in one line due to https://github.com/PyO3/maturin-action/issues/153
-          args: --release --manylinux 2014 --features protoc,substrait
+          args: --release --manylinux 2014
       - name: Archive wheels
         uses: actions/upload-artifact@v4
         with:
           name: dist-manylinux-x86_64
-          path: target/wheels/*
+          path: python/target/wheels/*
 
   build-manylinux-aarch64:
     needs: [generate-license]
@@ -218,12 +218,12 @@ jobs:
           # Use manylinux_2_28-cross because the manylinux2014-cross has GCC 4.8.5, which causes the build to fail
           manylinux: 2_28
           rustup-components: rust-std rustfmt # Keep them in one line due to https://github.com/PyO3/maturin-action/issues/153
-          args: --release --features protoc,substrait
+          args: --release
       - name: Archive wheels
         uses: actions/upload-artifact@v4
         with:
           name: dist-manylinux-aarch64
-          path: target/wheels/*
+          path: python/target/wheels/*
 
   build-sdist:
     needs: [generate-license]
@@ -244,7 +244,7 @@ jobs:
           rust-toolchain: stable
           manylinux: auto
           rustup-components: rust-std rustfmt
-          args: --release --sdist --out dist --features protoc,substrait
+          args: --release --sdist --out dist
       - name: Assert sdist build does not generate wheels
         run: |
             if [ "$(ls -A target/wheels)" ]; then
