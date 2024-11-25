@@ -188,6 +188,7 @@ jobs:
           target: x86_64
           manylinux: auto
           rustup-components: rust-std rustfmt # Keep them in one line due to https://github.com/PyO3/maturin-action/issues/153
+          working-directory: python
           args: --release --manylinux 2014
       - name: Archive wheels
         uses: actions/upload-artifact@v4
@@ -218,6 +219,7 @@ jobs:
           # Use manylinux_2_28-cross because the manylinux2014-cross has GCC 4.8.5, which causes the build to fail
           manylinux: 2_28
           rustup-components: rust-std rustfmt # Keep them in one line due to https://github.com/PyO3/maturin-action/issues/153
+          working-directory: python
           args: --release
       - name: Archive wheels
         uses: actions/upload-artifact@v4
@@ -244,6 +246,7 @@ jobs:
           rust-toolchain: stable
           manylinux: auto
           rustup-components: rust-std rustfmt
+          working-directory: python
           args: --release --sdist --out dist
       - name: Assert sdist build does not generate wheels
         run: |
