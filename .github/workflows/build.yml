@@ -101,7 +101,7 @@ jobs:
         run: cd python && cargo build 
 
       - name: Build Python package
-        run: maturin build --release --strip
+        run: cd python && maturin build --release --strip
 
       - name: List Windows wheels
         if: matrix.os == 'windows-latest'
@@ -160,7 +160,7 @@ jobs:
       - name: Cargo build
         run: cd python && cargo build
       - name: Build Python package
-        run: maturin build --release --strip
+        run: cd python && maturin build --release --strip
       - name: List Mac wheels
         run: python/target/wheels/
 
