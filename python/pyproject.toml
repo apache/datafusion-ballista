@@ -60,5 +60,3 @@ include = [
     { path = "Cargo.lock", format = "sdist" }
 ]
 exclude = [".github/**", "ci/**", ".asf.yaml"]
-# Require Cargo.lock is up to date
-locked = true

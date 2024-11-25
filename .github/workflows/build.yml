@@ -97,8 +97,11 @@ jobs:
           version: "27.4"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Cargo build
+        run: cd python && cargo build 
+
       - name: Build Python package
-        run: cd python && cargo build && maturin build --release --strip
+        run: maturin build --release --strip
 
       - name: List Windows wheels
         if: matrix.os == 'windows-latest'
@@ -154,9 +157,10 @@ jobs:
         with:
           version: "27.4"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-
+      - name: Cargo build
+        run: cd python && cargo build
       - name: Build Python package
-        run: cd python && cargo build && maturin build --release --strip
+        run: maturin build --release --strip
       - name: List Mac wheels
         run: python/target/wheels/
 
