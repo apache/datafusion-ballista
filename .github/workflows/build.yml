@@ -186,9 +186,6 @@ jobs:
 
       - run: cat LICENSE.txt
 
-      - name: Install Protobug Compiler (Setup protoc not working)
-        run: sudo apt-get install protobuf-compiler
-
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
         with:
@@ -199,6 +196,7 @@ jobs:
       
       - name: Build wheels
         uses: PyO3/maturin-action@v1
+        run: sudo apt-get install protobuf-compiler
         env:
           RUST_BACKTRACE: 1
         with:
