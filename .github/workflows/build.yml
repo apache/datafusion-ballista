@@ -196,7 +196,6 @@ jobs:
       
       - name: Build wheels
         uses: PyO3/maturin-action@v1
-        run: sudo apt-get install protobuf-compiler
         env:
           RUST_BACKTRACE: 1
         with:
@@ -284,7 +283,6 @@ jobs:
       
       - name: Build sdist
         uses: PyO3/maturin-action@v1
-        run: sudo apt-get install protobuf-compiler
         with:
           rust-toolchain: stable
           manylinux: auto
