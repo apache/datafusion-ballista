@@ -177,12 +177,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rm LICENSE.txt
+      
       - name: Download LICENSE.txt
         uses: actions/download-artifact@v4
         with:
           name: python-wheel-license
           path: .
+
       - run: cat LICENSE.txt
+
+      - name: Cargo Build
+        run: cd python && cargo build
+      
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         env:
@@ -212,7 +218,12 @@ jobs:
         with:
           name: python-wheel-license
           path: .
+
       - run: cat LICENSE.txt
+
+      - name: Cargo Build
+        run: cd python && cargo build
+      
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         env:
@@ -243,7 +254,12 @@ jobs:
         with:
           name: python-wheel-license
           path: .
+          
       - run: cat LICENSE.txt
+
+      - name: Cargo Build
+        run: cd python && cargo build
+      
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
