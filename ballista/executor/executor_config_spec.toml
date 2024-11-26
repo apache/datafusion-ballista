@@ -75,7 +75,6 @@ doc = "Directory for temporary IPC files"
 abbr = "c"
 name = "concurrent_tasks"
 type = "usize"
-default = "0" # defaults to all available cores if left as zero
 doc = "Max concurrent tasks."
 
 [[param]]
@@ -167,6 +166,7 @@ doc = "The number of worker threads for the runtime of caching. Default: 2"
 default = "2"
 
 [[param]]
+abbr = "e"
 name = "executor_cores"
 type = "usize"
 doc = "The number of worker threads. Default: number of available cores"

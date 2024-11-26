@@ -37,14 +37,10 @@ fn main() -> Result<()> {
         Config::including_optional_config_files(&["/etc/ballista/executor.toml"])
             .unwrap_or_exit();
 
-    let executor_cores = opt
-        .executor_cores
-        .unwrap_or_else(|| std::thread::available_parallelism().unwrap().get());
-
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("ballista_executor")
-        .worker_threads(executor_cores)
+        .worker_threads(opt.executor_cores_or_default())
         .build()
         .unwrap();
 

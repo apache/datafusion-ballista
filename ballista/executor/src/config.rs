@@ -23,6 +23,15 @@ use crate::executor_process::ExecutorProcessConfig;
 // #[allow(clippy::all)] to silence clippy warnings from the generated code
 include!(concat!(env!("OUT_DIR"), "/executor_configure_me_config.rs"));
 
+impl Config {
+    /// returns executor cores if setup or number of available
+    /// cpu cores
+    pub fn executor_cores_or_default(&self) -> usize {
+        self.executor_cores
+            .unwrap_or_else(|| std::thread::available_parallelism().unwrap().get())
+    }
+}
+
 impl TryFrom<Config> for ExecutorProcessConfig {
     type Error = BallistaError;
 
@@ -35,6 +44,8 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             opt.bind_port
         );
 
+        let concurrent_tasks = opt.executor_cores_or_default();
+
         Ok(ExecutorProcessConfig {
             special_mod_log_level: opt.log_level_setting,
             external_host: opt.external_host,
@@ -44,7 +55,7 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             scheduler_host: opt.scheduler_host,
             scheduler_port: opt.scheduler_port,
             scheduler_connect_timeout_seconds: opt.scheduler_connect_timeout_seconds,
-            concurrent_tasks: opt.concurrent_tasks,
+            concurrent_tasks,
             task_scheduling_policy: opt.task_scheduling_policy,
             work_dir: opt.work_dir,
             log_dir: opt.log_dir,
