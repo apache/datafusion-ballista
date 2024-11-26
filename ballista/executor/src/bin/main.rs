@@ -32,13 +32,26 @@ use tracing_subscriber::EnvFilter;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // parse command-line arguments
+fn main() -> Result<()> {
     let (opt, _remaining_args) =
         Config::including_optional_config_files(&["/etc/ballista/executor.toml"])
             .unwrap_or_exit();
 
+    let executor_cores = opt
+        .executor_cores
+        .unwrap_or_else(|| std::thread::available_parallelism().unwrap().get());
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("ballista_executor")
+        .worker_threads(executor_cores)
+        .build()
+        .unwrap();
+
+    runtime.block_on(inner(opt))
+}
+
+async fn inner(opt: Config) -> Result<()> {
     if opt.version {
         print_version();
         std::process::exit(0);

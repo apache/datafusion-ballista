@@ -165,3 +165,8 @@ name = "cache_io_concurrency"
 type = "u32"
 doc = "The number of worker threads for the runtime of caching. Default: 2"
 default = "2"
+
+[[param]]
+name = "executor_cores"
+type = "usize"
+doc = "The number of worker threads. Default: number of available cores"

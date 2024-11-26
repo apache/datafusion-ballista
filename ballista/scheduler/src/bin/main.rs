@@ -31,6 +31,7 @@ fn main() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_io()
         .enable_time()
+        .thread_name("ballista_scheduler")
         .thread_stack_size(32 * 1024 * 1024) // 32MB
         .build()
         .unwrap();
