@@ -68,7 +68,7 @@ pub fn default_session_builder(
     Ok(SessionStateBuilder::new()
         .with_default_features()
         .with_config(config)
-        .with_runtime_env(Arc::new(RuntimeEnv::new(RuntimeConfig::default()).unwrap()))
+        .with_runtime_env(Arc::new(RuntimeEnv::new(RuntimeConfig::default())?))
         .build())
 }
 
