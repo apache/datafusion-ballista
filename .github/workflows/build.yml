@@ -192,7 +192,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Protobug Compiler (Setup protoc not working)
-        run: apt-get install protobuf-compiler
+        run: sudo apt-get install protobuf-compiler
 
       - name: Cargo Build
         run: cd python && cargo build
@@ -235,7 +235,8 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Protobug Compiler (Setup protoc not working)
-        run: apt-get install protobuf-compiler
+        run: sudo apt-get install protobuf-compiler
+        
       - name: Cargo Build
         run: cd python && cargo build
       
@@ -278,7 +279,8 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Protobug Compiler (Setup protoc not working)
-        run: apt-get install protobuf-compiler
+        run: sudo apt-get install protobuf-compiler
+      
       - name: Cargo Build
         run: cd python && cargo build
       
