@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
 
     // new sessions state with required custom session configuration and runtime environment
     let state =
-        custom_session_state_with_s3_support(custom_session_config_with_s3_options());
+        custom_session_state_with_s3_support(custom_session_config_with_s3_options())?;
 
     let ctx: SessionContext =
         SessionContext::remote_with_state("df://localhost:50050", state).await?;
