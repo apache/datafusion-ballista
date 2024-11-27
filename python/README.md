@@ -36,7 +36,7 @@ from ballista import BallistaBuilder
 ## Example SQL Usage
 
 ```python
->>> ctx.sql("create external table t stored as parquet location '/mnt/bigdata/tpch/sf10-parquet/lineitem.parquet'")
+>>> ctx.sql("create external table t stored as parquet location './testdata/test.parquet'")
 >>> df = ctx.sql("select * from t limit 5")
 >>> pyarrow_batches = df.collect()
 ```
@@ -44,7 +44,7 @@ from ballista import BallistaBuilder
 ## Example DataFrame Usage
 
 ```python
->>> df = ctx.read_parquet('/mnt/bigdata/tpch/sf10-parquet/lineitem.parquet').limit(5)
+>>> df = ctx.read_parquet('./testdata/test.parquet').limit(5)
 >>> pyarrow_batches = df.collect()
 ```
 

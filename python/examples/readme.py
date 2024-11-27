@@ -20,13 +20,18 @@
 from ballista import BallistaBuilder
 from datafusion.context import SessionContext
 
-# Ballista will initiate with an empty config
-# set config variables with `config`
 ctx: SessionContext = BallistaBuilder()\
-    .config("ballista.job.name", "example ballista")\
+    .config("ballista.job.name", "Readme Examples")\
     .config("datafusion.execution.target_partitions", "4")\
     .standalone()
+ctx.sql("create external table t stored as parquet location '../testdata/test.parquet'")
 
-# Select 1 to verify its working
-ctx.sql("SELECT 1").show()
+# %%
+df = ctx.sql("select * from t limit 5")
+pyarrow_batches = df.collect()
+pyarrow_batches[0].to_pandas()
+# %%
+df = ctx.read_parquet('../testdata/test.parquet').limit(5)
+pyarrow_batches = df.collect()
+pyarrow_batches[0].to_pandas()
 # %%

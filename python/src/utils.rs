@@ -19,6 +19,7 @@ use ballista_core::error::BallistaError;
 use pyo3::exceptions::PyException;
 use pyo3::PyErr;
 
+#[allow(dead_code)]
 pub(crate) fn to_pyerr(err: BallistaError) -> PyErr {
     PyException::new_err(err.to_string())
 }

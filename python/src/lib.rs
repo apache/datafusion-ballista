@@ -20,12 +20,9 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::*;
 use datafusion_python::context::PySessionContext;
 use datafusion_python::utils::wait_for_future;
-
-use std::collections::HashMap;
-
 use pyo3::prelude::*;
+use std::collections::HashMap;
 mod utils;
-use utils::to_pyerr;
 
 #[pymodule]
 fn ballista_internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
@@ -66,7 +63,11 @@ impl PyBallistaBuilder {
     /// Construct the standalone instance from the SessionContext
     pub fn standalone(&self, py: Python) -> PyResult<PySessionContext> {
         // Build the config
-        let config: SessionConfig = SessionConfig::from_string_hash_map(&self.conf)?;
+        let mut config: SessionConfig = SessionConfig::new_with_ballista();
+        for (key, value) in &self.conf {
+            let _ = config.options_mut().set(&key, value);
+        }
+
         // Build the state
         let state = SessionStateBuilder::new()
             .with_config(config)
@@ -85,7 +86,10 @@ impl PyBallistaBuilder {
     /// Construct the remote instance from the SessionContext
     pub fn remote(&self, url: &str, py: Python) -> PyResult<PySessionContext> {
         // Build the config
-        let config: SessionConfig = SessionConfig::from_string_hash_map(&self.conf)?;
+        let mut config: SessionConfig = SessionConfig::new_with_ballista();
+        for (key, value) in &self.conf {
+            let _ = config.options_mut().set(&key, value);
+        }
         // Build the state
         let state = SessionStateBuilder::new()
             .with_config(config)
