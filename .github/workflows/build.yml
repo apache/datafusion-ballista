@@ -221,10 +221,7 @@ jobs:
           path: .
 
       - run: cat LICENSE.txt
-
-      - name: Install Protobug Compiler (Setup protoc not working)
-        run: sudo apt-get install protobuf-compiler
-        
+       
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
         with:
@@ -232,19 +229,16 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Cargo Build
         run: cd python && cargo build
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install maturin
+        run: pip install maturin==1.5.1
+      - name: Cargo Build
+        run: cd python && cargo build
       
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        env:
-          RUST_BACKTRACE: 1
-        with:
-          rust-toolchain: nightly
-          target: aarch64
-          # Use manylinux_2_28-cross because the manylinux2014-cross has GCC 4.8.5, which causes the build to fail
-          manylinux: 2_28
-          rustup-components: rust-std rustfmt # Keep them in one line due to https://github.com/PyO3/maturin-action/issues/153
-          working-directory: python
-          args: --release
+      - name: Build Python package
+        run: cd python && maturin build --release --strip
       - name: Archive wheels
         uses: actions/upload-artifact@v4
         with:
@@ -265,10 +259,7 @@ jobs:
           path: .
           
       - run: cat LICENSE.txt
-
-      - name: Install Protobug Compiler (Setup protoc not working)
-        run: sudo apt-get install protobuf-compiler
-      
+   
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
         with:
@@ -276,15 +267,9 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Cargo Build
         run: cd python && cargo build
+      - name: Build Python package
+        run: cd python && maturin build --release --sdist --out dist --strip
       
-      - name: Build sdist
-        uses: PyO3/maturin-action@v1
-        with:
-          rust-toolchain: stable
-          manylinux: auto
-          rustup-components: rust-std rustfmt
-          working-directory: python
-          args: --release --sdist --out dist
       - name: Assert sdist build does not generate wheels
         run: |
             if [ "$(ls -A target/wheels)" ]; then
