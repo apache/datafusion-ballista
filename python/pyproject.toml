@@ -16,7 +16,7 @@
 # under the License.
 
 [build-system]
-requires = ["maturin>=0.15,<0.16"]
+requires = ["maturin>=1.5.1,<1.6.0"]
 build-backend = "maturin"
 
 [project]
@@ -24,7 +24,7 @@ name = "ballista"
 description = "Python client for Apache Arrow Ballista Distributed SQL Query Engine"
 readme = "README.md"
 license = {file = "LICENSE.txt"}
-requires-python = ">=3.6"
+requires-python = ">=3.7"
 keywords = ["ballista", "sql", "rust", "distributed"]
 classifier = [
     "Development Status :: 2 - Pre-Alpha",
