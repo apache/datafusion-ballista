@@ -186,25 +186,11 @@ jobs:
 
       - run: cat LICENSE.txt
 
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          version: "27.4"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Cargo Build
         run: cd python && cargo build
       
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        env:
-          RUST_BACKTRACE: 1
-        with:
-          rust-toolchain: nightly
-          target: x86_64
-          manylinux: auto
-          rustup-components: rust-std rustfmt # Keep them in one line due to https://github.com/PyO3/maturin-action/issues/153
-          working-directory: python
-          args: --release --manylinux 2014
+      - name: Build Python package
+        run: cd python && maturin build --release --strip
       - name: Archive wheels
         uses: actions/upload-artifact@v4
         with:
