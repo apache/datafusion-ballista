@@ -24,7 +24,7 @@ name = "ballista"
 description = "Python client for Apache Arrow Ballista Distributed SQL Query Engine"
 readme = "README.md"
 license = {file = "LICENSE.txt"}
-requires-python = ">=3.6"
+requires-python = ">=3.7"
 keywords = ["ballista", "sql", "rust", "distributed"]
 classifier = [
     "Development Status :: 2 - Pre-Alpha",
