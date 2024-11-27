@@ -17,13 +17,14 @@
 
 # %%
 
-from ballista import BallistaBuilder
+from ballista import Ballista
 from datafusion.context import SessionContext
 
-ctx: SessionContext = BallistaBuilder()\
+ctx: SessionContext = Ballista.builder\
     .config("ballista.job.name", "Readme Examples")\
     .config("datafusion.execution.target_partitions", "4")\
     .standalone()
+
 ctx.sql("create external table t stored as parquet location '../testdata/test.parquet'")
 
 # %%

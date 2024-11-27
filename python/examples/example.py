@@ -17,12 +17,10 @@
 
 # %%
 
-from ballista import BallistaBuilder
+from ballista import Ballista
 from datafusion.context import SessionContext
 
-# Ballista will initiate with an empty config
-# set config variables with `config`
-ctx: SessionContext = BallistaBuilder()\
+ctx: SessionContext = Ballista.builder\
     .config("ballista.job.name", "example ballista")\
     .config("datafusion.execution.target_partitions", "4")\
     .standalone()

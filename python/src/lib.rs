@@ -30,12 +30,12 @@ fn ballista_internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     // BallistaBuilder struct
     m.add_class::<PyBallistaBuilder>()?;
     // DataFusion struct
-    m.add_class::<datafusion_python::dataframe::PyDataFrame>()?;
+    // m.add_class::<datafusion_python::dataframe::PyDataFrame>()?;
     Ok(())
 }
 
-// Ballista Builder will take a HasMap/Dict Cionfg
-#[pyclass(name = "BallistaBuilder", module = "ballista", subclass)]
+#[derive(Debug, Default)]
+#[pyclass(name = "Ballista", module = "ballista", subclass)]
 pub struct PyBallistaBuilder {
     conf: HashMap<String, String>,
 }
@@ -44,9 +44,12 @@ pub struct PyBallistaBuilder {
 impl PyBallistaBuilder {
     #[new]
     pub fn new() -> Self {
-        Self {
-            conf: HashMap::new(),
-        }
+        Self::default()
+    }
+    //#[staticmethod]
+    #[classattr]
+    pub fn builder() -> Self {
+        Self::default()
     }
 
     pub fn config(

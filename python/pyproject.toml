@@ -43,7 +43,8 @@ classifier = [
     "Programming Language :: Rust",
 ]
 dependencies = [
-    "pyarrow>=11.0.0",
+    "pyarrow>=11.0.0", 
+    "datafusion==42",
 ]
 
 [project.urls]
