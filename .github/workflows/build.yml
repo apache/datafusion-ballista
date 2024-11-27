@@ -227,8 +227,6 @@ jobs:
         with:
           version: "27.4"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Cargo Build
-        run: cd python && cargo build
       - name: Upgrade pip
         run: python -m pip install --upgrade pip
 
@@ -265,6 +263,11 @@ jobs:
         with:
           version: "27.4"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install maturin
+        run: pip install maturin==1.5.1
       - name: Cargo Build
         run: cd python && cargo build
       - name: Build Python package
