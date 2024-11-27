@@ -62,12 +62,14 @@ use tonic::codegen::StdError;
 use tonic::transport::{Channel, Error, Server};
 
 /// Default session builder using the provided configuration
-pub fn default_session_builder(config: SessionConfig) -> SessionState {
-    SessionStateBuilder::new()
+pub fn default_session_builder(
+    config: SessionConfig,
+) -> datafusion::common::Result<SessionState> {
+    Ok(SessionStateBuilder::new()
         .with_default_features()
         .with_config(config)
-        .with_runtime_env(Arc::new(RuntimeEnv::new(RuntimeConfig::default()).unwrap()))
-        .build()
+        .with_runtime_env(Arc::new(RuntimeEnv::new(RuntimeConfig::default())?))
+        .build())
 }
 
 pub fn default_config_producer() -> SessionConfig {

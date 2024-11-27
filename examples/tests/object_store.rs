@@ -298,7 +298,7 @@ mod custom_s3_config {
         // object store registry.
 
         let session_builder = Arc::new(produce_state);
-        let state = session_builder(config_producer());
+        let state = session_builder(config_producer())?;
 
         // setting up ballista cluster with new runtime, configuration, and session state producers
         let (host, port) = crate::common::setup_test_cluster_with_builders(
@@ -416,7 +416,7 @@ mod custom_s3_config {
         // object store registry.
 
         let session_builder = Arc::new(produce_state);
-        let state = session_builder(config_producer());
+        let state = session_builder(config_producer())?;
 
         // // establishing cluster connection,
         let ctx: SessionContext = SessionContext::standalone_with_state(state).await?;
@@ -480,24 +480,25 @@ mod custom_s3_config {
         Ok(())
     }
 
-    fn produce_state(session_config: SessionConfig) -> SessionState {
+    fn produce_state(
+        session_config: SessionConfig,
+    ) -> datafusion::common::Result<SessionState> {
         let s3options = session_config
             .options()
             .extensions
             .get::<S3Options>()
             .ok_or(DataFusionError::Configuration(
                 "S3 Options not set".to_string(),
-            ))
-            .unwrap();
+            ))?;
 
         let config = RuntimeConfig::new().with_object_store_registry(Arc::new(
             CustomObjectStoreRegistry::new(s3options.clone()),
         ));
-        let runtime_env = RuntimeEnv::new(config).unwrap();
+        let runtime_env = RuntimeEnv::new(config)?;
 
-        SessionStateBuilder::new()
+        Ok(SessionStateBuilder::new()
             .with_runtime_env(runtime_env.into())
             .with_config(session_config)
-            .build()
+            .build())
     }
 }

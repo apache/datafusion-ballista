@@ -88,13 +88,13 @@ pub fn custom_runtime_env_with_s3_support(
 /// and [RuntimeEnv].
 pub fn custom_session_state_with_s3_support(
     session_config: SessionConfig,
-) -> SessionState {
-    let runtime_env = custom_runtime_env_with_s3_support(&session_config).unwrap();
+) -> datafusion::common::Result<SessionState> {
+    let runtime_env = custom_runtime_env_with_s3_support(&session_config)?;
 
-    SessionStateBuilder::new()
+    Ok(SessionStateBuilder::new()
         .with_runtime_env(runtime_env)
         .with_config(session_config)
-        .build()
+        .build())
 }
 
 /// Custom [ObjectStoreRegistry] which will create

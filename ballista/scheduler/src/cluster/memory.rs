@@ -408,7 +408,7 @@ impl JobState for InMemoryJobState {
         &self,
         config: &SessionConfig,
     ) -> Result<Arc<SessionContext>> {
-        let session = create_datafusion_context(config, self.session_builder.clone());
+        let session = create_datafusion_context(config, self.session_builder.clone())?;
         self.sessions.insert(session.session_id(), session.clone());
 
         Ok(session)
@@ -419,7 +419,7 @@ impl JobState for InMemoryJobState {
         session_id: &str,
         config: &SessionConfig,
     ) -> Result<Arc<SessionContext>> {
-        let session = create_datafusion_context(config, self.session_builder.clone());
+        let session = create_datafusion_context(config, self.session_builder.clone())?;
         self.sessions
             .insert(session_id.to_string(), session.clone());
 
