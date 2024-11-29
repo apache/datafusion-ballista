@@ -87,7 +87,7 @@ impl<'a> DisplayableBallistaExecutionPlan<'a> {
             plan: &'a dyn ExecutionPlan,
             metrics: &'a Vec<MetricsSet>,
         }
-        impl<'a> fmt::Display for Wrapper<'a> {
+        impl fmt::Display for Wrapper<'_> {
             fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 let t = DisplayFormatType::Default;
                 let mut visitor = IndentVisitor {
@@ -121,7 +121,7 @@ struct IndentVisitor<'a, 'b> {
     metric_index: usize,
 }
 
-impl<'a, 'b> ExecutionPlanVisitor for IndentVisitor<'a, 'b> {
+impl ExecutionPlanVisitor for IndentVisitor<'_, '_> {
     type Error = fmt::Error;
     fn pre_visit(
         &mut self,
@@ -150,7 +150,7 @@ impl<'a, 'b> ExecutionPlanVisitor for IndentVisitor<'a, 'b> {
     }
 }
 
-impl<'a> ToStringifiedPlan for DisplayableBallistaExecutionPlan<'a> {
+impl ToStringifiedPlan for DisplayableBallistaExecutionPlan<'_> {
     fn to_stringified(
         &self,
         plan_type: datafusion::logical_expr::PlanType,

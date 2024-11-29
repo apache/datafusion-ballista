@@ -131,7 +131,6 @@ impl BallistaLogicalExtensionCodec {
     /// position is important with encoding process
     /// as position of used codecs is needed
     /// so the same codec can be used for decoding
-
     fn try_any<R>(
         &self,
         mut f: impl FnMut(&dyn LogicalExtensionCodec) -> Result<R>,

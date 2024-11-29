@@ -27,7 +27,6 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 /// Execution engine extension point
-
 pub trait ExecutionEngine: Sync + Send {
     fn create_query_stage_exec(
         &self,
