@@ -21,7 +21,6 @@ mod common;
 ///
 /// It provides indication if/when datafusion
 /// gets support for them
-
 #[cfg(test)]
 mod unsupported {
     use crate::common::{remote_context, standalone_context};

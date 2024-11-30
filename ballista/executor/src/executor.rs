@@ -111,7 +111,6 @@ impl Executor {
 
     /// Create a new executor instance with given [RuntimeEnv],
     /// [ScalarUDF], [AggregateUDF] and [WindowUDF]
-
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         metadata: ExecutorRegistration,

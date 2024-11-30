@@ -52,7 +52,6 @@ pub trait SessionStateExt {
 
 /// [SessionConfig] extension with methods needed
 /// for Ballista configuration
-
 pub trait SessionConfigExt {
     /// Creates session config which has
     /// ballista configuration initialized
@@ -315,7 +314,8 @@ impl SessionConfigHelperExt for SessionConfig {
                 value
             );
             if let Err(e) = s.options_mut().set(key, value) {
-                log::warn!(
+                // there is not much we can do about this error at the moment
+                log::debug!(
                     "could not set configuration key: `{}`, value: `{}`, reason: {}",
                     key,
                     value,
@@ -334,7 +334,8 @@ impl SessionConfigHelperExt for SessionConfig {
                 value
             );
             if let Err(e) = self.options_mut().set(key, value) {
-                log::warn!(
+                // there is not much we can do about this error at the moment
+                log::debug!(
                     "could not set configuration key: `{}`, value: `{}`, reason: {}",
                     key,
                     value,
