@@ -32,6 +32,7 @@ use datafusion_proto::logical_plan::file_formats::{
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_hash_partitioning;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
+use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
 use datafusion_proto::protobuf::proto_error;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use datafusion_proto::{
@@ -247,8 +248,18 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct BallistaPhysicalExtensionCodec {}
+#[derive(Debug)]
+pub struct BallistaPhysicalExtensionCodec {
+    default_codec: Arc<dyn PhysicalExtensionCodec>,
+}
+
+impl Default for BallistaPhysicalExtensionCodec {
+    fn default() -> Self {
+        Self {
+            default_codec: Arc::new(DefaultPhysicalExtensionCodec {}),
+        }
+    }
+}
 
 impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
     fn try_decode(
@@ -275,14 +286,11 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             PhysicalPlanType::ShuffleWriter(shuffle_writer) => {
                 let input = inputs[0].clone();
 
-                let default_codec =
-                    datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec {};
-
                 let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
                     shuffle_writer.output_partitioning.as_ref(),
                     registry,
                     input.schema().as_ref(),
-                    &default_codec,
+                    self.default_codec.as_ref(),
                 )?;
 
                 Ok(Arc::new(ShuffleWriterExec::try_new(
@@ -294,8 +302,6 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 )?))
             }
             PhysicalPlanType::ShuffleReader(shuffle_reader) => {
-                let default_codec =
-                    datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec {};
                 let stage_id = shuffle_reader.stage_id as usize;
                 let schema: SchemaRef =
                     Arc::new(convert_required!(shuffle_reader.schema)?);
@@ -319,7 +325,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     shuffle_reader.partitioning.as_ref(),
                     registry,
                     schema.as_ref(),
-                    &default_codec,
+                    self.default_codec.as_ref(),
                 )?;
                 let partitioning = partitioning
                     .ok_or_else(|| proto_error("missing required partitioning field"))?;
@@ -332,15 +338,13 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 Ok(Arc::new(shuffle_reader))
             }
             PhysicalPlanType::UnresolvedShuffle(unresolved_shuffle) => {
-                let default_codec =
-                    datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec {};
                 let schema: SchemaRef =
                     Arc::new(convert_required!(unresolved_shuffle.schema)?);
                 let partitioning = parse_protobuf_partitioning(
                     unresolved_shuffle.partitioning.as_ref(),
                     registry,
                     schema.as_ref(),
-                    &default_codec,
+                    self.default_codec.as_ref(),
                 )?;
                 let partitioning = partitioning
                     .ok_or_else(|| proto_error("missing required partitioning field"))?;
@@ -363,12 +367,10 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             // to get the true output partitioning
             let output_partitioning = match exec.shuffle_output_partitioning() {
                 Some(Partitioning::Hash(exprs, partition_count)) => {
-                    let default_codec =
-                        datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec {};
                     Some(datafusion_proto::protobuf::PhysicalHashRepartition {
                         hash_expr: exprs
                             .iter()
-                            .map(|expr|datafusion_proto::physical_plan::to_proto::serialize_physical_expr(&expr.clone(), &default_codec))
+                            .map(|expr|datafusion_proto::physical_plan::to_proto::serialize_physical_expr(&expr.clone(), self.default_codec.as_ref()))
                             .collect::<Result<Vec<_>, DataFusionError>>()?,
                         partition_count: *partition_count as u64,
                     })
@@ -416,10 +418,10 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         .collect::<Result<Vec<_>, _>>()?,
                 });
             }
-            let default_codec =
-                datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec {};
-            let partitioning =
-                serialize_partitioning(&exec.properties().partitioning, &default_codec)?;
+            let partitioning = serialize_partitioning(
+                &exec.properties().partitioning,
+                self.default_codec.as_ref(),
+            )?;
             let proto = protobuf::BallistaPhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::ShuffleReader(
                     protobuf::ShuffleReaderExecNode {
@@ -438,10 +440,10 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
 
             Ok(())
         } else if let Some(exec) = node.as_any().downcast_ref::<UnresolvedShuffleExec>() {
-            let default_codec =
-                datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec {};
-            let partitioning =
-                serialize_partitioning(&exec.properties().partitioning, &default_codec)?;
+            let partitioning = serialize_partitioning(
+                &exec.properties().partitioning,
+                self.default_codec.as_ref(),
+            )?;
             let proto = protobuf::BallistaPhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::UnresolvedShuffle(
                     protobuf::UnresolvedShuffleExecNode {
