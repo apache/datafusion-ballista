@@ -17,7 +17,6 @@
 
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
-use crate::serde::protobuf::execute_query_params::OptionalSessionId;
 use crate::serde::protobuf::{
     execute_query_params::Query, execute_query_result, job_status,
     scheduler_grpc_client::SchedulerGrpcClient, ExecuteQueryParams, GetJobStatusParams,
@@ -218,7 +217,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             .map(
                 |datafusion::config::ConfigEntry { key, value, .. }| KeyValuePair {
                     key: key.to_owned(),
-                    value: value.clone().unwrap_or_else(|| String::from("")),
+                    value: value.clone(),
                 },
             )
             .collect();
@@ -226,9 +225,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         let query = ExecuteQueryParams {
             query: Some(Query::LogicalPlan(buf)),
             settings,
-            optional_session_id: Some(OptionalSessionId::SessionId(
-                self.session_id.clone(),
-            )),
+            session_id: Some(self.session_id.clone()),
         };
 
         let stream = futures::stream::once(

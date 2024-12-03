@@ -249,8 +249,8 @@ pub struct TaskInputPartitions {
 pub struct KeyValuePair {
     #[prost(string, tag = "1")]
     pub key: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub value: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "2")]
+    pub value: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Action {
@@ -708,11 +708,6 @@ pub struct MultiTaskDefinition {
     pub props: ::prost::alloc::vec::Vec<KeyValuePair>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct SessionSettings {
-    #[prost(message, repeated, tag = "1")]
-    pub configs: ::prost::alloc::vec::Vec<KeyValuePair>,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct JobSessionConfig {
     #[prost(string, tag = "1")]
     pub session_id: ::prost::alloc::string::String,
@@ -789,14 +784,12 @@ pub struct UpdateTaskStatusResult {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteQueryParams {
+    #[prost(string, optional, tag = "3")]
+    pub session_id: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(message, repeated, tag = "4")]
     pub settings: ::prost::alloc::vec::Vec<KeyValuePair>,
     #[prost(oneof = "execute_query_params::Query", tags = "1, 2")]
     pub query: ::core::option::Option<execute_query_params::Query>,
-    #[prost(oneof = "execute_query_params::OptionalSessionId", tags = "3")]
-    pub optional_session_id: ::core::option::Option<
-        execute_query_params::OptionalSessionId,
-    >,
 }
 /// Nested message and enum types in `ExecuteQueryParams`.
 pub mod execute_query_params {
@@ -807,11 +800,6 @@ pub mod execute_query_params {
         /// I'd suggest to remove this, if SQL needed use `flight-sql`
         #[prost(string, tag = "2")]
         Sql(::prost::alloc::string::String),
-    }
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
-    pub enum OptionalSessionId {
-        #[prost(string, tag = "3")]
-        SessionId(::prost::alloc::string::String),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
