@@ -489,6 +489,11 @@ struct FileFormatProto {
 
 #[cfg(test)]
 mod test {
+    use super::*;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::execution::registry::MemoryFunctionRegistry;
+    use datafusion::physical_plan::expressions::col;
+    use datafusion::physical_plan::Partitioning;
     use datafusion::{
         common::DFSchema,
         datasource::file_format::{parquet::ParquetFormatFactory, DefaultFileType},
@@ -532,5 +537,76 @@ mod test {
 
         assert_eq!(o.to_string(), d.to_string())
         //logical_plan.
+    }
+
+    fn create_test_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]))
+    }
+
+    #[tokio::test]
+    async fn test_unresolved_shuffle_exec_roundtrip() {
+        let schema = create_test_schema();
+        let partitioning =
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 4);
+
+        let original_exec = UnresolvedShuffleExec::new(
+            1, // stage_id
+            schema.clone(),
+            partitioning.clone(),
+        );
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(Arc::new(original_exec.clone()), &mut buf)
+            .unwrap();
+
+        let registry = MemoryFunctionRegistry::new();
+        let decoded_plan = codec.try_decode(&buf, &[], &registry).unwrap();
+
+        let decoded_exec = decoded_plan
+            .as_any()
+            .downcast_ref::<UnresolvedShuffleExec>()
+            .expect("Expected UnresolvedShuffleExec");
+
+        assert_eq!(decoded_exec.stage_id, 1);
+        assert_eq!(decoded_exec.schema().as_ref(), schema.as_ref());
+        assert_eq!(&decoded_exec.properties().partitioning, &partitioning);
+    }
+
+    #[tokio::test]
+    async fn test_shuffle_reader_exec_roundtrip() {
+        let schema = create_test_schema();
+        let partitioning =
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 4);
+
+        let original_exec = ShuffleReaderExec::try_new(
+            1, // stage_id
+            Vec::new(),
+            schema.clone(),
+            partitioning.clone(),
+        )
+        .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(Arc::new(original_exec.clone()), &mut buf)
+            .unwrap();
+
+        let registry = MemoryFunctionRegistry::new();
+        let decoded_plan = codec.try_decode(&buf, &[], &registry).unwrap();
+
+        let decoded_exec = decoded_plan
+            .as_any()
+            .downcast_ref::<ShuffleReaderExec>()
+            .expect("Expected ShuffleReaderExec");
+
+        assert_eq!(decoded_exec.stage_id, 1);
+        assert_eq!(decoded_exec.schema().as_ref(), schema.as_ref());
+        assert_eq!(&decoded_exec.properties().partitioning, &partitioning);
     }
 }
