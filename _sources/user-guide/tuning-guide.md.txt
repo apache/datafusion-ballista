@@ -32,7 +32,7 @@ For example, if there is a table "customer" that consists of 200 Parquet files, 
 200 partitions and the table scan and certain subsequent operations will also have 200 partitions. Conversely, if the
 table only has a single Parquet file then there will be a single partition and the work will not be able to scale even
 if the cluster has resource available. Ballista supports repartitioning within a query to improve parallelism.
-The configuration setting `ballista.shuffle.partitions`can be set to the desired number of partitions. This is
+The configuration setting `datafusion.execution.target_partitions`can be set to the desired number of partitions. This is
 currently a global setting for the entire context. The default value for this setting is 16.
 
 Note that Ballista will never decrease the number of partitions based on this setting and will only repartition if
@@ -41,11 +41,17 @@ the source operation has fewer partitions than this setting.
 Example: Setting the desired number of shuffle partitions when creating a context.
 
 ```rust
-let config = BallistaConfig::builder()
-    .set("ballista.shuffle.partitions", "200")
-    .build()?;
+use ballista::extension::{SessionConfigExt, SessionContextExt};
 
-let ctx = BallistaContext::remote("localhost", 50050, &config).await?;
+let session_config = SessionConfig::new_with_ballista()
+    .with_target_partitions(200);
+
+let state = SessionStateBuilder::new()
+    .with_default_features()
+    .with_config(session_config)
+    .build();
+
+let ctx: SessionContext = SessionContext::remote_with_state(&url,state).await?;
 ```
 
 ## Configuring Executor Concurrency Levels
@@ -74,6 +80,8 @@ processes. The default is `pull-based`.
 
 The scheduler provides a REST API for monitoring jobs. See the
 [scheduler documentation](scheduler.md) for more information.
+
+> This is optional scheduler feature which should be enabled with rest-api feature
 
 To download a query plan in dot format from the scheduler, submit a request to the following API endpoint
 

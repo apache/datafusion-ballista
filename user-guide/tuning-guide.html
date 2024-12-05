@@ -339,16 +339,22 @@ single partition (in the future, Ballista will support splitting files into part
 200 partitions and the table scan and certain subsequent operations will also have 200 partitions. Conversely, if the
 table only has a single Parquet file then there will be a single partition and the work will not be able to scale even
 if the cluster has resource available. Ballista supports repartitioning within a query to improve parallelism.
-The configuration setting <code class="docutils literal notranslate"><span class="pre">ballista.shuffle.partitions</span></code>can be set to the desired number of partitions. This is
+The configuration setting <code class="docutils literal notranslate"><span class="pre">datafusion.execution.target_partitions</span></code>can be set to the desired number of partitions. This is
 currently a global setting for the entire context. The default value for this setting is 16.</p>
 <p>Note that Ballista will never decrease the number of partitions based on this setting and will only repartition if
 the source operation has fewer partitions than this setting.</p>
 <p>Example: Setting the desired number of shuffle partitions when creating a context.</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">BallistaConfig</span><span class="p">::</span><span class="n">builder</span><span class="p">()</span>
-<span class="w">    </span><span class="p">.</span><span class="n">set</span><span class="p">(</span><span class="s">&quot;ballista.shuffle.partitions&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;200&quot;</span><span class="p">)</span>
-<span class="w">    </span><span class="p">.</span><span class="n">build</span><span class="p">()</span><span class="o">?</span><span class="p">;</span>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">ballista</span><span class="p">::</span><span class="n">extension</span><span class="p">::{</span><span class="n">SessionConfigExt</span><span class="p">,</span><span class="w"> </span><span class="n">SessionContextExt</span><span class="p">};</span>
 
-<span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">BallistaContext</span><span class="p">::</span><span class="n">remote</span><span class="p">(</span><span class="s">&quot;localhost&quot;</span><span class="p">,</span><span class="w"> </span><span class="mi">50050</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">config</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">session_config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">::</span><span class="n">new_with_ballista</span><span class="p">()</span>
+<span class="w">    </span><span class="p">.</span><span class="n">with_target_partitions</span><span class="p">(</span><span class="mi">200</span><span class="p">);</span>
+
+<span class="kd">let</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionStateBuilder</span><span class="p">::</span><span class="n">new</span><span class="p">()</span>
+<span class="w">    </span><span class="p">.</span><span class="n">with_default_features</span><span class="p">()</span>
+<span class="w">    </span><span class="p">.</span><span class="n">with_config</span><span class="p">(</span><span class="n">session_config</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">build</span><span class="p">();</span>
+
+<span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="p">:</span><span class="w"> </span><span class="nc">SessionContext</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">remote_with_state</span><span class="p">(</span><span class="o">&amp;</span><span class="n">url</span><span class="p">,</span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 </pre></div>
 </div>
 </section>
@@ -374,6 +380,9 @@ processes. The default is <code class="docutils literal notranslate"><span class
 <h2>Viewing Query Plans and Metrics<a class="headerlink" href="#viewing-query-plans-and-metrics" title="Link to this heading">¶</a></h2>
 <p>The scheduler provides a REST API for monitoring jobs. See the
 <a class="reference internal" href="scheduler.html"><span class="std std-doc">scheduler documentation</span></a> for more information.</p>
+<blockquote>
+<div><p>This is optional scheduler feature which should be enabled with rest-api feature</p>
+</div></blockquote>
 <p>To download a query plan in dot format from the scheduler, submit a request to the following API endpoint</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">http</span><span class="p">:</span><span class="o">//</span><span class="n">localhost</span><span class="p">:</span><span class="mi">50050</span><span class="o">/</span><span class="n">api</span><span class="o">/</span><span class="n">job</span><span class="o">/</span><span class="p">{</span><span class="n">job_id</span><span class="p">}</span><span class="o">/</span><span class="n">dot</span>
 </pre></div>
