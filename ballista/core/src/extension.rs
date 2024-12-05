@@ -287,60 +287,49 @@ impl SessionConfigHelperExt for SessionConfig {
         self.options()
             .entries()
             .iter()
-            .filter(|v| v.value.is_some())
-            .map(
-                // TODO MM make `value` optional value
-                |datafusion::config::ConfigEntry { key, value, .. }| {
-                    log::trace!(
-                        "sending configuration key: `{}`, value`{:?}`",
-                        key,
-                        value
-                    );
-                    KeyValuePair {
-                        key: key.to_owned(),
-                        value: value.clone().unwrap(),
-                    }
-                },
-            )
+            .map(|datafusion::config::ConfigEntry { key, value, .. }| {
+                log::trace!("sending configuration key: `{}`, value`{:?}`", key, value);
+                KeyValuePair {
+                    key: key.to_owned(),
+                    value: value.clone(),
+                }
+            })
             .collect()
     }
 
     fn update_from_key_value_pair(self, key_value_pairs: &[KeyValuePair]) -> Self {
         let mut s = self;
-        for KeyValuePair { key, value } in key_value_pairs {
-            log::trace!(
-                "setting up configuration key: `{}`, value: `{}`",
-                key,
-                value
-            );
-            if let Err(e) = s.options_mut().set(key, value) {
-                // there is not much we can do about this error at the moment
-                log::debug!(
-                    "could not set configuration key: `{}`, value: `{}`, reason: {}",
-                    key,
-                    value,
-                    e.to_string()
-                )
-            }
-        }
+        s.update_from_key_value_pair_mut(key_value_pairs);
         s
     }
 
     fn update_from_key_value_pair_mut(&mut self, key_value_pairs: &[KeyValuePair]) {
         for KeyValuePair { key, value } in key_value_pairs {
-            log::trace!(
-                "setting up configuration key : `{}`, value: `{}`",
-                key,
-                value
-            );
-            if let Err(e) = self.options_mut().set(key, value) {
-                // there is not much we can do about this error at the moment
-                log::debug!(
-                    "could not set configuration key: `{}`, value: `{}`, reason: {}",
-                    key,
-                    value,
-                    e.to_string()
-                )
+            match value {
+                Some(value) => {
+                    log::trace!(
+                        "setting up configuration key: `{}`, value: `{:?}`",
+                        key,
+                        value
+                    );
+                    if let Err(e) = self.options_mut().set(key, value) {
+                        // there is not much we can do about this error at the moment.
+                        // it used to be warning but it gets very verbose
+                        // as even datafusion properties can't be parsed
+                        log::debug!(
+                            "could not set configuration key: `{}`, value: `{:?}`, reason: {}",
+                            key,
+                            value,
+                            e.to_string()
+                        )
+                    }
+                }
+                None => {
+                    log::trace!(
+                        "can't set up configuration key: `{}`, as value is None",
+                        key,
+                    )
+                }
             }
         }
     }
