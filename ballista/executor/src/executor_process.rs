@@ -81,7 +81,6 @@ pub struct ExecutorProcessConfig {
     pub work_dir: Option<String>,
     pub special_mod_log_level: String,
     pub print_thread_info: bool,
-    pub log_file_name_prefix: String,
     pub log_rotation_policy: LogRotationPolicy,
     pub job_data_ttl_seconds: u64,
     pub job_data_clean_up_interval_seconds: u64,
@@ -103,6 +102,50 @@ pub struct ExecutorProcessConfig {
     pub override_logical_codec: Option<Arc<dyn LogicalExtensionCodec>>,
     /// [PhysicalExtensionCodec] override option
     pub override_physical_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
+}
+
+impl ExecutorProcessConfig {
+    pub fn log_file_name_prefix(&self) -> String {
+        format!(
+            "executor_{}_{}",
+            self.external_host
+                .clone()
+                .unwrap_or_else(|| "localhost".to_string()),
+            self.port
+        )
+    }
+}
+
+impl Default for ExecutorProcessConfig {
+    fn default() -> Self {
+        Self {
+            bind_host: "127.0.0.1".into(),
+            external_host: None,
+            port: 50051,
+            grpc_port: 50052,
+            scheduler_host: "localhost".into(),
+            scheduler_port: 50050,
+            scheduler_connect_timeout_seconds: 0,
+            concurrent_tasks: std::thread::available_parallelism().unwrap().get(),
+            task_scheduling_policy: Default::default(),
+            log_dir: None,
+            work_dir: None,
+            special_mod_log_level: "INFO".into(),
+            print_thread_info: true,
+            log_rotation_policy: Default::default(),
+            job_data_ttl_seconds: 604800,
+            job_data_clean_up_interval_seconds: 0,
+            grpc_max_decoding_message_size: 16777216,
+            grpc_max_encoding_message_size: 16777216,
+            executor_heartbeat_interval_seconds: 60,
+            override_execution_engine: None,
+            override_function_registry: None,
+            override_runtime_producer: None,
+            override_config_producer: None,
+            override_logical_codec: None,
+            override_physical_codec: None,
+        }
+    }
 }
 
 pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<()> {

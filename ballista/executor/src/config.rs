@@ -27,14 +27,6 @@ impl TryFrom<Config> for ExecutorProcessConfig {
     type Error = BallistaError;
 
     fn try_from(opt: Config) -> Result<Self, Self::Error> {
-        let log_file_name_prefix = format!(
-            "executor_{}_{}",
-            opt.external_host
-                .clone()
-                .unwrap_or_else(|| "localhost".to_string()),
-            opt.bind_port
-        );
-
         Ok(ExecutorProcessConfig {
             special_mod_log_level: opt.log_level_setting,
             external_host: opt.external_host,
@@ -48,7 +40,6 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             task_scheduling_policy: opt.task_scheduling_policy,
             work_dir: opt.work_dir,
             log_dir: opt.log_dir,
-            log_file_name_prefix,
             log_rotation_policy: opt.log_rotation_policy,
             print_thread_info: opt.print_thread_info,
             job_data_ttl_seconds: opt.job_data_ttl_seconds,
