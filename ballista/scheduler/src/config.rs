@@ -135,15 +135,15 @@ impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
             namespace: String::default(),
-            external_host: "localhost".to_string(),
+            external_host: "localhost".into(),
             bind_port: 50050,
-            scheduling_policy: TaskSchedulingPolicy::PullStaged,
+            scheduling_policy: Default::default(),
             event_loop_buffer_size: 10000,
-            task_distribution: TaskDistributionPolicy::Bias,
+            task_distribution: Default::default(),
             finished_job_data_clean_up_interval_seconds: 300,
             finished_job_state_clean_up_interval_seconds: 3600,
             advertise_flight_sql_endpoint: None,
-            cluster_storage: ClusterStorageConfig::Memory,
+            cluster_storage: Default::default(),
             job_resubmit_interval_ms: None,
             executor_termination_grace_period: 0,
             scheduler_event_expected_processing_duration: 0,
@@ -248,8 +248,9 @@ impl SchedulerConfig {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum ClusterStorageConfig {
+    #[default]
     Memory,
 }
 
@@ -285,10 +286,11 @@ impl parse_arg::ParseArgFromStr for TaskDistribution {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum TaskDistributionPolicy {
     /// Eagerly assign tasks to executor slots. This will assign as many task slots per executor
     /// as are currently available
+    #[default]
     Bias,
     /// Distribute tasks evenly across executors. This will try and iterate through available executors
     /// and assign one task to each executor until all tasks are assigned.
@@ -332,7 +334,7 @@ impl TryFrom<Config> for SchedulerConfig {
             finished_job_state_clean_up_interval_seconds: opt
                 .finished_job_state_clean_up_interval_seconds,
             advertise_flight_sql_endpoint: opt.advertise_flight_sql_endpoint,
-            cluster_storage: ClusterStorageConfig::Memory,
+            cluster_storage: Default::default(),
             job_resubmit_interval_ms: (opt.job_resubmit_interval_ms > 0)
                 .then_some(opt.job_resubmit_interval_ms),
             executor_termination_grace_period: opt.executor_termination_grace_period,

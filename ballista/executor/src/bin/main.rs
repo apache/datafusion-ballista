@@ -59,17 +59,18 @@ async fn main() -> Result<()> {
     // File layer
     if let Some(log_dir) = &config.log_dir {
         let log_file = match config.log_rotation_policy {
-            LogRotationPolicy::Minutely => {
-                tracing_appender::rolling::minutely(log_dir, &config.log_file_name_prefix)
-            }
+            LogRotationPolicy::Minutely => tracing_appender::rolling::minutely(
+                log_dir,
+                config.log_file_name_prefix(),
+            ),
             LogRotationPolicy::Hourly => {
-                tracing_appender::rolling::hourly(log_dir, &config.log_file_name_prefix)
+                tracing_appender::rolling::hourly(log_dir, config.log_file_name_prefix())
             }
             LogRotationPolicy::Daily => {
-                tracing_appender::rolling::daily(log_dir, &config.log_file_name_prefix)
+                tracing_appender::rolling::daily(log_dir, config.log_file_name_prefix())
             }
             LogRotationPolicy::Never => {
-                tracing_appender::rolling::never(log_dir, &config.log_file_name_prefix)
+                tracing_appender::rolling::never(log_dir, config.log_file_name_prefix())
             }
         };
 
