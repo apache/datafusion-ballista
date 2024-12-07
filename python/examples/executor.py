@@ -15,18 +15,13 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from ballista import BallistaBuilder
-from datafusion.context import SessionContext
-
-# Ballista will initiate with an empty config
-# set config variables with `config`
-ctx: SessionContext = BallistaBuilder()\
-    .config("ballista.job.name", "example ballista")\
-    .config("ballista.shuffle.partitions", "16")\
-    .standalone()
-    
-#ctx_remote: SessionContext = ballista.remote("remote_ip", 50050)
-
-# Select 1 to verify its working
-ctx.sql("SELECT 1").show()
-#ctx_remote.sql("SELECT 2").show()
+# %%
+from ballista import BallistaExecutor
+# %%
+executor = BallistaExecutor()
+# %%
+executor.start()
+# %%
+executor.wait_for_termination()
+# %%
+# %%

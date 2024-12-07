@@ -16,16 +16,20 @@
 // under the License.
 
 use ballista::prelude::*;
+use cluster::{PyExecutor, PyScheduler};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::*;
 use datafusion_python::context::PySessionContext;
 use datafusion_python::utils::wait_for_future;
-
+use pyo3::prelude::*;
 use std::collections::HashMap;
 
-use pyo3::prelude::*;
+mod cluster;
+#[allow(dead_code)]
+mod codec;
 mod utils;
-use utils::to_pyerr;
+
+pub(crate) struct TokioRuntime(tokio::runtime::Runtime);
 
 #[pymodule]
 fn ballista_internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
@@ -34,6 +38,9 @@ fn ballista_internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBallistaBuilder>()?;
     // DataFusion struct
     m.add_class::<datafusion_python::dataframe::PyDataFrame>()?;
+    m.add_class::<PyScheduler>()?;
+    m.add_class::<PyExecutor>()?;
+
     Ok(())
 }
 

@@ -15,22 +15,21 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from abc import ABCMeta, abstractmethod
-from typing import List
+# %% 
 
-try:
-    import importlib.metadata as importlib_metadata
-except ImportError:
-    import importlib_metadata
+from ballista import BallistaBuilder
+from datafusion.context import SessionContext
 
-import pyarrow as pa
+# Ballista will initiate with an empty config
+# set config variables with `config`
+# ctx: SessionContext = BallistaBuilder()\
+#     .config("ballista.job.name", "example ballista")\
+#     .config("ballista.shuffle.partitions", "16")\
+#     .standalone()
+    
+ctx: SessionContext = BallistaBuilder().remote("df://127.0.0.1:50050")
 
-from .ballista_internal import (
-    BallistaBuilder, BallistaScheduler, BallistaExecutor
-)
+# Select 1 to verify its working
+ctx.sql("SELECT 1").show()
 
-__version__ = importlib_metadata.version(__name__)
-
-__all__ = [
-    "BallistaBuilder", "BallistaScheduler", "BallistaExecutor"
-]
+# %%

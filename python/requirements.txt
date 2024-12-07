@@ -1,3 +1,5 @@
-datafusion==35.0.0
+datafusion==42.0.0
 pyarrow
 pytest
+maturin==1.5.1
+cloudpickle
