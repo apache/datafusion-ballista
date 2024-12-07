@@ -21,10 +21,17 @@ from ballista import BallistaBuilder
 from datafusion.context import SessionContext
 
 ctx: SessionContext = BallistaBuilder()\
+    .config("datafusion.catalog.information_schema","true")\
     .config("ballista.job.name", "example ballista")\
     .standalone()
     
 
 ctx.sql("SELECT 1").show()
+
+# %%
+ctx.sql("SHOW TABLES").show()
+# %%
+ctx.sql("select name, value from information_schema.df_settings where name like 'ballista.job.name'").show()
+
 
 # %%
