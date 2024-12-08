@@ -96,6 +96,19 @@ impl PyScheduler {
             None => Ok(()),
         }
     }
+
+    pub fn close(&mut self) -> PyResult<()> {
+        let mut handle = None;
+        std::mem::swap(&mut self.handle, &mut handle);
+
+        match handle {
+            Some(handle) => handle.abort(),
+            None => {}
+        };
+
+        Ok(())
+    }
+
     #[classattr]
     pub fn version() -> &'static str {
         ballista_core::BALLISTA_VERSION
@@ -197,6 +210,18 @@ impl PyExecutor {
                 .map(|_| ()),
             None => Ok(()),
         }
+    }
+
+    pub fn close(&mut self) -> PyResult<()> {
+        let mut handle = None;
+        std::mem::swap(&mut self.handle, &mut handle);
+
+        match handle {
+            Some(handle) => handle.abort(),
+            None => {}
+        };
+
+        Ok(())
     }
 
     #[classattr]

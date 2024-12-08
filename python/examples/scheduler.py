@@ -26,3 +26,4 @@ scheduler.start()
 # %%
 scheduler.wait_for_termination()
 # %%
+scheduler.close()

@@ -27,3 +27,5 @@ executor
 executor.wait_for_termination()
 # %%
 # %%
+executor.close()
+# %%
