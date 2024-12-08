@@ -39,19 +39,24 @@ pub struct PyScheduler {
 
 #[pymethods]
 impl PyScheduler {
-    #[pyo3(signature = (bind_port=None))]
+    #[pyo3(signature = (bind_host=None, bind_port=None))]
     #[new]
-    pub fn new(py: Python, bind_port: Option<u16>) -> Self {
+    pub fn new(py: Python, bind_host: Option<String>, bind_port: Option<u16>) -> Self {
         let mut config = SchedulerConfig::default();
 
         if let Some(bind_port) = bind_port {
             config.bind_port = bind_port;
         }
 
+        if let Some(host) = bind_host {
+            config.bind_host = host;
+        }
+
         config.override_logical_codec =
             Some(Arc::new(PyLogicalCodec::try_new(py).unwrap()));
         config.override_physical_codec =
             Some(Arc::new(PyPhysicalCodec::try_new(py).unwrap()));
+
         Self {
             config,
             handle: None,
