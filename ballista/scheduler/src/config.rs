@@ -38,6 +38,8 @@ pub struct SchedulerConfig {
     pub namespace: String,
     /// The external hostname of the scheduler
     pub external_host: String,
+    /// The bind host for the scheduler's gRPC service
+    pub bind_host: String,
     /// The bind port for the scheduler's gRPC service
     pub bind_port: u16,
     /// The task scheduling policy for the scheduler
@@ -87,6 +89,7 @@ impl std::fmt::Debug for SchedulerConfig {
             .field("namespace", &self.namespace)
             .field("external_host", &self.external_host)
             .field("bind_port", &self.bind_port)
+            .field("bind_host", &self.bind_host)
             .field("scheduling_policy", &self.scheduling_policy)
             .field("event_loop_buffer_size", &self.event_loop_buffer_size)
             .field("task_distribution", &self.task_distribution)
@@ -137,6 +140,7 @@ impl Default for SchedulerConfig {
             namespace: String::default(),
             external_host: "localhost".into(),
             bind_port: 50050,
+            bind_host: "127.0.0.1".into(),
             scheduling_policy: Default::default(),
             event_loop_buffer_size: 10000,
             task_distribution: Default::default(),
@@ -326,6 +330,7 @@ impl TryFrom<Config> for SchedulerConfig {
             namespace: opt.namespace,
             external_host: opt.external_host,
             bind_port: opt.bind_port,
+            bind_host: opt.bind_host,
             scheduling_policy: opt.scheduler_policy,
             event_loop_buffer_size: opt.event_loop_buffer_size,
             task_distribution,

@@ -26,6 +26,12 @@ part of the default Cargo workspace so that it doesn't cause overhead for mainta
 
 ## Creating a SessionContext
 
+> [!IMPORTANT]
+> Current approach is to support datafusion python API, there are know limitations of current approach,
+> with some cases producing errors.
+> We trying to come up with the best approach to support datafusion python interface.
+> More details could be found at [#1142](https://github.com/apache/datafusion-ballista/issues/1142)
+
 Creates a new context and connects to a Ballista scheduler process.
 
 ```python
@@ -33,22 +39,50 @@ from ballista import BallistaBuilder
 >>> ctx = BallistaBuilder().standalone()
 ```
 
-## Example SQL Usage
+### Example SQL Usage
 
 ```python
->>> ctx.sql("create external table t stored as parquet location '/mnt/bigdata/tpch/sf10-parquet/lineitem.parquet'")
+>>> ctx.sql("create external table t stored as parquet location './testdata/test.parquet'")
 >>> df = ctx.sql("select * from t limit 5")
 >>> pyarrow_batches = df.collect()
 ```
 
-## Example DataFrame Usage
+### Example DataFrame Usage
 
 ```python
->>> df = ctx.read_parquet('/mnt/bigdata/tpch/sf10-parquet/lineitem.parquet').limit(5)
+>>> df = ctx.read_parquet('./testdata/test.parquet').limit(5)
 >>> pyarrow_batches = df.collect()
 ```
 
-## Creating Virtual Environment
+## Scheduler and Executor
+
+Scheduler and executors can be configured and started from python code.
+
+To start scheduler:
+
+```python
+from ballista import BallistaScheduler
+
+scheduler = BallistaScheduler()
+
+scheduler.start()
+scheduler.wait_for_termination()
+```
+
+For executor:
+
+```python
+from ballista import BallistaExecutor
+
+executor = BallistaExecutor()
+
+executor.start()
+executor.wait_for_termination()
+```
+
+## Development Process
+
+### Creating Virtual Environment
 
 ```shell
 python3 -m venv venv
@@ -56,7 +90,7 @@ source venv/bin/activate
 pip3 install -r requirements.txt
 ```
 
-## Building
+### Building
 
 ```shell
 maturin develop
@@ -64,7 +98,7 @@ maturin develop
 
 Note that you can also run `maturin develop --release` to get a release build locally.
 
-## Testing
+### Testing
 
 ```shell
 python3 -m pytest

@@ -15,22 +15,24 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from abc import ABCMeta, abstractmethod
-from typing import List
+# %%
 
-try:
-    import importlib.metadata as importlib_metadata
-except ImportError:
-    import importlib_metadata
+from ballista import BallistaBuilder
+from datafusion.context import SessionContext
 
-import pyarrow as pa
+ctx: SessionContext = BallistaBuilder()\
+    .config("ballista.job.name", "Readme Example Remote")\
+    .config("datafusion.execution.target_partitions", "4")\
+    .remote("df://127.0.0.1:50050")
 
-from .ballista_internal import (
-    BallistaBuilder, BallistaScheduler, BallistaExecutor
-)
+ctx.sql("create external table t stored as parquet location '../testdata/test.parquet'")
 
-__version__ = importlib_metadata.version(__name__)
-
-__all__ = [
-    "BallistaBuilder", "BallistaScheduler", "BallistaExecutor"
-]
+# %%
+df = ctx.sql("select * from t limit 5")
+pyarrow_batches = df.collect()
+pyarrow_batches[0].to_pandas()
+# %%
+df = ctx.read_parquet('../testdata/test.parquet').limit(5)
+pyarrow_batches = df.collect()
+pyarrow_batches[0].to_pandas()
+# %%

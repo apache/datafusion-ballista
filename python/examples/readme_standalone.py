@@ -15,18 +15,24 @@
 # specific language governing permissions and limitations
 # under the License.
 
+# %%
+
 from ballista import BallistaBuilder
 from datafusion.context import SessionContext
 
-# Ballista will initiate with an empty config
-# set config variables with `config`
 ctx: SessionContext = BallistaBuilder()\
-    .config("ballista.job.name", "example ballista")\
-    .config("ballista.shuffle.partitions", "16")\
+    .config("ballista.job.name", "Readme Example")\
+    .config("datafusion.execution.target_partitions", "4")\
     .standalone()
-    
-#ctx_remote: SessionContext = ballista.remote("remote_ip", 50050)
 
-# Select 1 to verify its working
-ctx.sql("SELECT 1").show()
-#ctx_remote.sql("SELECT 2").show()
+ctx.sql("create external table t stored as parquet location '../testdata/test.parquet'")
+
+# %%
+df = ctx.sql("select * from t limit 5")
+pyarrow_batches = df.collect()
+pyarrow_batches[0].to_pandas()
+# %%
+df = ctx.read_parquet('../testdata/test.parquet').limit(5)
+pyarrow_batches = df.collect()
+pyarrow_batches[0].to_pandas()
+# %%

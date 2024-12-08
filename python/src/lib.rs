@@ -15,32 +15,36 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::utils::wait_for_future;
 use ballista::prelude::*;
+use cluster::{PyExecutor, PyScheduler};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::*;
 use datafusion_python::context::PySessionContext;
-use datafusion_python::utils::wait_for_future;
-
-use std::collections::HashMap;
-
 use pyo3::prelude::*;
+
+mod cluster;
+#[allow(dead_code)]
+mod codec;
 mod utils;
-use utils::to_pyerr;
+
+pub(crate) struct TokioRuntime(tokio::runtime::Runtime);
 
 #[pymodule]
 fn ballista_internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     pyo3_log::init();
-    // BallistaBuilder struct
+
     m.add_class::<PyBallistaBuilder>()?;
-    // DataFusion struct
     m.add_class::<datafusion_python::dataframe::PyDataFrame>()?;
+    m.add_class::<PyScheduler>()?;
+    m.add_class::<PyExecutor>()?;
+
     Ok(())
 }
 
-// Ballista Builder will take a HasMap/Dict Cionfg
 #[pyclass(name = "BallistaBuilder", module = "ballista", subclass)]
 pub struct PyBallistaBuilder {
-    conf: HashMap<String, String>,
+    session_config: SessionConfig,
 }
 
 #[pymethods]
@@ -48,56 +52,47 @@ impl PyBallistaBuilder {
     #[new]
     pub fn new() -> Self {
         Self {
-            conf: HashMap::new(),
+            session_config: SessionConfig::new_with_ballista(),
         }
     }
 
     pub fn config(
         mut slf: PyRefMut<'_, Self>,
-        k: &str,
-        v: &str,
+        key: &str,
+        value: &str,
         py: Python,
     ) -> PyResult<PyObject> {
-        slf.conf.insert(k.into(), v.into());
+        let _ = slf.session_config.options_mut().set(key, value);
 
         Ok(slf.into_py(py))
     }
 
     /// Construct the standalone instance from the SessionContext
     pub fn standalone(&self, py: Python) -> PyResult<PySessionContext> {
-        // Build the config
-        let config: SessionConfig = SessionConfig::from_string_hash_map(&self.conf)?;
-        // Build the state
         let state = SessionStateBuilder::new()
-            .with_config(config)
+            .with_config(self.session_config.clone())
             .with_default_features()
             .build();
-        // Build the context
-        let standalone_session = SessionContext::standalone_with_state(state);
 
-        // SessionContext is an async function
-        let ctx = wait_for_future(py, standalone_session)?;
+        let ctx = wait_for_future(py, SessionContext::standalone_with_state(state))?;
 
-        // Convert the SessionContext into a Python SessionContext
         Ok(ctx.into())
     }
 
     /// Construct the remote instance from the SessionContext
     pub fn remote(&self, url: &str, py: Python) -> PyResult<PySessionContext> {
-        // Build the config
-        let config: SessionConfig = SessionConfig::from_string_hash_map(&self.conf)?;
-        // Build the state
         let state = SessionStateBuilder::new()
-            .with_config(config)
+            .with_config(self.session_config.clone())
             .with_default_features()
             .build();
-        // Build the context
-        let remote_session = SessionContext::remote_with_state(url, state);
 
-        // SessionContext is an async function
-        let ctx = wait_for_future(py, remote_session)?;
+        let ctx = wait_for_future(py, SessionContext::remote_with_state(url, state))?;
 
-        // Convert the SessionContext into a Python SessionContext
         Ok(ctx.into())
+    }
+
+    #[classattr]
+    pub fn version() -> &'static str {
+        ballista_core::BALLISTA_VERSION
     }
 }
