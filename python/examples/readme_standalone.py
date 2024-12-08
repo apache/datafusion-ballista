@@ -21,7 +21,7 @@ from ballista import BallistaBuilder
 from datafusion.context import SessionContext
 
 ctx: SessionContext = BallistaBuilder()\
-    .config("ballista.job.name", "Readme Examples")\
+    .config("ballista.job.name", "Readme Example")\
     .config("datafusion.execution.target_partitions", "4")\
     .standalone()
 
