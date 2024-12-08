@@ -3,3 +3,4 @@ pyarrow
 pytest
 maturin==1.5.1
 cloudpickle
+pandas
