@@ -68,7 +68,7 @@ impl PyScheduler {
             return Err(PyException::new_err("Scheduler already started"));
         }
         let cluster = wait_for_future(py, BallistaCluster::new_from_config(&self.config))
-            .map_err(|e| to_pyerr(e))?;
+            .map_err(to_pyerr)?;
 
         let config = self.config.clone();
         let address = format!("{}:{}", config.bind_host, config.bind_port);
@@ -101,10 +101,9 @@ impl PyScheduler {
         let mut handle = None;
         std::mem::swap(&mut self.handle, &mut handle);
 
-        match handle {
-            Some(handle) => handle.abort(),
-            None => {}
-        };
+        if let Some(handle) = handle {
+            handle.abort()
+        }
 
         Ok(())
     }
@@ -216,10 +215,9 @@ impl PyExecutor {
         let mut handle = None;
         std::mem::swap(&mut self.handle, &mut handle);
 
-        match handle {
-            Some(handle) => handle.abort(),
-            None => {}
-        };
+        if let Some(handle) = handle {
+            handle.abort()
+        }
 
         Ok(())
     }
