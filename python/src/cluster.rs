@@ -66,10 +66,12 @@ impl PyScheduler {
             .map_err(|e| to_pyerr(e))?;
 
         let config = self.config.clone();
-        let addr = format!("0.0.0.0:{}", config.bind_port);
-        let addr = addr.parse()?;
+        let address = format!("{}:{}", config.bind_host, config.bind_port);
+        let address = address.parse()?;
         let handle = spawn_feature(py, async move {
-            start_server(cluster, addr, Arc::new(config)).await.unwrap();
+            start_server(cluster, address, Arc::new(config))
+                .await
+                .unwrap();
         });
         self.handle = Some(handle);
 
@@ -88,6 +90,31 @@ impl PyScheduler {
                 .map_err(|e| PyException::new_err(e.to_string())),
             None => Ok(()),
         }
+    }
+    #[classattr]
+    pub fn version() -> &'static str {
+        ballista_core::BALLISTA_VERSION
+    }
+
+    pub fn __str__(&self) -> String {
+        match self.handle {
+            Some(_) => format!(
+                "listening address={}:{}",
+                self.config.bind_host, self.config.bind_port,
+            ),
+            None => format!(
+                "configured address={}:{}",
+                self.config.bind_host, self.config.bind_port,
+            ),
+        }
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "BallistaScheduler(config={:?}, listening= {})",
+            self.config,
+            self.handle.is_some()
+        )
     }
 }
 
@@ -165,5 +192,40 @@ impl PyExecutor {
                 .map(|_| ()),
             None => Ok(()),
         }
+    }
+
+    #[classattr]
+    pub fn version() -> &'static str {
+        ballista_core::BALLISTA_VERSION
+    }
+
+    pub fn __str__(&self) -> String {
+        match self.handle {
+            Some(_) => format!(
+                "listening address={}:{}, scheduler={}:{}",
+                self.config.bind_host,
+                self.config.port,
+                self.config.scheduler_host,
+                self.config.scheduler_port
+            ),
+            None => format!(
+                "configured address={}:{}, scheduler={}:{}",
+                self.config.bind_host,
+                self.config.port,
+                self.config.scheduler_host,
+                self.config.scheduler_port
+            ),
+        }
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!(
+            "BallistaExecutor(address={}:{}, scheduler={}:{}, listening={})",
+            self.config.bind_host,
+            self.config.port,
+            self.config.scheduler_host,
+            self.config.scheduler_port,
+            self.handle.is_some()
+        )
     }
 }

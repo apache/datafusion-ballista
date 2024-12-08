@@ -23,6 +23,7 @@ use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use pyo3::types::{PyAnyMethods, PyBytes, PyBytesMethods};
 use pyo3::{PyObject, PyResult, Python};
+use std::fmt::Debug;
 use std::sync::Arc;
 
 static MODULE: &str = "cloudpickle";
@@ -59,7 +60,6 @@ impl CloudPickle {
     }
 }
 
-#[derive(Debug)]
 pub struct PyLogicalCodec {
     inner: BallistaLogicalExtensionCodec,
     cloudpickle: CloudPickle,
@@ -71,6 +71,12 @@ impl PyLogicalCodec {
             inner: BallistaLogicalExtensionCodec::default(),
             cloudpickle: CloudPickle::try_new(py)?,
         })
+    }
+}
+
+impl Debug for PyLogicalCodec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PyLogicalCodec").finish()
     }
 }
 
@@ -185,10 +191,15 @@ impl LogicalExtensionCodec for PyLogicalCodec {
     }
 }
 
-#[derive(Debug)]
 pub struct PyPhysicalCodec {
     inner: BallistaPhysicalExtensionCodec,
     cloudpickle: CloudPickle,
+}
+
+impl Debug for PyPhysicalCodec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PyPhysicalCodec").finish()
+    }
 }
 
 impl PyPhysicalCodec {

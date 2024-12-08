@@ -20,6 +20,8 @@ from ballista import BallistaScheduler
 # %%
 scheduler = BallistaScheduler()
 # %%
+scheduler
+# %%
 scheduler.start()
 # %%
 scheduler.wait_for_termination()

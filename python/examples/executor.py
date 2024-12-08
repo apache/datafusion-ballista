@@ -22,6 +22,8 @@ executor = BallistaExecutor()
 # %%
 executor.start()
 # %%
+executor
+# %%
 executor.wait_for_termination()
 # %%
 # %%

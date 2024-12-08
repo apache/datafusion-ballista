@@ -90,4 +90,9 @@ impl PyBallistaBuilder {
 
         Ok(ctx.into())
     }
+
+    #[classattr]
+    pub fn version() -> &'static str {
+        ballista_core::BALLISTA_VERSION
+    }
 }
