@@ -74,12 +74,11 @@ impl ShuffleReaderExec {
         stage_id: usize,
         partition: Vec<Vec<PartitionLocation>>,
         schema: SchemaRef,
+        partitioning: Partitioning,
     ) -> Result<Self> {
         let properties = PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
-            // TODO partitioning may be known and could be populated here
-            // see https://github.com/apache/arrow-datafusion/issues/758
-            Partitioning::UnknownPartitioning(partition.len()),
+            partitioning,
             datafusion::physical_plan::ExecutionMode::Bounded,
         );
         Ok(Self {
@@ -134,6 +133,7 @@ impl ExecutionPlan for ShuffleReaderExec {
             self.stage_id,
             self.partition.clone(),
             self.schema.clone(),
+            self.properties().output_partitioning().clone(),
         )?))
     }
 
@@ -553,6 +553,7 @@ mod tests {
             input_stage_id,
             vec![partitions],
             Arc::new(schema),
+            Partitioning::UnknownPartitioning(4),
         )?;
         let mut stream = shuffle_reader_exec.execute(0, task_ctx)?;
         let batches = utils::collect_stream(&mut stream).await;
