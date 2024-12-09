@@ -15,10 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-extern crate configure_me_codegen;
-
 fn main() -> Result<(), String> {
+    #[cfg(feature = "build-binary")]
     println!("cargo:rerun-if-changed=executor_config_spec.toml");
+    #[cfg(feature = "build-binary")]
     configure_me_codegen::build_script_auto()
-        .map_err(|e| format!("configure_me code generation failed: {e}"))
+        .map_err(|e| format!("configure_me code generation failed: {e}"))?;
+
+    Ok(())
 }

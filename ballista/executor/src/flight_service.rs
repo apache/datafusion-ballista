@@ -45,7 +45,6 @@ use tokio::{sync::mpsc::Sender, task};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataValue;
 use tonic::{Request, Response, Status, Streaming};
-use tracing::warn;
 
 /// Service implementing the Apache Arrow Flight Protocol
 #[derive(Clone)]
@@ -103,7 +102,10 @@ impl FlightService for BallistaFlightService {
                 let schema = reader.schema();
                 task::spawn_blocking(move || {
                     if let Err(e) = read_partition(reader, tx) {
-                        warn!(error = %e, "error streaming shuffle partition");
+                        log::warn!(
+                            "error streaming shuffle partition: {}",
+                            e.to_string()
+                        );
                     }
                 });
 

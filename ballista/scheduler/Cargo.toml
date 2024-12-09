@@ -32,6 +32,7 @@ scheduler = "scheduler_config_spec.toml"
 [[bin]]
 name = "ballista-scheduler"
 path = "src/bin/main.rs"
+required-features = ["build-binary"]
 
 [features]
 default = []
@@ -39,6 +40,7 @@ flight-sql = []
 keda-scaler = []
 prometheus-metrics = ["prometheus", "once_cell"]
 rest-api = []
+build-binary = ["configure_me", "tracing-subscriber", "tracing-appender", "tracing"]
 
 [dependencies]
 arrow-flight = { workspace = true }
@@ -47,7 +49,7 @@ axum = "0.7.7"
 ballista-core = { path = "../core", version = "0.12.0" }
 base64 = { version = "0.22" }
 clap = { workspace = true }
-configure_me = { workspace = true }
+configure_me = { workspace = true, optional = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
@@ -66,9 +68,9 @@ serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tonic = { workspace = true }
-tracing = { workspace = true }
-tracing-appender = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing = { workspace = true, optional = true }
+tracing-appender = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 uuid = { workspace = true }
 
 [dev-dependencies]

@@ -19,12 +19,13 @@
 //! Ballista scheduler specific configuration
 
 use crate::SessionBuilder;
-use ballista_core::{config::TaskSchedulingPolicy, error::BallistaError, ConfigProducer};
+use ballista_core::{config::TaskSchedulingPolicy, ConfigProducer};
 use clap::ValueEnum;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
-use std::{fmt, sync::Arc};
+use std::sync::Arc;
 
+#[cfg(feature = "build-binary")]
 include!(concat!(
     env!("OUT_DIR"),
     "/scheduler_configure_me_config.rs"
@@ -233,8 +234,9 @@ impl std::str::FromStr for TaskDistribution {
     }
 }
 
+#[cfg(feature = "build-binary")]
 impl configure_me::parse_arg::ParseArgFromStr for TaskDistribution {
-    fn describe_type<W: fmt::Write>(mut writer: W) -> fmt::Result {
+    fn describe_type<W: std::fmt::Write>(mut writer: W) -> std::fmt::Result {
         write!(writer, "The executor slots policy for the scheduler")
     }
 }
@@ -257,9 +259,9 @@ pub enum TaskDistributionPolicy {
         tolerance: usize,
     },
 }
-
+#[cfg(feature = "build-binary")]
 impl TryFrom<Config> for SchedulerConfig {
-    type Error = BallistaError;
+    type Error = ballista_core::error::BallistaError;
 
     fn try_from(opt: Config) -> Result<Self, Self::Error> {
         let task_distribution = match opt.task_distribution {

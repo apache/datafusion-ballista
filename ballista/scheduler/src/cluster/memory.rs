@@ -37,7 +37,7 @@ use crate::scheduler_server::{timestamp_millis, timestamp_secs, SessionBuilder};
 use crate::state::session_manager::create_datafusion_context;
 use crate::state::task_manager::JobInfoCache;
 use ballista_core::serde::protobuf::job_status::Status;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::ops::DerefMut;
 
@@ -45,7 +45,6 @@ use ballista_core::consistent_hash::node::Node;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 use tokio::sync::{Mutex, MutexGuard};
-use tracing::debug;
 
 #[derive(Default)]
 pub struct InMemoryClusterState {
