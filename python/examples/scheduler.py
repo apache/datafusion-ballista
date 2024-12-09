@@ -15,22 +15,15 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from abc import ABCMeta, abstractmethod
-from typing import List
-
-try:
-    import importlib.metadata as importlib_metadata
-except ImportError:
-    import importlib_metadata
-
-import pyarrow as pa
-
-from .ballista_internal import (
-    BallistaBuilder, BallistaScheduler, BallistaExecutor
-)
-
-__version__ = importlib_metadata.version(__name__)
-
-__all__ = [
-    "BallistaBuilder", "BallistaScheduler", "BallistaExecutor"
-]
+# %%
+from ballista import BallistaScheduler
+# %%
+scheduler = BallistaScheduler()
+# %%
+scheduler
+# %%
+scheduler.start()
+# %%
+scheduler.wait_for_termination()
+# %%
+scheduler.close()

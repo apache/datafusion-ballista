@@ -15,22 +15,13 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from abc import ABCMeta, abstractmethod
-from typing import List
+# %% 
+from ballista import BallistaBuilder
+from datafusion.context import SessionContext
+    
+ctx: SessionContext = BallistaBuilder().remote("df://127.0.0.1:50050")
 
-try:
-    import importlib.metadata as importlib_metadata
-except ImportError:
-    import importlib_metadata
+# Select 1 to verify its working
+ctx.sql("SELECT 1").show()
 
-import pyarrow as pa
-
-from .ballista_internal import (
-    BallistaBuilder, BallistaScheduler, BallistaExecutor
-)
-
-__version__ = importlib_metadata.version(__name__)
-
-__all__ = [
-    "BallistaBuilder", "BallistaScheduler", "BallistaExecutor"
-]
+# %%
