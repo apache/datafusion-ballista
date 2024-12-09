@@ -57,7 +57,6 @@ dashmap = { version = "6.1" }
 async-trait = { version = "0.1.4" }
 serde = { version = "1.0" }
 tokio-stream = { version = "0.1" }
-parse_arg = { version = "0.1" }
 url = { version = "2.5" }
 
 # cargo build --profile release-lto

@@ -70,7 +70,7 @@ impl std::str::FromStr for ClusterStorage {
     }
 }
 
-impl parse_arg::ParseArgFromStr for ClusterStorage {
+impl configure_me::parse_arg::ParseArgFromStr for ClusterStorage {
     fn describe_type<W: fmt::Write>(mut writer: W) -> fmt::Result {
         write!(writer, "The cluster storage backend for the scheduler")
     }

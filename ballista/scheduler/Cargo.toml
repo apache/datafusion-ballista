@@ -58,7 +58,6 @@ log = { workspace = true }
 object_store = { workspace = true }
 once_cell = { version = "1.16.0", optional = true }
 parking_lot = { workspace = true }
-parse_arg = { workspace = true }
 prometheus = { version = "0.13", features = ["process"], optional = true }
 prost = { workspace = true }
 prost-types = { workspace = true }

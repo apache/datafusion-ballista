@@ -284,7 +284,7 @@ impl std::str::FromStr for TaskDistribution {
     }
 }
 
-impl parse_arg::ParseArgFromStr for TaskDistribution {
+impl configure_me::parse_arg::ParseArgFromStr for TaskDistribution {
     fn describe_type<W: fmt::Write>(mut writer: W) -> fmt::Result {
         write!(writer, "The executor slots policy for the scheduler")
     }
