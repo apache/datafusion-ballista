@@ -35,12 +35,12 @@ path = "src/bin/main.rs"
 required-features = ["build-binary"]
 
 [features]
+build-binary = ["configure_me", "tracing-subscriber", "tracing-appender", "tracing"]
 default = []
 flight-sql = []
 keda-scaler = []
 prometheus-metrics = ["prometheus", "once_cell"]
 rest-api = []
-build-binary = ["configure_me", "tracing-subscriber", "tracing-appender", "tracing"]
 
 [dependencies]
 arrow-flight = { workspace = true }

@@ -35,8 +35,8 @@ path = "src/bin/main.rs"
 required-features = ["build-binary"]
 
 [features]
-default = ["mimalloc"]
 build-binary = ["configure_me", "tracing-subscriber", "tracing-appender", "tracing"]
+default = ["mimalloc"]
 
 [dependencies]
 arrow = { workspace = true }
