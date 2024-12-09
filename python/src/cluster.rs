@@ -143,7 +143,7 @@ pub struct PyExecutor {
 
 #[pymethods]
 impl PyExecutor {
-    #[pyo3(signature = (bind_port=None, bind_host =None, scheduler_host = None, scheduler_port = None))]
+    #[pyo3(signature = (bind_port=None, bind_host =None, scheduler_host = None, scheduler_port = None, concurrent_tasks = None))]
     #[new]
     pub fn new(
         py: Python,
@@ -151,6 +151,7 @@ impl PyExecutor {
         bind_host: Option<String>,
         scheduler_host: Option<String>,
         scheduler_port: Option<u16>,
+        concurrent_tasks: Option<u16>,
     ) -> PyResult<Self> {
         let mut config = ExecutorProcessConfig::default();
         if let Some(port) = bind_port {
@@ -167,6 +168,10 @@ impl PyExecutor {
 
         if let Some(host) = scheduler_host {
             config.scheduler_host = host;
+        }
+
+        if let Some(concurrent_tasks) = concurrent_tasks {
+            config.concurrent_tasks = concurrent_tasks as usize
         }
 
         config.override_logical_codec = Some(Arc::new(PyLogicalCodec::try_new(py)?));
