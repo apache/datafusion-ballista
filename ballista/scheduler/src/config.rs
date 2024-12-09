@@ -83,57 +83,6 @@ pub struct SchedulerConfig {
     pub override_physical_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
 }
 
-impl std::fmt::Debug for SchedulerConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SchedulerConfig")
-            .field("namespace", &self.namespace)
-            .field("external_host", &self.external_host)
-            .field("bind_port", &self.bind_port)
-            .field("bind_host", &self.bind_host)
-            .field("scheduling_policy", &self.scheduling_policy)
-            .field("event_loop_buffer_size", &self.event_loop_buffer_size)
-            .field("task_distribution", &self.task_distribution)
-            .field(
-                "finished_job_data_clean_up_interval_seconds",
-                &self.finished_job_data_clean_up_interval_seconds,
-            )
-            .field(
-                "finished_job_state_clean_up_interval_seconds",
-                &self.finished_job_state_clean_up_interval_seconds,
-            )
-            .field(
-                "advertise_flight_sql_endpoint",
-                &self.advertise_flight_sql_endpoint,
-            )
-            .field("job_resubmit_interval_ms", &self.job_resubmit_interval_ms)
-            .field("cluster_storage", &self.cluster_storage)
-            .field(
-                "executor_termination_grace_period",
-                &self.executor_termination_grace_period,
-            )
-            .field(
-                "scheduler_event_expected_processing_duration",
-                &self.scheduler_event_expected_processing_duration,
-            )
-            .field(
-                "grpc_server_max_decoding_message_size",
-                &self.grpc_server_max_decoding_message_size,
-            )
-            .field(
-                "grpc_server_max_encoding_message_size",
-                &self.grpc_server_max_encoding_message_size,
-            )
-            .field("executor_timeout_seconds", &self.executor_timeout_seconds)
-            .field(
-                "expire_dead_executor_interval_seconds",
-                &self.expire_dead_executor_interval_seconds,
-            )
-            .field("override_logical_codec", &self.override_logical_codec)
-            .field("override_physical_codec", &self.override_physical_codec)
-            .finish()
-    }
-}
-
 impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
