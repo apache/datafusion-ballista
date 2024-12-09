@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use anyhow::Result;
 use ballista_examples::object_store::{
     custom_runtime_env_with_s3_support, custom_session_config_with_s3_options,
 };
@@ -31,7 +30,7 @@ use std::sync::Arc;
 /// This example demonstrates how to crate custom ballista executors.
 ///
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ballista_core::error::Result<()> {
     let _ = env_logger::builder()
         .filter_level(log::LevelFilter::Info)
         .is_test(true)

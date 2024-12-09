@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use anyhow::Result;
+use ballista_core::error::BallistaError;
 use ballista_core::print_version;
 use ballista_examples::object_store::{
     custom_session_config_with_s3_options, custom_session_state_with_s3_support,
@@ -24,6 +24,7 @@ use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::config::{Config, ResultExt, SchedulerConfig};
 use ballista_scheduler::scheduler_process::start_server;
 use datafusion::prelude::SessionConfig;
+use std::net::AddrParseError;
 use std::sync::Arc;
 
 ///
@@ -32,7 +33,7 @@ use std::sync::Arc;
 /// This example demonstrates how to crate custom made ballista schedulers.
 ///
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ballista_core::error::Result<()> {
     let _ = env_logger::builder()
         .filter_level(log::LevelFilter::Info)
         .is_test(true)
@@ -49,7 +50,9 @@ async fn main() -> Result<()> {
     }
 
     let addr = format!("{}:{}", opt.bind_host, opt.bind_port);
-    let addr = addr.parse()?;
+    let addr = addr
+        .parse()
+        .map_err(|e: AddrParseError| BallistaError::Configuration(e.to_string()))?;
     let mut config: SchedulerConfig = opt.try_into()?;
 
     // overriding default runtime producer with custom producer

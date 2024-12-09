@@ -77,16 +77,14 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
         let task_status: Vec<TaskStatus> =
             sample_tasks_status(&mut task_status_receiver).await;
 
-        let poll_work_result: anyhow::Result<
-            tonic::Response<PollWorkResult>,
-            tonic::Status,
-        > = scheduler
-            .poll_work(PollWorkParams {
-                metadata: Some(executor.metadata.clone()),
-                num_free_slots: available_task_slots.available_permits() as u32,
-                task_status,
-            })
-            .await;
+        let poll_work_result: Result<tonic::Response<PollWorkResult>, tonic::Status> =
+            scheduler
+                .poll_work(PollWorkParams {
+                    metadata: Some(executor.metadata.clone()),
+                    num_free_slots: available_task_slots.available_permits() as u32,
+                    task_status,
+                })
+                .await;
 
         match poll_work_result {
             Ok(result) => {
@@ -274,7 +272,7 @@ async fn sample_tasks_status(
 
     loop {
         match task_status_receiver.try_recv() {
-            anyhow::Result::Ok(status) => {
+            Result::Ok(status) => {
                 task_status.push(status);
             }
             Err(TryRecvError::Empty) => {

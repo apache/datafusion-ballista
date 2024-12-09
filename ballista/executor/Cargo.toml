@@ -37,7 +37,6 @@ path = "src/bin/main.rs"
 default = ["mimalloc"]
 
 [dependencies]
-anyhow = { workspace = true }
 arrow = { workspace = true }
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }

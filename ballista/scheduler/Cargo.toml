@@ -41,7 +41,6 @@ prometheus-metrics = ["prometheus", "once_cell"]
 rest-api = []
 
 [dependencies]
-anyhow = { workspace = true }
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 axum = "0.7.7"

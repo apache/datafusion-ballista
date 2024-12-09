@@ -17,8 +17,8 @@
 
 //! Ballista Rust scheduler binary.
 
-use anyhow::Result;
 use ballista_core::config::LogRotationPolicy;
+use ballista_core::error::BallistaError;
 use ballista_core::print_version;
 use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::config::{Config, ResultExt};
@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::{env, io};
 use tracing_subscriber::EnvFilter;
 
-fn main() -> Result<()> {
+fn main() -> ballista_core::error::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_io()
         .enable_time()
@@ -37,7 +37,7 @@ fn main() -> Result<()> {
 
     runtime.block_on(inner())
 }
-async fn inner() -> Result<()> {
+async fn inner() -> ballista_core::error::Result<()> {
     // parse options
     let (opt, _remaining_args) =
         Config::including_optional_config_files(&["/etc/ballista/scheduler.toml"])
@@ -85,7 +85,10 @@ async fn inner() -> Result<()> {
         tracing.init();
     }
     let addr = format!("{}:{}", opt.bind_host, opt.bind_port);
-    let addr = addr.parse()?;
+    let addr = addr.parse().map_err(|e: std::net::AddrParseError| {
+        BallistaError::Configuration(e.to_string())
+    })?;
+
     let config = opt.try_into()?;
     let cluster = BallistaCluster::new_from_config(&config).await?;
     start_server(cluster, addr, Arc::new(config)).await?;
