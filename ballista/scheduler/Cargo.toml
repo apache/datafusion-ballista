@@ -36,7 +36,7 @@ required-features = ["build-binary"]
 
 [features]
 build-binary = ["configure_me", "tracing-subscriber", "tracing-appender", "tracing"]
-default = []
+default = ["build-binary"]
 flight-sql = []
 keda-scaler = []
 prometheus-metrics = ["prometheus", "once_cell"]

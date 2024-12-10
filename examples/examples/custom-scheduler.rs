@@ -29,7 +29,7 @@ use std::sync::Arc;
 ///
 /// # Custom Ballista Scheduler
 ///
-/// This example demonstrates how to crate custom made ballista schedulers.
+/// This example demonstrates how to crate custom ballista schedulers.
 ///
 #[tokio::main]
 async fn main() -> ballista_core::error::Result<()> {
