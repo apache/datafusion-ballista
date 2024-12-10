@@ -36,7 +36,7 @@ required-features = ["build-binary"]
 
 [features]
 build-binary = ["configure_me", "tracing-subscriber", "tracing-appender", "tracing"]
-default = ["build-binary","mimalloc"]
+default = ["build-binary", "mimalloc"]
 
 [dependencies]
 arrow = { workspace = true }
