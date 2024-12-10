@@ -215,13 +215,13 @@ impl Executor {
 mod test {
     use crate::execution_engine::DefaultQueryStageExec;
     use crate::executor::Executor;
-    use arrow::datatypes::{Schema, SchemaRef};
-    use arrow::record_batch::RecordBatch;
     use ballista_core::execution_plans::ShuffleWriterExec;
     use ballista_core::serde::protobuf::ExecutorRegistration;
     use ballista_core::serde::scheduler::PartitionId;
     use ballista_core::utils::default_config_producer;
     use ballista_core::RuntimeProducer;
+    use datafusion::arrow::datatypes::{Schema, SchemaRef};
+    use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::error::{DataFusionError, Result};
     use datafusion::execution::context::TaskContext;
 

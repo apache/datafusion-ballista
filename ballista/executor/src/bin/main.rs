@@ -17,7 +17,6 @@
 
 //! Ballista Rust executor binary.
 
-use anyhow::Result;
 use ballista_core::config::LogRotationPolicy;
 use ballista_core::print_version;
 use ballista_executor::config::prelude::*;
@@ -33,7 +32,7 @@ use tracing_subscriber::EnvFilter;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ballista_core::error::Result<()> {
     // parse command-line arguments
     let (opt, _remaining_args) =
         Config::including_optional_config_files(&["/etc/ballista/executor.toml"])

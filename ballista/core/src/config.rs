@@ -267,7 +267,7 @@ impl std::str::FromStr for TaskSchedulingPolicy {
     }
 }
 
-impl parse_arg::ParseArgFromStr for TaskSchedulingPolicy {
+impl configure_me::parse_arg::ParseArgFromStr for TaskSchedulingPolicy {
     fn describe_type<W: fmt::Write>(mut writer: W) -> fmt::Result {
         write!(writer, "The scheduler policy for the scheduler")
     }
@@ -292,7 +292,7 @@ impl std::str::FromStr for LogRotationPolicy {
     }
 }
 
-impl parse_arg::ParseArgFromStr for LogRotationPolicy {
+impl configure_me::parse_arg::ParseArgFromStr for LogRotationPolicy {
     fn describe_type<W: fmt::Write>(mut writer: W) -> fmt::Result {
         write!(writer, "The log rotation policy")
     }

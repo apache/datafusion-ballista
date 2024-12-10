@@ -19,12 +19,13 @@
 //! Ballista scheduler specific configuration
 
 use crate::SessionBuilder;
-use ballista_core::{config::TaskSchedulingPolicy, error::BallistaError, ConfigProducer};
+use ballista_core::{config::TaskSchedulingPolicy, ConfigProducer};
 use clap::ValueEnum;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
-use std::{fmt, sync::Arc};
+use std::sync::Arc;
 
+#[cfg(feature = "build-binary")]
 include!(concat!(
     env!("OUT_DIR"),
     "/scheduler_configure_me_config.rs"
@@ -81,57 +82,6 @@ pub struct SchedulerConfig {
     pub override_logical_codec: Option<Arc<dyn LogicalExtensionCodec>>,
     /// [PhysicalExtensionCodec] override option
     pub override_physical_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
-}
-
-impl std::fmt::Debug for SchedulerConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SchedulerConfig")
-            .field("namespace", &self.namespace)
-            .field("external_host", &self.external_host)
-            .field("bind_port", &self.bind_port)
-            .field("bind_host", &self.bind_host)
-            .field("scheduling_policy", &self.scheduling_policy)
-            .field("event_loop_buffer_size", &self.event_loop_buffer_size)
-            .field("task_distribution", &self.task_distribution)
-            .field(
-                "finished_job_data_clean_up_interval_seconds",
-                &self.finished_job_data_clean_up_interval_seconds,
-            )
-            .field(
-                "finished_job_state_clean_up_interval_seconds",
-                &self.finished_job_state_clean_up_interval_seconds,
-            )
-            .field(
-                "advertise_flight_sql_endpoint",
-                &self.advertise_flight_sql_endpoint,
-            )
-            .field("job_resubmit_interval_ms", &self.job_resubmit_interval_ms)
-            .field("cluster_storage", &self.cluster_storage)
-            .field(
-                "executor_termination_grace_period",
-                &self.executor_termination_grace_period,
-            )
-            .field(
-                "scheduler_event_expected_processing_duration",
-                &self.scheduler_event_expected_processing_duration,
-            )
-            .field(
-                "grpc_server_max_decoding_message_size",
-                &self.grpc_server_max_decoding_message_size,
-            )
-            .field(
-                "grpc_server_max_encoding_message_size",
-                &self.grpc_server_max_encoding_message_size,
-            )
-            .field("executor_timeout_seconds", &self.executor_timeout_seconds)
-            .field(
-                "expire_dead_executor_interval_seconds",
-                &self.expire_dead_executor_interval_seconds,
-            )
-            .field("override_logical_codec", &self.override_logical_codec)
-            .field("override_physical_codec", &self.override_physical_codec)
-            .finish()
-    }
 }
 
 impl Default for SchedulerConfig {
@@ -284,8 +234,9 @@ impl std::str::FromStr for TaskDistribution {
     }
 }
 
-impl parse_arg::ParseArgFromStr for TaskDistribution {
-    fn describe_type<W: fmt::Write>(mut writer: W) -> fmt::Result {
+#[cfg(feature = "build-binary")]
+impl configure_me::parse_arg::ParseArgFromStr for TaskDistribution {
+    fn describe_type<W: std::fmt::Write>(mut writer: W) -> std::fmt::Result {
         write!(writer, "The executor slots policy for the scheduler")
     }
 }
@@ -308,9 +259,9 @@ pub enum TaskDistributionPolicy {
         tolerance: usize,
     },
 }
-
+#[cfg(feature = "build-binary")]
 impl TryFrom<Config> for SchedulerConfig {
-    type Error = BallistaError;
+    type Error = ballista_core::error::BallistaError;
 
     fn try_from(opt: Config) -> Result<Self, Self::Error> {
         let task_distribution = match opt.task_distribution {

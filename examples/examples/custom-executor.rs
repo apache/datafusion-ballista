@@ -15,11 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use anyhow::Result;
 use ballista_examples::object_store::{
     custom_runtime_env_with_s3_support, custom_session_config_with_s3_options,
 };
-use ballista_executor::config::prelude::*;
+
 use ballista_executor::executor_process::{
     start_executor_process, ExecutorProcessConfig,
 };
@@ -31,34 +30,23 @@ use std::sync::Arc;
 /// This example demonstrates how to crate custom ballista executors.
 ///
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ballista_core::error::Result<()> {
     let _ = env_logger::builder()
         .filter_level(log::LevelFilter::Info)
         .is_test(true)
         .try_init();
 
-    let (opt, _remaining_args) =
-        Config::including_optional_config_files(&["/etc/ballista/executor.toml"])
-            .unwrap_or_exit();
-
-    if opt.version {
-        ballista_core::print_version();
-        std::process::exit(0);
-    }
-
-    let mut config: ExecutorProcessConfig = opt.try_into().unwrap();
-
-    // overriding default config producer with custom producer
-    // which has required S3 configuration options
-    config.override_config_producer =
-        Some(Arc::new(custom_session_config_with_s3_options));
-
-    // overriding default runtime producer with custom producer
-    // which knows how to create S3 connections
-    config.override_runtime_producer =
-        Some(Arc::new(|session_config: &SessionConfig| {
+    let config: ExecutorProcessConfig = ExecutorProcessConfig {
+        // overriding default config producer with custom producer
+        // which has required S3 configuration options
+        override_config_producer: Some(Arc::new(custom_session_config_with_s3_options)),
+        // overriding default runtime producer with custom producer
+        // which knows how to create S3 connections
+        override_runtime_producer: Some(Arc::new(|session_config: &SessionConfig| {
             custom_runtime_env_with_s3_support(session_config)
-        }));
+        })),
+        ..Default::default()
+    };
 
     start_executor_process(Arc::new(config)).await
 }

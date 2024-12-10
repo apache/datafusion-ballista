@@ -16,7 +16,6 @@
 // under the License.
 
 use std::collections::{HashMap, HashSet};
-use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -69,9 +68,9 @@ impl std::str::FromStr for ClusterStorage {
         ValueEnum::from_str(s, true)
     }
 }
-
-impl parse_arg::ParseArgFromStr for ClusterStorage {
-    fn describe_type<W: fmt::Write>(mut writer: W) -> fmt::Result {
+#[cfg(feature = "build-binary")]
+impl configure_me::parse_arg::ParseArgFromStr for ClusterStorage {
+    fn describe_type<W: std::fmt::Write>(mut writer: W) -> std::fmt::Result {
         write!(writer, "The cluster storage backend for the scheduler")
     }
 }

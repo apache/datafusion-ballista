@@ -44,15 +44,14 @@ arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 chrono = { version = "0.4", default-features = false }
 clap = { workspace = true }
+configure_me = { workspace = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 datafusion-proto-common = { workspace = true }
 futures = { workspace = true }
-
 itertools = "0.13"
 log = { workspace = true }
 md-5 = { version = "^0.10.0" }
-parse_arg = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 rand = { workspace = true }

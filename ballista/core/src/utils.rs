@@ -17,9 +17,7 @@
 
 use crate::config::BallistaConfig;
 use crate::error::{BallistaError, Result};
-use crate::execution_plans::{
-    DistributedQueryExec, ShuffleWriterExec, UnresolvedShuffleExec,
-};
+use crate::execution_plans::DistributedQueryExec;
 
 use crate::extension::SessionConfigExt;
 use crate::serde::scheduler::PartitionStats;
@@ -32,29 +30,19 @@ use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{TreeNode, TreeNodeVisitor};
-use datafusion::datasource::physical_plan::{CsvExec, ParquetExec};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::{QueryPlanner, SessionConfig, SessionState};
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::logical_expr::{DdlStatement, LogicalPlan, TableScan};
-use datafusion::physical_plan::aggregates::AggregateExec;
-use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
-use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::empty::EmptyExec;
-use datafusion::physical_plan::filter::FilterExec;
-use datafusion::physical_plan::joins::HashJoinExec;
 use datafusion::physical_plan::metrics::MetricsSet;
-use datafusion::physical_plan::projection::ProjectionExec;
-use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::{metrics, ExecutionPlan, RecordBatchStream};
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use datafusion_proto::logical_plan::{AsLogicalPlan, LogicalExtensionCodec};
 use futures::StreamExt;
 use log::error;
-use std::io::{BufWriter, Write};
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs::File, pin::Pin};
@@ -127,121 +115,6 @@ pub async fn collect_stream(
         batches.push(batch?);
     }
     Ok(batches)
-}
-
-pub fn produce_diagram(filename: &str, stages: &[Arc<ShuffleWriterExec>]) -> Result<()> {
-    let write_file = File::create(filename)?;
-    let mut w = BufWriter::new(&write_file);
-    writeln!(w, "digraph G {{")?;
-
-    // draw stages and entities
-    for stage in stages {
-        writeln!(w, "\tsubgraph cluster{} {{", stage.stage_id())?;
-        writeln!(w, "\t\tlabel = \"Stage {}\";", stage.stage_id())?;
-        let mut id = AtomicUsize::new(0);
-        build_exec_plan_diagram(
-            &mut w,
-            stage.children()[0].as_ref(),
-            stage.stage_id(),
-            &mut id,
-            true,
-        )?;
-        writeln!(w, "\t}}")?;
-    }
-
-    // draw relationships
-    for stage in stages {
-        let mut id = AtomicUsize::new(0);
-        build_exec_plan_diagram(
-            &mut w,
-            stage.children()[0].as_ref(),
-            stage.stage_id(),
-            &mut id,
-            false,
-        )?;
-    }
-
-    write!(w, "}}")?;
-    Ok(())
-}
-
-fn build_exec_plan_diagram(
-    w: &mut BufWriter<&File>,
-    plan: &dyn ExecutionPlan,
-    stage_id: usize,
-    id: &mut AtomicUsize,
-    draw_entity: bool,
-) -> Result<usize> {
-    let operator_str = if plan.as_any().downcast_ref::<AggregateExec>().is_some() {
-        "AggregateExec"
-    } else if plan.as_any().downcast_ref::<SortExec>().is_some() {
-        "SortExec"
-    } else if plan.as_any().downcast_ref::<ProjectionExec>().is_some() {
-        "ProjectionExec"
-    } else if plan.as_any().downcast_ref::<HashJoinExec>().is_some() {
-        "HashJoinExec"
-    } else if plan.as_any().downcast_ref::<ParquetExec>().is_some() {
-        "ParquetExec"
-    } else if plan.as_any().downcast_ref::<CsvExec>().is_some() {
-        "CsvExec"
-    } else if plan.as_any().downcast_ref::<FilterExec>().is_some() {
-        "FilterExec"
-    } else if plan.as_any().downcast_ref::<ShuffleWriterExec>().is_some() {
-        "ShuffleWriterExec"
-    } else if plan
-        .as_any()
-        .downcast_ref::<UnresolvedShuffleExec>()
-        .is_some()
-    {
-        "UnresolvedShuffleExec"
-    } else if plan
-        .as_any()
-        .downcast_ref::<CoalesceBatchesExec>()
-        .is_some()
-    {
-        "CoalesceBatchesExec"
-    } else if plan
-        .as_any()
-        .downcast_ref::<CoalescePartitionsExec>()
-        .is_some()
-    {
-        "CoalescePartitionsExec"
-    } else {
-        println!("Unknown: {plan:?}");
-        "Unknown"
-    };
-
-    let node_id = id.load(Ordering::SeqCst);
-    id.store(node_id + 1, Ordering::SeqCst);
-
-    if draw_entity {
-        writeln!(
-            w,
-            "\t\tstage_{stage_id}_exec_{node_id} [shape=box, label=\"{operator_str}\"];"
-        )?;
-    }
-    for child in plan.children() {
-        if let Some(shuffle) = child.as_any().downcast_ref::<UnresolvedShuffleExec>() {
-            if !draw_entity {
-                writeln!(
-                    w,
-                    "\tstage_{}_exec_1 -> stage_{}_exec_{};",
-                    shuffle.stage_id, stage_id, node_id
-                )?;
-            }
-        } else {
-            // relationships within same entity
-            let child_id =
-                build_exec_plan_diagram(w, child.as_ref(), stage_id, id, draw_entity)?;
-            if draw_entity {
-                writeln!(
-                    w,
-                    "\t\tstage_{stage_id}_exec_{child_id} -> stage_{stage_id}_exec_{node_id};"
-                )?;
-            }
-        }
-    }
-    Ok(node_id)
 }
 
 pub struct BallistaQueryPlanner<T: AsLogicalPlan> {
