@@ -18,7 +18,7 @@
 use ballista_examples::object_store::{
     custom_runtime_env_with_s3_support, custom_session_config_with_s3_options,
 };
-use ballista_executor::config::prelude::*;
+
 use ballista_executor::executor_process::{
     start_executor_process, ExecutorProcessConfig,
 };
@@ -36,16 +36,7 @@ async fn main() -> ballista_core::error::Result<()> {
         .is_test(true)
         .try_init();
 
-    let (opt, _remaining_args) =
-        Config::including_optional_config_files(&["/etc/ballista/executor.toml"])
-            .unwrap_or_exit();
-
-    if opt.version {
-        ballista_core::print_version();
-        std::process::exit(0);
-    }
-
-    let mut config: ExecutorProcessConfig = opt.try_into().unwrap();
+    let mut config: ExecutorProcessConfig = ExecutorProcessConfig::default();
 
     // overriding default config producer with custom producer
     // which has required S3 configuration options

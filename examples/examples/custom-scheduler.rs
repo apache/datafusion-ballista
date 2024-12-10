@@ -16,12 +16,11 @@
 // under the License.
 
 use ballista_core::error::BallistaError;
-use ballista_core::print_version;
 use ballista_examples::object_store::{
     custom_session_config_with_s3_options, custom_session_state_with_s3_support,
 };
 use ballista_scheduler::cluster::BallistaCluster;
-use ballista_scheduler::config::{Config, ResultExt, SchedulerConfig};
+use ballista_scheduler::config::SchedulerConfig;
 use ballista_scheduler::scheduler_process::start_server;
 use datafusion::prelude::SessionConfig;
 use std::net::AddrParseError;
@@ -39,21 +38,12 @@ async fn main() -> ballista_core::error::Result<()> {
         .is_test(true)
         .try_init();
 
-    // parse options
-    let (opt, _remaining_args) =
-        Config::including_optional_config_files(&["/etc/ballista/scheduler.toml"])
-            .unwrap_or_exit();
+    let mut config: SchedulerConfig = SchedulerConfig::default();
 
-    if opt.version {
-        print_version();
-        std::process::exit(0);
-    }
-
-    let addr = format!("{}:{}", opt.bind_host, opt.bind_port);
+    let addr = format!("{}:{}", config.bind_host, config.bind_port);
     let addr = addr
         .parse()
         .map_err(|e: AddrParseError| BallistaError::Configuration(e.to_string()))?;
-    let mut config: SchedulerConfig = opt.try_into()?;
 
     // overriding default runtime producer with custom producer
     // which knows how to create S3 connections
