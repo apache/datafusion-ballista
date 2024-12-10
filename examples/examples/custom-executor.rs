@@ -36,19 +36,17 @@ async fn main() -> ballista_core::error::Result<()> {
         .is_test(true)
         .try_init();
 
-    let mut config: ExecutorProcessConfig = ExecutorProcessConfig::default();
-
-    // overriding default config producer with custom producer
-    // which has required S3 configuration options
-    config.override_config_producer =
-        Some(Arc::new(custom_session_config_with_s3_options));
-
-    // overriding default runtime producer with custom producer
-    // which knows how to create S3 connections
-    config.override_runtime_producer =
-        Some(Arc::new(|session_config: &SessionConfig| {
+    let config: ExecutorProcessConfig = ExecutorProcessConfig {
+        // overriding default config producer with custom producer
+        // which has required S3 configuration options
+        override_config_producer: Some(Arc::new(custom_session_config_with_s3_options)),
+        // overriding default runtime producer with custom producer
+        // which knows how to create S3 connections
+        override_runtime_producer: Some(Arc::new(|session_config: &SessionConfig| {
             custom_runtime_env_with_s3_support(session_config)
-        }));
+        })),
+        ..Default::default()
+    };
 
     start_executor_process(Arc::new(config)).await
 }
