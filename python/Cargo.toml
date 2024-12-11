@@ -33,7 +33,7 @@ publish = false
 async-trait = "0.1.77"
 ballista = { path = "../ballista/client", version = "0.12.0" }
 ballista-core = { path = "../ballista/core", version = "0.12.0" }
-ballista-executor = { path = "../ballista/executor", version = "0.12.0", features = ["mimalloc"], default-features = false }
+ballista-executor = { path = "../ballista/executor", version = "0.12.0", default-features = false }
 ballista-scheduler = { path = "../ballista/scheduler", version = "0.12.0", default-features = false }
 datafusion = { version = "42", features = ["pyarrow", "avro"] }
 datafusion-proto = { version = "42" }
