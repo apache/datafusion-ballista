@@ -35,7 +35,7 @@ path = "src/bin/main.rs"
 required-features = ["build-binary"]
 
 [features]
-build-binary = ["configure_me", "tracing-subscriber", "tracing-appender", "tracing"]
+build-binary = ["configure_me", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary"]
 default = ["build-binary", "mimalloc"]
 
 [dependencies]

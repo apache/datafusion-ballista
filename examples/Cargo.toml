@@ -26,7 +26,6 @@ license = "Apache-2.0"
 keywords = ["arrow", "distributed", "query", "sql"]
 edition = "2021"
 publish = false
-rust-version = "1.72"
 
 [[example]]
 name = "standalone_sql"

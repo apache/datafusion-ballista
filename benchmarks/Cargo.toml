@@ -25,7 +25,6 @@ homepage = "https://github.com/apache/arrow-ballista"
 repository = "https://github.com/apache/arrow-ballista"
 license = "Apache-2.0"
 publish = false
-rust-version = "1.72"
 
 [features]
 ci = []

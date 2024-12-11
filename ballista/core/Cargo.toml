@@ -34,17 +34,17 @@ exclude = ["*.proto"]
 rustc-args = ["--cfg", "docsrs"]
 
 [features]
+build-binary = ["configure_me", "clap"]
 docsrs = []
 # Used for testing ONLY: causes all values to hash to the same value (test for collisions)
 force_hash_collisions = ["datafusion/force_hash_collisions"]
-
 
 [dependencies]
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 chrono = { version = "0.4", default-features = false }
-clap = { workspace = true }
-configure_me = { workspace = true }
+clap = { workspace = true, optional = true }
+configure_me = { workspace = true, optional = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 datafusion-proto-common = { workspace = true }
@@ -65,5 +65,5 @@ url = { workspace = true }
 tempfile = { workspace = true }
 
 [build-dependencies]
-rustc_version = "0.4.0"
+rustc_version = "0.4.1"
 tonic-build = { workspace = true }
