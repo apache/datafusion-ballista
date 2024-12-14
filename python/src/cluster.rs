@@ -128,8 +128,9 @@ impl PyScheduler {
 
     pub fn __repr__(&self) -> String {
         format!(
-            "BallistaScheduler(config={:?}, listening= {})",
-            self.config,
+            "BallistaScheduler(listening address={}:{}, listening= {})",
+            self.config.bind_host,
+            self.config.bind_port,
             self.handle.is_some()
         )
     }
@@ -246,18 +247,19 @@ impl PyExecutor {
                 self.config.bind_host,
                 self.config.port,
                 self.config.scheduler_host,
-                self.config.scheduler_port
+                self.config.scheduler_port,
             ),
         }
     }
 
     pub fn __repr__(&self) -> String {
         format!(
-            "BallistaExecutor(address={}:{}, scheduler={}:{}, listening={})",
+            "BallistaExecutor(address={}:{}, scheduler={}:{}, concurrent_tasks={} listening={})",
             self.config.bind_host,
             self.config.port,
             self.config.scheduler_host,
             self.config.scheduler_port,
+            self.config.concurrent_tasks,
             self.handle.is_some()
         )
     }

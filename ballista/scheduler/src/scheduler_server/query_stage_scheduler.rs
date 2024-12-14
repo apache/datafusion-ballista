@@ -359,14 +359,9 @@ mod tests {
     use datafusion::test_util::scan_empty_with_partitions;
     use std::sync::Arc;
     use std::time::Duration;
-    use tracing_subscriber::EnvFilter;
 
     #[tokio::test]
     async fn test_pending_job_metric() -> Result<()> {
-        tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::from_default_env())
-            .init();
-
         let plan = test_plan(10);
 
         let metrics_collector = Arc::new(TestMetricsCollector::default());

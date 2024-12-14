@@ -21,7 +21,6 @@ members = ["ballista-cli", "ballista/client", "ballista/core", "ballista/executo
 resolver = "2"
 
 [workspace.dependencies]
-anyhow = "1"
 arrow = { version = "53", features = ["ipc_compression"] }
 arrow-flight = { version = "53", features = ["flight-sql-experimental"] }
 clap = { version = "4.5", features = ["derive", "cargo"] }
@@ -40,9 +39,9 @@ tonic-build = { version = "0.12", default-features = false, features = [
     "transport",
     "prost"
 ] }
-tracing = "0.1.36"
+tracing = "0.1"
 tracing-appender = "0.2.2"
-tracing-subscriber = { version = "0.3.15", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ctor = { version = "0.2" }
 mimalloc = { version = "0.1" }
 
@@ -58,7 +57,6 @@ dashmap = { version = "6.1" }
 async-trait = { version = "0.1.4" }
 serde = { version = "1.0" }
 tokio-stream = { version = "0.1" }
-parse_arg = { version = "0.1" }
 url = { version = "2.5" }
 
 # cargo build --profile release-lto

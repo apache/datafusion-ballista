@@ -15,9 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use anyhow::{Error, Result};
 #[cfg(feature = "flight-sql")]
 use arrow_flight::flight_service_server::FlightServiceServer;
+use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer;
 use ballista_core::serde::{
     BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
@@ -43,7 +43,7 @@ pub async fn start_server(
     cluster: BallistaCluster,
     addr: SocketAddr,
     config: Arc<SchedulerConfig>,
-) -> Result<()> {
+) -> ballista_core::error::Result<()> {
     info!(
         "Ballista v{} Scheduler listening on {:?}",
         BALLISTA_VERSION, addr
@@ -109,9 +109,9 @@ pub async fn start_server(
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
-        .map_err(Error::from)?;
+        .map_err(BallistaError::from)?;
 
     axum::serve(listener, final_route)
         .await
-        .map_err(Error::from)
+        .map_err(BallistaError::from)
 }

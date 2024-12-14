@@ -25,7 +25,6 @@ keywords = ["ballista", "cli"]
 license = "Apache-2.0"
 homepage = "https://github.com/apache/arrow-ballista"
 repository = "https://github.com/apache/arrow-ballista"
-rust-version = "1.72"
 readme = "README.md"
 
 [dependencies]

@@ -22,7 +22,6 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::registry::BallistaFunctionRegistry;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
@@ -148,11 +147,13 @@ impl Default for ExecutorProcessConfig {
     }
 }
 
-pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<()> {
+pub async fn start_executor_process(
+    opt: Arc<ExecutorProcessConfig>,
+) -> ballista_core::error::Result<()> {
     let addr = format!("{}:{}", opt.bind_host, opt.port);
-    let addr = addr
-        .parse()
-        .with_context(|| format!("Could not parse address: {addr}"))?;
+    let addr = addr.parse().map_err(|e: std::net::AddrParseError| {
+        BallistaError::Configuration(e.to_string())
+    })?;
 
     let scheduler_host = opt.scheduler_host.clone();
     let scheduler_port = opt.scheduler_port;
@@ -237,7 +238,11 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
     let connection = if connect_timeout == 0 {
         create_grpc_client_connection(scheduler_url)
             .await
-            .context("Could not connect to scheduler")
+            .map_err(|_| {
+                BallistaError::GrpcConnectionError(
+                    "Could not connect to scheduler".to_string(),
+                )
+            })
     } else {
         // this feature was added to support docker-compose so that we can have the executor
         // wait for the scheduler to start, or at least run for 10 seconds before failing so
@@ -249,8 +254,11 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
         {
             match create_grpc_client_connection(scheduler_url.clone())
                 .await
-                .context("Could not connect to scheduler")
-            {
+                .map_err(|_| {
+                    BallistaError::GrpcConnectionError(
+                        "Could not connect to scheduler".to_string(),
+                    )
+                }) {
                 Ok(conn) => {
                     info!("Connected to scheduler at {}", scheduler_url);
                     x = Some(conn);
@@ -268,8 +276,7 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
             Some(conn) => Ok(conn),
             _ => Err(BallistaError::General(format!(
                 "Timed out attempting to connect to scheduler at {scheduler_url}"
-            ))
-            .into()),
+            ))),
         }
     }?;
 
@@ -489,7 +496,10 @@ async fn check_services(
 
 /// This function will be scheduled periodically for cleanup the job shuffle data left on the executor.
 /// Only directories will be checked cleaned.
-async fn clean_shuffle_data_loop(work_dir: &str, seconds: u64) -> Result<()> {
+async fn clean_shuffle_data_loop(
+    work_dir: &str,
+    seconds: u64,
+) -> ballista_core::error::Result<()> {
     let mut dir = fs::read_dir(work_dir).await?;
     let mut to_deleted = Vec::new();
     while let Some(child) = dir.next_entry().await? {
@@ -527,7 +537,7 @@ async fn clean_shuffle_data_loop(work_dir: &str, seconds: u64) -> Result<()> {
 }
 
 /// This function will clean up all shuffle data on this executor
-async fn clean_all_shuffle_data(work_dir: &str) -> Result<()> {
+async fn clean_all_shuffle_data(work_dir: &str) -> ballista_core::error::Result<()> {
     let mut dir = fs::read_dir(work_dir).await?;
     let mut to_deleted = Vec::new();
     while let Some(child) = dir.next_entry().await? {
@@ -552,7 +562,10 @@ async fn clean_all_shuffle_data(work_dir: &str) -> Result<()> {
 
 /// Determines if a directory contains files newer than the cutoff time.
 /// If return true, it means the directory contains files newer than the cutoff time. It satisfy the ttl and should not be deleted.
-pub async fn satisfy_dir_ttl(dir: DirEntry, ttl_seconds: u64) -> Result<bool> {
+pub async fn satisfy_dir_ttl(
+    dir: DirEntry,
+    ttl_seconds: u64,
+) -> ballista_core::error::Result<bool> {
     let cutoff = get_time_before(ttl_seconds);
 
     let mut to_check = vec![dir];
