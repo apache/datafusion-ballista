@@ -384,7 +384,7 @@ new configuration extensions, object stores, logical and physical codecs …</p>
 <span class="w">        </span><span class="n">CustomObjectStoreRegistry</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">s3options</span><span class="p">.</span><span class="n">clone</span><span class="p">()),</span>
 <span class="w">    </span><span class="p">));</span>
 
-<span class="w">    </span><span class="nb">Ok</span><span class="p">(</span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">RuntimeEnv</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">config</span><span class="p">)</span><span class="o">?</span><span class="p">))</span>
+<span class="w">    </span><span class="nb">Ok</span><span class="p">(</span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">RuntimeEnv</span><span class="p">::</span><span class="n">try_new</span><span class="p">(</span><span class="n">config</span><span class="p">)</span><span class="o">?</span><span class="p">))</span>
 <span class="p">}</span>
 </pre></div>
 </div>
