@@ -185,7 +185,7 @@ pub async fn new_standalone_executor<
     let wd = work_dir.clone();
     let runtime_producer: RuntimeProducer = Arc::new(move |_: &SessionConfig| {
         let config = RuntimeConfig::new().with_temp_file_path(wd.clone());
-        Ok(Arc::new(RuntimeEnv::new(config)?))
+        Ok(Arc::new(RuntimeEnv::try_new(config)?))
     });
 
     let executor = Arc::new(Executor::new_basic(

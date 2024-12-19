@@ -79,7 +79,7 @@ pub fn custom_runtime_env_with_s3_support(
         CustomObjectStoreRegistry::new(s3options.clone()),
     ));
 
-    Ok(Arc::new(RuntimeEnv::new(config)?))
+    Ok(Arc::new(RuntimeEnv::try_new(config)?))
 }
 
 /// Custom [SessionState] constructor method

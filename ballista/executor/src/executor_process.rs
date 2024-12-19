@@ -204,7 +204,7 @@ pub async fn start_executor_process(
         opt.override_runtime_producer.clone().unwrap_or_else(|| {
             Arc::new(move |_| {
                 let config = RuntimeConfig::new().with_temp_file_path(wd.clone());
-                Ok(Arc::new(RuntimeEnv::new(config)?))
+                Ok(Arc::new(RuntimeEnv::try_new(config)?))
             })
         });
 

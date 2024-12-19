@@ -71,6 +71,7 @@ const TEST_SCHEDULER_NAME: &str = "localhost:50050";
 /// Sometimes we need to construct logical plans that will produce errors
 /// when we try and create physical plan. A scan using `ExplodingTableProvider`
 /// will do the trick
+#[derive(Debug)]
 pub struct ExplodingTableProvider;
 
 #[async_trait]
@@ -135,7 +136,7 @@ pub async fn datafusion_test_context(path: &str) -> Result<SessionContext> {
     let default_shuffle_partitions = 2;
     let config = SessionConfig::new().with_target_partitions(default_shuffle_partitions);
     let ctx = SessionContext::new_with_config(config);
-    for table in TPCH_TABLES {
+    for &table in TPCH_TABLES {
         let schema = get_tpch_schema(table);
         let options = CsvReadOptions::new()
             .schema(&schema)
@@ -143,7 +144,7 @@ pub async fn datafusion_test_context(path: &str) -> Result<SessionContext> {
             .has_header(false)
             .file_extension(".tbl");
         let dir = format!("{path}/{table}");
-        ctx.register_csv(table, &dir, options).await?;
+        ctx.register_csv(table, dir, options).await?;
     }
     Ok(ctx)
 }

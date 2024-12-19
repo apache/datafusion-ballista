@@ -56,7 +56,7 @@ pub fn default_session_builder(
     Ok(SessionStateBuilder::new()
         .with_default_features()
         .with_config(config)
-        .with_runtime_env(Arc::new(RuntimeEnv::new(RuntimeConfig::default())?))
+        .with_runtime_env(Arc::new(RuntimeEnv::try_new(RuntimeConfig::default())?))
         .build())
 }
 
@@ -123,6 +123,17 @@ pub struct BallistaQueryPlanner<T: AsLogicalPlan> {
     extension_codec: Arc<dyn LogicalExtensionCodec>,
     local_planner: DefaultPhysicalPlanner,
     plan_repr: PhantomData<T>,
+}
+
+impl<T: AsLogicalPlan> std::fmt::Debug for BallistaQueryPlanner<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BallistaQueryPlanner")
+            .field("scheduler_url", &self.scheduler_url)
+            .field("config", &self.config)
+            .field("extension_codec", &self.extension_codec)
+            .field("plan_repr", &self.plan_repr)
+            .finish()
+    }
 }
 
 impl<T: 'static + AsLogicalPlan> BallistaQueryPlanner<T> {
@@ -316,7 +327,7 @@ mod test {
     use crate::utils::LocalRun;
 
     fn context() -> SessionContext {
-        let runtime_environment = RuntimeEnv::new(RuntimeConfig::new()).unwrap();
+        let runtime_environment = RuntimeEnv::try_new(RuntimeConfig::new()).unwrap();
 
         let session_config = SessionConfig::new().with_information_schema(true);
 

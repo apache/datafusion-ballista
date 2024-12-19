@@ -60,7 +60,7 @@ mod standalone {
 
         let test_data = examples_test_data();
         let config = RuntimeConfig::new();
-        let runtime_env = RuntimeEnv::new(config)?;
+        let runtime_env = RuntimeEnv::try_new(config)?;
 
         runtime_env.register_object_store(
             &format!("s3://{}", crate::common::BUCKET)
@@ -147,7 +147,7 @@ mod remote {
             .map_err(|e| DataFusionError::External(e.into()))?;
 
         let config = RuntimeConfig::new();
-        let runtime_env = RuntimeEnv::new(config)?;
+        let runtime_env = RuntimeEnv::try_new(config)?;
 
         runtime_env.register_object_store(
             &format!("s3://{}", crate::common::BUCKET)
@@ -219,6 +219,7 @@ mod custom_s3_config {
     use ballista_core::RuntimeProducer;
     use ballista_examples::object_store::{CustomObjectStoreRegistry, S3Options};
     use ballista_examples::test_util::examples_test_data;
+    use datafusion::execution::runtime_env::RuntimeEnv;
     use datafusion::execution::SessionState;
     use datafusion::prelude::SessionConfig;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
@@ -288,7 +289,7 @@ mod custom_s3_config {
                     CustomObjectStoreRegistry::new(s3options.clone()),
                 ));
 
-                Ok(Arc::new(RuntimeEnv::new(config)?))
+                Ok(Arc::new(RuntimeEnv::try_new(config)?))
             });
 
         // Session builder creates SessionState
@@ -494,7 +495,8 @@ mod custom_s3_config {
         let config = RuntimeConfig::new().with_object_store_registry(Arc::new(
             CustomObjectStoreRegistry::new(s3options.clone()),
         ));
-        let runtime_env = RuntimeEnv::new(config)?;
+
+        let runtime_env = RuntimeEnv::try_new(config)?;
 
         Ok(SessionStateBuilder::new()
             .with_runtime_env(runtime_env.into())

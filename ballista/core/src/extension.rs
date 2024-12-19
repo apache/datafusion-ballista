@@ -133,7 +133,7 @@ impl SessionStateExt for SessionState {
             .with_round_robin_repartition(false);
 
         let runtime_config = RuntimeConfig::default();
-        let runtime_env = RuntimeEnv::new(runtime_config)?;
+        let runtime_env = RuntimeEnv::try_new(runtime_config)?;
         let session_state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(session_config)
