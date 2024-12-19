@@ -19,8 +19,9 @@ use crate::metrics::LoggingMetricsCollector;
 use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightService};
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::config::BallistaConfig;
-use ballista_core::serde::scheduler::BallistaFunctionRegistry;
-use ballista_core::utils::{default_config_producer, SessionConfigExt};
+use ballista_core::extension::SessionConfigExt;
+use ballista_core::registry::BallistaFunctionRegistry;
+use ballista_core::utils::default_config_producer;
 use ballista_core::{
     error::Result,
     serde::protobuf::{scheduler_grpc_client::SchedulerGrpcClient, ExecutorRegistration},
@@ -47,10 +48,7 @@ use uuid::Uuid;
 ///
 /// This provides flexible way of configuring underlying
 /// components.
-pub async fn new_standalone_executor_from_state<
-    T: 'static + AsLogicalPlan,
-    U: 'static + AsExecutionPlan,
->(
+pub async fn new_standalone_executor_from_state(
     scheduler: SchedulerGrpcClient<Channel>,
     concurrent_tasks: usize,
     session_state: &SessionState,

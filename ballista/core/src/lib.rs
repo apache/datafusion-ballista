@@ -29,13 +29,14 @@ pub fn print_version() {
 pub mod client;
 pub mod config;
 pub mod consistent_hash;
+pub mod diagram;
 pub mod error;
 pub mod event_loop;
 pub mod execution_plans;
-pub mod utils;
-
-#[macro_use]
+pub mod extension;
+pub mod registry;
 pub mod serde;
+pub mod utils;
 
 ///
 /// [RuntimeProducer] is a factory which creates runtime [RuntimeEnv]

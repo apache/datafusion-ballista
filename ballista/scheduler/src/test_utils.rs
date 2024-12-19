@@ -16,6 +16,7 @@
 // under the License.
 
 use ballista_core::error::{BallistaError, Result};
+use ballista_core::extension::SessionConfigExt;
 use datafusion::catalog::Session;
 use std::any::Any;
 use std::collections::HashMap;
@@ -56,9 +57,7 @@ use crate::cluster::BallistaCluster;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
 use crate::state::execution_graph::{ExecutionGraph, ExecutionStage, TaskDescription};
-use ballista_core::utils::{
-    default_config_producer, default_session_builder, SessionConfigExt,
-};
+use ballista_core::utils::{default_config_producer, default_session_builder};
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use parking_lot::Mutex;
 use tokio::sync::mpsc::{channel, Receiver, Sender};

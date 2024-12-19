@@ -17,32 +17,22 @@
 
 //! Ballista Rust executor binary.
 
-use anyhow::Result;
-use std::sync::Arc;
-
+use ballista_core::config::LogRotationPolicy;
 use ballista_core::print_version;
+use ballista_executor::config::prelude::*;
 use ballista_executor::executor_process::{
     start_executor_process, ExecutorProcessConfig,
 };
-use config::prelude::*;
-
-#[allow(unused_imports)]
-#[macro_use]
-extern crate configure_me;
-
-#[allow(clippy::all, warnings)]
-mod config {
-    // Ideally we would use the include_config macro from configure_me, but then we cannot use
-    // #[allow(clippy::all)] to silence clippy warnings from the generated code
-    include!(concat!(env!("OUT_DIR"), "/executor_configure_me_config.rs"));
-}
+use std::env;
+use std::sync::Arc;
+use tracing_subscriber::EnvFilter;
 
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ballista_core::error::Result<()> {
     // parse command-line arguments
     let (opt, _remaining_args) =
         Config::including_optional_config_files(&["/etc/ballista/executor.toml"])
@@ -53,46 +43,40 @@ async fn main() -> Result<()> {
         std::process::exit(0);
     }
 
-    let log_file_name_prefix = format!(
-        "executor_{}_{}",
-        opt.external_host
-            .clone()
-            .unwrap_or_else(|| "localhost".to_string()),
-        opt.bind_port
-    );
+    let config: ExecutorProcessConfig = opt.try_into()?;
 
-    let config = ExecutorProcessConfig {
-        special_mod_log_level: opt.log_level_setting,
-        external_host: opt.external_host,
-        bind_host: opt.bind_host,
-        port: opt.bind_port,
-        grpc_port: opt.bind_grpc_port,
-        scheduler_host: opt.scheduler_host,
-        scheduler_port: opt.scheduler_port,
-        scheduler_connect_timeout_seconds: opt.scheduler_connect_timeout_seconds,
-        concurrent_tasks: opt.concurrent_tasks,
-        task_scheduling_policy: opt.task_scheduling_policy,
-        work_dir: opt.work_dir,
-        log_dir: opt.log_dir,
-        log_file_name_prefix,
-        log_rotation_policy: opt.log_rotation_policy,
-        print_thread_info: opt.print_thread_info,
-        job_data_ttl_seconds: opt.job_data_ttl_seconds,
-        job_data_clean_up_interval_seconds: opt.job_data_clean_up_interval_seconds,
-        grpc_max_decoding_message_size: opt.grpc_server_max_decoding_message_size,
-        grpc_max_encoding_message_size: opt.grpc_server_max_encoding_message_size,
-        executor_heartbeat_interval_seconds: opt.executor_heartbeat_interval_seconds,
-        data_cache_policy: opt.data_cache_policy,
-        cache_dir: opt.cache_dir,
-        cache_capacity: opt.cache_capacity,
-        cache_io_concurrency: opt.cache_io_concurrency,
-        execution_engine: None,
-        function_registry: None,
-        config_producer: None,
-        runtime_producer: None,
-        logical_codec: None,
-        physical_codec: None,
-    };
+    let rust_log = env::var(EnvFilter::DEFAULT_ENV);
+    let log_filter =
+        EnvFilter::new(rust_log.unwrap_or(config.special_mod_log_level.clone()));
+
+    let tracing = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_thread_names(config.print_thread_info)
+        .with_thread_ids(config.print_thread_info)
+        .with_env_filter(log_filter);
+
+    // File layer
+    if let Some(log_dir) = &config.log_dir {
+        let log_file = match config.log_rotation_policy {
+            LogRotationPolicy::Minutely => tracing_appender::rolling::minutely(
+                log_dir,
+                config.log_file_name_prefix(),
+            ),
+            LogRotationPolicy::Hourly => {
+                tracing_appender::rolling::hourly(log_dir, config.log_file_name_prefix())
+            }
+            LogRotationPolicy::Daily => {
+                tracing_appender::rolling::daily(log_dir, config.log_file_name_prefix())
+            }
+            LogRotationPolicy::Never => {
+                tracing_appender::rolling::never(log_dir, config.log_file_name_prefix())
+            }
+        };
+
+        tracing.with_writer(log_file).init();
+    } else {
+        tracing.init();
+    }
 
     start_executor_process(Arc::new(config)).await
 }

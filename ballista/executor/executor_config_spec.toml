@@ -143,25 +143,3 @@ name = "executor_heartbeat_interval_seconds"
 type = "u64"
 doc = "The heartbeat interval in seconds to the scheduler for push-based task scheduling"
 default = "60"
-
-[[param]]
-name = "data_cache_policy"
-type = "ballista_core::config::DataCachePolicy"
-doc = "Data cache policy, possible values: local-disk-file"
-
-[[param]]
-name = "cache_dir"
-type = "String"
-doc = "Directory for cached source data"
-
-[[param]]
-name = "cache_capacity"
-type = "u64"
-doc = "The maximum capacity can be used for cache. Default: 1GB"
-default = "1073741824"
-
-[[param]]
-name = "cache_io_concurrency"
-type = "u32"
-doc = "The number of worker threads for the runtime of caching. Default: 2"
-default = "2"

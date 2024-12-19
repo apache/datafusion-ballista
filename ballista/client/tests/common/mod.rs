@@ -19,64 +19,14 @@ use std::env;
 use std::error::Error;
 use std::path::PathBuf;
 
-use ballista::prelude::SessionConfigExt;
+use ballista::prelude::{SessionConfigExt, SessionContextExt};
 use ballista_core::serde::{
     protobuf::scheduler_grpc_client::SchedulerGrpcClient, BallistaCodec,
 };
 use ballista_core::{ConfigProducer, RuntimeProducer};
 use ballista_scheduler::SessionBuilder;
 use datafusion::execution::SessionState;
-use datafusion::prelude::SessionConfig;
-use object_store::aws::AmazonS3Builder;
-use testcontainers_modules::minio::MinIO;
-use testcontainers_modules::testcontainers::core::{CmdWaitFor, ExecCommand};
-use testcontainers_modules::testcontainers::ContainerRequest;
-use testcontainers_modules::{minio, testcontainers::ImageExt};
-
-pub const REGION: &str = "eu-west-1";
-pub const BUCKET: &str = "ballista";
-pub const ACCESS_KEY_ID: &str = "MINIO";
-pub const SECRET_KEY: &str = "MINIOMINIO";
-
-#[allow(dead_code)]
-pub fn create_s3_store(
-    port: u16,
-) -> std::result::Result<object_store::aws::AmazonS3, object_store::Error> {
-    AmazonS3Builder::new()
-        .with_endpoint(format!("http://localhost:{port}"))
-        .with_region(REGION)
-        .with_bucket_name(BUCKET)
-        .with_access_key_id(ACCESS_KEY_ID)
-        .with_secret_access_key(SECRET_KEY)
-        .with_allow_http(true)
-        .build()
-}
-
-#[allow(dead_code)]
-pub fn create_minio_container() -> ContainerRequest<minio::MinIO> {
-    MinIO::default()
-        .with_env_var("MINIO_ACCESS_KEY", ACCESS_KEY_ID)
-        .with_env_var("MINIO_SECRET_KEY", SECRET_KEY)
-}
-
-#[allow(dead_code)]
-pub fn create_bucket_command() -> ExecCommand {
-    // this is hack to create a bucket without creating s3 client.
-    // this works with current testcontainer (and image) version 'RELEASE.2022-02-07T08-17-33Z'.
-    // (testcontainer  does not await properly on latest image version)
-    //
-    // if testcontainer image version change to something newer we should use "mc mb /data/ballista"
-    // to crate a bucket.
-    ExecCommand::new(vec![
-        "mkdir".to_string(),
-        format!("/data/{}", crate::common::BUCKET),
-    ])
-    .with_cmd_ready_condition(CmdWaitFor::seconds(1))
-}
-
-// /// Remote ballista cluster to be used for local testing.
-// static BALLISTA_CLUSTER: tokio::sync::OnceCell<(String, u16)> =
-//     tokio::sync::OnceCell::const_new();
+use datafusion::prelude::{SessionConfig, SessionContext};
 
 /// Returns the parquet test data directory, which is by default
 /// stored in a git submodule rooted at
@@ -161,17 +111,8 @@ pub async fn setup_test_cluster() -> (String, u16) {
 
     let host = "localhost".to_string();
 
-    let scheduler_url = format!("http://{}:{}", host, addr.port());
-
-    let scheduler = loop {
-        match SchedulerGrpcClient::connect(scheduler_url.clone()).await {
-            Err(_) => {
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                log::info!("Attempting to connect to test scheduler...");
-            }
-            Ok(scheduler) => break scheduler,
-        }
-    };
+    let scheduler =
+        connect_to_scheduler(format!("http://{}:{}", host, addr.port())).await;
 
     ballista_executor::new_standalone_executor(
         scheduler,
@@ -190,7 +131,6 @@ pub async fn setup_test_cluster() -> (String, u16) {
 #[allow(dead_code)]
 pub async fn setup_test_cluster_with_state(session_state: SessionState) -> (String, u16) {
     let config = SessionConfig::new_with_ballista();
-    //let default_codec = BallistaCodec::default();
 
     let addr = ballista_scheduler::standalone::new_standalone_scheduler_from_state(
         &session_state,
@@ -200,22 +140,10 @@ pub async fn setup_test_cluster_with_state(session_state: SessionState) -> (Stri
 
     let host = "localhost".to_string();
 
-    let scheduler_url = format!("http://{}:{}", host, addr.port());
+    let scheduler =
+        connect_to_scheduler(format!("http://{}:{}", host, addr.port())).await;
 
-    let scheduler = loop {
-        match SchedulerGrpcClient::connect(scheduler_url.clone()).await {
-            Err(_) => {
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                log::info!("Attempting to connect to test scheduler...");
-            }
-            Ok(scheduler) => break scheduler,
-        }
-    };
-
-    ballista_executor::new_standalone_executor_from_state::<
-        datafusion_proto::protobuf::LogicalPlanNode,
-        datafusion_proto::protobuf::PhysicalPlanNode,
-    >(
+    ballista_executor::new_standalone_executor_from_state(
         scheduler,
         config.ballista_standalone_parallelism(),
         &session_state,
@@ -253,22 +181,13 @@ pub async fn setup_test_cluster_with_builders(
 
     let host = "localhost".to_string();
 
-    let scheduler_url = format!("http://{}:{}", host, addr.port());
-
-    let scheduler = loop {
-        match SchedulerGrpcClient::connect(scheduler_url.clone()).await {
-            Err(_) => {
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                log::info!("Attempting to connect to test scheduler...");
-            }
-            Ok(scheduler) => break scheduler,
-        }
-    };
+    let scheduler =
+        connect_to_scheduler(format!("http://{}:{}", host, addr.port())).await;
 
     ballista_executor::new_standalone_executor_from_builder(
         scheduler,
         config.ballista_standalone_parallelism(),
-        config_producer.clone(),
+        config_producer,
         runtime_producer,
         codec,
         Default::default(),
@@ -279,6 +198,40 @@ pub async fn setup_test_cluster_with_builders(
     log::info!("test scheduler created at: {}:{}", host, addr.port());
 
     (host, addr.port())
+}
+
+async fn connect_to_scheduler(
+    scheduler_url: String,
+) -> SchedulerGrpcClient<tonic::transport::Channel> {
+    let mut retry = 50;
+    loop {
+        match SchedulerGrpcClient::connect(scheduler_url.clone()).await {
+            Err(_) if retry > 0 => {
+                retry -= 1;
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                log::debug!("Re-attempting to connect to test scheduler...");
+            }
+
+            Err(_) => {
+                log::error!("scheduler connection timed out");
+                panic!("scheduler connection timed out")
+            }
+            Ok(scheduler) => break scheduler,
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub async fn standalone_context() -> SessionContext {
+    SessionContext::standalone().await.unwrap()
+}
+
+#[allow(dead_code)]
+pub async fn remote_context() -> SessionContext {
+    let (host, port) = setup_test_cluster().await;
+    SessionContext::remote(&format!("df://{host}:{port}"))
+        .await
+        .unwrap()
 }
 
 #[ctor::ctor]

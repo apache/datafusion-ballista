@@ -21,11 +21,9 @@ use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
-use std::{env, io};
 
-use anyhow::{Context, Result};
 use arrow_flight::flight_service_server::FlightServiceServer;
-use ballista_core::serde::scheduler::BallistaFunctionRegistry;
+use ballista_core::registry::BallistaFunctionRegistry;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use futures::stream::FuturesUnordered;
@@ -37,12 +35,11 @@ use tokio::signal;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::{fs, time};
-use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 
-use ballista_core::config::{DataCachePolicy, LogRotationPolicy, TaskSchedulingPolicy};
+use ballista_core::config::{LogRotationPolicy, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf::executor_resource::Resource;
 use ballista_core::serde::protobuf::executor_status::Status;
@@ -83,14 +80,9 @@ pub struct ExecutorProcessConfig {
     pub work_dir: Option<String>,
     pub special_mod_log_level: String,
     pub print_thread_info: bool,
-    pub log_file_name_prefix: String,
     pub log_rotation_policy: LogRotationPolicy,
     pub job_data_ttl_seconds: u64,
     pub job_data_clean_up_interval_seconds: u64,
-    pub data_cache_policy: Option<DataCachePolicy>,
-    pub cache_dir: Option<String>,
-    pub cache_capacity: u64,
-    pub cache_io_concurrency: u32,
     /// The maximum size of a decoded message
     pub grpc_max_decoding_message_size: u32,
     /// The maximum size of an encoded message
@@ -98,61 +90,70 @@ pub struct ExecutorProcessConfig {
     pub executor_heartbeat_interval_seconds: u64,
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.
-    pub execution_engine: Option<Arc<dyn ExecutionEngine>>,
+    pub override_execution_engine: Option<Arc<dyn ExecutionEngine>>,
     /// Overrides default function registry
-    pub function_registry: Option<Arc<BallistaFunctionRegistry>>,
+    pub override_function_registry: Option<Arc<BallistaFunctionRegistry>>,
     /// [RuntimeProducer] override option
-    pub runtime_producer: Option<RuntimeProducer>,
+    pub override_runtime_producer: Option<RuntimeProducer>,
     /// [ConfigProducer] override option
-    pub config_producer: Option<ConfigProducer>,
+    pub override_config_producer: Option<ConfigProducer>,
     /// [PhysicalExtensionCodec] override option
-    pub logical_codec: Option<Arc<dyn LogicalExtensionCodec>>,
+    pub override_logical_codec: Option<Arc<dyn LogicalExtensionCodec>>,
     /// [PhysicalExtensionCodec] override option
-    pub physical_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
+    pub override_physical_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
 }
 
-pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<()> {
-    let rust_log = env::var(EnvFilter::DEFAULT_ENV);
-    let log_filter =
-        EnvFilter::new(rust_log.unwrap_or(opt.special_mod_log_level.clone()));
-    // File layer
-    if let Some(log_dir) = opt.log_dir.clone() {
-        let log_file = match opt.log_rotation_policy {
-            LogRotationPolicy::Minutely => {
-                tracing_appender::rolling::minutely(log_dir, &opt.log_file_name_prefix)
-            }
-            LogRotationPolicy::Hourly => {
-                tracing_appender::rolling::hourly(log_dir, &opt.log_file_name_prefix)
-            }
-            LogRotationPolicy::Daily => {
-                tracing_appender::rolling::daily(log_dir, &opt.log_file_name_prefix)
-            }
-            LogRotationPolicy::Never => {
-                tracing_appender::rolling::never(log_dir, &opt.log_file_name_prefix)
-            }
-        };
-        tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_thread_names(opt.print_thread_info)
-            .with_thread_ids(opt.print_thread_info)
-            .with_writer(log_file)
-            .with_env_filter(log_filter)
-            .init();
-    } else {
-        // Console layer
-        tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_thread_names(opt.print_thread_info)
-            .with_thread_ids(opt.print_thread_info)
-            .with_writer(io::stdout)
-            .with_env_filter(log_filter)
-            .init();
+impl ExecutorProcessConfig {
+    pub fn log_file_name_prefix(&self) -> String {
+        format!(
+            "executor_{}_{}",
+            self.external_host
+                .clone()
+                .unwrap_or_else(|| "localhost".to_string()),
+            self.port
+        )
     }
+}
 
+impl Default for ExecutorProcessConfig {
+    fn default() -> Self {
+        Self {
+            bind_host: "127.0.0.1".into(),
+            external_host: None,
+            port: 50051,
+            grpc_port: 50052,
+            scheduler_host: "localhost".into(),
+            scheduler_port: 50050,
+            scheduler_connect_timeout_seconds: 0,
+            concurrent_tasks: std::thread::available_parallelism().unwrap().get(),
+            task_scheduling_policy: Default::default(),
+            log_dir: None,
+            work_dir: None,
+            special_mod_log_level: "INFO".into(),
+            print_thread_info: true,
+            log_rotation_policy: Default::default(),
+            job_data_ttl_seconds: 604800,
+            job_data_clean_up_interval_seconds: 0,
+            grpc_max_decoding_message_size: 16777216,
+            grpc_max_encoding_message_size: 16777216,
+            executor_heartbeat_interval_seconds: 60,
+            override_execution_engine: None,
+            override_function_registry: None,
+            override_runtime_producer: None,
+            override_config_producer: None,
+            override_logical_codec: None,
+            override_physical_codec: None,
+        }
+    }
+}
+
+pub async fn start_executor_process(
+    opt: Arc<ExecutorProcessConfig>,
+) -> ballista_core::error::Result<()> {
     let addr = format!("{}:{}", opt.bind_host, opt.port);
-    let addr = addr
-        .parse()
-        .with_context(|| format!("Could not parse address: {addr}"))?;
+    let addr = addr.parse().map_err(|e: std::net::AddrParseError| {
+        BallistaError::Configuration(e.to_string())
+    })?;
 
     let scheduler_host = opt.scheduler_host.clone();
     let scheduler_port = opt.scheduler_port;
@@ -194,23 +195,26 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
     // put them to session config
     let metrics_collector = Arc::new(LoggingMetricsCollector::default());
     let config_producer = opt
-        .config_producer
+        .override_config_producer
         .clone()
         .unwrap_or_else(|| Arc::new(default_config_producer));
 
     let wd = work_dir.clone();
-    let runtime_producer: RuntimeProducer = Arc::new(move |_| {
-        let config = RuntimeConfig::new().with_temp_file_path(wd.clone());
-        Ok(Arc::new(RuntimeEnv::try_new(config)?))
-    });
+    let runtime_producer: RuntimeProducer =
+        opt.override_runtime_producer.clone().unwrap_or_else(|| {
+            Arc::new(move |_| {
+                let config = RuntimeConfig::new().with_temp_file_path(wd.clone());
+                Ok(Arc::new(RuntimeEnv::try_new(config)?))
+            })
+        });
 
     let logical = opt
-        .logical_codec
+        .override_logical_codec
         .clone()
         .unwrap_or_else(|| Arc::new(BallistaLogicalExtensionCodec::default()));
 
     let physical = opt
-        .physical_codec
+        .override_physical_codec
         .clone()
         .unwrap_or_else(|| Arc::new(BallistaPhysicalExtensionCodec::default()));
 
@@ -224,17 +228,21 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
         &work_dir,
         runtime_producer,
         config_producer,
-        opt.function_registry.clone().unwrap_or_default(),
+        opt.override_function_registry.clone().unwrap_or_default(),
         metrics_collector,
         concurrent_tasks,
-        opt.execution_engine.clone(),
+        opt.override_execution_engine.clone(),
     ));
 
     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;
     let connection = if connect_timeout == 0 {
         create_grpc_client_connection(scheduler_url)
             .await
-            .context("Could not connect to scheduler")
+            .map_err(|_| {
+                BallistaError::GrpcConnectionError(
+                    "Could not connect to scheduler".to_string(),
+                )
+            })
     } else {
         // this feature was added to support docker-compose so that we can have the executor
         // wait for the scheduler to start, or at least run for 10 seconds before failing so
@@ -246,8 +254,11 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
         {
             match create_grpc_client_connection(scheduler_url.clone())
                 .await
-                .context("Could not connect to scheduler")
-            {
+                .map_err(|_| {
+                    BallistaError::GrpcConnectionError(
+                        "Could not connect to scheduler".to_string(),
+                    )
+                }) {
                 Ok(conn) => {
                     info!("Connected to scheduler at {}", scheduler_url);
                     x = Some(conn);
@@ -265,8 +276,7 @@ pub async fn start_executor_process(opt: Arc<ExecutorProcessConfig>) -> Result<(
             Some(conn) => Ok(conn),
             _ => Err(BallistaError::General(format!(
                 "Timed out attempting to connect to scheduler at {scheduler_url}"
-            ))
-            .into()),
+            ))),
         }
     }?;
 
@@ -486,7 +496,10 @@ async fn check_services(
 
 /// This function will be scheduled periodically for cleanup the job shuffle data left on the executor.
 /// Only directories will be checked cleaned.
-async fn clean_shuffle_data_loop(work_dir: &str, seconds: u64) -> Result<()> {
+async fn clean_shuffle_data_loop(
+    work_dir: &str,
+    seconds: u64,
+) -> ballista_core::error::Result<()> {
     let mut dir = fs::read_dir(work_dir).await?;
     let mut to_deleted = Vec::new();
     while let Some(child) = dir.next_entry().await? {
@@ -524,7 +537,7 @@ async fn clean_shuffle_data_loop(work_dir: &str, seconds: u64) -> Result<()> {
 }
 
 /// This function will clean up all shuffle data on this executor
-async fn clean_all_shuffle_data(work_dir: &str) -> Result<()> {
+async fn clean_all_shuffle_data(work_dir: &str) -> ballista_core::error::Result<()> {
     let mut dir = fs::read_dir(work_dir).await?;
     let mut to_deleted = Vec::new();
     while let Some(child) = dir.next_entry().await? {
@@ -549,7 +562,10 @@ async fn clean_all_shuffle_data(work_dir: &str) -> Result<()> {
 
 /// Determines if a directory contains files newer than the cutoff time.
 /// If return true, it means the directory contains files newer than the cutoff time. It satisfy the ttl and should not be deleted.
-pub async fn satisfy_dir_ttl(dir: DirEntry, ttl_seconds: u64) -> Result<bool> {
+pub async fn satisfy_dir_ttl(
+    dir: DirEntry,
+    ttl_seconds: u64,
+) -> ballista_core::error::Result<bool> {
     let cutoff = get_time_before(ttl_seconds);
 
     let mut to_check = vec![dir];

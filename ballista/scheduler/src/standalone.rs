@@ -19,10 +19,10 @@ use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
 use crate::metrics::default_metrics_collector;
 use crate::scheduler_server::SchedulerServer;
+use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{
     create_grpc_server, default_config_producer, default_session_builder,
-    SessionConfigExt,
 };
 use ballista_core::ConfigProducer;
 use ballista_core::{
@@ -57,9 +57,11 @@ pub async fn new_standalone_scheduler_from_state(
     let session_config = session_state.config().clone();
     let session_state = session_state.clone();
     let session_builder = Arc::new(move |c: SessionConfig| {
-        SessionStateBuilder::new_from_existing(session_state.clone())
-            .with_config(c)
-            .build()
+        Ok(
+            SessionStateBuilder::new_from_existing(session_state.clone())
+                .with_config(c)
+                .build(),
+        )
     });
 
     let config_producer = Arc::new(move || session_config.clone());

@@ -23,9 +23,9 @@ use crate::execution_engine::QueryStageExecutor;
 use crate::metrics::ExecutorMetricsCollector;
 use crate::metrics::LoggingMetricsCollector;
 use ballista_core::error::BallistaError;
+use ballista_core::registry::BallistaFunctionRegistry;
 use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::ExecutorRegistration;
-use ballista_core::serde::scheduler::BallistaFunctionRegistry;
 use ballista_core::serde::scheduler::PartitionId;
 use ballista_core::ConfigProducer;
 use ballista_core::RuntimeProducer;
@@ -111,7 +111,6 @@ impl Executor {
 
     /// Create a new executor instance with given [RuntimeEnv],
     /// [ScalarUDF], [AggregateUDF] and [WindowUDF]
-
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         metadata: ExecutorRegistration,
@@ -216,13 +215,13 @@ impl Executor {
 mod test {
     use crate::execution_engine::DefaultQueryStageExec;
     use crate::executor::Executor;
-    use arrow::datatypes::{Schema, SchemaRef};
-    use arrow::record_batch::RecordBatch;
     use ballista_core::execution_plans::ShuffleWriterExec;
     use ballista_core::serde::protobuf::ExecutorRegistration;
     use ballista_core::serde::scheduler::PartitionId;
     use ballista_core::utils::default_config_producer;
     use ballista_core::RuntimeProducer;
+    use datafusion::arrow::datatypes::{Schema, SchemaRef};
+    use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::error::{DataFusionError, Result};
     use datafusion::execution::context::TaskContext;
 

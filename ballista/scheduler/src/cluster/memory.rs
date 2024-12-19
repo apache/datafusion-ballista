@@ -37,7 +37,7 @@ use crate::scheduler_server::{timestamp_millis, timestamp_secs, SessionBuilder};
 use crate::state::session_manager::create_datafusion_context;
 use crate::state::task_manager::JobInfoCache;
 use ballista_core::serde::protobuf::job_status::Status;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::ops::DerefMut;
 
@@ -45,7 +45,6 @@ use ballista_core::consistent_hash::node::Node;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 use tokio::sync::{Mutex, MutexGuard};
-use tracing::debug;
 
 #[derive(Default)]
 pub struct InMemoryClusterState {
@@ -290,7 +289,7 @@ pub struct InMemoryJobState {
     session_builder: SessionBuilder,
     /// Sender of job events
     job_event_sender: ClusterEventSender<JobStateEvent>,
-
+    /// Config producer
     config_producer: ConfigProducer,
 }
 
@@ -408,7 +407,7 @@ impl JobState for InMemoryJobState {
         &self,
         config: &SessionConfig,
     ) -> Result<Arc<SessionContext>> {
-        let session = create_datafusion_context(config, self.session_builder.clone());
+        let session = create_datafusion_context(config, self.session_builder.clone())?;
         self.sessions.insert(session.session_id(), session.clone());
 
         Ok(session)
@@ -419,7 +418,7 @@ impl JobState for InMemoryJobState {
         session_id: &str,
         config: &SessionConfig,
     ) -> Result<Arc<SessionContext>> {
-        let session = create_datafusion_context(config, self.session_builder.clone());
+        let session = create_datafusion_context(config, self.session_builder.clone())?;
         self.sessions
             .insert(session_id.to_string(), session.clone());
 

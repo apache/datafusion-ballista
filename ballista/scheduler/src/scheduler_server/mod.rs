@@ -56,7 +56,8 @@ mod external_scaler;
 mod grpc;
 pub(crate) mod query_stage_scheduler;
 
-pub type SessionBuilder = Arc<dyn Fn(SessionConfig) -> SessionState + Send + Sync>;
+pub type SessionBuilder =
+    Arc<dyn Fn(SessionConfig) -> datafusion::common::Result<SessionState> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
@@ -346,7 +347,7 @@ pub fn timestamp_millis() -> u64 {
 mod test {
     use std::sync::Arc;
 
-    use ballista_core::utils::SessionConfigExt;
+    use ballista_core::extension::SessionConfigExt;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::functions_aggregate::sum::sum;
     use datafusion::logical_expr::{col, LogicalPlan};

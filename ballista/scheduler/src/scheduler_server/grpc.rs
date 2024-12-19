@@ -17,7 +17,8 @@
 
 use axum::extract::ConnectInfo;
 use ballista_core::config::BALLISTA_JOB_NAME;
-use ballista_core::serde::protobuf::execute_query_params::{OptionalSessionId, Query};
+use ballista_core::extension::SessionConfigHelperExt;
+use ballista_core::serde::protobuf::execute_query_params::Query;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
     execute_query_failure_result, execute_query_result, AvailableTaskSlots,
@@ -31,7 +32,6 @@ use ballista_core::serde::protobuf::{
     UpdateTaskStatusParams, UpdateTaskStatusResult,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
-use ballista_core::utils::SessionConfigExt;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info, trace, warn};
@@ -337,25 +337,28 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let query_params = request.into_inner();
         if let ExecuteQueryParams {
             query: Some(query),
-            optional_session_id,
+            session_id,
             settings,
         } = query_params
         {
             let job_name = settings
                 .iter()
                 .find(|s| s.key == BALLISTA_JOB_NAME)
-                .map(|s| s.value.clone())
-                .unwrap_or_else(|| "None".to_string());
+                .and_then(|s| s.value.clone())
+                .unwrap_or_default();
 
-            let (session_id, session_ctx) = match optional_session_id {
-                Some(OptionalSessionId::SessionId(session_id)) => {
+            let (session_id, session_ctx) = match session_id {
+                Some(session_id) => {
                     match self.state.session_manager.get_session(&session_id).await {
                         Ok(ctx) => {
-                            // [SessionConfig] will be updated from received properties
+                            // Update [SessionConfig] using received properties
 
                             // TODO MM can we do something better here?
                             // move this to update session and use .update_session(&session_params.session_id, &session_config)
-                            // instead of get_session
+                            // instead of get_session.
+                            //
+                            // also we should consider sending properties if/when changed rather than
+                            // all properties every time
 
                             let state = ctx.state_ref();
                             let mut state = state.write();

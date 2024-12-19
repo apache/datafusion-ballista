@@ -67,7 +67,7 @@ impl SessionManager {
 pub fn create_datafusion_context(
     session_config: &SessionConfig,
     session_builder: SessionBuilder,
-) -> Arc<SessionContext> {
+) -> datafusion::common::Result<Arc<SessionContext>> {
     let session_state = if session_config.round_robin_repartition() {
         let session_config = session_config
             .clone()
@@ -75,10 +75,10 @@ pub fn create_datafusion_context(
             .with_round_robin_repartition(false);
 
         log::warn!("session manager will override `datafusion.optimizer.enable_round_robin_repartition` to `false` ");
-        session_builder(session_config)
+        session_builder(session_config)?
     } else {
-        session_builder(session_config.clone())
+        session_builder(session_config.clone())?
     };
 
-    Arc::new(SessionContext::new_with_state(session_state))
+    Ok(Arc::new(SessionContext::new_with_state(session_state)))
 }

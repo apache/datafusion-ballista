@@ -17,24 +17,24 @@
 
 //! Implementation of the Apache Arrow Flight protocol that wraps an executor.
 
-use arrow::ipc::reader::StreamReader;
+use datafusion::arrow::ipc::reader::StreamReader;
 use std::convert::TryFrom;
 use std::fs::File;
 use std::pin::Pin;
 
-use arrow::ipc::CompressionType;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use ballista_core::error::BallistaError;
 use ballista_core::serde::decode_protobuf;
 use ballista_core::serde::scheduler::Action as BallistaAction;
+use datafusion::arrow::ipc::CompressionType;
 
-use arrow::ipc::writer::IpcWriteOptions;
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty,
     FlightData, FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse,
     PollInfo, PutResult, SchemaResult, Ticket,
 };
+use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::arrow::{error::ArrowError, record_batch::RecordBatch};
 use futures::{Stream, StreamExt, TryStreamExt};
 use log::{debug, info};
@@ -45,7 +45,6 @@ use tokio::{sync::mpsc::Sender, task};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataValue;
 use tonic::{Request, Response, Status, Streaming};
-use tracing::warn;
 
 /// Service implementing the Apache Arrow Flight Protocol
 #[derive(Clone)]
@@ -103,7 +102,10 @@ impl FlightService for BallistaFlightService {
                 let schema = reader.schema();
                 task::spawn_blocking(move || {
                     if let Err(e) = read_partition(reader, tx) {
-                        warn!(error = %e, "error streaming shuffle partition");
+                        log::warn!(
+                            "error streaming shuffle partition: {}",
+                            e.to_string()
+                        );
                     }
                 });
 

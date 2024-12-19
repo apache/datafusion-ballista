@@ -24,7 +24,7 @@ use crate::state::executor_manager::ExecutorManager;
 
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
-use ballista_core::utils::SessionConfigExt;
+use ballista_core::extension::SessionConfigHelperExt;
 use datafusion::prelude::SessionConfig;
 
 use crate::cluster::JobState;
@@ -38,7 +38,7 @@ use dashmap::DashMap;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use std::collections::{HashMap, HashSet};
@@ -47,8 +47,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
-
-use tracing::trace;
 
 type ActiveJobCache = Arc<DashMap<String, JobInfoCache>>;
 

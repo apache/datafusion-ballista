@@ -15,10 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub use ballista_core::utils::SessionConfigExt;
+use ballista_core::extension::SessionConfigHelperExt;
+pub use ballista_core::extension::{SessionConfigExt, SessionStateExt};
 use ballista_core::{
     serde::protobuf::{scheduler_grpc_client::SchedulerGrpcClient, CreateSessionParams},
-    utils::{create_grpc_client_connection, SessionStateExt},
+    utils::create_grpc_client_connection,
 };
 use datafusion::{
     error::DataFusionError,
@@ -122,7 +123,7 @@ impl SessionContextExt for SessionContext {
         let config = SessionConfig::new_with_ballista();
         let scheduler_url = Extension::parse_url(url)?;
         log::info!(
-            "Connecting to Ballista scheduler at {}",
+            "Connecting to Ballista scheduler at: {}",
             scheduler_url.clone()
         );
         let remote_session_id =
@@ -245,10 +246,11 @@ impl Extension {
                 .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
             }
             Some(session_state) => {
-                ballista_executor::new_standalone_executor_from_state::<
-                    datafusion_proto::protobuf::LogicalPlanNode,
-                    datafusion_proto::protobuf::PhysicalPlanNode,
-                >(scheduler, concurrent_tasks, session_state)
+                ballista_executor::new_standalone_executor_from_state(
+                    scheduler,
+                    concurrent_tasks,
+                    session_state,
+                )
                 .await
                 .map_err(|e| DataFusionError::Configuration(e.to_string()))?;
             }

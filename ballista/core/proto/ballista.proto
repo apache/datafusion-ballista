@@ -172,7 +172,7 @@ message TaskInputPartitions {
 
 message KeyValuePair {
   string key = 1;
-  string value = 2;
+  optional string value = 2;
 }
 
 message Action {
@@ -458,10 +458,6 @@ message MultiTaskDefinition {
   repeated KeyValuePair props = 9;
 }
 
-message SessionSettings {
-  repeated KeyValuePair configs = 1;
-}
-
 message JobSessionConfig {
   string session_id = 1;
   repeated KeyValuePair configs = 2;
@@ -526,9 +522,8 @@ message ExecuteQueryParams {
     bytes logical_plan = 1;
     string sql = 2 [deprecated=true]; // I'd suggest to remove this, if SQL needed use `flight-sql`
   }
-  oneof optional_session_id {
-    string session_id = 3;
-  }
+  
+  optional string session_id = 3;
   repeated KeyValuePair settings = 4;
 }
 

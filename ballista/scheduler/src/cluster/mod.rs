@@ -16,7 +16,6 @@
 // under the License.
 
 use std::collections::{HashMap, HashSet};
-use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -69,9 +68,9 @@ impl std::str::FromStr for ClusterStorage {
         ValueEnum::from_str(s, true)
     }
 }
-
-impl parse_arg::ParseArgFromStr for ClusterStorage {
-    fn describe_type<W: fmt::Write>(mut writer: W) -> fmt::Result {
+#[cfg(feature = "build-binary")]
+impl configure_me::parse_arg::ParseArgFromStr for ClusterStorage {
+    fn describe_type<W: std::fmt::Write>(mut writer: W) -> std::fmt::Result {
         write!(writer, "The cluster storage backend for the scheduler")
     }
 }
@@ -111,11 +110,21 @@ impl BallistaCluster {
     pub async fn new_from_config(config: &SchedulerConfig) -> Result<Self> {
         let scheduler = config.scheduler_name();
 
+        let session_builder = config
+            .override_session_builder
+            .clone()
+            .unwrap_or_else(|| Arc::new(default_session_builder));
+
+        let config_producer = config
+            .override_config_producer
+            .clone()
+            .unwrap_or_else(|| Arc::new(default_config_producer));
+
         match &config.cluster_storage {
             ClusterStorageConfig::Memory => Ok(BallistaCluster::new_memory(
                 scheduler,
-                Arc::new(default_session_builder),
-                Arc::new(default_config_producer),
+                session_builder,
+                config_producer,
             )),
         }
     }
