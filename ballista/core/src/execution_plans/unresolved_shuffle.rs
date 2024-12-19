@@ -46,22 +46,16 @@ pub struct UnresolvedShuffleExec {
 
 impl UnresolvedShuffleExec {
     /// Create a new UnresolvedShuffleExec
-    pub fn new(
-        stage_id: usize,
-        schema: SchemaRef,
-        output_partition_count: usize,
-    ) -> Self {
+    pub fn new(stage_id: usize, schema: SchemaRef, partitioning: Partitioning) -> Self {
         let properties = PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
-            // TODO the output partition is known and should be populated here!
-            // see https://github.com/apache/arrow-datafusion/issues/758
-            Partitioning::UnknownPartitioning(output_partition_count),
+            partitioning,
             datafusion::physical_plan::ExecutionMode::Bounded,
         );
         Self {
             stage_id,
             schema,
-            output_partition_count,
+            output_partition_count: properties.partitioning.partition_count(),
             properties,
         }
     }
@@ -75,7 +69,11 @@ impl DisplayAs for UnresolvedShuffleExec {
     ) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "UnresolvedShuffleExec")
+                write!(
+                    f,
+                    "UnresolvedShuffleExec: {:?}",
+                    self.properties().output_partitioning()
+                )
             }
         }
     }

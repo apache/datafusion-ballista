@@ -168,10 +168,7 @@ fn create_unresolved_shuffle(
     Arc::new(UnresolvedShuffleExec::new(
         shuffle_writer.stage_id(),
         shuffle_writer.schema(),
-        shuffle_writer
-            .properties()
-            .output_partitioning()
-            .partition_count(),
+        shuffle_writer.properties().output_partitioning().clone(),
     ))
 }
 
@@ -239,6 +236,10 @@ pub fn remove_unresolved_shuffles(
                 unresolved_shuffle.stage_id,
                 relevant_locations,
                 unresolved_shuffle.schema().clone(),
+                unresolved_shuffle
+                    .properties()
+                    .output_partitioning()
+                    .clone(),
             )?))
         } else {
             new_children.push(remove_unresolved_shuffles(
@@ -259,16 +260,12 @@ pub fn rollback_resolved_shuffles(
     let mut new_children: Vec<Arc<dyn ExecutionPlan>> = vec![];
     for child in stage.children() {
         if let Some(shuffle_reader) = child.as_any().downcast_ref::<ShuffleReaderExec>() {
-            let output_partition_count = shuffle_reader
-                .properties()
-                .output_partitioning()
-                .partition_count();
             let stage_id = shuffle_reader.stage_id;
 
             let unresolved_shuffle = Arc::new(UnresolvedShuffleExec::new(
                 stage_id,
                 shuffle_reader.schema(),
-                output_partition_count,
+                shuffle_reader.properties().partitioning.clone(),
             ));
             new_children.push(unresolved_shuffle);
         } else {
@@ -396,6 +393,10 @@ mod test {
             downcast_exec!(unresolved_shuffle, UnresolvedShuffleExec);
         assert_eq!(unresolved_shuffle.stage_id, 1);
         assert_eq!(unresolved_shuffle.output_partition_count, 2);
+        assert_eq!(
+            unresolved_shuffle.properties().partitioning,
+            Partitioning::Hash(vec![Arc::new(Column::new("l_returnflag", 0))], 2)
+        );
 
         // verify stage 2
         let stage2 = stages[2].children()[0].clone();
@@ -405,6 +406,10 @@ mod test {
             downcast_exec!(unresolved_shuffle, UnresolvedShuffleExec);
         assert_eq!(unresolved_shuffle.stage_id, 2);
         assert_eq!(unresolved_shuffle.output_partition_count, 2);
+        assert_eq!(
+            unresolved_shuffle.properties().partitioning,
+            Partitioning::Hash(vec![Arc::new(Column::new("l_returnflag", 0))], 2)
+        );
 
         Ok(())
     }
@@ -559,6 +564,10 @@ order by
         let unresolved_shuffle_reader_1 =
             downcast_exec!(join_input_1, UnresolvedShuffleExec);
         assert_eq!(unresolved_shuffle_reader_1.output_partition_count, 2);
+        assert_eq!(
+            unresolved_shuffle_reader_1.properties().partitioning,
+            Partitioning::Hash(vec![Arc::new(Column::new("l_orderkey", 0))], 2)
+        );
 
         let join_input_2 = join.children()[1].clone();
         // skip CoalesceBatches
@@ -566,6 +575,10 @@ order by
         let unresolved_shuffle_reader_2 =
             downcast_exec!(join_input_2, UnresolvedShuffleExec);
         assert_eq!(unresolved_shuffle_reader_2.output_partition_count, 2);
+        assert_eq!(
+            unresolved_shuffle_reader_2.properties().partitioning,
+            Partitioning::Hash(vec![Arc::new(Column::new("o_orderkey", 0))], 2)
+        );
 
         // final partitioned hash aggregate
         assert_eq!(

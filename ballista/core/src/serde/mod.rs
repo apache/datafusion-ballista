@@ -21,6 +21,7 @@
 use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 
 use arrow_flight::sql::ProstMessageExt;
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::FunctionRegistry;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
@@ -29,6 +30,9 @@ use datafusion_proto::logical_plan::file_formats::{
     JsonLogicalExtensionCodec, ParquetLogicalExtensionCodec,
 };
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_hash_partitioning;
+use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
+use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
+use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
 use datafusion_proto::protobuf::proto_error;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use datafusion_proto::{
@@ -244,8 +248,18 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct BallistaPhysicalExtensionCodec {}
+#[derive(Debug)]
+pub struct BallistaPhysicalExtensionCodec {
+    default_codec: Arc<dyn PhysicalExtensionCodec>,
+}
+
+impl Default for BallistaPhysicalExtensionCodec {
+    fn default() -> Self {
+        Self {
+            default_codec: Arc::new(DefaultPhysicalExtensionCodec {}),
+        }
+    }
+}
 
 impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
     fn try_decode(
@@ -272,14 +286,11 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             PhysicalPlanType::ShuffleWriter(shuffle_writer) => {
                 let input = inputs[0].clone();
 
-                let default_codec =
-                    datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec {};
-
                 let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
                     shuffle_writer.output_partitioning.as_ref(),
                     registry,
                     input.schema().as_ref(),
-                    &default_codec,
+                    self.default_codec.as_ref(),
                 )?;
 
                 Ok(Arc::new(ShuffleWriterExec::try_new(
@@ -292,7 +303,8 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             }
             PhysicalPlanType::ShuffleReader(shuffle_reader) => {
                 let stage_id = shuffle_reader.stage_id as usize;
-                let schema = Arc::new(convert_required!(shuffle_reader.schema)?);
+                let schema: SchemaRef =
+                    Arc::new(convert_required!(shuffle_reader.schema)?);
                 let partition_location: Vec<Vec<PartitionLocation>> = shuffle_reader
                     .partition
                     .iter()
@@ -309,16 +321,37 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                             .collect::<Result<Vec<_>, _>>()
                     })
                     .collect::<Result<Vec<_>, DataFusionError>>()?;
-                let shuffle_reader =
-                    ShuffleReaderExec::try_new(stage_id, partition_location, schema)?;
+                let partitioning = parse_protobuf_partitioning(
+                    shuffle_reader.partitioning.as_ref(),
+                    registry,
+                    schema.as_ref(),
+                    self.default_codec.as_ref(),
+                )?;
+                let partitioning = partitioning
+                    .ok_or_else(|| proto_error("missing required partitioning field"))?;
+                let shuffle_reader = ShuffleReaderExec::try_new(
+                    stage_id,
+                    partition_location,
+                    schema,
+                    partitioning,
+                )?;
                 Ok(Arc::new(shuffle_reader))
             }
             PhysicalPlanType::UnresolvedShuffle(unresolved_shuffle) => {
-                let schema = Arc::new(convert_required!(unresolved_shuffle.schema)?);
+                let schema: SchemaRef =
+                    Arc::new(convert_required!(unresolved_shuffle.schema)?);
+                let partitioning = parse_protobuf_partitioning(
+                    unresolved_shuffle.partitioning.as_ref(),
+                    registry,
+                    schema.as_ref(),
+                    self.default_codec.as_ref(),
+                )?;
+                let partitioning = partitioning
+                    .ok_or_else(|| proto_error("missing required partitioning field"))?;
                 Ok(Arc::new(UnresolvedShuffleExec::new(
                     unresolved_shuffle.stage_id as usize,
                     schema,
-                    unresolved_shuffle.output_partition_count as usize,
+                    partitioning,
                 )))
             }
         }
@@ -334,12 +367,10 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             // to get the true output partitioning
             let output_partitioning = match exec.shuffle_output_partitioning() {
                 Some(Partitioning::Hash(exprs, partition_count)) => {
-                    let default_codec =
-                        datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec {};
                     Some(datafusion_proto::protobuf::PhysicalHashRepartition {
                         hash_expr: exprs
                             .iter()
-                            .map(|expr|datafusion_proto::physical_plan::to_proto::serialize_physical_expr(&expr.clone(), &default_codec))
+                            .map(|expr|datafusion_proto::physical_plan::to_proto::serialize_physical_expr(&expr.clone(), self.default_codec.as_ref()))
                             .collect::<Result<Vec<_>, DataFusionError>>()?,
                         partition_count: *partition_count as u64,
                     })
@@ -387,12 +418,17 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         .collect::<Result<Vec<_>, _>>()?,
                 });
             }
+            let partitioning = serialize_partitioning(
+                &exec.properties().partitioning,
+                self.default_codec.as_ref(),
+            )?;
             let proto = protobuf::BallistaPhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::ShuffleReader(
                     protobuf::ShuffleReaderExecNode {
                         stage_id,
                         partition,
                         schema: Some(exec.schema().as_ref().try_into()?),
+                        partitioning: Some(partitioning),
                     },
                 )),
             };
@@ -404,12 +440,16 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
 
             Ok(())
         } else if let Some(exec) = node.as_any().downcast_ref::<UnresolvedShuffleExec>() {
+            let partitioning = serialize_partitioning(
+                &exec.properties().partitioning,
+                self.default_codec.as_ref(),
+            )?;
             let proto = protobuf::BallistaPhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::UnresolvedShuffle(
                     protobuf::UnresolvedShuffleExecNode {
                         stage_id: exec.stage_id as u32,
                         schema: Some(exec.schema().as_ref().try_into()?),
-                        output_partition_count: exec.output_partition_count as u32,
+                        partitioning: Some(partitioning),
                     },
                 )),
             };
@@ -449,6 +489,11 @@ struct FileFormatProto {
 
 #[cfg(test)]
 mod test {
+    use super::*;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::execution::registry::MemoryFunctionRegistry;
+    use datafusion::physical_plan::expressions::col;
+    use datafusion::physical_plan::Partitioning;
     use datafusion::{
         common::DFSchema,
         datasource::file_format::{parquet::ParquetFormatFactory, DefaultFileType},
@@ -492,5 +537,76 @@ mod test {
 
         assert_eq!(o.to_string(), d.to_string())
         //logical_plan.
+    }
+
+    fn create_test_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]))
+    }
+
+    #[tokio::test]
+    async fn test_unresolved_shuffle_exec_roundtrip() {
+        let schema = create_test_schema();
+        let partitioning =
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 4);
+
+        let original_exec = UnresolvedShuffleExec::new(
+            1, // stage_id
+            schema.clone(),
+            partitioning.clone(),
+        );
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(Arc::new(original_exec.clone()), &mut buf)
+            .unwrap();
+
+        let registry = MemoryFunctionRegistry::new();
+        let decoded_plan = codec.try_decode(&buf, &[], &registry).unwrap();
+
+        let decoded_exec = decoded_plan
+            .as_any()
+            .downcast_ref::<UnresolvedShuffleExec>()
+            .expect("Expected UnresolvedShuffleExec");
+
+        assert_eq!(decoded_exec.stage_id, 1);
+        assert_eq!(decoded_exec.schema().as_ref(), schema.as_ref());
+        assert_eq!(&decoded_exec.properties().partitioning, &partitioning);
+    }
+
+    #[tokio::test]
+    async fn test_shuffle_reader_exec_roundtrip() {
+        let schema = create_test_schema();
+        let partitioning =
+            Partitioning::Hash(vec![col("id", schema.as_ref()).unwrap()], 4);
+
+        let original_exec = ShuffleReaderExec::try_new(
+            1, // stage_id
+            Vec::new(),
+            schema.clone(),
+            partitioning.clone(),
+        )
+        .unwrap();
+
+        let codec = BallistaPhysicalExtensionCodec::default();
+        let mut buf: Vec<u8> = vec![];
+        codec
+            .try_encode(Arc::new(original_exec.clone()), &mut buf)
+            .unwrap();
+
+        let registry = MemoryFunctionRegistry::new();
+        let decoded_plan = codec.try_decode(&buf, &[], &registry).unwrap();
+
+        let decoded_exec = decoded_plan
+            .as_any()
+            .downcast_ref::<ShuffleReaderExec>()
+            .expect("Expected ShuffleReaderExec");
+
+        assert_eq!(decoded_exec.stage_id, 1);
+        assert_eq!(decoded_exec.schema().as_ref(), schema.as_ref());
+        assert_eq!(&decoded_exec.properties().partitioning, &partitioning);
     }
 }
