@@ -219,7 +219,6 @@ mod custom_s3_config {
     use ballista_core::RuntimeProducer;
     use ballista_examples::object_store::{CustomObjectStoreRegistry, S3Options};
     use ballista_examples::test_util::examples_test_data;
-    use datafusion::execution::runtime_env::RuntimeEnv;
     use datafusion::execution::SessionState;
     use datafusion::prelude::SessionConfig;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
