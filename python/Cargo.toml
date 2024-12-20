@@ -34,12 +34,12 @@ ballista = { path = "../ballista/client", version = "0.12.0" }
 ballista-core = { path = "../ballista/core", version = "0.12.0" }
 ballista-executor = { path = "../ballista/executor", version = "0.12.0", default-features = false }
 ballista-scheduler = { path = "../ballista/scheduler", version = "0.12.0", default-features = false }
-datafusion = { version = "42", features = ["pyarrow", "avro"] }
-datafusion-proto = { version = "42" }
-datafusion-python = { version = "42" }
+datafusion = { version = "43", features = ["pyarrow", "avro"] }
+datafusion-proto = { version = "43" }
+datafusion-python = { version = "43" }
 
 pyo3 = { version = "0.22", features = ["extension-module", "abi3", "abi3-py38"] }
-pyo3-log = "0.11.0"
+pyo3-log = "0.11"
 tokio = { version = "1.42", features = ["macros", "rt", "rt-multi-thread", "sync"] }
 
 [lib]
