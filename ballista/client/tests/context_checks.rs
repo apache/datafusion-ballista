@@ -198,6 +198,8 @@ mod supported {
             "| datafusion    | information_schema | columns     | VIEW       |",
             "| datafusion    | information_schema | df_settings | VIEW       |",
             "| datafusion    | information_schema | schemata    | VIEW       |",
+            "| datafusion    | information_schema | routines    | VIEW       |",
+            "| datafusion    | information_schema | parameters  | VIEW       |",
             "+---------------+--------------------+-------------+------------+",
         ];
 

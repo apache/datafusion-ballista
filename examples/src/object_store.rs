@@ -30,14 +30,12 @@ use datafusion::config::{
 };
 use datafusion::error::Result;
 use datafusion::execution::object_store::ObjectStoreRegistry;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::SessionState;
 use datafusion::prelude::SessionConfig;
 use datafusion::{
     error::DataFusionError,
-    execution::{
-        runtime_env::{RuntimeConfig, RuntimeEnv},
-        SessionStateBuilder,
-    },
+    execution::{runtime_env::RuntimeEnv, SessionStateBuilder},
 };
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
@@ -75,11 +73,13 @@ pub fn custom_runtime_env_with_s3_support(
             "S3 Options not set".to_string(),
         ))?;
 
-    let config = RuntimeConfig::new().with_object_store_registry(Arc::new(
-        CustomObjectStoreRegistry::new(s3options.clone()),
-    ));
+    let runtime_env = RuntimeEnvBuilder::new()
+        .with_object_store_registry(Arc::new(CustomObjectStoreRegistry::new(
+            s3options.clone(),
+        )))
+        .build()?;
 
-    Ok(Arc::new(RuntimeEnv::try_new(config)?))
+    Ok(Arc::new(runtime_env))
 }
 
 /// Custom [SessionState] constructor method

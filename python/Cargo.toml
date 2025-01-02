@@ -30,10 +30,10 @@ publish = false
 
 [dependencies]
 async-trait = "0.1.77"
-ballista = { path = "../ballista/client", version = "43.0.0" }
-ballista-core = { path = "../ballista/core", version = "43.0.0" }
-ballista-executor = { path = "../ballista/executor", version = "43.0.0", default-features = false }
-ballista-scheduler = { path = "../ballista/scheduler", version = "43.0.0", default-features = false }
+ballista = { version = "43.0.0" }
+ballista-core = { version = "43.0.0" }
+ballista-executor = { version = "43.0.0", default-features = false }
+ballista-scheduler = { version = "43.0.0", default-features = false }
 datafusion = { version = "43", features = ["pyarrow", "avro"] }
 datafusion-proto = { version = "43" }
 datafusion-python = { version = "43" }

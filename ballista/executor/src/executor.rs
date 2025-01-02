@@ -272,7 +272,8 @@ mod test {
                         Schema::empty(),
                     )),
                     Partitioning::UnknownPartitioning(1),
-                    datafusion::physical_plan::ExecutionMode::Bounded,
+                    datafusion::physical_plan::execution_plan::EmissionType::Incremental,
+                    datafusion::physical_plan::execution_plan::Boundedness::Bounded,
                 ),
             }
         }

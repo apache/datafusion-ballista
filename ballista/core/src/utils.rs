@@ -24,7 +24,7 @@ use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::context::{SessionConfig, SessionState};
-use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{metrics, ExecutionPlan, RecordBatchStream};
@@ -43,7 +43,7 @@ pub fn default_session_builder(
     Ok(SessionStateBuilder::new()
         .with_default_features()
         .with_config(config)
-        .with_runtime_env(Arc::new(RuntimeEnv::try_new(RuntimeConfig::default())?))
+        .with_runtime_env(Arc::new(RuntimeEnvBuilder::new().build()?))
         .build())
 }
 
