@@ -687,7 +687,7 @@ order by
         assert_eq!(Some(&Column::new("l_shipmode", 1)), partition_by);
         assert_eq!(InputOrderMode::Sorted, window.input_order_mode);
         let sort = downcast_exec!(window.children()[0], SortExec);
-        match sort.expr() {
+        match &sort.expr().inner[..] {
             [expr1, expr2] => {
                 assert_eq!(
                     SortOptions {

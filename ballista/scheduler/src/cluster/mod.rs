@@ -1030,6 +1030,7 @@ mod test {
                 range: None,
                 extensions: None,
                 statistics: None,
+                metadata_size_hint: None,
             }]);
         }
         vec![scan_files]
