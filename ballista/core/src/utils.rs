@@ -32,7 +32,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{TreeNode, TreeNodeVisitor};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::{QueryPlanner, SessionConfig, SessionState};
-use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion::logical_expr::{DdlStatement, LogicalPlan, TableScan};
 use datafusion::physical_plan::empty::EmptyExec;
@@ -56,7 +56,7 @@ pub fn default_session_builder(
     Ok(SessionStateBuilder::new()
         .with_default_features()
         .with_config(config)
-        .with_runtime_env(Arc::new(RuntimeEnv::try_new(RuntimeConfig::default())?))
+        .with_runtime_env(Arc::new(RuntimeEnvBuilder::new().build()?))
         .build())
 }
 
@@ -317,17 +317,14 @@ mod test {
     use datafusion::{
         common::tree_node::TreeNode,
         error::Result,
-        execution::{
-            runtime_env::{RuntimeConfig, RuntimeEnv},
-            SessionStateBuilder,
-        },
+        execution::{runtime_env::RuntimeEnvBuilder, SessionStateBuilder},
         prelude::{SessionConfig, SessionContext},
     };
 
     use crate::utils::LocalRun;
 
     fn context() -> SessionContext {
-        let runtime_environment = RuntimeEnv::try_new(RuntimeConfig::new()).unwrap();
+        let runtime_environment = RuntimeEnvBuilder::new().build().unwrap();
 
         let session_config = SessionConfig::new().with_information_schema(true);
 

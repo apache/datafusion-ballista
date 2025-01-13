@@ -31,7 +31,7 @@ use ballista_core::{
     BALLISTA_VERSION,
 };
 use ballista_core::{ConfigProducer, RuntimeProducer};
-use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::SessionState;
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -184,8 +184,10 @@ pub async fn new_standalone_executor<
     let config_producer = Arc::new(default_config_producer);
     let wd = work_dir.clone();
     let runtime_producer: RuntimeProducer = Arc::new(move |_: &SessionConfig| {
-        let config = RuntimeConfig::new().with_temp_file_path(wd.clone());
-        Ok(Arc::new(RuntimeEnv::try_new(config)?))
+        let runtime_env = RuntimeEnvBuilder::new()
+            .with_temp_file_path(wd.clone())
+            .build()?;
+        Ok(Arc::new(runtime_env))
     });
 
     let executor = Arc::new(Executor::new_basic(

@@ -37,7 +37,7 @@ use tokio::task::JoinHandle;
 use tokio::{fs, time};
 use uuid::Uuid;
 
-use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 
 use ballista_core::config::{LogRotationPolicy, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
@@ -203,8 +203,10 @@ pub async fn start_executor_process(
     let runtime_producer: RuntimeProducer =
         opt.override_runtime_producer.clone().unwrap_or_else(|| {
             Arc::new(move |_| {
-                let config = RuntimeConfig::new().with_temp_file_path(wd.clone());
-                Ok(Arc::new(RuntimeEnv::try_new(config)?))
+                let runtime_env = RuntimeEnvBuilder::new()
+                    .with_temp_file_path(wd.clone())
+                    .build()?;
+                Ok(Arc::new(runtime_env))
             })
         });
 

@@ -79,7 +79,8 @@ impl ShuffleReaderExec {
         let properties = PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(schema.clone()),
             partitioning,
-            datafusion::physical_plan::ExecutionMode::Bounded,
+            datafusion::physical_plan::execution_plan::EmissionType::Incremental,
+            datafusion::physical_plan::execution_plan::Boundedness::Bounded,
         );
         Ok(Self {
             stage_id,
