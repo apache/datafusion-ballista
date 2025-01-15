@@ -40,7 +40,7 @@ default = ["build-binary"]
 flight-sql = ["base64"]
 keda-scaler = []
 prometheus-metrics = ["prometheus", "once_cell"]
-rest-api = []
+rest-api = ["graphviz-rust"]
 
 [dependencies]
 arrow-flight = { workspace = true }
@@ -54,6 +54,7 @@ dashmap = { workspace = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 futures = { workspace = true }
+graphviz-rust = { version = "0.9", optional = true }
 http = "1.1"
 log = { workspace = true }
 object_store = { workspace = true }
