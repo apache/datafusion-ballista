@@ -19,7 +19,14 @@
 
 # Ballista: Making DataFusion Applications Distributed
 
-Ballista is a distributed execution engine which makes [Apache DataFusion](https://github.com/apache/datafusion) applications distributed.
+[![Apache licensed][license-badge]][license-url]
+
+[license-badge]: https://img.shields.io/badge/license-Apache%20v2-blue.svg
+[license-url]: https://github.com/apache/datafusion-comet/blob/main/LICENSE.txt
+
+<img src="docs/source/_static/images/ballista-logo.png" width="512" alt="logo"/>
+
+Ballista is a distributed query execution engine that enhances [Apache DataFusion](https://github.com/apache/datafusion) by enabling the parallelized execution of workloads across multiple nodes in a distributed environment.
 
 Existing DataFusion application:
 
@@ -45,7 +52,7 @@ async fn main() -> datafusion::error::Result<()> {
 can be distributed with few lines of code changed:
 
 > [!IMPORTANT]  
-> There is a gap between DataFusion and Ballista, which may bring incompatibilities. The community is working hard to close this gap
+> There is a gap between DataFusion and Ballista, which may bring incompatibilities. The community is actively working to close the gap
 
 ```rust
 use ballista::prelude::*;
@@ -68,7 +75,7 @@ async fn main() -> datafusion::error::Result<()> {
 }
 ```
 
-If you are looking for documentation or more examples, please refer to the [Ballista User Guide][user-guide].
+For documentation or more examples, please refer to the [Ballista User Guide][user-guide].
 
 ## Architecture
 
