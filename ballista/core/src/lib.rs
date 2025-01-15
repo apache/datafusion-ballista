@@ -34,6 +34,7 @@ pub mod error;
 pub mod event_loop;
 pub mod execution_plans;
 pub mod extension;
+pub mod planner;
 pub mod registry;
 pub mod serde;
 pub mod utils;
