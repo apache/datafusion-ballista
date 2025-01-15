@@ -27,6 +27,7 @@ use datafusion::physical_plan::joins::HashJoinExec;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::ExecutionPlan;
+use log::warn;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -110,7 +111,7 @@ fn build_exec_plan_diagram(
     {
         "CoalescePartitionsExec"
     } else {
-        println!("Unknown: {plan:?}");
+        warn!("Unknown: {plan:?}");
         "Unknown"
     };
 
