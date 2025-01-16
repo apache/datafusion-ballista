@@ -60,9 +60,9 @@ Although some tasks can only be performed by a PMC member, many tasks can be per
 
 ### Post-Release
 
-| Task                                                    | Role Required |
-| ------------------------------------------------------- | ------------- |
-| Create PR against arrow-site with updated documentation | None          |
+| Task                                                         | Role Required |
+|--------------------------------------------------------------| ------------- |
+| Create PR against datafusion-site with updated documentation | None          |
 
 ## Detailed Guide
 
@@ -71,7 +71,7 @@ Although some tasks can only be performed by a PMC member, many tasks can be per
 - You will need a GitHub Personal Access Token with "repo" access. Follow
   [these instructions](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token)
   to generate one if you do not already have one.
-- Have upstream git repo `git@github.com:apache/arrow-ballista.git` add as git remote `apache`.
+- Have upstream git repo `git@github.com:apache/datafusion-ballista.git` add as git remote `apache`.
 
 ### Preparing the `main` Branch
 
@@ -102,7 +102,7 @@ pip3 install PyGitHub
 Run the following command to generate the changelog content.
 
 ```bash
-$ GITHUB_TOKEN=<TOKEN> ./dev/release/generate-changelog.py apache/arrow-ballista 0.11.0 HEAD > 0.12.0.md
+$ GITHUB_TOKEN=<TOKEN> ./dev/release/generate-changelog.py apache/datafusion-ballista 0.11.0 HEAD > 0.12.0.md
 ```
 
 This script creates a changelog from GitHub PRs based on the labels associated with them as well as looking for
@@ -121,9 +121,9 @@ This process is not fully automated, so there are some additional manual steps:
 - Add the following content (copy from the previous version's changelog and update as appropriate:
 
 ```
-## [0.12.0](https://github.com/apache/arrow-ballista/tree/0.12.0) (2024-01-14)
+## [0.12.0](https://github.com/apache/datafusion-ballista/tree/0.12.0) (2024-01-14)
 
-[Full Changelog](https://github.com/apache/arrow-ballista/compare/0.11.0...0.12.0)
+[Full Changelog](https://github.com/apache/datafusion-ballista/compare/0.11.0...0.12.0)
 ```
 
 Send a PR to get these changes merged into the release branch (e.g. `branch-0.12`). If new commits that could change the
@@ -157,16 +157,16 @@ git push apache <version>
 ### Create, sign, and upload artifacts
 
 - Make sure your signing key is added to the following files in SVN:
-    - https://dist.apache.org/repos/dist/dev/arrow/KEYS
-    - https://dist.apache.org/repos/dist/release/arrow/KEYS
+    - https://dist.apache.org/repos/dist/dev/datafusion/KEYS
+    - https://dist.apache.org/repos/dist/release/datafusion/KEYS
 
 See instructions at https://infra.apache.org/release-signing.html#generate for generating keys.
 
 Committers can add signing keys in Subversion client with their ASF account. e.g.:
 
 ```bash
-$ svn co https://dist.apache.org/repos/dist/dev/arrow
-$ cd arrow
+$ svn co https://dist.apache.org/repos/dist/dev/datafusion
+$ cd datafusion
 $ editor KEYS
 $ svn ci KEYS
 ```
@@ -186,43 +186,17 @@ GH_TOKEN=<TOKEN> ./dev/release/create-tarball.sh 0.11.0 1
 
 The `create-tarball.sh` script
 
-1. creates and uploads all release candidate artifacts to the [arrow
-   dev](https://dist.apache.org/repos/dist/dev/arrow) location on the
+1. creates and uploads all release candidate artifacts to the [datafusion
+   dev](https://dist.apache.org/repos/dist/dev/datafusion) location on the
    apache distribution svn server
 
 2. provide you an email template to
-   send to dev@arrow.apache.org for release voting.
+   send to dev@datafusion.apache.org for release voting.
 
 ### Vote on Release Candidate artifacts
 
-Send the email output from the script to dev@arrow.apache.org. The email should look like
+Send the email output from the script to dev@datafusion.apache.org. 
 
-```
-To: dev@arrow.apache.org
-Subject: [VOTE][Ballista] Release Apache Arrow Ballista 0.8.0 RC0
-
-Hi,
-
-I would like to propose a release of Apache Arrow Ballista Implementation,
-version 0.8.0.
-
-This release candidate is based on commit: a5dd428f57e62db20a945e8b1895de91405958c4 [1]
-The proposed release artifacts and signatures are hosted at [2].
-The changelog is located at [3].
-
-Please download, verify checksums and signatures, run the unit tests,
-and vote on the release.
-
-The vote will be open for at least 72 hours.
-
-[ ] +1 Release this as Apache Arrow Ballista 0.8.0
-[ ] +0
-[ ] -1 Do not release this as Apache Arrow Ballista 0.8.0 because...
-
-[1]: https://github.com/apache/arrow-ballista/tree/a5dd428f57e62db20a945e8b1895de91405958c4
-[2]: https://dist.apache.org/repos/dist/dev/arrow/apache-arrow-ballista-0.8.0
-[3]: https://github.com/apache/arrow-ballista/blob/a5dd428f57e62db20a945e8b1895de91405958c4/CHANGELOG.md
-```
 
 For the release to become "official" it needs at least three PMC members to vote +1 on it.
 
@@ -246,7 +220,7 @@ NOTE: steps in this section can only be done by PMC members.
 ### After the release is approved
 
 Move artifacts to the release location in SVN, e.g.
-https://dist.apache.org/repos/dist/release/arrow/arrow-ballista-0.8.0/, using
+https://dist.apache.org/repos/dist/release/datafusion/datafusion-ballista-0.8.0/, using
 the `release-tarball.sh` script:
 
 ```shell
@@ -271,7 +245,7 @@ Only approved releases of the tarball should be published to
 crates.io, in order to conform to Apache Software Foundation
 governance standards.
 
-An Arrow committer can publish this crate after an official project release has
+A DataFusion committer can publish this crate after an official project release has
 been made to crates.io using the following instructions.
 
 Follow [these
@@ -311,11 +285,11 @@ dot -Tsvg dev/release/crate-deps.dot > dev/release/crate-deps.svg
 
 Pushing a release tag causes Docker images to be published.
 
-Images can be found at [https://github.com/apache/arrow-ballista/pkgs/container/arrow-ballista-standalone](https://github.com/apache/arrow-ballista/pkgs/container/arrow-ballista-standalone)
+Images can be found at [https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone)
 
 ### Call the vote
 
-Call the vote on the Arrow dev list by replying to the RC voting thread. The
+Call the vote on the DataFusion dev list by replying to the RC voting thread. The
 reply should have a new subject constructed by adding `[RESULT]` prefix to the
 old subject line.
 
@@ -328,8 +302,8 @@ with the release verification.
 
 ### Add the release to Apache Reporter
 
-Add the release to https://reporter.apache.org/addrelease.html?arrow with a version name prefixed with `RS-BALLISTA-`,
-for example `RS-BALLISTA-0.9.0`.
+Add the release to https://reporter.apache.org/addrelease.html?datafusion with a version name prefixed with `BALLISTA-`,
+for example `BALLISTA-0.9.0`.
 
 The release information is used to generate a template for a board report (see example
 [here](https://github.com/apache/arrow/pull/14357)).
@@ -346,13 +320,13 @@ Release candidates should be deleted once the release is published.
 Get a list of Ballista release candidates:
 
 ```bash
-svn ls https://dist.apache.org/repos/dist/dev/arrow | grep ballista
+svn ls https://dist.apache.org/repos/dist/dev/datafusion | grep ballista
 ```
 
 Delete a release candidate:
 
 ```bash
-svn delete -m "delete old Ballista RC" https://dist.apache.org/repos/dist/dev/arrow/apache-arrow-ballista-0.8.0-rc1/
+svn delete -m "delete old Ballista RC" https://dist.apache.org/repos/dist/dev/datafusion/apache-datafusion-ballista-0.8.0-rc1/
 ```
 
 #### Deleting old releases from `release` svn
@@ -362,13 +336,13 @@ Only the latest release should be available. Delete old releases after publishin
 Get a list of Ballista releases:
 
 ```bash
-svn ls https://dist.apache.org/repos/dist/release/arrow | grep ballista
+svn ls https://dist.apache.org/repos/dist/release/datafusion | grep ballista
 ```
 
 Delete a release:
 
 ```bash
-svn delete -m "delete old Ballista release" https://dist.apache.org/repos/dist/release/arrow/arrow-ballista-0.8.0
+svn delete -m "delete old Ballista release" https://dist.apache.org/repos/dist/release/datafusion/datafusion-ballista-0.8.0
 ```
 
 ### Optional: Write a blog post announcing the release
@@ -384,11 +358,7 @@ git shortlog -sn 0.11.0..0.10.0 ballista ballista-cli examples | wc -l
 ```
 
 Once there is consensus on the contents of the post, create a PR to add a blog post to the
-[arrow-site](https://github.com/apache/arrow-site) repository. Note that there is no need for a formal
+[datafusion-site](https://github.com/apache/datafusion-site) repository. Note that there is no need for a formal
 PMC vote on the blog post contents since this isn't considered to be a "release".
 
-Here is an example blog post PR:
-
-- https://github.com/apache/arrow-site/pull/217
-
-Once the PR is merged, a GitHub action will publish the new blog post to https://arrow.apache.org/blog/.
+Once the PR is merged, a GitHub action will publish the new blog post to https://datafusion.apache.org/blog/.

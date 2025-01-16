@@ -32,8 +32,8 @@ set -x
 set -o pipefail
 
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-ARROW_DIR="$(dirname $(dirname ${SOURCE_DIR}))"
-ARROW_DIST_URL='https://dist.apache.org/repos/dist/dev/arrow'
+DATAFUSION_DIR="$(dirname $(dirname ${SOURCE_DIR}))"
+DATAFUSION_DIST_URL='https://dist.apache.org/repos/dist/dev/datafusion'
 
 download_dist_file() {
   curl \
@@ -41,11 +41,11 @@ download_dist_file() {
     --show-error \
     --fail \
     --location \
-    --remote-name $ARROW_DIST_URL/$1
+    --remote-name $DATAFUSION_DIST_URL/$1
 }
 
 download_rc_file() {
-  download_dist_file apache-arrow-ballista-${VERSION}-rc${RC_NUMBER}/$1
+  download_dist_file apache-datafusion-ballista-${VERSION}-rc${RC_NUMBER}/$1
 }
 
 import_gpg_keys() {
@@ -89,19 +89,19 @@ verify_dir_artifact_signatures() {
 setup_tempdir() {
   cleanup() {
     if [ "${TEST_SUCCESS}" = "yes" ]; then
-      rm -fr "${ARROW_TMPDIR}"
+      rm -fr "${DATAFUSION_TMPDIR}"
     else
-      echo "Failed to verify release candidate. See ${ARROW_TMPDIR} for details."
+      echo "Failed to verify release candidate. See ${DATAFUSION_TMPDIR} for details."
     fi
   }
 
-  if [ -z "${ARROW_TMPDIR}" ]; then
-    # clean up automatically if ARROW_TMPDIR is not defined
-    ARROW_TMPDIR=$(mktemp -d -t "$1.XXXXX")
+  if [ -z "${DATAFUSION_TMPDIR}" ]; then
+    # clean up automatically if DATAFUSION_TMPDIR is not defined
+    DATAFUSION_TMPDIR=$(mktemp -d -t "$1.XXXXX")
     trap cleanup EXIT
   else
     # don't clean up automatically
-    mkdir -p "${ARROW_TMPDIR}"
+    mkdir -p "${DATAFUSION_TMPDIR}"
   fi
 }
 
@@ -124,7 +124,7 @@ test_source_distribution() {
   # Clone testing repositories if not cloned already
   git clone https://github.com/apache/arrow-testing.git arrow-testing-data
   git clone https://github.com/apache/parquet-testing.git parquet-testing-data
-  export ARROW_TEST_DATA=$PWD/arrow-testing-data/data
+  export DATAFUSION_TEST_DATA=$PWD/arrow-testing-data/data
   export PARQUET_TEST_DATA=$PWD/parquet-testing-data/data
 
   # TODO: enable this eventually so that cargo test will check benchmark query results
@@ -150,11 +150,11 @@ test_source_distribution() {
 
 TEST_SUCCESS=no
 
-setup_tempdir "arrow-${VERSION}"
-echo "Working in sandbox ${ARROW_TMPDIR}"
-cd ${ARROW_TMPDIR}
+setup_tempdir "datafusion-${VERSION}"
+echo "Working in sandbox ${DATAFUSION_TMPDIR}"
+cd ${DATAFUSION_TMPDIR}
 
-dist_name="apache-arrow-ballista-${VERSION}"
+dist_name="apache-datafusion-ballista-${VERSION}"
 import_gpg_keys
 fetch_archive ${dist_name}
 tar xf ${dist_name}.tar.gz
