@@ -19,9 +19,9 @@ use crate::config::{
     BallistaConfig, BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, BALLISTA_JOB_NAME,
     BALLISTA_STANDALONE_PARALLELISM,
 };
+use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
 use crate::serde::{BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec};
-use crate::utils::BallistaQueryPlanner;
 use datafusion::execution::context::{QueryPlanner, SessionConfig, SessionState};
 use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
 use datafusion::execution::session_state::SessionStateBuilder;
