@@ -422,7 +422,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
             graph.revive();
 
-            println!("Saving job with status {:?}", graph.status());
+            info!("Saving job with status {:?}", graph.status());
 
             self.state.save_job(job_id, &graph).await?;
 

@@ -309,7 +309,6 @@ mod test {
 
         let keys = vec!["1", "4", "5", "3", "2"];
         for (i, key) in keys.iter().enumerate() {
-            // println!("{}", consistent_hash.get(key.as_bytes()).unwrap().name());
             assert_eq!(
                 consistent_hash.get(key.as_bytes()).unwrap().name(),
                 nodes[i].name()
