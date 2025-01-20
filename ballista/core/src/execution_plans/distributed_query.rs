@@ -105,26 +105,6 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
         }
     }
 
-    pub fn with_repr(
-        scheduler_url: String,
-        config: BallistaConfig,
-        plan: LogicalPlan,
-        extension_codec: Arc<dyn LogicalExtensionCodec>,
-        plan_repr: PhantomData<T>,
-        session_id: String,
-    ) -> Self {
-        let properties = Self::compute_properties(plan.schema().as_ref().clone().into());
-        Self {
-            scheduler_url,
-            config,
-            plan,
-            extension_codec,
-            plan_repr,
-            session_id,
-            properties,
-        }
-    }
-
     fn compute_properties(schema: SchemaRef) -> PlanProperties {
         PlanProperties::new(
             EquivalenceProperties::new(schema),
