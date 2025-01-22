@@ -15,13 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista::prelude::{SessionConfigExt, SessionContextExt};
-use ballista_examples::test_util;
-use datafusion::{
+use ballista::datafusion::{
     common::Result,
     execution::{options::ParquetReadOptions, SessionStateBuilder},
     prelude::{SessionConfig, SessionContext},
 };
+use ballista::prelude::{SessionConfigExt, SessionContextExt};
+use ballista_examples::test_util;
 
 #[tokio::main]
 async fn main() -> Result<()> {

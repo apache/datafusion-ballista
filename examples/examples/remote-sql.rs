@@ -15,13 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista::prelude::*;
-use ballista_examples::test_util;
-use datafusion::{
+use ballista::datafusion::{
     common::Result,
     execution::SessionStateBuilder,
     prelude::{CsvReadOptions, SessionConfig, SessionContext},
 };
+use ballista::prelude::*;
+use ballista_examples::test_util;
 
 /// This example demonstrates executing a simple query against an Arrow data source (CSV) and
 /// fetching results, using SQL
