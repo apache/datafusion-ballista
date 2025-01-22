@@ -33,17 +33,32 @@ pub mod terminate;
 mod cpu_bound_executor;
 mod standalone;
 
+use ballista_core::error::BallistaError;
+use std::net::SocketAddr;
+
 pub use standalone::new_standalone_executor;
 pub use standalone::new_standalone_executor_from_builder;
 pub use standalone::new_standalone_executor_from_state;
 
 use log::info;
 
+use crate::shutdown::Shutdown;
 use ballista_core::serde::protobuf::{
     task_status, FailedTask, OperatorMetricsSet, ShuffleWritePartition, SuccessfulTask,
     TaskStatus,
 };
 use ballista_core::serde::scheduler::PartitionId;
+
+/// [ArrowFlightServerProvider] provides a function which creates a new Arrow Flight server.
+///
+/// The function should take two arguments:
+/// [SocketAddr] - the address to bind the server to
+/// [Shutdown] - a shutdown signal to gracefully shutdown the server
+/// Returns a [tokio::task::JoinHandle] which will be registered as service handler
+///
+pub type ArrowFlightServerProvider = dyn Fn(SocketAddr, Shutdown) -> tokio::task::JoinHandle<Result<(), BallistaError>>
+    + Send
+    + Sync;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TaskExecutionTimes {

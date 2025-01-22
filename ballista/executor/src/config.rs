@@ -54,6 +54,7 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             override_runtime_producer: None,
             override_logical_codec: None,
             override_physical_codec: None,
+            override_arrow_flight_service: None,
         })
     }
 }
