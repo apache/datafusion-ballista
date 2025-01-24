@@ -19,3 +19,4 @@
 
 pub mod extension;
 pub mod prelude;
+pub use datafusion;
