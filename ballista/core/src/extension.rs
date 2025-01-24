@@ -23,7 +23,7 @@ use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
 use crate::serde::{BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec};
 use datafusion::execution::context::{QueryPlanner, SessionConfig, SessionState};
-use datafusion::execution::runtime_env::{RuntimeConfig, RuntimeEnv};
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::session_state::SessionStateBuilder;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
@@ -132,8 +132,7 @@ impl SessionStateExt for SessionState {
             // Ballista disables this option
             .with_round_robin_repartition(false);
 
-        let runtime_config = RuntimeConfig::default();
-        let runtime_env = RuntimeEnv::try_new(runtime_config)?;
+        let runtime_env = RuntimeEnvBuilder::new().build()?;
         let session_state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(session_config)

@@ -19,7 +19,7 @@
 name = "ballista-core"
 description = "Ballista Distributed Compute"
 license = "Apache-2.0"
-version = "43.0.0"
+version = "44.0.0"
 homepage = "https://github.com/apache/arrow-ballista"
 repository = "https://github.com/apache/arrow-ballista"
 readme = "README.md"

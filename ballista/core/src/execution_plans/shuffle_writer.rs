@@ -135,7 +135,8 @@ impl ShuffleWriterExec {
         let properties = PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(plan.schema()),
             partitioning,
-            datafusion::physical_plan::ExecutionMode::Bounded,
+            datafusion::physical_plan::execution_plan::EmissionType::Incremental,
+            datafusion::physical_plan::execution_plan::Boundedness::Bounded,
         );
         Ok(Self {
             job_id,

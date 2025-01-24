@@ -180,17 +180,14 @@ mod test {
     use datafusion::{
         common::tree_node::TreeNode,
         error::Result,
-        execution::{
-            runtime_env::{RuntimeConfig, RuntimeEnv},
-            SessionStateBuilder,
-        },
+        execution::{runtime_env::RuntimeEnvBuilder, SessionStateBuilder},
         prelude::{SessionConfig, SessionContext},
     };
 
     use super::LocalRun;
 
     fn context() -> SessionContext {
-        let runtime_environment = RuntimeEnv::try_new(RuntimeConfig::new()).unwrap();
+        let runtime_environment = RuntimeEnvBuilder::new().build().unwrap();
 
         let session_config = SessionConfig::new().with_information_schema(true);
 
