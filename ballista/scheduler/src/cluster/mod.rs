@@ -186,6 +186,9 @@ pub trait ClusterState: Send + Sync + 'static {
     /// Get executor metadata for the provided executor ID. Returns an error if the executor does not exist
     async fn get_executor_metadata(&self, executor_id: &str) -> Result<ExecutorMetadata>;
 
+    /// return list of registered executors
+    async fn registered_executor_metadata(&self) -> Vec<ExecutorMetadata>;
+
     /// Save the executor heartbeat
     async fn save_executor_heartbeat(&self, heartbeat: ExecutorHeartbeat) -> Result<()>;
 

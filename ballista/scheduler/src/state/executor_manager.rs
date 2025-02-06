@@ -192,20 +192,16 @@ impl ExecutorManager {
     }
 
     /// Get a list of all executors along with the timestamp of their last recorded heartbeat
-    pub async fn get_executor_state(&self) -> Result<Vec<(ExecutorMetadata, Duration)>> {
-        let heartbeat_timestamps: Vec<(String, u64)> = self
-            .cluster_state
-            .executor_heartbeats()
-            .into_iter()
-            .map(|(executor_id, heartbeat)| (executor_id, heartbeat.timestamp))
-            .collect();
-
-        let mut state: Vec<(ExecutorMetadata, Duration)> = vec![];
-        for (executor_id, ts) in heartbeat_timestamps {
-            let duration = Duration::from_secs(ts);
-
-            let metadata = self.get_executor_metadata(&executor_id).await?;
-
+    pub async fn get_executor_state(
+        &self,
+    ) -> Result<Vec<(ExecutorMetadata, Option<Duration>)>> {
+        let mut state: Vec<(ExecutorMetadata, Option<Duration>)> = vec![];
+        for metadata in self.cluster_state.registered_executor_metadata().await {
+            let duration = self
+                .cluster_state
+                .get_executor_heartbeat(&metadata.id)
+                .map(|hb| hb.timestamp)
+                .map(Duration::from_secs);
             state.push((metadata, duration));
         }
 

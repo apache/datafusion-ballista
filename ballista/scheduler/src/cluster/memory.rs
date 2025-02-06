@@ -259,7 +259,7 @@ impl ClusterState for InMemoryClusterState {
 
             guard.remove(executor_id);
         }
-
+        self.executors.remove(executor_id);
         self.heartbeats.remove(executor_id);
 
         Ok(())
@@ -274,6 +274,10 @@ impl ClusterState for InMemoryClusterState {
 
     fn get_executor_heartbeat(&self, executor_id: &str) -> Option<ExecutorHeartbeat> {
         self.heartbeats.get(executor_id).map(|r| r.value().clone())
+    }
+
+    async fn registered_executor_metadata(&self) -> Vec<ExecutorMetadata> {
+        self.executors.iter().map(|v| v.clone()).collect()
     }
 }
 
