@@ -225,6 +225,10 @@ impl ClusterState for InMemoryClusterState {
 
     async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()> {
         log::debug!("save executor metadata: {}", metadata.id);
+        // TODO: MM it would make sense to add time when ExecutorMetadata is persisted
+        //       we can do that adding additional field in ExecutorMetadata representing
+        //       insert time. This information may be useful when reporting executor
+        //       status and heartbeat is not available (in case of `TaskSchedulingPolicy::PullStaged`)
         self.executors.insert(metadata.id.clone(), metadata);
         Ok(())
     }
