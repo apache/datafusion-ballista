@@ -224,6 +224,10 @@ impl ExecutorManager {
     ///
     /// For push-based one, we should use [`register_executor`], instead.
     pub async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()> {
+        debug!(
+            "save executor metadata {} with {} task slots (pull-based registration)",
+            metadata.id, metadata.specification.task_slots
+        );
         self.cluster_state.save_executor_metadata(metadata).await
     }
 
@@ -238,7 +242,7 @@ impl ExecutorManager {
         specification: ExecutorData,
     ) -> Result<()> {
         debug!(
-            "registering executor {} with {} task slots",
+            "registering executor {} with {} task slots (push-based registration)",
             metadata.id, specification.total_task_slots
         );
 

@@ -197,6 +197,7 @@ impl ClusterState for InMemoryClusterState {
         spec: ExecutorData,
     ) -> Result<()> {
         let executor_id = metadata.id.clone();
+        log::debug!("registering executor: {}", executor_id);
 
         self.save_executor_metadata(metadata).await?;
         self.save_executor_heartbeat(ExecutorHeartbeat {
@@ -223,6 +224,7 @@ impl ClusterState for InMemoryClusterState {
     }
 
     async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()> {
+        log::debug!("save executor metadata: {}", metadata.id);
         self.executors.insert(metadata.id.clone(), metadata);
         Ok(())
     }
@@ -239,6 +241,7 @@ impl ClusterState for InMemoryClusterState {
     }
 
     async fn save_executor_heartbeat(&self, heartbeat: ExecutorHeartbeat) -> Result<()> {
+        log::debug!("saving executor heartbeat: {}", heartbeat.executor_id);
         let executor_id = heartbeat.executor_id.clone();
         if let Some(mut last) = self.heartbeats.get_mut(&executor_id) {
             let _ = std::mem::replace(last.deref_mut(), heartbeat);
@@ -250,6 +253,7 @@ impl ClusterState for InMemoryClusterState {
     }
 
     async fn remove_executor(&self, executor_id: &str) -> Result<()> {
+        log::debug!("removing executor: {}", executor_id);
         {
             let mut guard = self.task_slots.lock().await;
 
