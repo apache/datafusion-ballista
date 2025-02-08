@@ -501,7 +501,7 @@ async fn loadtest_ballista(opt: BallistaLoadtestOpt) -> Result<()> {
                 let query_id = query_list_clone
                     .get(
                         (0..query_list_clone.len())
-                            .choose(&mut rand::thread_rng())
+                            .choose(&mut rand::rng())
                             .unwrap(),
                     )
                     .unwrap();

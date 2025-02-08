@@ -556,7 +556,7 @@ order by
 
         let join = coalesce_batches.children()[0].clone();
         let join = downcast_exec!(join, HashJoinExec);
-        assert!(join.contain_projection());
+        assert!(join.contains_projection());
 
         let join_input_1 = join.children()[0].clone();
         // skip CoalesceBatches
@@ -687,7 +687,7 @@ order by
         assert_eq!(Some(&Column::new("l_shipmode", 1)), partition_by);
         assert_eq!(InputOrderMode::Sorted, window.input_order_mode);
         let sort = downcast_exec!(window.children()[0], SortExec);
-        match &sort.expr().inner[..] {
+        match &sort.expr().iter().collect::<Vec<_>>()[..] {
             [expr1, expr2] => {
                 assert_eq!(
                     SortOptions {

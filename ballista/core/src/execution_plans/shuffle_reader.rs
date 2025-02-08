@@ -50,7 +50,7 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use itertools::Itertools;
 use log::{error, info};
 use rand::prelude::SliceRandom;
-use rand::thread_rng;
+use rand::rng;
 use tokio::sync::{mpsc, Semaphore};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -163,7 +163,7 @@ impl ExecutionPlan for ShuffleReaderExec {
             .map(|(_, p)| p)
             .collect();
         // Shuffle partitions for evenly send fetching partition requests to avoid hot executors within multiple tasks
-        partition_locations.shuffle(&mut thread_rng());
+        partition_locations.shuffle(&mut rng());
 
         let response_receiver =
             send_fetch_partitions(partition_locations, max_request_num);
