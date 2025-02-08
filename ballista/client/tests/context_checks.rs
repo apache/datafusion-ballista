@@ -365,4 +365,38 @@ mod supported {
 
         Ok(())
     }
+
+    /// looks like `ctx.enable_url_table()` changes session context id.
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_execute_sql_show_with_url_table(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) {
+        let ctx = ctx.enable_url_table();
+
+        let result = ctx
+            .sql(&format!("select string_col, timestamp_col from '{test_data}/alltypes_plain.parquet' where id > 4"))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        let expected = [
+            "+------------+---------------------+",
+            "| string_col | timestamp_col       |",
+            "+------------+---------------------+",
+            "| 31         | 2009-03-01T00:01:00 |",
+            "| 30         | 2009-04-01T00:00:00 |",
+            "| 31         | 2009-04-01T00:01:00 |",
+            "+------------+---------------------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+    }
 }
