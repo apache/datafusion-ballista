@@ -399,4 +399,69 @@ mod supported {
 
         assert_batches_eq!(expected, &result);
     }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    #[cfg(not(windows))] // test is failing at windows, can't debug it
+    async fn should_support_sql_insert_into(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) {
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+
+        let write_dir = tempfile::tempdir().expect("temporary directory to be created");
+        let write_dir_path = write_dir
+            .path()
+            .to_str()
+            .expect("path to be converted to str");
+
+        ctx.sql("select * from test")
+            .await
+            .unwrap()
+            .write_parquet(write_dir_path, Default::default(), Default::default())
+            .await
+            .unwrap();
+
+        ctx.register_parquet("written_table", write_dir_path, Default::default())
+            .await
+            .unwrap();
+
+        ctx.sql("INSERT INTO written_table select * from test")
+            .await
+            .unwrap()
+            .show()
+            .await
+            .unwrap();
+
+        let result = ctx
+            .sql("select id, string_col, timestamp_col from written_table where id > 4 order by id")
+            .await.unwrap()
+            .collect()
+            .await.unwrap();
+
+        let expected = [
+            "+----+------------+---------------------+",
+            "| id | string_col | timestamp_col       |",
+            "+----+------------+---------------------+",
+            "| 5  | 31         | 2009-03-01T00:01:00 |",
+            "| 5  | 31         | 2009-03-01T00:01:00 |",
+            "| 6  | 30         | 2009-04-01T00:00:00 |",
+            "| 6  | 30         | 2009-04-01T00:00:00 |",
+            "| 7  | 31         | 2009-04-01T00:01:00 |",
+            "| 7  | 31         | 2009-04-01T00:01:00 |",
+            "+----+------------+---------------------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+    }
 }

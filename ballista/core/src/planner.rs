@@ -17,14 +17,16 @@
 
 use crate::config::BallistaConfig;
 use crate::execution_plans::DistributedQueryExec;
-use crate::serde::BallistaLogicalExtensionCodec;
+use crate::serde::{BallistaDmlExtension, BallistaLogicalExtensionCodec};
 
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::Schema;
+use datafusion::common::plan_err;
 use datafusion::common::tree_node::{TreeNode, TreeNodeVisitor};
+use datafusion::datasource::DefaultTableSource;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::{QueryPlanner, SessionState};
-use datafusion::logical_expr::{LogicalPlan, TableScan};
+use datafusion::logical_expr::{DmlStatement, Extension, LogicalPlan, TableScan};
 use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
@@ -124,6 +126,41 @@ impl<T: 'static + AsLogicalPlan> QueryPlanner for BallistaQueryPlanner<T> {
                 LogicalPlan::EmptyRelation(_) => {
                     log::debug!("create_physical_plan - handling empty exec");
                     Ok(Arc::new(EmptyExec::new(Arc::new(Schema::empty()))))
+                }
+                // At the moment DML statement uses TableReference instead of TableProvider.
+                // As ballista has two contexts (client and scheduler) scheduler context may not
+                // know table provider for given table reference, thus we need to attach
+                // table provider to this DML statement.
+                LogicalPlan::Dml(DmlStatement { table_name, .. })
+                    if self.config.planner_dml_extension() =>
+                {
+                    let table_name = table_name.to_owned();
+                    let table = table_name.table().to_string();
+                    let schema = session_state.schema_for_ref(table_name.clone())?;
+                    let table_provider = match schema.table(&table).await? {
+                        Some(ref provider) => Ok(Arc::clone(provider)),
+                        _ => plan_err!("No table named '{table}'"),
+                    }?;
+
+                    let table_source = Arc::new(DefaultTableSource::new(table_provider));
+                    let table =
+                        TableScan::try_new(table_name, table_source, None, vec![], None)?;
+
+                    // custom made logical extension node is used to attach table reference
+                    let node = Arc::new(BallistaDmlExtension {
+                        dml: logical_plan.clone(),
+                        table,
+                    });
+                    let plan = LogicalPlan::Extension(Extension { node });
+                    log::debug!("create_physical_plan - handling DML statement");
+
+                    Ok(Arc::new(DistributedQueryExec::<T>::with_extension(
+                        self.scheduler_url.clone(),
+                        self.config.clone(),
+                        plan.clone(),
+                        self.extension_codec.clone(),
+                        session_state.session_id().to_string(),
+                    )))
                 }
                 _ => {
                     log::debug!("create_physical_plan - handling general statement");

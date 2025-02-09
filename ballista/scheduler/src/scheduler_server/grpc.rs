@@ -32,6 +32,9 @@ use ballista_core::serde::protobuf::{
     UpdateTaskStatusParams, UpdateTaskStatusResult,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
+use ballista_core::serde::BallistaDmlExtension;
+use datafusion::datasource::DefaultTableSource;
+use datafusion::logical_expr::{Extension, LogicalPlan};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info, trace, warn};
@@ -409,6 +412,34 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                             self.state.codec.logical_extension_codec(),
                         )
                     }) {
+                        Ok(LogicalPlan::Extension(Extension { node }))
+                            if node
+                                .as_any()
+                                .downcast_ref::<BallistaDmlExtension>()
+                                .is_some() =>
+                        {
+                            let plan = node
+                                .as_any()
+                                .downcast_ref::<BallistaDmlExtension>()
+                                .unwrap();
+
+                            let table_provider = &plan
+                                .table
+                                .source
+                                .as_any()
+                                .downcast_ref::<DefaultTableSource>()
+                                .expect("Default Table Source is expected")
+                                .table_provider;
+
+                            let _ = session_ctx
+                                .deregister_table(plan.table.table_name.clone());
+                            let _ = session_ctx.register_table(
+                                plan.table.table_name.clone(),
+                                table_provider.clone(),
+                            );
+
+                            plan.dml.clone()
+                        }
                         Ok(plan) => plan,
                         Err(e) => {
                             let msg =

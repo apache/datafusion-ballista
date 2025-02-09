@@ -32,6 +32,13 @@ pub const BALLISTA_STANDALONE_PARALLELISM: &str = "ballista.standalone.paralleli
 /// max message size for gRPC clients
 pub const BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE: &str =
     "ballista.grpc_client_max_message_size";
+/// enable or disable ballista dml planner extension.
+/// when enabled planner will use custom logical planner DML
+/// extension which will serialize table provider used in DML
+///
+/// this configuration should be disabled if using remote schema
+/// registries.
+pub const BALLISTA_PLANNER_DML_EXTENSION: &str = "ballista.planner.dml_extension";
 
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
@@ -48,6 +55,10 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Configuration for max message size in gRPC clients".to_string(),
                          DataType::UInt64,
                          Some((16 * 1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_PLANNER_DML_EXTENSION.to_string(),
+                         "Enable ballista planner DML extension".to_string(),
+                         DataType::Boolean,
+                         Some((true).to_string())),
     ];
     entries
         .into_iter()
@@ -163,6 +174,10 @@ impl BallistaConfig {
 
     pub fn default_standalone_parallelism(&self) -> usize {
         self.get_usize_setting(BALLISTA_STANDALONE_PARALLELISM)
+    }
+
+    pub fn planner_dml_extension(&self) -> bool {
+        self.get_bool_setting(BALLISTA_PLANNER_DML_EXTENSION)
     }
 
     fn get_usize_setting(&self, key: &str) -> usize {
