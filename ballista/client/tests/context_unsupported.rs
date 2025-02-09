@@ -155,14 +155,14 @@ mod unsupported {
     ) -> datafusion::error::Result<()> {
         let cached_df = ctx.sql("SELECT 1").await?.cache().await?;
 
-        // Collect fails because extension node can't be serialized
+        // Collect fails because extension node is not handled for now by default query planner
         let result = cached_df.collect().await;
 
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("LogicalExtensionCodec is not provided"),
-            "Expected codec error, got: {err_msg}"
+            err_msg.contains("No installed planner was able to convert the custom node to an execution plan: BallistaCacheNode"),
+            "Expected planner error, got: {err_msg}"
         );
 
         Ok(())

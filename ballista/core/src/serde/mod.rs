@@ -18,12 +18,14 @@
 //! This crate contains code generated from the Ballista Protocol Buffer Definition as well
 //! as convenience code for interacting with the generated code.
 
+use crate::extension::BallistaCacheNode;
 use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 
 use arrow_flight::sql::ProstMessageExt;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
+use datafusion::logical_expr::Extension;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion_proto::logical_plan::file_formats::{
     ArrowLogicalExtensionCodec, AvroLogicalExtensionCodec, CsvLogicalExtensionCodec,
@@ -186,9 +188,23 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         &self,
         buf: &[u8],
         inputs: &[datafusion::logical_expr::LogicalPlan],
-        ctx: &TaskContext,
+        _ctx: &TaskContext,
     ) -> Result<datafusion::logical_expr::Extension> {
-        self.default_codec.try_decode(buf, inputs, ctx)
+        let message = protobuf::BallistaLogicalPlanCacheNode::decode(buf)
+            .map_err(|e| DataFusionError::Internal(e.to_string()))?;
+
+        Ok(Extension {
+            node: Arc::new(BallistaCacheNode::new(
+                message.cache_id,
+                message.session_id,
+                inputs
+                    .first()
+                    .ok_or(DataFusionError::Plan(
+                        "expected input size of 1".to_string(),
+                    ))?
+                    .clone(),
+            )),
+        })
     }
 
     fn try_encode(
@@ -196,7 +212,18 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         node: &datafusion::logical_expr::Extension,
         buf: &mut Vec<u8>,
     ) -> Result<()> {
-        self.default_codec.try_encode(node, buf)
+        if let Some(node) = node.node.as_any().downcast_ref::<BallistaCacheNode>() {
+            let message = protobuf::BallistaLogicalPlanCacheNode {
+                cache_id: node.cache_id().to_owned(),
+                session_id: node.session_id().to_owned(),
+            };
+
+            message
+                .encode(buf)
+                .map_err(|e| DataFusionError::Internal(e.to_string()))?;
+        }
+
+        Ok(())
     }
 
     fn try_decode_table_provider(

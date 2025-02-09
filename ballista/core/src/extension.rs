@@ -742,7 +742,8 @@ impl CacheFactory for BallistaCacheFactory {
         session_state: &SessionState,
     ) -> datafusion::error::Result<LogicalPlan> {
         Ok(LogicalPlan::Extension(Extension {
-            node: Arc::new(BallistaUserDefinedLogicalNodeCore::new(
+            node: Arc::new(BallistaCacheNode::new(
+                Uuid::new_v4().to_string(),
                 session_state.session_id().to_string(),
                 plan,
             )),
@@ -750,17 +751,18 @@ impl CacheFactory for BallistaCacheFactory {
     }
 }
 
+/// Ballista logical Extension for caching.
 #[derive(PartialEq, Eq, PartialOrd, Hash, Debug)]
-struct BallistaUserDefinedLogicalNodeCore {
+pub struct BallistaCacheNode {
     cache_id: String,
     session_id: String,
     input: LogicalPlan,
     exprs: Vec<Expr>,
 }
 
-impl BallistaUserDefinedLogicalNodeCore {
-    fn new(session_id: String, input: LogicalPlan) -> Self {
-        let cache_id = Uuid::new_v4().to_string();
+impl BallistaCacheNode {
+    /// Create a new cache node from provided logical input plan and cache infos.
+    pub fn new(cache_id: String, session_id: String, input: LogicalPlan) -> Self {
         Self {
             cache_id,
             session_id,
@@ -768,11 +770,21 @@ impl BallistaUserDefinedLogicalNodeCore {
             exprs: vec![],
         }
     }
+
+    /// Returns cache id.
+    pub fn cache_id(&self) -> &str {
+        self.cache_id.as_str()
+    }
+
+    /// Returns session id.
+    pub fn session_id(&self) -> &str {
+        self.session_id.as_str()
+    }
 }
 
-impl UserDefinedLogicalNodeCore for BallistaUserDefinedLogicalNodeCore {
+impl UserDefinedLogicalNodeCore for BallistaCacheNode {
     fn name(&self) -> &str {
-        "BallistaUserDefinedLogicalNodeCore"
+        "BallistaCacheNode"
     }
 
     fn inputs(&self) -> Vec<&LogicalPlan> {
@@ -788,18 +800,22 @@ impl UserDefinedLogicalNodeCore for BallistaUserDefinedLogicalNodeCore {
     }
 
     fn fmt_for_explain(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", UserDefinedLogicalNodeCore::name(self))
+        write!(f, "{}", self.name())
     }
 
     fn with_exprs_and_inputs(
         &self,
         exprs: Vec<datafusion::prelude::Expr>,
-        _inputs: Vec<LogicalPlan>,
+        inputs: Vec<LogicalPlan>,
     ) -> datafusion::error::Result<Self> {
+        let [input] = <[LogicalPlan; 1]>::try_from(inputs).map_err(|_| {
+            datafusion::error::DataFusionError::Plan("input size must be one".to_string())
+        })?;
+
         Ok(Self {
             cache_id: self.cache_id.clone(),
             session_id: self.session_id.clone(),
-            input: self.input.clone(),
+            input,
             exprs,
         })
     }
