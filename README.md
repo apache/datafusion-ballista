@@ -60,18 +60,25 @@ use datafusion::prelude::*;
 
 #[tokio::main]
 async fn main() -> datafusion::error::Result<()> {
-  // create DataFusion SessionContext with ballista standalone cluster started
-  let ctx = SessionContext::standalone();
+    // create SessionContext with ballista support
+    // standalone context will start all required
+    // ballista infrastructure in the background as well
+    let ctx = SessionContext::standalone().await?;
 
-  // register the table
-  ctx.register_csv("example", "tests/data/example.csv", CsvReadOptions::new()).await?;
+    // everything else remains the same
 
-  // create a plan to run a SQL query
-  let df = ctx.sql("SELECT a, MIN(b) FROM example WHERE a <= b GROUP BY a LIMIT 100").await?;
+    // register the table
+    ctx.register_csv("example", "tests/data/example.csv", CsvReadOptions::new())
+        .await?;
 
-  // execute and print results
-  df.show().await?;
-  Ok(())
+    // create a plan to run a SQL query
+    let df = ctx
+        .sql("SELECT a, MIN(b) FROM example WHERE a <= b GROUP BY a LIMIT 100")
+        .await?;
+
+    // execute and print results
+    df.show().await?;
+    Ok(())
 }
 ```
 
