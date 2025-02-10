@@ -41,7 +41,7 @@ pub struct ExecutorMetaResponse {
     pub id: String,
     pub host: String,
     pub port: u16,
-    pub last_seen: u128,
+    pub last_seen: Option<u128>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -98,7 +98,7 @@ pub async fn get_executors<
             id: metadata.id,
             host: metadata.host,
             port: metadata.port,
-            last_seen: duration.as_millis(),
+            last_seen: duration.map(|d| d.as_millis()),
         })
         .collect();
 

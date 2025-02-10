@@ -197,6 +197,7 @@ impl ClusterState for InMemoryClusterState {
         spec: ExecutorData,
     ) -> Result<()> {
         let executor_id = metadata.id.clone();
+        log::debug!("registering executor: {}", executor_id);
 
         self.save_executor_metadata(metadata).await?;
         self.save_executor_heartbeat(ExecutorHeartbeat {
@@ -223,6 +224,11 @@ impl ClusterState for InMemoryClusterState {
     }
 
     async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()> {
+        log::debug!("save executor metadata: {}", metadata.id);
+        // TODO: MM it would make sense to add time when ExecutorMetadata is persisted
+        //       we can do that adding additional field in ExecutorMetadata representing
+        //       insert time. This information may be useful when reporting executor
+        //       status and heartbeat is not available (in case of `TaskSchedulingPolicy::PullStaged`)
         self.executors.insert(metadata.id.clone(), metadata);
         Ok(())
     }
@@ -239,6 +245,7 @@ impl ClusterState for InMemoryClusterState {
     }
 
     async fn save_executor_heartbeat(&self, heartbeat: ExecutorHeartbeat) -> Result<()> {
+        log::debug!("saving executor heartbeat: {}", heartbeat.executor_id);
         let executor_id = heartbeat.executor_id.clone();
         if let Some(mut last) = self.heartbeats.get_mut(&executor_id) {
             let _ = std::mem::replace(last.deref_mut(), heartbeat);
@@ -250,12 +257,13 @@ impl ClusterState for InMemoryClusterState {
     }
 
     async fn remove_executor(&self, executor_id: &str) -> Result<()> {
+        log::debug!("removing executor: {}", executor_id);
         {
             let mut guard = self.task_slots.lock().await;
 
             guard.remove(executor_id);
         }
-
+        self.executors.remove(executor_id);
         self.heartbeats.remove(executor_id);
 
         Ok(())
@@ -270,6 +278,10 @@ impl ClusterState for InMemoryClusterState {
 
     fn get_executor_heartbeat(&self, executor_id: &str) -> Option<ExecutorHeartbeat> {
         self.heartbeats.get(executor_id).map(|r| r.value().clone())
+    }
+
+    async fn registered_executor_metadata(&self) -> Vec<ExecutorMetadata> {
+        self.executors.iter().map(|v| v.clone()).collect()
     }
 }
 
