@@ -19,9 +19,32 @@
 
 # Changelog
 
-## [43.0.0](https://github.com/apache/arrow-ballista/tree/43.0.0) (2025-01-07)
+## [44.0.0](https://github.com/apache/arrow-ballista/tree/44.0.0) (2025-02-02)
 
-[Full Changelog](https://github.com/apache/arrow-ballista/compare/0.12.0...43.0.0)
+[Full Changelog](https://github.com/apache/arrow-ballista/compare/43.0.0-rc2...44.0.0)
+
+**Implemented enhancements:**
+
+- feat: Job notification should emit job status for successful and failed jobs [#1165](https://github.com/apache/datafusion-ballista/pull/1165) (milenkovicm)
+- feat: executor supports pluggable arrow flight server [#1170](https://github.com/apache/datafusion-ballista/pull/1170) (milenkovicm)
+
+**Fixed bugs:**
+
+- fix: do not compile `keda.proto` if feature not used. [#1168](https://github.com/apache/datafusion-ballista/pull/1168) (milenkovicm)
+
+**Merged pull requests:**
+
+- chore: planner cleanup and refactor [#1160](https://github.com/apache/datafusion-ballista/pull/1160) (milenkovicm)
+- feat: Job notification should emit job status for successful and failed jobs [#1165](https://github.com/apache/datafusion-ballista/pull/1165) (milenkovicm)
+- chore: fix executor build issue on release [#1167](https://github.com/apache/datafusion-ballista/pull/1167) (milenkovicm)
+- fix: do not compile `keda.proto` if feature not used. [#1168](https://github.com/apache/datafusion-ballista/pull/1168) (milenkovicm)
+- chore: update to DF.44 [#1153](https://github.com/apache/datafusion-ballista/pull/1153) (milenkovicm)
+- chore: publicly expose datafusion in ballista client [#1169](https://github.com/apache/datafusion-ballista/pull/1169) (milenkovicm)
+- feat: executor supports pluggable arrow flight server [#1170](https://github.com/apache/datafusion-ballista/pull/1170) (milenkovicm)
+
+## [43.0.0](<https://github.com/apache/arrow-ballista/tree/43.0.0-rc2> (2025-01-07)
+
+[Full Changelog](https://github.com/apache/arrow-ballista/compare/0.12.0...43.0.0-rc2)
 
 **Implemented enhancements:**
 
