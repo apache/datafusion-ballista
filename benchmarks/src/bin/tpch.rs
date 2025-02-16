@@ -352,11 +352,13 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
     println!("Running benchmarks with the following options: {opt:?}");
     let mut benchmark_run = BenchmarkRun::new(opt.query);
 
-    let config = SessionConfig::new_with_ballista()
+    let mut config = SessionConfig::new_with_ballista()
         .with_target_partitions(opt.partitions)
         .with_ballista_job_name(&format!("Query derived from TPC-H q{}", opt.query))
         .with_batch_size(opt.batch_size)
         .with_collect_statistics(true);
+
+    config.options_mut().execution.parquet.schema_force_view_types = false;
 
     let state = SessionStateBuilder::new()
         .with_default_features()
