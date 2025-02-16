@@ -358,7 +358,12 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
         .with_batch_size(opt.batch_size)
         .with_collect_statistics(true);
 
-    config.options_mut().execution.parquet.schema_force_view_types = false;
+    // workaround for https://github.com/apache/datafusion-ballista/issues/1182
+    config
+        .options_mut()
+        .execution
+        .parquet
+        .schema_force_view_types = false;
 
     let state = SessionStateBuilder::new()
         .with_default_features()

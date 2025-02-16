@@ -39,7 +39,6 @@ use datafusion::arrow::{error::ArrowError, record_batch::RecordBatch};
 use futures::{Stream, StreamExt, TryStreamExt};
 use log::{debug, info};
 use std::io::{BufReader, Read, Seek};
-use arrow::array::Array;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::error::SendError;
 use tokio::{sync::mpsc::Sender, task};
@@ -110,9 +109,9 @@ impl FlightService for BallistaFlightService {
                     }
                 });
 
-                let write_options: IpcWriteOptions = IpcWriteOptions::default();
-                    //.try_with_compression(Some(CompressionType::LZ4_FRAME))
-                    //.map_err(|e| from_arrow_err(&e))?;
+                let write_options: IpcWriteOptions = IpcWriteOptions::default()
+                    .try_with_compression(Some(CompressionType::LZ4_FRAME))
+                    .map_err(|e| from_arrow_err(&e))?;
                 let flight_data_stream = FlightDataEncoderBuilder::new()
                     .with_schema(schema)
                     .with_options(write_options)
@@ -230,24 +229,14 @@ where
     }
 
     for batch in reader {
-        let x = batch.map_err(|err| err.into());
-
-        if let Ok(y) = &x {
-            println!("read_partition() sending batch with {} rows and {} bytes", y.num_rows(), y.get_array_memory_size());
-
-            for col in y.columns() {
-                println!("col type {} size {}", col.data_type(), col.get_array_memory_size());
-            }
-        }
-
-        tx.blocking_send(x)
+        tx.blocking_send(batch.map_err(|err| err.into()))
             .map_err(|err| {
                 if let SendError(Err(err)) = err {
                     err
                 } else {
-                    FlightError::Tonic(Status::internal(
-                        format!("Can't send a batch, something went wrong: {err:?}"),
-                    ))
+                    FlightError::Tonic(Status::internal(format!(
+                        "Can't send a batch, something went wrong: {err:?}"
+                    )))
                 }
             })?
     }
