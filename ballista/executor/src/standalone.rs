@@ -130,7 +130,9 @@ pub async fn new_standalone_executor_from_builder(
     ));
 
     let service = BallistaFlightService::new();
-    let server = FlightServiceServer::new(service);
+    let server = FlightServiceServer::new(service)
+        .max_encoding_message_size(16 * 1024 * 1024)
+        .max_decoding_message_size(16 * 1024 * 1024);
     tokio::spawn(
         create_grpc_server()
             .add_service(server)
@@ -199,7 +201,9 @@ pub async fn new_standalone_executor<
     ));
 
     let service = BallistaFlightService::new();
-    let server = FlightServiceServer::new(service);
+    let server = FlightServiceServer::new(service)
+        .max_encoding_message_size(16 * 1024 * 1024)
+        .max_decoding_message_size(16 * 1024 * 1024);
     tokio::spawn(
         create_grpc_server()
             .add_service(server)

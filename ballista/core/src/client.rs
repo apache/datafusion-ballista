@@ -72,8 +72,11 @@ impl BallistaClient {
                     "Error connecting to Ballista scheduler or executor at {addr}: {e:?}"
                 ))
                 })?;
-        let flight_client = FlightServiceClient::new(connection);
-        debug!("BallistaClient connected OK");
+        let flight_client = FlightServiceClient::new(connection)
+            .max_decoding_message_size(16777216)
+            .max_encoding_message_size(16777216);
+
+        debug!("BallistaClient connected OK: {:?}", flight_client);
 
         Ok(Self { flight_client })
     }
@@ -99,13 +102,21 @@ impl BallistaClient {
             .await
             .map_err(|error| match error {
                 // map grpc connection error to partition fetch error.
-                BallistaError::GrpcActionError(msg) => BallistaError::FetchFailed(
-                    executor_id.to_owned(),
-                    partition_id.stage_id,
-                    partition_id.partition_id,
-                    msg,
-                ),
-                other => other,
+                BallistaError::GrpcActionError(msg) => {
+                    println!("Failed to fetch partition: {:?}?", msg);
+
+                    BallistaError::FetchFailed(
+                        executor_id.to_owned(),
+                        partition_id.stage_id,
+                        partition_id.partition_id,
+                        msg,
+                    )
+                }
+                other => {
+                    println!("Failed to fetch partition: {:?}?", other);
+
+                    other
+                }
             })
     }
 

@@ -88,7 +88,9 @@ pub async fn new_standalone_scheduler_with_builder(
         );
 
     scheduler_server.init().await?;
-    let server = SchedulerGrpcServer::new(scheduler_server.clone());
+    let server = SchedulerGrpcServer::new(scheduler_server.clone())
+        .max_encoding_message_size(16 * 1024 * 1024)
+        .max_decoding_message_size(16 * 1024 * 1024);
     // Let the OS assign a random, free port
     let listener = TcpListener::bind("localhost:0").await?;
     let addr = listener.local_addr()?;

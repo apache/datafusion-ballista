@@ -115,6 +115,7 @@ impl FlightService for BallistaFlightService {
                 let flight_data_stream = FlightDataEncoderBuilder::new()
                     .with_schema(schema)
                     .with_options(write_options)
+                    .with_max_flight_data_size(1048576)
                     .build(ReceiverStream::new(rx))
                     .map_err(|err| Status::from_error(Box::new(err)));
 

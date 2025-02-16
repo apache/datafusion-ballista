@@ -476,7 +476,11 @@ async fn flight_server_task(
         info!("Built-in arrow flight server listening on: {:?}", address);
 
         let server_future = create_grpc_server()
-            .add_service(FlightServiceServer::new(BallistaFlightService::new()))
+            .add_service(
+                FlightServiceServer::new(BallistaFlightService::new())
+                    .max_encoding_message_size(16 * 1024 * 1024)
+                    .max_decoding_message_size(16 * 1024 * 1024),
+            )
             .serve_with_shutdown(address, grpc_shutdown.recv());
 
         server_future.await.map_err(|e| {
@@ -671,7 +675,8 @@ mod tests {
                         .add_service(
                             arrow_flight::flight_service_server::FlightServiceServer::new(
                                 crate::flight_service::BallistaFlightService::new(),
-                            ),
+                            ).max_encoding_message_size(16*1024*1024)
+                                .max_decoding_message_size(16*1024*1024),
                         )
                         .serve_with_shutdown(address, grpc_shutdown.recv());
 
