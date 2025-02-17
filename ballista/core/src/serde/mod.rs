@@ -22,8 +22,11 @@ use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 
 use arrow_flight::sql::ProstMessageExt;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::{DataFusionError, Result};
+use datafusion::common::{plan_err, DataFusionError, Result};
 use datafusion::execution::FunctionRegistry;
+use datafusion::logical_expr::{
+    Extension, LogicalPlan, TableScan, UserDefinedLogicalNodeCore,
+};
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion_proto::logical_plan::file_formats::{
     ArrowLogicalExtensionCodec, AvroLogicalExtensionCodec, CsvLogicalExtensionCodec,
@@ -179,7 +182,31 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         inputs: &[datafusion::logical_expr::LogicalPlan],
         ctx: &datafusion::prelude::SessionContext,
     ) -> Result<datafusion::logical_expr::Extension> {
-        self.default_codec.try_decode(buf, inputs, ctx)
+        match BallistaExtensionProto::decode(buf) {
+            Ok(extension) => match extension.extension {
+                Some(BallistaExtensionType::Dml(BallistaDmlExtensionProto {
+                    dml: Some(dml),
+                    table: Some(table),
+                })) => {
+                    let table = table.try_into_logical_plan(ctx, self)?;
+                    match table {
+                        LogicalPlan::TableScan(scan) => {
+                            let dml = dml.try_into_logical_plan(ctx, self)?;
+                            Ok(Extension {
+                                node: Arc::new(BallistaDmlExtension { dml, table: scan }),
+                            })
+                        }
+                        _ => plan_err!(
+                            "TableScan expected in ballista DML extension definition"
+                        ),
+                    }
+                }
+                None => plan_err!("Ballista extension can't be None"),
+                _ => plan_err!("Ballista extension not supported"),
+            },
+
+            Err(_e) => self.default_codec.try_decode(buf, inputs, ctx),
+        }
     }
 
     fn try_encode(
@@ -187,7 +214,32 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         node: &datafusion::logical_expr::Extension,
         buf: &mut Vec<u8>,
     ) -> Result<()> {
-        self.default_codec.try_encode(node, buf)
+        if let Some(BallistaDmlExtension { dml: input, table }) =
+            node.node.as_any().downcast_ref::<BallistaDmlExtension>()
+        {
+            let input = LogicalPlanNode::try_from_logical_plan(input, self)?;
+
+            let table = LogicalPlanNode::try_from_logical_plan(
+                &LogicalPlan::TableScan(table.clone()),
+                self,
+            )?;
+            let extension = BallistaDmlExtensionProto {
+                dml: Some(input),
+                table: Some(table),
+            };
+
+            let extension = BallistaExtensionProto {
+                extension: Some(BallistaExtensionType::Dml(extension)),
+            };
+
+            extension
+                .encode(buf)
+                .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+
+            Ok(())
+        } else {
+            self.default_codec.try_encode(node, buf)
+        }
     }
 
     fn try_decode_table_provider(
@@ -485,6 +537,74 @@ struct FileFormatProto {
     pub encoder_position: u32,
     #[prost(bytes, tag = 2)]
     pub blob: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct BallistaExtensionProto {
+    #[prost(oneof = "BallistaExtensionType", tags = "1")]
+    extension: Option<BallistaExtensionType>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Oneof)]
+enum BallistaExtensionType {
+    #[prost(message, tag = "1")]
+    Dml(BallistaDmlExtensionProto),
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct BallistaDmlExtensionProto {
+    #[prost(message, tag = 1)]
+    pub dml: Option<LogicalPlanNode>,
+    #[prost(message, tag = 2)]
+    pub table: Option<LogicalPlanNode>,
+}
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone)]
+pub struct BallistaDmlExtension {
+    /// LogicalPlan::DML
+    /// DMLStatement is expected
+    pub dml: LogicalPlan,
+    /// Table provider which is referenced
+    /// from LogicalPlan::DML
+    pub table: TableScan,
+}
+
+impl std::cmp::PartialOrd for BallistaDmlExtension {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.dml.partial_cmp(&other.dml)
+    }
+}
+impl UserDefinedLogicalNodeCore for BallistaDmlExtension {
+    fn name(&self) -> &str {
+        "BallistaDmlExtension"
+    }
+
+    fn inputs(&self) -> Vec<&datafusion::logical_expr::LogicalPlan> {
+        vec![&self.dml]
+    }
+
+    fn schema(&self) -> &datafusion::common::DFSchemaRef {
+        self.dml.schema()
+    }
+
+    fn expressions(&self) -> Vec<datafusion::prelude::Expr> {
+        self.dml.expressions()
+    }
+
+    fn fmt_for_explain(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        self.dml.fmt(f)
+    }
+
+    fn with_exprs_and_inputs(
+        &self,
+        _exprs: Vec<datafusion::prelude::Expr>,
+        inputs: Vec<datafusion::logical_expr::LogicalPlan>,
+    ) -> Result<Self> {
+        Ok(Self {
+            dml: inputs[0].clone(),
+            table: self.table.clone(),
+        })
+    }
 }
 
 #[cfg(test)]
