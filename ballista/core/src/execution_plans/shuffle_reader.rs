@@ -149,9 +149,8 @@ impl ExecutionPlan for ShuffleReaderExec {
 
         let config = context.session_config();
 
-        let max_request_num = config.ballista_grpc_client_max_message_size();
-        let max_message_size =
-            config.ballista_shuffle_reader_maximum_in_flight_requests();
+        let max_request_num = config.ballista_shuffle_reader_maximum_in_flight_requests();
+        let max_message_size = config.ballista_grpc_client_max_message_size();
 
         log::debug!(
             "ShuffleReaderExec::execute({}) max_request_num: {}, max_message_size: {}",

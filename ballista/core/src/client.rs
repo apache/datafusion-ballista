@@ -61,11 +61,7 @@ const IO_RETRY_WAIT_TIME_MS: u64 = 3000;
 impl BallistaClient {
     /// Create a new BallistaClient to connect to the executor listening on the specified
     /// host and port
-    pub async fn try_new(
-        host: &str,
-        port: u16,
-        grpc_client_max_message_size: usize,
-    ) -> Result<Self> {
+    pub async fn try_new(host: &str, port: u16, max_message_size: usize) -> Result<Self> {
         let addr = format!("http://{host}:{port}");
         debug!("BallistaClient connecting to {}", addr);
         let connection =
@@ -77,8 +73,8 @@ impl BallistaClient {
                 ))
                 })?;
         let flight_client = FlightServiceClient::new(connection)
-            .max_decoding_message_size(grpc_client_max_message_size)
-            .max_encoding_message_size(grpc_client_max_message_size);
+            .max_decoding_message_size(max_message_size)
+            .max_encoding_message_size(max_message_size);
 
         debug!("BallistaClient connected OK: {:?}", flight_client);
 
