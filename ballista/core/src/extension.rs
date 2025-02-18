@@ -17,7 +17,7 @@
 
 use crate::config::{
     BallistaConfig, BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, BALLISTA_JOB_NAME,
-    BALLISTA_STANDALONE_PARALLELISM,
+    BALLISTA_SHUFFLE_READER_MAX_REQUESTS, BALLISTA_STANDALONE_PARALLELISM,
 };
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
@@ -103,6 +103,15 @@ pub trait SessionConfigExt {
 
     /// Sets ballista job name
     fn with_ballista_job_name(self, job_name: &str) -> Self;
+
+    /// get maximum in flight requests for shuffle reader
+    fn ballista_shuffle_reader_maximum_in_flight_requests(&self) -> usize;
+
+    /// Sets maximum in flight requests for shuffle reader
+    fn with_ballista_shuffle_reader_maximum_in_flight_requests(
+        self,
+        max_requests: usize,
+    ) -> Self;
 }
 
 /// [SessionConfigHelperExt] is set of [SessionConfig] extension methods
@@ -121,16 +130,11 @@ impl SessionStateExt for SessionState {
         scheduler_url: String,
         session_id: String,
     ) -> datafusion::error::Result<SessionState> {
-        let config = BallistaConfig::default();
-
-        let planner =
-            BallistaQueryPlanner::<LogicalPlanNode>::new(scheduler_url, config.clone());
-
-        let session_config = SessionConfig::new()
-            .with_information_schema(true)
-            .with_option_extension(config.clone())
-            // Ballista disables this option
-            .with_round_robin_repartition(false);
+        let session_config = SessionConfig::new_with_ballista();
+        let planner = BallistaQueryPlanner::<LogicalPlanNode>::new(
+            scheduler_url,
+            BallistaConfig::default(),
+        );
 
         let runtime_env = RuntimeEnvBuilder::new().build()?;
         let session_state = SessionStateBuilder::new()
@@ -191,6 +195,7 @@ impl SessionConfigExt for SessionConfig {
     fn new_with_ballista() -> SessionConfig {
         SessionConfig::new()
             .with_option_extension(BallistaConfig::default())
+            .with_information_schema(true)
             .with_target_partitions(16)
             .with_round_robin_repartition(false)
     }
@@ -277,6 +282,28 @@ impl SessionConfigExt for SessionConfig {
         } else {
             self.with_option_extension(BallistaConfig::default())
                 .set_usize(BALLISTA_STANDALONE_PARALLELISM, parallelism)
+        }
+    }
+
+    fn ballista_shuffle_reader_maximum_in_flight_requests(&self) -> usize {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.shuffle_reader_maximum_in_flight_requests())
+            .unwrap_or_else(|| {
+                BallistaConfig::default().shuffle_reader_maximum_in_flight_requests()
+            })
+    }
+
+    fn with_ballista_shuffle_reader_maximum_in_flight_requests(
+        self,
+        max_requests: usize,
+    ) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_usize(BALLISTA_SHUFFLE_READER_MAX_REQUESTS, max_requests)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_usize(BALLISTA_SHUFFLE_READER_MAX_REQUESTS, max_requests)
         }
     }
 }

@@ -31,11 +31,7 @@ use ballista_core::{
     BALLISTA_VERSION,
 };
 use ballista_core::{ConfigProducer, RuntimeProducer};
-use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use datafusion::execution::SessionState;
-use datafusion::prelude::SessionConfig;
-use datafusion_proto::logical_plan::AsLogicalPlan;
-use datafusion_proto::physical_plan::AsExecutionPlan;
+use datafusion::execution::{SessionState, SessionStateBuilder};
 use log::info;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -55,6 +51,7 @@ pub async fn new_standalone_executor_from_state(
 ) -> Result<()> {
     let logical = session_state.config().ballista_logical_extension_codec();
     let physical = session_state.config().ballista_physical_extension_codec();
+
     let codec: BallistaCodec<
         datafusion_proto::protobuf::LogicalPlanNode,
         datafusion_proto::protobuf::PhysicalPlanNode,
@@ -63,7 +60,9 @@ pub async fn new_standalone_executor_from_state(
     let config = session_state
         .config()
         .clone()
-        .with_option_extension(BallistaConfig::default());
+        .with_option_extension(BallistaConfig::default()) // TODO: do we need this statement
+        ;
+
     let runtime = session_state.runtime_env().clone();
 
     let config_producer: ConfigProducer = Arc::new(move || config.clone());
@@ -90,16 +89,16 @@ pub async fn new_standalone_executor_from_builder(
 ) -> Result<()> {
     // Let the OS assign a random, free port
     let listener = TcpListener::bind("localhost:0").await?;
-    let addr = listener.local_addr()?;
+    let address = listener.local_addr()?;
     info!(
         "Ballista v{} Rust Executor listening on {:?}",
-        BALLISTA_VERSION, addr
+        BALLISTA_VERSION, address
     );
 
     let executor_meta = ExecutorRegistration {
         id: Uuid::new_v4().to_string(), // assign this executor a unique ID
         host: Some("localhost".to_string()),
-        port: addr.port() as u32,
+        port: address.port() as u32,
         // TODO Make it configurable
         grpc_port: 50020,
         specification: Some(
@@ -109,6 +108,9 @@ pub async fn new_standalone_executor_from_builder(
             .into(),
         ),
     };
+
+    let config = config_producer();
+    let max_message_size = config.ballista_grpc_client_max_message_size();
 
     let work_dir = TempDir::new()?
         .into_path()
@@ -130,7 +132,10 @@ pub async fn new_standalone_executor_from_builder(
     ));
 
     let service = BallistaFlightService::new();
-    let server = FlightServiceServer::new(service);
+    let server = FlightServiceServer::new(service)
+        .max_decoding_message_size(max_message_size)
+        .max_encoding_message_size(max_message_size);
+
     tokio::spawn(
         create_grpc_server()
             .add_service(server)
@@ -145,69 +150,22 @@ pub async fn new_standalone_executor_from_builder(
 
 /// Creates standalone executor with most values
 /// set as default.
-pub async fn new_standalone_executor<
-    T: 'static + AsLogicalPlan,
-    U: 'static + AsExecutionPlan,
->(
+pub async fn new_standalone_executor(
     scheduler: SchedulerGrpcClient<Channel>,
     concurrent_tasks: usize,
-    codec: BallistaCodec<T, U>,
+    codec: BallistaCodec,
 ) -> Result<()> {
-    // Let the OS assign a random, free port
-    let listener = TcpListener::bind("localhost:0").await?;
-    let addr = listener.local_addr()?;
-    info!(
-        "Ballista v{} Rust Executor listening on {:?}",
-        BALLISTA_VERSION, addr
-    );
+    let session_state = SessionStateBuilder::new().with_default_features().build();
+    let runtime = session_state.runtime_env().clone();
+    let runtime_producer: RuntimeProducer = Arc::new(move |_| Ok(runtime.clone()));
 
-    let executor_meta = ExecutorRegistration {
-        id: Uuid::new_v4().to_string(), // assign this executor a unique ID
-        host: Some("localhost".to_string()),
-        port: addr.port() as u32,
-        // TODO Make it configurable
-        grpc_port: 50020,
-        specification: Some(
-            ExecutorSpecification {
-                task_slots: concurrent_tasks as u32,
-            }
-            .into(),
-        ),
-    };
-    let work_dir = TempDir::new()?
-        .into_path()
-        .into_os_string()
-        .into_string()
-        .unwrap();
-    info!("work_dir: {}", work_dir);
-
-    let config_producer = Arc::new(default_config_producer);
-    let wd = work_dir.clone();
-    let runtime_producer: RuntimeProducer = Arc::new(move |_: &SessionConfig| {
-        let runtime_env = RuntimeEnvBuilder::new()
-            .with_temp_file_path(wd.clone())
-            .build()?;
-        Ok(Arc::new(runtime_env))
-    });
-
-    let executor = Arc::new(Executor::new_basic(
-        executor_meta,
-        &work_dir,
-        runtime_producer,
-        config_producer,
+    new_standalone_executor_from_builder(
+        scheduler,
         concurrent_tasks,
-    ));
-
-    let service = BallistaFlightService::new();
-    let server = FlightServiceServer::new(service);
-    tokio::spawn(
-        create_grpc_server()
-            .add_service(server)
-            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
-                listener,
-            )),
-    );
-
-    tokio::spawn(execution_loop::poll_loop(scheduler, executor, codec));
-    Ok(())
+        Arc::new(default_config_producer),
+        runtime_producer,
+        codec,
+        (&session_state).into(),
+    )
+    .await
 }

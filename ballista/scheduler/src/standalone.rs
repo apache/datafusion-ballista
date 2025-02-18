@@ -74,8 +74,11 @@ pub async fn new_standalone_scheduler_with_builder(
     config_producer: ConfigProducer,
     codec: BallistaCodec,
 ) -> Result<SocketAddr> {
+    let config = config_producer();
+
     let cluster =
         BallistaCluster::new_memory("localhost:50050", session_builder, config_producer);
+
     let metrics_collector = default_metrics_collector()?;
 
     let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
@@ -88,7 +91,10 @@ pub async fn new_standalone_scheduler_with_builder(
         );
 
     scheduler_server.init().await?;
-    let server = SchedulerGrpcServer::new(scheduler_server.clone());
+    let server = SchedulerGrpcServer::new(scheduler_server.clone())
+        .max_decoding_message_size(config.ballista_grpc_client_max_message_size())
+        .max_encoding_message_size(config.ballista_grpc_client_max_message_size());
+
     // Let the OS assign a random, free port
     let listener = TcpListener::bind("localhost:0").await?;
     let addr = listener.local_addr()?;

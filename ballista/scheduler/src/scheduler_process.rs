@@ -91,9 +91,15 @@ pub async fn start_server(
         tonic_builder.add_service(ExternalScalerServer::new(scheduler_server.clone()));
 
     #[cfg(feature = "flight-sql")]
-    let tonic_builder = tonic_builder.add_service(FlightServiceServer::new(
-        FlightSqlServiceImpl::new(scheduler_server.clone()),
-    ));
+    let tonic_builder = tonic_builder.add_service(
+        FlightServiceServer::new(FlightSqlServiceImpl::new(scheduler_server.clone()))
+            .max_encoding_message_size(
+                config.grpc_server_max_encoding_message_size as usize,
+            )
+            .max_decoding_message_size(
+                config.grpc_server_max_decoding_message_size as usize,
+            ),
+    );
 
     let tonic = tonic_builder.into_service().into_axum_router();
 

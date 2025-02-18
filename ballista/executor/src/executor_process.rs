@@ -365,7 +365,13 @@ pub async fn start_executor_process(
     service_handlers.push(match override_flight {
         None => {
             info!("Starting built-in arrow flight service");
-            flight_server_task(address, shutdown).await
+            flight_server_task(
+                address,
+                shutdown,
+                opt.grpc_max_encoding_message_size as usize,
+                opt.grpc_max_decoding_message_size as usize,
+            )
+            .await
         }
         Some(flight_provider) => {
             info!("Starting custom, user provided, arrow flight service");
@@ -471,12 +477,18 @@ pub async fn start_executor_process(
 async fn flight_server_task(
     address: SocketAddr,
     mut grpc_shutdown: Shutdown,
+    max_encoding_message_size: usize,
+    max_decoding_message_size: usize,
 ) -> JoinHandle<Result<(), BallistaError>> {
     tokio::spawn(async move {
-        info!("Built-in arrow flight server listening on: {:?}", address);
+        info!("Built-in arrow flight server listening on: {:?} max_encoding_size: {} max_decoding_size: {}", address, max_encoding_message_size, max_decoding_message_size);
 
         let server_future = create_grpc_server()
-            .add_service(FlightServiceServer::new(BallistaFlightService::new()))
+            .add_service(
+                FlightServiceServer::new(BallistaFlightService::new())
+                    .max_decoding_message_size(max_decoding_message_size)
+                    .max_encoding_message_size(max_encoding_message_size),
+            )
             .serve_with_shutdown(address, grpc_shutdown.recv());
 
         server_future.await.map_err(|e| {
