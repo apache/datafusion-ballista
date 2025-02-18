@@ -169,7 +169,15 @@ impl SessionStateExt for SessionState {
             .clone()
             .with_option_extension(new_config.clone())
             // Ballista disables this option
-            .with_round_robin_repartition(false);
+            .with_round_robin_repartition(false)
+            // There is issue with Utv8View(s) where Arrow IPC will generate
+            // frames which would be too big to send using Arrow Flight.
+            // We disable this option temporary
+            // TODO: enable this option once we get to root of the problem
+            .set_bool(
+                "datafusion.execution.parquet.schema_force_view_types",
+                false,
+            );
 
         let builder = SessionStateBuilder::new_from_existing(self)
             .with_config(session_config)
