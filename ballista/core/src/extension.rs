@@ -105,10 +105,10 @@ pub trait SessionConfigExt {
     fn with_ballista_job_name(self, job_name: &str) -> Self;
 
     /// get maximum in flight requests for shuffle reader
-    fn ballista_shuffle_reader_maximum_in_flight_requests(&self) -> usize;
+    fn ballista_shuffle_reader_maximum_concurrent_requests(&self) -> usize;
 
     /// Sets maximum in flight requests for shuffle reader
-    fn with_ballista_shuffle_reader_maximum_in_flight_requests(
+    fn with_ballista_shuffle_reader_maximum_concurrent_requests(
         self,
         max_requests: usize,
     ) -> Self;
@@ -293,17 +293,17 @@ impl SessionConfigExt for SessionConfig {
         }
     }
 
-    fn ballista_shuffle_reader_maximum_in_flight_requests(&self) -> usize {
+    fn ballista_shuffle_reader_maximum_concurrent_requests(&self) -> usize {
         self.options()
             .extensions
             .get::<BallistaConfig>()
-            .map(|c| c.shuffle_reader_maximum_in_flight_requests())
+            .map(|c| c.shuffle_reader_maximum_concurrent_requests())
             .unwrap_or_else(|| {
-                BallistaConfig::default().shuffle_reader_maximum_in_flight_requests()
+                BallistaConfig::default().shuffle_reader_maximum_concurrent_requests()
             })
     }
 
-    fn with_ballista_shuffle_reader_maximum_in_flight_requests(
+    fn with_ballista_shuffle_reader_maximum_concurrent_requests(
         self,
         max_requests: usize,
     ) -> Self {
