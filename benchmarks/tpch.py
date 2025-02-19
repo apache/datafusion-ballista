@@ -30,8 +30,10 @@ query = args.query
 path = args.path
 table_ext = args.ext
 
-import ballista
-ctx = ballista.BallistaContext("localhost", 50050)
+from ballista import BallistaBuilder
+from datafusion.context import SessionContext
+    
+ctx: SessionContext = BallistaBuilder().remote("df://127.0.0.1:50050")
 
 tables = ["part", "supplier", "partsupp", "customer", "orders", "lineitem", "nation", "region"]
 
