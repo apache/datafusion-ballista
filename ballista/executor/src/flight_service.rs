@@ -234,9 +234,9 @@ where
                 if let SendError(Err(err)) = err {
                     err
                 } else {
-                    FlightError::Tonic(Status::internal(
-                        "Can't send a batch, something went wrong",
-                    ))
+                    FlightError::Tonic(Status::internal(format!(
+                        "Can't send a batch, something went wrong: {err:?}"
+                    )))
                 }
             })?
     }

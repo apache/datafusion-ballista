@@ -32,6 +32,8 @@ pub const BALLISTA_STANDALONE_PARALLELISM: &str = "ballista.standalone.paralleli
 /// max message size for gRPC clients
 pub const BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE: &str =
     "ballista.grpc_client_max_message_size";
+pub const BALLISTA_SHUFFLE_READER_MAX_REQUESTS: &str =
+    "ballista.shuffle.max_concurrent_read_requests";
 
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
@@ -48,6 +50,10 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Configuration for max message size in gRPC clients".to_string(),
                          DataType::UInt64,
                          Some((16 * 1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_READER_MAX_REQUESTS.to_string(),
+                         "Maximum concurrent requests shuffle reader can process".to_string(),
+                         DataType::UInt64,
+                         Some((64).to_string())),
     ];
     entries
         .into_iter()
@@ -163,6 +169,10 @@ impl BallistaConfig {
 
     pub fn default_standalone_parallelism(&self) -> usize {
         self.get_usize_setting(BALLISTA_STANDALONE_PARALLELISM)
+    }
+
+    pub fn shuffle_reader_maximum_concurrent_requests(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SHUFFLE_READER_MAX_REQUESTS)
     }
 
     fn get_usize_setting(&self, key: &str) -> usize {

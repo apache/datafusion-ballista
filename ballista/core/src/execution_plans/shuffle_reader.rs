@@ -29,6 +29,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use crate::client::BallistaClient;
+use crate::extension::SessionConfigExt;
 use crate::serde::scheduler::{PartitionLocation, PartitionStats};
 
 use datafusion::arrow::datatypes::SchemaRef;
@@ -146,8 +147,18 @@ impl ExecutionPlan for ShuffleReaderExec {
         let task_id = context.task_id().unwrap_or_else(|| partition.to_string());
         info!("ShuffleReaderExec::execute({})", task_id);
 
-        // TODO make the maximum size configurable, or make it depends on global memory control
-        let max_request_num = 50usize;
+        let config = context.session_config();
+
+        let max_request_num =
+            config.ballista_shuffle_reader_maximum_concurrent_requests();
+        let max_message_size = config.ballista_grpc_client_max_message_size();
+
+        log::debug!(
+            "ShuffleReaderExec::execute({}) max_request_num: {}, max_message_size: {}",
+            task_id,
+            max_request_num,
+            max_message_size
+        );
         let mut partition_locations = HashMap::new();
         for p in &self.partition[partition] {
             partition_locations
@@ -166,7 +177,7 @@ impl ExecutionPlan for ShuffleReaderExec {
         partition_locations.shuffle(&mut thread_rng());
 
         let response_receiver =
-            send_fetch_partitions(partition_locations, max_request_num);
+            send_fetch_partitions(partition_locations, max_request_num, max_message_size);
 
         let result = RecordBatchStreamAdapter::new(
             Arc::new(self.schema.as_ref().clone()),
@@ -284,6 +295,7 @@ impl Stream for AbortableReceiverStream {
 fn send_fetch_partitions(
     partition_locations: Vec<PartitionLocation>,
     max_request_num: usize,
+    max_message_size: usize,
 ) -> AbortableReceiverStream {
     let (response_sender, response_receiver) = mpsc::channel(max_request_num);
     let semaphore = Arc::new(Semaphore::new(max_request_num));
@@ -302,7 +314,9 @@ fn send_fetch_partitions(
     let response_sender_c = response_sender.clone();
     spawned_tasks.push(SpawnedTask::spawn(async move {
         for p in local_locations {
-            let r = PartitionReaderEnum::Local.fetch_partition(&p).await;
+            let r = PartitionReaderEnum::Local
+                .fetch_partition(&p, max_message_size)
+                .await;
             if let Err(e) = response_sender_c.send(r).await {
                 error!("Fail to send response event to the channel due to {}", e);
             }
@@ -315,7 +329,9 @@ fn send_fetch_partitions(
         spawned_tasks.push(SpawnedTask::spawn(async move {
             // Block if exceeds max request number.
             let permit = semaphore.acquire_owned().await.unwrap();
-            let r = PartitionReaderEnum::FlightRemote.fetch_partition(&p).await;
+            let r = PartitionReaderEnum::FlightRemote
+                .fetch_partition(&p, max_message_size)
+                .await;
             // Block if the channel buffer is full.
             if let Err(e) = response_sender.send(r).await {
                 error!("Fail to send response event to the channel due to {}", e);
@@ -339,6 +355,7 @@ trait PartitionReader: Send + Sync + Clone {
     async fn fetch_partition(
         &self,
         location: &PartitionLocation,
+        max_message_size: usize,
     ) -> result::Result<SendableRecordBatchStream, BallistaError>;
 }
 
@@ -356,9 +373,12 @@ impl PartitionReader for PartitionReaderEnum {
     async fn fetch_partition(
         &self,
         location: &PartitionLocation,
+        max_message_size: usize,
     ) -> result::Result<SendableRecordBatchStream, BallistaError> {
         match self {
-            PartitionReaderEnum::FlightRemote => fetch_partition_remote(location).await,
+            PartitionReaderEnum::FlightRemote => {
+                fetch_partition_remote(location, max_message_size).await
+            }
             PartitionReaderEnum::Local => fetch_partition_local(location).await,
             PartitionReaderEnum::ObjectStoreRemote => {
                 fetch_partition_object_store(location).await
@@ -369,6 +389,7 @@ impl PartitionReader for PartitionReaderEnum {
 
 async fn fetch_partition_remote(
     location: &PartitionLocation,
+    max_message_size: usize,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
@@ -376,19 +397,18 @@ async fn fetch_partition_remote(
     // And we should also avoid to keep alive too many connections for long time.
     let host = metadata.host.as_str();
     let port = metadata.port;
-    let mut ballista_client =
-        BallistaClient::try_new(host, port)
-            .await
-            .map_err(|error| match error {
-                // map grpc connection error to partition fetch error.
-                BallistaError::GrpcConnectionError(msg) => BallistaError::FetchFailed(
-                    metadata.id.clone(),
-                    partition_id.stage_id,
-                    partition_id.partition_id,
-                    msg,
-                ),
-                other => other,
-            })?;
+    let mut ballista_client = BallistaClient::try_new(host, port, max_message_size)
+        .await
+        .map_err(|error| match error {
+            // map grpc connection error to partition fetch error.
+            BallistaError::GrpcConnectionError(msg) => BallistaError::FetchFailed(
+                metadata.id.clone(),
+                partition_id.stage_id,
+                partition_id.partition_id,
+                msg,
+            ),
+            other => other,
+        })?;
 
     ballista_client
         .fetch_partition(&metadata.id, partition_id, &location.path, host, port)
@@ -644,7 +664,7 @@ mod tests {
         );
 
         let response_receiver =
-            send_fetch_partitions(partition_locations, max_request_num);
+            send_fetch_partitions(partition_locations, max_request_num, 4 * 1024 * 1024);
 
         let stream = RecordBatchStreamAdapter::new(
             Arc::new(schema),

@@ -17,7 +17,7 @@
 
 use crate::config::{
     BallistaConfig, BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, BALLISTA_JOB_NAME,
-    BALLISTA_STANDALONE_PARALLELISM,
+    BALLISTA_SHUFFLE_READER_MAX_REQUESTS, BALLISTA_STANDALONE_PARALLELISM,
 };
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
@@ -103,6 +103,15 @@ pub trait SessionConfigExt {
 
     /// Sets ballista job name
     fn with_ballista_job_name(self, job_name: &str) -> Self;
+
+    /// get maximum in flight requests for shuffle reader
+    fn ballista_shuffle_reader_maximum_concurrent_requests(&self) -> usize;
+
+    /// Sets maximum in flight requests for shuffle reader
+    fn with_ballista_shuffle_reader_maximum_concurrent_requests(
+        self,
+        max_requests: usize,
+    ) -> Self;
 }
 
 /// [SessionConfigHelperExt] is set of [SessionConfig] extension methods
@@ -114,6 +123,9 @@ pub trait SessionConfigHelperExt {
     fn update_from_key_value_pair(self, key_value_pairs: &[KeyValuePair]) -> Self;
     /// updates mut [SessionConfig] from proto
     fn update_from_key_value_pair_mut(&mut self, key_value_pairs: &[KeyValuePair]);
+    /// changes some of default datafusion configuration
+    /// in order to make it suitable for ballista
+    fn ballista_restricted_configuration(self) -> Self;
 }
 
 impl SessionStateExt for SessionState {
@@ -121,16 +133,11 @@ impl SessionStateExt for SessionState {
         scheduler_url: String,
         session_id: String,
     ) -> datafusion::error::Result<SessionState> {
-        let config = BallistaConfig::default();
-
-        let planner =
-            BallistaQueryPlanner::<LogicalPlanNode>::new(scheduler_url, config.clone());
-
-        let session_config = SessionConfig::new()
-            .with_information_schema(true)
-            .with_option_extension(config.clone())
-            // Ballista disables this option
-            .with_round_robin_repartition(false);
+        let session_config = SessionConfig::new_with_ballista();
+        let planner = BallistaQueryPlanner::<LogicalPlanNode>::new(
+            scheduler_url,
+            BallistaConfig::default(),
+        );
 
         let runtime_env = RuntimeEnvBuilder::new().build()?;
         let session_state = SessionStateBuilder::new()
@@ -164,8 +171,7 @@ impl SessionStateExt for SessionState {
             .config()
             .clone()
             .with_option_extension(new_config.clone())
-            // Ballista disables this option
-            .with_round_robin_repartition(false);
+            .ballista_restricted_configuration();
 
         let builder = SessionStateBuilder::new_from_existing(self)
             .with_config(session_config)
@@ -191,8 +197,9 @@ impl SessionConfigExt for SessionConfig {
     fn new_with_ballista() -> SessionConfig {
         SessionConfig::new()
             .with_option_extension(BallistaConfig::default())
+            .with_information_schema(true)
             .with_target_partitions(16)
-            .with_round_robin_repartition(false)
+            .ballista_restricted_configuration()
     }
     fn with_ballista_logical_extension_codec(
         self,
@@ -279,6 +286,28 @@ impl SessionConfigExt for SessionConfig {
                 .set_usize(BALLISTA_STANDALONE_PARALLELISM, parallelism)
         }
     }
+
+    fn ballista_shuffle_reader_maximum_concurrent_requests(&self) -> usize {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.shuffle_reader_maximum_concurrent_requests())
+            .unwrap_or_else(|| {
+                BallistaConfig::default().shuffle_reader_maximum_concurrent_requests()
+            })
+    }
+
+    fn with_ballista_shuffle_reader_maximum_concurrent_requests(
+        self,
+        max_requests: usize,
+    ) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_usize(BALLISTA_SHUFFLE_READER_MAX_REQUESTS, max_requests)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_usize(BALLISTA_SHUFFLE_READER_MAX_REQUESTS, max_requests)
+        }
+    }
 }
 
 impl SessionConfigHelperExt for SessionConfig {
@@ -331,6 +360,28 @@ impl SessionConfigHelperExt for SessionConfig {
                 }
             }
         }
+    }
+
+    fn ballista_restricted_configuration(self) -> Self {
+        self
+            // round robbin repartition does not work well with ballista.
+            // this setting it will also be enforced by the scheduler
+            // thus user will not be able to override it.
+            .with_round_robin_repartition(false)
+            // There is issue with Utv8View(s) where Arrow IPC will generate
+            // frames which would be too big to send using Arrow Flight.
+            //
+            // This configuration option will be disabled temporary.
+            //
+            // This configuration is not enforced by the scheduler, thus
+            // user could override this setting using `SET` operation.
+            //
+            // TODO: enable this option once we get to root of the problem
+            //       between `IpcWriter` and `ViewTypes`
+            .set_bool(
+                "datafusion.execution.parquet.schema_force_view_types",
+                false,
+            )
     }
 }
 
