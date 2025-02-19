@@ -365,4 +365,36 @@ mod supported {
 
         Ok(())
     }
+
+    // test checks if this view types have been disabled in the configuration
+    //
+    // `datafusion.execution.parquet.schema_force_view_types` have been disabled
+    // temporary as they could break shuffle reader/writer.
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_disable_view_types(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+    ) -> datafusion::error::Result<()> {
+        let result = ctx
+            .sql("select name, value from information_schema.df_settings where name like 'datafusion.execution.parquet.schema_force_view_types' order by name limit 1")
+            .await?
+            .collect()
+            .await?;
+        //
+        let expected = [
+            "+------------------------------------------------------+-------+",
+            "| name                                                 | value |",
+            "+------------------------------------------------------+-------+",
+            "| datafusion.execution.parquet.schema_force_view_types | false |",
+            "+------------------------------------------------------+-------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
 }

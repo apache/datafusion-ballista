@@ -123,6 +123,9 @@ pub trait SessionConfigHelperExt {
     fn update_from_key_value_pair(self, key_value_pairs: &[KeyValuePair]) -> Self;
     /// updates mut [SessionConfig] from proto
     fn update_from_key_value_pair_mut(&mut self, key_value_pairs: &[KeyValuePair]);
+    /// changes some of default datafusion configuration
+    /// in order to make it suitable for ballista
+    fn ballista_restricted_configuration(self) -> Self;
 }
 
 impl SessionStateExt for SessionState {
@@ -168,16 +171,7 @@ impl SessionStateExt for SessionState {
             .config()
             .clone()
             .with_option_extension(new_config.clone())
-            // Ballista disables this option
-            .with_round_robin_repartition(false)
-            // There is issue with Utv8View(s) where Arrow IPC will generate
-            // frames which would be too big to send using Arrow Flight.
-            // We disable this option temporary
-            // TODO: enable this option once we get to root of the problem
-            .set_bool(
-                "datafusion.execution.parquet.schema_force_view_types",
-                false,
-            );
+            .ballista_restricted_configuration();
 
         let builder = SessionStateBuilder::new_from_existing(self)
             .with_config(session_config)
@@ -205,7 +199,7 @@ impl SessionConfigExt for SessionConfig {
             .with_option_extension(BallistaConfig::default())
             .with_information_schema(true)
             .with_target_partitions(16)
-            .with_round_robin_repartition(false)
+            .ballista_restricted_configuration()
     }
     fn with_ballista_logical_extension_codec(
         self,
@@ -366,6 +360,28 @@ impl SessionConfigHelperExt for SessionConfig {
                 }
             }
         }
+    }
+
+    fn ballista_restricted_configuration(self) -> Self {
+        self
+            // round robbin repartition does not work well with ballista.
+            // this setting it will also be enforced by the scheduler
+            // thus user will not be able to override it.
+            .with_round_robin_repartition(false)
+            // There is issue with Utv8View(s) where Arrow IPC will generate
+            // frames which would be too big to send using Arrow Flight.
+            //
+            // This configuration option will be disabled temporary.
+            //
+            // This configuration is not enforced by the scheduler, thus
+            // user could override this setting using `SET` operation.
+            //
+            // TODO: enable this option once we get to root of the problem
+            //       between `IpcWriter` and `ViewTypes`
+            .set_bool(
+                "datafusion.execution.parquet.schema_force_view_types",
+                false,
+            )
     }
 }
 
