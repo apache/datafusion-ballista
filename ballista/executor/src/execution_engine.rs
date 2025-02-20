@@ -97,7 +97,20 @@ impl DefaultQueryStageExec {
 
 impl Display for DefaultQueryStageExec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DefaultQueryStageExec:\n{}", self.shuffle_writer)
+        let stage_metrics: Vec<String> = self
+            .shuffle_writer
+            .metrics()
+            .unwrap_or_default()
+            .iter()
+            .map(|m| m.to_string())
+            .collect();
+
+        write!(
+            f,
+            "DefaultQueryStageExec: ({})\n{}",
+            stage_metrics.join(", "),
+            self.shuffle_writer
+        )
     }
 }
 
