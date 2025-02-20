@@ -409,16 +409,16 @@ mod supported {
         #[case]
         ctx: SessionContext,
         test_data: String,
-    ) {
+    ) -> datafusion::error::Result<()> {
+        // tests check if this configuration option
+        // will work
         let ctx = ctx.enable_url_table();
 
         let result = ctx
             .sql(&format!("select string_col, timestamp_col from '{test_data}/alltypes_plain.parquet' where id > 4"))
-            .await
-            .unwrap()
+            .await?
             .collect()
-            .await
-            .unwrap();
+            .await?;
 
         let expected = [
             "+------------+---------------------+",
@@ -431,5 +431,7 @@ mod supported {
         ];
 
         assert_batches_eq!(expected, &result);
+
+        Ok(())
     }
 }
