@@ -327,7 +327,7 @@ impl ExecutorManager {
     pub(crate) fn is_dead_executor(&self, executor_id: &str) -> bool {
         self.cluster_state
             .get_executor_heartbeat(executor_id)
-            .map_or(true, |heartbeat| {
+            .is_none_or(|heartbeat| {
                 matches!(
                     heartbeat.status,
                     Some(ballista_core::serde::generated::ballista::ExecutorStatus {
