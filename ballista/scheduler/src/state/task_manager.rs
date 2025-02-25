@@ -26,6 +26,7 @@ use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::extension::SessionConfigHelperExt;
 use datafusion::prelude::SessionConfig;
+use rand::distr::Alphanumeric;
 
 use crate::cluster::JobState;
 use ballista_core::serde::protobuf::{
@@ -39,8 +40,7 @@ use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info, trace, warn};
-use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
+use rand::{rng, Rng};
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::Arc;
@@ -644,7 +644,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
     /// Generate a new random Job ID
     pub fn generate_job_id(&self) -> String {
-        let mut rng = thread_rng();
+        let mut rng = rng();
         std::iter::repeat(())
             .map(|()| rng.sample(Alphanumeric))
             .map(char::from)
