@@ -41,7 +41,7 @@ tonic-build = { version = "0.12", default-features = false, features = [
 tracing = "0.1"
 tracing-appender = "0.2.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-ctor = { version = "0.2" }
+ctor = { version = "0.4" }
 mimalloc = { version = "0.1" }
 
 tokio = { version = "1" }

@@ -49,7 +49,7 @@ datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 datafusion-proto-common = { workspace = true }
 futures = { workspace = true }
-itertools = "0.13"
+itertools = "0.14"
 log = { workspace = true }
 md-5 = { version = "^0.10.0" }
 prost = { workspace = true }
