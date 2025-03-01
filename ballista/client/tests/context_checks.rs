@@ -397,4 +397,41 @@ mod supported {
 
         Ok(())
     }
+
+    // tests if `ctx.enable_url_table()` works correctly
+    // it did not work before datafusion 45.0.0
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_execute_sql_show_with_url_table(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) -> datafusion::error::Result<()> {
+        // tests check if this configuration option
+        // will work
+        let ctx = ctx.enable_url_table();
+
+        let result = ctx
+            .sql(&format!("select string_col, timestamp_col from '{test_data}/alltypes_plain.parquet' where id > 4"))
+            .await?
+            .collect()
+            .await?;
+
+        let expected = [
+            "+------------+---------------------+",
+            "| string_col | timestamp_col       |",
+            "+------------+---------------------+",
+            "| 31         | 2009-03-01T00:01:00 |",
+            "| 30         | 2009-04-01T00:00:00 |",
+            "| 31         | 2009-04-01T00:01:00 |",
+            "+------------+---------------------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
 }

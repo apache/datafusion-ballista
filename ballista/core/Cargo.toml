@@ -19,7 +19,7 @@
 name = "ballista-core"
 description = "Ballista Distributed Compute"
 license = "Apache-2.0"
-version = "44.0.0"
+version = "45.0.0"
 homepage = "https://github.com/apache/arrow-ballista"
 repository = "https://github.com/apache/arrow-ballista"
 readme = "README.md"
@@ -49,7 +49,7 @@ datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 datafusion-proto-common = { workspace = true }
 futures = { workspace = true }
-itertools = "0.13"
+itertools = "0.14"
 log = { workspace = true }
 md-5 = { version = "^0.10.0" }
 prost = { workspace = true }
