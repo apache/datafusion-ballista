@@ -53,11 +53,6 @@ if [ "$#" -ne 2 ]; then
     exit
 fi
 
-if [[ -z "${GH_TOKEN}" ]]; then
-    echo "Please set personal github token through GH_TOKEN environment variable"
-    exit
-fi
-
 version=$1
 rc=$2
 tag="${version}-rc${rc}"
@@ -100,6 +95,8 @@ The standard verification procedure is documented at https://github.com/apache/d
 [ ] +1 Release this as Apache DataFusion Ballista ${version}
 [ ] +0
 [ ] -1 Do not release this as Apache DataFusion Ballista ${version} because...
+
+Here is my vote: +1
 
 [1]: https://github.com/apache/datafusion-ballista/tree/${release_hash}
 [2]: ${url}
