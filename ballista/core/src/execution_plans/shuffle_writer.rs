@@ -25,6 +25,7 @@ use datafusion::arrow::ipc::CompressionType;
 
 use datafusion::arrow::ipc::writer::StreamWriter;
 use std::any::Any;
+use std::fmt::Debug;
 use std::fs;
 use std::fs::File;
 use std::future::Future;
@@ -50,8 +51,8 @@ use datafusion::physical_plan::metrics::{
 };
 
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    SendableRecordBatchStream, Statistics,
+    displayable, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
+    PlanProperties, SendableRecordBatchStream, Statistics,
 };
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 
@@ -80,7 +81,21 @@ pub struct ShuffleWriterExec {
     shuffle_output_partitioning: Option<Partitioning>,
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
+    /// Plan properties
     properties: PlanProperties,
+}
+
+impl std::fmt::Display for ShuffleWriterExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let printable_plan = displayable(self.plan.as_ref())
+            .set_show_statistics(true)
+            .indent(false);
+        write!(
+            f,
+            "ShuffleWriterExec: job={} stage={} work_dir={} partitioning={:?} plan: \n {}",
+            self.job_id, self.stage_id, self.work_dir, self.shuffle_output_partitioning, printable_plan
+        )
+    }
 }
 
 pub struct WriteTracker {

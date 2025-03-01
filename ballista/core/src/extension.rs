@@ -315,6 +315,13 @@ impl SessionConfigHelperExt for SessionConfig {
         self.options()
             .entries()
             .iter()
+            // TODO: revisit this log once we this option is removed
+            //
+            // filtering this key as it's creating a lot of warning logs
+            // at the executor side.
+            .filter(|c| {
+                c.key != "datafusion.sql_parser.enable_options_value_normalization"
+            })
             .map(|datafusion::config::ConfigEntry { key, value, .. }| {
                 log::trace!("sending configuration key: `{}`, value`{:?}`", key, value);
                 KeyValuePair {
