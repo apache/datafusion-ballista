@@ -798,7 +798,7 @@ async fn get_table(
     table_format: &str,
     target_partitions: usize,
 ) -> Result<Arc<dyn TableProvider>> {
-    let (format, path, extension): (Arc<dyn FileFormat>, String, &'static str) =
+    let (format, path, extension, schema): (Arc<dyn FileFormat>, String, &'static str, Schema) =
         match table_format {
             // dbgen creates .tbl ('|' delimited) files without header
             "tbl" => {
@@ -808,7 +808,7 @@ async fn get_table(
                     .with_delimiter(b'|')
                     .with_has_header(false);
 
-                (Arc::new(format), path, ".tbl")
+                (Arc::new(format), path, ".tbl", get_tbl_tpch_table_schema(table))
             }
             "csv" => {
                 let path = format!("{path}/{table}");
@@ -816,19 +816,18 @@ async fn get_table(
                     .with_delimiter(b',')
                     .with_has_header(true);
 
-                (Arc::new(format), path, DEFAULT_CSV_EXTENSION)
+                (Arc::new(format), path, DEFAULT_CSV_EXTENSION, get_schema(table))
             }
             "parquet" => {
                 let path = format!("{path}/{table}");
                 let format = ParquetFormat::default().with_enable_pruning(true);
 
-                (Arc::new(format), path, DEFAULT_PARQUET_EXTENSION)
+                (Arc::new(format), path, DEFAULT_PARQUET_EXTENSION, get_schema(table))
             }
             other => {
                 unimplemented!("Invalid file format '{}'", other);
             }
         };
-    let schema = Arc::new(get_schema(table));
 
     let options = ListingOptions {
         format,
@@ -845,7 +844,7 @@ async fn get_table(
     let config = if table_format == "parquet" {
         config.infer_schema(ctx).await?
     } else {
-        config.with_schema(schema)
+        config.with_schema(Arc::new(schema))
     };
 
     Ok(Arc::new(ListingTable::try_new(config)?))
