@@ -1368,6 +1368,15 @@ mod tests {
         verify_query(16).await
     }
 
+    // Python code to reproduce the "348406.05" result in DuckDB:
+    // ```python
+    // import duckdb
+    // lineitem = duckdb.read_csv("data/lineitem.tbl", columns={'l_orderkey':'int64', 'l_partkey':'int64', 'l_suppkey':'int64', 'l_linenumber':'int64', 'l_quantity':'int64', 'l_extendedprice':'decimal(15,2)', 'l_discount':'decimal(15,2)', 'l_tax':'decimal(15,2)', 'l_returnflag':'varchar','l_linestatus':'varchar', 'l_shipdate':'date', 'l_commitdate':'date', 'l_receiptdate':'date', 'l_shipinstruct':'varchar', 'l_shipmode':'varchar', 'l_comment':'varchar'})
+    // part = duckdb.read_csv("data/part.tbl", columns={'p_partkey':'int64', 'p_name':'varchar', 'p_mfgr':'varchar', 'p_brand':'varchar', 'p_type':'varchar', 'p_size':'int64', 'p_container':'varchar', 'p_retailprice':'double', 'p_comment':'varchar'})
+    // duckdb.sql("select sum(l_extendedprice) / 7.0 as avg_yearly from lineitem, part where p_partkey = l_partkey and p_brand = 'Brand#23' and p_container = 'MED BOX' and l_quantity < (select 0.2 * avg(l_quantity) from lineitem where l_partkey = p_partkey )")
+    // ```
+    // That is the same as DataFusion's output.
+    #[ignore = "Somehow, the expected result is 348406.02 whereas both DataFusion and DuckDB return 348406.05"]
     #[tokio::test]
     async fn q17() -> Result<()> {
         verify_query(17).await
