@@ -1534,6 +1534,74 @@ mod tests {
         Ok(())
     }
 
+    // We read the expected results from CSV files so we need to normalize the
+    // query results before we compare them with the expected results for the
+    // following reasons:
+    //
+    // 1. Float numbers have only two digits after the decimal point in CSV so
+    // we need to convert results to Decimal(15, 2) and then back to floats.
+    //
+    // 2. Decimal numbers are fixed as Decimal(15, 2) in CSV.
+    //
+    // 3. Strings may have trailing spaces and need to be trimmed.
+    //
+    // 4. Rename columns using the expected schema to make schema matching
+    // because, for q18, we have aggregate field `sum(l_quantity)` that is
+    // called `sum_l_quantity` in the expected results.
+    async fn normalize_columns(batches: Vec<RecordBatch>, expected_schema: Schema) -> Result<Vec<RecordBatch>> {
+        if batches.is_empty() {
+            return Ok(vec![]);
+        }
+        let ctx = SessionContext::new();
+        let schema = batches[0].schema();
+        let df = ctx.read_batches(batches)?;
+        let df = df.select(
+            schema
+            .fields()
+            .iter()
+            .zip(expected_schema.fields())
+            .map(|(field, expected_field)| {
+                match Field::data_type(field) {
+                    // Normalize decimals to Decimal(15, 2)
+                    DataType::Decimal128(_, _) => {
+                        // We convert to float64 and then to decimal(15, 2).
+                        // Directly converting between Decimals caused test
+                        // failures.
+                        let inner_cast = Box::new(Expr::Cast(Cast::new(
+                            Box::new(col(Field::name(field))),
+                            DataType::Float64,
+                        )));
+                        Expr::Cast(Cast::new(
+                            inner_cast,
+                            DataType::Decimal128(15, 2),
+                        ))
+                        .alias(Field::name(expected_field))
+                    }
+                    // Normalize floats to have 2 digits after the decimal point
+                    DataType::Float64 => {
+                        let inner_cast = Box::new(Expr::Cast(Cast::new(
+                            Box::new(col(Field::name(field))),
+                            DataType::Decimal128(15, 2),
+                        )));
+                        Expr::Cast(Cast::new(
+                            inner_cast,
+                            DataType::Float64,
+                        ))
+                        .alias(Field::name(expected_field))
+                    }
+                    // Normalize strings by trimming trailing spaces.
+                    DataType::Utf8 => Expr::Cast(Cast::new(
+                        Box::new(trim(vec![col(Field::name(field))])),
+                        Field::data_type(field).to_owned(),
+                    ))
+                    .alias(Field::name(field)),
+                    _ => col(Field::name(expected_field)),
+                }
+            })
+            .collect::<Vec<Expr>>())?;
+        df.collect().await
+    }
+
     async fn verify_query(n: usize) -> Result<()> {
         if let Ok(path) = env::var("TPCH_DATA") {
             // load expected answers from tpch-dbgen
@@ -1554,8 +1622,10 @@ mod tests {
                 output_path: None,
             };
             let actual = benchmark_datafusion(opt).await?;
+            let expected_schema = get_answer_schema(n);
+            let normalized = normalize_columns(actual, expected_schema).await?;
 
-            assert_expected_results(&expected, &actual)
+            assert_expected_results(&expected, &normalized)
         } else {
             println!("TPCH_DATA environment variable not set, skipping test");
         }
