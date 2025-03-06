@@ -1395,7 +1395,7 @@ mod tests {
     // duckdb.sql("select sum(l_extendedprice) / 7.0 as avg_yearly from lineitem, part where p_partkey = l_partkey and p_brand = 'Brand#23' and p_container = 'MED BOX' and l_quantity < (select 0.2 * avg(l_quantity) from lineitem where l_partkey = p_partkey )")
     // ```
     // That is the same as DataFusion's output.
-    #[ignore = "Somehow, the expected result is 348406.02 whereas both DataFusion and DuckDB return 348406.05"]
+    #[ignore = "the expected result is 348406.02 whereas both DataFusion and DuckDB return 348406.05"]
     #[tokio::test]
     async fn q17() -> Result<()> {
         verify_query(17).await
@@ -1564,13 +1564,8 @@ mod tests {
 
     // Our queries do not have the LIMIT clause, so we need to apply it
     // before comparing the results with the expected results.
-    const QUERY_LIMITS: [(usize, usize); 5] = [
-        (2, 100),
-        (3, 10),
-        (10, 20),
-        (18, 100),
-        (21, 100),
-    ];
+    const QUERY_LIMITS: [(usize, usize); 5] =
+        [(2, 100), (3, 10), (10, 20), (18, 100), (21, 100)];
 
     // We read the expected results from CSV files so we need to normalize the
     // query results before we compare them with the expected results for the
@@ -1600,45 +1595,50 @@ mod tests {
         let ctx = SessionContext::new();
         let schema = batches[0].schema();
         let df = ctx.read_batches(batches)?;
-        let df = df.select(
-            schema
-                .fields()
-                .iter()
-                .zip(expected_schema.fields())
-                .map(|(field, expected_field)| {
-                    match Field::data_type(field) {
-                        // Normalize decimals to Decimal(15, 2)
-                        DataType::Decimal128(_, _) => {
-                            // We convert to float64 and then to decimal(15, 2).
-                            // Directly converting between Decimals caused test
-                            // failures.
-                            let inner_cast = Box::new(Expr::Cast(Cast::new(
-                                Box::new(col(Field::name(field))),
-                                DataType::Float64,
-                            )));
-                            Expr::Cast(Cast::new(inner_cast, DataType::Decimal128(15, 2)))
+        let df = df
+            .select(
+                schema
+                    .fields()
+                    .iter()
+                    .zip(expected_schema.fields())
+                    .map(|(field, expected_field)| {
+                        match Field::data_type(field) {
+                            // Normalize decimals to Decimal(15, 2)
+                            DataType::Decimal128(_, _) => {
+                                // We convert to float64 and then to decimal(15, 2).
+                                // Directly converting between Decimals caused test
+                                // failures.
+                                let inner_cast = Box::new(Expr::Cast(Cast::new(
+                                    Box::new(col(Field::name(field))),
+                                    DataType::Float64,
+                                )));
+                                Expr::Cast(Cast::new(
+                                    inner_cast,
+                                    DataType::Decimal128(15, 2),
+                                ))
                                 .alias(Field::name(expected_field))
+                            }
+                            // Normalize floats to have 2 digits after the decimal point
+                            DataType::Float64 => {
+                                let inner_cast = Box::new(Expr::Cast(Cast::new(
+                                    Box::new(col(Field::name(field))),
+                                    DataType::Decimal128(15, 2),
+                                )));
+                                Expr::Cast(Cast::new(inner_cast, DataType::Float64))
+                                    .alias(Field::name(expected_field))
+                            }
+                            // Normalize strings by trimming trailing spaces.
+                            DataType::Utf8 => Expr::Cast(Cast::new(
+                                Box::new(trim(vec![col(Field::name(field))])),
+                                Field::data_type(field).to_owned(),
+                            ))
+                            .alias(Field::name(field)),
+                            _ => col(Field::name(expected_field)),
                         }
-                        // Normalize floats to have 2 digits after the decimal point
-                        DataType::Float64 => {
-                            let inner_cast = Box::new(Expr::Cast(Cast::new(
-                                Box::new(col(Field::name(field))),
-                                DataType::Decimal128(15, 2),
-                            )));
-                            Expr::Cast(Cast::new(inner_cast, DataType::Float64))
-                                .alias(Field::name(expected_field))
-                        }
-                        // Normalize strings by trimming trailing spaces.
-                        DataType::Utf8 => Expr::Cast(Cast::new(
-                            Box::new(trim(vec![col(Field::name(field))])),
-                            Field::data_type(field).to_owned(),
-                        ))
-                        .alias(Field::name(field)),
-                        _ => col(Field::name(expected_field)),
-                    }
-                })
-                .collect::<Vec<Expr>>(),
-        )?.limit(0, limit)?;
+                    })
+                    .collect::<Vec<Expr>>(),
+            )?
+            .limit(0, limit)?;
         df.collect().await
     }
 
