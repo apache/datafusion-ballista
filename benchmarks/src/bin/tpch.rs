@@ -1562,6 +1562,16 @@ mod tests {
         Ok(())
     }
 
+    // Our queries do not have the LIMIT clause, so we need to apply it
+    // before comparing the results with the expected results.
+    const QUERY_LIMITS: [(usize, usize); 5] = [
+        (2, 100),
+        (3, 10),
+        (10, 20),
+        (18, 100),
+        (21, 100),
+    ];
+
     // We read the expected results from CSV files so we need to normalize the
     // query results before we compare them with the expected results for the
     // following reasons:
@@ -1576,13 +1586,17 @@ mod tests {
     // 4. Rename columns using the expected schema to make schema matching
     // because, for q18, we have aggregate field `sum(l_quantity)` that is
     // called `sum_l_quantity` in the expected results.
-    async fn normalize_columns(
+    //
+    // 5. If there is a missing LIMIT clause, apply it to the results.
+    async fn normalize_for_verification(
         batches: Vec<RecordBatch>,
-        expected_schema: Schema,
+        n: usize,
     ) -> Result<Vec<RecordBatch>> {
         if batches.is_empty() {
             return Ok(vec![]);
         }
+        let expected_schema = get_answer_schema(n);
+        let limit = QUERY_LIMITS.iter().find(|&&x| x.0 == n).map(|x| x.1);
         let ctx = SessionContext::new();
         let schema = batches[0].schema();
         let df = ctx.read_batches(batches)?;
@@ -1624,7 +1638,7 @@ mod tests {
                     }
                 })
                 .collect::<Vec<Expr>>(),
-        )?;
+        )?.limit(0, limit)?;
         df.collect().await
     }
 
@@ -1648,8 +1662,7 @@ mod tests {
                 output_path: None,
             };
             let actual = benchmark_datafusion(opt).await?;
-            let expected_schema = get_answer_schema(n);
-            let normalized = normalize_columns(actual, expected_schema).await?;
+            let normalized = normalize_for_verification(actual, n).await?;
 
             assert_expected_results(&expected, &normalized)
         } else {
