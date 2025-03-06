@@ -1722,7 +1722,7 @@ mod ballista_round_trip {
     test_round_trip_logical!(q12, 12);
     test_round_trip_logical!(q13, 13);
     test_round_trip_logical!(q14, 14);
-    //test_round_trip_logical!(q15, 15); // https://github.com/apache/arrow-ballista/issues/330
+    //test_round_trip_logical!(q15, 15); // https://github.com/apache/datafusion-ballista/issues/330
     test_round_trip_logical!(q16, 16);
     test_round_trip_logical!(q17, 17);
     test_round_trip_logical!(q18, 18);
@@ -1754,7 +1754,7 @@ mod ballista_round_trip {
     test_round_trip_physical!(physical_round_trip_q12, 12);
     test_round_trip_physical!(physical_round_trip_q13, 13);
     test_round_trip_physical!(physical_round_trip_q14, 14);
-    // test_round_trip_physical!(physical_round_trip_q15, 15); // https://github.com/apache/arrow-ballista/issues/330
+    // test_round_trip_physical!(physical_round_trip_q15, 15); // https://github.com/apache/datafusion-ballista/issues/330
     test_round_trip_physical!(physical_round_trip_q16, 16);
     test_round_trip_physical!(physical_round_trip_q17, 17);
     test_round_trip_physical!(physical_round_trip_q18, 18);

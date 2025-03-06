@@ -17,7 +17,7 @@
 
 FROM ubuntu:22.04
 
-LABEL org.opencontainers.image.source="https://github.com/apache/arrow-ballista"
+LABEL org.opencontainers.image.source="https://github.com/apache/datafusion-ballista"
 LABEL org.opencontainers.image.description="Apache Arrow Ballista Distributed SQL Query Engine"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
