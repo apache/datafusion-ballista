@@ -798,36 +798,55 @@ async fn get_table(
     table_format: &str,
     target_partitions: usize,
 ) -> Result<Arc<dyn TableProvider>> {
-    let (format, path, extension, schema): (Arc<dyn FileFormat>, String, &'static str, Schema) =
-        match table_format {
-            // dbgen creates .tbl ('|' delimited) files without header
-            "tbl" => {
-                let path = format!("{path}/{table}.tbl");
+    let (format, path, extension, schema): (
+        Arc<dyn FileFormat>,
+        String,
+        &'static str,
+        Schema,
+    ) = match table_format {
+        // dbgen creates .tbl ('|' delimited) files without header
+        "tbl" => {
+            let path = format!("{path}/{table}.tbl");
 
-                let format = CsvFormat::default()
-                    .with_delimiter(b'|')
-                    .with_has_header(false);
+            let format = CsvFormat::default()
+                .with_delimiter(b'|')
+                .with_has_header(false);
 
-                (Arc::new(format), path, ".tbl", get_tbl_tpch_table_schema(table))
-            }
-            "csv" => {
-                let path = format!("{path}/{table}");
-                let format = CsvFormat::default()
-                    .with_delimiter(b',')
-                    .with_has_header(true);
+            (
+                Arc::new(format),
+                path,
+                ".tbl",
+                get_tbl_tpch_table_schema(table),
+            )
+        }
+        "csv" => {
+            let path = format!("{path}/{table}");
+            let format = CsvFormat::default()
+                .with_delimiter(b',')
+                .with_has_header(true);
 
-                (Arc::new(format), path, DEFAULT_CSV_EXTENSION, get_schema(table))
-            }
-            "parquet" => {
-                let path = format!("{path}/{table}");
-                let format = ParquetFormat::default().with_enable_pruning(true);
+            (
+                Arc::new(format),
+                path,
+                DEFAULT_CSV_EXTENSION,
+                get_schema(table),
+            )
+        }
+        "parquet" => {
+            let path = format!("{path}/{table}");
+            let format = ParquetFormat::default().with_enable_pruning(true);
 
-                (Arc::new(format), path, DEFAULT_PARQUET_EXTENSION, get_schema(table))
-            }
-            other => {
-                unimplemented!("Invalid file format '{}'", other);
-            }
-        };
+            (
+                Arc::new(format),
+                path,
+                DEFAULT_PARQUET_EXTENSION,
+                get_schema(table),
+            )
+        }
+        other => {
+            unimplemented!("Invalid file format '{}'", other);
+        }
+    };
 
     let options = ListingOptions {
         format,
@@ -1557,7 +1576,10 @@ mod tests {
     // 4. Rename columns using the expected schema to make schema matching
     // because, for q18, we have aggregate field `sum(l_quantity)` that is
     // called `sum_l_quantity` in the expected results.
-    async fn normalize_columns(batches: Vec<RecordBatch>, expected_schema: Schema) -> Result<Vec<RecordBatch>> {
+    async fn normalize_columns(
+        batches: Vec<RecordBatch>,
+        expected_schema: Schema,
+    ) -> Result<Vec<RecordBatch>> {
         if batches.is_empty() {
             return Ok(vec![]);
         }
@@ -1566,48 +1588,43 @@ mod tests {
         let df = ctx.read_batches(batches)?;
         let df = df.select(
             schema
-            .fields()
-            .iter()
-            .zip(expected_schema.fields())
-            .map(|(field, expected_field)| {
-                match Field::data_type(field) {
-                    // Normalize decimals to Decimal(15, 2)
-                    DataType::Decimal128(_, _) => {
-                        // We convert to float64 and then to decimal(15, 2).
-                        // Directly converting between Decimals caused test
-                        // failures.
-                        let inner_cast = Box::new(Expr::Cast(Cast::new(
-                            Box::new(col(Field::name(field))),
-                            DataType::Float64,
-                        )));
-                        Expr::Cast(Cast::new(
-                            inner_cast,
-                            DataType::Decimal128(15, 2),
+                .fields()
+                .iter()
+                .zip(expected_schema.fields())
+                .map(|(field, expected_field)| {
+                    match Field::data_type(field) {
+                        // Normalize decimals to Decimal(15, 2)
+                        DataType::Decimal128(_, _) => {
+                            // We convert to float64 and then to decimal(15, 2).
+                            // Directly converting between Decimals caused test
+                            // failures.
+                            let inner_cast = Box::new(Expr::Cast(Cast::new(
+                                Box::new(col(Field::name(field))),
+                                DataType::Float64,
+                            )));
+                            Expr::Cast(Cast::new(inner_cast, DataType::Decimal128(15, 2)))
+                                .alias(Field::name(expected_field))
+                        }
+                        // Normalize floats to have 2 digits after the decimal point
+                        DataType::Float64 => {
+                            let inner_cast = Box::new(Expr::Cast(Cast::new(
+                                Box::new(col(Field::name(field))),
+                                DataType::Decimal128(15, 2),
+                            )));
+                            Expr::Cast(Cast::new(inner_cast, DataType::Float64))
+                                .alias(Field::name(expected_field))
+                        }
+                        // Normalize strings by trimming trailing spaces.
+                        DataType::Utf8 => Expr::Cast(Cast::new(
+                            Box::new(trim(vec![col(Field::name(field))])),
+                            Field::data_type(field).to_owned(),
                         ))
-                        .alias(Field::name(expected_field))
+                        .alias(Field::name(field)),
+                        _ => col(Field::name(expected_field)),
                     }
-                    // Normalize floats to have 2 digits after the decimal point
-                    DataType::Float64 => {
-                        let inner_cast = Box::new(Expr::Cast(Cast::new(
-                            Box::new(col(Field::name(field))),
-                            DataType::Decimal128(15, 2),
-                        )));
-                        Expr::Cast(Cast::new(
-                            inner_cast,
-                            DataType::Float64,
-                        ))
-                        .alias(Field::name(expected_field))
-                    }
-                    // Normalize strings by trimming trailing spaces.
-                    DataType::Utf8 => Expr::Cast(Cast::new(
-                        Box::new(trim(vec![col(Field::name(field))])),
-                        Field::data_type(field).to_owned(),
-                    ))
-                    .alias(Field::name(field)),
-                    _ => col(Field::name(expected_field)),
-                }
-            })
-            .collect::<Vec<Expr>>())?;
+                })
+                .collect::<Vec<Expr>>(),
+        )?;
         df.collect().await
     }
 
