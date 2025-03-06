@@ -49,7 +49,7 @@ dependencies = [
 [project.urls]
 homepage = "https://datafusion.apache.org/ballista"
 documentation = "https://datafusion.apache.org/ballista"
-repository = "https://github.com/apache/arrow-ballista"
+repository = "https://github.com/apache/datafusion-ballista"
 
 [tool.isort]
 profile = "black"
