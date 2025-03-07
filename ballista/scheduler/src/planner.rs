@@ -680,7 +680,8 @@ order by
         let coalesce = downcast_exec!(projection.children()[0], CoalesceBatchesExec);
         let filter = downcast_exec!(coalesce.children()[0], FilterExec);
         let window = downcast_exec!(filter.children()[0], BoundedWindowAggExec);
-        let partition_by = match window.partition_keys.as_slice() {
+        let partition_by = window.partition_keys();
+        let partition_by = match partition_by[..] {
             [ref col] => col.as_any().downcast_ref::<Column>(),
             _ => None,
         };

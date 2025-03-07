@@ -25,6 +25,7 @@ use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{
     AvroExec, CsvExec, FileScanConfig, NdJsonExec, ParquetExec,
 };
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
@@ -32,7 +33,6 @@ use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::CrossJoinExec;
 use datafusion::physical_plan::joins::HashJoinExec;
 use datafusion::physical_plan::limit::{GlobalLimitExec, LocalLimitExec};
-use datafusion::physical_plan::memory::MemoryExec;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort::SortExec;
@@ -320,7 +320,8 @@ filter_expr={}",
             "ShuffleWriter [{} partitions]",
             exec.input_partition_count()
         )
-    } else if plan.as_any().downcast_ref::<MemoryExec>().is_some() {
+    } else if let Some(_) = plan.as_any().downcast_ref::<DataSourceExec>() {
+        // TODO: make this proper string
         "MemoryExec".to_string()
     } else if let Some(exec) = plan.as_any().downcast_ref::<CsvExec>() {
         let parts = exec.properties().output_partitioning().partition_count();
