@@ -23,8 +23,6 @@ RELEASE_FLAG=${RELEASE_FLAG:=release}
 
 ./dev/build-ballista-executables.sh
 
-# docker compose build
-
 . ./dev/build-set-env.sh
 
 docker build -t "apache/arrow-ballista-standalone:latest" -f dev/docker/ballista-standalone.Dockerfile .
