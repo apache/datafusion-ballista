@@ -16,11 +16,11 @@
 # under the License.
 
 name: Docker
-on: [pull_request]
+on: [pull_request, push]
 
 jobs:
   build_docker:
-    name: Run build Docker script
+    name: Run Build Docker Script
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -28,4 +28,23 @@ jobs:
       - name: Installs Rust and Cargo
         run: curl -y --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
       - name: Run script
-        run: ./dev/build-ballista-docker.sh
+        run: |
+          ./dev/build-ballista-docker.sh
+          export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '')"
+          if [[ $DOCKER_TAG =~ ^[0-9\.]+-rc[0-9]+$ ]]
+          then
+            echo "publishing docker tag $DOCKER_TAG"
+            docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
+            
+            docker tag apache/arrow-ballista-standalone:latest ghcr.io/apache/arrow-ballista-standalone:$DOCKER_TAG
+            docker tag apache/arrow-ballista-executor:latest "ghcr.io/apache/arrow-ballista-executor:$DOCKER_TAG"
+            docker tag apache/arrow-ballista-scheduler:latest "ghcr.io/apache/arrow-ballista-scheduler:$DOCKER_TAG"
+
+            docker push ghcr.io/apache/arrow-ballista-standalone:$DOCKER_TAG
+            docker push ghcr.io/apache/arrow-ballista-executor:$DOCKER_TAG
+            docker push ghcr.io/apache/arrow-ballista-scheduler:$DOCKER_TAG
+
+          fi
+        env:
+          DOCKER_USER: ${{ github.actor }}
+          DOCKER_PASS: ${{ secrets.GITHUB_TOKEN }}
