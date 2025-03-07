@@ -30,4 +30,3 @@ docker build -t "apache/arrow-ballista-scheduler:latest" -f dev/docker/ballista-
 docker build -t "apache/arrow-ballista-executor:latest" -f dev/docker/ballista-executor.Dockerfile .
 docker build -t "apache/arrow-ballista-cli:latest" -f dev/docker/ballista-cli.Dockerfile .
 docker build -t "apache/arrow-ballista-benchmarks:latest" -f dev/docker/ballista-benchmarks.Dockerfile .
-
