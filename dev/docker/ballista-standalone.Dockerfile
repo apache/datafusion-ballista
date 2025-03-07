@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 LABEL org.opencontainers.image.source="https://github.com/apache/arrow-ballista"
 LABEL org.opencontainers.image.description="Apache Arrow Ballista Distributed SQL Query Engine"
