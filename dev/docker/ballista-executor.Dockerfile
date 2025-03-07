@@ -23,8 +23,6 @@ ENV RELEASE_FLAG=${RELEASE_FLAG}
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
 
-RUN apt-get update && apt-get install -y netcat
-
 COPY target/$RELEASE_FLAG/ballista-executor /root/ballista-executor
 
 # Expose Ballista Executor gRPC port

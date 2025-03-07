@@ -24,8 +24,6 @@ ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y netcat
-
 COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
 
 # Expose Ballista Scheduler gRPC port
