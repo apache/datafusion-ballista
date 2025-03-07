@@ -32,19 +32,29 @@ jobs:
           ./dev/build-ballista-docker.sh
 
           docker tag apache/arrow-ballista-standalone:latest ghcr.io/apache/arrow-ballista-standalone:$BALLISTA_VERSION
-          docker tag apache/arrow-ballista-executor:latest "ghcr.io/apache/arrow-ballista-executor:$BALLISTA_VERSION"
-          docker tag apache/arrow-ballista-scheduler:latest "ghcr.io/apache/arrow-ballista-scheduler:$BALLISTA_VERSION"
+          docker tag apache/arrow-ballista-executor:latest ghcr.io/apache/arrow-ballista-executor:$BALLISTA_VERSION
+          docker tag apache/arrow-ballista-scheduler:latest ghcr.io/apache/arrow-ballista-scheduler:$BALLISTA_VERSION
 
-          # release dockers only when tagged 
+          docker tag apache/arrow-ballista-standalone:latest ghcr.io/apache/arrow-ballista-standalone:latest
+          docker tag apache/arrow-ballista-executor:latest ghcr.io/apache/arrow-ballista-executor:latest
+          docker tag apache/arrow-ballista-scheduler:latest ghcr.io/apache/arrow-ballista-scheduler:latest
+
+          # release dockers only when there is a tag 
           export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '')"
           if [[ $DOCKER_TAG =~ ^[0-9\.]+-rc[0-9]+$ ]]
           then
-            echo "publishing docker tag $DOCKER_TAG"
+            echo "publishing docker tag $BALLISTA_VERSION"
             docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
             
             docker push ghcr.io/apache/arrow-ballista-standalone:$BALLISTA_VERSION
             docker push ghcr.io/apache/arrow-ballista-executor:$BALLISTA_VERSION
             docker push ghcr.io/apache/arrow-ballista-scheduler:$BALLISTA_VERSION
+
+            echo "publishing docker tag latest"
+
+            docker push ghcr.io/apache/arrow-ballista-standalone:latest
+            docker push ghcr.io/apache/arrow-ballista-executor:latest
+            docker push ghcr.io/apache/arrow-ballista-scheduler:latest
 
           fi
         env:
