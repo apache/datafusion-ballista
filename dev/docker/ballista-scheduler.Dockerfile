@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 ARG RELEASE_FLAG=release
 
@@ -23,8 +23,6 @@ ENV RELEASE_FLAG=${RELEASE_FLAG}
 ENV RUST_LOG=info
 ENV RUST_BACKTRACE=full
 ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y netcat
 
 COPY target/$RELEASE_FLAG/ballista-scheduler /root/ballista-scheduler
 

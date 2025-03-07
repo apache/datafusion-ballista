@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM rust:1.81-bullseye
+FROM rust:1.85-bullseye
 
 ARG EXT_UID
 
@@ -24,7 +24,7 @@ ENV RUST_BACKTRACE=full
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && \
-    apt-get -y install libssl-dev openssl zlib1g zlib1g-dev libpq-dev cmake protobuf-compiler netcat curl unzip
+    apt-get -y install libssl-dev openssl zlib1g zlib1g-dev libpq-dev cmake protobuf-compiler curl unzip
 
 RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
     apt-get update && \
