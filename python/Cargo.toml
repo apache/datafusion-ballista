@@ -30,13 +30,13 @@ publish = false
 
 [dependencies]
 async-trait = "0.1.77"
-ballista = { version = "43.0.0" }
-ballista-core = { version = "43.0.0" }
-ballista-executor = { version = "43.0.0", default-features = false }
-ballista-scheduler = { version = "43.0.0", default-features = false }
-datafusion = { version = "43", features = ["pyarrow", "avro"] }
-datafusion-proto = { version = "43" }
-datafusion-python = { version = "43" }
+ballista = { version = "44.0.0" }
+ballista-core = { version = "44.0.0" }
+ballista-executor = { version = "44.0.0", default-features = false }
+ballista-scheduler = { version = "44.0.0", default-features = false }
+datafusion = { version = "44", features = ["pyarrow", "avro"] }
+datafusion-proto = { version = "44" }
+datafusion-python = { version = "44" }
 
 pyo3 = { version = "0.22", features = ["extension-module", "abi3", "abi3-py38"] }
 pyo3-log = "0.11"
