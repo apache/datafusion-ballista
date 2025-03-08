@@ -1562,11 +1562,6 @@ mod tests {
         Ok(())
     }
 
-    // Our queries do not have the LIMIT clause, so we need to apply it
-    // before comparing the results with the expected results.
-    const QUERY_LIMITS: [(usize, usize); 5] =
-        [(2, 100), (3, 10), (10, 20), (18, 100), (21, 100)];
-
     // We read the expected results from CSV files so we need to normalize the
     // query results before we compare them with the expected results for the
     // following reasons:
@@ -1581,64 +1576,55 @@ mod tests {
     // 4. Rename columns using the expected schema to make schema matching
     // because, for q18, we have aggregate field `sum(l_quantity)` that is
     // called `sum_l_quantity` in the expected results.
-    //
-    // 5. If there is a missing LIMIT clause, apply it to the results.
     async fn normalize_for_verification(
         batches: Vec<RecordBatch>,
-        n: usize,
+        expected_schema: Schema,
     ) -> Result<Vec<RecordBatch>> {
         if batches.is_empty() {
             return Ok(vec![]);
         }
-        let expected_schema = get_answer_schema(n);
-        let limit = QUERY_LIMITS.iter().find(|&&x| x.0 == n).map(|x| x.1);
         let ctx = SessionContext::new();
         let schema = batches[0].schema();
         let df = ctx.read_batches(batches)?;
-        let df = df
-            .select(
-                schema
-                    .fields()
-                    .iter()
-                    .zip(expected_schema.fields())
-                    .map(|(field, expected_field)| {
-                        match Field::data_type(field) {
-                            // Normalize decimals to Decimal(15, 2)
-                            DataType::Decimal128(_, _) => {
-                                // We convert to float64 and then to decimal(15, 2).
-                                // Directly converting between Decimals caused test
-                                // failures.
-                                let inner_cast = Box::new(Expr::Cast(Cast::new(
-                                    Box::new(col(Field::name(field))),
-                                    DataType::Float64,
-                                )));
-                                Expr::Cast(Cast::new(
-                                    inner_cast,
-                                    DataType::Decimal128(15, 2),
-                                ))
+        let df = df.select(
+            schema
+                .fields()
+                .iter()
+                .zip(expected_schema.fields())
+                .map(|(field, expected_field)| {
+                    match Field::data_type(field) {
+                        // Normalize decimals to Decimal(15, 2)
+                        DataType::Decimal128(_, _) => {
+                            // We convert to float64 and then to decimal(15, 2).
+                            // Directly converting between Decimals caused test
+                            // failures.
+                            let inner_cast = Box::new(Expr::Cast(Cast::new(
+                                Box::new(col(Field::name(field))),
+                                DataType::Float64,
+                            )));
+                            Expr::Cast(Cast::new(inner_cast, DataType::Decimal128(15, 2)))
                                 .alias(Field::name(expected_field))
-                            }
-                            // Normalize floats to have 2 digits after the decimal point
-                            DataType::Float64 => {
-                                let inner_cast = Box::new(Expr::Cast(Cast::new(
-                                    Box::new(col(Field::name(field))),
-                                    DataType::Decimal128(15, 2),
-                                )));
-                                Expr::Cast(Cast::new(inner_cast, DataType::Float64))
-                                    .alias(Field::name(expected_field))
-                            }
-                            // Normalize strings by trimming trailing spaces.
-                            DataType::Utf8 => Expr::Cast(Cast::new(
-                                Box::new(trim(vec![col(Field::name(field))])),
-                                Field::data_type(field).to_owned(),
-                            ))
-                            .alias(Field::name(field)),
-                            _ => col(Field::name(expected_field)),
                         }
-                    })
-                    .collect::<Vec<Expr>>(),
-            )?
-            .limit(0, limit)?;
+                        // Normalize floats to have 2 digits after the decimal point
+                        DataType::Float64 => {
+                            let inner_cast = Box::new(Expr::Cast(Cast::new(
+                                Box::new(col(Field::name(field))),
+                                DataType::Decimal128(15, 2),
+                            )));
+                            Expr::Cast(Cast::new(inner_cast, DataType::Float64))
+                                .alias(Field::name(expected_field))
+                        }
+                        // Normalize strings by trimming trailing spaces.
+                        DataType::Utf8 => Expr::Cast(Cast::new(
+                            Box::new(trim(vec![col(Field::name(field))])),
+                            Field::data_type(field).to_owned(),
+                        ))
+                        .alias(Field::name(field)),
+                        _ => col(Field::name(expected_field)),
+                    }
+                })
+                .collect::<Vec<Expr>>(),
+        )?;
         df.collect().await
     }
 
@@ -1662,7 +1648,8 @@ mod tests {
                 output_path: None,
             };
             let actual = benchmark_datafusion(opt).await?;
-            let normalized = normalize_for_verification(actual, n).await?;
+            let expected_schema = get_answer_schema(n);
+            let normalized = normalize_for_verification(actual, expected_schema).await?;
 
             assert_expected_results(&expected, &normalized)
         } else {
