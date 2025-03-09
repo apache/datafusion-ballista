@@ -22,9 +22,8 @@ use ballista_core::execution_plans::{
     ShuffleReaderExec, ShuffleWriterExec, UnresolvedShuffleExec,
 };
 use datafusion::datasource::listing::PartitionedFile;
-use datafusion::datasource::physical_plan::{
-    AvroExec, CsvExec, FileScanConfig, NdJsonExec, ParquetExec,
-};
+use datafusion::datasource::memory::MemorySourceConfig;
+use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
@@ -320,33 +319,21 @@ filter_expr={}",
             "ShuffleWriter [{} partitions]",
             exec.input_partition_count()
         )
-    } else if let Some(_) = plan.as_any().downcast_ref::<DataSourceExec>() {
-        // TODO: make this proper string
-        "MemoryExec".to_string()
-    } else if let Some(exec) = plan.as_any().downcast_ref::<CsvExec>() {
+    } else if let Some(exec) = plan.as_any().downcast_ref::<DataSourceExec>() {
         let parts = exec.properties().output_partitioning().partition_count();
-        format!(
-            "CSV: {} [{} partitions]",
-            get_file_scan(exec.base_config()),
-            parts
-        )
-    } else if let Some(exec) = plan.as_any().downcast_ref::<NdJsonExec>() {
-        let parts = exec.properties().output_partitioning().partition_count();
-        format!("JSON [{parts} partitions]")
-    } else if let Some(exec) = plan.as_any().downcast_ref::<AvroExec>() {
-        let parts = exec.properties().output_partitioning().partition_count();
-        format!(
-            "Avro: {} [{} partitions]",
-            get_file_scan(exec.base_config()),
-            parts
-        )
-    } else if let Some(exec) = plan.as_any().downcast_ref::<ParquetExec>() {
-        let parts = exec.properties().output_partitioning().partition_count();
-        format!(
-            "Parquet: {} [{} partitions]",
-            get_file_scan(exec.base_config()),
-            parts
-        )
+        let data_source = exec.data_source();
+        let config =
+            if let Some(config) = data_source.as_any().downcast_ref::<FileScanConfig>() {
+                get_file_scan(config)
+            } else if let Some(_config) =
+                data_source.as_any().downcast_ref::<MemorySourceConfig>()
+            {
+                "Memory".to_string()
+            } else {
+                "Unknown".to_string()
+            };
+
+        format!("DataSourceExec: ({}) [{} partitions]", config, parts)
     } else if let Some(exec) = plan.as_any().downcast_ref::<GlobalLimitExec>() {
         format!(
             "GlobalLimit(skip={}, fetch={:?})",
@@ -435,13 +422,13 @@ mod tests {
 	subgraph cluster0 {
 		label = "Stage 1 [Resolved]";
 		stage_1_0 [shape=box, label="ShuffleWriter [2 partitions]"]
-		stage_1_0_0 [shape=box, label="MemoryExec"]
+		stage_1_0_0 [shape=box, label="DataSourceExec: (Memory) [2 partitions]"]
 		stage_1_0_0 -> stage_1_0
 	}
 	subgraph cluster1 {
 		label = "Stage 2 [Resolved]";
 		stage_2_0 [shape=box, label="ShuffleWriter [2 partitions]"]
-		stage_2_0_0 [shape=box, label="MemoryExec"]
+		stage_2_0_0 [shape=box, label="DataSourceExec: (Memory) [2 partitions]"]
 		stage_2_0_0 -> stage_2_0
 	}
 	subgraph cluster2 {
@@ -465,7 +452,7 @@ filter_expr="]
 	subgraph cluster3 {
 		label = "Stage 4 [Resolved]";
 		stage_4_0 [shape=box, label="ShuffleWriter [2 partitions]"]
-		stage_4_0_0 [shape=box, label="MemoryExec"]
+		stage_4_0_0 [shape=box, label="DataSourceExec: (Memory) [2 partitions]"]
 		stage_4_0_0 -> stage_4_0
 	}
 	subgraph cluster4 {
@@ -534,19 +521,19 @@ filter_expr="]
 	subgraph cluster0 {
 		label = "Stage 1 [Resolved]";
 		stage_1_0 [shape=box, label="ShuffleWriter [2 partitions]"]
-		stage_1_0_0 [shape=box, label="MemoryExec"]
+		stage_1_0_0 [shape=box, label="DataSourceExec: (Memory) [2 partitions]"]
 		stage_1_0_0 -> stage_1_0
 	}
 	subgraph cluster1 {
 		label = "Stage 2 [Resolved]";
 		stage_2_0 [shape=box, label="ShuffleWriter [2 partitions]"]
-		stage_2_0_0 [shape=box, label="MemoryExec"]
+		stage_2_0_0 [shape=box, label="DataSourceExec: (Memory) [2 partitions]"]
 		stage_2_0_0 -> stage_2_0
 	}
 	subgraph cluster2 {
 		label = "Stage 3 [Resolved]";
 		stage_3_0 [shape=box, label="ShuffleWriter [2 partitions]"]
-		stage_3_0_0 [shape=box, label="MemoryExec"]
+		stage_3_0_0 [shape=box, label="DataSourceExec: (Memory) [2 partitions]"]
 		stage_3_0_0 -> stage_3_0
 	}
 	subgraph cluster3 {
