@@ -23,7 +23,8 @@ use clap::ValueEnum;
 use datafusion::common::tree_node::TreeNode;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::datasource::listing::PartitionedFile;
-use datafusion::datasource::physical_plan::{AvroExec, CsvExec, NdJsonExec, ParquetExec};
+use datafusion::datasource::physical_plan::FileScanConfig;
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::DataFusionError;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -628,21 +629,16 @@ pub(crate) fn get_scan_files(
     let mut collector: Vec<Vec<Vec<PartitionedFile>>> = vec![];
     plan.apply(&mut |plan: &Arc<dyn ExecutionPlan>| {
         let plan_any = plan.as_any();
-        let file_groups =
-            if let Some(parquet_exec) = plan_any.downcast_ref::<ParquetExec>() {
-                parquet_exec.base_config().file_groups.clone()
-            } else if let Some(avro_exec) = plan_any.downcast_ref::<AvroExec>() {
-                avro_exec.base_config().file_groups.clone()
-            } else if let Some(json_exec) = plan_any.downcast_ref::<NdJsonExec>() {
-                json_exec.base_config().file_groups.clone()
-            } else if let Some(csv_exec) = plan_any.downcast_ref::<CsvExec>() {
-                csv_exec.base_config().file_groups.clone()
-            } else {
-                return Ok(TreeNodeRecursion::Continue);
-            };
 
-        collector.push(file_groups);
-        Ok(TreeNodeRecursion::Jump)
+        if let Some(config) = plan_any
+            .downcast_ref::<DataSourceExec>()
+            .and_then(|c| c.data_source().as_any().downcast_ref::<FileScanConfig>())
+        {
+            collector.push(config.file_groups.clone());
+            Ok(TreeNodeRecursion::Jump)
+        } else {
+            Ok(TreeNodeRecursion::Continue)
+        }
     })?;
     Ok(collector)
 }
