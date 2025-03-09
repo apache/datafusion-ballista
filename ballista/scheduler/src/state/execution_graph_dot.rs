@@ -320,18 +320,21 @@ filter_expr={}",
             exec.input_partition_count()
         )
     } else if let Some(exec) = plan.as_any().downcast_ref::<DataSourceExec>() {
+        let config = if let Some(config) =
+            exec.data_source().as_any().downcast_ref::<FileScanConfig>()
+        {
+            get_file_scan(config)
+        } else if let Some(_config) = exec
+            .data_source()
+            .as_any()
+            .downcast_ref::<MemorySourceConfig>()
+        {
+            "Memory".to_string()
+        } else {
+            "Unknown".to_string()
+        };
+
         let parts = exec.properties().output_partitioning().partition_count();
-        let data_source = exec.data_source();
-        let config =
-            if let Some(config) = data_source.as_any().downcast_ref::<FileScanConfig>() {
-                get_file_scan(config)
-            } else if let Some(_config) =
-                data_source.as_any().downcast_ref::<MemorySourceConfig>()
-            {
-                "Memory".to_string()
-            } else {
-                "Unknown".to_string()
-            };
 
         format!("DataSourceExec: ({}) [{} partitions]", config, parts)
     } else if let Some(exec) = plan.as_any().downcast_ref::<GlobalLimitExec>() {
