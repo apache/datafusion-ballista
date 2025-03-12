@@ -26,24 +26,24 @@ Docker Compose is a convenient way to launch a cluster when testing locally.
 Run the following commands to download the [official Docker image](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone):
 
 ```bash
-docker pull ghcr.io/apache/datafusion-ballista-standalone:0.12.0-rc4
+docker pull ghcr.io/apache/datafusion-ballista-standalone:latest
 ```
 
 Altenatively run the following commands to clone the source repository and build the Docker images from source:
 
 ```bash
-git clone git@github.com:apache/datafusion-ballista.git -b 0.12.0
+git clone git@github.com:apache/datafusion-ballista.git -b latest
 cd datafusion-ballista
 ./dev/build-ballista-docker.sh
 ```
 
 This will create the following images:
 
-- `apache/datafusion-ballista-benchmarks:0.12.0`
-- `apache/datafusion-ballista-cli:0.12.0`
-- `apache/datafusion-ballista-executor:0.12.0`
-- `apache/datafusion-ballista-scheduler:0.12.0`
-- `apache/datafusion-ballista-standalone:0.12.0`
+- `apache/datafusion-ballista-benchmarks:latest`
+- `apache/datafusion-ballista-cli:latest`
+- `apache/datafusion-ballista-executor:latest`
+- `apache/datafusion-ballista-scheduler:latest`
+- `apache/datafusion-ballista-standalone:latest`
 
 ## Start a Cluster
 
@@ -75,5 +75,5 @@ The scheduler listens on port 50050 and this is the port that clients will need 
 ## Connect from the Ballista CLI
 
 ```shell
-docker run --network=host -it apache/datafusion-ballista-cli:0.12.0 --host localhost --port 50050
+docker run --network=host -it apache/datafusion-ballista-cli:latest --host localhost --port 50050
 ```
