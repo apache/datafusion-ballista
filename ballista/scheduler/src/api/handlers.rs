@@ -24,9 +24,12 @@ use ballista_core::BALLISTA_VERSION;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet, Time};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
-use graphviz_rust::cmd::{CommandArg, Format};
-use graphviz_rust::exec;
-use graphviz_rust::printer::PrinterContext;
+#[cfg(feature = "graphviz-support")]
+use graphviz_rust::{
+    cmd::{CommandArg, Format},
+    exec,
+    printer::PrinterContext,
+};
 use http::{header::CONTENT_TYPE, StatusCode};
 use std::sync::Arc;
 use std::time::Duration;
@@ -342,7 +345,7 @@ pub async fn get_query_stage_dot_graph<
         Ok("Not Found".to_string())
     }
 }
-
+#[cfg(feature = "graphviz-support")]
 pub async fn get_job_svg_graph<
     T: AsLogicalPlan + Clone + Send + Sync + 'static,
     U: AsExecutionPlan + Send + Sync + 'static,

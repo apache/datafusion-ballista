@@ -25,10 +25,12 @@ The scheduler also provides a REST API that allows jobs to be monitored.
 
 > This is optional scheduler feature which should be enabled with `rest-api` feature
 
-| API                   | Method | Description                                                 |
-| --------------------- | ------ | ----------------------------------------------------------- |
-| /api/jobs             | GET    | Get a list of jobs that have been submitted to the cluster. |
-| /api/job/{job_id}     | GET    | Get a summary of a submitted job.                           |
-| /api/job/{job_id}/dot | GET    | Produce a query plan in DOT (graphviz) format.              |
-| /api/job/{job_id}     | PATCH  | Cancel a currently running job                              |
-| /api/metrics          | GET    | Return current scheduler metric set                         |
+| API                                  | Method | Description                                                       |
+| ------------------------------------ | ------ | ----------------------------------------------------------------- |
+| /api/jobs                            | GET    | Get a list of jobs that have been submitted to the cluster.       |
+| /api/job/{job_id}                    | GET    | Get a summary of a submitted job.                                 |
+| /api/job/{job_id}/dot                | GET    | Produce a query plan in DOT (graphviz) format.                    |
+| /api/job/:job_id/dot_svg             | GET    | Produce a query plan in SVG format. (`graphviz-support` required) |
+| /api/job/{job_id}                    | PATCH  | Cancel a currently running job                                    |
+| /api/job/:job_id/stage/:stage_id/dot | GET    | Produces stage plan in DOT (graphviz) format                      |
+| /api/metrics                         | GET    | Return current scheduler metric set                               |

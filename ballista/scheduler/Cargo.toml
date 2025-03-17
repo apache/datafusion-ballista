@@ -38,9 +38,10 @@ required-features = ["build-binary"]
 build-binary = ["configure_me", "clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary"]
 default = ["build-binary"]
 flight-sql = ["base64"]
+graphviz-support = ["dep:graphviz-rust"]
 keda-scaler = []
 prometheus-metrics = ["prometheus", "once_cell"]
-rest-api = ["graphviz-rust"]
+rest-api = []
 
 [dependencies]
 arrow-flight = { workspace = true }
