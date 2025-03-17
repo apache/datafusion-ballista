@@ -339,9 +339,17 @@
 <td><p>GET</p></td>
 <td><p>Produce a query plan in DOT (graphviz) format.</p></td>
 </tr>
-<tr class="row-odd"><td><p>/api/job/{job_id}</p></td>
+<tr class="row-odd"><td><p>/api/job/:job_id/dot_svg</p></td>
+<td><p>GET</p></td>
+<td><p>Produce a query plan in SVG format. (<code class="docutils literal notranslate"><span class="pre">graphviz-support</span></code> required)</p></td>
+</tr>
+<tr class="row-even"><td><p>/api/job/{job_id}</p></td>
 <td><p>PATCH</p></td>
 <td><p>Cancel a currently running job</p></td>
+</tr>
+<tr class="row-odd"><td><p>/api/job/:job_id/stage/:stage_id/dot</p></td>
+<td><p>GET</p></td>
+<td><p>Produces stage plan in DOT (graphviz) format</p></td>
 </tr>
 <tr class="row-even"><td><p>/api/metrics</p></td>
 <td><p>GET</p></td>
