@@ -648,6 +648,8 @@ dependencies = [
 [[package]]
 name = "ballista"
 version = "43.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1db1b0161d06f18ee9d67cb640ca55b66a1abff3846582f44088f8c6689da58"
 dependencies = [
  "async-trait",
  "ballista-core",
@@ -662,6 +664,8 @@ dependencies = [
 [[package]]
 name = "ballista-core"
 version = "43.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0692757892874379c9dfd1fbc0c84abc1490d43e753cf3a18882f46adcc43393"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -677,8 +681,6 @@ dependencies = [
  "md-5",
  "prost",
  "prost-types",
- "pyo3",
- "pyo3-log",
  "rand",
  "rustc_version",
  "serde",
@@ -692,6 +694,8 @@ dependencies = [
 [[package]]
 name = "ballista-executor"
 version = "43.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "335206c011b08435e446a35abb81ff8ed4fe87d3c155de3053669d59f704a00d"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -720,6 +724,8 @@ dependencies = [
 [[package]]
 name = "ballista-scheduler"
 version = "43.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e542a86166227591e805e2a9af02aa185f4032951be6cc37b68ceeb22a94808b"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -3359,15 +3365,14 @@ dependencies = [
 
 [[package]]
 name = "ring"
-version = "0.17.8"
+version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c17fa4cb658e3583423e915b9f3acc01cceaee1860e33d59ebae66adc3a2dc0d"
+checksum = "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
 dependencies = [
  "cc",
  "cfg-if",
  "getrandom",
  "libc",
- "spin",
  "untrusted",
  "windows-sys 0.52.0",
 ]
@@ -3699,12 +3704,6 @@ dependencies = [
  "libc",
  "windows-sys 0.52.0",
 ]
-
-[[package]]
-name = "spin"
-version = "0.9.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 
 [[package]]
 name = "sqlparser"
