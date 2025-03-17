@@ -24,24 +24,24 @@
 Run the following commands to download the [official Docker image](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone):
 
 ```bash
-docker pull ghcr.io/apache/datafusion-ballista-standalone:0.12.0-rc4
+docker pull ghcr.io/apache/datafusion-ballista-standalone:latest
 ```
 
 Altenatively run the following commands to clone the source repository and build the Docker images from source:
 
 ```bash
-git clone git@github.com:apache/datafusion-ballista.git -b 0.12.0
+git clone git@github.com:apache/datafusion-ballista.git
 cd datafusion-ballista
 ./dev/build-ballista-docker.sh
 ```
 
 This will create the following images:
 
-- `apache/datafusion-ballista-benchmarks:0.12.0`
-- `apache/datafusion-ballista-cli:0.12.0`
-- `apache/datafusion-ballista-executor:0.12.0`
-- `apache/datafusion-ballista-scheduler:0.12.0`
-- `apache/datafusion-ballista-standalone:0.12.0`
+- `apache/datafusion-ballista-benchmarks:latest`
+- `apache/datafusion-ballista-cli:latest`
+- `apache/datafusion-ballista-executor:latest`
+- `apache/datafusion-ballista-scheduler:latest`
+- `apache/datafusion-ballista-standalone:latest`
 
 ## Start a Cluster
 
@@ -51,7 +51,7 @@ Start a scheduler using the following syntax:
 
 ```bash
 docker run --network=host \
- -d apache/datafusion-ballista-scheduler:0.12.0 \
+ -d apache/datafusion-ballista-scheduler:latest \
  --bind-port 50050
 ```
 
@@ -60,7 +60,7 @@ Run `docker ps` to check that the process is running:
 ```
 $ docker ps
 CONTAINER ID   IMAGE                                    COMMAND                  CREATED         STATUS         PORTS     NAMES
-a756055576f3   apache/datafusion-ballista-scheduler:0.12.0   "/root/scheduler-ent…"   8 seconds ago   Up 8 seconds             xenodochial_carson
+a756055576f3   apache/datafusion-ballista-scheduler:latest   "/root/scheduler-ent…"   8 seconds ago   Up 8 seconds             xenodochial_carson
 ```
 
 Run `docker logs CONTAINER_ID` to check the output from the process:
@@ -82,7 +82,7 @@ Start one or more executor processes. Each executor process will need to listen 
 
 ```bash
 docker run --network=host \
-  -d apache/datafusion-ballista-executor:0.12.0 \
+  -d apache/datafusion-ballista-executor:latest \
   --external-host localhost --bind-port 50051
 ```
 
@@ -91,8 +91,8 @@ Use `docker ps` to check that both the scheduler and executor(s) are now running
 ```
 $ docker ps
 CONTAINER ID   IMAGE                                    COMMAND                  CREATED         STATUS         PORTS     NAMES
-fb8b530cee6d   apache/datafusion-ballista-executor:0.12.0    "/root/executor-entr…"   2 seconds ago   Up 1 second              gallant_galois
-a756055576f3   apache/datafusion-ballista-scheduler:0.12.0   "/root/scheduler-ent…"   8 seconds ago   Up 8 seconds             xenodochial_carson
+fb8b530cee6d   apache/datafusion-ballista-executor:latest    "/root/executor-entr…"   2 seconds ago   Up 1 second              gallant_galois
+a756055576f3   apache/datafusion-ballista-scheduler:latest   "/root/scheduler-ent…"   8 seconds ago   Up 8 seconds             xenodochial_carson
 ```
 
 Use `docker logs CONTAINER_ID` to check the output from the executor(s):
@@ -106,26 +106,8 @@ $ docker logs fb8b530cee6d
 2024-02-03T14:50:24.063281Z  INFO tokio-runtime-worker ThreadId(47) ballista_executor::execution_loop: Starting poll work loop with scheduler
 ```
 
-### Using etcd as a Backing Store
-
-_NOTE: This functionality is currently experimental_
-
-Ballista can optionally use [etcd](https://etcd.io/) as a backing store for the scheduler. Use the following commands
-to launch the scheduler with this option enabled.
-
-```bash
-docker run --network=host \
-  -d apache/datafusion-ballista-scheduler:0.12.0 \
-  --bind-port 50050 \
-  --config-backend etcd \
-  --etcd-urls etcd:2379
-```
-
-Please refer to the [etcd](https://etcd.io/) website for installation instructions. Etcd version 3.4.9 or later is
-recommended.
-
 ## Connect from the CLI
 
 ```shell
-docker run --network=host -it apache/datafusion-ballista-cli:0.12.0 --host localhost --port 50050
+docker run --network=host -it apache/datafusion-ballista-cli:latest --host localhost --port 50050
 ```
