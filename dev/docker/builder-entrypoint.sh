@@ -22,4 +22,4 @@ set -x
 
 printenv
 RELEASE_FLAG=${RELEASE_FLAG:=release}
-cargo build --features flight-sql --profile $RELEASE_FLAG "$@"
+cargo build --features rest-api --profile $RELEASE_FLAG "$@"
