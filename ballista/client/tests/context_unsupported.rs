@@ -211,4 +211,35 @@ mod unsupported {
 
         assert_batches_eq!(expected, &result);
     }
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    #[should_panic]
+    // "Error preparing task definition: Unsupported plan and extension codec failed with unsupported plan type: NdJsonExec"
+    async fn should_support_json_source(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) {
+        let result = ctx
+            .read_json(&format!("{test_data}/simple.json"), Default::default())
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        #[rustfmt::skip]
+        let expected = [
+            "+---+",
+            "| a |",
+            "+---+",
+            "| 1 |",
+            "+---+"
+        ];
+
+        assert_batches_eq!(expected, &result);
+    }
 }
