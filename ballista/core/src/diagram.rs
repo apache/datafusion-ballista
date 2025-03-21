@@ -18,7 +18,7 @@
 use crate::error::Result;
 use crate::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
 
-use datafusion::datasource::physical_plan::{CsvExec, ParquetExec};
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_plan::aggregates::AggregateExec;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
@@ -84,10 +84,8 @@ fn build_exec_plan_diagram(
         "ProjectionExec"
     } else if plan.as_any().downcast_ref::<HashJoinExec>().is_some() {
         "HashJoinExec"
-    } else if plan.as_any().downcast_ref::<ParquetExec>().is_some() {
-        "ParquetExec"
-    } else if plan.as_any().downcast_ref::<CsvExec>().is_some() {
-        "CsvExec"
+    } else if plan.as_any().downcast_ref::<DataSourceExec>().is_some() {
+        "DataSourceExec"
     } else if plan.as_any().downcast_ref::<FilterExec>().is_some() {
         "FilterExec"
     } else if plan.as_any().downcast_ref::<ShuffleWriterExec>().is_some() {

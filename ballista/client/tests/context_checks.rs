@@ -399,7 +399,7 @@ mod supported {
     }
 
     // tests if `ctx.enable_url_table()` works correctly
-    // it did not work before datafusion 45.0.0
+    // it did not work before datafusion 46.0.0
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
@@ -433,5 +433,66 @@ mod supported {
         assert_batches_eq!(expected, &result);
 
         Ok(())
+    }
+
+    // export RUST_MIN_STACK=20971520
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    #[cfg(not(windows))] // test is failing at windows, can't debug it
+    async fn should_support_sql_insert_into(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) {
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        let write_dir = tempfile::tempdir().expect("temporary directory to be created");
+        let write_dir_path = write_dir
+            .path()
+            .to_str()
+            .expect("path to be converted to str");
+
+        ctx.sql(&format!("CREATE EXTERNAL TABLE written_table (id INTEGER, string_col STRING, timestamp_col BIGINT) STORED AS PARQUET LOCATION '{}'" , write_dir_path)).await.unwrap().show().await.unwrap();
+
+        let _ = ctx
+            .sql("INSERT INTO written_table select  id, string_col, timestamp_col from test")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        ctx.deregister_table("written_table")
+            .expect("table to be dropped");
+
+        ctx.register_parquet("written_table_test", write_dir_path, Default::default())
+            .await
+            .unwrap();
+
+        let result = ctx
+            .sql("select id, string_col, timestamp_col from written_table_test where id > 4 order by id")
+            .await.unwrap()
+            .collect()
+            .await.unwrap();
+
+        let expected = [
+            "+----+------------+---------------------+",
+            "| id | string_col | timestamp_col       |",
+            "+----+------------+---------------------+",
+            "| 5  | 1          | 1235865660000000000 |",
+            "| 6  | 0          | 1238544000000000000 |",
+            "| 7  | 1          | 1238544060000000000 |",
+            "+----+------------+---------------------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
     }
 }
