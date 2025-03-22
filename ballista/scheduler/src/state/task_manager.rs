@@ -524,24 +524,35 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     pub(crate) async fn launch_multi_task(
         &self,
         executor: &ExecutorMetadata,
-        tasks: Vec<Vec<TaskDescription>>,
+        tasks: HashMap<(String, usize), Vec<TaskDescription>>,
         executor_manager: &ExecutorManager,
-    ) -> Result<()> {
+    ) -> Result<HashMap<String, Vec<TaskDescription>>> {
         let mut multi_tasks = vec![];
-        for stage_tasks in tasks {
-            match self.prepare_multi_task_definition(stage_tasks) {
+        let mut prepare_failed_jobs = HashMap::<String, Vec<TaskDescription>>::new();
+        for ((job_id, _stage_id), stage_tasks) in tasks {
+            if prepare_failed_jobs.contains_key(&job_id) {
+                prepare_failed_jobs
+                    .entry(job_id)
+                    .or_default()
+                    .extend(stage_tasks);
+                continue;
+            }
+            match self.prepare_multi_task_definition(stage_tasks.clone()) {
                 Ok(stage_tasks) => multi_tasks.extend(stage_tasks),
-                Err(e) => error!("Fail to prepare task definition: {:?}", e),
+                Err(e) => {
+                    error!("Fail to prepare task definition: {:?}", e);
+                    prepare_failed_jobs.insert(job_id, stage_tasks);
+                }
             }
         }
 
         if !multi_tasks.is_empty() {
             self.launcher
                 .launch_tasks(executor, multi_tasks, executor_manager)
-                .await
-        } else {
-            Ok(())
+                .await?;
         }
+
+        Ok(prepare_failed_jobs)
     }
 
     #[allow(dead_code)]
