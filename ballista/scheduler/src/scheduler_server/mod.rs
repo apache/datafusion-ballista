@@ -183,6 +183,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             .await
     }
 
+    pub(crate) async fn cancel_job(&self, job_id: String) -> Result<()> {
+        self.query_stage_event_loop
+            .get_sender()?
+            .post_event(QueryStageSchedulerEvent::JobCancel(job_id))
+            .await
+    }
+
     /// It just send task status update event to the channel,
     /// and will not guarantee the event processing completed after return
     pub(crate) async fn update_task_status(

@@ -44,7 +44,9 @@ use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
 
 use crate::config::{ClusterStorageConfig, SchedulerConfig, TaskDistributionPolicy};
 use crate::scheduler_server::SessionBuilder;
-use crate::state::execution_graph::{create_task_info, ExecutionGraph, TaskDescription};
+use crate::state::execution_graph::{
+    create_task_info, ExecutionGraph, ExecutionStage, TaskDescription,
+};
 use crate::state::task_manager::JobInfoCache;
 
 pub mod event;
@@ -645,6 +647,29 @@ pub(crate) fn get_scan_files(
         Ok(TreeNodeRecursion::Jump)
     })?;
     Ok(collector)
+}
+
+pub(crate) async fn unbind_prepare_failed_tasks(
+    active_jobs: Arc<HashMap<String, JobInfoCache>>,
+    failed_jobs: &HashMap<String, Vec<TaskDescription>>,
+) {
+    for (job_id, failed_tasks) in failed_jobs.iter() {
+        if let Some(job_info) = active_jobs.get(job_id) {
+            let mut graph = job_info.execution_graph.write().await;
+            failed_tasks.iter().for_each(|task| {
+                if let Some(ExecutionStage::Running(running_stage)) =
+                    graph.stages_mut().get_mut(&task.partition.stage_id)
+                {
+                    if let Some(task_info) = running_stage
+                        .task_infos
+                        .get_mut(task.partition.partition_id)
+                    {
+                        *task_info = None;
+                    }
+                }
+            });
+        }
+    }
 }
 
 #[derive(Clone)]
