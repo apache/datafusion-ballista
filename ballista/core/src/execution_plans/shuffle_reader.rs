@@ -152,12 +152,14 @@ impl ExecutionPlan for ShuffleReaderExec {
         let max_request_num =
             config.ballista_shuffle_reader_maximum_concurrent_requests();
         let max_message_size = config.ballista_grpc_client_max_message_size();
+        let skip_validation = config.ballista_shuffle_reader_skip_validation();
 
         log::debug!(
-            "ShuffleReaderExec::execute({}) max_request_num: {}, max_message_size: {}",
+            "ShuffleReaderExec::execute({}) max_request_num: {}, max_message_size: {}, skip_validation: {}",
             task_id,
             max_request_num,
-            max_message_size
+            max_message_size,
+            skip_validation
         );
         let mut partition_locations = HashMap::new();
         for p in &self.partition[partition] {
@@ -175,6 +177,9 @@ impl ExecutionPlan for ShuffleReaderExec {
             .collect();
         // Shuffle partitions for evenly send fetching partition requests to avoid hot executors within multiple tasks
         partition_locations.shuffle(&mut rng());
+        partition_locations
+            .iter_mut()
+            .for_each(|p| p.skip_validation = skip_validation);
 
         let response_receiver =
             send_fetch_partitions(partition_locations, max_request_num, max_message_size);
@@ -393,6 +398,7 @@ async fn fetch_partition_remote(
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
+    let skip_validation = location.skip_validation;
     // TODO for shuffle client connections, we should avoid creating new connections again and again.
     // And we should also avoid to keep alive too many connections for long time.
     let host = metadata.host.as_str();
@@ -411,7 +417,14 @@ async fn fetch_partition_remote(
         })?;
 
     ballista_client
-        .fetch_partition(&metadata.id, partition_id, &location.path, host, port)
+        .fetch_partition(
+            &metadata.id,
+            partition_id,
+            &location.path,
+            host,
+            port,
+            skip_validation,
+        )
         .await
 }
 
@@ -421,8 +434,9 @@ async fn fetch_partition_local(
     let path = &location.path;
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
+    let skip_validation = location.skip_validation;
 
-    let reader = fetch_partition_local_inner(path).map_err(|e| {
+    let reader = fetch_partition_local_inner(path, skip_validation).map_err(|e| {
         // return BallistaError::FetchFailed may let scheduler retry this task.
         BallistaError::FetchFailed(
             metadata.id.clone(),
@@ -436,14 +450,22 @@ async fn fetch_partition_local(
 
 fn fetch_partition_local_inner(
     path: &str,
+    skip_validation: bool,
 ) -> result::Result<StreamReader<BufReader<File>>, BallistaError> {
     let file = File::open(path).map_err(|e| {
         BallistaError::General(format!("Failed to open partition file at {path}: {e:?}"))
     })?;
     let file = BufReader::new(file);
-    let reader = StreamReader::try_new(file, None).map_err(|e| {
-        BallistaError::General(format!("Failed to new arrow FileReader at {path}: {e:?}"))
-    })?;
+    // Safety: The caller makes sure ipc file is valid
+    let reader = unsafe {
+        StreamReader::try_new(file, None)
+            .map_err(|e| {
+                BallistaError::General(format!(
+                    "Failed to new arrow FileReader at {path}: {e:?}"
+                ))
+            })?
+            .with_skip_validation(skip_validation)
+    };
     Ok(reader)
 }
 
@@ -567,6 +589,7 @@ mod tests {
                 },
                 partition_stats: Default::default(),
                 path: "test_path".to_string(),
+                skip_validation: true,
             })
         }
 
@@ -601,8 +624,7 @@ mod tests {
         test_send_fetch_partitions(4, 10).await;
     }
 
-    #[tokio::test]
-    async fn test_read_local_shuffle() {
+    async fn test_read_local_shuffle_impl(skip_validation: bool) {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
         let work_dir = TempDir::new().unwrap();
@@ -629,7 +651,7 @@ mod tests {
 
         // from to input partitions test the first one with two batches
         let file_path = path.value(0);
-        let reader = fetch_partition_local_inner(file_path).unwrap();
+        let reader = fetch_partition_local_inner(file_path, skip_validation).unwrap();
 
         let mut stream: Pin<Box<dyn RecordBatchStream + Send>> =
             async { Box::pin(LocalShuffleStream::new(reader)) }.await;
@@ -643,6 +665,16 @@ mod tests {
         for b in result {
             assert_eq!(b, create_test_batch())
         }
+    }
+
+    #[tokio::test]
+    async fn test_read_local_shuffle_with_validation() {
+        test_read_local_shuffle_impl(false).await;
+    }
+
+    #[tokio::test]
+    async fn test_read_local_shuffle_skip_validation() {
+        test_read_local_shuffle_impl(true).await;
     }
 
     async fn test_send_fetch_partitions(max_request_num: usize, partition_num: usize) {
@@ -693,6 +725,7 @@ mod tests {
                 },
                 partition_stats: Default::default(),
                 path: path.clone(),
+                skip_validation: true,
             })
             .collect()
     }

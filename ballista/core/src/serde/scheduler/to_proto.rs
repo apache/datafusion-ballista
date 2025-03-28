@@ -43,6 +43,7 @@ impl TryInto<protobuf::Action> for Action {
                 path,
                 host,
                 port,
+                skip_validation,
             } => Ok(protobuf::Action {
                 action_type: Some(ActionType::FetchPartition(protobuf::FetchPartition {
                     job_id,
@@ -51,6 +52,7 @@ impl TryInto<protobuf::Action> for Action {
                     path,
                     host,
                     port: port as u32,
+                    skip_validation,
                 })),
                 settings: vec![],
             }),
@@ -79,6 +81,7 @@ impl TryInto<protobuf::PartitionLocation> for PartitionLocation {
             executor_meta: Some(self.executor_meta.into()),
             partition_stats: Some(self.partition_stats.into()),
             path: self.path,
+            skip_validation: self.skip_validation,
         })
     }
 }

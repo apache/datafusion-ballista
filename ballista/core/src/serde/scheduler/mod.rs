@@ -42,6 +42,8 @@ pub enum Action {
         path: String,
         host: String,
         port: u16,
+        // Skip validation for Arrow IPC file when fetch partition
+        skip_validation: bool,
     },
 }
 
@@ -70,6 +72,7 @@ pub struct PartitionLocation {
     pub executor_meta: ExecutorMetadata,
     pub partition_stats: PartitionStats,
     pub path: String,
+    pub skip_validation: bool,
 }
 
 /// Meta-data for an executor, used when fetching shuffle partitions from other executors

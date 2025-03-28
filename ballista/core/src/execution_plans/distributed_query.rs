@@ -337,6 +337,7 @@ async fn fetch_partition(
     let partition_id = location.partition_id.ok_or_else(|| {
         DataFusionError::Internal("Received empty partition id".to_owned())
     })?;
+    let skip_validation = location.skip_validation;
     let host = metadata.host.as_str();
     let port = metadata.port as u16;
     let mut ballista_client = BallistaClient::try_new(host, port, max_message_size)
@@ -349,6 +350,7 @@ async fn fetch_partition(
             &location.path,
             host,
             port,
+            skip_validation,
         )
         .await
         .map_err(|e| DataFusionError::External(Box::new(e)))

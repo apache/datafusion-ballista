@@ -56,6 +56,7 @@ impl TryInto<Action> for protobuf::Action {
                     path: fetch.path,
                     host: fetch.host,
                     port: fetch.port as u16,
+                    skip_validation: fetch.skip_validation,
                 })
             }
             _ => Err(BallistaError::General(
@@ -126,6 +127,7 @@ impl TryInto<PartitionLocation> for protobuf::PartitionLocation {
                 })?
                 .into(),
             path: self.path,
+            skip_validation: self.skip_validation,
         })
     }
 }

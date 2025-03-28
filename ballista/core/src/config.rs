@@ -34,6 +34,8 @@ pub const BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE: &str =
     "ballista.grpc_client_max_message_size";
 pub const BALLISTA_SHUFFLE_READER_MAX_REQUESTS: &str =
     "ballista.shuffle.max_concurrent_read_requests";
+pub const BALLISTA_SHUFFLE_READER_SKIP_VALIDATION: &str =
+    "ballista.shuffle.skip_validation";
 
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
@@ -54,6 +56,10 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Maximum concurrent requests shuffle reader can process".to_string(),
                          DataType::UInt64,
                          Some((64).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_READER_SKIP_VALIDATION.to_string(),
+                         "Enable skip validation for Arrow IPC file when fetch partition".to_string(),
+                         DataType::Boolean,
+                         Some(true.to_string())),
     ];
     entries
         .into_iter()
@@ -173,6 +179,10 @@ impl BallistaConfig {
 
     pub fn shuffle_reader_maximum_concurrent_requests(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_READER_MAX_REQUESTS)
+    }
+
+    pub fn shuffle_reader_skip_validation(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SHUFFLE_READER_SKIP_VALIDATION)
     }
 
     fn get_usize_setting(&self, key: &str) -> usize {
