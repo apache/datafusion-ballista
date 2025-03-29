@@ -44,9 +44,9 @@ Start one or more Ballista executor processes in new terminal sessions. When sta
 executor, a unique port number must be specified for each executor.
 
 ```shell
-RUST_LOG=info ./target/release/ballista-executor -c 2 -p 50051
+RUST_LOG=info ./target/release/ballista-executor -c 2 -p 50051 --bind-grpc-port 50052
 
-RUST_LOG=info ./target/release/ballista-executor -c 2 -p 50052
+RUST_LOG=info ./target/release/ballista-executor -c 2 -p 50053 --bind-grpc-port 50054
 ```
 
 ## Running the examples

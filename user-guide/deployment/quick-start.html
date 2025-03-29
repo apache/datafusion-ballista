@@ -362,9 +362,9 @@
 </div>
 <p>Start one or more Ballista executor processes in new terminal sessions. When starting more than one
 executor, a unique port number must be specified for each executor.</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">RUST_LOG</span><span class="o">=</span>info<span class="w"> </span>./target/release/ballista-executor<span class="w"> </span>-c<span class="w"> </span><span class="m">2</span><span class="w"> </span>-p<span class="w"> </span><span class="m">50051</span>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">RUST_LOG</span><span class="o">=</span>info<span class="w"> </span>./target/release/ballista-executor<span class="w"> </span>-c<span class="w"> </span><span class="m">2</span><span class="w"> </span>-p<span class="w"> </span><span class="m">50051</span><span class="w"> </span>--bind-grpc-port<span class="w"> </span><span class="m">50052</span>
 
-<span class="nv">RUST_LOG</span><span class="o">=</span>info<span class="w"> </span>./target/release/ballista-executor<span class="w"> </span>-c<span class="w"> </span><span class="m">2</span><span class="w"> </span>-p<span class="w"> </span><span class="m">50052</span>
+<span class="nv">RUST_LOG</span><span class="o">=</span>info<span class="w"> </span>./target/release/ballista-executor<span class="w"> </span>-c<span class="w"> </span><span class="m">2</span><span class="w"> </span>-p<span class="w"> </span><span class="m">50053</span><span class="w"> </span>--bind-grpc-port<span class="w"> </span><span class="m">50054</span>
 </pre></div>
 </div>
 </section>
