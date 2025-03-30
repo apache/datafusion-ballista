@@ -19,6 +19,33 @@
 
 # Changelog
 
+## [45.0.0](https://github.com/apache/datafusion-ballista/tree/44.0.0) (2025-03-30)
+
+[Full Changelog](https://github.com/apache/datafusion-ballista/compare/44.0.0...45.0.0)
+
+**Implemented enhancements:**
+
+- feat: improve executor logs [#1187](https://github.com/apache/datafusion-ballista/pull/1187) (milenkovicm)
+- feat: publish docker containers for executor and scheduler  [#1200](https://github.com/apache/datafusion-ballista/pull/1200) (milenkovicm)
+
+**Merged pull requests:**
+
+- chore: minor release script fix [#1192](https://github.com/apache/datafusion-ballista/pull/1192) (andygrove)
+- feat: improve executor logs [#1187](https://github.com/apache/datafusion-ballista/pull/1187) (milenkovicm)
+- chore: update datafusion to v45 [#1176](https://github.com/apache/datafusion-ballista/pull/1176) (milenkovicm)
+- chore: Update changelog for 44.0.0 [#1191](https://github.com/apache/datafusion-ballista/pull/1191) (andygrove)
+- minor: fix repo and homepage url in `cargo.toml` [#1196](https://github.com/apache/datafusion-ballista/pull/1196) (milenkovicm)
+- chore(deps): bump ring from 0.17.11 to 0.17.13 [#1199](https://github.com/apache/datafusion-ballista/pull/1199) (dependabot[bot])
+- feat: publish docker containers for executor and scheduler  [#1200](https://github.com/apache/datafusion-ballista/pull/1200) (milenkovicm)
+- minor: make `graphviz-rust` dependency optional [#1203](https://github.com/apache/datafusion-ballista/pull/1203) (milenkovicm)
+- doc: update docker related documentation [#1204](https://github.com/apache/datafusion-ballista/pull/1204) (milenkovicm)
+- chore: update python dependencies [#1197](https://github.com/apache/datafusion-ballista/pull/1197) (milenkovicm)
+- chore(deps): bump ring from 0.17.8 to 0.17.14 in /python [#1206](https://github.com/apache/datafusion-ballista/pull/1206) (dependabot[bot])
+- doc: remove arrow from doc title [#1207](https://github.com/apache/datafusion-ballista/pull/1207) (milenkovicm)
+- Fix unit tests in tpch.rs [#1195](https://github.com/apache/datafusion-ballista/pull/1195) (vmingchen)
+- documentation :: quick-start.md sample source code correction [#1213](https://github.com/apache/datafusion-ballista/pull/1213) (nj7)
+- doc: fix quick-start executor command [#1217](https://github.com/apache/datafusion-ballista/pull/1217) (westhide)
+
 ## [44.0.0](https://github.com/apache/datafusion-ballista/tree/44.0.0) (2025-03-01)
 
 [Full Changelog](https://github.com/apache/datafusion-ballista/compare/43.0.0...44.0.0)
