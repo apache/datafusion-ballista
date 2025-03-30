@@ -35,17 +35,13 @@ use ballista_core::serde::scheduler::ExecutorMetadata;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info, trace, warn};
-use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use std::ops::Deref;
 
-use crate::cluster::{
-    bind_task_bias, bind_task_round_robin, unbind_prepare_failed_tasks,
-};
+use crate::cluster::{bind_task_bias, bind_task_round_robin};
 use crate::config::TaskDistributionPolicy;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use crate::state::execution_graph::TaskDescription;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
@@ -116,10 +112,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             let active_jobs = self.state.task_manager.get_running_job_cache();
             let schedulable_tasks = match self.state.config.task_distribution {
                 TaskDistributionPolicy::Bias => {
-                    bind_task_bias(available_slots, active_jobs.clone(), |_| false).await
+                    bind_task_bias(available_slots, active_jobs, |_| false).await
                 }
                 TaskDistributionPolicy::RoundRobin => {
-                    bind_task_round_robin(available_slots, active_jobs.clone(), |_| false).await
+                    bind_task_round_robin(available_slots, active_jobs, |_| false).await
                 }
                 TaskDistributionPolicy::ConsistentHash{..} => {
                     return Err(Status::unimplemented(
@@ -128,36 +124,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             };
 
             let mut tasks = vec![];
-            let mut prepare_failed_jobs = HashMap::<String, Vec<TaskDescription>>::new();
             for (_, task) in schedulable_tasks {
                 let job_id = task.partition.job_id.clone();
-                if prepare_failed_jobs.contains_key(&job_id) {
-                    prepare_failed_jobs.entry(job_id).or_default().push(task);
-                    continue;
-                }
-                match self
-                    .state
-                    .task_manager
-                    .prepare_task_definition(task.clone())
-                {
+                match self.state.task_manager.prepare_task_definition(task) {
                     Ok(task_definition) => tasks.push(task_definition),
                     Err(e) => {
                         error!("Error preparing task definition: {:?}", e);
-                        prepare_failed_jobs.entry(job_id).or_default().push(task);
+                        info!("Cancel prepare task definition failed job: {}", job_id);
+                        if let Err(err) = self.cancel_job(job_id).await {
+                            error!("Failed to cancel job {err:?}");
+                        }
                     }
                 }
             }
-
-            unbind_prepare_failed_tasks(active_jobs, &prepare_failed_jobs).await;
-            for job_id in prepare_failed_jobs.into_keys() {
-                info!("Cancel prepare task definition failed job: {}", job_id);
-                self.cancel_job(job_id).await.map_err(|e| {
-                    let msg = format!("Cancel job error due to {e:?}");
-                    error!("{}", msg);
-                    Status::internal(msg)
-                })?;
-            }
-
             Ok(Response::new(PollWorkResult { tasks }))
         } else {
             warn!("Received invalid executor poll_work request");
@@ -553,11 +532,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
     ) -> Result<Response<CancelJobResult>, Status> {
         let job_id = request.into_inner().job_id;
         info!("Received cancellation request for job {}", job_id);
-        self.cancel_job(job_id).await.map_err(|e| {
-            let msg = format!("Cancel job error due to {e:?}");
-            error!("{}", msg);
-            Status::internal(msg)
-        })?;
+
+        self.query_stage_event_loop
+            .get_sender()
+            .map_err(|e| {
+                let msg = format!("Get query stage event loop error due to {e:?}");
+                error!("{}", msg);
+                Status::internal(msg)
+            })?
+            .post_event(QueryStageSchedulerEvent::JobCancel(job_id))
+            .await
+            .map_err(|e| {
+                let msg = format!("Post to query stage event loop error due to {e:?}");
+                error!("{}", msg);
+                Status::internal(msg)
+            })?;
         Ok(Response::new(CancelJobResult { cancelled: true }))
     }
 

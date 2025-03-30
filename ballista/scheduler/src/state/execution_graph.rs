@@ -225,10 +225,6 @@ impl ExecutionGraph {
         &self.stages
     }
 
-    pub(crate) fn stages_mut(&mut self) -> &mut HashMap<usize, ExecutionStage> {
-        &mut self.stages
-    }
-
     /// An ExecutionGraph is successful if all its stages are successful
     pub fn is_successful(&self) -> bool {
         self.stages
