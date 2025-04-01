@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::planner::DefaultDistributedPlanner;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
 use crate::state::execution_graph::{
@@ -207,6 +208,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         queued_at: u64,
         session_config: Arc<SessionConfig>,
     ) -> Result<()> {
+        let mut planner = DefaultDistributedPlanner::new();
         let mut graph = ExecutionGraph::new(
             &self.scheduler_id,
             job_id,
@@ -215,6 +217,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             plan,
             queued_at,
             session_config,
+            &mut planner,
         )?;
         info!("Submitting execution graph: {:?}", graph);
 

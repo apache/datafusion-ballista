@@ -140,6 +140,7 @@ pub struct RunningTaskInfo {
 }
 
 impl ExecutionGraph {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         scheduler_id: &str,
         job_id: &str,
@@ -148,11 +149,9 @@ impl ExecutionGraph {
         plan: Arc<dyn ExecutionPlan>,
         queued_at: u64,
         session_config: Arc<SessionConfig>,
+        planner: &mut dyn DistributedPlanner,
     ) -> Result<Self> {
-        let mut planner = DistributedPlanner::new();
-
         let output_partitions = plan.properties().output_partitioning().partition_count();
-
         let shuffle_stages = planner.plan_query_stages(job_id, plan)?;
 
         let builder = ExecutionStageBuilder::new(session_config.clone());

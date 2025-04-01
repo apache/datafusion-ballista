@@ -36,27 +36,39 @@ use log::{debug, info};
 
 type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<ShuffleWriterExec>>);
 
-pub struct DistributedPlanner {
+/// [DistributedPlanner] breaks out plan into vector of stages
+pub trait DistributedPlanner {
+    /// Returns a vector of ExecutionPlans, where the root node is a [ShuffleWriterExec].
+    /// Plans that depend on the input of other plans will have leaf nodes of type [UnresolvedShuffleExec].
+    /// A [ShuffleWriterExec] is created whenever the partitioning changes.
+    fn plan_query_stages<'a>(
+        &'a mut self,
+        job_id: &'a str,
+        execution_plan: Arc<dyn ExecutionPlan>,
+    ) -> Result<Vec<Arc<ShuffleWriterExec>>>;
+}
+/// Default implementation of [DistributedPlanner]
+pub struct DefaultDistributedPlanner {
     next_stage_id: usize,
 }
 
-impl DistributedPlanner {
+impl DefaultDistributedPlanner {
     pub fn new() -> Self {
         Self { next_stage_id: 0 }
     }
 }
 
-impl Default for DistributedPlanner {
+impl Default for DefaultDistributedPlanner {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl DistributedPlanner {
+impl DistributedPlanner for DefaultDistributedPlanner {
     /// Returns a vector of ExecutionPlans, where the root node is a [ShuffleWriterExec].
     /// Plans that depend on the input of other plans will have leaf nodes of type [UnresolvedShuffleExec].
     /// A [ShuffleWriterExec] is created whenever the partitioning changes.
-    pub fn plan_query_stages<'a>(
+    fn plan_query_stages<'a>(
         &'a mut self,
         job_id: &'a str,
         execution_plan: Arc<dyn ExecutionPlan>,
@@ -72,7 +84,9 @@ impl DistributedPlanner {
         )?);
         Ok(stages)
     }
+}
 
+impl DefaultDistributedPlanner {
     /// Returns a potentially modified version of the input execution_plan along with the resulting query stages.
     /// This function is needed because the input execution_plan might need to be modified, but it might not hold a
     /// complete query stage (its parent might also belong to the same stage)
@@ -292,7 +306,7 @@ fn create_shuffle_writer(
 
 #[cfg(test)]
 mod test {
-    use crate::planner::DistributedPlanner;
+    use crate::planner::{DefaultDistributedPlanner, DistributedPlanner};
     use crate::test_utils::datafusion_test_context;
     use ballista_core::error::BallistaError;
     use ballista_core::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
@@ -346,7 +360,7 @@ mod test {
         let plan = session_state.optimize(&plan)?;
         let plan = session_state.create_physical_plan(&plan).await?;
 
-        let mut planner = DistributedPlanner::new();
+        let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
         let stages = planner.plan_query_stages(&job_uuid.to_string(), plan)?;
         for (i, stage) in stages.iter().enumerate() {
@@ -460,7 +474,7 @@ order by
         let plan = session_state.optimize(&plan)?;
         let plan = session_state.create_physical_plan(&plan).await?;
 
-        let mut planner = DistributedPlanner::new();
+        let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
         let stages = planner.plan_query_stages(&job_uuid.to_string(), plan)?;
         for (i, stage) in stages.iter().enumerate() {
@@ -628,7 +642,7 @@ order by
         let plan = session_state.optimize(&plan)?;
         let plan = session_state.create_physical_plan(&plan).await?;
 
-        let mut planner = DistributedPlanner::new();
+        let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
         let stages = planner.plan_query_stages(&job_uuid.to_string(), plan)?;
         for (i, stage) in stages.iter().enumerate() {
@@ -737,7 +751,7 @@ order by
         let plan = session_state.optimize(&plan)?;
         let plan = session_state.create_physical_plan(&plan).await?;
 
-        let mut planner = DistributedPlanner::new();
+        let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
         let stages = planner.plan_query_stages(&job_uuid.to_string(), plan)?;
 

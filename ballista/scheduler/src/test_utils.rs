@@ -28,6 +28,7 @@ use async_trait::async_trait;
 
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
+use crate::planner::DefaultDistributedPlanner;
 use crate::scheduler_server::{timestamp_millis, SchedulerServer};
 
 use crate::state::executor_manager::ExecutorManager;
@@ -861,7 +862,7 @@ pub async fn test_aggregation_plan_with_job_id(
         "{}",
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
-
+    let mut planner = DefaultDistributedPlanner::new();
     ExecutionGraph::new(
         "localhost:50050",
         job_id,
@@ -870,6 +871,7 @@ pub async fn test_aggregation_plan_with_job_id(
         plan,
         0,
         Arc::new(SessionConfig::new_with_ballista()),
+        &mut planner,
     )
     .unwrap()
 }
@@ -906,7 +908,7 @@ pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
         "{}",
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
-
+    let mut planner = DefaultDistributedPlanner::new();
     ExecutionGraph::new(
         "localhost:50050",
         "job",
@@ -915,6 +917,7 @@ pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
         plan,
         0,
         Arc::new(SessionConfig::new_with_ballista()),
+        &mut planner,
     )
     .unwrap()
 }
@@ -943,7 +946,7 @@ pub async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
         .create_physical_plan(&optimized_plan)
         .await
         .unwrap();
-
+    let mut planner = DefaultDistributedPlanner::new();
     ExecutionGraph::new(
         "localhost:50050",
         "job",
@@ -952,6 +955,7 @@ pub async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
         plan,
         0,
         Arc::new(SessionConfig::new_with_ballista()),
+        &mut planner,
     )
     .unwrap()
 }
@@ -1001,7 +1005,7 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
         "{}",
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
-
+    let mut planner = DefaultDistributedPlanner::new();
     let graph = ExecutionGraph::new(
         "localhost:50050",
         "job",
@@ -1010,6 +1014,7 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
         plan,
         0,
         Arc::new(SessionConfig::new_with_ballista()),
+        &mut planner,
     )
     .unwrap();
 
@@ -1041,7 +1046,7 @@ pub async fn test_union_all_plan(partition: usize) -> ExecutionGraph {
         "{}",
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
-
+    let mut planner = DefaultDistributedPlanner::new();
     let graph = ExecutionGraph::new(
         "localhost:50050",
         "job",
@@ -1050,6 +1055,7 @@ pub async fn test_union_all_plan(partition: usize) -> ExecutionGraph {
         plan,
         0,
         Arc::new(SessionConfig::new_with_ballista()),
+        &mut planner,
     )
     .unwrap();
 
@@ -1081,7 +1087,7 @@ pub async fn test_union_plan(partition: usize) -> ExecutionGraph {
         "{}",
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
-
+    let mut planner = DefaultDistributedPlanner::new();
     let graph = ExecutionGraph::new(
         "localhost:50050",
         "job",
@@ -1090,6 +1096,7 @@ pub async fn test_union_plan(partition: usize) -> ExecutionGraph {
         plan,
         0,
         Arc::new(SessionConfig::new_with_ballista()),
+        &mut planner,
     )
     .unwrap();
 
