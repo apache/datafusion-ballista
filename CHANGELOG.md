@@ -19,7 +19,7 @@
 
 # Changelog
 
-## [45.0.0](https://github.com/apache/datafusion-ballista/tree/44.0.0) (2025-03-30)
+## [45.0.0](https://github.com/apache/datafusion-ballista/tree/45.0.0) (2025-03-30)
 
 [Full Changelog](https://github.com/apache/datafusion-ballista/compare/44.0.0...45.0.0)
 
