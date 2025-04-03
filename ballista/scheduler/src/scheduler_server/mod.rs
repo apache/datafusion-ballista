@@ -665,7 +665,7 @@ mod test {
     }
 
     fn test_executors(num_partitions: usize) -> Vec<(ExecutorMetadata, ExecutorData)> {
-        let task_slots = (num_partitions as u32 + 1) / 2;
+        let task_slots = (num_partitions as u32).div_ceil(2);
 
         vec![
             (

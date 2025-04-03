@@ -369,14 +369,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         debug!("Statistics: {:?}", execution_result);
 
         let plan_metrics = query_stage_exec.collect_plan_metrics();
-        let operator_metrics = match plan_metrics
+        let operator_metrics = plan_metrics
             .into_iter()
             .map(|m| m.try_into())
             .collect::<Result<Vec<_>, BallistaError>>()
-        {
-            Ok(metrics) => Some(metrics),
-            Err(_) => None,
-        };
+            .ok();
         let executor_id = &self.executor.metadata.id;
 
         let end_exec_time = SystemTime::now()
