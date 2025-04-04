@@ -475,7 +475,7 @@ impl SchedulerTest {
         self.scheduler
             .state
             .session_manager
-            .create_session(&self.session_config)
+            .create_or_update_session("session_id", &self.session_config)
             .await
     }
 
@@ -490,7 +490,7 @@ impl SchedulerTest {
             .scheduler
             .state
             .session_manager
-            .create_session(&self.session_config)
+            .create_or_update_session("session_id", &self.session_config)
             .await?;
 
         self.scheduler
@@ -615,7 +615,7 @@ impl SchedulerTest {
             .scheduler
             .state
             .session_manager
-            .create_session(&self.session_config)
+            .create_or_update_session("session_id", &self.session_config)
             .await?;
 
         self.scheduler

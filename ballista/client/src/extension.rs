@@ -15,16 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista_core::extension::SessionConfigHelperExt;
 pub use ballista_core::extension::{SessionConfigExt, SessionStateExt};
-use ballista_core::{
-    serde::protobuf::{scheduler_grpc_client::SchedulerGrpcClient, CreateSessionParams},
-    utils::create_grpc_client_connection,
-};
+use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use datafusion::{
-    error::DataFusionError,
-    execution::SessionState,
-    prelude::{SessionConfig, SessionContext},
+    error::DataFusionError, execution::SessionState, prelude::SessionContext,
 };
 use url::Url;
 
@@ -100,40 +94,34 @@ impl SessionContextExt for SessionContext {
         url: &str,
         state: SessionState,
     ) -> datafusion::error::Result<SessionContext> {
-        let config = state.config();
-
         let scheduler_url = Extension::parse_url(url)?;
         log::info!(
             "Connecting to Ballista scheduler at {}",
             scheduler_url.clone()
         );
-        let remote_session_id =
-            Extension::setup_remote(config, scheduler_url.clone()).await?;
+
+        let session_state = state.upgrade_for_ballista(scheduler_url)?;
+
         log::info!(
             "Server side SessionContext created with session id: {}",
-            remote_session_id
+            session_state.session_id()
         );
-        let session_state =
-            state.upgrade_for_ballista(scheduler_url, remote_session_id)?;
 
         Ok(SessionContext::new_with_state(session_state))
     }
 
     async fn remote(url: &str) -> datafusion::error::Result<SessionContext> {
-        let config = SessionConfig::new_with_ballista();
         let scheduler_url = Extension::parse_url(url)?;
         log::info!(
             "Connecting to Ballista scheduler at: {}",
             scheduler_url.clone()
         );
-        let remote_session_id =
-            Extension::setup_remote(&config, scheduler_url.clone()).await?;
+
+        let session_state = SessionState::new_ballista_state(scheduler_url)?;
         log::info!(
             "Server side SessionContext created with session id: {}",
-            remote_session_id
+            session_state.session_id()
         );
-        let session_state =
-            SessionState::new_ballista_state(scheduler_url, remote_session_id)?;
 
         Ok(SessionContext::new_with_state(session_state))
     }
@@ -142,15 +130,13 @@ impl SessionContextExt for SessionContext {
     async fn standalone_with_state(
         state: SessionState,
     ) -> datafusion::error::Result<SessionContext> {
-        let (remote_session_id, scheduler_url) =
-            Extension::setup_standalone(Some(&state)).await?;
+        let scheduler_url = Extension::setup_standalone(Some(&state)).await?;
 
-        let session_state =
-            state.upgrade_for_ballista(scheduler_url, remote_session_id.clone())?;
+        let session_state = state.upgrade_for_ballista(scheduler_url)?;
 
         log::info!(
             "Server side SessionContext created with session id: {}",
-            remote_session_id
+            session_state.session_id()
         );
 
         Ok(SessionContext::new_with_state(session_state))
@@ -160,15 +146,13 @@ impl SessionContextExt for SessionContext {
     async fn standalone() -> datafusion::error::Result<Self> {
         log::info!("Running in local mode. Scheduler will be run in-proc");
 
-        let (remote_session_id, scheduler_url) =
-            Extension::setup_standalone(None).await?;
+        let scheduler_url = Extension::setup_standalone(None).await?;
 
-        let session_state =
-            SessionState::new_ballista_state(scheduler_url, remote_session_id.clone())?;
+        let session_state = SessionState::new_ballista_state(scheduler_url)?;
 
         log::info!(
             "Server side SessionContext created with session id: {}",
-            remote_session_id
+            session_state.session_id()
         );
 
         Ok(SessionContext::new_with_state(session_state))
@@ -193,7 +177,7 @@ impl Extension {
     #[cfg(feature = "standalone")]
     async fn setup_standalone(
         session_state: Option<&SessionState>,
-    ) -> datafusion::error::Result<(String, String)> {
+    ) -> datafusion::error::Result<String> {
         use ballista_core::{serde::BallistaCodec, utils::default_config_producer};
 
         let addr = match session_state {
@@ -214,7 +198,7 @@ impl Extension {
 
         let scheduler_url = format!("http://localhost:{}", addr.port());
 
-        let mut scheduler = loop {
+        let scheduler = loop {
             match SchedulerGrpcClient::connect(scheduler_url.clone()).await {
                 Err(_) => {
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -223,15 +207,6 @@ impl Extension {
                 Ok(scheduler) => break scheduler,
             }
         };
-
-        let remote_session_id = scheduler
-            .create_session(CreateSessionParams {
-                settings: config.to_key_value_pairs(),
-            })
-            .await
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
-            .into_inner()
-            .session_id;
 
         let concurrent_tasks = config.ballista_standalone_parallelism();
 
@@ -256,31 +231,6 @@ impl Extension {
             }
         }
 
-        Ok((remote_session_id, scheduler_url))
-    }
-
-    async fn setup_remote(
-        config: &SessionConfig,
-        scheduler_url: String,
-    ) -> datafusion::error::Result<String> {
-        let connection = create_grpc_client_connection(scheduler_url.clone())
-            .await
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-
-        let limit = config.ballista_grpc_client_max_message_size();
-        let mut scheduler = SchedulerGrpcClient::new(connection)
-            .max_encoding_message_size(limit)
-            .max_decoding_message_size(limit);
-
-        let remote_session_id = scheduler
-            .create_session(CreateSessionParams {
-                settings: config.to_key_value_pairs(),
-            })
-            .await
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
-            .into_inner()
-            .session_id;
-
-        Ok(remote_session_id)
+        Ok(scheduler_url)
     }
 }

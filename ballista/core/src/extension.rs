@@ -38,7 +38,6 @@ pub trait SessionStateExt {
     /// State will be created with appropriate [SessionConfig] configured
     fn new_ballista_state(
         scheduler_url: String,
-        session_id: String,
     ) -> datafusion::error::Result<SessionState>;
     /// Upgrades [SessionState] for ballista usage
     ///
@@ -46,7 +45,6 @@ pub trait SessionStateExt {
     fn upgrade_for_ballista(
         self,
         scheduler_url: String,
-        session_id: String,
     ) -> datafusion::error::Result<SessionState>;
 }
 
@@ -131,7 +129,6 @@ pub trait SessionConfigHelperExt {
 impl SessionStateExt for SessionState {
     fn new_ballista_state(
         scheduler_url: String,
-        session_id: String,
     ) -> datafusion::error::Result<SessionState> {
         let session_config = SessionConfig::new_with_ballista();
         let planner = BallistaQueryPlanner::<LogicalPlanNode>::new(
@@ -145,7 +142,6 @@ impl SessionStateExt for SessionState {
             .with_config(session_config)
             .with_runtime_env(Arc::new(runtime_env))
             .with_query_planner(Arc::new(planner))
-            .with_session_id(session_id)
             .build();
 
         Ok(session_state)
@@ -154,7 +150,6 @@ impl SessionStateExt for SessionState {
     fn upgrade_for_ballista(
         self,
         scheduler_url: String,
-        session_id: String,
     ) -> datafusion::error::Result<SessionState> {
         let codec_logical = self.config().ballista_logical_extension_codec();
         let planner_override = self.config().ballista_query_planner();
@@ -173,9 +168,8 @@ impl SessionStateExt for SessionState {
             .with_option_extension(new_config.clone())
             .ballista_restricted_configuration();
 
-        let builder = SessionStateBuilder::new_from_existing(self)
-            .with_config(session_config)
-            .with_session_id(session_id);
+        let builder =
+            SessionStateBuilder::new_from_existing(self).with_config(session_config);
 
         let builder = match planner_override {
             Some(planner) => builder.with_query_planner(planner),
@@ -452,11 +446,8 @@ mod test {
     // Ballista disables round robin repatriations
     #[tokio::test]
     async fn should_disable_round_robin_repartition() {
-        let state = SessionState::new_ballista_state(
-            "scheduler_url".to_string(),
-            "session_id".to_string(),
-        )
-        .unwrap();
+        let state =
+            SessionState::new_ballista_state("scheduler_url".to_string()).unwrap();
 
         assert!(!state.config().round_robin_repartition());
 
@@ -464,7 +455,7 @@ mod test {
 
         assert!(state.config().round_robin_repartition());
         let state = state
-            .upgrade_for_ballista("scheduler_url".to_string(), "session_id".to_string())
+            .upgrade_for_ballista("scheduler_url".to_string())
             .unwrap();
 
         assert!(!state.config().round_robin_repartition());
