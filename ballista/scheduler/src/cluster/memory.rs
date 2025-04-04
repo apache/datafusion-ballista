@@ -458,7 +458,7 @@ impl JobState for InMemoryJobState {
         Ok(())
     }
 
-    async fn create_session(
+    async fn create_or_update_session(
         &self,
         session_id: &str,
         config: &SessionConfig,

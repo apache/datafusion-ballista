@@ -303,8 +303,8 @@ pub trait JobState: Send + Sync {
     /// of a job changes in state
     async fn job_state_events(&self) -> Result<JobStateEventStream>;
 
-    /// Create a new saved session
-    async fn create_session(
+    /// Create new session or update existing one
+    async fn create_or_update_session(
         &self,
         session_id: &str,
         config: &SessionConfig,
