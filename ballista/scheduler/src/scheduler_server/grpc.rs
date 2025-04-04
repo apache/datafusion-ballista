@@ -280,7 +280,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let ctx = self
             .state
             .session_manager
-            .create_session("!!! CHANGE ME !!!", &session_config)
+            .create_or_update_session("!!! CHANGE ME !!!", &session_config)
             .await
             .map_err(|e| {
                 Status::internal(format!("Failed to create SessionContext: {e:?}"))
@@ -343,7 +343,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     let ctx = self
                         .state
                         .session_manager
-                        .create_session(&session_id, &session_config)
+                        .create_or_update_session(&session_id, &session_config)
                         .await
                         .map_err(|e| {
                             Status::internal(format!(
