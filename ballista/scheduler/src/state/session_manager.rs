@@ -35,12 +35,14 @@ impl SessionManager {
         self.state.remove_session(session_id).await
     }
 
-    pub async fn create_session(
+    pub async fn create_or_update_session(
         &self,
         session_id: &str,
         config: &SessionConfig,
     ) -> Result<Arc<SessionContext>> {
-        self.state.create_session(session_id, config).await
+        self.state
+            .create_or_update_session(session_id, config)
+            .await
     }
 
     pub(crate) fn produce_config(&self) -> SessionConfig {
