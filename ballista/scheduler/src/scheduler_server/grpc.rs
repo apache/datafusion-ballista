@@ -282,10 +282,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let session_config =
             session_config.update_from_key_value_pair(&session_params.settings);
 
+        // FIXME: this method is wrong
         let ctx = self
             .state
             .session_manager
-            .create_session(&session_config)
+            .create_session("!!! CHANGE ME !!!", &session_config)
             .await
             .map_err(|e| {
                 Status::internal(format!("Failed to create SessionContext: {e:?}"))
@@ -298,23 +299,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
     async fn update_session(
         &self,
-        request: Request<UpdateSessionParams>,
+        _request: Request<UpdateSessionParams>,
     ) -> Result<Response<UpdateSessionResult>, Status> {
-        let session_params = request.into_inner();
-
-        let session_config = self.state.session_manager.produce_config();
-        let session_config =
-            session_config.update_from_key_value_pair(&session_params.settings);
-
-        self.state
-            .session_manager
-            .update_session(&session_params.session_id, &session_config)
-            .await
-            .map_err(|e| {
-                Status::internal(format!("Failed to create SessionContext: {e:?}"))
-            })?;
-
-        Ok(Response::new(UpdateSessionResult { success: true }))
+        Err(Status::unimplemented("not supported"))
     }
 
     async fn remove_session(
@@ -355,39 +342,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
             let (session_id, session_ctx) = match session_id {
                 Some(session_id) => {
-                    match self.state.session_manager.get_session(&session_id).await {
-                        Ok(ctx) => {
-                            // Update [SessionConfig] using received properties
-
-                            // TODO MM can we do something better here?
-                            // move this to update session and use .update_session(&session_params.session_id, &session_config)
-                            // instead of get_session.
-                            //
-                            // also we should consider sending properties if/when changed rather than
-                            // all properties every time
-
-                            let state = ctx.state_ref();
-                            let mut state = state.write();
-                            let config = state.config_mut();
-                            config.update_from_key_value_pair_mut(&settings);
-
-                            (session_id, ctx)
-                        }
-                        Err(e) => {
-                            let msg = format!("Failed to load SessionContext for session ID {session_id}: {e}");
-                            error!("{}", msg);
-                            return Ok(Response::new(ExecuteQueryResult {
-                                result: Some(execute_query_result::Result::Failure(
-                                    ExecuteQueryFailureResult {
-                                        failure: Some(execute_query_failure_result::Failure::SessionNotFound(msg)),
-                                    },
-                                )),
-                            }));
-                        }
-                    }
-                }
-                _ => {
-                    // Create default config
                     let session_config = self.state.session_manager.produce_config();
                     let session_config =
                         session_config.update_from_key_value_pair(&settings);
@@ -395,7 +349,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     let ctx = self
                         .state
                         .session_manager
-                        .create_session(&session_config)
+                        .create_session(&session_id, &session_config)
                         .await
                         .map_err(|e| {
                             Status::internal(format!(
@@ -403,7 +357,17 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                             ))
                         })?;
 
-                    (ctx.session_id(), ctx)
+                    (session_id, ctx)
+                }
+                _ => {
+                    error!("Client should set session_id");
+                    return Ok(Response::new(ExecuteQueryResult {
+                                result: Some(execute_query_result::Result::Failure(
+                                    ExecuteQueryFailureResult {
+                                        failure: Some(execute_query_failure_result::Failure::SessionNotFound("Client should set session_id".to_string())),
+                                    },
+                                )),
+                            }));
                 }
             };
 

@@ -30,7 +30,6 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::Stream;
 use log::debug;
 
-use ballista_core::config::BallistaConfig;
 use ballista_core::consistent_hash::ConsistentHash;
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf::{
@@ -234,15 +233,9 @@ pub enum JobStateEvent {
         job_id: String,
     },
     /// Event when a new session has been created
-    SessionCreated {
-        session_id: String,
-        config: BallistaConfig,
-    },
-    /// Event when a session configuration has been updated
-    SessionUpdated {
-        session_id: String,
-        config: BallistaConfig,
-    },
+    SessionAccessed { session_id: String },
+    /// Event when a session configuration has been removed
+    SessionRemoved { session_id: String },
 }
 
 /// Events related to the state of cluster.
@@ -310,25 +303,14 @@ pub trait JobState: Send + Sync {
     /// of a job changes in state
     async fn job_state_events(&self) -> Result<JobStateEventStream>;
 
-    /// Get the `SessionContext` associated with `session_id`. Returns an error if the
-    /// session does not exist
-    async fn get_session(&self, session_id: &str) -> Result<Arc<SessionContext>>;
-
     /// Create a new saved session
-    async fn create_session(&self, config: &SessionConfig)
-        -> Result<Arc<SessionContext>>;
-
-    /// Update a new saved session. If the session does not exist, a new one will be created
-    async fn update_session(
+    async fn create_session(
         &self,
         session_id: &str,
         config: &SessionConfig,
     ) -> Result<Arc<SessionContext>>;
 
-    async fn remove_session(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<Arc<SessionContext>>>;
+    async fn remove_session(&self, session_id: &str) -> Result<()>;
 
     // TODO MM not sure this is the best place to put config producer
     fn produce_config(&self) -> SessionConfig;

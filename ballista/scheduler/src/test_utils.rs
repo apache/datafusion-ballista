@@ -476,7 +476,7 @@ impl SchedulerTest {
         self.scheduler
             .state
             .session_manager
-            .create_session(&self.session_config)
+            .create_session("session_id", &self.session_config)
             .await
     }
 
@@ -486,7 +486,7 @@ impl SchedulerTest {
             .scheduler
             .state
             .session_manager
-            .create_session(&self.session_config)
+            .create_session("session_id", &self.session_config)
             .await?;
 
         let job_id = self.scheduler.submit_job(job_name, ctx, plan).await?;
@@ -609,7 +609,7 @@ impl SchedulerTest {
             .scheduler
             .state
             .session_manager
-            .create_session(&self.session_config)
+            .create_session("session_id", &self.session_config)
             .await?;
 
         let job_id = self.scheduler.submit_job(job_name, ctx, plan).await?;
