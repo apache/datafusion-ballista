@@ -37,7 +37,6 @@ required-features = ["build-binary"]
 [features]
 build-binary = ["configure_me", "clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary"]
 default = ["build-binary"]
-flight-sql = ["base64"]
 graphviz-support = ["dep:graphviz-rust"]
 keda-scaler = []
 prometheus-metrics = ["prometheus", "once_cell"]
@@ -48,7 +47,6 @@ arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 axum = "0.7.7"
 ballista-core = { path = "../core", version = "46.0.0" }
-base64 = { version = "0.22", optional = true }
 clap = { workspace = true, optional = true }
 configure_me = { workspace = true, optional = true }
 dashmap = { workspace = true }

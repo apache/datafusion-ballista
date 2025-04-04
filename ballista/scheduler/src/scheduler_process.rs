@@ -15,8 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#[cfg(feature = "flight-sql")]
-use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer;
 use ballista_core::serde::{
@@ -33,8 +31,7 @@ use std::{net::SocketAddr, sync::Arc};
 use crate::api::get_routes;
 use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
-#[cfg(feature = "flight-sql")]
-use crate::flight_sql::FlightSqlServiceImpl;
+
 use crate::metrics::default_metrics_collector;
 #[cfg(feature = "keda-scaler")]
 use crate::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
@@ -90,17 +87,6 @@ pub async fn start_server(
     #[cfg(feature = "keda-scaler")]
     let tonic_builder =
         tonic_builder.add_service(ExternalScalerServer::new(scheduler_server.clone()));
-
-    #[cfg(feature = "flight-sql")]
-    let tonic_builder = tonic_builder.add_service(
-        FlightServiceServer::new(FlightSqlServiceImpl::new(scheduler_server.clone()))
-            .max_encoding_message_size(
-                config.grpc_server_max_encoding_message_size as usize,
-            )
-            .max_decoding_message_size(
-                config.grpc_server_max_decoding_message_size as usize,
-            ),
-    );
 
     let tonic = tonic_builder.into_service().into_axum_router();
     let tonic = tonic.fallback(|| async { (StatusCode::NOT_FOUND, "404 - Not Found") });
