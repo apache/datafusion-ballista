@@ -98,12 +98,6 @@ doc = "The number of seconds to retain job directories on each worker 604800 (7 
 default = "604800"
 
 [[param]]
-name = "plugin_dir"
-type = "String"
-doc = "plugin dir"
-default = "std::string::String::from(\"\")"
-
-[[param]]
 name = "log_dir"
 type = "String"
 doc = "Log dir: a path to save log. This will create a new storage directory at the specified path if it does not already exist."
