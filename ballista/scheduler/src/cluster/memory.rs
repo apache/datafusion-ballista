@@ -505,6 +505,7 @@ mod test {
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::JobStatus;
     use ballista_core::utils::{default_config_producer, default_session_builder};
+    use datafusion::prelude::SessionConfig;
     use futures::StreamExt;
     use tokio::sync::Barrier;
 
@@ -608,6 +609,45 @@ mod test {
             } => (), // assert!(true, "Last status should be successful job notification"),
             _ => panic!("JobUpdated status expected"),
         }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_session_notification() -> Result<()> {
+        let state = InMemoryJobState::new(
+            "",
+            Arc::new(default_session_builder),
+            Arc::new(default_config_producer),
+        );
+
+        let event_stream = state.job_state_events().await?;
+
+        state
+            .create_or_update_session("session_id_0", &SessionConfig::new())
+            .await?;
+
+        state.remove_session("session_id_0").await?;
+
+        state
+            .create_or_update_session("session_id_1", &SessionConfig::new())
+            .await?;
+
+        let result = event_stream.take(3).collect::<Vec<JobStateEvent>>().await;
+        assert_eq!(3, result.len());
+        let expected = vec![
+            JobStateEvent::SessionAccessed {
+                session_id: "session_id_0".to_string(),
+            },
+            JobStateEvent::SessionRemoved {
+                session_id: "session_id_0".to_string(),
+            },
+            JobStateEvent::SessionAccessed {
+                session_id: "session_id_1".to_string(),
+            },
+        ];
+
+        assert_eq!(expected, result);
 
         Ok(())
     }
