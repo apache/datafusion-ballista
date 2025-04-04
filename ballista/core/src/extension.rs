@@ -38,7 +38,6 @@ pub trait SessionStateExt {
     /// State will be created with appropriate [SessionConfig] configured
     fn new_ballista_state(
         scheduler_url: String,
-        //session_id: String,
     ) -> datafusion::error::Result<SessionState>;
     /// Upgrades [SessionState] for ballista usage
     ///
@@ -46,7 +45,6 @@ pub trait SessionStateExt {
     fn upgrade_for_ballista(
         self,
         scheduler_url: String,
-        //session_id: String,
     ) -> datafusion::error::Result<SessionState>;
 }
 
@@ -144,7 +142,6 @@ impl SessionStateExt for SessionState {
             .with_config(session_config)
             .with_runtime_env(Arc::new(runtime_env))
             .with_query_planner(Arc::new(planner))
-            //.with_session_id(session_id)
             .build();
 
         Ok(session_state)
@@ -171,10 +168,8 @@ impl SessionStateExt for SessionState {
             .with_option_extension(new_config.clone())
             .ballista_restricted_configuration();
 
-        let builder = SessionStateBuilder::new_from_existing(self)
-            .with_config(session_config)
-            //.with_session_id(session_id)
-            ;
+        let builder =
+            SessionStateBuilder::new_from_existing(self).with_config(session_config);
 
         let builder = match planner_override {
             Some(planner) => builder.with_query_planner(planner),
