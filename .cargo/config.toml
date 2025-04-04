@@ -1,0 +1,10 @@
+[env]
+# there were issues with stack memory, so memory was increased 
+# more details at:
+#
+# - https://github.com/apache/datafusion-ballista/pull/1201
+# - https://github.com/apache/datafusion/issues/15087
+#
+# no specific reason why this stack size has been selected,
+# apart from being maximum stack size 
+RUST_MIN_STACK="20971520"
