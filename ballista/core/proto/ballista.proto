@@ -528,11 +528,12 @@ message ExecuteQueryParams {
   repeated KeyValuePair settings = 4;
 }
 
-message CreateSessionParams {
+message CreateUpdateSessionParams {
+  string session_id = 2;
   repeated KeyValuePair settings = 1;
 }
 
-message CreateSessionResult {
+message CreateUpdateSessionResult {
   string session_id = 1;
 }
 
@@ -697,9 +698,7 @@ service SchedulerGrpc {
 
   rpc UpdateTaskStatus (UpdateTaskStatusParams) returns (UpdateTaskStatusResult) {}
 
-  rpc CreateSession (CreateSessionParams) returns (CreateSessionResult) {}
-
-  rpc UpdateSession (UpdateSessionParams) returns (UpdateSessionResult) {}
+  rpc CreateUpdateSession (CreateUpdateSessionParams) returns (CreateUpdateSessionResult) {}
 
   rpc RemoveSession (RemoveSessionParams) returns (RemoveSessionResult) {}
 

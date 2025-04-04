@@ -805,12 +805,14 @@ pub mod execute_query_params {
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CreateSessionParams {
+pub struct CreateUpdateSessionParams {
+    #[prost(string, tag = "2")]
+    pub session_id: ::prost::alloc::string::String,
     #[prost(message, repeated, tag = "1")]
     pub settings: ::prost::alloc::vec::Vec<KeyValuePair>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct CreateSessionResult {
+pub struct CreateUpdateSessionResult {
     #[prost(string, tag = "1")]
     pub session_id: ::prost::alloc::string::String,
 }
@@ -1230,11 +1232,11 @@ pub mod scheduler_grpc_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        pub async fn create_session(
+        pub async fn create_update_session(
             &mut self,
-            request: impl tonic::IntoRequest<super::CreateSessionParams>,
+            request: impl tonic::IntoRequest<super::CreateUpdateSessionParams>,
         ) -> std::result::Result<
-            tonic::Response<super::CreateSessionResult>,
+            tonic::Response<super::CreateUpdateSessionResult>,
             tonic::Status,
         > {
             self.inner
@@ -1247,38 +1249,15 @@ pub mod scheduler_grpc_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/ballista.protobuf.SchedulerGrpc/CreateSession",
+                "/ballista.protobuf.SchedulerGrpc/CreateUpdateSession",
             );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(
-                    GrpcMethod::new("ballista.protobuf.SchedulerGrpc", "CreateSession"),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn update_session(
-            &mut self,
-            request: impl tonic::IntoRequest<super::UpdateSessionParams>,
-        ) -> std::result::Result<
-            tonic::Response<super::UpdateSessionResult>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/ballista.protobuf.SchedulerGrpc/UpdateSession",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("ballista.protobuf.SchedulerGrpc", "UpdateSession"),
+                    GrpcMethod::new(
+                        "ballista.protobuf.SchedulerGrpc",
+                        "CreateUpdateSession",
+                    ),
                 );
             self.inner.unary(req, path, codec).await
         }
@@ -1698,18 +1677,11 @@ pub mod scheduler_grpc_server {
             tonic::Response<super::UpdateTaskStatusResult>,
             tonic::Status,
         >;
-        async fn create_session(
+        async fn create_update_session(
             &self,
-            request: tonic::Request<super::CreateSessionParams>,
+            request: tonic::Request<super::CreateUpdateSessionParams>,
         ) -> std::result::Result<
-            tonic::Response<super::CreateSessionResult>,
-            tonic::Status,
-        >;
-        async fn update_session(
-            &self,
-            request: tonic::Request<super::UpdateSessionParams>,
-        ) -> std::result::Result<
-            tonic::Response<super::UpdateSessionResult>,
+            tonic::Response<super::CreateUpdateSessionResult>,
             tonic::Status,
         >;
         async fn remove_session(
@@ -2015,25 +1987,26 @@ pub mod scheduler_grpc_server {
                     };
                     Box::pin(fut)
                 }
-                "/ballista.protobuf.SchedulerGrpc/CreateSession" => {
+                "/ballista.protobuf.SchedulerGrpc/CreateUpdateSession" => {
                     #[allow(non_camel_case_types)]
-                    struct CreateSessionSvc<T: SchedulerGrpc>(pub Arc<T>);
+                    struct CreateUpdateSessionSvc<T: SchedulerGrpc>(pub Arc<T>);
                     impl<
                         T: SchedulerGrpc,
-                    > tonic::server::UnaryService<super::CreateSessionParams>
-                    for CreateSessionSvc<T> {
-                        type Response = super::CreateSessionResult;
+                    > tonic::server::UnaryService<super::CreateUpdateSessionParams>
+                    for CreateUpdateSessionSvc<T> {
+                        type Response = super::CreateUpdateSessionResult;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::CreateSessionParams>,
+                            request: tonic::Request<super::CreateUpdateSessionParams>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as SchedulerGrpc>::create_session(&inner, request).await
+                                <T as SchedulerGrpc>::create_update_session(&inner, request)
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -2044,52 +2017,7 @@ pub mod scheduler_grpc_server {
                     let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
-                        let method = CreateSessionSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/ballista.protobuf.SchedulerGrpc/UpdateSession" => {
-                    #[allow(non_camel_case_types)]
-                    struct UpdateSessionSvc<T: SchedulerGrpc>(pub Arc<T>);
-                    impl<
-                        T: SchedulerGrpc,
-                    > tonic::server::UnaryService<super::UpdateSessionParams>
-                    for UpdateSessionSvc<T> {
-                        type Response = super::UpdateSessionResult;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::UpdateSessionParams>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as SchedulerGrpc>::update_session(&inner, request).await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = UpdateSessionSvc(inner);
+                        let method = CreateUpdateSessionSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
