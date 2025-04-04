@@ -45,7 +45,7 @@ impl Future for TasksDrainedFuture {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if self.0.abort_handles.len() > 0 {
+        if !self.0.abort_handles.is_empty() {
             Poll::Pending
         } else {
             Poll::Ready(())
