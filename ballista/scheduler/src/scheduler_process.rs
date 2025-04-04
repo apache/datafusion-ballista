@@ -25,6 +25,7 @@ use ballista_core::serde::{
 use ballista_core::utils::create_grpc_server;
 use ballista_core::BALLISTA_VERSION;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
+use http::StatusCode;
 use log::info;
 use std::{net::SocketAddr, sync::Arc};
 
@@ -102,6 +103,7 @@ pub async fn start_server(
     );
 
     let tonic = tonic_builder.into_service().into_axum_router();
+    let tonic = tonic.fallback(|| async { (StatusCode::NOT_FOUND, "404 - Not Found") });
 
     #[cfg(feature = "rest-api")]
     let axum = get_routes(Arc::new(scheduler_server));
