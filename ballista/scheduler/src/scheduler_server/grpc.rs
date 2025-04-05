@@ -125,10 +125,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
             let mut tasks = vec![];
             for (_, task) in schedulable_tasks {
+                let job_id = task.partition.job_id.clone();
                 match self.state.task_manager.prepare_task_definition(task) {
                     Ok(task_definition) => tasks.push(task_definition),
                     Err(e) => {
                         error!("Error preparing task definition: {:?}", e);
+                        info!("Cancel prepare task definition failed job: {}", job_id);
+                        if let Err(err) = self.cancel_job(job_id).await {
+                            error!("Failed to cancel job {err:?}");
+                        }
                     }
                 }
             }
