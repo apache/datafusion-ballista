@@ -138,6 +138,42 @@ mod supported {
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
     #[tokio::test]
+    async fn should_execute_sql_show_config_ballista_shuffle_skip_validation(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+    ) -> datafusion::error::Result<()> {
+        let state = ctx.state();
+        let ballista_config_extension =
+            state.config().options().extensions.get::<BallistaConfig>();
+
+        // ballista configuration should be registered with
+        // session state
+        assert!(ballista_config_extension.is_some());
+
+        let result = ctx
+            .sql("select name, value from information_schema.df_settings where name = 'ballista.shuffle.skip_validation'")
+            .await?
+            .collect()
+            .await?;
+
+        let expected = [
+            "+----------------------------------+-------+",
+            "| name                             | value |",
+            "+----------------------------------+-------+",
+            "| ballista.shuffle.skip_validation | true  |",
+            "+----------------------------------+-------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
     async fn should_execute_sql_set_configs(
         #[future(awt)]
         #[case]

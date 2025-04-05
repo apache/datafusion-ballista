@@ -304,6 +304,8 @@ pub struct FetchPartition {
     pub host: ::prost::alloc::string::String,
     #[prost(uint32, tag = "6")]
     pub port: u32,
+    #[prost(bool, tag = "7")]
+    pub skip_validation: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PartitionLocation {
@@ -319,6 +321,8 @@ pub struct PartitionLocation {
     pub partition_stats: ::core::option::Option<PartitionStats>,
     #[prost(string, tag = "5")]
     pub path: ::prost::alloc::string::String,
+    #[prost(bool, tag = "6")]
+    pub skip_validation: bool,
 }
 /// Unique identifier for a materialized partition of data
 #[derive(Clone, PartialEq, ::prost::Message)]

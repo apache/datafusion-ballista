@@ -17,7 +17,8 @@
 
 use crate::config::{
     BallistaConfig, BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, BALLISTA_JOB_NAME,
-    BALLISTA_SHUFFLE_READER_MAX_REQUESTS, BALLISTA_STANDALONE_PARALLELISM,
+    BALLISTA_SHUFFLE_READER_MAX_REQUESTS, BALLISTA_SHUFFLE_READER_SKIP_VALIDATION,
+    BALLISTA_STANDALONE_PARALLELISM,
 };
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
@@ -112,6 +113,12 @@ pub trait SessionConfigExt {
         self,
         max_requests: usize,
     ) -> Self;
+
+    /// get skip_validation in flight requests for shuffle reader
+    fn ballista_shuffle_reader_skip_validation(&self) -> bool;
+
+    /// set skip_validation in flight requests for shuffle reader
+    fn with_ballista_shuffle_reader_skip_validation(self, skip_validation: bool) -> Self;
 }
 
 /// [SessionConfigHelperExt] is set of [SessionConfig] extension methods
@@ -306,6 +313,23 @@ impl SessionConfigExt for SessionConfig {
         } else {
             self.with_option_extension(BallistaConfig::default())
                 .set_usize(BALLISTA_SHUFFLE_READER_MAX_REQUESTS, max_requests)
+        }
+    }
+
+    fn ballista_shuffle_reader_skip_validation(&self) -> bool {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.shuffle_reader_skip_validation())
+            .unwrap_or_else(|| BallistaConfig::default().shuffle_reader_skip_validation())
+    }
+
+    fn with_ballista_shuffle_reader_skip_validation(self, skip_validation: bool) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_bool(BALLISTA_SHUFFLE_READER_SKIP_VALIDATION, skip_validation)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_bool(BALLISTA_SHUFFLE_READER_SKIP_VALIDATION, skip_validation)
         }
     }
 }

@@ -85,8 +85,15 @@ impl FlightService for BallistaFlightService {
             decode_protobuf(&ticket.ticket).map_err(|e| from_ballista_err(&e))?;
 
         match &action {
-            BallistaAction::FetchPartition { path, .. } => {
-                debug!("FetchPartition reading {}", path);
+            BallistaAction::FetchPartition {
+                path,
+                skip_validation,
+                ..
+            } => {
+                debug!(
+                    "FetchPartition reading {} with skip_validation: {}",
+                    path, skip_validation
+                );
                 let file = File::open(path)
                     .map_err(|e| {
                         BallistaError::General(format!(
@@ -95,8 +102,12 @@ impl FlightService for BallistaFlightService {
                     })
                     .map_err(|e| from_ballista_err(&e))?;
                 let file = BufReader::new(file);
-                let reader =
-                    StreamReader::try_new(file, None).map_err(|e| from_arrow_err(&e))?;
+                // Safety: The caller makes sure ipc file is valid
+                let reader = unsafe {
+                    StreamReader::try_new(file, None)
+                        .map_err(|e| from_arrow_err(&e))?
+                        .with_skip_validation(*skip_validation)
+                };
 
                 let (tx, rx) = channel(2);
                 let schema = reader.schema();

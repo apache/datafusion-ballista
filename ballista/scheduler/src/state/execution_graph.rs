@@ -1525,6 +1525,7 @@ fn partition_to_location(
                 Some(shuffle.num_bytes),
             ),
             path: shuffle.path,
+            skip_validation: false,
         })
         .collect()
 }

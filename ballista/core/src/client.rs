@@ -89,6 +89,7 @@ impl BallistaClient {
         path: &str,
         host: &str,
         port: u16,
+        skip_validation: bool,
     ) -> Result<SendableRecordBatchStream> {
         let action = Action::FetchPartition {
             job_id: partition_id.job_id.clone(),
@@ -97,6 +98,7 @@ impl BallistaClient {
             path: path.to_owned(),
             host: host.to_owned(),
             port,
+            skip_validation,
         };
         self.execute_action(&action)
             .await
