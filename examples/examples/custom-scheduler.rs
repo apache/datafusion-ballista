@@ -16,13 +16,13 @@
 // under the License.
 
 use ballista_core::error::BallistaError;
-use ballista_examples::object_store::{
-    custom_session_config_with_s3_options, custom_session_state_with_s3_support,
+use ballista_core::object_store::{
+    session_config_with_s3_support, session_state_with_s3_support,
 };
+
 use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::config::SchedulerConfig;
 use ballista_scheduler::scheduler_process::start_server;
-use datafusion::prelude::SessionConfig;
 use std::net::AddrParseError;
 use std::sync::Arc;
 
@@ -41,12 +41,10 @@ async fn main() -> ballista_core::error::Result<()> {
     let config: SchedulerConfig = SchedulerConfig {
         // overriding default runtime producer with custom producer
         // which knows how to create S3 connections
-        override_config_producer: Some(Arc::new(custom_session_config_with_s3_options)),
+        override_config_producer: Some(Arc::new(session_config_with_s3_support)),
         // overriding default session builder, which has custom session configuration
         // runtime environment and session state.
-        override_session_builder: Some(Arc::new(|session_config: SessionConfig| {
-            custom_session_state_with_s3_support(session_config)
-        })),
+        override_session_builder: Some(Arc::new(session_state_with_s3_support)),
         ..Default::default()
     };
 

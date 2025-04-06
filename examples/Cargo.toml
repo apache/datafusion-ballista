@@ -35,13 +35,12 @@ required-features = ["ballista/standalone"]
 [dependencies]
 ballista = { path = "../ballista/client", version = "45.0.0" }
 ballista-core = { path = "../ballista/core", version = "45.0.0" }
-ballista-executor = { path = "../ballista/executor", version = "45.0.0", default-features = false }
-ballista-scheduler = { path = "../ballista/scheduler", version = "45.0.0", default-features = false }
+ballista-executor = { path = "../ballista/executor", version = "45.0.0" }
+ballista-scheduler = { path = "../ballista/scheduler", version = "45.0.0" }
 datafusion = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
 object_store = { workspace = true, features = ["aws"] }
-parking_lot = { workspace = true }
 tokio = { workspace = true, features = [
     "macros",
     "rt",
