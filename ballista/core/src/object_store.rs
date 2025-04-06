@@ -23,35 +23,35 @@
 //! [ObjectStore] is provided by  [ObjectStoreRegistry], and configured
 //! using [ExtensionOptions], which can be configured using SQL `SET` command.
 
-use ballista::prelude::SessionConfigExt;
 use datafusion::common::{config_err, exec_err};
 use datafusion::config::{
     ConfigEntry, ConfigExtension, ConfigField, ExtensionOptions, Visit,
 };
 use datafusion::error::Result;
 use datafusion::execution::object_store::ObjectStoreRegistry;
-use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use datafusion::execution::SessionState;
+
+use datafusion::error::DataFusionError;
+use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
+use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::prelude::SessionConfig;
-use datafusion::{
-    error::DataFusionError,
-    execution::{runtime_env::RuntimeEnv, SessionStateBuilder},
-};
 use object_store::aws::AmazonS3Builder;
+use object_store::http::HttpBuilder;
 use object_store::local::LocalFileSystem;
-use object_store::ObjectStore;
+use object_store::{ClientOptions, ObjectStore};
 use parking_lot::RwLock;
 use std::any::Any;
 use std::fmt::Display;
 use std::sync::Arc;
 use url::Url;
 
+use crate::extension::SessionConfigExt;
+
 /// Custom [SessionConfig] constructor method
 ///
 /// This method registers config extension [S3Options]
 /// which is used to configure [ObjectStore] with ACCESS and
 /// SECRET key
-pub fn custom_session_config_with_s3_options() -> SessionConfig {
+pub fn session_config_with_s3_support() -> SessionConfig {
     SessionConfig::new_with_ballista()
         .with_information_schema(true)
         .with_option_extension(S3Options::default())
@@ -62,7 +62,7 @@ pub fn custom_session_config_with_s3_options() -> SessionConfig {
 /// It will register [CustomObjectStoreRegistry] which will
 /// use configuration extension [S3Options] to configure
 /// and created [ObjectStore]s
-pub fn custom_runtime_env_with_s3_support(
+pub fn runtime_env_with_s3_support(
     session_config: &SessionConfig,
 ) -> Result<Arc<RuntimeEnv>> {
     let s3options = session_config
@@ -86,10 +86,10 @@ pub fn custom_runtime_env_with_s3_support(
 ///
 /// It will configure [SessionState] with provided [SessionConfig],
 /// and [RuntimeEnv].
-pub fn custom_session_state_with_s3_support(
+pub fn session_state_with_s3_support(
     session_config: SessionConfig,
 ) -> datafusion::common::Result<SessionState> {
-    let runtime_env = custom_runtime_env_with_s3_support(&session_config)?;
+    let runtime_env = runtime_env_with_s3_support(&session_config)?;
 
     Ok(SessionStateBuilder::new()
         .with_runtime_env(runtime_env)
@@ -129,6 +129,12 @@ impl ObjectStoreRegistry for CustomObjectStoreRegistry {
         log::info!("get_store: {:?}", &self.s3options.config.read());
         match scheme {
             "" | "file" => Ok(self.local.clone()),
+            "http" | "https" => Ok(Arc::new(
+                HttpBuilder::new()
+                    .with_client_options(ClientOptions::new().with_allow_http(true))
+                    .with_url(url.origin().ascii_serialization())
+                    .build()?,
+            )),
             "s3" => {
                 let s3store =
                     Self::s3_object_store_builder(url, &self.s3options.config.read())?

@@ -41,7 +41,6 @@ datafusion = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
 object_store = { workspace = true, features = ["aws"] }
-parking_lot = { workspace = true }
 tokio = { workspace = true, features = [
     "macros",
     "rt",

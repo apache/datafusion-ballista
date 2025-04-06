@@ -18,6 +18,9 @@
 //! Ballista Rust executor binary.
 
 use ballista_core::config::LogRotationPolicy;
+use ballista_core::object_store::{
+    runtime_env_with_s3_support, session_config_with_s3_support,
+};
 use ballista_core::print_version;
 use ballista_executor::config::prelude::*;
 use ballista_executor::executor_process::{
@@ -43,7 +46,9 @@ async fn main() -> ballista_core::error::Result<()> {
         std::process::exit(0);
     }
 
-    let config: ExecutorProcessConfig = opt.try_into()?;
+    let mut config: ExecutorProcessConfig = opt.try_into()?;
+    config.override_config_producer = Some(Arc::new(session_config_with_s3_support));
+    config.override_runtime_producer = Some(Arc::new(runtime_env_with_s3_support));
 
     let rust_log = env::var(EnvFilter::DEFAULT_ENV);
     let log_filter =
