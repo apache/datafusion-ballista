@@ -32,14 +32,9 @@ mod standalone {
 
     use ballista::extension::SessionContextExt;
     use ballista_examples::test_util::examples_test_data;
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
-    use datafusion::{
-        error::DataFusionError,
-        execution::{
-            runtime_env::{RuntimeConfig, RuntimeEnv},
-            SessionStateBuilder,
-        },
-    };
+    use datafusion::{error::DataFusionError, execution::SessionStateBuilder};
     use std::sync::Arc;
     use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
@@ -59,8 +54,7 @@ mod standalone {
             .map_err(|e| DataFusionError::External(e.into()))?;
 
         let test_data = examples_test_data();
-        let config = RuntimeConfig::new();
-        let runtime_env = RuntimeEnv::try_new(config)?;
+        let runtime_env = RuntimeEnvBuilder::new().build()?;
 
         runtime_env.register_object_store(
             &format!("s3://{}", crate::common::BUCKET)
@@ -118,14 +112,9 @@ mod remote {
 
     use ballista::extension::SessionContextExt;
     use ballista_examples::test_util::examples_test_data;
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
-    use datafusion::{
-        error::DataFusionError,
-        execution::{
-            runtime_env::{RuntimeConfig, RuntimeEnv},
-            SessionStateBuilder,
-        },
-    };
+    use datafusion::{error::DataFusionError, execution::SessionStateBuilder};
     use std::sync::Arc;
     use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
@@ -146,8 +135,7 @@ mod remote {
         let object_store = crate::common::create_s3_store(&host.to_string(), port)
             .map_err(|e| DataFusionError::External(e.into()))?;
 
-        let config = RuntimeConfig::new();
-        let runtime_env = RuntimeEnv::try_new(config)?;
+        let runtime_env = RuntimeEnvBuilder::new().build()?;
 
         runtime_env.register_object_store(
             &format!("s3://{}", crate::common::BUCKET)
@@ -216,19 +204,14 @@ mod custom_s3_config {
     use crate::common::{ACCESS_KEY_ID, SECRET_KEY};
     use ballista::extension::SessionContextExt;
     use ballista::prelude::SessionConfigExt;
+    use ballista_core::object_store::{CustomObjectStoreRegistry, S3Options};
     use ballista_core::RuntimeProducer;
-    use ballista_examples::object_store::{CustomObjectStoreRegistry, S3Options};
     use ballista_examples::test_util::examples_test_data;
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::execution::SessionState;
     use datafusion::prelude::SessionConfig;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
-    use datafusion::{
-        error::DataFusionError,
-        execution::{
-            runtime_env::{RuntimeConfig, RuntimeEnv},
-            SessionStateBuilder,
-        },
-    };
+    use datafusion::{error::DataFusionError, execution::SessionStateBuilder};
     use std::sync::Arc;
     use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
@@ -283,12 +266,13 @@ mod custom_s3_config {
                     .ok_or(DataFusionError::Configuration(
                         "S3 Options not set".to_string(),
                     ))?;
+                let runtime_env = RuntimeEnvBuilder::new()
+                    .with_object_store_registry(Arc::new(CustomObjectStoreRegistry::new(
+                        s3options.clone(),
+                    )))
+                    .build()?;
 
-                let config = RuntimeConfig::new().with_object_store_registry(Arc::new(
-                    CustomObjectStoreRegistry::new(s3options.clone()),
-                ));
-
-                Ok(Arc::new(RuntimeEnv::try_new(config)?))
+                Ok(Arc::new(runtime_env))
             });
 
         // Session builder creates SessionState
@@ -491,11 +475,11 @@ mod custom_s3_config {
                 "S3 Options not set".to_string(),
             ))?;
 
-        let config = RuntimeConfig::new().with_object_store_registry(Arc::new(
-            CustomObjectStoreRegistry::new(s3options.clone()),
-        ));
-
-        let runtime_env = RuntimeEnv::try_new(config)?;
+        let runtime_env = RuntimeEnvBuilder::new()
+            .with_object_store_registry(Arc::new(CustomObjectStoreRegistry::new(
+                s3options.clone(),
+            )))
+            .build()?;
 
         Ok(SessionStateBuilder::new()
             .with_runtime_env(runtime_env.into())
