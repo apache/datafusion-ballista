@@ -95,9 +95,12 @@ impl FlightService for BallistaFlightService {
                     })
                     .map_err(|e| from_ballista_err(&e))?;
                 let file = BufReader::new(file);
-                let reader =
-                    StreamReader::try_new(file, None).map_err(|e| from_arrow_err(&e))?;
-
+                // Safety: The ShuffleWriter partition file is valid
+                let reader = unsafe {
+                    StreamReader::try_new(file, None)
+                        .map_err(|e| from_arrow_err(&e))?
+                        .with_skip_validation(true)
+                };
                 let (tx, rx) = channel(2);
                 let schema = reader.schema();
                 task::spawn_blocking(move || {

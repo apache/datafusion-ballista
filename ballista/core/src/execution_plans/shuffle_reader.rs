@@ -441,9 +441,16 @@ fn fetch_partition_local_inner(
         BallistaError::General(format!("Failed to open partition file at {path}: {e:?}"))
     })?;
     let file = BufReader::new(file);
-    let reader = StreamReader::try_new(file, None).map_err(|e| {
-        BallistaError::General(format!("Failed to new arrow FileReader at {path}: {e:?}"))
-    })?;
+    // Safety: The ShuffleWriter partition file is valid
+    let reader = unsafe {
+        StreamReader::try_new(file, None)
+            .map_err(|e| {
+                BallistaError::General(format!(
+                    "Failed to new arrow FileReader at {path}: {e:?}"
+                ))
+            })?
+            .with_skip_validation(true)
+    };
     Ok(reader)
 }
 
