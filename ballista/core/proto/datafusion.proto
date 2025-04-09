@@ -21,7 +21,7 @@
  package datafusion;
  
  option java_multiple_files = true;
- option java_package = "org.apache.arrow.datafusion.protobuf";
+ option java_package = "org.apache.datafusion.protobuf";
  option java_outer_classname = "DatafusionProto";
  
  import "datafusion_common.proto";

@@ -235,7 +235,7 @@ $SPARK_HOME/bin/spark-submit \
     tpch \
     --input-path /mnt/bigdata/tpch/sf10-parquet-float/ \
     --input-format parquet \
-    --query-path /home/andy/git/apache/arrow-ballista/benchmarks/queries \
+    --query-path /home/andy/git/apache/datafusion-ballista/benchmarks/queries \
     --query 1
 ```
 

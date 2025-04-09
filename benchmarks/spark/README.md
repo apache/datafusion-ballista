@@ -73,7 +73,7 @@ $SPARK_HOME/bin/spark-submit --master spark://localhost:7077 \
     tpch \
     --input-path /mnt/bigdata/tpch/sf10-parquet-float/ \
     --input-format parquet \
-    --query-path /path/to/arrow-ballista/benchmarks/queries \
+    --query-path /path/to/datafusion-ballista/benchmarks/queries \
     --query 1
 ```
 

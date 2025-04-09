@@ -25,8 +25,8 @@ RELEASE_FLAG=${RELEASE_FLAG:=release}
 
 . ./dev/build-set-env.sh
 
-docker build -t "apache/arrow-ballista-standalone:latest" -f dev/docker/ballista-standalone.Dockerfile .
-docker build -t "apache/arrow-ballista-scheduler:latest" -f dev/docker/ballista-scheduler.Dockerfile .
-docker build -t "apache/arrow-ballista-executor:latest" -f dev/docker/ballista-executor.Dockerfile .
-docker build -t "apache/arrow-ballista-cli:latest" -f dev/docker/ballista-cli.Dockerfile .
-docker build -t "apache/arrow-ballista-benchmarks:latest" -f dev/docker/ballista-benchmarks.Dockerfile .
+docker build -t "apache/datafusion-ballista-standalone:latest" -f dev/docker/ballista-standalone.Dockerfile .
+docker build -t "apache/datafusion-ballista-scheduler:latest" -f dev/docker/ballista-scheduler.Dockerfile .
+docker build -t "apache/datafusion-ballista-executor:latest" -f dev/docker/ballista-executor.Dockerfile .
+docker build -t "apache/datafusion-ballista-cli:latest" -f dev/docker/ballista-cli.Dockerfile .
+docker build -t "apache/datafusion-ballista-benchmarks:latest" -f dev/docker/ballista-benchmarks.Dockerfile .

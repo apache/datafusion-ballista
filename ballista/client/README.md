@@ -168,7 +168,7 @@ The output should look similar to the following table.
 +-----------------+--------------------------+--------------------------+--------------------------+--------------------------+
 ```
 
-More [examples](../../examples/examples/) can be found in the arrow-ballista repository.
+More [examples](../../examples/examples/) can be found in the datafusion-ballista repository.
 
 ## Performance
 
