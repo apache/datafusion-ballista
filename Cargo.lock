@@ -996,7 +996,6 @@ dependencies = [
  "async-trait",
  "axum",
  "ballista-core",
- "base64 0.22.1",
  "clap 4.5.31",
  "configure_me",
  "configure_me_codegen",
