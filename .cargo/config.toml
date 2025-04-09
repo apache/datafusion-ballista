@@ -4,7 +4,12 @@
 #
 # - https://github.com/apache/datafusion-ballista/pull/1201
 # - https://github.com/apache/datafusion/issues/15087
+# - https://github.com/apache/datafusion/pull/15600
 #
 # no specific reason why this stack size has been selected,
 # apart from being maximum stack size 
+#
+# TODO we should remove file when updating to datafusion 47
+# if https://github.com/apache/datafusion/pull/15600 is merged 
+# until then 
 RUST_MIN_STACK="20971520"
