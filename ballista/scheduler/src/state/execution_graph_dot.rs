@@ -415,6 +415,7 @@ fn get_file_scan(scan: &FileScanConfig) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::planner::DefaultDistributedPlanner;
     use crate::state::execution_graph::ExecutionGraph;
     use crate::state::execution_graph_dot::ExecutionGraphDot;
     use ballista_core::error::{BallistaError, Result};
@@ -645,6 +646,7 @@ filter_expr="]
             .await?;
         let plan = df.into_optimized_plan()?;
         let plan = ctx.state().create_physical_plan(&plan).await?;
+        let mut planner = DefaultDistributedPlanner::new();
         ExecutionGraph::new(
             "scheduler_id",
             "job_id",
@@ -653,6 +655,7 @@ filter_expr="]
             plan,
             0,
             Arc::new(SessionConfig::new_with_ballista()),
+            &mut planner,
         )
     }
 
@@ -679,6 +682,7 @@ filter_expr="]
             .await?;
         let plan = df.into_optimized_plan()?;
         let plan = ctx.state().create_physical_plan(&plan).await?;
+        let mut planner = DefaultDistributedPlanner::new();
         ExecutionGraph::new(
             "scheduler_id",
             "job_id",
@@ -687,6 +691,7 @@ filter_expr="]
             plan,
             0,
             Arc::new(SessionConfig::new_with_ballista()),
+            &mut planner,
         )
     }
 }
