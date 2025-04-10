@@ -18,6 +18,7 @@
 
 //! Ballista scheduler specific configuration
 
+use crate::cluster::DistributionPolicy;
 use crate::SessionBuilder;
 use ballista_core::{config::TaskSchedulingPolicy, ConfigProducer};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
@@ -242,7 +243,7 @@ impl configure_me::parse_arg::ParseArgFromStr for TaskDistribution {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub enum TaskDistributionPolicy {
     /// Eagerly assign tasks to executor slots. This will assign as many task slots per executor
     /// as are currently available
@@ -259,7 +260,10 @@ pub enum TaskDistributionPolicy {
         num_replicas: usize,
         tolerance: usize,
     },
+    /// User provided task distribution policy
+    Custom(Arc<dyn DistributionPolicy>),
 }
+
 #[cfg(feature = "build-binary")]
 impl TryFrom<Config> for SchedulerConfig {
     type Error = ballista_core::error::BallistaError;

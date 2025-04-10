@@ -66,26 +66,25 @@ impl ExecutorManager {
         Ok(())
     }
 
-    /// Bind the ready to running tasks from [`active_jobs`] with available executors.
     ///
-    /// If `executors` is provided, only bind slots from the specified executor IDs
+    /// Bind the ready to run tasks from [`active_jobs`] to available executors.
     pub async fn bind_schedulable_tasks(
         &self,
-        active_jobs: Arc<HashMap<String, JobInfoCache>>,
+        running_jobs: Arc<HashMap<String, JobInfoCache>>,
     ) -> Result<Vec<BoundTask>> {
-        if active_jobs.is_empty() {
-            warn!("There's no active jobs for binding tasks");
+        if running_jobs.is_empty() {
+            debug!("There's no active jobs for binding tasks");
             return Ok(vec![]);
         }
         let alive_executors = self.get_alive_executors();
         if alive_executors.is_empty() {
-            warn!("There's no alive executors for binding tasks");
+            debug!("There's no alive executors for binding tasks");
             return Ok(vec![]);
         }
         self.cluster_state
             .bind_schedulable_tasks(
-                self.config.task_distribution,
-                active_jobs,
+                self.config.task_distribution.clone(),
+                running_jobs,
                 Some(alive_executors),
             )
             .await

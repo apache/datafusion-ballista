@@ -28,7 +28,7 @@ use datafusion::error::DataFusionError;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::Stream;
-use log::{debug, info, warn};
+use log::debug;
 
 use ballista_core::config::BallistaConfig;
 use ballista_core::consistent_hash::ConsistentHash;
@@ -318,14 +318,14 @@ pub trait JobState: Send + Sync {
 
 pub(crate) async fn bind_task_bias(
     mut slots: Vec<&mut AvailableTaskSlots>,
-    active_jobs: Arc<HashMap<String, JobInfoCache>>,
+    running_jobs: Arc<HashMap<String, JobInfoCache>>,
     if_skip: fn(Arc<dyn ExecutionPlan>) -> bool,
 ) -> Vec<BoundTask> {
     let mut schedulable_tasks: Vec<BoundTask> = vec![];
 
     let total_slots = slots.iter().fold(0, |acc, s| acc + s.slots);
     if total_slots == 0 {
-        warn!("Not enough available executor slots for task running!!!");
+        debug!("Not enough available executor slots for task running!!!");
         return schedulable_tasks;
     }
 
@@ -334,7 +334,7 @@ pub(crate) async fn bind_task_bias(
 
     let mut idx_slot = 0usize;
     let mut slot = &mut slots[idx_slot];
-    for (job_id, job_info) in active_jobs.iter() {
+    for (job_id, job_info) in running_jobs.iter() {
         if !matches!(job_info.status, Some(job_status::Status::Running(_))) {
             debug!(
                 "Job {} is not in running status and will be skipped",
@@ -349,7 +349,7 @@ pub(crate) async fn bind_task_bias(
             graph.fetch_running_stage(&black_list)
         {
             if if_skip(running_stage.plan.clone()) {
-                info!(
+                debug!(
                     "Will skip stage {}/{} for bias task binding",
                     job_id, running_stage.stage_id
                 );
@@ -405,23 +405,23 @@ pub(crate) async fn bind_task_bias(
 
 pub(crate) async fn bind_task_round_robin(
     mut slots: Vec<&mut AvailableTaskSlots>,
-    active_jobs: Arc<HashMap<String, JobInfoCache>>,
+    running_jobs: Arc<HashMap<String, JobInfoCache>>,
     if_skip: fn(Arc<dyn ExecutionPlan>) -> bool,
 ) -> Vec<BoundTask> {
     let mut schedulable_tasks: Vec<BoundTask> = vec![];
 
     let mut total_slots = slots.iter().fold(0, |acc, s| acc + s.slots);
     if total_slots == 0 {
-        warn!("Not enough available executor slots for task running!!!");
+        debug!("Not enough available executor slots for task running!!!");
         return schedulable_tasks;
     }
-    info!("Total slot number is {}", total_slots);
+    debug!("Total slot number is {}", total_slots);
 
     // Sort the slots by descending order
     slots.sort_by(|a, b| Ord::cmp(&b.slots, &a.slots));
 
     let mut idx_slot = 0usize;
-    for (job_id, job_info) in active_jobs.iter() {
+    for (job_id, job_info) in running_jobs.iter() {
         if !matches!(job_info.status, Some(job_status::Status::Running(_))) {
             debug!(
                 "Job {} is not in running status and will be skipped",
@@ -436,7 +436,7 @@ pub(crate) async fn bind_task_round_robin(
             graph.fetch_running_stage(&black_list)
         {
             if if_skip(running_stage.plan.clone()) {
-                info!(
+                debug!(
                     "Will skip stage {}/{} for round robin task binding",
                     job_id, running_stage.stage_id
                 );
@@ -497,16 +497,49 @@ pub(crate) async fn bind_task_round_robin(
     schedulable_tasks
 }
 
+/// Maps execution plan to list of files it scans
 type GetScanFilesFunc = fn(
     &str,
     Arc<dyn ExecutionPlan>,
 ) -> datafusion::common::Result<Vec<Vec<Vec<PartitionedFile>>>>;
 
+/// User provided task distribution policy
+#[async_trait::async_trait]
+pub trait DistributionPolicy: std::fmt::Debug + Send + Sync {
+    // few open questions for later:
+    //
+    // - should scheduling policy type be a parameter
+    //   as we see in the consistent hash, it does not work in
+    //   pull based. Or we find another way to address this concern
+    // - should we add `ClusterState` as method parameter
+    //
+
+    /// User provided custom task distribution policy
+    ///
+    /// # Parameters
+    ///
+    /// * `slots` - vector of available executor slots, there may not be available slots
+    /// * `running_jobs` - (JobId -> JobInfoCache) cache must contain only running jobs
+    ///
+    /// # Returns
+    ///
+    /// vector of task, executor bounding
+    ///
+    async fn bind_tasks(
+        &self,
+        mut slots: Vec<&mut AvailableTaskSlots>,
+        running_jobs: Arc<HashMap<String, JobInfoCache>>,
+    ) -> datafusion::error::Result<Vec<BoundTask>>;
+
+    /// Name of [DistributionPolicy]
+    fn name(&self) -> &str;
+}
+
 pub(crate) async fn bind_task_consistent_hash(
     topology_nodes: HashMap<String, TopologyNode>,
     num_replicas: usize,
     tolerance: usize,
-    active_jobs: Arc<HashMap<String, JobInfoCache>>,
+    running_jobs: Arc<HashMap<String, JobInfoCache>>,
     get_scan_files: GetScanFilesFunc,
 ) -> Result<(Vec<BoundTask>, Option<ConsistentHash<TopologyNode>>)> {
     let mut total_slots = 0usize;
@@ -514,10 +547,13 @@ pub(crate) async fn bind_task_consistent_hash(
         total_slots += node.available_slots as usize;
     }
     if total_slots == 0 {
-        info!("Not enough available executor slots for binding tasks with consistent hashing policy!!!");
+        debug!("Not enough available executor slots for binding tasks with consistent hashing policy!!!");
         return Ok((vec![], None));
     }
-    info!("Total slot number is {}", total_slots);
+    debug!(
+        "Total slot number for consistent hash binding is {}",
+        total_slots
+    );
 
     let node_replicas = topology_nodes
         .into_values()
@@ -527,7 +563,7 @@ pub(crate) async fn bind_task_consistent_hash(
         ConsistentHash::new(node_replicas);
 
     let mut schedulable_tasks: Vec<BoundTask> = vec![];
-    for (job_id, job_info) in active_jobs.iter() {
+    for (job_id, job_info) in running_jobs.iter() {
         if !matches!(job_info.status, Some(job_status::Status::Running(_))) {
             debug!(
                 "Job {} is not in running status and will be skipped",
@@ -543,7 +579,7 @@ pub(crate) async fn bind_task_consistent_hash(
         {
             let scan_files = get_scan_files(job_id, running_stage.plan.clone())?;
             if is_skip_consistent_hash(&scan_files) {
-                info!(
+                debug!(
                     "Will skip stage {}/{} for consistent hashing task binding",
                     job_id, running_stage.stage_id
                 );
