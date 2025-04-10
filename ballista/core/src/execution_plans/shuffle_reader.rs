@@ -466,9 +466,11 @@ mod tests {
     use datafusion::arrow::ipc::writer::StreamWriter;
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::common::DataFusionError;
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::common;
-    use datafusion::physical_plan::memory::MemoryExec;
+
     use datafusion::prelude::SessionContext;
     use tempfile::{tempdir, TempDir};
 
@@ -706,11 +708,13 @@ mod tests {
         let batch = create_test_batch();
         let partition = vec![batch.clone(), batch];
         let partitions = vec![partition.clone(), partition];
-        Ok(Arc::new(MemoryExec::try_new(
+        let memory_data_source = Arc::new(MemorySourceConfig::try_new(
             &partitions,
             create_test_schema(),
             None,
-        )?))
+        )?);
+
+        Ok(Arc::new(DataSourceExec::new(memory_data_source)))
     }
 
     fn create_test_batch() -> RecordBatch {

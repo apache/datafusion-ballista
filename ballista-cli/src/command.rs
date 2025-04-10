@@ -56,6 +56,10 @@ impl Command {
         print_options: &mut PrintOptions,
     ) -> Result<()> {
         let now = Instant::now();
+        let max_rows = match print_options.maxrows {
+            datafusion_cli::print_options::MaxRows::Unlimited => usize::MAX,
+            datafusion_cli::print_options::MaxRows::Limited(max_rows) => max_rows,
+        };
         match self {
             Self::Help =>
             // TODO need to provide valid schema
@@ -64,19 +68,20 @@ impl Command {
                     Arc::new(Schema::empty()),
                     &[all_commands_info()],
                     now,
+                    max_rows,
                 )
             }
             Self::ListTables => {
                 let df = ctx.sql("SHOW TABLES").await?;
                 let schema = Arc::new(df.schema().as_arrow().clone());
                 let batches = df.collect().await?;
-                print_options.print_batches(schema, &batches, now)
+                print_options.print_batches(schema, &batches, now, max_rows)
             }
             Self::DescribeTable(name) => {
                 let df = ctx.sql(&format!("SHOW COLUMNS FROM {name}")).await?;
                 let schema = Arc::new(df.schema().as_arrow().clone());
                 let batches = df.collect().await?;
-                print_options.print_batches(schema, &batches, now)
+                print_options.print_batches(schema, &batches, now, max_rows)
             }
             Self::QuietMode(quiet) => {
                 if let Some(quiet) = quiet {

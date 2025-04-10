@@ -486,10 +486,10 @@ fn result_schema() -> SchemaRef {
 mod tests {
     use super::*;
     use datafusion::arrow::array::{StringArray, StructArray, UInt32Array, UInt64Array};
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
     use datafusion::physical_plan::expressions::Column;
-
-    use datafusion::physical_plan::memory::MemoryExec;
     use datafusion::prelude::SessionContext;
     use tempfile::TempDir;
 
@@ -606,6 +606,10 @@ mod tests {
         )?;
         let partition = vec![batch.clone(), batch];
         let partitions = vec![partition.clone(), partition];
-        Ok(Arc::new(MemoryExec::try_new(&partitions, schema, None)?))
+
+        let memory_data_source =
+            Arc::new(MemorySourceConfig::try_new(&partitions, schema, None)?);
+
+        Ok(Arc::new(DataSourceExec::new(memory_data_source)))
     }
 }
