@@ -146,17 +146,18 @@ impl FlightSqlServiceImpl {
     }
 
     async fn create_ctx(&self) -> Result<Uuid, Status> {
+        let handle = Uuid::new_v4();
         let config = self.server.state.session_manager.produce_config();
         let ctx = self
             .server
             .state
             .session_manager
-            .create_session(&config)
+            .create_or_update_session(&handle.to_string(), &config)
             .await
             .map_err(|e| {
                 Status::internal(format!("Failed to create SessionContext: {e:?}"))
             })?;
-        let handle = Uuid::new_v4();
+
         self.contexts.insert(handle, ctx);
         Ok(handle)
     }
