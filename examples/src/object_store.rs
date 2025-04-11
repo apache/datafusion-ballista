@@ -94,6 +94,7 @@ pub fn custom_session_state_with_s3_support(
     Ok(SessionStateBuilder::new()
         .with_runtime_env(runtime_env)
         .with_config(session_config)
+        .with_default_features()
         .build())
 }
 
