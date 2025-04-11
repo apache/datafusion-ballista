@@ -25,7 +25,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{accept, ExecutionPlan, ExecutionPlanVisitor};
 use datafusion::prelude::SessionConfig;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
@@ -943,7 +943,7 @@ impl ExecutionGraph {
                 ..
             }
         ) {
-            warn!("Call fetch_runnable_stage on failed Job");
+            debug!("Call fetch_runnable_stage on failed Job");
             return None;
         }
 
