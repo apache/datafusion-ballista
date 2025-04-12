@@ -593,7 +593,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     .as_millis() as u64;
 
                 let mut multi_tasks = vec![];
-
+                let props = task.session_config.to_key_value_pairs();
                 let task_ids = tasks
                     .into_iter()
                     .map(|task| TaskId {
@@ -610,7 +610,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     plan,
                     session_id,
                     launch_time,
-                    props: vec![],
+                    props,
                 });
 
                 Ok(multi_tasks)
