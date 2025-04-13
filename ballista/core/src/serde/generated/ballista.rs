@@ -786,10 +786,12 @@ pub struct UpdateTaskStatusResult {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteQueryParams {
-    #[prost(string, optional, tag = "3")]
-    pub session_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, tag = "3")]
+    pub session_id: ::prost::alloc::string::String,
     #[prost(message, repeated, tag = "4")]
     pub settings: ::prost::alloc::vec::Vec<KeyValuePair>,
+    #[prost(string, tag = "5")]
+    pub operation_id: ::prost::alloc::string::String,
     #[prost(oneof = "execute_query_params::Query", tags = "1, 2")]
     pub query: ::core::option::Option<execute_query_params::Query>,
 }
@@ -845,6 +847,8 @@ pub struct ExecuteSqlParams {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteQueryResult {
+    #[prost(string, tag = "3")]
+    pub operation_id: ::prost::alloc::string::String,
     #[prost(oneof = "execute_query_result::Result", tags = "1, 2")]
     pub result: ::core::option::Option<execute_query_result::Result>,
 }

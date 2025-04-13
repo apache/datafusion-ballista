@@ -319,6 +319,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         if let ExecuteQueryParams {
             query: Some(query),
             session_id,
+            operation_id,
             settings,
         } = query_params
         {
@@ -328,35 +329,26 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .and_then(|s| s.value.clone())
                 .unwrap_or_default();
 
-            let (session_id, session_ctx) = match session_id {
-                Some(session_id) => {
-                    let session_config = self.state.session_manager.produce_config();
-                    let session_config =
-                        session_config.update_from_key_value_pair(&settings);
+            let job_id = self.state.task_manager.generate_job_id();
 
-                    let ctx = self
-                        .state
-                        .session_manager
-                        .create_or_update_session(&session_id, &session_config)
-                        .await
-                        .map_err(|e| {
-                            Status::internal(format!(
-                                "Failed to create SessionContext: {e:?}"
-                            ))
-                        })?;
+            info!("execution query - session_id: {}, operation_id: {}, job_name: {}, job_id: {}", session_id, operation_id, job_name, job_id);
 
-                    (session_id, ctx)
-                }
-                _ => {
-                    error!("Client should set session_id");
-                    return Ok(Response::new(ExecuteQueryResult {
-                                result: Some(execute_query_result::Result::Failure(
-                                    ExecuteQueryFailureResult {
-                                        failure: Some(execute_query_failure_result::Failure::SessionNotFound("Client should set session_id".to_string())),
-                                    },
-                                )),
-                            }));
-                }
+            let (session_id, session_ctx) = {
+                let session_config = self.state.session_manager.produce_config();
+                let session_config = session_config.update_from_key_value_pair(&settings);
+
+                let ctx = self
+                    .state
+                    .session_manager
+                    .create_or_update_session(&session_id, &session_config)
+                    .await
+                    .map_err(|e| {
+                        Status::internal(format!(
+                            "Failed to create SessionContext: {e:?}"
+                        ))
+                    })?;
+
+                (session_id, ctx)
             };
 
             let plan = match query {
@@ -373,6 +365,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                                 format!("Could not parse logical plan protobuf: {e}");
                             error!("{}", msg);
                             return Ok(Response::new(ExecuteQueryResult {
+                                operation_id,
                                 result: Some(execute_query_result::Result::Failure(
                                     ExecuteQueryFailureResult {
                                         failure: Some(execute_query_failure_result::Failure::PlanParsingFailure(msg)),
@@ -393,6 +386,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                             let msg = format!("Error parsing SQL: {e}");
                             error!("{}", msg);
                             return Ok(Response::new(ExecuteQueryResult {
+                                operation_id,
                                 result: Some(execute_query_result::Result::Failure(
                                     ExecuteQueryFailureResult {
                                         failure: Some(execute_query_failure_result::Failure::PlanParsingFailure(msg)),
@@ -422,6 +416,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 })?;
 
             Ok(Response::new(ExecuteQueryResult {
+                operation_id,
                 result: Some(execute_query_result::Result::Success(
                     ExecuteQuerySuccessResult { job_id, session_id },
                 )),

@@ -524,8 +524,12 @@ message ExecuteQueryParams {
     string sql = 2 [deprecated=true]; // I'd suggest to remove this, if SQL needed use `flight-sql`
   }
   
-  optional string session_id = 3;
+  string session_id = 3;
   repeated KeyValuePair settings = 4;
+  // operation_id is unique number for each request 
+  // client makes. it helps mapping requests between 
+  // client and scheduler
+  string operation_id = 5;
 }
 
 message CreateUpdateSessionParams {
@@ -563,6 +567,7 @@ message ExecuteQueryResult {
     ExecuteQuerySuccessResult success = 1;
     ExecuteQueryFailureResult failure = 2;
   }
+  string operation_id = 3;
 }
 
 message ExecuteQuerySuccessResult {
