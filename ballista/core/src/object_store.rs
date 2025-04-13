@@ -104,7 +104,6 @@ pub fn session_state_with_s3_support(
 ///
 /// It will configure [SessionState] S3 enabled [SessionConfig],
 /// and [RuntimeEnv].
-
 pub fn state_with_s3_support() -> datafusion::common::Result<SessionState> {
     session_state_with_s3_support(session_config_with_s3_support())
 }
