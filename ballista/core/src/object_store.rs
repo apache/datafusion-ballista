@@ -82,7 +82,7 @@ pub fn runtime_env_with_s3_support(
     Ok(Arc::new(runtime_env))
 }
 
-/// Custom [SessionState] constructor method
+/// Custom [SessionState] with S3 support enabled
 ///
 /// It will configure [SessionState] with provided [SessionConfig],
 /// and [RuntimeEnv].
@@ -96,6 +96,17 @@ pub fn session_state_with_s3_support(
         .with_config(session_config)
         .with_default_features()
         .build())
+}
+
+/// Custom [SessionState] with S3 support.
+/// It is alias to [session_state_with_s3_support] with [session_config_with_s3_support] as a
+/// parameter
+///
+/// It will configure [SessionState] S3 enabled [SessionConfig],
+/// and [RuntimeEnv].
+
+pub fn state_with_s3_support() -> datafusion::common::Result<SessionState> {
+    session_state_with_s3_support(session_config_with_s3_support())
 }
 
 /// Custom [ObjectStoreRegistry] which will create

@@ -34,7 +34,7 @@ required-features = ["ballista/standalone"]
 
 [dependencies]
 ballista = { path = "../ballista/client", version = "46.0.0" }
-ballista-core = { path = "../ballista/core", version = "46.0.0" }
+ballista-core = { path = "../ballista/core", version = "46.0.0", feature = ["binary-build"] }
 ballista-executor = { path = "../ballista/executor", version = "46.0.0", default-features = false }
 ballista-scheduler = { path = "../ballista/scheduler", version = "46.0.0", default-features = false }
 datafusion = { workspace = true }

@@ -16,9 +16,7 @@
 // under the License.
 
 use ballista::extension::SessionContextExt;
-use ballista_core::object_store::{
-    session_config_with_s3_support, session_state_with_s3_support,
-};
+use ballista_core::object_store::state_with_s3_support;
 use datafusion::error::Result;
 use datafusion::{assert_batches_eq, prelude::SessionContext};
 
@@ -61,7 +59,7 @@ async fn main() -> Result<()> {
     let test_data = ballista_examples::test_util::examples_test_data();
 
     // new sessions state with required custom session configuration and runtime environment
-    let state = session_state_with_s3_support(session_config_with_s3_support())?;
+    let state = state_with_s3_support()?;
 
     let ctx: SessionContext =
         SessionContext::remote_with_state("df://localhost:50050", state).await?;
