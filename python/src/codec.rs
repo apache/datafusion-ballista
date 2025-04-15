@@ -39,7 +39,7 @@ struct CloudPickle {
 
 impl CloudPickle {
     pub fn try_new(py: Python<'_>) -> PyResult<Self> {
-        let module = py.import_bound(MODULE)?;
+        let module = py.import(MODULE)?;
         let loads = module.getattr(FUN_LOADS)?.unbind();
         let dumps = module.getattr(FUN_DUMPS)?.unbind();
 
