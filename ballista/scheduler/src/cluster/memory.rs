@@ -168,6 +168,9 @@ impl ClusterState for InMemoryClusterState {
                 }
                 bound_tasks
             }
+            TaskDistributionPolicy::Custom(ref policy) => {
+                policy.bind_tasks(available_slots, active_jobs).await?
+            }
         };
 
         Ok(bound_tasks)
