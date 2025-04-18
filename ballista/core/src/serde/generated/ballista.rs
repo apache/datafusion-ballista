@@ -790,6 +790,9 @@ pub struct ExecuteQueryParams {
     pub session_id: ::prost::alloc::string::String,
     #[prost(message, repeated, tag = "4")]
     pub settings: ::prost::alloc::vec::Vec<KeyValuePair>,
+    /// operation_id is unique number for each request
+    /// client makes. it helps mapping requests between
+    /// client and scheduler
     #[prost(string, tag = "5")]
     pub operation_id: ::prost::alloc::string::String,
     #[prost(oneof = "execute_query_params::Query", tags = "1, 2")]
