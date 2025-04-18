@@ -34,6 +34,8 @@ pub mod error;
 pub mod event_loop;
 pub mod execution_plans;
 pub mod extension;
+#[cfg(feature = "build-binary")]
+pub mod object_store;
 pub mod planner;
 pub mod registry;
 pub mod serde;

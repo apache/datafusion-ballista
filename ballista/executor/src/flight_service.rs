@@ -102,10 +102,7 @@ impl FlightService for BallistaFlightService {
                 let schema = reader.schema();
                 task::spawn_blocking(move || {
                     if let Err(e) = read_partition(reader, tx) {
-                        log::warn!(
-                            "error streaming shuffle partition: {}",
-                            e.to_string()
-                        );
+                        log::warn!("error streaming shuffle partition: {}", e);
                     }
                 });
 

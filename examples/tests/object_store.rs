@@ -32,14 +32,9 @@ mod standalone {
 
     use ballista::extension::SessionContextExt;
     use ballista_examples::test_util::examples_test_data;
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
-    use datafusion::{
-        error::DataFusionError,
-        execution::{
-            runtime_env::{RuntimeConfig, RuntimeEnv},
-            SessionStateBuilder,
-        },
-    };
+    use datafusion::{error::DataFusionError, execution::SessionStateBuilder};
     use std::sync::Arc;
     use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
@@ -59,8 +54,7 @@ mod standalone {
             .map_err(|e| DataFusionError::External(e.into()))?;
 
         let test_data = examples_test_data();
-        let config = RuntimeConfig::new();
-        let runtime_env = RuntimeEnv::try_new(config)?;
+        let runtime_env = RuntimeEnvBuilder::new().build()?;
 
         runtime_env.register_object_store(
             &format!("s3://{}", crate::common::BUCKET)
@@ -71,6 +65,7 @@ mod standalone {
         );
         let state = SessionStateBuilder::new()
             .with_runtime_env(runtime_env.into())
+            .with_default_features()
             .build();
 
         let ctx: SessionContext = SessionContext::standalone_with_state(state).await?;
@@ -108,6 +103,22 @@ mod standalone {
         ];
 
         assert_batches_eq!(expected, &result);
+
+        let result = ctx
+            .sql("select max(id) as max, min(id) as min from written_table")
+            .await?
+            .collect()
+            .await?;
+        let expected = [
+            "+-----+-----+",
+            "| max | min |",
+            "+-----+-----+",
+            "| 7   | 0   |",
+            "+-----+-----+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
         Ok(())
     }
 }
@@ -118,14 +129,9 @@ mod remote {
 
     use ballista::extension::SessionContextExt;
     use ballista_examples::test_util::examples_test_data;
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
-    use datafusion::{
-        error::DataFusionError,
-        execution::{
-            runtime_env::{RuntimeConfig, RuntimeEnv},
-            SessionStateBuilder,
-        },
-    };
+    use datafusion::{error::DataFusionError, execution::SessionStateBuilder};
     use std::sync::Arc;
     use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
@@ -146,8 +152,7 @@ mod remote {
         let object_store = crate::common::create_s3_store(&host.to_string(), port)
             .map_err(|e| DataFusionError::External(e.into()))?;
 
-        let config = RuntimeConfig::new();
-        let runtime_env = RuntimeEnv::try_new(config)?;
+        let runtime_env = RuntimeEnvBuilder::new().build()?;
 
         runtime_env.register_object_store(
             &format!("s3://{}", crate::common::BUCKET)
@@ -216,19 +221,14 @@ mod custom_s3_config {
     use crate::common::{ACCESS_KEY_ID, SECRET_KEY};
     use ballista::extension::SessionContextExt;
     use ballista::prelude::SessionConfigExt;
+    use ballista_core::object_store::{CustomObjectStoreRegistry, S3Options};
     use ballista_core::RuntimeProducer;
-    use ballista_examples::object_store::{CustomObjectStoreRegistry, S3Options};
     use ballista_examples::test_util::examples_test_data;
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::execution::SessionState;
     use datafusion::prelude::SessionConfig;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
-    use datafusion::{
-        error::DataFusionError,
-        execution::{
-            runtime_env::{RuntimeConfig, RuntimeEnv},
-            SessionStateBuilder,
-        },
-    };
+    use datafusion::{error::DataFusionError, execution::SessionStateBuilder};
     use std::sync::Arc;
     use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
@@ -264,32 +264,15 @@ mod custom_s3_config {
         //
         // configuration producer registers user defined config extension
         // S3Option with relevant S3 configuration
-        let config_producer = Arc::new(|| {
-            SessionConfig::new_with_ballista()
-                .with_information_schema(true)
-                .with_option_extension(S3Options::default())
-        });
+        let config_producer =
+            Arc::new(ballista_core::object_store::session_config_with_s3_support);
         // Setting up runtime producer
         //
         // Runtime producer creates object store registry
         // which can create object store connecter based on
         // S3Option configuration.
         let runtime_producer: RuntimeProducer =
-            Arc::new(|session_config: &SessionConfig| {
-                let s3options = session_config
-                    .options()
-                    .extensions
-                    .get::<S3Options>()
-                    .ok_or(DataFusionError::Configuration(
-                        "S3 Options not set".to_string(),
-                    ))?;
-
-                let config = RuntimeConfig::new().with_object_store_registry(Arc::new(
-                    CustomObjectStoreRegistry::new(s3options.clone()),
-                ));
-
-                Ok(Arc::new(RuntimeEnv::try_new(config)?))
-            });
+            Arc::new(ballista_core::object_store::runtime_env_with_s3_support);
 
         // Session builder creates SessionState
         //
@@ -297,7 +280,9 @@ mod custom_s3_config {
         // producing same runtime environment, and providing same
         // object store registry.
 
-        let session_builder = Arc::new(produce_state);
+        let session_builder =
+            Arc::new(ballista_core::object_store::session_state_with_s3_support);
+
         let state = session_builder(config_producer())?;
 
         // setting up ballista cluster with new runtime, configuration, and session state producers
@@ -365,6 +350,21 @@ mod custom_s3_config {
             "| 6  | 30         | 2009-04-01T00:00:00 |",
             "| 7  | 31         | 2009-04-01T00:01:00 |",
             "+----+------------+---------------------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        let result = ctx
+            .sql("select max(id) as max, min(id) as min from written_table")
+            .await?
+            .collect()
+            .await?;
+        let expected = [
+            "+-----+-----+",
+            "| max | min |",
+            "+-----+-----+",
+            "| 7   | 0   |",
+            "+-----+-----+",
         ];
 
         assert_batches_eq!(expected, &result);
@@ -491,15 +491,16 @@ mod custom_s3_config {
                 "S3 Options not set".to_string(),
             ))?;
 
-        let config = RuntimeConfig::new().with_object_store_registry(Arc::new(
-            CustomObjectStoreRegistry::new(s3options.clone()),
-        ));
-
-        let runtime_env = RuntimeEnv::try_new(config)?;
+        let runtime_env = RuntimeEnvBuilder::new()
+            .with_object_store_registry(Arc::new(CustomObjectStoreRegistry::new(
+                s3options.clone(),
+            )))
+            .build()?;
 
         Ok(SessionStateBuilder::new()
             .with_runtime_env(runtime_env.into())
             .with_config(session_config)
+            .with_default_features()
             .build())
     }
 }

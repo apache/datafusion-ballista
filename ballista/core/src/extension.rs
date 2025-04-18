@@ -355,7 +355,7 @@ impl SessionConfigHelperExt for SessionConfig {
                             "could not set configuration key: `{}`, value: `{:?}`, reason: {}",
                             key,
                             value,
-                            e.to_string()
+                            e
                         )
                     }
                 }

@@ -199,6 +199,22 @@ impl SchedulerConfig {
         self.grpc_server_max_encoding_message_size = value;
         self
     }
+
+    pub fn with_override_config_producer(
+        mut self,
+        override_config_producer: ConfigProducer,
+    ) -> Self {
+        self.override_config_producer = Some(override_config_producer);
+        self
+    }
+
+    pub fn with_override_session_builder(
+        mut self,
+        override_session_builder: SessionBuilder,
+    ) -> Self {
+        self.override_session_builder = Some(override_session_builder);
+        self
+    }
 }
 
 #[derive(Clone, Debug, Default)]
