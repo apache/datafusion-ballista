@@ -168,10 +168,7 @@ fn init() {
     // Enable RUST_LOG logging configuration for test
     let _ = env_logger::builder()
         .filter_level(log::LevelFilter::Info)
-        .parse_filters(
-            "ballista=debug,ballista_scheduler-rs=debug,ballista_executor=debug",
-        )
-        //.parse_filters("ballista=debug,ballista_scheduler-rs=debug,ballista_executor=debug,datafusion=debug")
+        .parse_filters("ballista=debug,ballista_scheduler=debug,ballista_executor=debug")
         .is_test(true)
         .try_init();
 }
