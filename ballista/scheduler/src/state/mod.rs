@@ -167,7 +167,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             .bind_schedulable_tasks(self.task_manager.get_running_job_cache())
             .await?;
         if schedulable_tasks.is_empty() {
-            warn!("No schedulable tasks found to be launched");
+            debug!("No schedulable tasks found to be launched");
             return Ok(());
         }
 
