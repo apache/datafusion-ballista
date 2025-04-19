@@ -19,7 +19,10 @@ mod common;
 #[cfg(test)]
 mod supported {
 
-    use crate::common::{remote_context, standalone_context};
+    use crate::common::{
+        remote_context, remote_context_with_state, standalone_context,
+        standalone_context_with_state,
+    };
     use ballista_core::config::BallistaConfig;
     use datafusion::prelude::*;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
@@ -499,6 +502,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_state(standalone_context_with_state())]
+    #[case::remote_state(remote_context_with_state())]
     #[tokio::test]
     #[cfg(not(windows))] // test is failing at windows, can't debug it
     async fn should_execute_sql_write_read_roundtrip(
@@ -587,6 +592,8 @@ mod supported {
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
+    #[case::standalone_state(standalone_context_with_state())]
+    #[case::remote_state(remote_context_with_state())]
     #[tokio::test]
     async fn should_execute_sql_show_multiple_times(
         #[future(awt)]
