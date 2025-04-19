@@ -25,7 +25,7 @@ use ballista_core::serde::{
 };
 use ballista_core::{ConfigProducer, RuntimeProducer};
 use ballista_scheduler::SessionBuilder;
-use datafusion::execution::SessionState;
+use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::prelude::{SessionConfig, SessionContext};
 
 /// Returns the parquet test data directory, which is by default
@@ -234,14 +234,27 @@ pub async fn remote_context() -> SessionContext {
         .unwrap()
 }
 
+#[allow(dead_code)]
+pub async fn standalone_context_with_state() -> SessionContext {
+    let state = SessionStateBuilder::new().with_default_features().build();
+    SessionContext::standalone_with_state(state).await.unwrap()
+}
+
+#[allow(dead_code)]
+pub async fn remote_context_with_state() -> SessionContext {
+    let state = SessionStateBuilder::new().with_default_features().build();
+    let (host, port) = setup_test_cluster_with_state(state.clone()).await;
+    SessionContext::remote_with_state(&format!("df://{host}:{port}"), state)
+        .await
+        .unwrap()
+}
+
 #[ctor::ctor]
 fn init() {
     // Enable RUST_LOG logging configuration for test
     let _ = env_logger::builder()
         .filter_level(log::LevelFilter::Info)
-        .parse_filters(
-            "ballista=debug,ballista_scheduler-rs=debug,ballista_executor=debug",
-        )
+        .parse_filters("ballista=debug,ballista_scheduler=debug,ballista_executor=debug")
         //.parse_filters("ballista=debug,ballista_scheduler-rs=debug,ballista_executor=debug,datafusion=debug")
         .is_test(true)
         .try_init();
