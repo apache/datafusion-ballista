@@ -18,7 +18,6 @@
 use crate::metrics::LoggingMetricsCollector;
 use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightService};
 use arrow_flight::flight_service_server::FlightServiceServer;
-use ballista_core::config::BallistaConfig;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::registry::BallistaFunctionRegistry;
 use ballista_core::utils::default_config_producer;
@@ -57,12 +56,7 @@ pub async fn new_standalone_executor_from_state(
         datafusion_proto::protobuf::PhysicalPlanNode,
     > = BallistaCodec::new(logical, physical);
 
-    let config = session_state
-        .config()
-        .clone()
-        .with_option_extension(BallistaConfig::default()) // TODO: do we need this statement
-        ;
-
+    let config = session_state.config().clone().upgrade_for_ballista();
     let runtime = session_state.runtime_env().clone();
 
     let config_producer: ConfigProducer = Arc::new(move || config.clone());
