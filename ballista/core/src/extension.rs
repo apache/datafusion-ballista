@@ -55,6 +55,13 @@ pub trait SessionConfigExt {
     /// ballista configuration initialized
     fn new_with_ballista() -> SessionConfig;
 
+    /// update [SessionConfig] with Ballista specific settings
+    fn upgrade_for_ballista(self) -> SessionConfig;
+
+    /// return ballista specific configuration or
+    /// creates one if does not exist
+    fn ballista_config(&self) -> BallistaConfig;
+
     /// Overrides ballista's [LogicalExtensionCodec]
     fn with_ballista_logical_extension_codec(
         self,
@@ -154,19 +161,9 @@ impl SessionStateExt for SessionState {
         let codec_logical = self.config().ballista_logical_extension_codec();
         let planner_override = self.config().ballista_query_planner();
 
-        let new_config = self
-            .config()
-            .options()
-            .extensions
-            .get::<BallistaConfig>()
-            .cloned()
-            .unwrap_or_else(BallistaConfig::default);
+        let session_config = self.config().clone().upgrade_for_ballista();
 
-        let session_config = self
-            .config()
-            .clone()
-            .with_option_extension(new_config.clone())
-            .ballista_restricted_configuration();
+        let ballista_config = session_config.ballista_config();
 
         let builder =
             SessionStateBuilder::new_from_existing(self).with_config(session_config);
@@ -176,7 +173,7 @@ impl SessionStateExt for SessionState {
             None => {
                 let planner = BallistaQueryPlanner::<LogicalPlanNode>::with_extension(
                     scheduler_url,
-                    new_config,
+                    ballista_config,
                     codec_logical,
                 );
                 builder.with_query_planner(Arc::new(planner))
@@ -194,6 +191,26 @@ impl SessionConfigExt for SessionConfig {
             .with_information_schema(true)
             .with_target_partitions(16)
             .ballista_restricted_configuration()
+    }
+
+    fn upgrade_for_ballista(self) -> SessionConfig {
+        // if ballista config is not provided
+        // one is created and session state is updated
+        let ballista_config = self.ballista_config();
+
+        // session config has ballista config extension and
+        // default datafusion configuration is altered
+        // to fit ballista execution
+        self.with_option_extension(ballista_config)
+            .ballista_restricted_configuration()
+    }
+
+    fn ballista_config(&self) -> BallistaConfig {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .cloned()
+            .unwrap_or_else(BallistaConfig::default)
     }
     fn with_ballista_logical_extension_codec(
         self,
