@@ -518,8 +518,6 @@ mod supported {
         Ok(())
     }
 
-    // tests if `ctx.enable_url_table()` works correctly
-    // it did not work before datafusion 47.0.0
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
@@ -555,7 +553,6 @@ mod supported {
         Ok(())
     }
 
-    // export RUST_MIN_STACK=20971520
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
