@@ -376,7 +376,7 @@ fn get_file_scan(scan: &FileScanConfig) -> String {
         let partitioned_files: Vec<PartitionedFile> = scan
             .file_groups
             .iter()
-            .flat_map(|part_file| part_file.clone())
+            .flat_map(|part_file| part_file.clone().into_inner())
             .collect();
         let paths: Vec<Path> = partitioned_files
             .iter()

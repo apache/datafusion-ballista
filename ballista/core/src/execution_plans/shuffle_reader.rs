@@ -103,6 +103,9 @@ impl DisplayAs for ShuffleReaderExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "ShuffleReaderExec: partitions={}", self.partition.len())
             }
+            DisplayFormatType::TreeRender => {
+                write!(f, "partitions={}", self.partition.len())
+            }
         }
     }
 }

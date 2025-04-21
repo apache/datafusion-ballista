@@ -129,6 +129,9 @@ impl<T: 'static + AsLogicalPlan> DisplayAs for DistributedQueryExec<T> {
                     self.scheduler_url
                 )
             }
+            DisplayFormatType::TreeRender => {
+                writeln!(f, "scheduler_url={}", self.scheduler_url)
+            }
         }
     }
 }
