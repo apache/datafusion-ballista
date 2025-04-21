@@ -687,7 +687,13 @@ pub(crate) fn get_scan_files(
             .downcast_ref::<DataSourceExec>()
             .and_then(|c| c.data_source().as_any().downcast_ref::<FileScanConfig>())
         {
-            collector.push(config.file_groups.clone());
+            collector.push(
+                config
+                    .file_groups
+                    .iter()
+                    .map(|f| f.clone().into_inner())
+                    .collect(),
+            );
             Ok(TreeNodeRecursion::Jump)
         } else {
             Ok(TreeNodeRecursion::Continue)

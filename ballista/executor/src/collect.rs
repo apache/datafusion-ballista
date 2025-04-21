@@ -63,6 +63,7 @@ impl DisplayAs for CollectExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(f, "CollectExec")
             }
+            DisplayFormatType::TreeRender => write!(f, "CollectExec"),
         }
     }
 }

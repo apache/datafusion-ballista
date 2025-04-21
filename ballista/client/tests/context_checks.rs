@@ -519,7 +519,7 @@ mod supported {
     }
 
     // tests if `ctx.enable_url_table()` works correctly
-    // it did not work before datafusion 46.0.0
+    // it did not work before datafusion 47.0.0
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
