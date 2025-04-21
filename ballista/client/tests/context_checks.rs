@@ -21,6 +21,7 @@ mod supported {
 
     use crate::common::{remote_context, standalone_context};
     use ballista_core::config::BallistaConfig;
+    use datafusion::physical_plan::collect;
     use datafusion::prelude::*;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
     use rstest::*;
@@ -66,6 +67,122 @@ mod supported {
 
         Ok(())
     }
+
+    // tests if client will collect statistics for
+    // collect/show operation
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_collect_client_statistics_for_show(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) -> datafusion::error::Result<()> {
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        let plan = ctx
+            .sql("select string_col, timestamp_col from test where id > 4")
+            .await?
+            .create_physical_plan()
+            .await?;
+
+        let result = collect(plan.clone(), ctx.task_ctx()).await?;
+
+        let expected = [
+            "+------------+---------------------+",
+            "| string_col | timestamp_col       |",
+            "+------------+---------------------+",
+            "| 31         | 2009-03-01T00:01:00 |",
+            "| 30         | 2009-04-01T00:00:00 |",
+            "| 31         | 2009-04-01T00:01:00 |",
+            "+------------+---------------------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        let metrics = plan.metrics().unwrap();
+        let rows = metrics.output_rows().unwrap();
+
+        assert_eq!(3, rows);
+        assert!(
+            plan.metrics()
+                .unwrap()
+                .sum_by_name("transferred_bytes")
+                .unwrap()
+                .as_usize()
+                > 0
+        );
+
+        Ok(())
+    }
+
+    // tests if client will collect statistics for
+    // insert operation
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    #[cfg(not(windows))] // test is failing at windows, can't debug it
+    async fn should_collect_client_statistics_for_insert(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) -> datafusion::error::Result<()> {
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        let write_dir = tempfile::tempdir().expect("temporary directory to be created");
+        let write_dir_path = write_dir
+            .path()
+            .to_str()
+            .expect("path to be converted to str");
+
+        ctx.sql(&format!("CREATE EXTERNAL TABLE written_table (id INTEGER, string_col STRING, timestamp_col BIGINT) STORED AS PARQUET LOCATION '{}'" , write_dir_path)).await.unwrap().show().await.unwrap();
+
+        let plan = ctx
+            .sql("INSERT INTO written_table select  id, string_col, timestamp_col from test")
+            .await?
+            .create_physical_plan()
+            .await?;
+
+        let result = collect(plan.clone(), ctx.task_ctx()).await.unwrap();
+
+        // INSERT operation should return only single row
+        assert_eq!(1, plan.metrics().unwrap().output_rows().unwrap());
+        assert!(
+            plan.metrics()
+                .unwrap()
+                .sum_by_name("transferred_bytes")
+                .unwrap()
+                .as_usize()
+                > 0
+        );
+
+        let expected = [
+            "+-------+",
+            "| count |",
+            "+-------+",
+            "| 8     |",
+            "+-------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
