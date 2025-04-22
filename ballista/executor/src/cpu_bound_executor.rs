@@ -311,17 +311,23 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
-    // related https://github.com/apache/arrow-datafusion/issues/2140
     async fn executor_shutdown_while_task_running() {
-        let barrier = Arc::new(Barrier::new(2));
+        let barrier_task_completed = Arc::new(Barrier::new(2));
+        // prevents executor shutdown before task gets running
+        // otherwise there is race on task spawn and shutdown
+        // leading barrier_task_completed waiting forever
+        let barrier_task_running = Arc::new(Barrier::new(2));
 
         let exec = DedicatedExecutor::new("Test DedicatedExecutor", 1);
-        let dedicated_task = exec.spawn(do_work(42, Arc::clone(&barrier)));
-
+        let dedicated_task = exec.spawn(signal_running_do_work(
+            42,
+            Arc::clone(&barrier_task_running),
+            Arc::clone(&barrier_task_completed),
+        ));
+        barrier_task_running.wait();
         exec.shutdown();
         // block main thread until completion of the outstanding task
-        barrier.wait();
+        barrier_task_completed.wait();
 
         // task should complete successfully
         assert_eq!(dedicated_task.await.unwrap(), 42);
@@ -373,6 +379,17 @@ mod tests {
     /// Wait for the barrier and then return `result`
     async fn do_work(result: usize, barrier: Arc<Barrier>) -> usize {
         barrier.wait();
+        result
+    }
+    /// signals when task starts running,
+    /// waits on barrier and then returns result
+    async fn signal_running_do_work(
+        result: usize,
+        barrier_task_running: Arc<Barrier>,
+        barrier_task_finished: Arc<Barrier>,
+    ) -> usize {
+        barrier_task_running.wait();
+        barrier_task_finished.wait();
         result
     }
 }
