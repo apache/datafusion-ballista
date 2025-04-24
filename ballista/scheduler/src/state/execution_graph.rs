@@ -218,7 +218,7 @@ impl ExecutionGraph {
         new_tid
     }
 
-    pub(crate) fn stages(&self) -> &HashMap<usize, ExecutionStage> {
+    pub fn stages(&self) -> &HashMap<usize, ExecutionStage> {
         &self.stages
     }
 
