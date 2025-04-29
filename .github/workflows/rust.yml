@@ -121,6 +121,15 @@ jobs:
         env:
           CARGO_HOME: "/github/home/.cargo"
           CARGO_TARGET_DIR: "/github/home/target"
+      - name: Try to compile when `--no-default-features` is selected
+        run: |
+          export PATH=$PATH:$HOME/d/protoc/bin
+          export ARROW_TEST_DATA=$(pwd)/testing/data
+          export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
+          cargo build -p ballista-scheduler -p ballista-executor -p ballista-core -p ballista --no-default-features
+        env:
+          CARGO_HOME: "/github/home/.cargo"
+          CARGO_TARGET_DIR: "/github/home/target"
 
   # run ballista tests
   ballista-test:
