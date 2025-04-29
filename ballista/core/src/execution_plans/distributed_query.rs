@@ -17,6 +17,7 @@
 
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
+use crate::serde::protobuf::SuccessfulJob;
 use crate::serde::protobuf::{
     execute_query_params::Query, execute_query_result, job_status,
     scheduler_grpc_client::SchedulerGrpcClient, ExecuteQueryParams, GetJobStatusParams,
@@ -30,6 +31,9 @@ use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_plan::metrics::{
+    ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
+};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
@@ -64,7 +68,12 @@ pub struct DistributedQueryExec<T: 'static + AsLogicalPlan> {
     plan_repr: PhantomData<T>,
     /// Session id
     session_id: String,
+    /// Plan properties
     properties: PlanProperties,
+    /// Execution metrics, currently exposes:
+    /// - row count
+    /// - transferred_bytes
+    metrics: ExecutionPlanMetricsSet,
 }
 
 impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
@@ -83,6 +92,7 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
             plan_repr: PhantomData,
             session_id,
             properties,
+            metrics: ExecutionPlanMetricsSet::new(),
         }
     }
 
@@ -102,6 +112,7 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
             plan_repr: PhantomData,
             session_id,
             properties,
+            metrics: ExecutionPlanMetricsSet::new(),
         }
     }
 
@@ -168,6 +179,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             properties: Self::compute_properties(
                 self.plan.schema().as_ref().clone().into(),
             ),
+            metrics: ExecutionPlanMetricsSet::new(),
         }))
     }
 
@@ -209,6 +221,9 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             session_id: Some(self.session_id.clone()),
         };
 
+        let metric_row_count = MetricBuilder::new(&self.metrics).output_rows(partition);
+        let metric_total_bytes =
+            MetricBuilder::new(&self.metrics).counter("transferred_bytes", partition);
         let stream = futures::stream::once(
             execute_query(
                 self.scheduler_url.clone(),
@@ -218,7 +233,17 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             )
             .map_err(|e| ArrowError::ExternalError(Box::new(e))),
         )
-        .try_flatten();
+        .try_flatten()
+        .inspect(move |batch| {
+            metric_total_bytes.add(
+                batch
+                    .as_ref()
+                    .map(|b| b.get_array_memory_size())
+                    .unwrap_or(0),
+            );
+
+            metric_row_count.add(batch.as_ref().map(|b| b.num_rows()).unwrap_or(0));
+        });
 
         let schema = self.schema();
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
@@ -229,6 +254,10 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         // performing the node by node conversion to a full physical plan.
         // This implies that we cannot infer the statistics at this stage.
         Ok(Statistics::new_unknown(&self.schema()))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
     }
 }
 
@@ -285,14 +314,14 @@ async fn execute_query(
         match status {
             None => {
                 if has_status_change {
-                    info!("Job {} still in initialization ...", job_id);
+                    info!("Job {} is in initialization ...", job_id);
                 }
                 wait_future.await;
                 prev_status = status;
             }
             Some(job_status::Status::Queued(_)) => {
                 if has_status_change {
-                    info!("Job {} still queued...", job_id);
+                    info!("Job {} is queued...", job_id);
                 }
                 wait_future.await;
                 prev_status = status;
@@ -309,17 +338,22 @@ async fn execute_query(
                 error!("{}", msg);
                 break Err(DataFusionError::Execution(msg));
             }
-            Some(job_status::Status::Successful(successful)) => {
-                let streams =
-                    successful
-                        .partition_location
-                        .into_iter()
-                        .map(move |partition| {
-                            let f = fetch_partition(partition, max_message_size)
-                                .map_err(|e| ArrowError::ExternalError(Box::new(e)));
+            Some(job_status::Status::Successful(SuccessfulJob {
+                started_at,
+                ended_at,
+                partition_location,
+                ..
+            })) => {
+                let duration = ended_at.saturating_sub(started_at);
+                let duration = Duration::from_millis(duration);
 
-                            futures::stream::once(f).try_flatten()
-                        });
+                info!("Job {} finished executing in {:?} ", job_id, duration);
+                let streams = partition_location.into_iter().map(move |partition| {
+                    let f = fetch_partition(partition, max_message_size)
+                        .map_err(|e| ArrowError::ExternalError(Box::new(e)));
+
+                    futures::stream::once(f).try_flatten()
+                });
 
                 break Ok(futures::stream::iter(streams).flatten());
             }
