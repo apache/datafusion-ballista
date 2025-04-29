@@ -19,7 +19,10 @@ mod common;
 #[cfg(test)]
 mod supported {
 
-    use crate::common::{remote_context, standalone_context};
+    use crate::common::{
+        remote_context, remote_context_with_state, standalone_context,
+        standalone_context_with_state,
+    };
     use ballista_core::config::BallistaConfig;
     use datafusion::physical_plan::collect;
     use datafusion::prelude::*;
@@ -611,5 +614,139 @@ mod supported {
         ];
 
         assert_batches_eq!(expected, &result);
+    }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[case::standalone_state(standalone_context_with_state())]
+    #[case::remote_state(remote_context_with_state())]
+    #[tokio::test]
+    #[cfg(not(windows))] // test is failing at windows, can't debug it
+    async fn should_execute_sql_write_read_roundtrip(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) -> datafusion::error::Result<()> {
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        let expected = [
+            "+----+------------+",
+            "| id | string_col |",
+            "+----+------------+",
+            "| 5  | 31         |",
+            "| 6  | 30         |",
+            "| 7  | 31         |",
+            "+----+------------+",
+        ];
+
+        let write_dir = tempfile::tempdir().expect("temporary directory to be created");
+        let write_dir_path = write_dir
+            .path()
+            .to_str()
+            .expect("path to be converted to str");
+
+        ctx.sql("select * from test")
+            .await?
+            .write_parquet(write_dir_path, Default::default(), Default::default())
+            .await?;
+
+        ctx.register_parquet("p_written_table", write_dir_path, Default::default())
+            .await?;
+
+        let result = ctx
+            .sql("select id, string_col from p_written_table where id > 4")
+            .await?
+            .collect()
+            .await?;
+
+        assert_batches_eq!(expected, &result);
+
+        ctx.sql("select * from test")
+            .await?
+            .write_csv(write_dir_path, Default::default(), Default::default())
+            .await?;
+
+        ctx.register_csv("c_written_table", write_dir_path, Default::default())
+            .await?;
+
+        let result = ctx
+            .sql("select id, string_col from c_written_table where id > 4")
+            .await?
+            .collect()
+            .await?;
+
+        assert_batches_eq!(expected, &result);
+
+        //
+        // TODO: enable when json supports lands in datafusion 47
+        //
+        // ctx.sql("select * from test")
+        //     .await?
+        //     .write_json(write_dir_path, Default::default(), Default::default())
+        //     .await?;
+
+        // ctx.register_json("j_written_table", write_dir_path, Default::default())
+        //     .await?;
+
+        // let result = ctx
+        //     .sql("select id, string_col from j_written_table where id > 4")
+        //     .await?
+        //     .collect()
+        //     .await?;
+
+        // assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[case::standalone_state(standalone_context_with_state())]
+    #[case::remote_state(remote_context_with_state())]
+    #[tokio::test]
+    async fn should_execute_sql_show_multiple_times(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) -> datafusion::error::Result<()> {
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        let expected = [
+            "+------------+---------------------+",
+            "| string_col | timestamp_col       |",
+            "+------------+---------------------+",
+            "| 31         | 2009-03-01T00:01:00 |",
+            "| 30         | 2009-04-01T00:00:00 |",
+            "| 31         | 2009-04-01T00:01:00 |",
+            "+------------+---------------------+",
+        ];
+        // there were cases when we break session context
+        // with standalone setup. so subsequent query for the
+        // same table fails with table does not exist
+        for _ in 0..5 {
+            let result = ctx
+                .sql("select string_col, timestamp_col from test where id > 4")
+                .await?
+                .collect()
+                .await?;
+
+            assert_batches_eq!(expected, &result);
+        }
+
+        Ok(())
     }
 }
