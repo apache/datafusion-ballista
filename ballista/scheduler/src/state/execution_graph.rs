@@ -218,6 +218,7 @@ impl ExecutionGraph {
         new_tid
     }
 
+    /// Exposes executions stages and stage id's
     pub fn stages(&self) -> &HashMap<usize, ExecutionStage> {
         &self.stages
     }
