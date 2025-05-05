@@ -177,15 +177,16 @@ pub async fn start_executor_process(
         opt.concurrent_tasks
     };
 
+    // assign this executor an unique ID
+    let executor_id = Uuid::new_v4().to_string();
     info!(
         "Executor starting ... (Datafusion Ballista {})",
         BALLISTA_VERSION
     );
+    info!("Executor id: {}", executor_id);
     info!("Executor working directory: {}", work_dir);
     info!("Executor number of concurrent tasks: {}", concurrent_tasks);
 
-    // assign this executor an unique ID
-    let executor_id = Uuid::new_v4().to_string();
     let executor_meta = ExecutorRegistration {
         id: executor_id.clone(),
         host: opt.external_host.clone(),

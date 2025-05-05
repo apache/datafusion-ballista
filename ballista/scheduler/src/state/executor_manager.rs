@@ -20,6 +20,7 @@ use std::time::Duration;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf;
+use log::trace;
 
 use crate::cluster::{BoundTask, ClusterState, ExecutorSlot};
 use crate::config::SchedulerConfig;
@@ -219,9 +220,10 @@ impl ExecutorManager {
     ///
     /// For push-based one, we should use [`register_executor`], instead.
     pub async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()> {
-        debug!(
+        trace!(
             "save executor metadata {} with {} task slots (pull-based registration)",
-            metadata.id, metadata.specification.task_slots
+            metadata.id,
+            metadata.specification.task_slots
         );
         self.cluster_state.save_executor_metadata(metadata).await
     }
