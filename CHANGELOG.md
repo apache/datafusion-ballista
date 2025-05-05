@@ -19,6 +19,46 @@
 
 # Changelog
 
+## [46.0.0](https://github.com/apache/datafusion-ballista/tree/46.0.0) (2025-05-05)
+
+[Full Changelog](https://github.com/apache/datafusion-ballista/compare/45.0.0...46.0.0)
+
+**Implemented enhancements:**
+
+- feat: make task distribution policies pluggable  [#1243](https://github.com/apache/datafusion-ballista/pull/1243) (milenkovicm)
+- feat: remove flight-sql from scheduler [#1228](https://github.com/apache/datafusion-ballista/pull/1228) (milenkovicm)
+- feat: ballista client collects (few) metrics [#1251](https://github.com/apache/datafusion-ballista/pull/1251) (milenkovicm)
+- feat: make execution_graph.stages()  public [#1256](https://github.com/apache/datafusion-ballista/pull/1256) (milenkovicm)
+
+**Fixed bugs:**
+
+- fix: executor can't read s3 config in push-staged mode [#1236](https://github.com/apache/datafusion-ballista/pull/1236) (mmooyyii)
+
+**Merged pull requests:**
+
+- chore: Remove some arrow references [#1232](https://github.com/apache/datafusion-ballista/pull/1232) (andygrove)
+- chore: remove unused executor configuration option [#1229](https://github.com/apache/datafusion-ballista/pull/1229) (milenkovicm)
+- chore: return `404` for api requests if path does not exist [#1224](https://github.com/apache/datafusion-ballista/pull/1224) (milenkovicm)
+- chore(ci): replace `actions-rs` which are deprecated  [#1222](https://github.com/apache/datafusion-ballista/pull/1222) (milenkovicm)
+- minor: Decouple `ExecutionGraph` and `DistributedPlanner` [#1221](https://github.com/apache/datafusion-ballista/pull/1221) (milenkovicm)
+- chore: update datafusion to 46 [#1201](https://github.com/apache/datafusion-ballista/pull/1201) (milenkovicm)
+- chore(deps): bump crossbeam-channel from 0.5.14 to 0.5.15 [#1233](https://github.com/apache/datafusion-ballista/pull/1233) (dependabot[bot])
+- chore(deps): bump tokio from 1.44.1 to 1.44.2 [#1234](https://github.com/apache/datafusion-ballista/pull/1234) (dependabot[bot])
+- fix: executor can't read s3 config in push-staged mode [#1236](https://github.com/apache/datafusion-ballista/pull/1236) (mmooyyii)
+- chore: update python deps to 45 [#1240](https://github.com/apache/datafusion-ballista/pull/1240) (milenkovicm)
+- Add S3 object store support to executor and scheduler [#1230](https://github.com/apache/datafusion-ballista/pull/1230) (milenkovicm)
+- feat: make task distribution policies pluggable  [#1243](https://github.com/apache/datafusion-ballista/pull/1243) (milenkovicm)
+- chore: reduce log levels for few log statements [#1237](https://github.com/apache/datafusion-ballista/pull/1237) (milenkovicm)
+- chore(deps): bump crossbeam-channel from 0.5.14 to 0.5.15 in /python [#1244](https://github.com/apache/datafusion-ballista/pull/1244) (dependabot[bot])
+- feat: remove flight-sql from scheduler [#1228](https://github.com/apache/datafusion-ballista/pull/1228) (milenkovicm)
+- minor: `executor_shutdown_while_running` test has race condition [#1248](https://github.com/apache/datafusion-ballista/pull/1248) (milenkovicm)
+- bug: build fails with `--no-default-features` [#1255](https://github.com/apache/datafusion-ballista/pull/1255) (milenkovicm)
+- doc: update architectural diagram [#1253](https://github.com/apache/datafusion-ballista/pull/1253) (milenkovicm)
+- feat: ballista client collects (few) metrics [#1251](https://github.com/apache/datafusion-ballista/pull/1251) (milenkovicm)
+- chore: add read/write roundtrip tests [#1249](https://github.com/apache/datafusion-ballista/pull/1249) (milenkovicm)
+- minor: change log level for object store creation [#1247](https://github.com/apache/datafusion-ballista/pull/1247) (milenkovicm)
+- feat: make execution_graph.stages()  public [#1256](https://github.com/apache/datafusion-ballista/pull/1256) (milenkovicm)
+
 ## [45.0.0](https://github.com/apache/datafusion-ballista/tree/45.0.0) (2025-03-30)
 
 [Full Changelog](https://github.com/apache/datafusion-ballista/compare/44.0.0...45.0.0)
