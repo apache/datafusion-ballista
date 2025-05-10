@@ -37,15 +37,12 @@ use crate::metrics::default_metrics_collector;
 use crate::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
 use crate::scheduler_server::SchedulerServer;
 
-pub async fn start_server(
+/// Creates as initialized scheduler service
+/// without exposing it as a grpc service
+pub async fn create_scheduler(
     cluster: BallistaCluster,
-    addr: SocketAddr,
     config: Arc<SchedulerConfig>,
-) -> ballista_core::error::Result<()> {
-    info!(
-        "Ballista v{} Scheduler listening on {:?}",
-        BALLISTA_VERSION, addr
-    );
+) -> ballista_core::error::Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
     // Should only call SchedulerServer::new() once in the process
     info!(
         "Starting Scheduler grpc server with task scheduling policy of {:?}",
@@ -77,8 +74,16 @@ pub async fn start_server(
 
     scheduler_server.init().await?;
 
-    let config = &scheduler_server.state.config;
-    let scheduler_grpc_server = SchedulerGrpcServer::new(scheduler_server.clone())
+    Ok(scheduler_server)
+}
+
+/// Exposes scheduler grpc service
+pub async fn start_grpc_service(
+    address: SocketAddr,
+    scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
+) -> ballista_core::error::Result<()> {
+    let config = &scheduler.state.config;
+    let scheduler_grpc_server = SchedulerGrpcServer::new(scheduler.clone())
         .max_encoding_message_size(config.grpc_server_max_encoding_message_size as usize)
         .max_decoding_message_size(config.grpc_server_max_decoding_message_size as usize);
 
@@ -86,13 +91,13 @@ pub async fn start_server(
 
     #[cfg(feature = "keda-scaler")]
     let tonic_builder =
-        tonic_builder.add_service(ExternalScalerServer::new(scheduler_server.clone()));
+        tonic_builder.add_service(ExternalScalerServer::new(scheduler.clone()));
 
     let tonic = tonic_builder.into_service().into_axum_router();
     let tonic = tonic.fallback(|| async { (StatusCode::NOT_FOUND, "404 - Not Found") });
 
     #[cfg(feature = "rest-api")]
-    let axum = get_routes(Arc::new(scheduler_server));
+    let axum = get_routes(Arc::new(scheduler));
     #[cfg(feature = "rest-api")]
     let final_route = axum
         .merge(tonic)
@@ -101,11 +106,26 @@ pub async fn start_server(
     #[cfg(not(feature = "rest-api"))]
     let final_route = tonic.into_make_service_with_connect_info::<SocketAddr>();
 
-    let listener = tokio::net::TcpListener::bind(&addr)
+    let listener = tokio::net::TcpListener::bind(&address)
         .await
         .map_err(BallistaError::from)?;
 
     axum::serve(listener, final_route)
         .await
         .map_err(BallistaError::from)
+}
+
+/// Creates scheduler and exposes it as grpc service
+/// This method is a helper method which calls [create_scheduler] and [start_grpc_service]
+pub async fn start_server(
+    cluster: BallistaCluster,
+    address: SocketAddr,
+    config: Arc<SchedulerConfig>,
+) -> ballista_core::error::Result<()> {
+    info!(
+        "Ballista v{} Scheduler listening on {:?}",
+        BALLISTA_VERSION, address
+    );
+    let scheduler = create_scheduler(cluster, config).await?;
+    start_grpc_service(address, scheduler).await
 }
