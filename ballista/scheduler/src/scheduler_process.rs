@@ -22,6 +22,8 @@ use ballista_core::serde::{
 };
 use ballista_core::utils::create_grpc_server;
 use ballista_core::BALLISTA_VERSION;
+use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use http::StatusCode;
 use log::info;
@@ -39,17 +41,18 @@ use crate::scheduler_server::SchedulerServer;
 
 /// Creates as initialized scheduler service
 /// without exposing it as a grpc service
-pub async fn create_scheduler(
+pub async fn create_scheduler<
+    T: 'static + AsLogicalPlan,
+    U: 'static + AsExecutionPlan,
+>(
     cluster: BallistaCluster,
     config: Arc<SchedulerConfig>,
-) -> ballista_core::error::Result<SchedulerServer<LogicalPlanNode, PhysicalPlanNode>> {
+) -> ballista_core::error::Result<SchedulerServer<T, U>> {
     // Should only call SchedulerServer::new() once in the process
     info!(
         "Starting Scheduler grpc server with task scheduling policy of {:?}",
         config.scheduling_policy
     );
-
-    let metrics_collector = default_metrics_collector()?;
 
     let codec_logical = config
         .override_logical_codec
@@ -62,15 +65,15 @@ pub async fn create_scheduler(
         .unwrap_or_else(|| Arc::new(BallistaPhysicalExtensionCodec::default()));
 
     let codec = BallistaCodec::new(codec_logical, codec_physical);
+    let metrics_collector = default_metrics_collector()?;
 
-    let mut scheduler_server: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
-        SchedulerServer::new(
-            config.scheduler_name(),
-            cluster,
-            codec,
-            config,
-            metrics_collector,
-        );
+    let mut scheduler_server = SchedulerServer::new(
+        config.scheduler_name(),
+        cluster,
+        codec,
+        config,
+        metrics_collector,
+    );
 
     scheduler_server.init().await?;
 
@@ -78,9 +81,12 @@ pub async fn create_scheduler(
 }
 
 /// Exposes scheduler grpc service
-pub async fn start_grpc_service(
+pub async fn start_grpc_service<
+    T: 'static + AsLogicalPlan,
+    U: 'static + AsExecutionPlan,
+>(
     address: SocketAddr,
-    scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
+    scheduler: SchedulerServer<T, U>,
 ) -> ballista_core::error::Result<()> {
     let config = &scheduler.state.config;
     let scheduler_grpc_server = SchedulerGrpcServer::new(scheduler.clone())
@@ -116,7 +122,8 @@ pub async fn start_grpc_service(
 }
 
 /// Creates scheduler and exposes it as grpc service
-/// This method is a helper method which calls [create_scheduler] and [start_grpc_service]
+///
+/// Method is a helper method which calls [create_scheduler] and [start_grpc_service]
 pub async fn start_server(
     cluster: BallistaCluster,
     address: SocketAddr,
@@ -126,6 +133,8 @@ pub async fn start_server(
         "Ballista v{} Scheduler listening on {:?}",
         BALLISTA_VERSION, address
     );
-    let scheduler = create_scheduler(cluster, config).await?;
+    let scheduler =
+        create_scheduler::<LogicalPlanNode, PhysicalPlanNode>(cluster, config).await?;
+
     start_grpc_service(address, scheduler).await
 }
