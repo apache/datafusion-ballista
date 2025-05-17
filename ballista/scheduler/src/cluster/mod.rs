@@ -202,6 +202,10 @@ pub trait ClusterState: Send + Sync + 'static {
 
     /// Get executor heartbeat for the provided executor ID. Return None if the executor does not exist
     fn get_executor_heartbeat(&self, executor_id: &str) -> Option<ExecutorHeartbeat>;
+
+    /// Get a stream of all `ClusterState` events. An event should be published any time that status
+    /// of a cluster changes in state
+    async fn cluster_state_events(&self) -> Result<ClusterStateEventStream>;
 }
 
 /// Events related to the state of jobs. Implementations may or may not support all event types.
@@ -240,6 +244,18 @@ pub enum JobStateEvent {
         config: BallistaConfig,
     },
 }
+
+/// Events related to the state of cluster.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClusterStateEvent {
+    /// Executor registered
+    RegisteredExecutor { executor_id: String },
+    /// Executor removed
+    RemovedExecutor { executor_id: String },
+}
+
+/// Stream of `ClusterStateEvent`.
+pub type ClusterStateEventStream = Pin<Box<dyn Stream<Item = ClusterStateEvent> + Send>>;
 
 /// Stream of `JobStateEvent`. This stream should contain all `JobStateEvent`s received
 /// by any schedulers with a shared `ClusterState`

@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use log::{debug, error, info, warn};
+use log::{error, info, trace, warn};
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::{EventAction, EventSender};
@@ -251,7 +251,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.state.clean_up_failed_job(job_id);
             }
             QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status) => {
-                debug!(
+                trace!(
                     "processing task status updates from {executor_id}: {:?}",
                     tasks_status
                 );
