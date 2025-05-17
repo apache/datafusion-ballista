@@ -36,9 +36,9 @@ jobs:
           docker tag apache/datafusion-ballista-executor:latest ghcr.io/apache/datafusion-ballista-executor:latest
           docker tag apache/datafusion-ballista-scheduler:latest ghcr.io/apache/datafusion-ballista-scheduler:latest
 
-          # release dockers only when there is a tag 
+          # release dockers only when there is a release tag 
           export DOCKER_TAG="$(git describe --exact-match --tags $(git log -n1 --pretty='%h') || echo '')"
-          if [[ $DOCKER_TAG =~ ^[0-9\.]+-rc[0-9]+$ ]]
+          if [[ $DOCKER_TAG =~ ^[0-9\.]+(-rc[0-9]+)?$ ]]
           then
             
             docker login ghcr.io -u $DOCKER_USER -p "$DOCKER_PASS"
