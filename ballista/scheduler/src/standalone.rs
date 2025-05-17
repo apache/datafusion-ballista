@@ -29,7 +29,7 @@ use ballista_core::{
     error::Result, serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer,
     BALLISTA_VERSION,
 };
-use datafusion::execution::{SessionState, SessionStateBuilder};
+use datafusion::execution::SessionState;
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::protobuf::LogicalPlanNode;
 use datafusion_proto::protobuf::PhysicalPlanNode;
@@ -56,14 +56,7 @@ pub async fn new_standalone_scheduler_from_state(
     let codec = BallistaCodec::new(logical, physical);
     let session_config = session_state.config().clone();
     let session_state = session_state.clone();
-    let session_builder = Arc::new(move |c: SessionConfig| {
-        Ok(
-            SessionStateBuilder::new_from_existing(session_state.clone())
-                .with_config(c)
-                .build(),
-        )
-    });
-
+    let session_builder = Arc::new(move |_: SessionConfig| Ok(session_state.clone()));
     let config_producer = Arc::new(move || session_config.clone());
 
     new_standalone_scheduler_with_builder(session_builder, config_producer, codec).await
