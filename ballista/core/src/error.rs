@@ -39,11 +39,11 @@ pub enum BallistaError {
     Internal(String),
     Configuration(String),
     ArrowError(ArrowError),
-    DataFusionError(DataFusionError),
+    DataFusionError(Box<DataFusionError>),
     SqlError(parser::ParserError),
     IoError(io::Error),
     TonicError(tonic::transport::Error),
-    GrpcError(tonic::Status),
+    GrpcError(Box<tonic::Status>),
     GrpcConnectionError(String),
     TokioError(tokio::task::JoinError),
     GrpcActionError(String),
@@ -80,7 +80,9 @@ impl From<ArrowError> for BallistaError {
             ArrowError::ExternalError(e)
                 if e.downcast_ref::<DataFusionError>().is_some() =>
             {
-                BallistaError::DataFusionError(*e.downcast::<DataFusionError>().unwrap())
+                BallistaError::DataFusionError(Box::new(
+                    *e.downcast::<DataFusionError>().unwrap(),
+                ))
             }
             other => BallistaError::ArrowError(other),
         }
@@ -97,7 +99,7 @@ impl From<DataFusionError> for BallistaError {
     fn from(e: DataFusionError) -> Self {
         match e {
             DataFusionError::ArrowError(e, _) => Self::from(e),
-            _ => BallistaError::DataFusionError(e),
+            _ => BallistaError::DataFusionError(Box::new(e)),
         }
     }
 }
@@ -116,7 +118,7 @@ impl From<tonic::transport::Error> for BallistaError {
 
 impl From<tonic::Status> for BallistaError {
     fn from(e: tonic::Status) -> Self {
-        BallistaError::GrpcError(e)
+        BallistaError::GrpcError(Box::new(e))
     }
 }
 
@@ -216,9 +218,11 @@ impl From<BallistaError> for FailedTask {
                     failed_reason: Some(FailedReason::IoError(IoError {})),
                 }
             }
-            BallistaError::DataFusionError(DataFusionError::IoError(io)) => {
+            BallistaError::DataFusionError(e)
+                if matches!(*e, DataFusionError::IoError(_)) =>
+            {
                 FailedTask {
-                    error: format!("Task failed due to DataFusion IO error: {io:?}"),
+                    error: format!("Task failed due to DataFusion IO error: {e:?}"),
                     // IO error is considered to be temporary and retryable
                     retryable: true,
                     count_to_failures: true,

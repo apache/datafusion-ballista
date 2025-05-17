@@ -426,5 +426,5 @@ fn reset_metrics_for_execution_plan(
         plan.with_new_children(children).map(Transformed::yes)
     })
     .data()
-    .map_err(BallistaError::DataFusionError)
+    .map_err(|e| BallistaError::DataFusionError(Box::new(e)))
 }
