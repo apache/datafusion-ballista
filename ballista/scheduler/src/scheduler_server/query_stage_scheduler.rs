@@ -376,8 +376,6 @@ mod tests {
         )
         .await?;
 
-        //let job_id = "job-1";
-
         let job_id = test.submit("", &plan).await?;
 
         test.tick().await?;
