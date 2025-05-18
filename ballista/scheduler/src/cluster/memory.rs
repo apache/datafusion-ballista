@@ -246,7 +246,11 @@ impl ClusterState for InMemoryClusterState {
         //       insert time. This information may be useful when reporting executor
         //       status and heartbeat is not available (in case of `TaskSchedulingPolicy::PullStaged`)
         let executor_id = metadata.id.clone();
-        if matches!(self.executors.insert(executor_id.clone(), metadata), None) {
+        if self
+            .executors
+            .insert(executor_id.clone(), metadata)
+            .is_none()
+        {
             self.cluster_event_sender
                 .send(&ClusterStateEvent::RegisteredExecutor {
                     executor_id: executor_id.to_string(),
@@ -701,7 +705,7 @@ mod test {
             Some(
                 ClusterStateEvent::RegisteredExecutor {
                 executor_id
-            }) if executor_id == "id123".to_string(),
+            }) if executor_id == *"id123",
 
         ));
 
@@ -718,7 +722,7 @@ mod test {
             Some(
                 ClusterStateEvent::RemovedExecutor {
                 executor_id
-            }) if executor_id == "id123".to_string(),
+            }) if executor_id == *"id123",
 
         ));
 
