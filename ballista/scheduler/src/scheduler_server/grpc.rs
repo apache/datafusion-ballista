@@ -189,7 +189,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             status,
             metadata,
         } = request.into_inner();
-        debug!("Received heart beat request for {:?}", executor_id);
+        trace!("Received heart beat request for {:?}", executor_id);
 
         // If not registered, do registration first before saving heart beat
         if let Err(e) = self

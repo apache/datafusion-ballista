@@ -46,6 +46,8 @@ use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
 use tokio::sync::{Mutex, MutexGuard};
 
+use super::{ClusterStateEvent, ClusterStateEventStream};
+
 #[derive(Default)]
 pub struct InMemoryClusterState {
     /// Current available task slots for each executor
@@ -54,6 +56,8 @@ pub struct InMemoryClusterState {
     executors: DashMap<String, ExecutorMetadata>,
     /// Last heartbeat received for each executor
     heartbeats: DashMap<String, ExecutorHeartbeat>,
+
+    cluster_event_sender: ClusterEventSender<ClusterStateEvent>,
 }
 
 impl InMemoryClusterState {
@@ -218,22 +222,57 @@ impl ClusterState for InMemoryClusterState {
         guard.insert(
             executor_id.clone(),
             AvailableTaskSlots {
-                executor_id,
+                executor_id: executor_id.clone(),
                 slots: spec.available_task_slots,
             },
         );
+
+        // RegisteredExecutor event is not pushed from here,
+        // in order to align between push and pull policy
+        // event is pushed from `save_executor_metadata`
+        //
+        // self.cluster_event_sender
+        //     .send(&ClusterStateEvent::RegisteredExecutor {
+        //         executor_id: executor_id.to_string(),
+        //     });
 
         Ok(())
     }
 
     async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()> {
-        log::debug!("save executor metadata: {}", metadata.id);
+        log::trace!("save executor metadata: {}", metadata.id);
         // TODO: MM it would make sense to add time when ExecutorMetadata is persisted
         //       we can do that adding additional field in ExecutorMetadata representing
         //       insert time. This information may be useful when reporting executor
         //       status and heartbeat is not available (in case of `TaskSchedulingPolicy::PullStaged`)
-        self.executors.insert(metadata.id.clone(), metadata);
-        Ok(())
+        let executor_id = metadata.id.clone();
+        if self
+            .executors
+            .insert(executor_id.clone(), metadata)
+            .is_none()
+        {
+            self.cluster_event_sender
+                .send(&ClusterStateEvent::RegisteredExecutor {
+                    executor_id: executor_id.to_string(),
+                });
+        }
+
+        //
+        // pull based executor sends `save_executor_metadata`
+        // with all requests, not `ExecutorHeartbeat`, to make it consistent
+        // with push based, registering `ExecutorHeartbeat` every time
+        //
+        let heartbeat = ExecutorHeartbeat {
+            executor_id,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_secs(),
+            metrics: vec![],
+            status: None,
+        };
+        self.save_executor_heartbeat(heartbeat).await
+        // Ok(())
     }
 
     async fn get_executor_metadata(&self, executor_id: &str) -> Result<ExecutorMetadata> {
@@ -248,7 +287,7 @@ impl ClusterState for InMemoryClusterState {
     }
 
     async fn save_executor_heartbeat(&self, heartbeat: ExecutorHeartbeat) -> Result<()> {
-        log::debug!("saving executor heartbeat: {}", heartbeat.executor_id);
+        log::trace!("saving executor heartbeat: {}", heartbeat.executor_id);
         let executor_id = heartbeat.executor_id.clone();
         if let Some(mut last) = self.heartbeats.get_mut(&executor_id) {
             let _ = std::mem::replace(last.deref_mut(), heartbeat);
@@ -269,6 +308,11 @@ impl ClusterState for InMemoryClusterState {
         self.executors.remove(executor_id);
         self.heartbeats.remove(executor_id);
 
+        self.cluster_event_sender
+            .send(&ClusterStateEvent::RemovedExecutor {
+                executor_id: executor_id.to_string(),
+            });
+
         Ok(())
     }
 
@@ -285,6 +329,10 @@ impl ClusterState for InMemoryClusterState {
 
     async fn registered_executor_metadata(&self) -> Vec<ExecutorMetadata> {
         self.executors.iter().map(|v| v.clone()).collect()
+    }
+
+    async fn cluster_state_events(&self) -> Result<ClusterStateEventStream> {
+        Ok(Box::pin(self.cluster_event_sender.subscribe()))
     }
 }
 
@@ -516,14 +564,15 @@ impl JobState for InMemoryJobState {
 mod test {
     use std::sync::Arc;
 
-    use crate::cluster::memory::InMemoryJobState;
+    use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
     use crate::cluster::test_util::{test_job_lifecycle, test_job_planning_failure};
-    use crate::cluster::{JobState, JobStateEvent};
+    use crate::cluster::{ClusterState, ClusterStateEvent, JobState, JobStateEvent};
     use crate::test_utils::{
         test_aggregation_plan, test_join_plan, test_two_aggregations_plan,
     };
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::JobStatus;
+    use ballista_core::serde::scheduler::{ExecutorMetadata, ExecutorSpecification};
     use ballista_core::utils::{default_config_producer, default_session_builder};
     use futures::StreamExt;
     use tokio::sync::Barrier;
@@ -628,6 +677,54 @@ mod test {
             } => (), // assert!(true, "Last status should be successful job notification"),
             _ => panic!("JobUpdated status expected"),
         }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_cluster_notification() -> Result<()> {
+        let cluster_state = InMemoryClusterState::default();
+
+        let mut event_stream = cluster_state.cluster_state_events().await?;
+
+        let metadata = ExecutorMetadata {
+            id: "id123".to_string(),
+            host: "".to_string(),
+            port: 50055,
+            grpc_port: 50050,
+            specification: ExecutorSpecification { task_slots: 2 },
+        };
+
+        cluster_state
+            .save_executor_metadata(metadata.clone())
+            .await?;
+        let event = event_stream.next().await;
+
+        assert!(matches!(
+            event,
+            Some(
+                ClusterStateEvent::RegisteredExecutor {
+                executor_id
+            }) if executor_id == *"id123",
+
+        ));
+
+        // event should not be emitted as executor is already registered
+        cluster_state
+            .save_executor_metadata(metadata.clone())
+            .await?;
+
+        cluster_state.remove_executor("id123").await?;
+        let event = event_stream.next().await;
+
+        assert!(matches!(
+            event,
+            Some(
+                ClusterStateEvent::RemovedExecutor {
+                executor_id
+            }) if executor_id == *"id123",
+
+        ));
 
         Ok(())
     }

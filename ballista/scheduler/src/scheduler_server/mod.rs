@@ -33,7 +33,7 @@ use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
-use log::{error, warn};
+use log::{debug, error, warn};
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
@@ -240,6 +240,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         tokio::task::spawn(async move {
             loop {
                 let expired_executors = state.executor_manager.get_expired_executors();
+                debug!("expire_dead_executors: {:?}", expired_executors);
                 for expired in expired_executors {
                     let executor_id = expired.executor_id.clone();
 
@@ -300,6 +301,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         reason: Option<String>,
         wait_secs: u64,
     ) {
+        debug!("remove executor: {}", executor_id);
         let executor_id = executor_id.to_owned();
         tokio::spawn(async move {
             // Wait for `wait_secs` before removing executor
