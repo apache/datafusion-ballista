@@ -163,14 +163,28 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     pub(crate) fn metrics_collector(&self) -> &dyn SchedulerMetricsCollector {
         self.query_stage_scheduler.metrics_collector()
     }
+    /// Cancels job for given job_id
+    pub async fn cancel_job(&self, job_id: String) -> Result<()> {
+        log::debug!("Received cancellation request for job {}", job_id);
 
-    pub(crate) async fn submit_job(
+        self.query_stage_event_loop
+            .get_sender()?
+            .post_event(QueryStageSchedulerEvent::JobCancel(job_id.to_owned()))
+            .await?;
+
+        Ok(())
+    }
+
+    /// Submits a job to executor returning job_id
+    pub async fn submit_job(
         &self,
-        job_id: &str,
         job_name: &str,
         ctx: Arc<SessionContext>,
         plan: &LogicalPlan,
-    ) -> Result<()> {
+    ) -> Result<String> {
+        log::debug!("Received submit request for job {}", job_name);
+        let job_id = self.state.task_manager.generate_job_id();
+
         self.query_stage_event_loop
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::JobQueued {
@@ -180,7 +194,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                 plan: Box::new(plan.clone()),
                 queued_at: timestamp_millis(),
             })
-            .await
+            .await?;
+
+        Ok(job_id)
     }
 
     /// It just send task status update event to the channel,
@@ -505,7 +521,7 @@ mod test {
         )
         .await?;
 
-        let status = test.run("job", "", &plan).await.expect("running plan");
+        let (status, job_id) = test.run("", &plan).await.expect("running plan");
 
         match status.status {
             Some(job_status::Status::Successful(SuccessfulJob {
@@ -519,8 +535,8 @@ mod test {
             }
         }
 
-        assert_submitted_event("job", &metrics_collector);
-        assert_completed_event("job", &metrics_collector);
+        assert_submitted_event(&job_id, &metrics_collector);
+        assert_completed_event(&job_id, &metrics_collector);
 
         Ok(())
     }
@@ -580,7 +596,7 @@ mod test {
         )
         .await?;
 
-        let status = test.run("job", "", &plan).await.expect("running plan");
+        let (status, job_id) = test.run("", &plan).await.expect("running plan");
 
         assert!(
             matches!(
@@ -594,8 +610,8 @@ mod test {
             "Expected job status to be failed but it was {status:?}"
         );
 
-        assert_submitted_event("job", &metrics_collector);
-        assert_failed_event("job", &metrics_collector);
+        assert_submitted_event(&job_id, &metrics_collector);
+        assert_failed_event(&job_id, &metrics_collector);
 
         Ok(())
     }
@@ -625,7 +641,7 @@ mod test {
             .into_optimized_plan()?;
 
         // This should fail when we try and create the physical plan
-        let status = test.run("job", "", &plan).await?;
+        let (status, job_id) = test.run("", &plan).await?;
 
         assert!(
             matches!(
@@ -639,8 +655,8 @@ mod test {
             "Expected job status to be failed but it was {status:?}"
         );
 
-        assert_no_submitted_event("job", &metrics_collector);
-        assert_failed_event("job", &metrics_collector);
+        assert_no_submitted_event(&job_id, &metrics_collector);
+        assert_failed_event(&job_id, &metrics_collector);
 
         Ok(())
     }

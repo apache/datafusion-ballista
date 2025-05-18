@@ -376,9 +376,7 @@ mod tests {
         )
         .await?;
 
-        let job_id = "job-1";
-
-        test.submit(job_id, "", &plan).await?;
+        let job_id = test.submit("", &plan).await?;
 
         test.tick().await?;
 
@@ -398,7 +396,7 @@ mod tests {
             expected, running_jobs
         );
 
-        test.cancel(job_id).await?;
+        test.cancel(&job_id).await?;
 
         let expected = 0usize;
         let success = await_condition(Duration::from_millis(10), 20, || {

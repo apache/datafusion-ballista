@@ -457,14 +457,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 plan.display_indent()
             );
 
-            let job_id = self.state.task_manager.generate_job_id();
-
             log::trace!("setting job name: {}", job_name);
-            self.submit_job(&job_id, &job_name, session_ctx, &plan)
+            let job_id = self
+                .submit_job(&job_name, session_ctx, &plan)
                 .await
                 .map_err(|e| {
                     let msg =
-                        format!("Failed to send JobQueued event for {job_id}: {e:?}");
+                        format!("Failed to send JobQueued event for {job_name}: {e:?}");
                     error!("{}", msg);
 
                     Status::internal(msg)
@@ -534,20 +533,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let job_id = request.into_inner().job_id;
         info!("Received cancellation request for job {}", job_id);
 
-        self.query_stage_event_loop
-            .get_sender()
-            .map_err(|e| {
-                let msg = format!("Get query stage event loop error due to {e:?}");
-                error!("{}", msg);
-                Status::internal(msg)
-            })?
-            .post_event(QueryStageSchedulerEvent::JobCancel(job_id))
-            .await
-            .map_err(|e| {
-                let msg = format!("Post to query stage event loop error due to {e:?}");
-                error!("{}", msg);
-                Status::internal(msg)
-            })?;
+        self.cancel_job(job_id).await.map_err(|e| {
+            let msg = format!("Post to query stage event loop error due to {e:?}");
+            error!("{}", msg);
+            Status::internal(msg)
+        })?;
+
         Ok(Response::new(CancelJobResult { cancelled: true }))
     }
 
