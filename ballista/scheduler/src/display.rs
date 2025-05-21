@@ -53,7 +53,7 @@ pub fn print_stage_metrics(
             DisplayableBallistaExecutionPlan::new(plan, &plan_metrics).indent()
         );
     } else {
-        error!("Fail to combine stage metrics to plan for stage [{}/{}],  plan metrics array size {} does not equal
+        error!("Fail to combine stage metrics to plan for job/stage [{}/{}],  plan metrics array size {} does not equal
                 to the stage metrics array size {}", job_id, stage_id, plan_metrics.len(), stage_metrics.len());
     }
 }
