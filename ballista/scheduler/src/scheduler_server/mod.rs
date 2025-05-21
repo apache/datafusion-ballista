@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -61,6 +62,8 @@ pub type SessionBuilder =
 
 #[derive(Clone)]
 pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
+    /// Stores job ID sequence
+    pub job_id_sequence: Arc<AtomicUsize>,
     pub scheduler_name: String,
     pub start_time: u128,
     pub state: Arc<SchedulerState<T, U>>,
@@ -103,6 +106,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             #[cfg(feature = "rest-api")]
             query_stage_scheduler,
             config,
+            job_id_sequence: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -141,6 +145,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             #[cfg(feature = "rest-api")]
             query_stage_scheduler,
             config,
+            job_id_sequence: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -150,6 +155,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         self.expire_dead_executors()?;
 
         Ok(())
+    }
+
+    /// generates job id
+    fn generate_job_id(&self) -> String {
+        let id = self
+            .job_id_sequence
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        format!("{}", id)
     }
 
     pub fn pending_job_number(&self) -> usize {
@@ -183,7 +197,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         plan: &LogicalPlan,
     ) -> Result<String> {
         log::debug!("Received submit request for job {}", job_name);
-        let job_id = self.state.task_manager.generate_job_id();
+        let job_id = self.generate_job_id();
 
         self.query_stage_event_loop
             .get_sender()?
