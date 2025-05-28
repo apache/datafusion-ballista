@@ -42,7 +42,7 @@ use ballista_core::{consistent_hash, ConfigProducer};
 
 use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
 
-use crate::config::{ClusterStorageConfig, SchedulerConfig, TaskDistributionPolicy};
+use crate::config::{SchedulerConfig, TaskDistributionPolicy};
 use crate::scheduler_server::SessionBuilder;
 use crate::state::execution_graph::{create_task_info, ExecutionGraph, TaskDescription};
 use crate::state::task_manager::JobInfoCache;
@@ -122,13 +122,11 @@ impl BallistaCluster {
             .clone()
             .unwrap_or_else(|| Arc::new(default_config_producer));
 
-        match &config.cluster_storage {
-            ClusterStorageConfig::Memory => Ok(BallistaCluster::new_memory(
-                scheduler,
-                session_builder,
-                config_producer,
-            )),
-        }
+        Ok(BallistaCluster::new_memory(
+            scheduler,
+            session_builder,
+            config_producer,
+        ))
     }
 
     pub fn cluster_state(&self) -> Arc<dyn ClusterState> {
