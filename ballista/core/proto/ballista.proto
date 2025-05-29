@@ -524,15 +524,20 @@ message ExecuteQueryParams {
     string sql = 2 [deprecated=true]; // I'd suggest to remove this, if SQL needed use `flight-sql`
   }
   
-  optional string session_id = 3;
+  string session_id = 3;
   repeated KeyValuePair settings = 4;
+  // operation_id is unique number for each request 
+  // client makes. it helps mapping requests between 
+  // client and scheduler
+  string operation_id = 5;
 }
 
-message CreateSessionParams {
+message CreateUpdateSessionParams {
+  string session_id = 2;
   repeated KeyValuePair settings = 1;
 }
 
-message CreateSessionResult {
+message CreateUpdateSessionResult {
   string session_id = 1;
 }
 
@@ -562,6 +567,7 @@ message ExecuteQueryResult {
     ExecuteQuerySuccessResult success = 1;
     ExecuteQueryFailureResult failure = 2;
   }
+  string operation_id = 3;
 }
 
 message ExecuteQuerySuccessResult {
@@ -697,9 +703,7 @@ service SchedulerGrpc {
 
   rpc UpdateTaskStatus (UpdateTaskStatusParams) returns (UpdateTaskStatusResult) {}
 
-  rpc CreateSession (CreateSessionParams) returns (CreateSessionResult) {}
-
-  rpc UpdateSession (UpdateSessionParams) returns (UpdateSessionResult) {}
+  rpc CreateUpdateSession (CreateUpdateSessionParams) returns (CreateUpdateSessionResult) {}
 
   rpc RemoveSession (RemoveSessionParams) returns (RemoveSessionResult) {}
 

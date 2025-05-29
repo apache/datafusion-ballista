@@ -999,6 +999,7 @@ dependencies = [
  "tonic",
  "tonic-build",
  "url",
+ "uuid",
 ]
 
 [[package]]

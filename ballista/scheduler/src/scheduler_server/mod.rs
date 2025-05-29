@@ -420,7 +420,7 @@ mod test {
         let ctx = scheduler
             .state
             .session_manager
-            .create_session(&config)
+            .create_or_update_session("session_id", &config)
             .await?;
 
         let job_id = "job";
