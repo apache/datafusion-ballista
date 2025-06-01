@@ -21,16 +21,16 @@ members = ["ballista-cli", "ballista/client", "ballista/core", "ballista/executo
 resolver = "2"
 
 [workspace.dependencies]
-arrow = { version = "54", features = ["ipc_compression"] }
-arrow-flight = { version = "54", features = ["flight-sql-experimental"] }
+arrow = { version = "55", features = ["ipc_compression"] }
+arrow-flight = { version = "55", features = ["flight-sql-experimental"] }
 clap = { version = "4.5", features = ["derive", "cargo"] }
 configure_me = { version = "0.4.0" }
 configure_me_codegen = { version = "0.4.4" }
-datafusion = "46.0.1"
-datafusion-cli = "46.0.1"
-datafusion-proto = "46.0.1"
-datafusion-proto-common = "46.0.1"
-object_store = "0.11"
+datafusion = "47.0.0"
+datafusion-cli = "47.0.0"
+datafusion-proto = "47.0.0"
+datafusion-proto-common = "47.0.0"
+object_store = "0.12"
 prost = "0.13"
 prost-types = "0.13"
 tonic = { version = "0.12" }
