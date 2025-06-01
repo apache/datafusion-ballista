@@ -31,31 +31,18 @@ impl SessionManager {
     pub fn new(state: Arc<dyn JobState>) -> Self {
         Self { state }
     }
-
-    pub async fn remove_session(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<Arc<SessionContext>>> {
+    pub async fn remove_session(&self, session_id: &str) -> Result<()> {
         self.state.remove_session(session_id).await
     }
 
-    pub async fn update_session(
+    pub async fn create_or_update_session(
         &self,
         session_id: &str,
         config: &SessionConfig,
     ) -> Result<Arc<SessionContext>> {
-        self.state.update_session(session_id, config).await
-    }
-
-    pub async fn create_session(
-        &self,
-        config: &SessionConfig,
-    ) -> Result<Arc<SessionContext>> {
-        self.state.create_session(config).await
-    }
-
-    pub async fn get_session(&self, session_id: &str) -> Result<Arc<SessionContext>> {
-        self.state.get_session(session_id).await
+        self.state
+            .create_or_update_session(session_id, config)
+            .await
     }
 
     pub(crate) fn produce_config(&self) -> SessionConfig {

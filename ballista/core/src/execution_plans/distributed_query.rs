@@ -43,7 +43,7 @@ use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
-use log::{error, info};
+use log::{debug, error, info};
 use std::any::Any;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -214,11 +214,16 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                 },
             )
             .collect();
-
+        let operation_id = uuid::Uuid::now_v7().to_string();
+        debug!(
+            "Distributed query with session_id: {}, execution operation_id: {}",
+            self.session_id, operation_id
+        );
         let query = ExecuteQueryParams {
             query: Some(Query::LogicalPlan(buf)),
             settings,
-            session_id: Some(self.session_id.clone()),
+            session_id: self.session_id.clone(),
+            operation_id,
         };
 
         let metric_row_count = MetricBuilder::new(&self.metrics).output_rows(partition);

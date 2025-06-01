@@ -346,8 +346,6 @@ pub struct InMemoryJobState {
     queued_jobs: DashMap<String, (String, u64)>,
     /// In-memory store of running job statuses. Map from Job ID -> JobStatus
     running_jobs: DashMap<String, JobStatus>,
-    /// Active ballista sessions
-    sessions: DashMap<String, Arc<SessionContext>>,
     /// `SessionBuilder` for building DataFusion `SessionContext` from `BallistaConfig`
     session_builder: SessionBuilder,
     /// Sender of job events
@@ -367,7 +365,7 @@ impl InMemoryJobState {
             completed_jobs: Default::default(),
             queued_jobs: Default::default(),
             running_jobs: Default::default(),
-            sessions: Default::default(),
+            //sessions: Default::default(),
             session_builder,
             job_event_sender: ClusterEventSender::new(100),
             config_producer,
@@ -460,42 +458,27 @@ impl JobState for InMemoryJobState {
         Ok(())
     }
 
-    async fn get_session(&self, session_id: &str) -> Result<Arc<SessionContext>> {
-        self.sessions
-            .get(session_id)
-            .map(|session_ctx| session_ctx.clone())
-            .ok_or_else(|| {
-                BallistaError::General(format!("No session for {session_id} found"))
-            })
-    }
-
-    async fn create_session(
-        &self,
-        config: &SessionConfig,
-    ) -> Result<Arc<SessionContext>> {
-        let session = create_datafusion_context(config, self.session_builder.clone())?;
-        self.sessions.insert(session.session_id(), session.clone());
-
-        Ok(session)
-    }
-
-    async fn update_session(
+    async fn create_or_update_session(
         &self,
         session_id: &str,
         config: &SessionConfig,
     ) -> Result<Arc<SessionContext>> {
-        let session = create_datafusion_context(config, self.session_builder.clone())?;
-        self.sessions
-            .insert(session_id.to_string(), session.clone());
+        self.job_event_sender.send(&JobStateEvent::SessionAccessed {
+            session_id: session_id.to_string(),
+        });
 
-        Ok(session)
+        Ok(create_datafusion_context(
+            config,
+            self.session_builder.clone(),
+        )?)
     }
 
-    async fn remove_session(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<Arc<SessionContext>>> {
-        Ok(self.sessions.remove(session_id).map(|(_key, value)| value))
+    async fn remove_session(&self, session_id: &str) -> Result<()> {
+        self.job_event_sender.send(&JobStateEvent::SessionRemoved {
+            session_id: session_id.to_string(),
+        });
+
+        Ok(())
     }
 
     async fn job_state_events(&self) -> Result<JobStateEventStream> {
@@ -574,6 +557,7 @@ mod test {
     use ballista_core::serde::protobuf::JobStatus;
     use ballista_core::serde::scheduler::{ExecutorMetadata, ExecutorSpecification};
     use ballista_core::utils::{default_config_producer, default_session_builder};
+    use datafusion::prelude::SessionConfig;
     use futures::StreamExt;
     use tokio::sync::Barrier;
 
@@ -725,6 +709,45 @@ mod test {
             }) if executor_id == *"id123",
 
         ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_session_notification() -> Result<()> {
+        let state = InMemoryJobState::new(
+            "",
+            Arc::new(default_session_builder),
+            Arc::new(default_config_producer),
+        );
+
+        let event_stream = state.job_state_events().await?;
+
+        state
+            .create_or_update_session("session_id_0", &SessionConfig::new())
+            .await?;
+
+        state.remove_session("session_id_0").await?;
+
+        state
+            .create_or_update_session("session_id_1", &SessionConfig::new())
+            .await?;
+
+        let result = event_stream.take(3).collect::<Vec<JobStateEvent>>().await;
+        assert_eq!(3, result.len());
+        let expected = vec![
+            JobStateEvent::SessionAccessed {
+                session_id: "session_id_0".to_string(),
+            },
+            JobStateEvent::SessionRemoved {
+                session_id: "session_id_0".to_string(),
+            },
+            JobStateEvent::SessionAccessed {
+                session_id: "session_id_1".to_string(),
+            },
+        ];
+
+        assert_eq!(expected, result);
 
         Ok(())
     }
