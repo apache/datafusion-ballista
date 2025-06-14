@@ -471,8 +471,8 @@ impl ExecutionPlan for ShuffleWriterExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn statistics(&self) -> Result<Statistics> {
-        self.plan.statistics()
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+        self.plan.partition_statistics(partition)
     }
 }
 
