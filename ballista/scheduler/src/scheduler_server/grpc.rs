@@ -107,25 +107,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 executor_id,
                 slots: num_free_slots,
             }];
-            let available_slots = available_slots.iter_mut().collect();
+            let mut available_slots = available_slots.iter_mut().collect();
             let running_jobs = self.state.task_manager.get_running_job_cache();
             let schedulable_tasks = match self.state.config.task_distribution {
                 TaskDistributionPolicy::Bias => {
-                    bind_task_bias(available_slots, running_jobs, |_| false).await
+                    bind_task_bias(&mut available_slots, running_jobs, |_| false).await
                 }
                 TaskDistributionPolicy::RoundRobin => {
-                    bind_task_round_robin(available_slots, running_jobs, |_| false).await
-                }
-                TaskDistributionPolicy::ConsistentHash{..} => {
-                    return Err(Status::unimplemented(
-                        "ConsistentHash TaskDistribution is not feasible for pull-based task scheduling"))
+                    bind_task_round_robin(&mut available_slots, running_jobs, |_| false)
+                        .await
                 }
 
-                TaskDistributionPolicy::Custom(ref policy) =>{
-                    policy.bind_tasks(available_slots, running_jobs).await.map_err(|e| {
-                        Status::internal(e.to_string())
-                    })?
-                }
+                TaskDistributionPolicy::Custom(ref policy) => policy
+                    .bind_tasks(available_slots, running_jobs)
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?,
             };
 
             let mut tasks = vec![];

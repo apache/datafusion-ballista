@@ -87,18 +87,6 @@ doc = "The policy of distributing tasks to available executor slots, possible va
 default = "crate::config::TaskDistribution::Bias"
 
 [[param]]
-name = "consistent_hash_num_replicas"
-type = "u32"
-default = "31"
-doc = "Replica number of each node for the consistent hashing. Default: 31"
-
-[[param]]
-name = "consistent_hash_tolerance"
-type = "u32"
-default = "0"
-doc = "Tolerance of the consistent hashing policy for task scheduling. Default: 0"
-
-[[param]]
 name = "plugin_dir"
 type = "String"
 doc = "plugin dir"

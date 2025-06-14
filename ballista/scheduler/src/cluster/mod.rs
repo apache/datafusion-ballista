@@ -19,6 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use ballista_core::consistent_hash::node::Node;
 use datafusion::common::tree_node::TreeNode;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::datasource::listing::PartitionedFile;
@@ -315,7 +316,7 @@ pub trait JobState: Send + Sync {
 }
 
 pub(crate) async fn bind_task_bias(
-    mut slots: Vec<&mut AvailableTaskSlots>,
+    slots: &mut Vec<&mut AvailableTaskSlots>,
     running_jobs: Arc<HashMap<String, JobInfoCache>>,
     if_skip: fn(Arc<dyn ExecutionPlan>) -> bool,
 ) -> Vec<BoundTask> {
@@ -402,7 +403,7 @@ pub(crate) async fn bind_task_bias(
 }
 
 pub(crate) async fn bind_task_round_robin(
-    mut slots: Vec<&mut AvailableTaskSlots>,
+    slots: &mut Vec<&mut AvailableTaskSlots>,
     running_jobs: Arc<HashMap<String, JobInfoCache>>,
     if_skip: fn(Arc<dyn ExecutionPlan>) -> bool,
 ) -> Vec<BoundTask> {
@@ -516,7 +517,7 @@ pub trait DistributionPolicy: std::fmt::Debug + Send + Sync {
     ///
     /// # Parameters
     ///
-    /// * `slots` - vector of available executor slots, there may not be available slots
+    /// * `slots` - vector of available, non zero, executor slots, there may not be available slots
     /// * `running_jobs` - (JobId -> JobInfoCache) cache must contain only running jobs
     ///
     /// # Returns
@@ -717,6 +718,97 @@ impl consistent_hash::node::Node for TopologyNode {
     }
 }
 
+#[derive(Debug)]
+pub struct ConsistentHashPolicy {
+    num_replicas: usize,
+    tolerance: usize,
+}
+
+impl ConsistentHashPolicy {
+    pub fn new(num_replicas: usize, tolerance: usize) -> Self {
+        Self {
+            num_replicas,
+            tolerance,
+        }
+    }
+
+    fn get_topology_nodes(
+        &self,
+        slots: &Vec<&mut AvailableTaskSlots>,
+    ) -> HashMap<String, TopologyNode> {
+        let mut nodes: HashMap<String, TopologyNode> = HashMap::new();
+        for slot in slots.iter() {
+            let node =
+                TopologyNode::new(&slot.executor_id, 0, &slot.executor_id, 0, slot.slots);
+            nodes.insert(node.name().to_string(), node);
+        }
+        nodes
+    }
+}
+
+#[async_trait::async_trait]
+impl DistributionPolicy for ConsistentHashPolicy {
+    /// 1. Firstly, try to bind tasks without scanning source files by [`RoundRobin`] policy.
+    /// 2. Then for a task for scanning source files, firstly calculate a hash value based on input files.
+    ///    And then bind it with an execute according to consistent hashing policy.
+    /// 3. If needed, work stealing can be enabled based on the tolerance of the consistent hashing.
+    async fn bind_tasks(
+        &self,
+        mut slots: Vec<&mut AvailableTaskSlots>,
+        running_jobs: Arc<HashMap<String, JobInfoCache>>,
+    ) -> datafusion::error::Result<Vec<BoundTask>> {
+        // TODO this is wrong
+        let topology_nodes = self.get_topology_nodes(&slots);
+
+        let mut bound_tasks = bind_task_round_robin(
+            &mut slots,
+            running_jobs.clone(),
+            |stage_plan: Arc<dyn ExecutionPlan>| {
+                if let Ok(scan_files) = get_scan_files(stage_plan) {
+                    // Should be opposite to consistent hash ones.
+                    !is_skip_consistent_hash(&scan_files)
+                } else {
+                    false
+                }
+            },
+        )
+        .await;
+
+        debug!("{} tasks bound by round robin policy", bound_tasks.len());
+        let (bound_tasks_consistent_hash, ch_topology) = bind_task_consistent_hash(
+            topology_nodes,
+            self.num_replicas,
+            self.tolerance,
+            running_jobs,
+            |_, plan| get_scan_files(plan),
+        )
+        .await
+        .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+
+        debug!(
+            "{} tasks bound by consistent hashing policy",
+            bound_tasks_consistent_hash.len()
+        );
+        if !bound_tasks_consistent_hash.is_empty() {
+            bound_tasks.extend(bound_tasks_consistent_hash);
+            // Update the available slots
+            let ch_topology = ch_topology.unwrap();
+            for node in ch_topology.nodes() {
+                if let Some(data) = slots.iter_mut().find(|n| n.executor_id == node.id) {
+                    data.slots = node.available_slots;
+                } else {
+                    log::warn!("Fail to find executor data for {}", &node.id);
+                }
+            }
+        }
+        Ok(bound_tasks)
+    }
+
+    fn name(&self) -> &str {
+        "ConsistentHashPolicy"
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::collections::HashMap;
@@ -746,10 +838,11 @@ mod test {
         let num_partition = 8usize;
         let active_jobs = mock_active_jobs(num_partition).await?;
         let mut available_slots = mock_available_slots();
-        let available_slots_ref: Vec<&mut AvailableTaskSlots> =
+        let mut available_slots_ref: Vec<&mut AvailableTaskSlots> =
             available_slots.iter_mut().collect();
         let bound_tasks =
-            bind_task_bias(available_slots_ref, Arc::new(active_jobs), |_| false).await;
+            bind_task_bias(&mut available_slots_ref, Arc::new(active_jobs), |_| false)
+                .await;
         assert_eq!(9, bound_tasks.len());
 
         let result = get_result(bound_tasks);
@@ -798,11 +891,14 @@ mod test {
         let num_partition = 8usize;
         let active_jobs = mock_active_jobs(num_partition).await?;
         let mut available_slots = mock_available_slots();
-        let available_slots_ref: Vec<&mut AvailableTaskSlots> =
+        let mut available_slots_ref: Vec<&mut AvailableTaskSlots> =
             available_slots.iter_mut().collect();
-        let bound_tasks =
-            bind_task_round_robin(available_slots_ref, Arc::new(active_jobs), |_| false)
-                .await;
+        let bound_tasks = bind_task_round_robin(
+            &mut available_slots_ref,
+            Arc::new(active_jobs),
+            |_| false,
+        )
+        .await;
         assert_eq!(9, bound_tasks.len());
 
         let result = get_result(bound_tasks);
