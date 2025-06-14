@@ -122,7 +122,7 @@ The overall speedup is 2.9x
 
 ![benchmarks](docs/source/_static/images/tpch_queries_speedup_abs.png)
 
-# Getting Started
+## Getting Started
 
 The easiest way to get started is to run one of the standalone or distributed [examples](./examples/README.md). After
 that, refer to the [Getting Started Guide](ballista/client/README.md).
