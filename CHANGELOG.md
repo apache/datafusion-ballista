@@ -19,6 +19,35 @@
 
 # Changelog
 
+## [47.0.0](https://github.com/apache/datafusion-ballista/tree/47.0.0) (2025-06-15)
+
+[Full Changelog](https://github.com/apache/datafusion-ballista/compare/46.0.0...47.0.0)
+
+**Implemented enhancements:**
+
+- feat: expose submit and cancel job methods as public in scheduler [#1260](https://github.com/apache/datafusion-ballista/pull/1260) (milenkovicm)
+- feat: split scheduler gprc creation [#1261](https://github.com/apache/datafusion-ballista/pull/1261) (milenkovicm)
+- feat: expose cluster state notifications [#1263](https://github.com/apache/datafusion-ballista/pull/1263) (milenkovicm)
+- feat: remove `ClusterStorageConfig` as it is redundant [#1265](https://github.com/apache/datafusion-ballista/pull/1265) (milenkovicm)
+- feat: disable task stage plan binary cache [#1266](https://github.com/apache/datafusion-ballista/pull/1266) (milenkovicm)
+- feat: `ClusterState` does not cache session contexts [#1226](https://github.com/apache/datafusion-ballista/pull/1226) (milenkovicm)
+
+**Fixed bugs:**
+
+- fix: clippy issue after rust update to 1.87 [#1262](https://github.com/apache/datafusion-ballista/pull/1262) (milenkovicm)
+
+**Merged pull requests:**
+
+- fix: clippy issue after rust update to 1.87 [#1262](https://github.com/apache/datafusion-ballista/pull/1262) (milenkovicm)
+- feat: expose submit and cancel job methods as public in scheduler [#1260](https://github.com/apache/datafusion-ballista/pull/1260) (milenkovicm)
+- feat: split scheduler gprc creation [#1261](https://github.com/apache/datafusion-ballista/pull/1261) (milenkovicm)
+- feat: expose cluster state notifications [#1263](https://github.com/apache/datafusion-ballista/pull/1263) (milenkovicm)
+- minor: release docker on when release has been tagged [#1264](https://github.com/apache/datafusion-ballista/pull/1264) (milenkovicm)
+- feat: remove `ClusterStorageConfig` as it is redundant [#1265](https://github.com/apache/datafusion-ballista/pull/1265) (milenkovicm)
+- feat: disable task stage plan binary cache [#1266](https://github.com/apache/datafusion-ballista/pull/1266) (milenkovicm)
+- feat: `ClusterState` does not cache session contexts [#1226](https://github.com/apache/datafusion-ballista/pull/1226) (milenkovicm)
+- chore(deps): update to datafusion 47.0.0 [#1250](https://github.com/apache/datafusion-ballista/pull/1250) (milenkovicm)
+
 ## [46.0.0](https://github.com/apache/datafusion-ballista/tree/46.0.0) (2025-05-05)
 
 [Full Changelog](https://github.com/apache/datafusion-ballista/compare/45.0.0...46.0.0)
