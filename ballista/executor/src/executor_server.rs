@@ -790,22 +790,22 @@ mod test {
 
         // Normal correct one
         {
-            let job_path = prepare_testing_job_directory(&base_dir, "job_a");
+            let job_path = prepare_testing_job_directory(base_dir, "job_a");
             assert!(is_subdirectory(&job_path, base_dir));
         }
 
         // Empty job id
         {
-            let job_path = prepare_testing_job_directory(&base_dir, "");
+            let job_path = prepare_testing_job_directory(base_dir, "");
             assert!(!is_subdirectory(&job_path, base_dir));
 
-            let job_path = prepare_testing_job_directory(&base_dir, ".");
+            let job_path = prepare_testing_job_directory(base_dir, ".");
             assert!(!is_subdirectory(&job_path, base_dir));
         }
 
         // Malicious job id
         {
-            let job_path = prepare_testing_job_directory(&base_dir, "..");
+            let job_path = prepare_testing_job_directory(base_dir, "..");
             assert!(!is_subdirectory(&job_path, base_dir));
         }
     }

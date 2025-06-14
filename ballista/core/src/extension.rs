@@ -400,6 +400,8 @@ impl SessionConfigHelperExt for SessionConfig {
                 "datafusion.execution.parquet.schema_force_view_types",
                 false,
             )
+            // same like previous comment
+            .set_bool("datafusion.sql_parser.map_varchar_to_utf8view", false)
     }
 }
 
