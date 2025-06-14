@@ -54,7 +54,7 @@ url = { workspace = true }
 [dev-dependencies]
 ctor = { workspace = true }
 env_logger = { workspace = true }
-testcontainers-modules = { version = "0.11", features = ["minio"] }
+testcontainers-modules = { version = "0.12", features = ["minio"] }
 tonic = { workspace = true }
 
 [features]
