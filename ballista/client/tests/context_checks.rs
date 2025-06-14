@@ -500,16 +500,17 @@ mod supported {
         ctx: SessionContext,
     ) -> datafusion::error::Result<()> {
         let result = ctx
-            .sql("select name, value from information_schema.df_settings where name like 'datafusion.execution.parquet.schema_force_view_types' order by name limit 1")
+            .sql("select name, value from information_schema.df_settings where name like 'datafusion.execution.parquet.schema_force_view_types' or name like 'datafusion.sql_parser.map_varchar_to_utf8view' order by name limit 2")
             .await?
             .collect()
             .await?;
-        //
+
         let expected = [
             "+------------------------------------------------------+-------+",
             "| name                                                 | value |",
             "+------------------------------------------------------+-------+",
             "| datafusion.execution.parquet.schema_force_view_types | false |",
+            "| datafusion.sql_parser.map_varchar_to_utf8view        | false |",
             "+------------------------------------------------------+-------+",
         ];
 

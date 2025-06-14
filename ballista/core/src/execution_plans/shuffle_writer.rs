@@ -471,8 +471,8 @@ impl ExecutionPlan for ShuffleWriterExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn statistics(&self) -> Result<Statistics> {
-        self.plan.statistics()
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+        self.plan.partition_statistics(partition)
     }
 }
 
@@ -509,7 +509,7 @@ mod tests {
             "jobOne".to_owned(),
             1,
             input_plan,
-            work_dir.into_path().to_str().unwrap().to_owned(),
+            work_dir.path().to_str().unwrap().to_owned(),
             Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
         )?;
         let mut stream = query_stage.execute(0, task_ctx)?;
@@ -566,7 +566,7 @@ mod tests {
             "jobOne".to_owned(),
             1,
             input_plan,
-            work_dir.into_path().to_str().unwrap().to_owned(),
+            work_dir.path().to_str().unwrap().to_owned(),
             Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
         )?;
         let mut stream = query_stage.execute(0, task_ctx)?;
