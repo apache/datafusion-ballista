@@ -785,27 +785,28 @@ mod test {
 
     #[tokio::test]
     async fn test_is_subdirectory() {
-        let base_dir = TempDir::new().unwrap().into_path();
+        let base_dir = TempDir::new().unwrap();
+        let base_dir = base_dir.path();
 
         // Normal correct one
         {
             let job_path = prepare_testing_job_directory(&base_dir, "job_a");
-            assert!(is_subdirectory(&job_path, base_dir.as_path()));
+            assert!(is_subdirectory(&job_path, base_dir));
         }
 
         // Empty job id
         {
             let job_path = prepare_testing_job_directory(&base_dir, "");
-            assert!(!is_subdirectory(&job_path, base_dir.as_path()));
+            assert!(!is_subdirectory(&job_path, base_dir));
 
             let job_path = prepare_testing_job_directory(&base_dir, ".");
-            assert!(!is_subdirectory(&job_path, base_dir.as_path()));
+            assert!(!is_subdirectory(&job_path, base_dir));
         }
 
         // Malicious job id
         {
             let job_path = prepare_testing_job_directory(&base_dir, "..");
-            assert!(!is_subdirectory(&job_path, base_dir.as_path()));
+            assert!(!is_subdirectory(&job_path, base_dir));
         }
     }
 

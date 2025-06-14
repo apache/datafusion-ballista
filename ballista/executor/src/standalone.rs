@@ -106,11 +106,7 @@ pub async fn new_standalone_executor_from_builder(
     let config = config_producer();
     let max_message_size = config.ballista_grpc_client_max_message_size();
 
-    let work_dir = TempDir::new()?
-        .into_path()
-        .into_os_string()
-        .into_string()
-        .unwrap();
+    let work_dir = TempDir::new()?.path().to_str().unwrap().to_string();
 
     info!("work_dir: {}", work_dir);
 

@@ -162,13 +162,10 @@ pub async fn start_executor_process(
     let scheduler_port = opt.scheduler_port;
     let scheduler_url = format!("http://{scheduler_host}:{scheduler_port}");
 
-    let work_dir = opt.work_dir.clone().unwrap_or(
-        TempDir::new()?
-            .into_path()
-            .into_os_string()
-            .into_string()
-            .unwrap(),
-    );
+    let work_dir = opt
+        .work_dir
+        .clone()
+        .unwrap_or(TempDir::new()?.path().to_str().unwrap().to_string());
 
     let concurrent_tasks = if opt.concurrent_tasks == 0 {
         // use all available cores if no concurrency level is specified
@@ -642,8 +639,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_executor_clean_up() {
-        let work_dir = TempDir::new().unwrap().into_path();
-        let job_dir = work_dir.as_path().join("job_id");
+        let work_dir = TempDir::new().unwrap();
+        let work_dir_clone = work_dir.path().to_owned();
+        let job_dir = work_dir_clone.join("job_id");
         let file_path = job_dir.as_path().join("tmp.csv");
         let data = "Jorge,2018-12-13T12:12:10.011Z\n\
                     Andrew,2018-11-13T17:11:10.011Z";
@@ -653,19 +651,19 @@ mod tests {
             .write_all(data.as_bytes())
             .expect("writing data");
 
-        let work_dir_clone = work_dir.clone();
+        let work_dir_cloned = work_dir_clone.clone();
 
-        let count1 = fs::read_dir(work_dir.clone()).unwrap().count();
+        let count1 = fs::read_dir(&work_dir_clone).unwrap().count();
         assert_eq!(count1, 1);
         let mut handles = vec![];
         handles.push(tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(2)).await;
-            clean_shuffle_data_loop(work_dir_clone.to_str().unwrap(), 1)
+            clean_shuffle_data_loop(work_dir_cloned.to_str().unwrap(), 1)
                 .await
                 .unwrap();
         }));
         futures::future::join_all(handles).await;
-        let count2 = fs::read_dir(work_dir.clone()).unwrap().count();
+        let count2 = fs::read_dir(work_dir_clone).unwrap().count();
         assert_eq!(count2, 0);
     }
 
