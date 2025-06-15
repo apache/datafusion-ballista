@@ -34,16 +34,16 @@ use ballista_core::serde::protobuf::{job_status, AvailableTaskSlots};
 use ballista_core::serde::scheduler::PartitionId;
 use md5::{Digest, Md5};
 
-use crate::cluster::{
-    bind_task_round_robin, BoundTask, DistributionPolicy, GetScanFilesFunc,
-};
+use crate::cluster::{bind_task_round_robin, BoundTask, DistributionPolicy};
 
 use crate::state::execution_graph::{create_task_info, TaskDescription};
 use crate::state::task_manager::JobInfoCache;
 
-//
-// Custom consistent hash scheduler policy
-//
+/// Maps execution plan to list of files it scans
+type GetScanFilesFunc = fn(
+    &str,
+    Arc<dyn ExecutionPlan>,
+) -> datafusion::common::Result<Vec<Vec<Vec<PartitionedFile>>>>;
 
 #[derive(Clone)]
 pub struct TopologyNode {

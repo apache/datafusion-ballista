@@ -19,7 +19,6 @@ use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use datafusion::datasource::listing::PartitionedFile;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::Stream;
@@ -488,12 +487,6 @@ pub(crate) async fn bind_task_round_robin(
 
     schedulable_tasks
 }
-
-/// Maps execution plan to list of files it scans
-type GetScanFilesFunc = fn(
-    &str,
-    Arc<dyn ExecutionPlan>,
-) -> datafusion::common::Result<Vec<Vec<Vec<PartitionedFile>>>>;
 
 /// User provided task distribution policy
 #[async_trait::async_trait]
