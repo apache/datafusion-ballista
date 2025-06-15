@@ -53,7 +53,6 @@ datafusion-proto-common = { workspace = true }
 futures = { workspace = true }
 itertools = "0.14"
 log = { workspace = true }
-md-5 = { version = "^0.10.0" }
 object_store = { workspace = true, features = ["aws","http"], optional = true }
 parking_lot = { workspace = true }
 prost = { workspace = true }
