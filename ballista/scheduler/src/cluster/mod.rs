@@ -20,6 +20,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use ballista_core::consistent_hash::node::Node;
+use dashmap::DashSet;
 use datafusion::common::tree_node::TreeNode;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::datasource::listing::PartitionedFile;
@@ -565,31 +566,66 @@ impl consistent_hash::node::Node for TopologyNode {
     }
 }
 
+///
+/// ConsistentHashPolicy uses cluster and file scan information
+/// to decide where to schedule tasks.
+///
+/// IMPORTANT: In order for policy to be functional it has to be subscribed to ClusterState
+/// notifications, in order to track cluster state.
+///
+/// Policy will inspect stage physical plan and decide if tasks needed to be
+/// scheduled using consistent hash policy. Tasks not suitable for consistent hash
+/// policy will be scheduled using round robbin policy.
+///
+/// Word of caution:
+///
+/// - current implementation is very experimental
+/// - it prioritizes tasks which can't be scheduled using consistent hash policy,
+///   leading to possible starvation of consistent hash tasks
+///
 #[derive(Debug)]
 pub struct ConsistentHashPolicy {
     num_replicas: usize,
     tolerance: usize,
+    executors: DashSet<String>,
 }
 
 impl ConsistentHashPolicy {
-    ///
-    ///
     pub fn new(num_replicas: usize, tolerance: usize) -> Self {
         Self {
             num_replicas,
             tolerance,
+            executors: Default::default(),
         }
     }
-    // TODO MM revisit this one
+    /// Hash to called every time new executor has been added.
+    /// This method should be called when cluster state notification
+    /// has been triggered.
+    pub fn add_executor(&self, executor_id: String) {
+        self.executors.insert(executor_id);
+    }
+    /// Hash to called every time new executor has been removed
+    /// This method should be called when cluster state notification
+    /// has been triggered.
+    pub fn remove_executor(&self, executor_in: &str) {
+        self.executors.remove(executor_in);
+    }
+
     fn get_topology_nodes(
         &self,
         slots: &Vec<&mut AvailableTaskSlots>,
     ) -> HashMap<String, TopologyNode> {
         let mut nodes: HashMap<String, TopologyNode> = HashMap::new();
-        for slot in slots.iter() {
-            let node = TopologyNode::new(&slot.executor_id, slot.slots);
+        for executor_id in self.executors.iter() {
+            let slots_available = slots
+                .iter()
+                .find(|s| s.executor_id == *executor_id)
+                .map(|s| s.slots)
+                .unwrap_or(0);
+            let node = TopologyNode::new(&executor_id, slots_available);
             nodes.insert(node.name().to_string(), node);
         }
+
         nodes
     }
 
