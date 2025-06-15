@@ -28,7 +28,6 @@ pub fn print_version() {
 
 pub mod client;
 pub mod config;
-pub mod consistent_hash;
 pub mod diagram;
 pub mod error;
 pub mod event_loop;
