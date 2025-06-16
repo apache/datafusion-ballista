@@ -236,6 +236,8 @@ jobs:
           export PATH=$PATH:$HOME/d/protoc/bin
           export ARROW_TEST_DATA=$(pwd)/testing/data
           export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
+          export TMP=$(pwd)/.temp
+          mkdir -p "$TMP"
           cargo test
         env:
           # do not produce debug symbols to keep memory usage down
