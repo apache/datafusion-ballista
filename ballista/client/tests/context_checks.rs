@@ -132,7 +132,6 @@ mod supported {
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
     #[tokio::test]
-    #[cfg(not(windows))] // test is failing at windows, can't debug it
     async fn should_collect_client_statistics_for_insert(
         #[future(awt)]
         #[case]
@@ -399,7 +398,6 @@ mod supported {
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
     #[tokio::test]
-    #[cfg(not(windows))] // test is failing at windows, can't debug it
     async fn should_execute_sql_write(
         #[future(awt)]
         #[case]
@@ -557,7 +555,6 @@ mod supported {
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
     #[tokio::test]
-    #[cfg(not(windows))] // test is failing at windows, can't debug it
     async fn should_support_sql_insert_into(
         #[future(awt)]
         #[case]
@@ -619,7 +616,6 @@ mod supported {
     #[case::standalone_state(standalone_context_with_state())]
     #[case::remote_state(remote_context_with_state())]
     #[tokio::test]
-    #[cfg(not(windows))] // test is failing at windows, can't debug it
     async fn should_execute_sql_write_read_roundtrip(
         #[future(awt)]
         #[case]
