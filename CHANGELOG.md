@@ -35,6 +35,7 @@
 **Fixed bugs:**
 
 - fix: clippy issue after rust update to 1.87 [#1262](https://github.com/apache/datafusion-ballista/pull/1262) (milenkovicm)
+- fix: fix tests failing on windows [#1273](https://github.com/apache/datafusion-ballista/pull/1273) (Huy1Ng)
 
 **Merged pull requests:**
 
