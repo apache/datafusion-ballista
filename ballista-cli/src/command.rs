@@ -69,19 +69,32 @@ impl Command {
                     &[all_commands_info()],
                     now,
                     max_rows,
+                    &Default::default(),
                 )
             }
             Self::ListTables => {
                 let df = ctx.sql("SHOW TABLES").await?;
                 let schema = Arc::new(df.schema().as_arrow().clone());
                 let batches = df.collect().await?;
-                print_options.print_batches(schema, &batches, now, max_rows)
+                print_options.print_batches(
+                    schema,
+                    &batches,
+                    now,
+                    max_rows,
+                    &Default::default(),
+                )
             }
             Self::DescribeTable(name) => {
                 let df = ctx.sql(&format!("SHOW COLUMNS FROM {name}")).await?;
                 let schema = Arc::new(df.schema().as_arrow().clone());
                 let batches = df.collect().await?;
-                print_options.print_batches(schema, &batches, now, max_rows)
+                print_options.print_batches(
+                    schema,
+                    &batches,
+                    now,
+                    max_rows,
+                    &Default::default(),
+                )
             }
             Self::QuietMode(quiet) => {
                 if let Some(quiet) = quiet {

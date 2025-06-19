@@ -15,8 +15,3 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# increasing the threshold until we get to datafusion 48 which should
-# address this issue. 
-#
-# https://github.com/apache/datafusion/pull/15861
-large-error-threshold = 266
