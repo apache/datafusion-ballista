@@ -107,8 +107,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
         let addr = addr.parse().unwrap();
 
         info!(
-            "Ballista v{} Rust Executor Grpc Server listening on {:?}",
-            BALLISTA_VERSION, addr
+            "Ballista v{BALLISTA_VERSION} Rust Executor Grpc Server listening on {addr:?}"
         );
         let server = ExecutorGrpcServer::new(executor_server.clone())
             .max_encoding_message_size(config.grpc_max_encoding_message_size as usize)
@@ -134,7 +133,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
             info!("Executor registration succeed");
         }
         Err(error) => {
-            error!("Executor registration failed due to: {}", error);
+            error!("Executor registration failed due to: {error}");
             // abort the Executor Grpc Future
             server.abort();
             return Err(error);
@@ -278,8 +277,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             }
             Err(e) => {
                 warn!(
-                    "Fail to update heartbeat to its registration scheduler due to {:?}",
-                    e
+                    "Fail to update heartbeat to its registration scheduler due to {e:?}"
                 );
             }
         };
@@ -297,8 +295,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                 }
                 Err(e) => {
                     warn!(
-                        "Fail to update heartbeat to scheduler {} due to {:?}",
-                        scheduler_id, e
+                        "Fail to update heartbeat to scheduler {scheduler_id} due to {e:?}"
                     );
                 }
             }
@@ -312,7 +309,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        info!("Start to run task {}", task_identity);
+        info!("Start to run task {task_identity}");
         let task = curator_task.task;
 
         let task_id = task.task_id;
@@ -354,7 +351,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             ))
         };
 
-        info!("Start to execute shuffle write for task {}", task_identity);
+        info!("Start to execute shuffle write for task {task_identity}");
 
         let execution_result = self
             .executor
@@ -365,8 +362,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                 task_context,
             )
             .await;
-        info!("Done with task {}", task_identity);
-        debug!("Statistics: {:?}", execution_result);
+        info!("Done with task {task_identity}");
+        debug!("Statistics: {execution_result:?}");
 
         let plan_metrics = query_stage_exec.collect_plan_metrics();
         let operator_metrics = plan_metrics
@@ -516,7 +513,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                             fetched_task_num += 1;
                         }
                         Err(TryRecvError::Empty) => {
-                            info!("Fetched {} tasks status to report", fetched_task_num);
+                            info!("Fetched {fetched_task_num} tasks status to report");
                             break;
                         }
                         Err(TryRecvError::Disconnected) => {
@@ -542,15 +539,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                                 .await
                             {
                                 error!(
-                                    "Fail to update tasks {:?} due to {:?}",
-                                    tasks_status, e
+                                    "Fail to update tasks {tasks_status:?} due to {e:?}"
                                 );
                             }
                         }
                         Err(e) => {
                             error!(
-                                "Fail to connect to scheduler {} due to {:?}",
-                                scheduler_id, e
+                                "Fail to connect to scheduler {scheduler_id} due to {e:?}"
                             );
                         }
                     }
@@ -720,7 +715,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                 )
                 .await
             {
-                error!("Error cancelling task: {:?}", e);
+                error!("Error cancelling task: {e:?}");
                 cancelled = false;
             }
         }
@@ -785,27 +780,28 @@ mod test {
 
     #[tokio::test]
     async fn test_is_subdirectory() {
-        let base_dir = TempDir::new().unwrap().into_path();
+        let base_dir = TempDir::new().unwrap();
+        let base_dir = base_dir.path();
 
         // Normal correct one
         {
-            let job_path = prepare_testing_job_directory(&base_dir, "job_a");
-            assert!(is_subdirectory(&job_path, base_dir.as_path()));
+            let job_path = prepare_testing_job_directory(base_dir, "job_a");
+            assert!(is_subdirectory(&job_path, base_dir));
         }
 
         // Empty job id
         {
-            let job_path = prepare_testing_job_directory(&base_dir, "");
-            assert!(!is_subdirectory(&job_path, base_dir.as_path()));
+            let job_path = prepare_testing_job_directory(base_dir, "");
+            assert!(!is_subdirectory(&job_path, base_dir));
 
-            let job_path = prepare_testing_job_directory(&base_dir, ".");
-            assert!(!is_subdirectory(&job_path, base_dir.as_path()));
+            let job_path = prepare_testing_job_directory(base_dir, ".");
+            assert!(!is_subdirectory(&job_path, base_dir));
         }
 
         // Malicious job id
         {
-            let job_path = prepare_testing_job_directory(&base_dir, "..");
-            assert!(!is_subdirectory(&job_path, base_dir.as_path()));
+            let job_path = prepare_testing_job_directory(base_dir, "..");
+            assert!(!is_subdirectory(&job_path, base_dir));
         }
     }
 

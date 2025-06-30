@@ -185,7 +185,7 @@ async fn exec_and_print(
     let df = ctx.sql(&sql).await?;
     let schema = Arc::new(df.schema().as_arrow().clone());
     let results = df.collect().await?;
-    print_options.print_batches(schema, &results, now, row_count)?;
+    print_options.print_batches(schema, &results, now, row_count, &Default::default())?;
 
     Ok(())
 }

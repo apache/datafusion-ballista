@@ -95,7 +95,7 @@ where
     pub fn remove(&mut self, node_name: &str) -> Option<(N, usize)> {
         if let Some((node, num_replicas)) = self.node_replicas.remove(node_name) {
             for i in 0..num_replicas {
-                let vnode_id = format!("{}:{i}", node_name);
+                let vnode_id = format!("{node_name}:{i}");
                 let vnode_key = (self.hash_func)(vnode_id.as_bytes());
                 self.virtual_nodes.remove(vnode_key.as_slice());
             }

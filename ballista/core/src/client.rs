@@ -63,7 +63,7 @@ impl BallistaClient {
     /// host and port
     pub async fn try_new(host: &str, port: u16, max_message_size: usize) -> Result<Self> {
         let addr = format!("http://{host}:{port}");
-        debug!("BallistaClient connecting to {}", addr);
+        debug!("BallistaClient connecting to {addr}");
         let connection =
             create_grpc_client_connection(addr.clone())
                 .await
@@ -76,7 +76,7 @@ impl BallistaClient {
             .max_decoding_message_size(max_message_size)
             .max_encoding_message_size(max_message_size);
 
-        debug!("BallistaClient connected OK: {:?}", flight_client);
+        debug!("BallistaClient connected OK: {flight_client:?}");
 
         Ok(Self { flight_client })
     }
@@ -104,9 +104,7 @@ impl BallistaClient {
                 // map grpc connection error to partition fetch error.
                 BallistaError::GrpcActionError(msg) => {
                     log::warn!(
-                        "grpc client failed to fetch partition: {:?} , message: {:?}",
-                        partition_id,
-                        msg
+                        "grpc client failed to fetch partition: {partition_id:?} , message: {msg:?}"
                     );
                     BallistaError::FetchFailed(
                         executor_id.to_owned(),
@@ -117,9 +115,7 @@ impl BallistaClient {
                 }
                 error => {
                     log::warn!(
-                        "grpc client failed to fetch partition: {:?} , error: {:?}",
-                        partition_id,
-                        error
+                        "grpc client failed to fetch partition: {partition_id:?} , error: {error:?}"
                     );
                     error
                 }
@@ -142,8 +138,7 @@ impl BallistaClient {
         for i in 0..IO_RETRIES_TIMES {
             if i > 0 {
                 warn!(
-                    "Remote shuffle read fail, retry {} times, sleep {} ms.",
-                    i, IO_RETRY_WAIT_TIME_MS
+                    "Remote shuffle read fail, retry {i} times, sleep {IO_RETRY_WAIT_TIME_MS} ms."
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(
                     IO_RETRY_WAIT_TIME_MS,

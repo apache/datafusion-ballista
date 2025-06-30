@@ -182,13 +182,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                             .unbind_tasks(unassigned_executor_slots)
                             .await
                         {
-                            error!("Fail to unbind tasks: {}", e);
+                            error!("Fail to unbind tasks: {e}");
                         }
                         if_revive = true;
                     }
                 }
                 Err(e) => {
-                    error!("Fail to launch tasks: {}", e);
+                    error!("Fail to launch tasks: {e}");
                     if_revive = true;
                 }
             }
@@ -197,7 +197,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                     .post_event(QueryStageSchedulerEvent::ReviveOffers)
                     .await
                 {
-                    error!("Fail to send revive offers event due to {:?}", e);
+                    error!("Fail to send revive offers event due to {e:?}");
                 }
             }
         });
@@ -219,7 +219,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             .remove_executor(executor_id, reason)
             .await
         {
-            warn!("Fail to remove executor {}: {}", executor_id, e);
+            warn!("Fail to remove executor {executor_id}: {e}");
         }
 
         match self.task_manager.executor_lost(executor_id).await {
@@ -228,15 +228,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                     if let Err(e) =
                         self.executor_manager.cancel_running_tasks(tasks).await
                     {
-                        warn!("Fail to cancel running tasks due to {:?}", e);
+                        warn!("Fail to cancel running tasks due to {e:?}");
                     }
                 }
             }
             Err(e) => {
-                error!(
-                    "TaskManager error to handle Executor {} lost: {}",
-                    executor_id, e
-                );
+                error!("TaskManager error to handle Executor {executor_id} lost: {e}");
             }
         }
     }
@@ -306,7 +303,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                         }
                     }
                     Err(e) => {
-                        error!("Failed to launch new task, could not get executor metadata: {}", e);
+                        error!("Failed to launch new task, could not get executor metadata: {e}");
                         false
                     }
                 };
@@ -438,7 +435,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
         let elapsed = start.elapsed();
 
-        info!("Planned job {} in {:?}", job_id, elapsed);
+        info!("Planned job {job_id} in {elapsed:?}");
 
         Ok(())
     }

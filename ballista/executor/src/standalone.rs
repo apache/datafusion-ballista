@@ -84,10 +84,7 @@ pub async fn new_standalone_executor_from_builder(
     // Let the OS assign a random, free port
     let listener = TcpListener::bind("localhost:0").await?;
     let address = listener.local_addr()?;
-    info!(
-        "Ballista v{} Rust Executor listening on {:?}",
-        BALLISTA_VERSION, address
-    );
+    info!("Ballista v{BALLISTA_VERSION} Rust Executor listening on {address:?}");
 
     let executor_meta = ExecutorRegistration {
         id: Uuid::new_v4().to_string(), // assign this executor a unique ID
@@ -106,13 +103,9 @@ pub async fn new_standalone_executor_from_builder(
     let config = config_producer();
     let max_message_size = config.ballista_grpc_client_max_message_size();
 
-    let work_dir = TempDir::new()?
-        .into_path()
-        .into_os_string()
-        .into_string()
-        .unwrap();
+    let work_dir = TempDir::new()?.path().to_str().unwrap().to_string();
 
-    info!("work_dir: {}", work_dir);
+    info!("work_dir: {work_dir}");
 
     let executor = Arc::new(Executor::new(
         executor_meta,

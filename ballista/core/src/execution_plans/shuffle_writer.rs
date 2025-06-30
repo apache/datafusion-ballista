@@ -211,7 +211,7 @@ impl ShuffleWriterExec {
                     std::fs::create_dir_all(&path)?;
                     path.push("data.arrow");
                     let path = path.to_str().unwrap();
-                    debug!("Writing results to {}", path);
+                    debug!("Writing results to {path}");
 
                     // stream results to disk
                     let stats = utils::write_stream_to_disk(
@@ -283,7 +283,7 @@ impl ShuffleWriterExec {
                                         path.push(format!(
                                             "data-{input_partition}.arrow"
                                         ));
-                                        debug!("Writing results to {:?}", path);
+                                        debug!("Writing results to {path:?}");
 
                                         let options = IpcWriteOptions::default()
                                             .try_with_compression(Some(
@@ -455,7 +455,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     vec![partition_num, path, stats],
                 )?;
 
-                debug!("RESULTS METADATA:\n{:?}", batch);
+                debug!("RESULTS METADATA:\n{batch:?}");
 
                 MemoryStream::try_new(vec![batch], schema_captured, None)
             })
@@ -471,8 +471,8 @@ impl ExecutionPlan for ShuffleWriterExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn statistics(&self) -> Result<Statistics> {
-        self.plan.statistics()
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+        self.plan.partition_statistics(partition)
     }
 }
 
@@ -509,7 +509,7 @@ mod tests {
             "jobOne".to_owned(),
             1,
             input_plan,
-            work_dir.into_path().to_str().unwrap().to_owned(),
+            work_dir.path().to_str().unwrap().to_owned(),
             Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
         )?;
         let mut stream = query_stage.execute(0, task_ctx)?;
@@ -566,7 +566,7 @@ mod tests {
             "jobOne".to_owned(),
             1,
             input_plan,
-            work_dir.into_path().to_str().unwrap().to_owned(),
+            work_dir.path().to_str().unwrap().to_owned(),
             Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
         )?;
         let mut stream = query_stage.execute(0, task_ctx)?;

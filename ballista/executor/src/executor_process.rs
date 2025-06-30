@@ -162,13 +162,10 @@ pub async fn start_executor_process(
     let scheduler_port = opt.scheduler_port;
     let scheduler_url = format!("http://{scheduler_host}:{scheduler_port}");
 
-    let work_dir = opt.work_dir.clone().unwrap_or(
-        TempDir::new()?
-            .into_path()
-            .into_os_string()
-            .into_string()
-            .unwrap(),
-    );
+    let work_dir = opt
+        .work_dir
+        .clone()
+        .unwrap_or(TempDir::new()?.path().to_str().unwrap().to_string());
 
     let concurrent_tasks = if opt.concurrent_tasks == 0 {
         // use all available cores if no concurrency level is specified
@@ -179,13 +176,10 @@ pub async fn start_executor_process(
 
     // assign this executor an unique ID
     let executor_id = Uuid::new_v4().to_string();
-    info!(
-        "Executor starting ... (Datafusion Ballista {})",
-        BALLISTA_VERSION
-    );
-    info!("Executor id: {}", executor_id);
-    info!("Executor working directory: {}", work_dir);
-    info!("Executor number of concurrent tasks: {}", concurrent_tasks);
+    info!("Executor starting ... (Datafusion Ballista {BALLISTA_VERSION})");
+    info!("Executor id: {executor_id}");
+    info!("Executor working directory: {work_dir}");
+    info!("Executor number of concurrent tasks: {concurrent_tasks}");
 
     let executor_meta = ExecutorRegistration {
         id: executor_id.clone(),
@@ -269,13 +263,12 @@ pub async fn start_executor_process(
                     )
                 }) {
                 Ok(connection) => {
-                    info!("Connected to scheduler at {}", scheduler_url);
+                    info!("Connected to scheduler at {scheduler_url}");
                     x = Some(connection);
                 }
                 Err(e) => {
                     warn!(
-                        "Failed to connect to scheduler at {} ({}); retrying ...",
-                        scheduler_url, e
+                        "Failed to connect to scheduler at {scheduler_url} ({e}); retrying ..."
                     );
                     tokio::time::sleep(time::Duration::from_millis(500)).await;
                 }
@@ -313,13 +306,13 @@ pub async fn start_executor_process(
                     _ = interval_time.tick() => {
                             if let Err(e) = clean_shuffle_data_loop(&work_dir, job_data_ttl_seconds).await
                         {
-                            error!("Ballista executor fail to clean_shuffle_data {:?}", e)
+                            error!("Ballista executor fail to clean_shuffle_data {e:?}")
                         }
                         },
                     _ = shuffle_cleaner_shutdown.recv() => {
                         if let Err(e) = clean_all_shuffle_data(&work_dir).await
                         {
-                            error!("Ballista executor fail to clean_shuffle_data {:?}", e)
+                            error!("Ballista executor fail to clean_shuffle_data {e:?}")
                         } else {
                             info!("Shuffle data cleaned.");
                         }
@@ -388,17 +381,17 @@ pub async fn start_executor_process(
     let (notify_scheduler, stop_reason) = tokio::select! {
         service_val = check_services(&mut service_handlers) => {
             let msg = format!("executor services stopped with reason {service_val:?}");
-            info!("{:?}", msg);
+            info!("{msg:?}");
             (true, msg)
         },
         _ = signal::ctrl_c() => {
             let msg = "executor received ctrl-c event.".to_string();
-             info!("{:?}", msg);
+             info!("{msg:?}");
             (true, msg)
         },
         _ = terminate::sig_term() => {
             let msg = "executor received terminate signal.".to_string();
-             info!("{:?}", msg);
+             info!("{msg:?}");
             (true, msg)
         },
         _ = stop_recv.recv() => {
@@ -434,7 +427,7 @@ pub async fn start_executor_process(
             })
             .await
         {
-            error!("error sending heartbeat with fenced status: {:?}", error);
+            error!("error sending heartbeat with fenced status: {error:?}");
         }
 
         // TODO we probably don't need a separate rpc call for this....
@@ -445,7 +438,7 @@ pub async fn start_executor_process(
             })
             .await
         {
-            error!("ExecutorStopped grpc failed: {:?}", error);
+            error!("ExecutorStopped grpc failed: {error:?}");
         }
 
         // Wait for tasks to drain
@@ -482,7 +475,7 @@ async fn flight_server_task(
     max_decoding_message_size: usize,
 ) -> JoinHandle<Result<(), BallistaError>> {
     tokio::spawn(async move {
-        info!("Built-in arrow flight server listening on: {:?} max_encoding_size: {} max_decoding_size: {}", address, max_encoding_message_size, max_decoding_message_size);
+        info!("Built-in arrow flight server listening on: {address:?} max_encoding_size: {max_encoding_message_size} max_decoding_size: {max_decoding_message_size}");
 
         let server_future = create_grpc_server()
             .add_service(
@@ -538,27 +531,25 @@ async fn clean_shuffle_data_loop(
                 match satisfy_dir_ttl(child, seconds).await {
                     Err(e) => {
                         error!(
-                            "Fail to check ttl for the directory {:?} due to {:?}",
-                            child_path, e
+                            "Fail to check ttl for the directory {child_path:?} due to {e:?}"
                         )
                     }
                     Ok(false) => to_deleted.push(child_path),
                     Ok(_) => {}
                 }
             } else {
-                warn!("{:?} under the working directory is a not a directory and will be ignored when doing cleanup", child_path)
+                warn!("{child_path:?} under the working directory is a not a directory and will be ignored when doing cleanup")
             }
         } else {
             error!("Fail to get metadata for file {:?}", child.path())
         }
     }
     info!(
-        "The directories {:?} that have not been modified for {:?} seconds so that they will be deleted",
-        to_deleted, seconds
+        "The directories {to_deleted:?} that have not been modified for {seconds:?} seconds so that they will be deleted"
     );
     for del in to_deleted {
         if let Err(e) = fs::remove_dir_all(&del).await {
-            error!("Fail to remove the directory {:?} due to {}", del, e);
+            error!("Fail to remove the directory {del:?} due to {e}");
         }
     }
     Ok(())
@@ -575,14 +566,14 @@ async fn clean_all_shuffle_data(work_dir: &str) -> ballista_core::error::Result<
                 to_deleted.push(child.path().into_os_string())
             }
         } else {
-            error!("Can not get metadata from file: {:?}", child)
+            error!("Can not get metadata from file: {child:?}")
         }
     }
 
     info!("The work_dir {:?} will be deleted", &to_deleted);
     for del in to_deleted {
         if let Err(e) = fs::remove_dir_all(&del).await {
-            error!("Fail to remove the directory {:?} due to {}", del, e);
+            error!("Fail to remove the directory {del:?} due to {e}");
         }
     }
     Ok(())
@@ -642,8 +633,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_executor_clean_up() {
-        let work_dir = TempDir::new().unwrap().into_path();
-        let job_dir = work_dir.as_path().join("job_id");
+        let work_dir = TempDir::new().unwrap();
+        let work_dir_clone = work_dir.path().to_owned();
+        let job_dir = work_dir_clone.join("job_id");
         let file_path = job_dir.as_path().join("tmp.csv");
         let data = "Jorge,2018-12-13T12:12:10.011Z\n\
                     Andrew,2018-11-13T17:11:10.011Z";
@@ -653,19 +645,19 @@ mod tests {
             .write_all(data.as_bytes())
             .expect("writing data");
 
-        let work_dir_clone = work_dir.clone();
+        let work_dir_cloned = work_dir_clone.clone();
 
-        let count1 = fs::read_dir(work_dir.clone()).unwrap().count();
+        let count1 = fs::read_dir(&work_dir_clone).unwrap().count();
         assert_eq!(count1, 1);
         let mut handles = vec![];
         handles.push(tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(2)).await;
-            clean_shuffle_data_loop(work_dir_clone.to_str().unwrap(), 1)
+            clean_shuffle_data_loop(work_dir_cloned.to_str().unwrap(), 1)
                 .await
                 .unwrap();
         }));
         futures::future::join_all(handles).await;
-        let count2 = fs::read_dir(work_dir.clone()).unwrap().count();
+        let count2 = fs::read_dir(work_dir_clone).unwrap().count();
         assert_eq!(count2, 0);
     }
 
@@ -676,8 +668,7 @@ mod tests {
                 move |address, mut grpc_shutdown| {
                     tokio::spawn(async move {
                         log::info!(
-                            "custom arrow flight server listening on: {:?}",
-                            address
+                            "custom arrow flight server listening on: {address:?}"
                         );
 
                         let server_future = ballista_core::utils::create_grpc_server()

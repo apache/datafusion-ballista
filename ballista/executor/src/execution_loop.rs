@@ -127,8 +127,7 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             };
 
                             warn!(
-                                "Executor failed to run task: {:?}, error: {:?}",
-                                partition_id, e
+                                "Executor failed to run task: {partition_id:?}, error: {e:?}"
                             );
 
                             let end_exec_time = SystemTime::now()
@@ -153,14 +152,14 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                                 None,
                                 task_execution_times,
                             )) {
-                                warn!("failed to send task status: {:?}", error);
+                                warn!("failed to send task status: {error:?}");
                             };
                         }
                     }
                 }
             }
             Err(error) => {
-                warn!("Executor poll work loop failed. If this continues to happen the Scheduler might be marked as dead. Error: {}", error);
+                warn!("Executor poll work loop failed. If this continues to happen the Scheduler might be marked as dead. Error: {error}");
             }
         }
 
@@ -205,7 +204,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     let task_identity = format!(
         "TID {task_id} {job_id}/{stage_id}.{stage_attempt_num}/{partition_id}.{task_attempt_num}"
     );
-    info!("Received task: [{}]", task_identity);
+    info!("Received task: [{task_identity}]");
 
     log::trace!(
         "Received task: [{}], task_properties: {:?}",
@@ -271,8 +270,8 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
             }
         };
 
-        info!("Done with task {}", task_identity);
-        debug!("Statistics: {:?}", execution_result);
+        info!("Done with task {task_identity}");
+        debug!("Statistics: {execution_result:?}");
 
         let plan_metrics = query_stage_exec.collect_plan_metrics();
         let operator_metrics = plan_metrics

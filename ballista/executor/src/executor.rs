@@ -338,12 +338,7 @@ mod test {
 
     #[tokio::test]
     async fn test_task_cancellation() {
-        let work_dir = TempDir::new()
-            .unwrap()
-            .into_path()
-            .into_os_string()
-            .into_string()
-            .unwrap();
+        let work_dir = TempDir::new().unwrap().path().to_str().unwrap().to_string();
 
         let shuffle_write = ShuffleWriterExec::try_new(
             "job-id".to_owned(),

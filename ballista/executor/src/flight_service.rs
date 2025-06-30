@@ -86,7 +86,7 @@ impl FlightService for BallistaFlightService {
 
         match &action {
             BallistaAction::FetchPartition { path, .. } => {
-                debug!("FetchPartition reading {}", path);
+                debug!("FetchPartition reading {path}");
                 let file = File::open(path)
                     .map_err(|e| {
                         BallistaError::General(format!(
@@ -102,7 +102,7 @@ impl FlightService for BallistaFlightService {
                 let schema = reader.schema();
                 task::spawn_blocking(move || {
                     if let Err(e) = read_partition(reader, tx) {
-                        log::warn!("error streaming shuffle partition: {}", e);
+                        log::warn!("error streaming shuffle partition: {e}");
                     }
                 });
 
