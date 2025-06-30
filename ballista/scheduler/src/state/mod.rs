@@ -233,9 +233,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 }
             }
             Err(e) => {
-                error!(
-                    "TaskManager error to handle Executor {executor_id} lost: {e}"
-                );
+                error!("TaskManager error to handle Executor {executor_id} lost: {e}");
             }
         }
     }

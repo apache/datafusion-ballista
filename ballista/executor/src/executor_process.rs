@@ -176,9 +176,7 @@ pub async fn start_executor_process(
 
     // assign this executor an unique ID
     let executor_id = Uuid::new_v4().to_string();
-    info!(
-        "Executor starting ... (Datafusion Ballista {BALLISTA_VERSION})"
-    );
+    info!("Executor starting ... (Datafusion Ballista {BALLISTA_VERSION})");
     info!("Executor id: {executor_id}");
     info!("Executor working directory: {work_dir}");
     info!("Executor number of concurrent tasks: {concurrent_tasks}");

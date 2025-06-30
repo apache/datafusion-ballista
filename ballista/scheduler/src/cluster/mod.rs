@@ -334,9 +334,7 @@ pub(crate) async fn bind_task_bias(
     let mut slot = &mut slots[idx_slot];
     for (job_id, job_info) in running_jobs.iter() {
         if !matches!(job_info.status, Some(job_status::Status::Running(_))) {
-            debug!(
-                "Job {job_id} is not in running status and will be skipped"
-            );
+            debug!("Job {job_id} is not in running status and will be skipped");
             continue;
         }
         let mut graph = job_info.execution_graph.write().await;
@@ -420,9 +418,7 @@ pub(crate) async fn bind_task_round_robin(
     let mut idx_slot = 0usize;
     for (job_id, job_info) in running_jobs.iter() {
         if !matches!(job_info.status, Some(job_status::Status::Running(_))) {
-            debug!(
-                "Job {job_id} is not in running status and will be skipped"
-            );
+            debug!("Job {job_id} is not in running status and will be skipped");
             continue;
         }
         let mut graph = job_info.execution_graph.write().await;
@@ -546,9 +542,7 @@ pub(crate) async fn bind_task_consistent_hash(
         debug!("Not enough available executor slots for binding tasks with consistent hashing policy!!!");
         return Ok((vec![], None));
     }
-    debug!(
-        "Total slot number for consistent hash binding is {total_slots}"
-    );
+    debug!("Total slot number for consistent hash binding is {total_slots}");
 
     let node_replicas = topology_nodes
         .into_values()
@@ -560,9 +554,7 @@ pub(crate) async fn bind_task_consistent_hash(
     let mut schedulable_tasks: Vec<BoundTask> = vec![];
     for (job_id, job_info) in running_jobs.iter() {
         if !matches!(job_info.status, Some(job_status::Status::Running(_))) {
-            debug!(
-                "Job {job_id} is not in running status and will be skipped"
-            );
+            debug!("Job {job_id} is not in running status and will be skipped");
             continue;
         }
         let mut graph = job_info.execution_graph.write().await;

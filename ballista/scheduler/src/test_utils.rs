@@ -789,7 +789,9 @@ pub fn revive_graph_and_complete_next_stage_with_executor(
 
     // find the num_available_tasks of the next running stage
     let num_available_tasks = graph
-        .stages().values().map(|stage| {
+        .stages()
+        .values()
+        .map(|stage| {
             if let ExecutionStage::Running(stage) = stage {
                 stage
                     .task_infos

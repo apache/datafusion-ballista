@@ -178,9 +178,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
                 info!("Job {job_id} success");
                 if let Err(e) = self.state.task_manager.succeed_job(&job_id).await {
-                    error!(
-                        "Fail to invoke succeed_job for job {job_id} due to {e:?}"
-                    );
+                    error!("Fail to invoke succeed_job for job {job_id} due to {e:?}");
                 }
                 self.state.clean_up_successful_job(job_id);
             }
@@ -210,9 +208,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         }
                     }
                     Err(e) => {
-                        error!(
-                            "Fail to invoke abort_job for job {job_id} due to {e:?}"
-                        );
+                        error!("Fail to invoke abort_job for job {job_id} due to {e:?}");
                     }
                 }
                 self.state.clean_up_failed_job(job_id);
@@ -220,9 +216,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             QueryStageSchedulerEvent::JobUpdated(job_id) => {
                 info!("Job {job_id} Updated");
                 if let Err(e) = self.state.task_manager.update_job(&job_id).await {
-                    error!(
-                        "Fail to invoke update_job for job {job_id} due to {e:?}"
-                    );
+                    error!("Fail to invoke update_job for job {job_id} due to {e:?}");
                 }
             }
             QueryStageSchedulerEvent::JobCancel(job_id) => {
@@ -238,9 +232,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                             .await?;
                     }
                     Err(e) => {
-                        error!(
-                            "Fail to invoke cancel_job for job {job_id} due to {e:?}"
-                        );
+                        error!("Fail to invoke cancel_job for job {job_id} due to {e:?}");
                     }
                 }
                 self.state.clean_up_failed_job(job_id);

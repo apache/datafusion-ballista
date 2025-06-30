@@ -84,9 +84,7 @@ pub async fn new_standalone_executor_from_builder(
     // Let the OS assign a random, free port
     let listener = TcpListener::bind("localhost:0").await?;
     let address = listener.local_addr()?;
-    info!(
-        "Ballista v{BALLISTA_VERSION} Rust Executor listening on {address:?}"
-    );
+    info!("Ballista v{BALLISTA_VERSION} Rust Executor listening on {address:?}");
 
     let executor_meta = ExecutorRegistration {
         id: Uuid::new_v4().to_string(), // assign this executor a unique ID
