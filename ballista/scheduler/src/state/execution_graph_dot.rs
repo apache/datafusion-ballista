@@ -336,7 +336,7 @@ filter_expr={}",
 
         let parts = exec.properties().output_partitioning().partition_count();
 
-        format!("DataSourceExec: ({}) [{} partitions]", config, parts)
+        format!("DataSourceExec: ({config}) [{parts} partitions]")
     } else if let Some(exec) = plan.as_any().downcast_ref::<GlobalLimitExec>() {
         format!(
             "GlobalLimit(skip={}, fetch={:?})",
@@ -347,8 +347,7 @@ filter_expr={}",
         format!("LocalLimit({})", exec.fetch())
     } else {
         debug!(
-            "Unknown physical operator when producing DOT graph: {:?}",
-            plan
+            "Unknown physical operator when producing DOT graph: {plan:?}"
         );
         "Unknown Operator".to_string()
     }

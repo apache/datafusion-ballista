@@ -72,7 +72,7 @@ impl<T: Clone> ClusterEventSender<T> {
     pub fn send(&self, event: &T) {
         if self.shared.subscriptions.load(Ordering::Acquire) > 0 {
             if let Err(e) = self.sender.send(event.clone()) {
-                debug!("Failed to send event to channel: {}", e);
+                debug!("Failed to send event to channel: {e}");
                 return;
             }
 
@@ -141,7 +141,7 @@ impl<T: Clone> Stream for EventSubscriber<T> {
                 }
                 Err(TryRecvError::Closed) => return Poll::Ready(None),
                 Err(TryRecvError::Lagged(n)) => {
-                    debug!("Subscriber lagged by {} message", n);
+                    debug!("Subscriber lagged by {n} message");
                     self.register(cx.waker().clone());
                     continue;
                 }

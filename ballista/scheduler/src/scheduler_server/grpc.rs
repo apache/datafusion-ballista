@@ -67,7 +67,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             task_status,
         } = request.into_inner()
         {
-            trace!("Received poll_work request for {:?}", metadata);
+            trace!("Received poll_work request for {metadata:?}");
             let executor_id = metadata.id.clone();
 
             // It's not necessary.
@@ -88,7 +88,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     .save_executor_metadata(metadata)
                     .await
                 {
-                    warn!("Could not save executor metadata: {:?}", e);
+                    warn!("Could not save executor metadata: {e:?}");
                 }
             }
 
@@ -99,7 +99,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                         "Fail to update tasks status from executor {:?} due to {:?}",
                         &executor_id, e
                     );
-                    error!("{}", msg);
+                    error!("{msg}");
                     Status::internal(msg)
                 })?;
 
@@ -133,7 +133,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 match self.state.task_manager.prepare_task_definition(task) {
                     Ok(task_definition) => tasks.push(task_definition),
                     Err(e) => {
-                        error!("Error preparing task definition: {:?}", e);
+                        error!("Error preparing task definition: {e:?}");
                     }
                 }
             }
@@ -153,7 +153,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             metadata: Some(metadata),
         } = request.into_inner()
         {
-            info!("Received register executor request for {:?}", metadata);
+            info!("Received register executor request for {metadata:?}");
             let metadata = ExecutorMetadata {
                 id: metadata.id,
                 host: metadata
@@ -166,7 +166,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
             self.do_register_executor(metadata).await.map_err(|e| {
                 let msg = format!("Fail to do executor registration due to: {e}");
-                error!("{}", msg);
+                error!("{msg}");
                 Status::internal(msg)
             })?;
 
@@ -197,7 +197,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             .get_executor_metadata(&executor_id)
             .await
         {
-            warn!("Fail to get executor metadata: {}", e);
+            warn!("Fail to get executor metadata: {e}");
             if let Some(metadata) = metadata {
                 let metadata = ExecutorMetadata {
                     id: metadata.id,
@@ -211,7 +211,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
                 self.do_register_executor(metadata).await.map_err(|e| {
                     let msg = format!("Fail to do executor registration due to: {e}");
-                    error!("{}", msg);
+                    error!("{msg}");
                     Status::internal(msg)
                 })?;
             } else {
@@ -237,7 +237,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             .await
             .map_err(|e| {
                 let msg = format!("Could not save executor heartbeat: {e}");
-                error!("{}", msg);
+                error!("{msg}");
                 Status::internal(msg)
             })?;
         Ok(Response::new(HeartBeatResult { reregister: false }))
@@ -264,7 +264,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     "Fail to update tasks status from executor {:?} due to {:?}",
                     &executor_id, e
                 );
-                error!("{}", msg);
+                error!("{msg}");
                 Status::internal(msg)
             })?;
 
@@ -331,7 +331,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
             let job_id = self.state.task_manager.generate_job_id();
 
-            info!("execution query - session_id: {}, operation_id: {}, job_name: {}, job_id: {}", session_id, operation_id, job_name, job_id);
+            info!("execution query - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}, job_id: {job_id}");
 
             let (session_id, session_ctx) = {
                 let session_config = self.state.session_manager.produce_config();
@@ -363,7 +363,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                         Err(e) => {
                             let msg =
                                 format!("Could not parse logical plan protobuf: {e}");
-                            error!("{}", msg);
+                            error!("{msg}");
                             return Ok(Response::new(ExecuteQueryResult {
                                 operation_id,
                                 result: Some(execute_query_result::Result::Failure(
@@ -384,7 +384,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                         Ok(plan) => plan,
                         Err(e) => {
                             let msg = format!("Error parsing SQL: {e}");
-                            error!("{}", msg);
+                            error!("{msg}");
                             return Ok(Response::new(ExecuteQueryResult {
                                 operation_id,
                                 result: Some(execute_query_result::Result::Failure(
@@ -403,14 +403,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 plan.display_indent()
             );
 
-            log::trace!("setting job name: {}", job_name);
+            log::trace!("setting job name: {job_name}");
             let job_id = self
                 .submit_job(&job_name, session_ctx, &plan)
                 .await
                 .map_err(|e| {
                     let msg =
                         format!("Failed to send JobQueued event for {job_name}: {e:?}");
-                    error!("{}", msg);
+                    error!("{msg}");
 
                     Status::internal(msg)
                 })?;
@@ -436,7 +436,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             Ok(status) => Ok(Response::new(GetJobStatusResult { status })),
             Err(e) => {
                 let msg = format!("Error getting status for job {job_id}: {e:?}");
-                error!("{}", msg);
+                error!("{msg}");
                 Err(Status::internal(msg))
             }
         }
@@ -458,7 +458,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let executor_manager = self.state.executor_manager.clone();
         let event_sender = self.query_stage_event_loop.get_sender().map_err(|e| {
             let msg = format!("Get query stage event loop error due to {e:?}");
-            error!("{}", msg);
+            error!("{msg}");
             Status::internal(msg)
         })?;
 
@@ -482,7 +482,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
         self.cancel_job(job_id).await.map_err(|e| {
             let msg = format!("Post to query stage event loop error due to {e:?}");
-            error!("{}", msg);
+            error!("{msg}");
             Status::internal(msg)
         })?;
 
@@ -500,14 +500,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             .get_sender()
             .map_err(|e| {
                 let msg = format!("Get query stage event loop error due to {e:?}");
-                error!("{}", msg);
+                error!("{msg}");
                 Status::internal(msg)
             })?
             .post_event(QueryStageSchedulerEvent::JobDataClean(job_id))
             .await
             .map_err(|e| {
                 let msg = format!("Post to query stage event loop error due to {e:?}");
-                error!("{}", msg);
+                error!("{msg}");
                 Status::internal(msg)
             })?;
         Ok(Response::new(CleanJobDataResult {}))

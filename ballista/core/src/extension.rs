@@ -334,7 +334,7 @@ impl SessionConfigHelperExt for SessionConfig {
                 c.key != "datafusion.sql_parser.enable_options_value_normalization"
             })
             .map(|datafusion::config::ConfigEntry { key, value, .. }| {
-                log::trace!("sending configuration key: `{}`, value`{:?}`", key, value);
+                log::trace!("sending configuration key: `{key}`, value`{value:?}`");
                 KeyValuePair {
                     key: key.to_owned(),
                     value: value.clone(),
@@ -354,26 +354,20 @@ impl SessionConfigHelperExt for SessionConfig {
             match value {
                 Some(value) => {
                     log::trace!(
-                        "setting up configuration key: `{}`, value: `{:?}`",
-                        key,
-                        value
+                        "setting up configuration key: `{key}`, value: `{value:?}`"
                     );
                     if let Err(e) = self.options_mut().set(key, value) {
                         // there is not much we can do about this error at the moment.
                         // it used to be warning but it gets very verbose
                         // as even datafusion properties can't be parsed
                         log::debug!(
-                            "could not set configuration key: `{}`, value: `{:?}`, reason: {}",
-                            key,
-                            value,
-                            e
+                            "could not set configuration key: `{key}`, value: `{value:?}`, reason: {e}"
                         )
                     }
                 }
                 None => {
                     log::trace!(
-                        "can't set up configuration key: `{}`, as value is None",
-                        key,
+                        "can't set up configuration key: `{key}`, as value is None",
                     )
                 }
             }

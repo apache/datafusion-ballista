@@ -15,6 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//
+// configure me does not follow clippy spec
+// we need to replace it with some other library
+// as mentioned in https://github.com/apache/datafusion-ballista/issues/1271
+//
+#![allow(clippy::uninlined_format_args, clippy::unused_unit)]
 use ballista_core::error::BallistaError;
 
 use crate::executor_process::ExecutorProcessConfig;

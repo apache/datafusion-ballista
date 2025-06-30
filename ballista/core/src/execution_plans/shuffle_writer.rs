@@ -211,7 +211,7 @@ impl ShuffleWriterExec {
                     std::fs::create_dir_all(&path)?;
                     path.push("data.arrow");
                     let path = path.to_str().unwrap();
-                    debug!("Writing results to {}", path);
+                    debug!("Writing results to {path}");
 
                     // stream results to disk
                     let stats = utils::write_stream_to_disk(
@@ -283,7 +283,7 @@ impl ShuffleWriterExec {
                                         path.push(format!(
                                             "data-{input_partition}.arrow"
                                         ));
-                                        debug!("Writing results to {:?}", path);
+                                        debug!("Writing results to {path:?}");
 
                                         let options = IpcWriteOptions::default()
                                             .try_with_compression(Some(
@@ -455,7 +455,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     vec![partition_num, path, stats],
                 )?;
 
-                debug!("RESULTS METADATA:\n{:?}", batch);
+                debug!("RESULTS METADATA:\n{batch:?}");
 
                 MemoryStream::try_new(vec![batch], schema_captured, None)
             })

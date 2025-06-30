@@ -92,8 +92,7 @@ pub async fn new_standalone_scheduler_with_builder(
     let listener = TcpListener::bind("localhost:0").await?;
     let addr = listener.local_addr()?;
     info!(
-        "Ballista v{} Rust Scheduler listening on {:?}",
-        BALLISTA_VERSION, addr
+        "Ballista v{BALLISTA_VERSION} Rust Scheduler listening on {addr:?}"
     );
     tokio::spawn(
         create_grpc_server()

@@ -94,14 +94,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 plan,
                 queued_at,
             } => {
-                info!("Job {} queued with name {:?}", job_id, job_name);
+                info!("Job {job_id} queued with name {job_name:?}");
 
                 if let Err(e) = self
                     .state
                     .task_manager
                     .queue_job(&job_id, &job_name, queued_at)
                 {
-                    error!("Fail to queue job {} due to {:?}", job_id, e);
+                    error!("Fail to queue job {job_id} due to {e:?}");
                     return Ok(());
                 }
 
@@ -127,7 +127,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         }
                     };
                     if let Err(e) = event_sender.post_event(event).await {
-                        error!("Fail to send event due to {}", e);
+                        error!("Fail to send event due to {e}");
                     }
                 });
             }
@@ -139,7 +139,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.metrics_collector
                     .record_submitted(&job_id, queued_at, submitted_at);
 
-                info!("Job {} submitted", job_id);
+                info!("Job {job_id} submitted");
 
                 if self.state.config.is_push_staged_scheduling() {
                     event_sender
@@ -156,7 +156,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.metrics_collector
                     .record_failed(&job_id, queued_at, failed_at);
 
-                error!("Job {} failed: {}", job_id, fail_message);
+                error!("Job {job_id} failed: {fail_message}");
                 if let Err(e) = self
                     .state
                     .task_manager
@@ -164,8 +164,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .await
                 {
                     error!(
-                        "Fail to invoke fail_unscheduled_job for job {} due to {:?}",
-                        job_id, e
+                        "Fail to invoke fail_unscheduled_job for job {job_id} due to {e:?}"
                     );
                 }
             }
@@ -177,11 +176,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.metrics_collector
                     .record_completed(&job_id, queued_at, completed_at);
 
-                info!("Job {} success", job_id);
+                info!("Job {job_id} success");
                 if let Err(e) = self.state.task_manager.succeed_job(&job_id).await {
                     error!(
-                        "Fail to invoke succeed_job for job {} due to {:?}",
-                        job_id, e
+                        "Fail to invoke succeed_job for job {job_id} due to {e:?}"
                     );
                 }
                 self.state.clean_up_successful_job(job_id);
@@ -195,7 +193,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 self.metrics_collector
                     .record_failed(&job_id, queued_at, failed_at);
 
-                error!("Job {} running failed", job_id);
+                error!("Job {job_id} running failed");
                 match self
                     .state
                     .task_manager
@@ -213,26 +211,24 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     }
                     Err(e) => {
                         error!(
-                            "Fail to invoke abort_job for job {} due to {:?}",
-                            job_id, e
+                            "Fail to invoke abort_job for job {job_id} due to {e:?}"
                         );
                     }
                 }
                 self.state.clean_up_failed_job(job_id);
             }
             QueryStageSchedulerEvent::JobUpdated(job_id) => {
-                info!("Job {} Updated", job_id);
+                info!("Job {job_id} Updated");
                 if let Err(e) = self.state.task_manager.update_job(&job_id).await {
                     error!(
-                        "Fail to invoke update_job for job {} due to {:?}",
-                        job_id, e
+                        "Fail to invoke update_job for job {job_id} due to {e:?}"
                     );
                 }
             }
             QueryStageSchedulerEvent::JobCancel(job_id) => {
                 self.metrics_collector.record_cancelled(&job_id);
 
-                info!("Job {} Cancelled", job_id);
+                info!("Job {job_id} Cancelled");
                 match self.state.task_manager.cancel_job(&job_id).await {
                     Ok((running_tasks, _pending_tasks)) => {
                         event_sender
@@ -243,8 +239,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     }
                     Err(e) => {
                         error!(
-                            "Fail to invoke cancel_job for job {} due to {:?}",
-                            job_id, e
+                            "Fail to invoke cancel_job for job {job_id} due to {e:?}"
                         );
                     }
                 }
@@ -252,8 +247,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             }
             QueryStageSchedulerEvent::TaskUpdating(executor_id, tasks_status) => {
                 trace!(
-                    "processing task status updates from {executor_id}: {:?}",
-                    tasks_status
+                    "processing task status updates from {executor_id}: {tasks_status:?}"
                 );
 
                 let num_status = tasks_status.len();
@@ -281,8 +275,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     }
                     Err(e) => {
                         error!(
-                            "Failed to update {} task statuses for Executor {}: {:?}",
-                            num_status, executor_id, e
+                            "Failed to update {num_status} task statuses for Executor {executor_id}: {e:?}"
                         );
                         // TODO error handling
                     }
@@ -301,7 +294,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                                 .cancel_running_tasks(tasks)
                                 .await
                             {
-                                warn!("Fail to cancel running tasks due to {:?}", e);
+                                warn!("Fail to cancel running tasks due to {e:?}");
                             }
                         }
                     }
@@ -309,7 +302,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         let msg = format!(
                             "TaskManager error to handle Executor {executor_id} lost: {e}"
                         );
-                        error!("{}", msg);
+                        error!("{msg}");
                     }
                 }
             }
@@ -320,7 +313,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     .cancel_running_tasks(tasks)
                     .await
                 {
-                    warn!("Fail to cancel running tasks due to {:?}", e);
+                    warn!("Fail to cancel running tasks due to {e:?}");
                 }
             }
             QueryStageSchedulerEvent::JobDataClean(job_id) => {
@@ -343,7 +336,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
     }
 
     fn on_error(&self, error: BallistaError) {
-        error!("Error received by QueryStageScheduler: {:?}", error);
+        error!("Error received by QueryStageScheduler: {error:?}");
     }
 }
 
@@ -384,16 +377,14 @@ mod tests {
         let expected = 0usize;
         assert_eq!(
             expected, pending_jobs,
-            "Expected {} pending jobs but found {}",
-            expected, pending_jobs
+            "Expected {expected} pending jobs but found {pending_jobs}"
         );
 
         let running_jobs = test.running_job_number();
         let expected = 1usize;
         assert_eq!(
             expected, running_jobs,
-            "Expected {} running jobs but found {}",
-            expected, running_jobs
+            "Expected {expected} running jobs but found {running_jobs}"
         );
 
         test.cancel(&job_id).await?;

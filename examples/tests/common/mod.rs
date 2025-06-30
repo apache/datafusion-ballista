@@ -39,7 +39,7 @@ pub fn create_s3_store(
     host: &str,
     port: u16,
 ) -> std::result::Result<object_store::aws::AmazonS3, object_store::Error> {
-    log::info!("create S3 client: host: {}, port: {}", host, port);
+    log::info!("create S3 client: host: {host}, port: {port}");
     AmazonS3Builder::new()
         .with_endpoint(format!("http://{host}:{port}"))
         .with_region(REGION)

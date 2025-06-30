@@ -74,11 +74,11 @@ impl<E: Send + 'static> EventLoop<E> {
         let stopped = self.stopped.clone();
         let action = self.action.clone();
         tokio::spawn(async move {
-            info!("Starting the event loop {}", name);
+            info!("Starting the event loop {name}");
             while !stopped.load(Ordering::SeqCst) {
                 if let Some(event) = rx_event.recv().await {
                     if let Err(e) = action.on_receive(event, &tx_event, &rx_event).await {
-                        error!("Fail to process event due to {}", e);
+                        error!("Fail to process event due to {e}");
                         action.on_error(e);
                     }
                 } else {
@@ -86,7 +86,7 @@ impl<E: Send + 'static> EventLoop<E> {
                     break;
                 }
             }
-            info!("The event loop {} has been stopped", name);
+            info!("The event loop {name} has been stopped");
         });
     }
 

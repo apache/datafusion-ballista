@@ -102,7 +102,7 @@ pub fn as_task_status(
         }
         Err(e) => {
             let error_msg = e.to_string();
-            info!("Task {:?} failed: {}", task_id, error_msg);
+            info!("Task {task_id:?} failed: {error_msg}");
 
             TaskStatus {
                 task_id: task_id as u32,

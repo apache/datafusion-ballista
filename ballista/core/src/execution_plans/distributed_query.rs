@@ -275,7 +275,7 @@ async fn execute_query(
     query: ExecuteQueryParams,
     max_message_size: usize,
 ) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
-    info!("Connecting to Ballista scheduler at {}", scheduler_url);
+    info!("Connecting to Ballista scheduler at {scheduler_url}");
     // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
     let connection = create_grpc_client_connection(scheduler_url)
         .await
@@ -322,28 +322,28 @@ async fn execute_query(
         match status {
             None => {
                 if has_status_change {
-                    info!("Job {} is in initialization ...", job_id);
+                    info!("Job {job_id} is in initialization ...");
                 }
                 wait_future.await;
                 prev_status = status;
             }
             Some(job_status::Status::Queued(_)) => {
                 if has_status_change {
-                    info!("Job {} is queued...", job_id);
+                    info!("Job {job_id} is queued...");
                 }
                 wait_future.await;
                 prev_status = status;
             }
             Some(job_status::Status::Running(_)) => {
                 if has_status_change {
-                    info!("Job {} is running...", job_id);
+                    info!("Job {job_id} is running...");
                 }
                 wait_future.await;
                 prev_status = status;
             }
             Some(job_status::Status::Failed(err)) => {
                 let msg = format!("Job {} failed: {}", job_id, err.error);
-                error!("{}", msg);
+                error!("{msg}");
                 break Err(DataFusionError::Execution(msg));
             }
             Some(job_status::Status::Successful(SuccessfulJob {
@@ -355,7 +355,7 @@ async fn execute_query(
                 let duration = ended_at.saturating_sub(started_at);
                 let duration = Duration::from_millis(duration);
 
-                info!("Job {} finished executing in {:?} ", job_id, duration);
+                info!("Job {job_id} finished executing in {duration:?} ");
                 let streams = partition_location.into_iter().map(move |partition| {
                     let f = fetch_partition(partition, max_message_size)
                         .map_err(|e| ArrowError::ExternalError(Box::new(e)));

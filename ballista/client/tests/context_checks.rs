@@ -152,7 +152,7 @@ mod supported {
             .to_str()
             .expect("path to be converted to str");
 
-        ctx.sql(&format!("CREATE EXTERNAL TABLE written_table (id INTEGER, string_col STRING, timestamp_col BIGINT) STORED AS PARQUET LOCATION '{}'" , write_dir_path)).await.unwrap().show().await.unwrap();
+        ctx.sql(&format!("CREATE EXTERNAL TABLE written_table (id INTEGER, string_col STRING, timestamp_col BIGINT) STORED AS PARQUET LOCATION '{write_dir_path}'")).await.unwrap().show().await.unwrap();
 
         let plan = ctx
             .sql("INSERT INTO written_table select  id, string_col, timestamp_col from test")
@@ -338,7 +338,7 @@ mod supported {
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
-        ctx.sql(&format!("CREATE EXTERNAL TABLE tbl_test STORED AS PARQUET LOCATION '{}/alltypes_plain.parquet'", test_data, )).await?.show().await?;
+        ctx.sql(&format!("CREATE EXTERNAL TABLE tbl_test STORED AS PARQUET LOCATION '{test_data}/alltypes_plain.parquet'", )).await?.show().await?;
 
         let result = ctx
             .sql("select id, string_col, timestamp_col from tbl_test where id > 4")
@@ -578,7 +578,7 @@ mod supported {
             .to_str()
             .expect("path to be converted to str");
 
-        ctx.sql(&format!("CREATE EXTERNAL TABLE written_table (id INTEGER, string_col STRING, timestamp_col BIGINT) STORED AS PARQUET LOCATION '{}'" , write_dir_path)).await.unwrap().show().await.unwrap();
+        ctx.sql(&format!("CREATE EXTERNAL TABLE written_table (id INTEGER, string_col STRING, timestamp_col BIGINT) STORED AS PARQUET LOCATION '{write_dir_path}'")).await.unwrap().show().await.unwrap();
 
         let _ = ctx
             .sql("INSERT INTO written_table select  id, string_col, timestamp_col from test")

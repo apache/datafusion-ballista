@@ -58,7 +58,7 @@ pub async fn write_stream_to_disk(
     disk_write_metric: &metrics::Time,
 ) -> Result<PartitionStats> {
     let file = File::create(path).map_err(|e| {
-        error!("Failed to create partition file at {}: {:?}", path, e);
+        error!("Failed to create partition file at {path}: {e:?}");
         BallistaError::IoError(e)
     })?;
 

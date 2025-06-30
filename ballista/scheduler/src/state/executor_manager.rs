@@ -121,14 +121,12 @@ impl ExecutorManager {
                         .await
                     {
                         error!(
-                            "Fail to cancel tasks for executor ID {} due to {:?}",
-                            executor_id, e
+                            "Fail to cancel tasks for executor ID {executor_id} due to {e:?}"
                         );
                     }
                 } else {
                     error!(
-                        "Failed to get client for executor ID {} to cancel tasks",
-                        executor_id
+                        "Failed to get client for executor ID {executor_id} to cancel tasks"
                     )
                 }
             }
@@ -145,8 +143,7 @@ impl ExecutorManager {
     ) {
         if clean_up_interval == 0 {
             info!(
-                "The interval is 0 and the clean up for job data {} will not triggered",
-                job_id
+                "The interval is 0 and the clean up for job data {job_id} will not triggered"
             );
             return;
         }
@@ -180,13 +177,12 @@ impl ExecutorManager {
                         .await
                     {
                         warn!(
-                            "Failed to call remove_job_data on Executor {} due to {:?}",
-                            executor, err
+                            "Failed to call remove_job_data on Executor {executor} due to {err:?}"
                         )
                     }
                 });
             } else {
-                warn!("Failed to get client for Executor {}", executor)
+                warn!("Failed to get client for Executor {executor}")
             }
         }
     }
@@ -258,7 +254,7 @@ impl ExecutorManager {
         executor_id: &str,
         reason: Option<String>,
     ) -> Result<()> {
-        info!("Removing executor {}: {:?}", executor_id, reason);
+        info!("Removing executor {executor_id}: {reason:?}");
         self.cluster_state.remove_executor(executor_id).await
     }
 
@@ -276,7 +272,7 @@ impl ExecutorManager {
                         .await
                     {
                         Err(error) => {
-                            warn!("Failed to send stop_executor rpc due to, {}", error);
+                            warn!("Failed to send stop_executor rpc due to, {error}");
                         }
                         Ok(_value) => {}
                     }
@@ -284,8 +280,7 @@ impl ExecutorManager {
             }
             Err(_) => {
                 warn!(
-                    "Executor is already dead, failed to connect to Executor {}",
-                    executor_id
+                    "Executor is already dead, failed to connect to Executor {executor_id}"
                 );
             }
         }
@@ -306,8 +301,7 @@ impl ExecutorManager {
             .await
             .map_err(|e| {
                 BallistaError::Internal(format!(
-                    "Failed to connect to executor {}: {:?}",
-                    executor_id, e
+                    "Failed to connect to executor {executor_id}: {e:?}"
                 ))
             })?;
 
@@ -417,7 +411,7 @@ impl ExecutorManager {
     #[cfg(not(test))]
     async fn test_connectivity(metadata: &ExecutorMetadata) -> Result<()> {
         let executor_url = format!("http://{}:{}", metadata.host, metadata.grpc_port);
-        debug!("Connecting to executor {:?}", executor_url);
+        debug!("Connecting to executor {executor_url:?}");
         let _ = protobuf::executor_grpc_client::ExecutorGrpcClient::connect(executor_url)
             .await
             .map_err(|e| {

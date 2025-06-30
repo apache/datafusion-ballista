@@ -18,6 +18,13 @@
 
 //! Ballista scheduler specific configuration
 
+//
+// configure me does not follow clippy spec
+// we need to replace it with some other library
+// as mentioned in https://github.com/apache/datafusion-ballista/issues/1271
+//
+#![allow(clippy::uninlined_format_args)]
+
 use crate::cluster::DistributionPolicy;
 use crate::SessionBuilder;
 use ballista_core::{config::TaskSchedulingPolicy, ConfigProducer};
@@ -26,6 +33,7 @@ use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use std::sync::Arc;
 
 #[cfg(feature = "build-binary")]
+
 include!(concat!(
     env!("OUT_DIR"),
     "/scheduler_configure_me_config.rs"
