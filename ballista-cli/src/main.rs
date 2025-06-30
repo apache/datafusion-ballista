@@ -122,7 +122,7 @@ pub async fn main() -> Result<()> {
 
     let ctx = match (args.host, args.port) {
         (Some(ref host), Some(port)) => {
-            let address = format!("df://{}:{}", host, port);
+            let address = format!("df://{host}:{port}");
             let state = SessionStateBuilder::new()
                 .with_config(ballista_config)
                 .with_default_features()

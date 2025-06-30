@@ -165,7 +165,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     }
     /// Cancels job for given job_id
     pub async fn cancel_job(&self, job_id: String) -> Result<()> {
-        log::debug!("Received cancellation request for job {}", job_id);
+        log::debug!("Received cancellation request for job {job_id}");
 
         self.query_stage_event_loop
             .get_sender()?
@@ -182,7 +182,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         ctx: Arc<SessionContext>,
         plan: &LogicalPlan,
     ) -> Result<String> {
-        log::debug!("Received submit request for job {}", job_name);
+        log::debug!("Received submit request for job {job_name}");
         let job_id = self.state.task_manager.generate_job_id();
 
         self.query_stage_event_loop
@@ -213,7 +213,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
             let error_msg = format!(
                 "Receive buggy tasks status from dead Executor {executor_id}, task status update ignored."
             );
-            warn!("{}", error_msg);
+            warn!("{error_msg}");
             return Ok(());
         }
         self.query_stage_event_loop
@@ -240,7 +240,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         tokio::task::spawn(async move {
             loop {
                 let expired_executors = state.executor_manager.get_expired_executors();
-                debug!("expire_dead_executors: {:?}", expired_executors);
+                debug!("expire_dead_executors: {expired_executors:?}");
                 for expired in expired_executors {
                     let executor_id = expired.executor_id.clone();
 
@@ -301,7 +301,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         reason: Option<String>,
         wait_secs: u64,
     ) {
-        debug!("remove executor: {}", executor_id);
+        debug!("remove executor: {executor_id}");
         let executor_id = executor_id.to_owned();
         tokio::spawn(async move {
             // Wait for `wait_secs` before removing executor
@@ -533,7 +533,7 @@ mod test {
                 assert_eq!(partition_location.len(), 4);
             }
             other => {
-                panic!("Expected success status but found {:?}", other);
+                panic!("Expected success status but found {other:?}");
             }
         }
 

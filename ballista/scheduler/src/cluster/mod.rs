@@ -334,10 +334,7 @@ pub(crate) async fn bind_task_bias(
     let mut slot = &mut slots[idx_slot];
     for (job_id, job_info) in running_jobs.iter() {
         if !matches!(job_info.status, Some(job_status::Status::Running(_))) {
-            debug!(
-                "Job {} is not in running status and will be skipped",
-                job_id
-            );
+            debug!("Job {job_id} is not in running status and will be skipped");
             continue;
         }
         let mut graph = job_info.execution_graph.write().await;
@@ -413,7 +410,7 @@ pub(crate) async fn bind_task_round_robin(
         debug!("Not enough available executor slots for task running!!!");
         return schedulable_tasks;
     }
-    debug!("Total slot number is {}", total_slots);
+    debug!("Total slot number is {total_slots}");
 
     // Sort the slots by descending order
     slots.sort_by(|a, b| Ord::cmp(&b.slots, &a.slots));
@@ -421,10 +418,7 @@ pub(crate) async fn bind_task_round_robin(
     let mut idx_slot = 0usize;
     for (job_id, job_info) in running_jobs.iter() {
         if !matches!(job_info.status, Some(job_status::Status::Running(_))) {
-            debug!(
-                "Job {} is not in running status and will be skipped",
-                job_id
-            );
+            debug!("Job {job_id} is not in running status and will be skipped");
             continue;
         }
         let mut graph = job_info.execution_graph.write().await;
@@ -548,10 +542,7 @@ pub(crate) async fn bind_task_consistent_hash(
         debug!("Not enough available executor slots for binding tasks with consistent hashing policy!!!");
         return Ok((vec![], None));
     }
-    debug!(
-        "Total slot number for consistent hash binding is {}",
-        total_slots
-    );
+    debug!("Total slot number for consistent hash binding is {total_slots}");
 
     let node_replicas = topology_nodes
         .into_values()
@@ -563,10 +554,7 @@ pub(crate) async fn bind_task_consistent_hash(
     let mut schedulable_tasks: Vec<BoundTask> = vec![];
     for (job_id, job_info) in running_jobs.iter() {
         if !matches!(job_info.status, Some(job_status::Status::Running(_))) {
-            debug!(
-                "Job {} is not in running status and will be skipped",
-                job_id
-            );
+            debug!("Job {job_id} is not in running status and will be skipped");
             continue;
         }
         let mut graph = job_info.execution_graph.write().await;
@@ -785,9 +773,7 @@ mod test {
 
         assert!(
             expected.contains(&result),
-            "The result {:?} is not as expected {:?}",
-            result,
-            expected
+            "The result {result:?} is not as expected {expected:?}"
         );
 
         Ok(())
@@ -843,9 +829,7 @@ mod test {
 
         assert!(
             expected.contains(&result),
-            "The result {:?} is not as expected {:?}",
-            result,
-            expected
+            "The result {result:?} is not as expected {expected:?}"
         );
 
         Ok(())
@@ -898,9 +882,7 @@ mod test {
             }
             assert!(
                 expected.eq(&result),
-                "The result {:?} is not as expected {:?}",
-                result,
-                expected
+                "The result {result:?} is not as expected {expected:?}"
             );
         }
 
@@ -940,9 +922,7 @@ mod test {
             }
             assert!(
                 expected.eq(&result),
-                "The result {:?} is not as expected {:?}",
-                result,
-                expected
+                "The result {result:?} is not as expected {expected:?}"
             );
         }
 
@@ -1058,7 +1038,7 @@ mod test {
         for i in 0..num_partition {
             scan_files.push(vec![PartitionedFile {
                 object_meta: ObjectMeta {
-                    location: Path::from(format!("file--{}", i)),
+                    location: Path::from(format!("file--{i}")),
                     last_modified: Default::default(),
                     size: 1,
                     e_tag: None,

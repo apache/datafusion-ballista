@@ -148,7 +148,7 @@ impl ExecutionPlan for ShuffleReaderExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let task_id = context.task_id().unwrap_or_else(|| partition.to_string());
-        debug!("ShuffleReaderExec::execute({})", task_id);
+        debug!("ShuffleReaderExec::execute({task_id})");
 
         let config = context.session_config();
 
@@ -157,10 +157,7 @@ impl ExecutionPlan for ShuffleReaderExec {
         let max_message_size = config.ballista_grpc_client_max_message_size();
 
         log::debug!(
-            "ShuffleReaderExec::execute({}) max_request_num: {}, max_message_size: {}",
-            task_id,
-            max_request_num,
-            max_message_size
+            "ShuffleReaderExec::execute({task_id}) max_request_num: {max_request_num}, max_message_size: {max_message_size}"
         );
         let mut partition_locations = HashMap::new();
         for p in &self.partition[partition] {
@@ -321,7 +318,7 @@ fn send_fetch_partitions(
                 .fetch_partition(&p, max_message_size)
                 .await;
             if let Err(e) = response_sender_c.send(r).await {
-                error!("Fail to send response event to the channel due to {}", e);
+                error!("Fail to send response event to the channel due to {e}");
             }
         }
     }));
@@ -337,7 +334,7 @@ fn send_fetch_partitions(
                 .await;
             // Block if the channel buffer is full.
             if let Err(e) = response_sender.send(r).await {
-                error!("Fail to send response event to the channel due to {}", e);
+                error!("Fail to send response event to the channel due to {e}");
             }
             // Increase semaphore by dropping existing permits.
             drop(permit);
@@ -615,7 +612,7 @@ mod tests {
             "local_file".to_owned(),
             1,
             create_test_data_plan().unwrap(),
-            work_dir.into_path().to_str().unwrap().to_owned(),
+            work_dir.path().to_str().unwrap().to_owned(),
             Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 1)),
         )
         .unwrap();

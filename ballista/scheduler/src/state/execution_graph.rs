@@ -358,7 +358,7 @@ impl ExecutionGraph {
                                         if !failed_stages.is_empty() {
                                             let error_msg = format!(
                                                 "Stages was marked failed, ignore FetchPartitionError from task {task_identity}");
-                                            warn!("{}", error_msg);
+                                            warn!("{error_msg}");
                                         } else {
                                             // There are different removal strategies here.
                                             // We can choose just remove the map_partition_id in the FetchPartitionError, when resubmit the input stage, there are less tasks
@@ -383,8 +383,7 @@ impl ExecutionGraph {
                                                     .entry(map_stage_id)
                                                     .or_default();
                                             missing_inputs.extend(removed_map_partitions);
-                                            warn!("Need to resubmit the current running Stage {} and its map Stage {} due to FetchPartitionError from task {}",
-                                                    stage_id, map_stage_id, task_identity)
+                                            warn!("Need to resubmit the current running Stage {stage_id} and its map Stage {map_stage_id} due to FetchPartitionError from task {task_identity}")
                                         }
                                     } else {
                                         let error_msg = format!(
@@ -394,7 +393,7 @@ impl ExecutionGraph {
                                             max_stage_failures,
                                             failed_task.error
                                         );
-                                        error!("{}", error_msg);
+                                        error!("{error_msg}");
                                         failed_stages.insert(stage_id, error_msg);
                                     }
                                 }
@@ -416,7 +415,7 @@ impl ExecutionGraph {
                                                 "Task {} in Stage {} failed {} times, fail the stage, most recent failure reason: {:?}",
                                                 partition_id, stage_id, max_task_failures, failed_task.error
                                             );
-                                            error!("{}", error_msg);
+                                            error!("{error_msg}");
                                             failed_stages.insert(stage_id, error_msg);
                                         }
                                     } else if failed_task.retryable {
@@ -428,7 +427,7 @@ impl ExecutionGraph {
                                 None => {
                                     let error_msg = format!(
                                         "Task {partition_id} in Stage {stage_id} failed with unknown failure reasons, fail the stage");
-                                    error!("{}", error_msg);
+                                    error!("{error_msg}");
                                     failed_stages.insert(stage_id, error_msg);
                                 }
                             }
@@ -449,8 +448,7 @@ impl ExecutionGraph {
                             ));
                         } else {
                             warn!(
-                                "The task {}'s status is invalid for updating",
-                                task_identity
+                                "The task {task_identity}'s status is invalid for updating"
                             );
                         }
                     }
@@ -545,8 +543,7 @@ impl ExecutionGraph {
                                             .entry(map_stage_id)
                                             .or_default();
                                         missing_inputs.extend(removed_map_partitions);
-                                        warn!("Need to reset the current running Stage {} due to late come FetchPartitionError from its parent stage {} of task {}",
-                                                    map_stage_id, stage_id, task_identity);
+                                        warn!("Need to reset the current running Stage {map_stage_id} due to late come FetchPartitionError from its parent stage {stage_id} of task {task_identity}");
 
                                         // If the previous other task updates had already mark the map stage success, need to remove it.
                                         if successful_stages.contains(&map_stage_id) {
@@ -561,7 +558,7 @@ impl ExecutionGraph {
                             }
                         }
                         if should_ignore {
-                            warn!("Ignore TaskStatus update of task with TID {} as the Stage {}/{} is in UnResolved status", task_identity, job_id, stage_id);
+                            warn!("Ignore TaskStatus update of task with TID {task_identity} as the Stage {job_id}/{stage_id} is in UnResolved status");
                         }
                     }
                 } else {
@@ -606,9 +603,7 @@ impl ExecutionGraph {
                     }
                 } else {
                     warn!(
-                        "Stage {}/{} is not in Successful state when try to resubmit this stage. ",
-                        job_id,
-                        stage_id);
+                        "Stage {job_id}/{stage_id} is not in Successful state when try to resubmit this stage. ");
                 }
             } else {
                 return Err(BallistaError::Internal(format!(
@@ -631,9 +626,7 @@ impl ExecutionGraph {
                     }
                 } else {
                     warn!(
-                        "Stage {}/{} is not in Running state when try to reset the running task. ",
-                        job_id,
-                        stage_id);
+                        "Stage {job_id}/{stage_id} is not in Running state when try to reset the running task. ");
                 }
             } else {
                 return Err(BallistaError::Internal(format!(
@@ -699,7 +692,7 @@ impl ExecutionGraph {
         }
 
         if !updated_stages.failed_stages.is_empty() {
-            info!("Job {} is failed", job_id);
+            info!("Job {job_id} is failed");
             self.fail_job(job_err_msg.clone());
             events.push(QueryStageSchedulerEvent::JobRunningFailed {
                 job_id,
@@ -709,7 +702,7 @@ impl ExecutionGraph {
             });
         } else if self.is_successful() {
             // If this ExecutionGraph is successful, finish it
-            info!("Job {} is success, finalizing output partitions", job_id);
+            info!("Job {job_id} is success, finalizing output partitions");
             self.succeed_job()?;
             events.push(QueryStageSchedulerEvent::JobFinished {
                 job_id,
@@ -1049,8 +1042,7 @@ impl ExecutionGraph {
                         let reset = stage.reset_tasks(executor_id);
                         if reset > 0 {
                             warn!(
-                        "Reset {} tasks for running job/stage {}/{} on lost Executor {}",
-                        reset, job_id, stage_id, executor_id
+                        "Reset {reset} tasks for running job/stage {job_id}/{stage_id} on lost Executor {executor_id}"
                         );
                             reset_running_stage.insert(*stage_id);
                         }
@@ -1085,14 +1077,12 @@ impl ExecutionGraph {
                         ExecutionStage::Resolved(_) => {
                             rollback_resolved_stages.insert(*stage_id);
                             warn!(
-                            "Roll back resolved job/stage {}/{} and change ShuffleReaderExec back to UnresolvedShuffleExec",
-                            job_id, stage_id);
+                            "Roll back resolved job/stage {job_id}/{stage_id} and change ShuffleReaderExec back to UnresolvedShuffleExec");
                         }
                         ExecutionStage::Running(_) => {
                             rollback_running_stages.insert(*stage_id);
                             warn!(
-                            "Roll back running job/stage {}/{} and change ShuffleReaderExec back to UnresolvedShuffleExec",
-                            job_id, stage_id);
+                            "Roll back running job/stage {job_id}/{stage_id} and change ShuffleReaderExec back to UnresolvedShuffleExec");
                         }
                         _ => {}
                     }

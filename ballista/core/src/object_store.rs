@@ -244,7 +244,7 @@ impl ExtensionOptions for S3Options {
     }
 
     fn set(&mut self, key: &str, value: &str) -> Result<()> {
-        log::debug!("set config, key:{},  value:{}", key, value);
+        log::debug!("set config, key:{key},  value:{value}");
         match key {
             "access_key_id" => {
                 let mut c = self.config.write();
@@ -271,7 +271,7 @@ impl ExtensionOptions for S3Options {
                 c.allow_http.set(key, value)?;
             }
             _ => {
-                log::warn!("Config value {} cant be set to {}", key, value);
+                log::warn!("Config value {key} cant be set to {value}");
                 return config_err!("Config value \"{}\" not found in S3Options", key);
             }
         }

@@ -254,7 +254,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             session_config,
             &mut planner,
         )?;
-        info!("Submitting execution graph: {:?}", graph);
+        info!("Submitting execution graph: {graph:?}");
 
         self.state.submit_job(job_id.to_string(), &graph).await?;
         graph.revive();
@@ -340,7 +340,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     ) -> Result<Vec<QueryStageSchedulerEvent>> {
         let mut job_updates: HashMap<String, Vec<TaskStatus>> = HashMap::new();
         for status in task_status {
-            trace!("Task Update\n{:?}", status);
+            trace!("Task Update\n{status:?}");
             let job_id = status.job_id.clone();
             let job_task_statuses = job_updates.entry(job_id).or_default();
             job_task_statuses.push(status);
@@ -349,7 +349,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         let mut events: Vec<QueryStageSchedulerEvent> = vec![];
         for (job_id, statuses) in job_updates {
             let num_tasks = statuses.len();
-            debug!("Updating {} tasks in job {}", num_tasks, job_id);
+            debug!("Updating {num_tasks} tasks in job {job_id}");
 
             // let graph = self.get_active_execution_graph(&job_id).await;
             let job_events = if let Some(cached) =
@@ -364,7 +364,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 )?
             } else {
                 // TODO Deal with curator changed case
-                error!("Fail to find job {} in the active cache and it may not be curated by this scheduler", job_id);
+                error!("Fail to find job {job_id} in the active cache and it may not be curated by this scheduler");
                 vec![]
             };
 
@@ -379,18 +379,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Mark a job to success. This will create a key under the CompletedJobs keyspace
     /// and remove the job from ActiveJobs
     pub(crate) async fn succeed_job(&self, job_id: &str) -> Result<()> {
-        debug!("Moving job {} from Active to Success", job_id);
+        debug!("Moving job {job_id} from Active to Success");
 
         if let Some(graph) = self.remove_active_execution_graph(job_id) {
             let graph = graph.read().await.clone();
             if graph.is_successful() {
                 self.state.save_job(job_id, &graph).await?;
             } else {
-                error!("Job {} has not finished and cannot be completed", job_id);
+                error!("Job {job_id} has not finished and cannot be completed");
                 return Ok(());
             }
         } else {
-            warn!("Fail to find job {} in the cache", job_id);
+            warn!("Fail to find job {job_id} in the cache");
         }
 
         Ok(())
@@ -431,7 +431,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             (running_tasks, pending_tasks)
         } else {
             // TODO listen the job state update event and fix task cancelling
-            warn!("Fail to find job {} in the cache, unable to cancel tasks for job, fail the job state only.", job_id);
+            warn!("Fail to find job {job_id} in the cache, unable to cancel tasks for job, fail the job state only.");
             (vec![], 0)
         };
 
@@ -467,7 +467,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
             Ok(new_tasks)
         } else {
-            warn!("Fail to find job {} in the cache", job_id);
+            warn!("Fail to find job {job_id} in the cache");
 
             Ok(0)
         }
@@ -501,7 +501,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             let available_tasks = graph.read().await.available_tasks();
             Ok(available_tasks)
         } else {
-            warn!("Fail to find job {} in the cache", job_id);
+            warn!("Fail to find job {job_id} in the cache");
             Ok(0)
         }
     }
@@ -511,7 +511,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         &self,
         task: TaskDescription,
     ) -> Result<TaskDefinition> {
-        debug!("Preparing task definition for {:?}", task);
+        debug!("Preparing task definition for {task:?}");
 
         let job_id = task.partition.job_id.clone();
         let stage_id = task.partition.stage_id;
@@ -557,7 +557,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         for stage_tasks in tasks {
             match self.prepare_multi_task_definition(stage_tasks) {
                 Ok(stage_tasks) => multi_tasks.extend(stage_tasks),
-                Err(e) => error!("Fail to prepare task definition: {:?}", e),
+                Err(e) => error!("Fail to prepare task definition: {e:?}"),
             }
         }
 
@@ -587,8 +587,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     .iter()
                     .map(|task| task.partition.partition_id)
                     .collect();
-                debug!("Preparing multi task definition for tasks {:?} belonging to job stage {}/{}", task_ids, job_id, stage_id);
-                trace!("With task details {:?}", tasks);
+                debug!("Preparing multi task definition for tasks {task_ids:?} belonging to job stage {job_id}/{stage_id}");
+                trace!("With task details {tasks:?}");
             }
 
             if let Some(mut job_info) = self.active_job_cache.get_mut(&job_id) {
@@ -669,7 +669,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Clean up a failed job in FailedJobs Keyspace by delayed clean_up_interval seconds
     pub(crate) fn clean_up_job_delayed(&self, job_id: String, clean_up_interval: u64) {
         if clean_up_interval == 0 {
-            info!("The interval is 0 and the clean up for the failed job state {} will not triggered", job_id);
+            info!("The interval is 0 and the clean up for the failed job state {job_id} will not triggered");
             return;
         }
 

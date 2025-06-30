@@ -68,11 +68,11 @@ async fn main() -> Result<()> {
     // S3 configuration options can be changed using `SET` statement
     ctx.sql("SET s3.allow_http = true").await?.show().await?;
 
-    ctx.sql(&format!("SET s3.access_key_id = '{}'", S3_ACCESS_KEY_ID))
+    ctx.sql(&format!("SET s3.access_key_id = '{S3_ACCESS_KEY_ID}'"))
         .await?
         .show()
         .await?;
-    ctx.sql(&format!("SET s3.secret_access_key = '{}'", S3_SECRET_KEY))
+    ctx.sql(&format!("SET s3.secret_access_key = '{S3_SECRET_KEY}'"))
         .await?
         .show()
         .await?;
@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    let write_dir_path = &format!("s3://{}/write_test.parquet", S3_BUCKET);
+    let write_dir_path = &format!("s3://{S3_BUCKET}/write_test.parquet");
 
     ctx.sql("select * from test")
         .await?

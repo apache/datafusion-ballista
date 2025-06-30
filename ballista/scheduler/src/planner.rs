@@ -73,7 +73,7 @@ impl DistributedPlanner for DefaultDistributedPlanner {
         job_id: &'a str,
         execution_plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Vec<Arc<ShuffleWriterExec>>> {
-        info!("planning query stages for job {}", job_id);
+        info!("planning query stages for job {job_id}");
         let (new_plan, mut stages) =
             self.plan_query_stages_internal(job_id, execution_plan)?;
         stages.push(create_shuffle_writer(
@@ -727,7 +727,7 @@ order by
                     expr2.expr.as_any().downcast_ref()
                 );
             }
-            _ => panic!("invalid sort {:?}", sort),
+            _ => panic!("invalid sort {sort:?}"),
         };
 
         Ok(())
