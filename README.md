@@ -38,10 +38,13 @@ async fn main() -> datafusion::error::Result<()> {
   let ctx = SessionContext::new();
 
   // register the table
-  ctx.register_csv("example", "tests/data/example.csv", CsvReadOptions::new()).await?;
+  ctx.register_csv("example", "tests/data/example.csv", CsvReadOptions::new())
+      .await?;
 
   // create a plan to run a SQL query
-  let df = ctx.sql("SELECT a, MIN(b) FROM example WHERE a <= b GROUP BY a LIMIT 100").await?;
+  let df = ctx
+      .sql("SELECT a, MIN(b) FROM example WHERE a <= b GROUP BY a LIMIT 100")
+      .await?;
 
   // execute and print results
   df.show().await?;
