@@ -9,7 +9,7 @@
 			"version": "latest",
 			"profile": "complete"
 		},
-		"ghcr.io/devcontainers-contrib/features/protoc:1": {},
+		"ghcr.io/devcontainers-extra/features/protoc:1": {},
 		"ghcr.io/devcontainers/features/node:1": {},
 		"ghcr.io/devcontainers/features/docker-in-docker:2": {},
 	}
