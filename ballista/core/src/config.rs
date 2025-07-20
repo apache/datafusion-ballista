@@ -273,6 +273,15 @@ pub enum TaskSchedulingPolicy {
     PushStaged,
 }
 
+impl ToString for TaskSchedulingPolicy {
+    fn to_string(&self) -> String {
+        match self {
+            TaskSchedulingPolicy::PullStaged => "pull-staged".into(),
+            TaskSchedulingPolicy::PushStaged => "push-staged".into(),
+        }
+    }
+}
+
 #[cfg(feature = "build-binary")]
 impl std::str::FromStr for TaskSchedulingPolicy {
     type Err = String;
@@ -298,6 +307,17 @@ pub enum LogRotationPolicy {
     Daily,
     #[default]
     Never,
+}
+
+impl ToString for LogRotationPolicy {
+    fn to_string(&self) -> String {
+        match self {
+            LogRotationPolicy::Minutely => "minutely".into(),
+            LogRotationPolicy::Hourly => "hourly".into(),
+            LogRotationPolicy::Daily => "daily".into(),
+            LogRotationPolicy::Never => "never".into(),
+        }
+    }
 }
 
 #[cfg(feature = "build-binary")]
