@@ -24,7 +24,8 @@ authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
 description = "Apache Arrow Ballista Python Client"
 readme = "README.md"
 license = "Apache-2.0"
-edition = "2021"
+edition = { workspace = true }
+rust-version = { workspace = true }
 include = ["/src", "/ballista", "/LICENSE.txt", "pyproject.toml", "Cargo.toml", "Cargo.lock"]
 publish = false
 

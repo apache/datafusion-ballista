@@ -20,8 +20,8 @@
 //! partition is re-partitioned and streamed to disk in Arrow IPC format. Future stages of the query
 //! will use the ShuffleReaderExec to read these results.
 
-use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::arrow::ipc::CompressionType;
+use datafusion::arrow::ipc::writer::IpcWriteOptions;
 
 use datafusion::arrow::ipc::writer::StreamWriter;
 use std::any::Any;
@@ -51,8 +51,8 @@ use datafusion::physical_plan::metrics::{
 };
 
 use datafusion::physical_plan::{
-    displayable, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
-    PlanProperties, SendableRecordBatchStream, Statistics,
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    SendableRecordBatchStream, Statistics, displayable,
 };
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 
@@ -93,7 +93,11 @@ impl std::fmt::Display for ShuffleWriterExec {
         write!(
             f,
             "ShuffleWriterExec: job={} stage={} work_dir={} partitioning={:?} plan: \n {}",
-            self.job_id, self.stage_id, self.work_dir, self.shuffle_output_partitioning, printable_plan
+            self.job_id,
+            self.stage_id,
+            self.work_dir,
+            self.shuffle_output_partitioning,
+            printable_plan
         )
     }
 }
@@ -188,7 +192,7 @@ impl ShuffleWriterExec {
     }
 
     pub fn execute_shuffle_write(
-        &self,
+        self,
         input_partition: usize,
         context: Arc<TaskContext>,
     ) -> impl Future<Output = Result<Vec<ShuffleWritePartition>>> {
@@ -322,11 +326,7 @@ impl ShuffleWriterExec {
                             w.writer.finish()?;
                             debug!(
                                 "Finished writing shuffle partition {} at {:?}. Batches: {}. Rows: {}. Bytes: {}.",
-                                i,
-                                w.path,
-                                w.num_batches,
-                                w.num_rows,
-                                num_bytes
+                                i, w.path, w.num_batches, w.num_rows, num_bytes
                             );
 
                             part_locs.push(ShuffleWritePartition {
@@ -413,6 +413,7 @@ impl ExecutionPlan for ShuffleWriterExec {
 
         let schema_captured = schema.clone();
         let fut_stream = self
+            .clone()
             .execute_shuffle_write(partition, context)
             .and_then(|part_loc| async move {
                 // build metadata result batch

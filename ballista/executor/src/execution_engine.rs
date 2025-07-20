@@ -21,8 +21,8 @@ use ballista_core::serde::protobuf::ShuffleWritePartition;
 use ballista_core::utils;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
-use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::metrics::MetricsSet;
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
 
@@ -122,6 +122,7 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         context: Arc<TaskContext>,
     ) -> Result<Vec<ShuffleWritePartition>> {
         self.shuffle_writer
+            .clone()
             .execute_shuffle_write(input_partition, context)
             .await
     }

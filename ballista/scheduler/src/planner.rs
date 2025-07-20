@@ -29,7 +29,7 @@ use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::{
-    with_new_children_if_necessary, ExecutionPlan, Partitioning,
+    ExecutionPlan, Partitioning, with_new_children_if_necessary,
 };
 
 use log::{debug, info};
@@ -321,7 +321,7 @@ mod test {
     use datafusion::physical_plan::sorts::sort::SortExec;
     use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
     use datafusion::physical_plan::windows::BoundedWindowAggExec;
-    use datafusion::physical_plan::{displayable, ExecutionPlan};
+    use datafusion::physical_plan::{ExecutionPlan, displayable};
     use datafusion::physical_plan::{InputOrderMode, Partitioning};
     use datafusion::prelude::SessionContext;
     use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -681,7 +681,7 @@ order by
         assert_eq!(2, partitioning.partition_count());
         let partition_col = match partitioning {
             Partitioning::Hash(exprs, 2) => match exprs.as_slice() {
-                [ref col] => col.as_any().downcast_ref::<Column>(),
+                [col] => col.as_any().downcast_ref::<Column>(),
                 _ => None,
             },
             _ => None,
