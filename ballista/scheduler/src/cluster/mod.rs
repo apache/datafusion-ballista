@@ -69,12 +69,6 @@ impl std::str::FromStr for ClusterStorage {
         clap::ValueEnum::from_str(s, true)
     }
 }
-#[cfg(feature = "build-binary")]
-impl configure_me::parse_arg::ParseArgFromStr for ClusterStorage {
-    fn describe_type<W: std::fmt::Write>(mut writer: W) -> std::fmt::Result {
-        write!(writer, "The cluster storage backend for the scheduler")
-    }
-}
 
 #[derive(Clone)]
 pub struct BallistaCluster {

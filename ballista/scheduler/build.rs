@@ -16,13 +16,6 @@
 // under the License.
 
 fn main() -> Result<(), String> {
-    #[cfg(feature = "build-binary")]
-    println!("cargo:rerun-if-changed=scheduler_config_spec.toml");
-
-    #[cfg(feature = "build-binary")]
-    configure_me_codegen::build_script_auto()
-        .map_err(|e| format!("configure_me code generation failed: {e}"))?;
-
     #[cfg(feature = "keda-scaler")]
     println!("cargo:rerun-if-changed=proto/keda.proto");
 

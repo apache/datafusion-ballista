@@ -35,7 +35,7 @@ path = "src/bin/main.rs"
 required-features = ["build-binary"]
 
 [features]
-build-binary = ["tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary"]
+build-binary = ["clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary"]
 default = ["build-binary", "mimalloc"]
 
 [dependencies]
@@ -43,7 +43,7 @@ arrow = { workspace = true }
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 ballista-core = { path = "../core", version = "48.0.0" }
-clap = { workspace = true }
+clap = { workspace = true, optional = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }

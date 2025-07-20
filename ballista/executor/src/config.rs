@@ -25,6 +25,7 @@ use ballista_core::error::BallistaError;
 
 use crate::executor_process::ExecutorProcessConfig;
 
+#[cfg(feature = "build-binary")]
 #[derive(clap::Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Config {

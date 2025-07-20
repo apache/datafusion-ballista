@@ -32,12 +32,138 @@ use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use std::sync::Arc;
 
+/// Configuration of the application
 #[cfg(feature = "build-binary")]
-
-include!(concat!(
-    env!("OUT_DIR"),
-    "/scheduler_configure_me_config.rs"
-));
+#[derive(clap::Parser, Debug)]
+#[command(version, about, long_about = None)]
+pub struct Config {
+    #[arg(
+        long,
+        help = "Route for proxying flight results via scheduler. Should be of the form 'IP:PORT"
+    )]
+    pub advertise_flight_sql_endpoint: Option<String>,
+    #[arg(short = 'n', long, default_value_t = String::from("ballista"), help = "Namespace for the ballista cluster that this executor will join. Default: ballista")]
+    pub namespace: String,
+    #[arg(long, default_value_t = String::from("0.0.0.0"), help = "Local host name or IP address to bind to. Default: 0.0.0.0")]
+    pub bind_host: String,
+    #[arg(long, default_value_t = String::from("localhost"), help = "Host name or IP address so that executors can connect to this scheduler. Default: localhost")]
+    pub external_host: String,
+    #[arg(
+        short = 'p',
+        long,
+        default_value_t = 50050,
+        help = "bind port. Default: 50050"
+    )]
+    pub bind_port: u16,
+    #[arg(
+        short = 's',
+        long,
+        default_value_t = ballista_core::config::TaskSchedulingPolicy::PullStaged,
+        help = "The scheduling policy for the scheduler, possible values: pull-staged, push-staged. Default: pull-staged"
+    )]
+    pub scheduler_policy: ballista_core::config::TaskSchedulingPolicy,
+    #[arg(
+        long,
+        default_value_t = 1000,
+        help = "Event loop buffer size. Default: 10000"
+    )]
+    pub event_loop_buffer_size: u32,
+    #[arg(
+        long,
+        default_value_t = 300,
+        help = "Delayed interval for cleaning up finished job data. Default: 300"
+    )]
+    pub finished_job_data_clean_up_interval_seconds: u64,
+    #[arg(
+        long,
+        default_value_t = 3600,
+        help = "Delayed interval for cleaning up finished job state. Default: 3600"
+    )]
+    pub finished_job_state_clean_up_interval_seconds: u64,
+    #[arg(
+        long,
+        default_value_t = crate::config::TaskDistribution::Bias,
+        help = "The policy of distributing tasks to available executor slots, possible values: bias, round-robin, consistent-hash. Default: bias"
+    )]
+    pub task_distribution: crate::config::TaskDistribution,
+    #[arg(
+        long,
+        default_value_t = 31,
+        help = "Replica number of each node for the consistent hashing. Default: 31"
+    )]
+    pub consistent_hash_num_replicas: u32,
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "Tolerance of the consistent hashing policy for task scheduling. Default: 0"
+    )]
+    pub consistent_hash_tolerance: u32,
+    #[arg(
+        long,
+        help = "Log dir: a path to save log. This will create a new storage directory at the specified path if it does not already exist."
+    )]
+    pub log_dir: Option<String>,
+    #[arg(
+        long,
+        default_value_t = true,
+        help = "Enable print thread ids and names in log file."
+    )]
+    pub print_thread_info: bool,
+    #[arg(
+        long,
+        default_value_t = String::from("INFO,datafusion=INFO"),
+        help = "special log level for sub mod. link: https://docs.rs/env_logger/latest/env_logger/#enabling-logging. For example we want whole level is INFO but datafusion mode is DEBUG"
+    )]
+    pub log_level_setting: String,
+    #[arg(
+        long,
+        default_value_t = ballista_core::config::LogRotationPolicy::Daily,
+        help = "Tracing log rotation policy, possible values: minutely, hourly, daily, never. Default: daily"
+    )]
+    pub log_rotation_policy: ballista_core::config::LogRotationPolicy,
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "If job is not able to be scheduled on submission, wait for this interval and resubmit. Default value of 0 indicates that job should not be resubmitted"
+    )]
+    pub job_resubmit_interval_ms: u64,
+    #[arg(
+        long,
+        default_value_t = 30,
+        help = "Time in seconds an executor should be considered lost after it enters terminating status"
+    )]
+    pub executor_termination_grace_period: u64,
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "The maximum expected processing time of a scheduler event (microseconds). Zero means disable."
+    )]
+    pub scheduler_event_expected_processing_duration: u64,
+    #[arg(
+        long,
+        default_value_t = 16777216,
+        help = "The maximum size of a decoded message at the grpc server side. Default: 16MB"
+    )]
+    pub grpc_server_max_decoding_message_size: u32,
+    #[arg(
+        long,
+        default_value_t = 16777216,
+        help = "The maximum size of an encoded message at the grpc server side. Default: 16MB"
+    )]
+    pub grpc_server_max_encoding_message_size: u32,
+    #[arg(
+        long,
+        default_value_t = 180,
+        help = "The executor timeout in seconds. It should be longer than executor's heartbeat intervals. Only after missing two or tree consecutive heartbeats from a executor, the executor is mark to be dead"
+    )]
+    pub executor_timeout_seconds: u64,
+    #[arg(
+        long,
+        default_value_t = 15,
+        help = "The interval to check expired or dead executors"
+    )]
+    pub expire_dead_executor_interval_seconds: u64,
+}
 
 /// Configurations for the ballista scheduler of scheduling jobs and tasks
 #[derive(Clone)]
@@ -237,19 +363,22 @@ pub enum TaskDistribution {
     ConsistentHash,
 }
 
+impl ToString for TaskDistribution {
+    fn to_string(&self) -> String {
+        match self {
+            TaskDistribution::Bias => "bias".into(),
+            TaskDistribution::RoundRobin => "round-robin".into(),
+            TaskDistribution::ConsistentHash => "consistent-hash".into(),
+        }
+    }
+}
+
 #[cfg(feature = "build-binary")]
 impl std::str::FromStr for TaskDistribution {
     type Err = String;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         clap::ValueEnum::from_str(s, true)
-    }
-}
-
-#[cfg(feature = "build-binary")]
-impl configure_me::parse_arg::ParseArgFromStr for TaskDistribution {
-    fn describe_type<W: std::fmt::Write>(mut writer: W) -> std::fmt::Result {
-        write!(writer, "The executor slots policy for the scheduler")
     }
 }
 
