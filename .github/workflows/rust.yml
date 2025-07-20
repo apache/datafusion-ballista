@@ -18,13 +18,25 @@
 name: Rust
 
 concurrency:
-  group: ${{ github.repository }}-${{ github.workflow }}
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
   cancel-in-progress: true
 
 on:
-  # always trigger
   push:
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/pull_request_template.md"
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/pull_request_template.md"
+  # manual trigger
+  # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
+  workflow_dispatch:
 
 jobs:
   # Check crate compiles and base cargo check passes
@@ -198,18 +210,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: /github/home/.cargo
-          # this key equals the ones on `linux-build-lib` for re-use
-          key: cargo-cache-
-      - name: Cache Rust dependencies
-        uses: actions/cache@v4
-        with:
-          path: /github/home/target
-          # this key equals the ones on `linux-build-lib` for re-use
-          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
@@ -240,18 +240,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: /github/home/.cargo
-          # this key equals the ones on `linux-build-lib` for re-use
-          key: cargo-cache-
-      - name: Cache Rust dependencies
-        uses: actions/cache@v4
-        with:
-          path: /github/home/target
-          # this key equals the ones on `linux-build-lib` for re-use
-          key: ${{ runner.os }}-${{ matrix.arch }}-target-cache-${{ matrix.rust }}
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
