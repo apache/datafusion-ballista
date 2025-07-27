@@ -18,6 +18,10 @@
 name: Docker
 on: [pull_request, push]
 
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
 jobs:
   build_docker:
     name: Run Build Docker Script
