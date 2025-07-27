@@ -18,7 +18,7 @@
 [package]
 name = "ballista-examples"
 description = "Ballista usage examples"
-version = "48.0.0"
+version = "49.0.0"
 homepage = "https://datafusion.apache.org/ballista/"
 repository = "https://github.com/apache/datafusion-ballista"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
@@ -33,10 +33,10 @@ path = "examples/standalone-sql.rs"
 required-features = ["ballista/standalone"]
 
 [dependencies]
-ballista = { path = "../ballista/client", version = "48.0.0" }
-ballista-core = { path = "../ballista/core", version = "48.0.0", default-features = false }
-ballista-executor = { path = "../ballista/executor", version = "48.0.0", default-features = false }
-ballista-scheduler = { path = "../ballista/scheduler", version = "48.0.0", default-features = false }
+ballista = { path = "../ballista/client", version = "49.0.0" }
+ballista-core = { path = "../ballista/core", version = "49.0.0", default-features = false }
+ballista-executor = { path = "../ballista/executor", version = "49.0.0", default-features = false }
+ballista-scheduler = { path = "../ballista/scheduler", version = "49.0.0", default-features = false }
 datafusion = { workspace = true }
 env_logger = { workspace = true }
 futures = { workspace = true }

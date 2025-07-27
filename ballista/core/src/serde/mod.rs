@@ -518,6 +518,7 @@ mod test {
             partition_by: vec![],
             file_type,
             options: Default::default(),
+            output_schema: Arc::new(DFSchema::empty()),
         });
 
         let codec = crate::serde::BallistaLogicalExtensionCodec::default();

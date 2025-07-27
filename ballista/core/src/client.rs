@@ -232,7 +232,7 @@ impl Stream for FlightDataStream {
                             self.schema.clone(),
                             &self.dictionaries_by_id,
                         )
-                        .map_err(|e| DataFusionError::ArrowError(e, None))
+                        .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
                     });
                 Some(converted_chunk)
             }

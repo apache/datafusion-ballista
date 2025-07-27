@@ -395,7 +395,7 @@ impl SessionConfigHelperExt for SessionConfig {
                 false,
             )
             // same like previous comment
-            .set_bool("datafusion.sql_parser.map_varchar_to_utf8view", false)
+            .set_bool("datafusion.sql_parser.map_string_types_to_utf8view", false)
     }
 }
 

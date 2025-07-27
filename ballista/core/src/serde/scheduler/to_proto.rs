@@ -21,7 +21,7 @@ use std::convert::TryInto;
 
 use crate::error::BallistaError;
 
-use crate::serde::protobuf;
+use crate::serde::protobuf::{self};
 use datafusion_proto::protobuf as datafusion_protobuf;
 
 use crate::serde::scheduler::{
@@ -177,6 +177,11 @@ impl TryInto<protobuf::OperatorMetric> for &MetricValue {
                         .unwrap_or(0),
                 )),
             }),
+            // at the moment there there is no way to serialize custom metrics
+            // thus at the moment we can't support it
+            MetricValue::Custom { .. } => Err(BallistaError::General(String::from(
+                "Custom metrics values are not supported",
+            ))),
         }
     }
 }

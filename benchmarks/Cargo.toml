@@ -18,7 +18,7 @@
 [package]
 name = "ballista-benchmarks"
 description = "Ballista Benchmarks"
-version = "48.0.0"
+version = "49.0.0"
 edition = "2021"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
 homepage = "https://datafusion.apache.org/ballista/"
@@ -32,7 +32,7 @@ default = ["mimalloc"]
 snmalloc = ["snmalloc-rs"]
 
 [dependencies]
-ballista = { path = "../ballista/client", version = "48.0.0" }
+ballista = { path = "../ballista/client", version = "49.0.0" }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 env_logger = { workspace = true }
@@ -51,4 +51,4 @@ tokio = { version = "^1.44", features = [
 ] }
 
 [dev-dependencies]
-ballista-core = { path = "../ballista/core", version = "48.0.0" }
+ballista-core = { path = "../ballista/core", version = "49.0.0" }
