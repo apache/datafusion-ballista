@@ -508,7 +508,7 @@ mod supported {
             "| name                                                 | value |",
             "+------------------------------------------------------+-------+",
             "| datafusion.execution.parquet.schema_force_view_types | false |",
-            "| datafusion.sql_parser.map_varchar_to_utf8view        | false |",
+            "| datafusion.sql_parser..map_string_types_to_utf8view  | false |",
             "+------------------------------------------------------+-------+",
         ];
 
