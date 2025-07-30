@@ -31,17 +31,17 @@ publish = false
 
 [dependencies]
 async-trait = "0.1.77"
-ballista = { version = "45.0.0" }
-ballista-core = { version = "45.0.0" }
-ballista-executor = { version = "45.0.0", default-features = false }
-ballista-scheduler = { version = "45.0.0", default-features = false }
-datafusion = { version = "45", features = ["pyarrow", "avro"] }
-datafusion-proto = { version = "45" }
-datafusion-python = { version = "45" }
+ballista = { version = "47.0.0" }
+ballista-core = { version = "47.0.0" }
+ballista-executor = { version = "47.0.0", default-features = false }
+ballista-scheduler = { version = "47.0.0", default-features = false }
+datafusion = { version = "47", features = ["pyarrow", "avro"] }
+datafusion-proto = { version = "47" }
+datafusion-python = { version = "47" }
 
-pyo3 = { version = "0.23", features = ["extension-module", "abi3", "abi3-py38"] }
+pyo3 = { version = "0.24", features = ["extension-module", "abi3", "abi3-py38"] }
 pyo3-log = "0.12"
-tokio = { version = "1.42", features = ["macros", "rt", "rt-multi-thread", "sync"] }
+tokio = { version = "1.46", features = ["macros", "rt", "rt-multi-thread", "sync"] }
 
 [lib]
 crate-type = ["cdylib"]
