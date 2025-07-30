@@ -24,7 +24,8 @@ homepage = "https://datafusion.apache.org/ballista/"
 repository = "https://github.com/apache/datafusion-ballista"
 readme = "README.md"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
-edition = "2021"
+edition = { workspace = true }
+rust-version = { workspace = true }
 
 [dependencies]
 async-trait = { workspace = true }

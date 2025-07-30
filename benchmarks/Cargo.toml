@@ -19,7 +19,8 @@
 name = "ballista-benchmarks"
 description = "Ballista Benchmarks"
 version = "48.0.0"
-edition = "2021"
+edition = { workspace = true }
+rust-version = { workspace = true }
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
 homepage = "https://datafusion.apache.org/ballista/"
 repository = "https://github.com/apache/datafusion-ballista"

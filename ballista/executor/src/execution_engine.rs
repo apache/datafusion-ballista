@@ -122,6 +122,7 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         context: Arc<TaskContext>,
     ) -> Result<Vec<ShuffleWritePartition>> {
         self.shuffle_writer
+            .clone()
             .execute_shuffle_write(input_partition, context)
             .await
     }

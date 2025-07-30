@@ -149,16 +149,16 @@ impl From<futures::future::Aborted> for BallistaError {
 impl Display for BallistaError {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self {
-            BallistaError::NotImplemented(ref desc) => {
+            BallistaError::NotImplemented(desc) => {
                 write!(f, "Not implemented: {desc}")
             }
-            BallistaError::General(ref desc) => write!(f, "General error: {desc}"),
-            BallistaError::ArrowError(ref desc) => write!(f, "Arrow error: {desc}"),
-            BallistaError::DataFusionError(ref desc) => {
+            BallistaError::General(desc) => write!(f, "General error: {desc}"),
+            BallistaError::ArrowError(desc) => write!(f, "Arrow error: {desc}"),
+            BallistaError::DataFusionError(desc) => {
                 write!(f, "DataFusion error: {desc}")
             }
-            BallistaError::SqlError(ref desc) => write!(f, "SQL error: {desc}"),
-            BallistaError::IoError(ref desc) => write!(f, "IO error: {desc}"),
+            BallistaError::SqlError(desc) => write!(f, "SQL error: {desc}"),
+            BallistaError::IoError(desc) => write!(f, "IO error: {desc}"),
             BallistaError::TonicError(desc) => write!(f, "Tonic error: {desc}"),
             BallistaError::GrpcError(desc) => write!(f, "Grpc error: {desc}"),
             BallistaError::GrpcConnectionError(desc) => {

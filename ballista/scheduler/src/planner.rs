@@ -681,7 +681,7 @@ order by
         assert_eq!(2, partitioning.partition_count());
         let partition_col = match partitioning {
             Partitioning::Hash(exprs, 2) => match exprs.as_slice() {
-                [ref col] => col.as_any().downcast_ref::<Column>(),
+                [col] => col.as_any().downcast_ref::<Column>(),
                 _ => None,
             },
             _ => None,
