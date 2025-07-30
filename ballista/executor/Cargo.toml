@@ -27,16 +27,13 @@ authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
 edition = { workspace = true }
 rust-version = { workspace = true }
 
-[package.metadata.configure_me.bin]
-executor = "executor_config_spec.toml"
-
 [[bin]]
 name = "ballista-executor"
 path = "src/bin/main.rs"
 required-features = ["build-binary"]
 
 [features]
-build-binary = ["configure_me", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary"]
+build-binary = ["clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary"]
 default = ["build-binary", "mimalloc"]
 
 [dependencies]
@@ -44,7 +41,7 @@ arrow = { workspace = true }
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 ballista-core = { path = "../core", version = "48.0.0" }
-configure_me = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
@@ -64,7 +61,6 @@ uuid = { workspace = true }
 [dev-dependencies]
 
 [build-dependencies]
-configure_me_codegen = { workspace = true }
 
 # use libc on unix like platforms to set worker priority in DedicatedExecutor
 [target."cfg(unix)".dependencies.libc]

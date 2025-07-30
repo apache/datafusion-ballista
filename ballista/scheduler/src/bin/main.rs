@@ -22,10 +22,10 @@ use ballista_core::error::BallistaError;
 use ballista_core::object_store::{
     session_config_with_s3_support, session_state_with_s3_support,
 };
-use ballista_core::print_version;
 use ballista_scheduler::cluster::BallistaCluster;
-use ballista_scheduler::config::{Config, ResultExt, SchedulerConfig};
+use ballista_scheduler::config::{Config, SchedulerConfig};
 use ballista_scheduler::scheduler_process::start_server;
+use clap::Parser;
 use std::sync::Arc;
 use std::{env, io};
 use tracing_subscriber::EnvFilter;
@@ -42,14 +42,7 @@ fn main() -> ballista_core::error::Result<()> {
 }
 async fn inner() -> ballista_core::error::Result<()> {
     // parse options
-    let (opt, _remaining_args) =
-        Config::including_optional_config_files(&["/etc/ballista/scheduler.toml"])
-            .unwrap_or_exit();
-
-    if opt.version {
-        print_version();
-        std::process::exit(0);
-    }
+    let opt = Config::parse();
 
     let rust_log = env::var(EnvFilter::DEFAULT_ENV);
     let log_filter = EnvFilter::new(rust_log.unwrap_or(opt.log_level_setting.clone()));

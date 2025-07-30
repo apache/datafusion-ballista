@@ -21,11 +21,11 @@ use ballista_core::config::LogRotationPolicy;
 use ballista_core::object_store::{
     runtime_env_with_s3_support, session_config_with_s3_support,
 };
-use ballista_core::print_version;
-use ballista_executor::config::prelude::*;
+use ballista_executor::config::Config;
 use ballista_executor::executor_process::{
     start_executor_process, ExecutorProcessConfig,
 };
+use clap::Parser;
 use std::env;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
@@ -37,14 +37,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[tokio::main]
 async fn main() -> ballista_core::error::Result<()> {
     // parse command-line arguments
-    let (opt, _remaining_args) =
-        Config::including_optional_config_files(&["/etc/ballista/executor.toml"])
-            .unwrap_or_exit();
-
-    if opt.version {
-        print_version();
-        std::process::exit(0);
-    }
+    let opt = Config::parse();
 
     let mut config: ExecutorProcessConfig = opt.try_into()?;
     config.override_config_producer = Some(Arc::new(session_config_with_s3_support));

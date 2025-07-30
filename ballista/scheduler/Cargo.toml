@@ -27,16 +27,13 @@ authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
 edition = { workspace = true }
 rust-version = { workspace = true }
 
-[package.metadata.configure_me.bin]
-scheduler = "scheduler_config_spec.toml"
-
 [[bin]]
 name = "ballista-scheduler"
 path = "src/bin/main.rs"
 required-features = ["build-binary"]
 
 [features]
-build-binary = ["configure_me", "clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary"]
+build-binary = ["clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary"]
 default = ["build-binary"]
 # job info can cache stage plans, in some cases where 
 # task plans can be re-computed, cache behavior may need to be disabled.
@@ -52,7 +49,6 @@ async-trait = { workspace = true }
 axum = "0.7.7"
 ballista-core = { path = "../core", version = "48.0.0" }
 clap = { workspace = true, optional = true }
-configure_me = { workspace = true, optional = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
@@ -79,5 +75,4 @@ uuid = { workspace = true }
 [dev-dependencies]
 
 [build-dependencies]
-configure_me_codegen = { workspace = true }
 tonic-build = { workspace = true }
