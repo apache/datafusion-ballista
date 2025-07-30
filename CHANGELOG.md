@@ -19,6 +19,32 @@
 
 # Changelog
 
+## [48.0.0](https://github.com/apache/datafusion-ballista/tree/48.0.0) (2025-07-30)
+
+[Full Changelog](https://github.com/apache/datafusion-ballista/compare/47.0.0...48.0.0)
+
+**Fixed bugs:**
+
+- fix: devcontainer protoc:1 feature url [#1278](https://github.com/apache/datafusion-ballista/pull/1278) (Almaz-KG)
+- fix: change code to support rust 2024 [#1283](https://github.com/apache/datafusion-ballista/pull/1283) (milenkovicm)
+- fix: remove configure_me [#1282](https://github.com/apache/datafusion-ballista/pull/1282) (milenkovicm)
+
+**Documentation updates:**
+
+- chore: update datafusion to 48 [#1270](https://github.com/apache/datafusion-ballista/pull/1270) (milenkovicm)
+- docs: Apply method chaining in example [#1276](https://github.com/apache/datafusion-ballista/pull/1276) (0ne-stone)
+
+**Merged pull requests:**
+
+- chore: update datafusion to 48 [#1270](https://github.com/apache/datafusion-ballista/pull/1270) (milenkovicm)
+- docs: Apply method chaining in example [#1276](https://github.com/apache/datafusion-ballista/pull/1276) (0ne-stone)
+- fix: devcontainer protoc:1 feature url [#1278](https://github.com/apache/datafusion-ballista/pull/1278) (Almaz-KG)
+- improve rust workflows without cache [#1275](https://github.com/apache/datafusion-ballista/pull/1275) (Huy1Ng)
+- fix: change code to support rust 2024 [#1283](https://github.com/apache/datafusion-ballista/pull/1283) (milenkovicm)
+- fix: remove configure_me [#1282](https://github.com/apache/datafusion-ballista/pull/1282) (milenkovicm)
+- chore: update python module to latest ballista release (v.47) [#1279](https://github.com/apache/datafusion-ballista/pull/1279) (milenkovicm)
+- chore: update datafusion to 48.0.1 [#1284](https://github.com/apache/datafusion-ballista/pull/1284) (milenkovicm)
+
 ## [47.0.0](https://github.com/apache/datafusion-ballista/tree/47.0.0) (2025-06-15)
 
 [Full Changelog](https://github.com/apache/datafusion-ballista/compare/46.0.0...47.0.0)
