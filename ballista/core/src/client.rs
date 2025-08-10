@@ -29,9 +29,9 @@ use crate::error::{BallistaError, Result};
 use crate::serde::scheduler::{Action, PartitionId};
 
 use arrow_flight;
-use arrow_flight::utils::flight_data_to_arrow_batch;
 use arrow_flight::Ticket;
-use arrow_flight::{flight_service_client::FlightServiceClient, FlightData};
+use arrow_flight::utils::flight_data_to_arrow_batch;
+use arrow_flight::{FlightData, flight_service_client::FlightServiceClient};
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::{
     datatypes::{Schema, SchemaRef},
@@ -64,14 +64,13 @@ impl BallistaClient {
     pub async fn try_new(host: &str, port: u16, max_message_size: usize) -> Result<Self> {
         let addr = format!("http://{host}:{port}");
         debug!("BallistaClient connecting to {addr}");
-        let connection =
-            create_grpc_client_connection(addr.clone())
-                .await
-                .map_err(|e| {
-                    BallistaError::GrpcConnectionError(format!(
+        let connection = create_grpc_client_connection(addr.clone()).await.map_err(
+            |e| {
+                BallistaError::GrpcConnectionError(format!(
                     "Error connecting to Ballista scheduler or executor at {addr}: {e:?}"
                 ))
-                })?;
+            },
+        )?;
         let flight_client = FlightServiceClient::new(connection)
             .max_decoding_message_size(max_message_size)
             .max_encoding_message_size(max_message_size);

@@ -25,9 +25,9 @@ resolver = "2"
 # Minimum Supported Rust Version (MSRV) to 1.85.0
 # which is datafusion 49s
 # 
-edition = "2021"
+edition = "2024"
 # we should try to follow datafusion version 
-rust-version = "1.82.0"
+rust-version = "1.89.0"
 
 [workspace.dependencies]
 arrow = { version = "55", features = ["ipc_compression"] }

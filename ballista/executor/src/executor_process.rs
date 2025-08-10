@@ -18,16 +18,16 @@
 //! Ballista Executor Process
 
 use std::net::SocketAddr;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::registry::BallistaFunctionRegistry;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
-use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use log::{error, info, warn};
 use tempfile::TempDir;
 use tokio::fs::DirEntry;
@@ -44,8 +44,8 @@ use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf::executor_resource::Resource;
 use ballista_core::serde::protobuf::executor_status::Status;
 use ballista_core::serde::protobuf::{
-    scheduler_grpc_client::SchedulerGrpcClient, ExecutorRegistration, ExecutorResource,
-    ExecutorSpecification, ExecutorStatus, ExecutorStoppedParams, HeartBeatParams,
+    ExecutorRegistration, ExecutorResource, ExecutorSpecification, ExecutorStatus,
+    ExecutorStoppedParams, HeartBeatParams, scheduler_grpc_client::SchedulerGrpcClient,
 };
 use ballista_core::serde::{
     BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
@@ -54,7 +54,7 @@ use ballista_core::utils::{
     create_grpc_client_connection, create_grpc_server, default_config_producer,
     get_time_before,
 };
-use ballista_core::{ConfigProducer, RuntimeProducer, BALLISTA_VERSION};
+use ballista_core::{BALLISTA_VERSION, ConfigProducer, RuntimeProducer};
 
 use crate::execution_engine::ExecutionEngine;
 use crate::executor::{Executor, TasksDrainedFuture};
@@ -63,8 +63,8 @@ use crate::flight_service::BallistaFlightService;
 use crate::metrics::LoggingMetricsCollector;
 use crate::shutdown::Shutdown;
 use crate::shutdown::ShutdownNotifier;
+use crate::{ArrowFlightServerProvider, terminate};
 use crate::{execution_loop, executor_server};
-use crate::{terminate, ArrowFlightServerProvider};
 
 pub struct ExecutorProcessConfig {
     pub bind_host: String,
@@ -475,7 +475,9 @@ async fn flight_server_task(
     max_decoding_message_size: usize,
 ) -> JoinHandle<Result<(), BallistaError>> {
     tokio::spawn(async move {
-        info!("Built-in arrow flight server listening on: {address:?} max_encoding_size: {max_encoding_message_size} max_decoding_size: {max_decoding_message_size}");
+        info!(
+            "Built-in arrow flight server listening on: {address:?} max_encoding_size: {max_encoding_message_size} max_decoding_size: {max_decoding_message_size}"
+        );
 
         let server_future = create_grpc_server()
             .add_service(
@@ -538,7 +540,9 @@ async fn clean_shuffle_data_loop(
                     Ok(_) => {}
                 }
             } else {
-                warn!("{child_path:?} under the working directory is a not a directory and will be ignored when doing cleanup")
+                warn!(
+                    "{child_path:?} under the working directory is a not a directory and will be ignored when doing cleanup"
+                )
             }
         } else {
             error!("Fail to get metadata for file {:?}", child.path())

@@ -52,7 +52,7 @@ use itertools::Itertools;
 use log::{debug, error};
 use rand::prelude::SliceRandom;
 use rand::rng;
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{Semaphore, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
 /// ShuffleReaderExec reads partitions that have already been materialized by a ShuffleWriterExec
@@ -472,7 +472,7 @@ mod tests {
     use datafusion::physical_plan::common;
 
     use datafusion::prelude::SessionContext;
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
 
     #[tokio::test]
     async fn test_stats_for_partitions_empty() {

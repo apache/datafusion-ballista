@@ -26,19 +26,19 @@ use datafusion::common::{DEFAULT_CSV_EXTENSION, DEFAULT_PARQUET_EXTENSION};
 use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::datasource::{MemTable, TableProvider};
 use datafusion::error::{DataFusionError, Result};
-use datafusion::execution::context::SessionState;
 use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::LogicalPlan;
-use datafusion::logical_expr::{expr::Cast, Expr};
+use datafusion::logical_expr::{Expr, expr::Cast};
 use datafusion::parquet::basic::Compression;
 use datafusion::parquet::file::properties::WriterProperties;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::{collect, displayable};
 use datafusion::prelude::*;
 use datafusion::{
-    arrow::datatypes::{DataType, Field, Schema},
-    datasource::file_format::{csv::CsvFormat, FileFormat},
     DATAFUSION_VERSION,
+    arrow::datatypes::{DataType, Field, Schema},
+    datasource::file_format::{FileFormat, csv::CsvFormat},
 };
 use datafusion::{
     arrow::record_batch::RecordBatch, datasource::file_format::parquet::ParquetFormat,
@@ -609,7 +609,7 @@ async fn register_tables(
             other => {
                 return Err(DataFusionError::Plan(format!(
                     "Invalid file format '{other}'"
-                )))
+                )));
             }
         }
     }
@@ -646,7 +646,7 @@ fn get_query_sql(query: usize) -> Result<Vec<String>> {
                         .map(|s| s.trim())
                         .filter(|s| !s.is_empty())
                         .map(|s| s.to_string())
-                        .collect())
+                        .collect());
                 }
                 Err(e) => errors.push(format!("{filename}: {e}")),
             };
@@ -771,7 +771,7 @@ async fn convert_tbl(opt: ConvertOpt) -> Result<()> {
                     other => {
                         return Err(DataFusionError::NotImplemented(format!(
                             "Invalid compression format: {other}"
-                        )))
+                        )));
                     }
                 };
                 let props = WriterProperties::builder()
@@ -782,7 +782,7 @@ async fn convert_tbl(opt: ConvertOpt) -> Result<()> {
             other => {
                 return Err(DataFusionError::NotImplemented(format!(
                     "Invalid output format: {other}"
-                )))
+                )));
             }
         }
         println!("Conversion completed in {} ms", start.elapsed().as_millis());

@@ -25,9 +25,9 @@
 //
 #![allow(clippy::uninlined_format_args)]
 
-use crate::cluster::DistributionPolicy;
 use crate::SessionBuilder;
-use ballista_core::{config::TaskSchedulingPolicy, ConfigProducer};
+use crate::cluster::DistributionPolicy;
+use ballista_core::{ConfigProducer, config::TaskSchedulingPolicy};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use std::fmt::Display;

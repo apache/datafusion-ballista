@@ -61,7 +61,9 @@ pub fn create_datafusion_context(
             // should we disable catalog on the scheduler side
             .with_round_robin_repartition(false);
 
-        log::warn!("session manager will override `datafusion.optimizer.enable_round_robin_repartition` to `false` ");
+        log::warn!(
+            "session manager will override `datafusion.optimizer.enable_round_robin_repartition` to `false` "
+        );
         session_builder(session_config)?
     } else {
         session_builder(session_config.clone())?

@@ -20,7 +20,7 @@ use ballista_core::object_store::{
 };
 
 use ballista_executor::executor_process::{
-    start_executor_process, ExecutorProcessConfig,
+    ExecutorProcessConfig, start_executor_process,
 };
 use std::sync::Arc;
 ///
