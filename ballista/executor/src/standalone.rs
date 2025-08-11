@@ -22,12 +22,12 @@ use ballista_core::extension::SessionConfigExt;
 use ballista_core::registry::BallistaFunctionRegistry;
 use ballista_core::utils::default_config_producer;
 use ballista_core::{
-    error::Result,
-    serde::protobuf::{scheduler_grpc_client::SchedulerGrpcClient, ExecutorRegistration},
-    serde::scheduler::ExecutorSpecification,
-    serde::BallistaCodec,
-    utils::create_grpc_server,
     BALLISTA_VERSION,
+    error::Result,
+    serde::BallistaCodec,
+    serde::protobuf::{ExecutorRegistration, scheduler_grpc_client::SchedulerGrpcClient},
+    serde::scheduler::ExecutorSpecification,
+    utils::create_grpc_server,
 };
 use ballista_core::{ConfigProducer, RuntimeProducer};
 use datafusion::execution::{SessionState, SessionStateBuilder};

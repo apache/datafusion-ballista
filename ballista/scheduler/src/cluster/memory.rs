@@ -16,24 +16,25 @@
 // under the License.
 
 use crate::cluster::{
-    bind_task_bias, bind_task_consistent_hash, bind_task_round_robin, get_scan_files,
-    is_skip_consistent_hash, BoundTask, ClusterState, ExecutorSlot, JobState,
-    JobStateEvent, JobStateEventStream, JobStatus, TaskDistributionPolicy, TopologyNode,
+    BoundTask, ClusterState, ExecutorSlot, JobState, JobStateEvent, JobStateEventStream,
+    JobStatus, TaskDistributionPolicy, TopologyNode, bind_task_bias,
+    bind_task_consistent_hash, bind_task_round_robin, get_scan_files,
+    is_skip_consistent_hash,
 };
 use crate::state::execution_graph::ExecutionGraph;
 use async_trait::async_trait;
+use ballista_core::ConfigProducer;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::{
-    executor_status, AvailableTaskSlots, ExecutorHeartbeat, ExecutorStatus, FailedJob,
-    QueuedJob,
+    AvailableTaskSlots, ExecutorHeartbeat, ExecutorStatus, FailedJob, QueuedJob,
+    executor_status,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
-use ballista_core::ConfigProducer;
 use dashmap::DashMap;
 use datafusion::prelude::{SessionConfig, SessionContext};
 
 use crate::cluster::event::ClusterEventSender;
-use crate::scheduler_server::{timestamp_millis, timestamp_secs, SessionBuilder};
+use crate::scheduler_server::{SessionBuilder, timestamp_millis, timestamp_secs};
 use crate::state::session_manager::create_datafusion_context;
 use crate::state::task_manager::JobInfoCache;
 use ballista_core::serde::protobuf::job_status::Status;
@@ -69,10 +70,10 @@ impl InMemoryClusterState {
     ) -> HashMap<String, TopologyNode> {
         let mut nodes: HashMap<String, TopologyNode> = HashMap::new();
         for (executor_id, slots) in guard.iter() {
-            if let Some(executors) = executors.as_ref() {
-                if !executors.contains(executor_id) {
-                    continue;
-                }
+            if let Some(executors) = executors.as_ref()
+                && !executors.contains(executor_id)
+            {
+                continue;
             }
             if let Some(executor) = self.executors.get(&slots.executor_id) {
                 let node = TopologyNode::new(

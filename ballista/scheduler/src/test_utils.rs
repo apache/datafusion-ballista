@@ -29,29 +29,29 @@ use async_trait::async_trait;
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
 use crate::planner::DefaultDistributedPlanner;
-use crate::scheduler_server::{timestamp_millis, SchedulerServer};
+use crate::scheduler_server::{SchedulerServer, timestamp_millis};
 
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::task_manager::TaskLauncher;
 
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    task_status, FailedTask, JobStatus, MultiTaskDefinition, ShuffleWritePartition,
-    SuccessfulTask, TaskId, TaskStatus,
+    FailedTask, JobStatus, MultiTaskDefinition, ShuffleWritePartition, SuccessfulTask,
+    TaskId, TaskStatus, task_status,
 };
 use ballista_core::serde::scheduler::{
     ExecutorData, ExecutorMetadata, ExecutorSpecification,
 };
-use ballista_core::serde::{protobuf, BallistaCodec};
+use ballista_core::serde::{BallistaCodec, protobuf};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::DataFusionError;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::context::{SessionConfig, SessionContext};
 use datafusion::functions_aggregate::{count::count, sum::sum};
 use datafusion::logical_expr::{Expr, LogicalPlan, SortExpr};
-use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::{col, CsvReadOptions, JoinType};
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
+use datafusion::prelude::{CsvReadOptions, JoinType, col};
 use datafusion::test_util::scan_empty_with_partitions;
 
 use crate::cluster::BallistaCluster;
@@ -61,7 +61,7 @@ use crate::state::execution_graph::{ExecutionGraph, ExecutionStage, TaskDescript
 use ballista_core::utils::{default_config_producer, default_session_builder};
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use parking_lot::Mutex;
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::sync::mpsc::{Receiver, Sender, channel};
 
 pub const TPCH_TABLES: &[&str] = &[
     "part", "supplier", "partsupp", "customer", "orders", "lineitem", "nation", "region",
@@ -552,7 +552,7 @@ impl SchedulerTest {
             {
                 match inner {
                     Status::Failed(_) | Status::Successful(_) => {
-                        break Ok(status.unwrap())
+                        break Ok(status.unwrap());
                     }
                     _ => {
                         if time >= timeout_ms {
@@ -587,7 +587,7 @@ impl SchedulerTest {
             {
                 match inner {
                     Status::Failed(_) | Status::Successful(_) => {
-                        break Ok(status.unwrap())
+                        break Ok(status.unwrap());
                     }
                     _ => continue,
                 }
@@ -641,7 +641,7 @@ impl SchedulerTest {
             {
                 match inner {
                     Status::Failed(_) | Status::Successful(_) => {
-                        break Ok(status.unwrap())
+                        break Ok(status.unwrap());
                     }
                     _ => continue,
                 }

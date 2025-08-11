@@ -219,11 +219,11 @@ fn sanitize(str: &str, max_len: Option<usize>) -> String {
     }
     // truncate after translation because we know we only have ASCII chars at this point
     // so the slice is safe (not splitting unicode character bytes)
-    if let Some(limit) = max_len {
-        if sanitized.len() > limit {
-            sanitized.truncate(limit);
-            return sanitized + " ...";
-        }
+    if let Some(limit) = max_len
+        && sanitized.len() > limit
+    {
+        sanitized.truncate(limit);
+        return sanitized + " ...";
     }
     sanitized
 }

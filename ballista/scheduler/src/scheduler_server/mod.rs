@@ -20,8 +20,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ballista_core::error::Result;
 use ballista_core::event_loop::{EventLoop, EventSender};
-use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::BallistaCodec;
+use ballista_core::serde::protobuf::TaskStatus;
 
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::LogicalPlan;
@@ -40,8 +40,8 @@ use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
 
 use crate::state::executor_manager::ExecutorManager;
 
-use crate::state::task_manager::TaskLauncher;
 use crate::state::SchedulerState;
+use crate::state::task_manager::TaskLauncher;
 
 // include the generated protobuf source as a submodule
 #[cfg(feature = "keda-scaler")]
@@ -256,8 +256,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
 
                     let stop_reason = if terminating {
                         format!(
-                        "TERMINATING executor {executor_id} heartbeat timed out after {}s", state.config.executor_termination_grace_period,
-                    )
+                            "TERMINATING executor {executor_id} heartbeat timed out after {}s",
+                            state.config.executor_termination_grace_period,
+                        )
                     } else {
                         format!(
                             "ACTIVE executor {executor_id} heartbeat timed out after {}s",
@@ -368,7 +369,7 @@ mod test {
     use ballista_core::extension::SessionConfigExt;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::functions_aggregate::sum::sum;
-    use datafusion::logical_expr::{col, LogicalPlan};
+    use datafusion::logical_expr::{LogicalPlan, col};
 
     use datafusion::prelude::SessionConfig;
     use datafusion::test_util::scan_empty_with_partitions;
@@ -380,22 +381,22 @@ mod test {
 
     use crate::config::SchedulerConfig;
 
+    use ballista_core::serde::BallistaCodec;
     use ballista_core::serde::protobuf::{
-        failed_task, job_status, task_status, ExecutionError, FailedTask, JobStatus,
-        MultiTaskDefinition, ShuffleWritePartition, SuccessfulJob, SuccessfulTask,
-        TaskId, TaskStatus,
+        ExecutionError, FailedTask, JobStatus, MultiTaskDefinition,
+        ShuffleWritePartition, SuccessfulJob, SuccessfulTask, TaskId, TaskStatus,
+        failed_task, job_status, task_status,
     };
     use ballista_core::serde::scheduler::{
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
     };
-    use ballista_core::serde::BallistaCodec;
 
-    use crate::scheduler_server::{timestamp_millis, SchedulerServer};
+    use crate::scheduler_server::{SchedulerServer, timestamp_millis};
 
     use crate::test_utils::{
+        ExplodingTableProvider, SchedulerTest, TaskRunnerFn, TestMetricsCollector,
         assert_completed_event, assert_failed_event, assert_no_submitted_event,
-        assert_submitted_event, test_cluster_context, ExplodingTableProvider,
-        SchedulerTest, TaskRunnerFn, TestMetricsCollector,
+        assert_submitted_event, test_cluster_context,
     };
 
     #[tokio::test]

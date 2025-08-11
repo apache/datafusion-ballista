@@ -30,8 +30,8 @@ use datafusion::physical_plan::{
     SendableRecordBatchStream, Statistics,
 };
 use datafusion::{error::Result, physical_plan::RecordBatchStream};
-use futures::stream::SelectAll;
 use futures::Stream;
+use futures::stream::SelectAll;
 
 /// The CollectExec operator retrieves results from the cluster and returns them as a single
 /// vector of [RecordBatch].

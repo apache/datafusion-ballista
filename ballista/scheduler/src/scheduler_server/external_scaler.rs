@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::scheduler_server::externalscaler::{
-    external_scaler_server::ExternalScaler, GetMetricSpecResponse, GetMetricsRequest,
-    GetMetricsResponse, IsActiveResponse, MetricSpec, MetricValue, ScaledObjectRef,
-};
 use crate::scheduler_server::SchedulerServer;
+use crate::scheduler_server::externalscaler::{
+    GetMetricSpecResponse, GetMetricsRequest, GetMetricsResponse, IsActiveResponse,
+    MetricSpec, MetricValue, ScaledObjectRef, external_scaler_server::ExternalScaler,
+};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 

@@ -14,7 +14,7 @@ mod handlers;
 
 use crate::scheduler_server::SchedulerServer;
 use axum::routing::patch;
-use axum::{routing::get, Router};
+use axum::{Router, routing::get};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use std::sync::Arc;

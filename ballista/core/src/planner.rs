@@ -25,8 +25,8 @@ use datafusion::common::tree_node::{TreeNode, TreeNodeVisitor};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::{QueryPlanner, SessionState};
 use datafusion::logical_expr::{LogicalPlan, TableScan};
-use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use datafusion_proto::logical_plan::{AsLogicalPlan, LogicalExtensionCodec};
 use std::marker::PhantomData;
@@ -180,7 +180,7 @@ mod test {
     use datafusion::{
         common::tree_node::TreeNode,
         error::Result,
-        execution::{runtime_env::RuntimeEnvBuilder, SessionStateBuilder},
+        execution::{SessionStateBuilder, runtime_env::RuntimeEnvBuilder},
         prelude::{SessionConfig, SessionContext},
     };
 

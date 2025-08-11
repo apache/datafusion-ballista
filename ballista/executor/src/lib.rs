@@ -44,8 +44,8 @@ use log::info;
 
 use crate::shutdown::Shutdown;
 use ballista_core::serde::protobuf::{
-    task_status, FailedTask, OperatorMetricsSet, ShuffleWritePartition, SuccessfulTask,
-    TaskStatus,
+    FailedTask, OperatorMetricsSet, ShuffleWritePartition, SuccessfulTask, TaskStatus,
+    task_status,
 };
 use ballista_core::serde::scheduler::PartitionId;
 

@@ -20,7 +20,7 @@ use ballista_examples::test_util;
 use datafusion::{
     common::Result,
     execution::SessionStateBuilder,
-    prelude::{col, lit, ParquetReadOptions, SessionConfig, SessionContext},
+    prelude::{ParquetReadOptions, SessionConfig, SessionContext, col, lit},
 };
 
 /// This example demonstrates executing a simple query against an Arrow data source (Parquet) and

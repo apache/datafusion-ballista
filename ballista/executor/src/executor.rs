@@ -22,13 +22,13 @@ use crate::execution_engine::ExecutionEngine;
 use crate::execution_engine::QueryStageExecutor;
 use crate::metrics::ExecutorMetricsCollector;
 use crate::metrics::LoggingMetricsCollector;
+use ballista_core::ConfigProducer;
+use ballista_core::RuntimeProducer;
 use ballista_core::error::BallistaError;
 use ballista_core::registry::BallistaFunctionRegistry;
 use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::ExecutorRegistration;
 use ballista_core::serde::scheduler::PartitionId;
-use ballista_core::ConfigProducer;
-use ballista_core::RuntimeProducer;
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -215,11 +215,11 @@ impl Executor {
 mod test {
     use crate::execution_engine::DefaultQueryStageExec;
     use crate::executor::Executor;
+    use ballista_core::RuntimeProducer;
     use ballista_core::execution_plans::ShuffleWriterExec;
     use ballista_core::serde::protobuf::ExecutorRegistration;
     use ballista_core::serde::scheduler::PartitionId;
     use ballista_core::utils::default_config_producer;
-    use ballista_core::RuntimeProducer;
     use datafusion::arrow::datatypes::{Schema, SchemaRef};
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::error::{DataFusionError, Result};

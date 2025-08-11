@@ -153,10 +153,10 @@ where
             .range(hashed_key..)
             .chain(self.virtual_nodes.iter())
         {
-            if let Some((node, _)) = self.node_replicas.get(node_name) {
-                if node.is_valid() {
-                    return Some(position_key.clone());
-                }
+            if let Some((node, _)) = self.node_replicas.get(node_name)
+                && node.is_valid()
+            {
+                return Some(position_key.clone());
             }
             if tolerance == 0 {
                 return None;
@@ -177,8 +177,8 @@ pub fn md5_hash(data: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod test {
-    use crate::consistent_hash::node::Node;
     use crate::consistent_hash::ConsistentHash;
+    use crate::consistent_hash::node::Node;
 
     #[test]
     fn test_topology() {
@@ -219,9 +219,11 @@ mod test {
         for (i, key) in keys.iter().enumerate() {
             if i == 2 {
                 assert!(consistent_hash.get(key.as_bytes()).is_none());
-                assert!(consistent_hash
-                    .get_with_tolerance(key.as_bytes(), 1)
-                    .is_some());
+                assert!(
+                    consistent_hash
+                        .get_with_tolerance(key.as_bytes(), 1)
+                        .is_some()
+                );
             } else {
                 assert_eq!(
                     consistent_hash.get(key.as_bytes()).unwrap().name(),

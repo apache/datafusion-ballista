@@ -28,7 +28,7 @@ use datafusion::common::Result;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
 
-use crate::functions::{display_all_functions, Function};
+use crate::functions::{Function, display_all_functions};
 use crate::print_format::PrintFormat;
 use crate::print_options::PrintOptions;
 

@@ -17,7 +17,7 @@
 
 use ballista::datafusion::{
     common::Result,
-    execution::{options::ParquetReadOptions, SessionStateBuilder},
+    execution::{SessionStateBuilder, options::ParquetReadOptions},
     prelude::{SessionConfig, SessionContext},
 };
 use ballista::prelude::{SessionConfigExt, SessionContextExt};

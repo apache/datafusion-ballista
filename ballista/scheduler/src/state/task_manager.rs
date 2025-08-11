@@ -30,11 +30,11 @@ use datafusion::prelude::SessionConfig;
 use rand::distr::Alphanumeric;
 
 use crate::cluster::JobState;
+use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::{
-    job_status, JobStatus, MultiTaskDefinition, TaskDefinition, TaskId, TaskStatus,
+    JobStatus, MultiTaskDefinition, TaskDefinition, TaskId, TaskStatus, job_status,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
-use ballista_core::serde::BallistaCodec;
 use dashmap::DashMap;
 
 use datafusion::physical_plan::ExecutionPlan;
@@ -42,7 +42,7 @@ use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
 use datafusion_proto::protobuf::PhysicalPlanNode;
 use log::{debug, error, info, trace, warn};
-use rand::{rng, Rng};
+use rand::{Rng, rng};
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::Arc;
@@ -364,7 +364,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                 )?
             } else {
                 // TODO Deal with curator changed case
-                error!("Fail to find job {job_id} in the active cache and it may not be curated by this scheduler");
+                error!(
+                    "Fail to find job {job_id} in the active cache and it may not be curated by this scheduler"
+                );
                 vec![]
             };
 
@@ -431,7 +433,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             (running_tasks, pending_tasks)
         } else {
             // TODO listen the job state update event and fix task cancelling
-            warn!("Fail to find job {job_id} in the cache, unable to cancel tasks for job, fail the job state only.");
+            warn!(
+                "Fail to find job {job_id} in the cache, unable to cancel tasks for job, fail the job state only."
+            );
             (vec![], 0)
         };
 
@@ -587,7 +591,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
                     .iter()
                     .map(|task| task.partition.partition_id)
                     .collect();
-                debug!("Preparing multi task definition for tasks {task_ids:?} belonging to job stage {job_id}/{stage_id}");
+                debug!(
+                    "Preparing multi task definition for tasks {task_ids:?} belonging to job stage {job_id}/{stage_id}"
+                );
                 trace!("With task details {tasks:?}");
             }
 
@@ -626,7 +632,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
                 Ok(multi_tasks)
             } else {
-                Err(BallistaError::General(format!("Cannot prepare multi task definition for job {job_id} which is not in active cache")))
+                Err(BallistaError::General(format!(
+                    "Cannot prepare multi task definition for job {job_id} which is not in active cache"
+                )))
             }
         } else {
             Err(BallistaError::General(
@@ -669,7 +677,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Clean up a failed job in FailedJobs Keyspace by delayed clean_up_interval seconds
     pub(crate) fn clean_up_job_delayed(&self, job_id: String, clean_up_interval: u64) {
         if clean_up_interval == 0 {
-            info!("The interval is 0 and the clean up for the failed job state {job_id} will not triggered");
+            info!(
+                "The interval is 0 and the clean up for the failed job state {job_id} will not triggered"
+            );
             return;
         }
 

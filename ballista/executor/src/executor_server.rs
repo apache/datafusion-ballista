@@ -19,8 +19,8 @@ use ballista_core::BALLISTA_VERSION;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
@@ -29,21 +29,21 @@ use tonic::transport::Channel;
 use tonic::{Request, Response, Status};
 
 use ballista_core::error::BallistaError;
+use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::{
-    executor_grpc_server::{ExecutorGrpc, ExecutorGrpcServer},
-    executor_metric, executor_status,
-    scheduler_grpc_client::SchedulerGrpcClient,
     CancelTasksParams, CancelTasksResult, ExecutorMetric, ExecutorStatus,
     HeartBeatParams, LaunchMultiTaskParams, LaunchMultiTaskResult, LaunchTaskParams,
     LaunchTaskResult, RegisterExecutorParams, RemoveJobDataParams, RemoveJobDataResult,
     StopExecutorParams, StopExecutorResult, TaskStatus, UpdateTaskStatusParams,
-};
-use ballista_core::serde::scheduler::from_proto::{
-    get_task_definition, get_task_definition_vec,
+    executor_grpc_server::{ExecutorGrpc, ExecutorGrpcServer},
+    executor_metric, executor_status,
+    scheduler_grpc_client::SchedulerGrpcClient,
 };
 use ballista_core::serde::scheduler::PartitionId;
 use ballista_core::serde::scheduler::TaskDefinition;
-use ballista_core::serde::BallistaCodec;
+use ballista_core::serde::scheduler::from_proto::{
+    get_task_definition, get_task_definition_vec,
+};
 use ballista_core::utils::{create_grpc_client_connection, create_grpc_server};
 use dashmap::DashMap;
 use datafusion::execution::TaskContext;
@@ -55,7 +55,7 @@ use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
 use crate::executor_process::ExecutorProcessConfig;
 use crate::shutdown::ShutdownNotifier;
-use crate::{as_task_status, TaskExecutionTimes};
+use crate::{TaskExecutionTimes, as_task_status};
 
 type ServerHandle = JoinHandle<Result<(), BallistaError>>;
 type SchedulerClients = Arc<DashMap<String, SchedulerGrpcClient<Channel>>>;
@@ -517,7 +517,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskRunnerPool<T,
                             break;
                         }
                         Err(TryRecvError::Disconnected) => {
-                            info!("Channel is closed and will exit the task status report loop");
+                            info!(
+                                "Channel is closed and will exit the task status report loop"
+                            );
                             drop(tasks_status_complete);
                             return;
                         }
