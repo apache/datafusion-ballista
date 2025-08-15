@@ -41,8 +41,8 @@ arrow = { workspace = true }
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 ballista-core = { path = "../core", version = "49.0.0" }
-configure_me = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
+configure_me = { workspace = true, optional = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
