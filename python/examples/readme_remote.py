@@ -20,10 +20,12 @@
 from ballista import BallistaBuilder
 from datafusion.context import SessionContext
 
-ctx: SessionContext = BallistaBuilder()\
-    .config("ballista.job.name", "Readme Example Remote")\
-    .config("datafusion.execution.target_partitions", "4")\
+ctx: SessionContext = (
+    BallistaBuilder()
+    .config("ballista.job.name", "Readme Example Remote")
+    .config("datafusion.execution.target_partitions", "4")
     .remote("df://127.0.0.1:50050")
+)
 
 ctx.sql("create external table t stored as parquet location '../testdata/test.parquet'")
 
@@ -32,7 +34,7 @@ df = ctx.sql("select * from t limit 5")
 pyarrow_batches = df.collect()
 pyarrow_batches[0].to_pandas()
 # %%
-df = ctx.read_parquet('../testdata/test.parquet').limit(5)
+df = ctx.read_parquet("../testdata/test.parquet").limit(5)
 pyarrow_batches = df.collect()
 pyarrow_batches[0].to_pandas()
 # %%
