@@ -16,7 +16,7 @@
 # under the License.
 
 [build-system]
-requires = ["maturin>=1.5.1,<1.6.0"]
+requires = ["maturin>=1.8.0,<2.0"]
 build-backend = "maturin"
 
 [project]
@@ -26,7 +26,7 @@ readme = "README.md"
 license = {file = "LICENSE.txt"}
 requires-python = ">=3.9"
 keywords = ["ballista", "sql", "rust", "distributed"]
-classifier = [
+classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
@@ -43,8 +43,10 @@ classifier = [
     "Programming Language :: Rust",
 ]
 dependencies = [
-    "pyarrow>=19.0.0", "cloudpickle"
+    "pyarrow>=21.0.0",
+    "cloudpickle",
 ]
+dynamic = ["version"]
 
 [project.urls]
 homepage = "https://datafusion.apache.org/ballista"
@@ -62,3 +64,15 @@ include = [
 exclude = [".github/**", "ci/**", ".asf.yaml"]
 # Require Cargo.lock is up to date
 locked = true
+
+[dependency-groups]
+dev = [
+    "maturin>=1.8.1",
+    "pytest>=8.4.1",
+    "pytest-asyncio>=1.1.0",
+    "ruff>=0.9.1",
+    "toml>=0.10.2",
+    "pygithub==2.5.0",
+]
+docs = [
+]

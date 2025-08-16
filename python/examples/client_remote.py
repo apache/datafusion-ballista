@@ -15,10 +15,10 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# %% 
+# %%
 from ballista import BallistaBuilder
 from datafusion.context import SessionContext
-    
+
 ctx: SessionContext = BallistaBuilder().remote("df://127.0.0.1:50050")
 
 # Select 1 to verify its working

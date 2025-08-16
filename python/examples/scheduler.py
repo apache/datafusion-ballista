@@ -17,6 +17,7 @@
 
 # %%
 from ballista import BallistaScheduler
+
 # %%
 scheduler = BallistaScheduler()
 # %%
