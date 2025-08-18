@@ -38,7 +38,7 @@ pub enum BallistaError {
     General(String),
     Internal(String),
     Configuration(String),
-    ArrowError(ArrowError),
+    ArrowError(Box<ArrowError>),
     DataFusionError(Box<DataFusionError>),
     SqlError(parser::ParserError),
     IoError(io::Error),
@@ -84,7 +84,7 @@ impl From<ArrowError> for BallistaError {
                     *e.downcast::<DataFusionError>().unwrap(),
                 ))
             }
-            other => BallistaError::ArrowError(other),
+            other => BallistaError::ArrowError(Box::new(other)),
         }
     }
 }
@@ -98,7 +98,7 @@ impl From<parser::ParserError> for BallistaError {
 impl From<DataFusionError> for BallistaError {
     fn from(e: DataFusionError) -> Self {
         match e {
-            DataFusionError::ArrowError(e, _) => Self::from(e),
+            DataFusionError::ArrowError(e, _) => Self::from(*e),
             _ => BallistaError::DataFusionError(Box::new(e)),
         }
     }
