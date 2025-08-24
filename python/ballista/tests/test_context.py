@@ -16,10 +16,11 @@
 # under the License.
 
 from ballista import BallistaBuilder
-import pytest
+
 
 def test_create_context():
     BallistaBuilder().standalone()
+
 
 def test_select_one():
     ctx = BallistaBuilder().standalone()
@@ -27,12 +28,14 @@ def test_select_one():
     batches = df.collect()
     assert len(batches) == 1
 
+
 def test_read_csv():
     ctx = BallistaBuilder().standalone()
     df = ctx.read_csv("testdata/test.csv", has_header=True)
     batches = df.collect()
     assert len(batches) == 1
     assert len(batches[0]) == 1
+
 
 def test_register_csv():
     ctx = BallistaBuilder().standalone()
@@ -42,12 +45,14 @@ def test_register_csv():
     assert len(batches) == 1
     assert len(batches[0]) == 1
 
+
 def test_read_parquet():
     ctx = BallistaBuilder().standalone()
     df = ctx.read_parquet("testdata/test.parquet")
     batches = df.collect()
     assert len(batches) == 1
     assert len(batches[0]) == 8
+
 
 def test_register_parquet():
     ctx = BallistaBuilder().standalone()
@@ -57,22 +62,28 @@ def test_register_parquet():
     assert len(batches) == 1
     assert len(batches[0]) == 8
 
+
 def test_read_dataframe_api():
     ctx = BallistaBuilder().standalone()
-    df = ctx.read_csv("testdata/test.csv", has_header=True) \
-        .select_columns('a', 'b') \
+    df = (
+        ctx.read_csv("testdata/test.csv", has_header=True)
+        .select_columns("a", "b")
         .limit(1)
+    )
     batches = df.collect()
     assert len(batches) == 1
     assert len(batches[0]) == 1
 
+
 def test_execute_plan():
     ctx = BallistaBuilder().standalone()
-    df = ctx.read_csv("testdata/test.csv", has_header=True) \
-        .select_columns('a', 'b') \
+    df = (
+        ctx.read_csv("testdata/test.csv", has_header=True)
+        .select_columns("a", "b")
         .limit(1)
+    )
     # TODO research SessionContext Logical Plan for DataFusionPython
-    #df = ctx.execute_logical_plan(df.logical_plan())
+    # df = ctx.execute_logical_plan(df.logical_plan())
     batches = df.collect()
     assert len(batches) == 1
     assert len(batches[0]) == 1

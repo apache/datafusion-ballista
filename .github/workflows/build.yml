@@ -29,6 +29,41 @@ on:
     branches: ["branch-*"]
 
 jobs:
+  test-release:
+    name: Test Python Release
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+          - "3.12"
+          - "3.13"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "27.4"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Build Python package
+        run: |
+          cd python
+          uv sync --dev --no-install-package ballista 
+          uv run pytest
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -36,28 +71,35 @@ jobs:
       - name: Install Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      # Use the --no-install-package to only install the dependencies
+      # but do not yet build the rust library
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install ruff
+          cd python 
+          uv sync --dev --no-install-package ballista
+
       # Update output format to enable automatic inline annotations.
-  #      - name: Run Ruff
-  #        run: |
-  #          ruff check --output-format=github python/
-  #          ruff format --check python/
+      - name: Run Ruff
+        run: |
+          cd python 
+          uv run --no-project ruff check --output-format=github .
+          uv run --no-project ruff format --check .
 
   generate-license:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v6
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
+          enable-cache: true
       - name: Generate license file
-        run: python ./dev/create_license.py
+        run: uv run --no-project python ./dev/create_license.py
       - uses: actions/upload-artifact@v4
         with:
           name: python-wheel-license
@@ -80,14 +122,6 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
-
-      - name: Install maturin
-        run: pip install maturin==1.5.1
 
       - run: rm LICENSE.txt
       - name: Download LICENSE.txt
@@ -102,11 +136,15 @@ jobs:
           version: "27.4"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Cargo build
-        run: cd python && cargo build
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
 
       - name: Build Python package
-        run: cd python && maturin build --release --strip
+        run: |
+          cd python
+          uv sync --dev --no-install-package ballista
+          uv run --no-project maturin build --release --strip
 
       - name: List Windows wheels
         if: matrix.os == 'windows-latest'
@@ -117,7 +155,7 @@ jobs:
 
       - name: List Mac wheels
         if: matrix.os != 'windows-latest'
-        run: cd python/target/wheels/
+        run: find python/target/wheels/
 
       - name: Archive wheels
         uses: actions/upload-artifact@v4
@@ -141,14 +179,6 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
-
-      - name: Install maturin
-        run: pip install maturin==1.5.1
 
       - run: rm LICENSE.txt
       - name: Download LICENSE.txt
@@ -162,12 +192,19 @@ jobs:
         with:
           version: "27.4"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Cargo build
-        run: cd python && cargo build
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
       - name: Build Python package
-        run: cd python && maturin build --release --strip
+        run: |
+          cd python
+          uv sync --dev --no-install-package ballista
+          uv run --no-project maturin build --release --strip
+
       - name: List Mac wheels
-        run: cd python/target/wheels/
+        run: find python/target/wheels/
 
       - name: Archive wheels
         uses: actions/upload-artifact@v4
@@ -181,8 +218,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: rm LICENSE.txt
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: rm LICENSE.txt
       - name: Download LICENSE.txt
         uses: actions/download-artifact@v4
         with:
@@ -190,22 +229,23 @@ jobs:
           path: .
 
       - run: cat LICENSE.txt
+
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
         with:
           version: "27.4"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
-
-      - name: Install maturin
-        run: pip install maturin==1.5.1
-      - name: Cargo Build
-        run: cd python && cargo build
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
 
       - name: Build Python package
-        run: cd python && maturin build --release --strip
+        run: |
+          cd python
+          uv sync --dev --no-install-package ballista
+          uv run --no-project maturin build --release --strip
+
       - name: Archive wheels
         uses: actions/upload-artifact@v4
         with:
@@ -218,6 +258,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
       - run: rm LICENSE.txt
       - name: Download LICENSE.txt
         uses: actions/download-artifact@v4
@@ -232,16 +275,17 @@ jobs:
         with:
           version: "27.4"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
 
-      - name: Install maturin
-        run: pip install maturin==1.5.1
-      - name: Cargo Build
-        run: cd python && cargo build
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
 
       - name: Build Python package
-        run: cd python && maturin build --release --strip
+        run: |
+          cd python
+          uv sync --dev --no-install-package ballista
+          uv run --no-project maturin build --release --strip
+
       - name: Archive wheels
         uses: actions/upload-artifact@v4
         with:
@@ -254,6 +298,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
       - run: rm LICENSE.txt
       - name: Download LICENSE.txt
         uses: actions/download-artifact@v4
@@ -268,15 +315,16 @@ jobs:
         with:
           version: "27.4"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
 
-      - name: Install maturin
-        run: pip install maturin==1.5.1
-      - name: Cargo Build
-        run: cd python && cargo build
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
       - name: Build Python package
-        run: cd python && maturin build --release --sdist --out dist --strip
+        run: |
+          cd python
+          uv sync --dev --no-install-package ballista
+          uv run --no-project maturin build --release --sdist --out dist --strip
 
       - name: Assert sdist build does not generate wheels
         run: |
