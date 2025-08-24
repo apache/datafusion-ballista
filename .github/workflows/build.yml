@@ -23,7 +23,10 @@ concurrency:
 
 on:
   pull_request:
+    branches: ["main"]
   push:
+    tags: ["*-rc*"]
+    branches: ["branch-*"]
 
 jobs:
   test-release:

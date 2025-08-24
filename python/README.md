@@ -83,23 +83,40 @@ executor.wait_for_termination()
 ## Development Process
 
 ### Creating Virtual Environment
-
+#### pip
 ```shell
 python3 -m venv venv
 source venv/bin/activate
 pip3 install -r requirements.txt
 ```
 
-### Building
+#### uv
+```shell
+uv sync --dev --no-install-package ballista
+```
 
+### Building
+#### pip
 ```shell
 maturin develop
 ```
 
 Note that you can also run `maturin develop --release` to get a release build locally.
 
-### Testing
+#### uv
+```shell
+uv run --no-project maturin build
+```
 
+Or `uv run --no-project maturin build --release --strip` to get a release build.
+
+### Testing
+#### pip
 ```shell
 python3 -m pytest
+```
+
+#### uv
+```shell
+uv run --no-project pytest
 ```
