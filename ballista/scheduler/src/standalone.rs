@@ -29,7 +29,7 @@ use ballista_core::{
     error::Result, serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer,
     BALLISTA_VERSION,
 };
-use datafusion::execution::{SessionState, SessionStateBuilder};
+use datafusion::execution::SessionState;
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::protobuf::LogicalPlanNode;
 use datafusion_proto::protobuf::PhysicalPlanNode;
