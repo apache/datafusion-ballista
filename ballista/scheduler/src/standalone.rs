@@ -56,13 +56,7 @@ pub async fn new_standalone_scheduler_from_state(
     let codec = BallistaCodec::new(logical, physical);
     let session_config = session_state.config().clone();
     let session_state = session_state.clone();
-    let session_builder = Arc::new(move |c: SessionConfig| {
-        Ok(
-            SessionStateBuilder::new_from_existing(session_state.clone())
-                .with_config(c)
-                .build(),
-        )
-    });
+    let session_builder = Arc::new(move |_: SessionConfig| Ok(session_state.clone()));
     let config_producer = Arc::new(move || session_config.clone());
 
     new_standalone_scheduler_with_builder(session_builder, config_producer, codec).await
