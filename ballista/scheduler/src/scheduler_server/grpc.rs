@@ -130,10 +130,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
             let mut tasks = vec![];
             for (_, task) in schedulable_tasks {
+                let job_id = task.partition.job_id.clone();
                 match self.state.task_manager.prepare_task_definition(task) {
                     Ok(task_definition) => tasks.push(task_definition),
                     Err(e) => {
                         error!("Error preparing task definition: {e:?}");
+                        if let Err(e) = self.fail_job(job_id, e.to_string()).await {
+                            error!("Error when failing job: {e:?}")
+                        }
                     }
                 }
             }

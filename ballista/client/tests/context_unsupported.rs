@@ -146,4 +146,46 @@ mod unsupported {
 
         assert_batches_eq!(expected, &result);
     }
+
+    // at the moment sort merge join is not supported due to
+    // serde issues. it should be supported with DF.50
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    #[should_panic]
+    async fn should_support_sort_merge_join(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) {
+        ctx.register_parquet(
+            "t0",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+
+        ctx.register_parquet(
+            "t1",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        ctx.sql("SET datafusion.optimizer.prefer_hash_join = false")
+            .await
+            .unwrap()
+            .show()
+            .await
+            .unwrap();
+        ctx.sql("select t0.id from t0 join t1 on t0.id = t1.id")
+            .await
+            .unwrap()
+            .show()
+            .await
+            .unwrap();
+    }
 }
