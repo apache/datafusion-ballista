@@ -101,10 +101,14 @@ impl DisplayAs for ShuffleReaderExec {
     ) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "ShuffleReaderExec: partitions={}", self.partition.len())
+                write!(
+                    f,
+                    "ShuffleReaderExec: partitioning={:?}",
+                    self.properties.partitioning,
+                )
             }
             DisplayFormatType::TreeRender => {
-                write!(f, "partitions={}", self.partition.len())
+                write!(f, "partitioning={:?}", self.properties.partitioning)
             }
         }
     }
