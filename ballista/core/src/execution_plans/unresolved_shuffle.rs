@@ -110,12 +110,16 @@ impl ExecutionPlan for UnresolvedShuffleExec {
 
     fn with_new_children(
         self: Arc<Self>,
-        _children: Vec<Arc<dyn ExecutionPlan>>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Err(DataFusionError::Plan(
-            "Ballista UnresolvedShuffleExec does not support with_new_children()"
-                .to_owned(),
-        ))
+        if children.is_empty() {
+            Ok(self)
+        } else {
+            Err(DataFusionError::Plan(
+                "Ballista UnresolvedShuffleExec does not support children plans"
+                    .to_owned(),
+            ))
+        }
     }
 
     fn execute(

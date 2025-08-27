@@ -395,13 +395,13 @@ impl ExecutionPlan for ShuffleWriterExec {
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(ShuffleWriterExec::try_new(
-            self.job_id.clone(),
-            self.stage_id,
-            children[0].clone(),
-            self.work_dir.clone(),
-            self.shuffle_output_partitioning.clone(),
-        )?))
+        if children.is_empty() {
+            Ok(self)
+        } else {
+            Err(DataFusionError::Plan(
+                "Ballista ShuffleWriterExec does not support children plans".to_owned(),
+            ))
+        }
     }
 
     fn execute(
