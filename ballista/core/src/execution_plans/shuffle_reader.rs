@@ -49,7 +49,7 @@ use crate::error::BallistaError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use itertools::Itertools;
-use log::{debug, error};
+use log::{debug, error, trace};
 use rand::prelude::SliceRandom;
 use rand::rng;
 use tokio::sync::{mpsc, Semaphore};
@@ -175,7 +175,6 @@ impl ExecutionPlan for ShuffleReaderExec {
             .collect();
         // Shuffle partitions for evenly send fetching partition requests to avoid hot executors within multiple tasks
         partition_locations.shuffle(&mut rng());
-
         let response_receiver =
             send_fetch_partitions(partition_locations, max_request_num, max_message_size);
 
@@ -190,15 +189,73 @@ impl ExecutionPlan for ShuffleReaderExec {
         Some(self.metrics.clone_inner())
     }
 
-    fn statistics(&self) -> Result<Statistics> {
-        Ok(stats_for_partitions(
-            self.schema.fields().len(),
-            self.partition
-                .iter()
-                .flatten()
-                .map(|loc| loc.partition_stats),
-        ))
+    fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
+        if let Some(idx) = partition {
+            let partition_count = self.properties().partitioning.partition_count();
+            if idx >= partition_count {
+                return datafusion::common::internal_err!(
+                    "Invalid partition index: {}, the partition count is {}",
+                    idx,
+                    partition_count
+                );
+            }
+            let stat_for_partition =
+                stats_for_partition(idx, self.schema.fields().len(), &self.partition);
+
+            trace!(
+                "shuffle reader at stage: {} and partition {} returned statistics: {:?}",
+                self.stage_id,
+                idx,
+                stat_for_partition
+            );
+            stat_for_partition
+        } else {
+            let stats_for_partitions = stats_for_partitions(
+                self.schema.fields().len(),
+                self.partition
+                    .iter()
+                    .flatten()
+                    .map(|loc| loc.partition_stats),
+            );
+            trace!("shuffle reader at stage: {} returned statistics for all partitions: {:?}", self.stage_id, stats_for_partitions);
+            Ok(stats_for_partitions)
+        }
     }
+}
+
+fn stats_for_partition(
+    partition: usize,
+    num_fields: usize,
+    partition_locations: &[Vec<PartitionLocation>],
+) -> Result<Statistics> {
+    // TODO stats: add column statistics to PartitionStats
+    let (num_rows, total_byte_size) = partition_locations
+        .iter()
+        .map(|location| {
+            // extract requested partitions
+            location
+                .get(partition)
+                .map(|p| p.partition_stats)
+                .map(|p| (p.num_rows, p.num_bytes))
+                .unwrap_or_default()
+        })
+        .fold(
+            (Some(0), Some(0)),
+            |(num_rows, total_byte_size), (rows, bytes)| {
+                (
+                    num_rows.zip(rows).map(|(a, b)| a + b as usize),
+                    total_byte_size.zip(bytes).map(|(a, b)| a + b as usize),
+                )
+            },
+        );
+
+    Ok(Statistics {
+        num_rows: num_rows.map(Precision::Exact).unwrap_or(Precision::Absent),
+        total_byte_size: total_byte_size
+            .map(Precision::Exact)
+            .unwrap_or(Precision::Absent),
+        column_statistics: vec![ColumnStatistics::new_unknown(); num_fields],
+    })
 }
 
 fn stats_for_partitions(
@@ -215,7 +272,6 @@ fn stats_for_partitions(
                 .map(|(a, b)| a + b as usize);
             (num_rows, total_byte_size)
         });
-
     Statistics {
         num_rows: num_rows.map(Precision::Exact).unwrap_or(Precision::Absent),
         total_byte_size: total_byte_size
@@ -537,6 +593,152 @@ mod tests {
         };
 
         assert_eq!(result, exptected);
+    }
+    #[tokio::test]
+    async fn test_stats_for_partition_statistics_no_specific_partition() -> Result<()> {
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+            Field::new("c", DataType::Int32, false),
+        ]);
+
+        let job_id = "test_job_1";
+        let input_stage_id = 2;
+        let mut partitions: Vec<PartitionLocation> = vec![];
+        for partition_id in 0..4 {
+            partitions.push(PartitionLocation {
+                map_partition_id: 0,
+                partition_id: PartitionId {
+                    job_id: job_id.to_string(),
+                    stage_id: input_stage_id,
+                    partition_id,
+                },
+                executor_meta: ExecutorMetadata {
+                    id: "executor_1".to_string(),
+                    host: "executor_1".to_string(),
+                    port: 7070,
+                    grpc_port: 8080,
+                    specification: ExecutorSpecification { task_slots: 1 },
+                },
+                partition_stats: PartitionStats {
+                    num_rows: Some(1),
+                    num_batches: None,
+                    num_bytes: Some(10),
+                },
+                path: "test_path".to_string(),
+            })
+        }
+
+        let shuffle_reader_exec = ShuffleReaderExec::try_new(
+            input_stage_id,
+            vec![partitions.clone(), partitions],
+            Arc::new(schema),
+            Partitioning::UnknownPartitioning(4),
+        )?;
+
+        let stats = shuffle_reader_exec.partition_statistics(None)?;
+        assert_eq!(8, *stats.num_rows.get_value().unwrap());
+        assert_eq!(80, *stats.total_byte_size.get_value().unwrap());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_stats_for_partition_statistics_specific_partition() -> Result<()> {
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+            Field::new("c", DataType::Int32, false),
+        ]);
+
+        let job_id = "test_job_1";
+        let input_stage_id = 2;
+        let mut partitions: Vec<PartitionLocation> = vec![];
+        for partition_id in 0..4 {
+            partitions.push(PartitionLocation {
+                map_partition_id: 0,
+                partition_id: PartitionId {
+                    job_id: job_id.to_string(),
+                    stage_id: input_stage_id,
+                    partition_id,
+                },
+                executor_meta: ExecutorMetadata {
+                    id: "executor_1".to_string(),
+                    host: "executor_1".to_string(),
+                    port: 7070,
+                    grpc_port: 8080,
+                    specification: ExecutorSpecification { task_slots: 1 },
+                },
+                partition_stats: PartitionStats {
+                    num_rows: Some(1),
+                    num_batches: None,
+                    num_bytes: Some(10),
+                },
+                path: "test_path".to_string(),
+            })
+        }
+
+        let shuffle_reader_exec = ShuffleReaderExec::try_new(
+            input_stage_id,
+            vec![partitions.clone(), partitions],
+            Arc::new(schema),
+            Partitioning::UnknownPartitioning(4),
+        )?;
+
+        let stats = shuffle_reader_exec.partition_statistics(Some(3))?;
+        assert_eq!(2, *stats.num_rows.get_value().unwrap());
+        assert_eq!(20, *stats.total_byte_size.get_value().unwrap());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_stats_for_partition_statistics_specific_partition_out_of_range(
+    ) -> Result<()> {
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+            Field::new("c", DataType::Int32, false),
+        ]);
+
+        let job_id = "test_job_1";
+        let input_stage_id = 2;
+        let mut partitions: Vec<PartitionLocation> = vec![];
+        for partition_id in 0..4 {
+            partitions.push(PartitionLocation {
+                map_partition_id: 0,
+                partition_id: PartitionId {
+                    job_id: job_id.to_string(),
+                    stage_id: input_stage_id,
+                    partition_id,
+                },
+                executor_meta: ExecutorMetadata {
+                    id: "executor_1".to_string(),
+                    host: "executor_1".to_string(),
+                    port: 7070,
+                    grpc_port: 8080,
+                    specification: ExecutorSpecification { task_slots: 1 },
+                },
+                partition_stats: PartitionStats {
+                    num_rows: Some(1),
+                    num_batches: None,
+                    num_bytes: Some(10),
+                },
+                path: "test_path".to_string(),
+            })
+        }
+
+        let shuffle_reader_exec = ShuffleReaderExec::try_new(
+            input_stage_id,
+            vec![partitions.clone(), partitions],
+            Arc::new(schema),
+            Partitioning::UnknownPartitioning(4),
+        )?;
+
+        let stats = shuffle_reader_exec.partition_statistics(Some(4));
+        assert!(stats.is_err());
+
+        Ok(())
     }
 
     #[tokio::test]

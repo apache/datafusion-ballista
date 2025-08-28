@@ -1141,8 +1141,12 @@ impl ExecutionGraph {
     /// Convert unresolved stage to be resolved
     pub fn resolve_stage(&mut self, stage_id: usize) -> Result<bool> {
         if let Some(ExecutionStage::UnResolved(stage)) = self.stages.remove(&stage_id) {
-            self.stages
-                .insert(stage_id, ExecutionStage::Resolved(stage.to_resolved()?));
+            self.stages.insert(
+                stage_id,
+                ExecutionStage::Resolved(
+                    stage.to_resolved(self.session_config.options())?,
+                ),
+            );
             Ok(true)
         } else {
             warn!(

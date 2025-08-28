@@ -21,6 +21,7 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use datafusion::config::ConfigOptions;
 use datafusion::physical_optimizer::aggregate_statistics::AggregateStatistics;
 use datafusion::physical_optimizer::join_selection::JoinSelection;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
@@ -350,7 +351,7 @@ impl UnresolvedStage {
     }
 
     /// Change to the resolved state
-    pub fn to_resolved(&self) -> Result<ResolvedStage> {
+    pub fn to_resolved(&self, options: &ConfigOptions) -> Result<ResolvedStage> {
         let input_locations = self
             .inputs
             .iter()
@@ -361,13 +362,14 @@ impl UnresolvedStage {
             &input_locations,
         )?;
 
+        //
+        // TODO: with datafusion 50 we can add rule to switch between HashJoin and SortMergeJoin
+        //
         let optimize_join = JoinSelection::new();
-        let config = SessionConfig::default();
-        let plan = optimize_join.optimize(plan, config.options())?;
+        let plan = optimize_join.optimize(plan, options)?;
 
         let optimize_aggregate = AggregateStatistics::new();
-        let plan =
-            optimize_aggregate.optimize(plan, SessionConfig::default().options())?;
+        let plan = optimize_aggregate.optimize(plan, options)?;
 
         Ok(ResolvedStage::new(
             self.stage_id,
