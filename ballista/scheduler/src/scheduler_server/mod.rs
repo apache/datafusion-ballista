@@ -175,6 +175,26 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         Ok(())
     }
 
+    pub(crate) async fn fail_job(
+        &self,
+        job_id: String,
+        fail_message: String,
+    ) -> Result<()> {
+        log::debug!("Received fail job request for job {job_id}");
+
+        self.query_stage_event_loop
+            .get_sender()?
+            .post_event(QueryStageSchedulerEvent::JobRunningFailed {
+                job_id,
+                fail_message,
+                queued_at: timestamp_millis(),
+                failed_at: timestamp_millis(),
+            })
+            .await?;
+
+        Ok(())
+    }
+
     /// Submits a job to executor returning job_id
     pub async fn submit_job(
         &self,
