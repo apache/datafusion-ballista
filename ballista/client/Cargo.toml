@@ -51,3 +51,6 @@ tonic = { workspace = true }
 [features]
 default = ["standalone"]
 standalone = ["ballista-executor", "ballista-scheduler"]
+# tests which need change of RUST_MIN_STACK in order for 
+# tests to run. 
+test_extended_stack = []

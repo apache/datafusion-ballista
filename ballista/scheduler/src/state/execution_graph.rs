@@ -150,7 +150,8 @@ impl ExecutionGraph {
         planner: &mut dyn DistributedPlanner,
     ) -> Result<Self> {
         let output_partitions = plan.properties().output_partitioning().partition_count();
-        let shuffle_stages = planner.plan_query_stages(job_id, plan)?;
+        let shuffle_stages =
+            planner.plan_query_stages(job_id, plan, session_config.options())?;
 
         let builder = ExecutionStageBuilder::new(session_config.clone());
         let stages = builder.build(shuffle_stages)?;

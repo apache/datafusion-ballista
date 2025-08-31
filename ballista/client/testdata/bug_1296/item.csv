@@ -1,0 +1,6 @@
+i_item_sk,i_item_id,i_item_name,i_category,i_brand,i_price
+20,ITM001,Laptop Pro,Electronics,TechBrand,999.99
+21,ITM002,Wireless Headphones,Electronics,SoundTech,199.99
+22,ITM003,Cotton T-Shirt,Clothing,FashionNow,19.99
+23,ITM004,Running Shoes,Footwear,SpeedWay,89.99
+24,ITM005,Coffee Maker,Appliances,HomeGoods,79.99
