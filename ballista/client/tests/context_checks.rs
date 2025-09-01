@@ -517,6 +517,41 @@ mod supported {
         Ok(())
     }
 
+    // As mentioned in https://github.com/apache/datafusion-ballista/issues/1055
+    // "Left/full outer join incorrect for CollectLeft / broadcast"
+    //
+    // In order to make correct results (decreasing performance) CollectLeft
+    // has been disabled until fixed
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_disable_collect_left(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+    ) -> datafusion::error::Result<()> {
+        let result = ctx
+            .sql("select name, value from information_schema.df_settings where name in ('datafusion.optimizer.hash_join_single_partition_threshold', 'datafusion.optimizer.hash_join_single_partition_threshold_rows') order by name limit 2")
+            .await?
+            .collect()
+            .await?;
+
+        let expected = [
+            "+----------------------------------------------------------------+-------+",
+            "| name                                                           | value |",
+            "+----------------------------------------------------------------+-------+",
+            "| datafusion.optimizer.hash_join_single_partition_threshold      | 0     |",
+            "| datafusion.optimizer.hash_join_single_partition_threshold_rows | 0     |",
+            "+----------------------------------------------------------------+-------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
+
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
