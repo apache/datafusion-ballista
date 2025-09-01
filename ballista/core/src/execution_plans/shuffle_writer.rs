@@ -393,15 +393,27 @@ impl ExecutionPlan for ShuffleWriterExec {
 
     fn with_new_children(
         self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
+        mut children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(ShuffleWriterExec::try_new(
-            self.job_id.clone(),
-            self.stage_id,
-            children[0].clone(),
-            self.work_dir.clone(),
-            self.shuffle_output_partitioning.clone(),
-        )?))
+        if children.len() == 1 {
+            let input = children.pop().ok_or_else(|| {
+                DataFusionError::Plan(
+                    "Ballista ShuffleWriterExec expects single child".to_owned(),
+                )
+            })?;
+
+            Ok(Arc::new(ShuffleWriterExec::try_new(
+                self.job_id.clone(),
+                self.stage_id,
+                input,
+                self.work_dir.clone(),
+                self.shuffle_output_partitioning.clone(),
+            )?))
+        } else {
+            Err(DataFusionError::Plan(
+                "Ballista ShuffleWriterExec expects single child".to_owned(),
+            ))
+        }
     }
 
     fn execute(

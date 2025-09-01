@@ -37,7 +37,7 @@ use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::runtime::SpawnedTask;
 
-use datafusion::error::Result;
+use datafusion::error::{DataFusionError, Result};
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::{
     ColumnStatistics, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
@@ -136,14 +136,15 @@ impl ExecutionPlan for ShuffleReaderExec {
 
     fn with_new_children(
         self: Arc<Self>,
-        _children: Vec<Arc<dyn ExecutionPlan>>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(ShuffleReaderExec::try_new(
-            self.stage_id,
-            self.partition.clone(),
-            self.schema.clone(),
-            self.properties().output_partitioning().clone(),
-        )?))
+        if children.is_empty() {
+            Ok(self)
+        } else {
+            Err(DataFusionError::Plan(
+                "Ballista ShuffleReaderExec does not support children plans".to_owned(),
+            ))
+        }
     }
 
     fn execute(
