@@ -25,6 +25,9 @@ use ballista_core::{
     execution_plans::{ShuffleReaderExec, ShuffleWriterExec, UnresolvedShuffleExec},
     serde::scheduler::PartitionLocation,
 };
+use datafusion::config::ConfigOptions;
+use datafusion::physical_optimizer::enforce_sorting::EnforceSorting;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
@@ -45,16 +48,24 @@ pub trait DistributedPlanner {
         &'a mut self,
         job_id: &'a str,
         execution_plan: Arc<dyn ExecutionPlan>,
+        config: &ConfigOptions,
     ) -> Result<Vec<Arc<ShuffleWriterExec>>>;
 }
 /// Default implementation of [DistributedPlanner]
 pub struct DefaultDistributedPlanner {
     next_stage_id: usize,
+    optimizer_enforce_sorting: EnforceSorting,
 }
 
 impl DefaultDistributedPlanner {
     pub fn new() -> Self {
-        Self { next_stage_id: 0 }
+        Self {
+            next_stage_id: 0,
+            // when plan is broken into stages some sorting information may get lost in the process
+            // thus stage re-optimisation is needed to adjust sort information
+            optimizer_enforce_sorting:
+                datafusion::physical_optimizer::enforce_sorting::EnforceSorting::default(),
+        }
     }
 }
 
@@ -72,10 +83,11 @@ impl DistributedPlanner for DefaultDistributedPlanner {
         &'a mut self,
         job_id: &'a str,
         execution_plan: Arc<dyn ExecutionPlan>,
+        config: &ConfigOptions,
     ) -> Result<Vec<Arc<ShuffleWriterExec>>> {
         info!("planning query stages for job {job_id}");
         let (new_plan, mut stages) =
-            self.plan_query_stages_internal(job_id, execution_plan)?;
+            self.plan_query_stages_internal(job_id, execution_plan, config)?;
         stages.push(create_shuffle_writer(
             job_id,
             self.next_stage_id(),
@@ -94,6 +106,7 @@ impl DefaultDistributedPlanner {
         &'a mut self,
         job_id: &'a str,
         execution_plan: Arc<dyn ExecutionPlan>,
+        config: &ConfigOptions,
     ) -> Result<PartialQueryStageResult> {
         // recurse down and replace children
         if execution_plan.children().is_empty() {
@@ -104,7 +117,7 @@ impl DefaultDistributedPlanner {
         let mut children = vec![];
         for child in execution_plan.children() {
             let (new_child, mut child_stages) =
-                self.plan_query_stages_internal(job_id, child.clone())?;
+                self.plan_query_stages_internal(job_id, child.clone(), config)?;
             children.push(new_child);
             stages.append(&mut child_stages);
         }
@@ -113,13 +126,12 @@ impl DefaultDistributedPlanner {
             .as_any()
             .downcast_ref::<CoalescePartitionsExec>()
         {
-            let shuffle_writer = create_shuffle_writer(
-                job_id,
-                self.next_stage_id(),
-                children[0].clone(),
-                None,
-            )?;
+            let input = children[0].clone();
+            let input = self.optimizer_enforce_sorting.optimize(input, config)?;
+            let shuffle_writer =
+                create_shuffle_writer(job_id, self.next_stage_id(), input, None)?;
             let unresolved_shuffle = create_unresolved_shuffle(&shuffle_writer);
+
             stages.push(shuffle_writer);
             Ok((
                 with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
@@ -146,13 +158,17 @@ impl DefaultDistributedPlanner {
         {
             match repart.properties().output_partitioning() {
                 Partitioning::Hash(_, _) => {
+                    let input = children[0].clone();
+                    let input = self.optimizer_enforce_sorting.optimize(input, config)?;
+
                     let shuffle_writer = create_shuffle_writer(
                         job_id,
                         self.next_stage_id(),
-                        children[0].clone(),
+                        input,
                         Some(repart.partitioning().to_owned()),
                     )?;
                     let unresolved_shuffle = create_unresolved_shuffle(&shuffle_writer);
+
                     stages.push(shuffle_writer);
                     Ok((unresolved_shuffle, stages))
                 }
@@ -362,7 +378,11 @@ mod test {
 
         let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
-        let stages = planner.plan_query_stages(&job_uuid.to_string(), plan)?;
+        let stages = planner.plan_query_stages(
+            &job_uuid.to_string(),
+            plan,
+            ctx.state().config().options(),
+        )?;
         for (i, stage) in stages.iter().enumerate() {
             println!("Stage {i}:\n{}", displayable(stage.as_ref()).indent(false));
         }
@@ -476,7 +496,11 @@ order by
 
         let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
-        let stages = planner.plan_query_stages(&job_uuid.to_string(), plan)?;
+        let stages = planner.plan_query_stages(
+            &job_uuid.to_string(),
+            plan,
+            ctx.state().config().options(),
+        )?;
         for (i, stage) in stages.iter().enumerate() {
             println!("Stage {i}:\n{}", displayable(stage.as_ref()).indent(false));
         }
@@ -644,7 +668,11 @@ order by
 
         let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
-        let stages = planner.plan_query_stages(&job_uuid.to_string(), plan)?;
+        let stages = planner.plan_query_stages(
+            &job_uuid.to_string(),
+            plan,
+            ctx.state().config().options(),
+        )?;
         for (i, stage) in stages.iter().enumerate() {
             println!("Stage {i}:\n{}", displayable(stage.as_ref()).indent(false));
         }
@@ -754,7 +782,11 @@ order by
 
         let mut planner = DefaultDistributedPlanner::new();
         let job_uuid = Uuid::new_v4();
-        let stages = planner.plan_query_stages(&job_uuid.to_string(), plan)?;
+        let stages = planner.plan_query_stages(
+            &job_uuid.to_string(),
+            plan,
+            ctx.state().config().options(),
+        )?;
 
         let partial_hash = stages[0].children()[0].clone();
         let partial_hash_serde = roundtrip_operator(&ctx, partial_hash.clone())?;

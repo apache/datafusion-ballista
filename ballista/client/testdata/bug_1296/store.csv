@@ -1,0 +1,4 @@
+s_store_sk,s_store_id,s_store_name,s_company_name,s_city,s_state
+10,ST001,Downtown Store,Retail Corp,New York,NY
+11,ST002,Mall Store,Retail Corp,Los Angeles,CA
+12,ST003,Uptown Market,Market Group,Chicago,IL
