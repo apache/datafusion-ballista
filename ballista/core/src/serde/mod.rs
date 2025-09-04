@@ -670,7 +670,7 @@ mod test {
     #[test]
     fn test_ballista_explain_plan_type_roundtrip() {
         use crate::execution_plans::{BallistaExplainExec, BallistaPlanType, BallistaStringifiedPlan};
-        use datafusion::logical_expr::PlanType as DFPlanType;
+        use datafusion::common::display::PlanType as DFPlanType;
         use datafusion::execution::registry::MemoryFunctionRegistry;
         use arrow::datatypes::{DataType, Field, Schema};
 
