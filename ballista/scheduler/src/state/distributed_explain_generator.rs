@@ -34,8 +34,11 @@ pub async fn generate_distributed_explain_plan(
 
 fn render_stages(stages: HashMap<usize,ExecutionStage>) -> String {
     let mut buf = String::new();
-    for (_, stage) in stages {
-        let _ = writeln!(buf, "{:#?}", stage);
+    let mut keys: Vec<_> = stages.keys().cloned().collect();
+    keys.sort(); 
+    for k in keys {
+        let stage = &stages[&k];
+        writeln!(buf, "{:#?}", stage).ok();
     }
     buf
 }

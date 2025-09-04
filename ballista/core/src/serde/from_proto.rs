@@ -17,24 +17,22 @@
 
 use crate::execution_plans::BallistaPlanType;
 use crate::serde::protobuf;
-use datafusion_proto::protobuf as df_protobuf;
 
 /// Convert protobuf BallistaPlanType to Ballista BallistaPlanType
 impl From<&protobuf::BallistaPlanType> for BallistaPlanType {
     fn from(proto_type: &protobuf::BallistaPlanType) -> Self {
-        use protobuf::ballista_plan_type::PlanType;
         
         match &proto_type.plan_type {
-            Some(PlanType::DatafusionPlanType(df_type)) => {
+            Some(protobuf::ballista_plan_type::PlanType::DatafusionPlanType(df_type)) => {
                 // Create a dummy protobuf StringifiedPlan to leverage DataFusion's conversion
-                let dummy_proto_plan = df_protobuf::StringifiedPlan {
+                let dummy_proto_plan = datafusion_proto::protobuf::StringifiedPlan {
                     plan_type: Some(df_type.clone()),
                     plan: "".to_string(),
                 };
-                let df_plan: datafusion::logical_expr::StringifiedPlan = (&dummy_proto_plan).into();
+                let df_plan: datafusion::common::display::StringifiedPlan = (&dummy_proto_plan).into();
                 BallistaPlanType::DataFusionPlanType(df_plan.plan_type)
             },
-            Some(PlanType::DistributedPlan(_)) => {
+            Some(protobuf::ballista_plan_type::PlanType::DistributedPlan(_)) => {
                 BallistaPlanType::DistributedPlan
             },
             None => panic!("Missing plan_type variant in BallistaPlanType"),

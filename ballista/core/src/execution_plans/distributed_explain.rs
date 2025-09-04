@@ -84,7 +84,7 @@ pub struct BallistaExplainExec {
 }
 
 impl BallistaExplainExec {
-    pub fn new(schema: SchemaRef, df_stringified_plans: Vec<StringifiedPlan>, distributed_plan: &String, verbose: bool) -> Self {
+    pub fn new(schema: SchemaRef, df_stringified_plans: Vec<StringifiedPlan>, distributed_plan: impl Into<String>, verbose: bool) -> Self {
         let mut rows: Vec<BallistaStringifiedPlan> =
             df_stringified_plans.iter().map(Into::into).collect();
 
