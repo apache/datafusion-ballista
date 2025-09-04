@@ -25,7 +25,7 @@ pub async fn generate_distributed_explain_plan(
         .await?;
     
     let mut planner = DefaultDistributedPlanner::new();
-    let shuffle_stages = planner.plan_query_stages(job_id, plan.clone())?;
+    let shuffle_stages = planner.plan_query_stages(job_id, plan)?;
     let builder = ExecutionStageBuilder::new(session_config.clone());
     let stages = builder.build(shuffle_stages)?;
 
