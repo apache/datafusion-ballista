@@ -4,7 +4,10 @@
 /// /////////////////////////////////////////////////////////////////////////////////////////////////
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BallistaPhysicalPlanNode {
-    #[prost(oneof = "ballista_physical_plan_node::PhysicalPlanType", tags = "1, 2, 3")]
+    #[prost(
+        oneof = "ballista_physical_plan_node::PhysicalPlanType",
+        tags = "1, 2, 3, 4"
+    )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
     >,
@@ -19,6 +22,8 @@ pub mod ballista_physical_plan_node {
         ShuffleReader(super::ShuffleReaderExecNode),
         #[prost(message, tag = "3")]
         UnresolvedShuffle(super::UnresolvedShuffleExecNode),
+        #[prost(message, tag = "4")]
+        BallistaExplain(super::BallistaExplainExecNode),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -62,6 +67,37 @@ pub struct ShuffleReaderPartition {
     /// each partition of a shuffle read can read data from multiple locations
     #[prost(message, repeated, tag = "1")]
     pub location: ::prost::alloc::vec::Vec<PartitionLocation>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BallistaExplainExecNode {
+    #[prost(message, optional, tag = "1")]
+    pub schema: ::core::option::Option<::datafusion_proto_common::Schema>,
+    #[prost(message, repeated, tag = "2")]
+    pub stringified_plans: ::prost::alloc::vec::Vec<BallistaStringifiedPlan>,
+    #[prost(bool, tag = "3")]
+    pub verbose: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BallistaStringifiedPlan {
+    #[prost(message, optional, tag = "1")]
+    pub plan_type: ::core::option::Option<BallistaPlanType>,
+    #[prost(string, tag = "2")]
+    pub plan: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BallistaPlanType {
+    #[prost(oneof = "ballista_plan_type::PlanType", tags = "1, 2")]
+    pub plan_type: ::core::option::Option<ballista_plan_type::PlanType>,
+}
+/// Nested message and enum types in `BallistaPlanType`.
+pub mod ballista_plan_type {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum PlanType {
+        #[prost(message, tag = "1")]
+        DatafusionPlanType(::datafusion_proto::protobuf::PlanType),
+        #[prost(message, tag = "2")]
+        DistributedPlan(::datafusion_proto_common::EmptyMessage),
+    }
 }
 /// /////////////////////////////////////////////////////////////////////////////////////////////////
 /// Ballista Scheduling

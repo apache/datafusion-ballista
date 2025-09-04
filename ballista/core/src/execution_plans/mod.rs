@@ -22,8 +22,10 @@ mod distributed_query;
 mod shuffle_reader;
 mod shuffle_writer;
 mod unresolved_shuffle;
+mod distributed_explain;
 
 pub use distributed_query::DistributedQueryExec;
 pub use shuffle_reader::ShuffleReaderExec;
 pub use shuffle_writer::ShuffleWriterExec;
 pub use unresolved_shuffle::UnresolvedShuffleExec;
+pub use distributed_explain::{BallistaExplainExec, BallistaPlanType, BallistaStringifiedPlan};
