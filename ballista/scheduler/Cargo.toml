@@ -73,6 +73,7 @@ tracing-subscriber = { workspace = true, optional = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+rstest = { version = "0.25" }
 
 [build-dependencies]
 tonic-build = { workspace = true }
