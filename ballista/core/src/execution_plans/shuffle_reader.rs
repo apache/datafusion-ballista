@@ -160,6 +160,14 @@ impl ExecutionPlan for ShuffleReaderExec {
         let max_request_num =
             config.ballista_shuffle_reader_maximum_concurrent_requests();
         let max_message_size = config.ballista_grpc_client_max_message_size();
+        let force_remote_read = config.ballista_shuffle_reader_force_remote_read();
+
+        if force_remote_read {
+            debug!(
+            "All shuffle partitions will be read as remote partitions! To disable this behavior set: `{}=false`",
+            crate::config::BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ
+        );
+        }
 
         log::debug!(
             "ShuffleReaderExec::execute({task_id}) max_request_num: {max_request_num}, max_message_size: {max_message_size}"
@@ -180,8 +188,12 @@ impl ExecutionPlan for ShuffleReaderExec {
             .collect();
         // Shuffle partitions for evenly send fetching partition requests to avoid hot executors within multiple tasks
         partition_locations.shuffle(&mut rng());
-        let response_receiver =
-            send_fetch_partitions(partition_locations, max_request_num, max_message_size);
+        let response_receiver = send_fetch_partitions(
+            partition_locations,
+            max_request_num,
+            max_message_size,
+            force_remote_read,
+        );
 
         let result = RecordBatchStreamAdapter::new(
             Arc::new(self.schema.as_ref().clone()),
@@ -352,18 +364,35 @@ impl Stream for AbortableReceiverStream {
             .map_err(|e| ArrowError::ExternalError(Box::new(e)))
     }
 }
+/// Splits the provided partition locations into local and remote partitions.
+/// Local partitions are read directly from local Arrow IPC files,
+/// while remote partitions are fetched using the Arrow Flight client.
+/// If `force_remote_read` is true, all partitions are treated as remote.
+fn local_remote_read_split(
+    partition_locations: Vec<PartitionLocation>,
+    force_remote_read: bool,
+) -> (Vec<PartitionLocation>, Vec<PartitionLocation>) {
+    if !force_remote_read {
+        partition_locations
+            .into_iter()
+            .partition(check_is_local_location)
+    } else {
+        (vec![], partition_locations)
+    }
+}
 
 fn send_fetch_partitions(
     partition_locations: Vec<PartitionLocation>,
     max_request_num: usize,
     max_message_size: usize,
+    force_remote_read: bool,
 ) -> AbortableReceiverStream {
     let (response_sender, response_receiver) = mpsc::channel(max_request_num);
     let semaphore = Arc::new(Semaphore::new(max_request_num));
     let mut spawned_tasks: Vec<SpawnedTask<()>> = vec![];
-    let (local_locations, remote_locations): (Vec<_>, Vec<_>) = partition_locations
-        .into_iter()
-        .partition(check_is_local_location);
+
+    let (local_locations, remote_locations): (Vec<_>, Vec<_>) =
+        local_remote_read_split(partition_locations, force_remote_read);
 
     debug!(
         "local shuffle file counts:{}, remote shuffle file count:{}.",
@@ -854,6 +883,36 @@ mod tests {
         }
     }
 
+    // tests if force remote read configuration option will
+    // qualify all partitions as remote
+    #[tokio::test]
+    async fn test_remote_local_read() {
+        let schema = get_test_partition_schema();
+        let data_array = Int32Array::from(vec![1]);
+        let batch =
+            RecordBatch::try_new(Arc::new(schema.clone()), vec![Arc::new(data_array)])
+                .unwrap();
+        let tmp_dir = tempdir().unwrap();
+        let file_path = tmp_dir.path().join("shuffle_data");
+        let file = File::create(&file_path).unwrap();
+        let mut writer = StreamWriter::try_new(file, &schema).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+
+        let partition_locations =
+            get_test_partition_locations(1, file_path.to_str().unwrap().to_string());
+
+        let (local, remote) = local_remote_read_split(partition_locations.clone(), false);
+
+        assert!(!local.is_empty());
+        assert!(remote.is_empty());
+
+        let (local, remote) = local_remote_read_split(partition_locations, true);
+
+        assert!(local.is_empty());
+        assert!(!remote.is_empty());
+    }
+
     async fn test_send_fetch_partitions(max_request_num: usize, partition_num: usize) {
         let schema = get_test_partition_schema();
         let data_array = Int32Array::from(vec![1]);
@@ -872,8 +931,12 @@ mod tests {
             file_path.to_str().unwrap().to_string(),
         );
 
-        let response_receiver =
-            send_fetch_partitions(partition_locations, max_request_num, 4 * 1024 * 1024);
+        let response_receiver = send_fetch_partitions(
+            partition_locations,
+            max_request_num,
+            4 * 1024 * 1024,
+            false,
+        );
 
         let stream = RecordBatchStreamAdapter::new(
             Arc::new(schema),

@@ -34,6 +34,8 @@ pub const BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE: &str =
     "ballista.grpc_client_max_message_size";
 pub const BALLISTA_SHUFFLE_READER_MAX_REQUESTS: &str =
     "ballista.shuffle.max_concurrent_read_requests";
+pub const BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ: &str =
+    "ballista.shuffle.force_remote_read";
 
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
@@ -54,6 +56,11 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Maximum concurrent requests shuffle reader can process".to_string(),
                          DataType::UInt64,
                          Some((64).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ.to_string(),
+                         "Forces the shuffle reader to always read partitions via the Arrow Flight client, even when partitions are local to the node.".to_string(),
+                         DataType::Boolean,
+                         Some((false).to_string())),
+
     ];
     entries
         .into_iter()
@@ -173,6 +180,16 @@ impl BallistaConfig {
 
     pub fn shuffle_reader_maximum_concurrent_requests(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_READER_MAX_REQUESTS)
+    }
+
+    /// Forces the shuffle reader to always read partitions via the Arrow Flight client,
+    /// even when partitions are local to the node.
+    ///
+    /// Enabling forced remote read may significantly reduce performance,
+    /// as all partition reads will go through the Arrow Flight client even for local data.
+    /// Use only when necessary, like in tests
+    pub fn shuffle_reader_force_remote_read(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ)
     }
 
     fn get_usize_setting(&self, key: &str) -> usize {
