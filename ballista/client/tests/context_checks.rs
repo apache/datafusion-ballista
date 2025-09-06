@@ -713,24 +713,21 @@ mod supported {
 
         assert_batches_eq!(expected, &result);
 
-        //
-        // TODO: enable when json supports lands in datafusion 47
-        //
-        // ctx.sql("select * from test")
-        //     .await?
-        //     .write_json(write_dir_path, Default::default(), Default::default())
-        //     .await?;
+        ctx.sql("select * from test")
+            .await?
+            .write_json(write_dir_path, Default::default(), Default::default())
+            .await?;
 
-        // ctx.register_json("j_written_table", write_dir_path, Default::default())
-        //     .await?;
+        ctx.register_json("j_written_table", write_dir_path, Default::default())
+            .await?;
 
-        // let result = ctx
-        //     .sql("select id, string_col from j_written_table where id > 4")
-        //     .await?
-        //     .collect()
-        //     .await?;
+        let result = ctx
+            .sql("select id, string_col from j_written_table where id > 4")
+            .await?
+            .collect()
+            .await?;
 
-        // assert_batches_eq!(expected, &result);
+        assert_batches_eq!(expected, &result);
 
         Ok(())
     }
