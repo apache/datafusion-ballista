@@ -54,7 +54,7 @@ impl Shared {
     }
 }
 
-pub(crate) struct ClusterEventSender<T: Clone> {
+pub struct ClusterEventSender<T: Clone> {
     sender: broadcast::Sender<T>,
     shared: Arc<Shared>,
 }
