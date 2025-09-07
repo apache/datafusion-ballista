@@ -738,8 +738,8 @@ mod test {
             let recovered_plan = &deserialized_explain.stringified_plans()[0];
             match &recovered_plan.plan_type {
                 BallistaPlanType::DataFusionPlanType(recovered_plan_type) => {
-                    assert_eq!(&original_plan_type, recovered_plan_type, 
-                        "PlanType should be preserved during serialization roundtrip: original={:?}, recovered={:?}", 
+                    assert_eq!(&original_plan_type, recovered_plan_type,
+                        "PlanType should be preserved during serialization roundtrip: original={:?}, recovered={:?}",
                         original_plan_type, recovered_plan_type);
                 }
                 _ => panic!("Expected DataFusionPlanType, got DistributedPlan"),
