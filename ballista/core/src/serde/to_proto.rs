@@ -22,7 +22,6 @@ use std::sync::Arc;
 /// Convert Ballista BallistaPlanType to protobuf BallistaPlanType
 impl From<&BallistaPlanType> for protobuf::BallistaPlanType {
     fn from(ballista_type: &BallistaPlanType) -> Self {
-        
         let plan_type = match ballista_type {
             BallistaPlanType::DataFusionPlanType(df_type) => {
                 // Create a dummy StringifiedPlan to leverage DataFusion's conversion
@@ -30,14 +29,19 @@ impl From<&BallistaPlanType> for protobuf::BallistaPlanType {
                     plan_type: df_type.clone(),
                     plan: Arc::new("".to_string()),
                 };
-                let proto_plan: datafusion_proto::protobuf::StringifiedPlan = (&dummy_plan).into();
-                Some(protobuf::ballista_plan_type::PlanType::DatafusionPlanType(proto_plan.plan_type.unwrap()))
-            },
+                let proto_plan: datafusion_proto::protobuf::StringifiedPlan =
+                    (&dummy_plan).into();
+                Some(protobuf::ballista_plan_type::PlanType::DatafusionPlanType(
+                    proto_plan.plan_type.unwrap(),
+                ))
+            }
             BallistaPlanType::DistributedPlan => {
-                Some(protobuf::ballista_plan_type::PlanType::DistributedPlan(datafusion_proto_common::EmptyMessage {}))
+                Some(protobuf::ballista_plan_type::PlanType::DistributedPlan(
+                    datafusion_proto_common::EmptyMessage {},
+                ))
             }
         };
-        
+
         Self { plan_type }
     }
 }

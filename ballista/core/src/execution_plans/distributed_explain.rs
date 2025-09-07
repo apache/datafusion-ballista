@@ -21,20 +21,16 @@ use std::sync::Arc;
 
 use arrow::{array::StringBuilder, datatypes::SchemaRef, record_batch::RecordBatch};
 
-use datafusion::common::{internal_err, Result};
 use datafusion::common::display::{PlanType, StringifiedPlan};
+use datafusion::common::{internal_err, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::EquivalenceProperties;
-use datafusion::physical_plan::{
-    DisplayAs,
-    DisplayFormatType,
-    ExecutionPlan,
-    Partitioning,
-    PlanProperties,
-    SendableRecordBatchStream,
-};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    SendableRecordBatchStream,
+};
 
 use log::trace;
 
@@ -56,12 +52,15 @@ impl Display for BallistaPlanType {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Hash)]
 pub struct BallistaStringifiedPlan {
     pub plan_type: BallistaPlanType,
-    pub plan: Arc<String>
+    pub plan: Arc<String>,
 }
 
 impl BallistaStringifiedPlan {
     pub fn new(plan_type: BallistaPlanType, plan: impl Into<String>) -> Self {
-        BallistaStringifiedPlan { plan_type, plan: Arc::new(plan.into()) }
+        BallistaStringifiedPlan {
+            plan_type,
+            plan: Arc::new(plan.into()),
+        }
     }
 
     pub fn should_display(&self, verbose_mode: bool) -> bool {
@@ -81,7 +80,7 @@ impl From<&StringifiedPlan> for BallistaStringifiedPlan {
     fn from(df_plan: &StringifiedPlan) -> Self {
         Self {
             plan_type: BallistaPlanType::DataFusionPlanType(df_plan.plan_type.clone()),
-            plan: Arc::clone(&df_plan.plan)
+            plan: Arc::clone(&df_plan.plan),
         }
     }
 }
@@ -101,7 +100,12 @@ pub struct BallistaExplainExec {
 }
 
 impl BallistaExplainExec {
-    pub fn new(schema: SchemaRef, df_stringified_plans: Vec<StringifiedPlan>, distributed_plan: impl Into<String>, verbose: bool) -> Self {
+    pub fn new(
+        schema: SchemaRef,
+        df_stringified_plans: Vec<StringifiedPlan>,
+        distributed_plan: impl Into<String>,
+        verbose: bool,
+    ) -> Self {
         let mut rows: Vec<BallistaStringifiedPlan> =
             df_stringified_plans.iter().map(Into::into).collect();
 
@@ -119,7 +123,11 @@ impl BallistaExplainExec {
         }
     }
 
-    pub fn from_stringified_plans(schema: SchemaRef, stringified_plans: Vec<BallistaStringifiedPlan>, verbose: bool) -> Self {
+    pub fn from_stringified_plans(
+        schema: SchemaRef,
+        stringified_plans: Vec<BallistaStringifiedPlan>,
+        verbose: bool,
+    ) -> Self {
         let cache = Self::compute_properties(schema.clone());
         Self {
             schema,
@@ -163,13 +171,21 @@ impl DisplayAs for BallistaExplainExec {
 }
 
 impl ExecutionPlan for BallistaExplainExec {
-    fn name(&self) -> &'static str { "BallistaExplainExec" }
+    fn name(&self) -> &'static str {
+        "BallistaExplainExec"
+    }
 
-    fn as_any(&self) -> &dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
-    fn properties(&self) -> &PlanProperties { &self.cache }
+    fn properties(&self) -> &PlanProperties {
+        &self.cache
+    }
 
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> { vec![] }
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
 
     fn with_new_children(
         self: Arc<Self>,
@@ -193,7 +209,10 @@ impl ExecutionPlan for BallistaExplainExec {
         let mut plan_builder =
             StringBuilder::with_capacity(self.stringified_plans.len(), 1024);
 
-        let plans_to_display = self.stringified_plans.iter().filter(|r| r.should_display(self.verbose));
+        let plans_to_display = self
+            .stringified_plans
+            .iter()
+            .filter(|r| r.should_display(self.verbose));
         for p in plans_to_display {
             type_builder.append_value(p.plan_type.to_string());
             plan_builder.append_value(p.plan.as_str());
@@ -212,6 +231,6 @@ impl ExecutionPlan for BallistaExplainExec {
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             Arc::clone(&self.schema),
             futures::stream::iter(vec![Ok(record_batch)]),
-        )))            
+        )))
     }
 }

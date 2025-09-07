@@ -48,16 +48,16 @@ use std::sync::Arc;
 use std::{convert::TryInto, io::Cursor};
 
 use crate::execution_plans::{
-    BallistaExplainExec, ShuffleReaderExec, ShuffleWriterExec, UnresolvedShuffleExec,
-    BallistaPlanType, BallistaStringifiedPlan,
+    BallistaExplainExec, BallistaPlanType, BallistaStringifiedPlan, ShuffleReaderExec,
+    ShuffleWriterExec, UnresolvedShuffleExec,
 };
 use crate::serde::protobuf::ballista_physical_plan_node::PhysicalPlanType;
 use crate::serde::scheduler::PartitionLocation;
 pub use generated::ballista as protobuf;
 
+pub mod from_proto;
 pub mod generated;
 pub mod scheduler;
-pub mod from_proto;
 pub mod to_proto;
 
 impl ProstMessageExt for protobuf::Action {
@@ -358,22 +358,30 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                 )))
             }
             PhysicalPlanType::BallistaExplain(ballista_explain) => {
-                let schema: SchemaRef = Arc::new(convert_required!(ballista_explain.schema)?);
-                
+                let schema: SchemaRef =
+                    Arc::new(convert_required!(ballista_explain.schema)?);
+
                 let stringified_plans: Result<Vec<_>, _> = ballista_explain
                     .stringified_plans
                     .iter()
-                    .map(|proto_plan| -> Result<BallistaStringifiedPlan, DataFusionError> {
-                        let plan_type = proto_plan.plan_type.as_ref()
-                            .ok_or_else(|| DataFusionError::Internal("Missing plan_type in BallistaStringifiedPlan".to_string()))?;
-                        
-                        let ballista_plan_type = BallistaPlanType::from(plan_type);
-                        
-                        Ok(BallistaStringifiedPlan::new(
-                            ballista_plan_type,
-                            proto_plan.plan.clone()
-                        ))
-                    })
+                    .map(
+                        |proto_plan| -> Result<BallistaStringifiedPlan, DataFusionError> {
+                            let plan_type =
+                                proto_plan.plan_type.as_ref().ok_or_else(|| {
+                                    DataFusionError::Internal(
+                                        "Missing plan_type in BallistaStringifiedPlan"
+                                            .to_string(),
+                                    )
+                                })?;
+
+                            let ballista_plan_type = BallistaPlanType::from(plan_type);
+
+                            Ok(BallistaStringifiedPlan::new(
+                                ballista_plan_type,
+                                proto_plan.plan.clone(),
+                            ))
+                        },
+                    )
                     .collect();
 
                 Ok(Arc::new(BallistaExplainExec::from_stringified_plans(
@@ -492,12 +500,16 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             let stringified_plans: Result<Vec<_>, _> = exec
                 .stringified_plans()
                 .iter()
-                .map(|p| -> Result<protobuf::BallistaStringifiedPlan, DataFusionError> {
-                    Ok(protobuf::BallistaStringifiedPlan {
-                        plan_type: Some(protobuf::BallistaPlanType::from(&p.plan_type)),
-                        plan: p.plan.as_ref().clone(),
-                    })
-                })
+                .map(
+                    |p| -> Result<protobuf::BallistaStringifiedPlan, DataFusionError> {
+                        Ok(protobuf::BallistaStringifiedPlan {
+                            plan_type: Some(protobuf::BallistaPlanType::from(
+                                &p.plan_type,
+                            )),
+                            plan: p.plan.as_ref().clone(),
+                        })
+                    },
+                )
                 .collect();
 
             let proto = protobuf::BallistaPhysicalPlanNode {
@@ -666,49 +678,54 @@ mod test {
         assert_eq!(decoded_exec.schema().as_ref(), schema.as_ref());
         assert_eq!(&decoded_exec.properties().partitioning, &partitioning);
     }
-    
+
     #[test]
     fn test_ballista_explain_plan_type_roundtrip() {
-        use crate::execution_plans::{BallistaExplainExec, BallistaPlanType, BallistaStringifiedPlan};
+        use crate::execution_plans::{
+            BallistaExplainExec, BallistaPlanType, BallistaStringifiedPlan,
+        };
+        use arrow::datatypes::{DataType, Field, Schema};
         use datafusion::common::display::PlanType as DFPlanType;
         use datafusion::execution::registry::MemoryFunctionRegistry;
-        use arrow::datatypes::{DataType, Field, Schema};
 
         let codec = BallistaPhysicalExtensionCodec::default();
-        
+
         // Create test schema
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("col1", DataType::Utf8, false)
-        ]));
-        
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("col1", DataType::Utf8, false)]));
+
         // Test different PlanType variants
         let test_cases = vec![
             DFPlanType::InitialLogicalPlan,
             DFPlanType::FinalLogicalPlan,
             DFPlanType::FinalPhysicalPlan,
-            DFPlanType::AnalyzedLogicalPlan { analyzer_name: "test_analyzer".to_string() },
-            DFPlanType::OptimizedLogicalPlan { optimizer_name: "test_optimizer".to_string() },
+            DFPlanType::AnalyzedLogicalPlan {
+                analyzer_name: "test_analyzer".to_string(),
+            },
+            DFPlanType::OptimizedLogicalPlan {
+                optimizer_name: "test_optimizer".to_string(),
+            },
             DFPlanType::PhysicalPlanError,
         ];
-        
+
         for original_plan_type in test_cases {
             // Create BallistaStringifiedPlan with specific PlanType
             let stringified_plan = BallistaStringifiedPlan::new(
                 BallistaPlanType::DataFusionPlanType(original_plan_type.clone()),
-                "SELECT 1".to_string()
+                "SELECT 1".to_string(),
             );
-            
+
             // Create BallistaExplainExec
             let explain_exec = Arc::new(BallistaExplainExec::from_stringified_plans(
                 schema.clone(),
                 vec![stringified_plan],
-                false
+                false,
             ));
-            
+
             // Serialize
             let mut buf = Vec::new();
             codec.try_encode(explain_exec.clone(), &mut buf).unwrap();
-            
+
             // Deserialize
             let registry = MemoryFunctionRegistry::new();
             let deserialized = codec.try_decode(&buf, &[], &registry).unwrap();
@@ -716,7 +733,7 @@ mod test {
                 .as_any()
                 .downcast_ref::<BallistaExplainExec>()
                 .unwrap();
-            
+
             // Verify PlanType is preserved
             let recovered_plan = &deserialized_explain.stringified_plans()[0];
             match &recovered_plan.plan_type {
@@ -724,42 +741,43 @@ mod test {
                     assert_eq!(&original_plan_type, recovered_plan_type, 
                         "PlanType should be preserved during serialization roundtrip: original={:?}, recovered={:?}", 
                         original_plan_type, recovered_plan_type);
-                },
+                }
                 _ => panic!("Expected DataFusionPlanType, got DistributedPlan"),
             }
         }
     }
 
-    #[test]  
+    #[test]
     fn test_distributed_plan_type_roundtrip() {
-        use crate::execution_plans::{BallistaExplainExec, BallistaPlanType, BallistaStringifiedPlan};
-        use datafusion::execution::registry::MemoryFunctionRegistry;
+        use crate::execution_plans::{
+            BallistaExplainExec, BallistaPlanType, BallistaStringifiedPlan,
+        };
         use arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::execution::registry::MemoryFunctionRegistry;
 
         let codec = BallistaPhysicalExtensionCodec::default();
-        
+
         // Create test schema
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("col1", DataType::Utf8, false)
-        ]));
-        
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("col1", DataType::Utf8, false)]));
+
         // Create BallistaStringifiedPlan with DistributedPlan type
         let stringified_plan = BallistaStringifiedPlan::new(
             BallistaPlanType::DistributedPlan,
-            "Distributed Plan Content".to_string()
+            "Distributed Plan Content".to_string(),
         );
-        
+
         // Create BallistaExplainExec
         let explain_exec = Arc::new(BallistaExplainExec::from_stringified_plans(
             schema.clone(),
             vec![stringified_plan],
-            true
+            true,
         ));
-        
+
         // Serialize
         let mut buf = Vec::new();
         codec.try_encode(explain_exec.clone(), &mut buf).unwrap();
-        
+
         // Deserialize
         let registry = MemoryFunctionRegistry::new();
         let deserialized = codec.try_decode(&buf, &[], &registry).unwrap();
@@ -767,19 +785,22 @@ mod test {
             .as_any()
             .downcast_ref::<BallistaExplainExec>()
             .unwrap();
-        
+
         // Verify DistributedPlan type is preserved
         let recovered_plan = &deserialized_explain.stringified_plans()[0];
         match &recovered_plan.plan_type {
             BallistaPlanType::DistributedPlan => {
                 // Success - type preserved
-            },
+            }
             BallistaPlanType::DataFusionPlanType(plan_type) => {
-                panic!("Expected DistributedPlan, got DataFusionPlanType({:?})", plan_type);
+                panic!(
+                    "Expected DistributedPlan, got DataFusionPlanType({:?})",
+                    plan_type
+                );
             }
         }
-        
-        // Verify verbose flag is preserved  
+
+        // Verify verbose flag is preserved
         assert_eq!(deserialized_explain.verbose(), true);
     }
 }

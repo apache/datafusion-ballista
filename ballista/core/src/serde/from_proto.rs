@@ -21,7 +21,6 @@ use crate::serde::protobuf;
 /// Convert protobuf BallistaPlanType to Ballista BallistaPlanType
 impl From<&protobuf::BallistaPlanType> for BallistaPlanType {
     fn from(proto_type: &protobuf::BallistaPlanType) -> Self {
-        
         match &proto_type.plan_type {
             Some(protobuf::ballista_plan_type::PlanType::DatafusionPlanType(df_type)) => {
                 // Create a dummy protobuf StringifiedPlan to leverage DataFusion's conversion
@@ -29,12 +28,13 @@ impl From<&protobuf::BallistaPlanType> for BallistaPlanType {
                     plan_type: Some(df_type.clone()),
                     plan: "".to_string(),
                 };
-                let df_plan: datafusion::common::display::StringifiedPlan = (&dummy_proto_plan).into();
+                let df_plan: datafusion::common::display::StringifiedPlan =
+                    (&dummy_proto_plan).into();
                 BallistaPlanType::DataFusionPlanType(df_plan.plan_type)
-            },
+            }
             Some(protobuf::ballista_plan_type::PlanType::DistributedPlan(_)) => {
                 BallistaPlanType::DistributedPlan
-            },
+            }
             None => panic!("Missing plan_type variant in BallistaPlanType"),
         }
     }
