@@ -801,6 +801,6 @@ mod test {
         }
 
         // Verify verbose flag is preserved
-        assert_eq!(deserialized_explain.verbose(), true);
+        assert!(deserialized_explain.verbose());
     }
 }

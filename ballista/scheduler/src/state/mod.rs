@@ -402,7 +402,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                             })?;
                     }
                 }
-            } if let LogicalPlan::Explain(explain_plan) = plan {
+            } else if let LogicalPlan::Explain(explain_plan) = plan {
                 explain_inner_logical_plan = Some(explain_plan.plan.clone());
             }
             Ok(TreeNodeRecursion::Continue)
@@ -429,24 +429,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 let empty: Arc<dyn ExecutionPlan> =
                     Arc::new(EmptyExec::new(node.schema()));
                 Ok(Transformed::yes(empty))
+            } else if let (Some(explain), Some(explain_distributed_plan)) = (
+                node.as_any()
+                    .downcast_ref::<datafusion::physical_plan::explain::ExplainExec>(),
+                &explain_distributed_plan,
+            ) {
+                let replaced: Arc<dyn ExecutionPlan> =
+                    Arc::new(BallistaExplainExec::new(
+                        explain.schema(),
+                        explain.stringified_plans().to_vec(),
+                        explain_distributed_plan,
+                        explain.verbose(),
+                    ));
+                Ok(Transformed::yes(replaced))
             } else {
-                if let (Some(explain), Some(explain_distributed_plan)) = (
-                    node.as_any()
-                        .downcast_ref::<datafusion::physical_plan::explain::ExplainExec>(
-                        ),
-                    &explain_distributed_plan,
-                ) {
-                    let replaced: Arc<dyn ExecutionPlan> =
-                        Arc::new(BallistaExplainExec::new(
-                            explain.schema(),
-                            explain.stringified_plans().to_vec(),
-                            explain_distributed_plan,
-                            explain.verbose(),
-                        ));
-                    Ok(Transformed::yes(replaced))
-                } else {
-                    Ok(Transformed::no(node))
-                }
+                Ok(Transformed::no(node))
             }
         })?;
         debug!(
