@@ -759,7 +759,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
 }
 
 // Check whether the path is the subdirectory of the base directory
-fn is_subdirectory(path: &Path, base_path: &Path) -> bool {
+pub(crate) fn is_subdirectory(path: &Path, base_path: &Path) -> bool {
     if let (Ok(path), Ok(base_path)) = (path.canonicalize(), base_path.canonicalize()) {
         if let Some(parent_path) = path.parent() {
             parent_path.starts_with(base_path)

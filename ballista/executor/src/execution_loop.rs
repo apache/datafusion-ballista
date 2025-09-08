@@ -17,6 +17,7 @@
 
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
+use crate::executor_server::is_subdirectory;
 use crate::{as_task_status, TaskExecutionTimes};
 use ballista_core::error::BallistaError;
 use ballista_core::extension::SessionConfigHelperExt;
@@ -36,6 +37,7 @@ use std::any::Any;
 use std::convert::TryInto;
 use std::error::Error;
 use std::ops::Deref;
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{sync::Arc, time::Duration};
@@ -88,8 +90,29 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
         match poll_work_result {
             Ok(result) => {
-                let tasks = result.into_inner().tasks;
+                let PollWorkResult {
+                    tasks,
+                    jobs_to_clean,
+                } = result.into_inner();
                 active_job = !tasks.is_empty();
+                let work_dir = PathBuf::from(&executor.work_dir);
+
+                // Clean up any state related to the listed jobs
+                for cleanup in jobs_to_clean {
+                    let cleanup_job_id = cleanup.job_id;
+                    let path = work_dir.join(&cleanup_job_id);
+                    let is_valid_path = path.is_dir()
+                        && is_subdirectory(path.as_path(), work_dir.as_path());
+
+                    if !is_valid_path {
+                        warn!("Invalid job cleanup path: {:?}", path);
+
+                        continue;
+                    }
+
+                    info!("Remove data for job {:?}", cleanup_job_id);
+                    std::fs::remove_dir_all(&path)?;
+                }
 
                 for task in tasks {
                     let task_status_sender = task_status_sender.clone();
