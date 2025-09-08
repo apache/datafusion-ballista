@@ -290,7 +290,7 @@ message ExecutorMetadata {
 }
 
 
-// Used for scheduler-executor 
+// Used for scheduler-executor
 // communication
 message ExecutorRegistration {
   string id = 1;
@@ -466,6 +466,7 @@ message JobSessionConfig {
 
 message PollWorkResult {
   repeated TaskDefinition tasks = 1;
+  repeated CleanJobDataParams jobs_to_clean = 2;
 }
 
 message RegisterExecutorParams {
@@ -523,11 +524,11 @@ message ExecuteQueryParams {
     bytes logical_plan = 1;
     string sql = 2 [deprecated=true]; // I'd suggest to remove this, if SQL needed use `flight-sql`
   }
-  
+
   string session_id = 3;
   repeated KeyValuePair settings = 4;
-  // operation_id is unique number for each request 
-  // client makes. it helps mapping requests between 
+  // operation_id is unique number for each request
+  // client makes. it helps mapping requests between
   // client and scheduler
   string operation_id = 5;
 }
