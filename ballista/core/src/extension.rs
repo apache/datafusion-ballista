@@ -17,7 +17,8 @@
 
 use crate::config::{
     BallistaConfig, BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, BALLISTA_JOB_NAME,
-    BALLISTA_SHUFFLE_READER_MAX_REQUESTS, BALLISTA_STANDALONE_PARALLELISM,
+    BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
+    BALLISTA_STANDALONE_PARALLELISM,
 };
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
@@ -95,6 +96,21 @@ pub trait SessionConfigExt {
 
     /// Returns parallelism of standalone cluster
     fn ballista_standalone_parallelism(&self) -> usize;
+
+    /// Forces the shuffle reader to always read partitions via the Arrow Flight client,
+    /// even when partitions are local to the node.
+    fn ballista_shuffle_reader_force_remote_read(&self) -> bool;
+    /// Forces the shuffle reader to always read partitions via the Arrow Flight client,
+    /// even when partitions are local to the node.
+    ///
+    /// Enabling forced remote read may significantly reduce performance,
+    /// as all partition reads will go through the Arrow Flight client even for local data.
+    /// Use only when necessary, like in tests
+    fn with_ballista_shuffle_reader_force_remote_read(
+        self,
+        force_remote_read: bool,
+    ) -> Self;
+
     /// Sets parallelism of standalone cluster
     ///
     /// This option to be used to configure standalone session context
@@ -317,6 +333,28 @@ impl SessionConfigExt for SessionConfig {
         } else {
             self.with_option_extension(BallistaConfig::default())
                 .set_usize(BALLISTA_SHUFFLE_READER_MAX_REQUESTS, max_requests)
+        }
+    }
+
+    fn ballista_shuffle_reader_force_remote_read(&self) -> bool {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.shuffle_reader_force_remote_read())
+            .unwrap_or_else(|| {
+                BallistaConfig::default().shuffle_reader_force_remote_read()
+            })
+    }
+
+    fn with_ballista_shuffle_reader_force_remote_read(
+        self,
+        force_remote_read: bool,
+    ) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_bool(BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, force_remote_read)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_bool(BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, force_remote_read)
         }
     }
 }
