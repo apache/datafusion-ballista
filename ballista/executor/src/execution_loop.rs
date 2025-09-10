@@ -17,7 +17,7 @@
 
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
-use crate::executor_server::is_subdirectory;
+use crate::executor_process::remove_job_dir;
 use crate::{as_task_status, TaskExecutionTimes};
 use ballista_core::error::BallistaError;
 use ballista_core::extension::SessionConfigHelperExt;
@@ -37,7 +37,6 @@ use std::any::Any;
 use std::convert::TryInto;
 use std::error::Error;
 use std::ops::Deref;
-use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{sync::Arc, time::Duration};
@@ -95,23 +94,19 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                     jobs_to_clean,
                 } = result.into_inner();
                 active_job = !tasks.is_empty();
-                let work_dir = PathBuf::from(&executor.work_dir);
 
                 // Clean up any state related to the listed jobs
                 for cleanup in jobs_to_clean {
-                    let cleanup_job_id = cleanup.job_id;
-                    let path = work_dir.join(&cleanup_job_id);
-                    let is_valid_path = path.is_dir()
-                        && is_subdirectory(path.as_path(), work_dir.as_path());
+                    let job_id = cleanup.job_id.clone();
+                    let work_dir = executor.work_dir.clone();
 
-                    if !is_valid_path {
-                        warn!("Invalid job cleanup path: {:?}", path);
-
-                        continue;
-                    }
-
-                    info!("Remove data for job {:?}", cleanup_job_id);
-                    std::fs::remove_dir_all(&path)?;
+                    // In poll-based cleanup, removing job data is fire-and-forget.
+                    // Failures here do not affect task execution and are only logged.
+                    tokio::spawn(async move {
+                        if let Err(e) = remove_job_dir(&work_dir, &job_id).await {
+                            error!("failed to remove job dir {job_id}: {e}");
+                        }
+                    });
                 }
 
                 for task in tasks {

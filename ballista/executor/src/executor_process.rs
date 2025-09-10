@@ -18,6 +18,7 @@
 //! Ballista Executor Process
 
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -579,6 +580,53 @@ async fn clean_all_shuffle_data(work_dir: &str) -> ballista_core::error::Result<
     Ok(())
 }
 
+/// Remove a job directory under work_dir.
+/// Used by both push-based (gRPC handler) and pull-based (poll loop) cleanup.
+pub(crate) async fn remove_job_dir(
+    work_dir: &str,
+    job_id: &str,
+) -> ballista_core::error::Result<()> {
+    let work_path = PathBuf::from(&work_dir);
+    let job_path = work_path.join(job_id);
+
+    // Match legacy behavior: If the job path does not exist, return OK
+    if !tokio::fs::try_exists(&job_path).await.unwrap_or(false) {
+        return Ok(());
+    }
+
+    if !job_path.is_dir() {
+        return Err(BallistaError::General(format!(
+            "Path {job_path:?} is not a directory"
+        )));
+    } else if !is_subdirectory(job_path.as_path(), work_path.as_path()) {
+        return Err(BallistaError::General(format!(
+            "Path {job_path:?} is not a subdirectory of {work_path:?}"
+        )));
+    }
+
+    info!("Remove data for job {:?}", job_id);
+
+    tokio::fs::remove_dir_all(&job_path).await.map_err(|e| {
+        BallistaError::General(format!("Failed to remove {job_path:?} due to {e}"))
+    })?;
+
+    Ok(())
+}
+
+// Check whether the path is the subdirectory of the base directory
+pub(crate) fn is_subdirectory(path: &Path, base_path: &Path) -> bool {
+    let path = match path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let base = match base_path.canonicalize() {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+
+    path.parent().is_some_and(|p| p.starts_with(&base))
+}
+
 /// Determines if a directory contains files newer than the cutoff time.
 /// If return true, it means the directory contains files newer than the cutoff time. It satisfy the ttl and should not be deleted.
 pub async fn satisfy_dir_ttl(
@@ -624,6 +672,9 @@ pub async fn satisfy_dir_ttl(
 
 #[cfg(test)]
 mod tests {
+    use crate::executor_process::is_subdirectory;
+    use std::path::{Path, PathBuf};
+
     use super::clean_shuffle_data_loop;
     use std::fs;
     use std::fs::File;
@@ -690,5 +741,40 @@ mod tests {
         };
 
         assert!(config.override_arrow_flight_service.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_is_subdirectory() {
+        let base_dir = TempDir::new().unwrap();
+        let base_dir = base_dir.path();
+
+        // Normal correct one
+        {
+            let job_path = prepare_testing_job_directory(base_dir, "job_a");
+            assert!(is_subdirectory(&job_path, base_dir));
+        }
+
+        // Empty job id
+        {
+            let job_path = prepare_testing_job_directory(base_dir, "");
+            assert!(!is_subdirectory(&job_path, base_dir));
+
+            let job_path = prepare_testing_job_directory(base_dir, ".");
+            assert!(!is_subdirectory(&job_path, base_dir));
+        }
+
+        // Malicious job id
+        {
+            let job_path = prepare_testing_job_directory(base_dir, "..");
+            assert!(!is_subdirectory(&job_path, base_dir));
+        }
+    }
+    fn prepare_testing_job_directory(base_dir: &Path, job_id: &str) -> PathBuf {
+        let mut path = base_dir.to_path_buf();
+        path.push(job_id);
+        if !path.exists() {
+            fs::create_dir(&path).unwrap();
+        }
+        path
     }
 }
