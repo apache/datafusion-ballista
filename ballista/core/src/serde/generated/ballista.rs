@@ -720,6 +720,8 @@ pub struct JobSessionConfig {
 pub struct PollWorkResult {
     #[prost(message, repeated, tag = "1")]
     pub tasks: ::prost::alloc::vec::Vec<TaskDefinition>,
+    #[prost(message, repeated, tag = "2")]
+    pub jobs_to_clean: ::prost::alloc::vec::Vec<CleanJobDataParams>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RegisterExecutorParams {

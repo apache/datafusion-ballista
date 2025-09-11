@@ -18,7 +18,6 @@
 use ballista_core::BALLISTA_VERSION;
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -53,7 +52,7 @@ use tokio::task::JoinHandle;
 
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
-use crate::executor_process::ExecutorProcessConfig;
+use crate::executor_process::{remove_job_dir, ExecutorProcessConfig};
 use crate::shutdown::ShutdownNotifier;
 use crate::{as_task_status, TaskExecutionTimes};
 
@@ -729,88 +728,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
     ) -> Result<Response<RemoveJobDataResult>, Status> {
         let job_id = request.into_inner().job_id;
 
-        let work_dir = PathBuf::from(&self.executor.work_dir);
-        let mut path = work_dir.clone();
-        path.push(&job_id);
-
-        // Verify it's an existing directory
-        if !path.is_dir() {
-            return if !path.exists() {
-                Ok(Response::new(RemoveJobDataResult {}))
-            } else {
-                Err(Status::invalid_argument(format!(
-                    "Path {path:?} is not for a directory!!!"
-                )))
-            };
-        }
-
-        if !is_subdirectory(path.as_path(), work_dir.as_path()) {
-            return Err(Status::invalid_argument(format!(
-                "Path {path:?} is not a subdirectory of {work_dir:?}!!!"
-            )));
-        }
-
-        info!("Remove data for job {:?}", job_id);
-
-        std::fs::remove_dir_all(&path)?;
+        remove_job_dir(&self.executor.work_dir, &job_id)
+            .await
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         Ok(Response::new(RemoveJobDataResult {}))
     }
 }
 
-// Check whether the path is the subdirectory of the base directory
-fn is_subdirectory(path: &Path, base_path: &Path) -> bool {
-    if let (Ok(path), Ok(base_path)) = (path.canonicalize(), base_path.canonicalize()) {
-        if let Some(parent_path) = path.parent() {
-            parent_path.starts_with(base_path)
-        } else {
-            false
-        }
-    } else {
-        false
-    }
-}
-
 #[cfg(test)]
-mod test {
-    use crate::executor_server::is_subdirectory;
-    use std::fs;
-    use std::path::{Path, PathBuf};
-    use tempfile::TempDir;
-
-    #[tokio::test]
-    async fn test_is_subdirectory() {
-        let base_dir = TempDir::new().unwrap();
-        let base_dir = base_dir.path();
-
-        // Normal correct one
-        {
-            let job_path = prepare_testing_job_directory(base_dir, "job_a");
-            assert!(is_subdirectory(&job_path, base_dir));
-        }
-
-        // Empty job id
-        {
-            let job_path = prepare_testing_job_directory(base_dir, "");
-            assert!(!is_subdirectory(&job_path, base_dir));
-
-            let job_path = prepare_testing_job_directory(base_dir, ".");
-            assert!(!is_subdirectory(&job_path, base_dir));
-        }
-
-        // Malicious job id
-        {
-            let job_path = prepare_testing_job_directory(base_dir, "..");
-            assert!(!is_subdirectory(&job_path, base_dir));
-        }
-    }
-
-    fn prepare_testing_job_directory(base_dir: &Path, job_id: &str) -> PathBuf {
-        let mut path = base_dir.to_path_buf();
-        path.push(job_id);
-        if !path.exists() {
-            fs::create_dir(&path).unwrap();
-        }
-        path
-    }
-}
+mod test {}

@@ -104,7 +104,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 })?;
 
             let mut available_slots = [AvailableTaskSlots {
-                executor_id,
+                executor_id: executor_id.clone(),
                 slots: num_free_slots,
             }];
             let available_slots = available_slots.iter_mut().collect();
@@ -141,7 +141,17 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                     }
                 }
             }
-            Ok(Response::new(PollWorkResult { tasks }))
+            let jobs_to_clean = self
+                .state
+                .executor_manager
+                .drain_pending_cleanup_jobs(&executor_id)
+                .into_iter()
+                .map(|job_id| CleanJobDataParams { job_id })
+                .collect();
+            Ok(Response::new(PollWorkResult {
+                tasks,
+                jobs_to_clean,
+            }))
         } else {
             warn!("Received invalid executor poll_work request");
             Err(Status::invalid_argument("Missing metadata in request"))

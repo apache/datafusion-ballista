@@ -47,6 +47,7 @@ pub struct ExecutorManager {
     cluster_state: Arc<dyn ClusterState>,
     config: Arc<SchedulerConfig>,
     clients: ExecutorClients,
+    pending_cleanup_jobs: Arc<DashMap<String, HashSet<String>>>,
 }
 
 impl ExecutorManager {
@@ -58,6 +59,7 @@ impl ExecutorManager {
             cluster_state,
             config,
             clients: Default::default(),
+            pending_cleanup_jobs: Default::default(),
         }
     }
 
@@ -163,26 +165,36 @@ impl ExecutorManager {
         });
     }
 
-    /// Send rpc to Executors to clean up the job data
+    /// 1. Push strategy: Send rpc to Executors to clean up the job data
+    /// 2. Poll strategy: Save cleanup job ids and send them to executors
     async fn clean_up_job_data_inner(&self, job_id: String) {
         let alive_executors = self.get_alive_executors();
+
         for executor in alive_executors {
             let job_id_clone = job_id.to_owned();
-            if let Ok(mut client) = self.get_client(&executor).await {
-                tokio::spawn(async move {
-                    if let Err(err) = client
-                        .remove_job_data(RemoveJobDataParams {
-                            job_id: job_id_clone,
-                        })
-                        .await
-                    {
-                        warn!(
-                            "Failed to call remove_job_data on Executor {executor} due to {err:?}"
-                        )
-                    }
-                });
+
+            if self.config.is_push_staged_scheduling() {
+                if let Ok(mut client) = self.get_client(&executor).await {
+                    tokio::spawn(async move {
+                        if let Err(err) = client
+                            .remove_job_data(RemoveJobDataParams {
+                                job_id: job_id_clone,
+                            })
+                            .await
+                        {
+                            warn!(
+                                    "Failed to call remove_job_data on Executor {executor} due to {err:?}"
+                                )
+                        }
+                    });
+                } else {
+                    warn!("Failed to get client for Executor {executor}")
+                }
             } else {
-                warn!("Failed to get client for Executor {executor}")
+                self.pending_cleanup_jobs
+                    .entry(executor)
+                    .or_default()
+                    .insert(job_id.clone());
             }
         }
     }
@@ -308,6 +320,16 @@ impl ExecutorManager {
         Ok(())
     }
 
+    pub(crate) fn drain_pending_cleanup_jobs(
+        &self,
+        executor_id: &str,
+    ) -> HashSet<String> {
+        self.pending_cleanup_jobs
+            .remove(executor_id)
+            .map(|(_, jobs)| jobs)
+            .unwrap_or_default()
+    }
+
     pub(crate) async fn save_executor_heartbeat(
         &self,
         heartbeat: ExecutorHeartbeat,
@@ -341,13 +363,20 @@ impl ExecutorManager {
             .executor_heartbeats()
             .iter()
             .filter_map(|(exec, heartbeat)| {
-                let active = matches!(
-                    heartbeat
-                        .status
-                        .as_ref()
-                        .and_then(|status| status.status.as_ref()),
-                    Some(executor_status::Status::Active(_))
-                );
+                let active = match heartbeat
+                    .status
+                    .as_ref()
+                    .and_then(|status| status.status.as_ref())
+                {
+                    Some(executor_status::Status::Active(_)) => true,
+                    Some(executor_status::Status::Terminating(_))
+                    | Some(executor_status::Status::Dead(_)) => false,
+                    None => {
+                        // If config is poll-based scheduling, treat executors with no status as active
+                        !self.config.is_push_staged_scheduling()
+                    }
+                    _ => false,
+                };
                 let live = heartbeat.timestamp > last_seen_ts_threshold;
 
                 (active && live).then(|| exec.clone())

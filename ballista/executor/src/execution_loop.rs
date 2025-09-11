@@ -17,6 +17,7 @@
 
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
+use crate::executor_process::remove_job_dir;
 use crate::{as_task_status, TaskExecutionTimes};
 use ballista_core::error::BallistaError;
 use ballista_core::extension::SessionConfigHelperExt;
@@ -88,8 +89,25 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 
         match poll_work_result {
             Ok(result) => {
-                let tasks = result.into_inner().tasks;
+                let PollWorkResult {
+                    tasks,
+                    jobs_to_clean,
+                } = result.into_inner();
                 active_job = !tasks.is_empty();
+
+                // Clean up any state related to the listed jobs
+                for cleanup in jobs_to_clean {
+                    let job_id = cleanup.job_id.clone();
+                    let work_dir = executor.work_dir.clone();
+
+                    // In poll-based cleanup, removing job data is fire-and-forget.
+                    // Failures here do not affect task execution and are only logged.
+                    tokio::spawn(async move {
+                        if let Err(e) = remove_job_dir(&work_dir, &job_id).await {
+                            error!("failed to remove job dir {job_id}: {e}");
+                        }
+                    });
+                }
 
                 for task in tasks {
                     let task_status_sender = task_status_sender.clone();
