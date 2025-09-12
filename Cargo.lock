@@ -967,6 +967,7 @@ dependencies = [
 name = "ballista-core"
 version = "49.0.0"
 dependencies = [
+ "arrow",
  "arrow-flight",
  "async-trait",
  "aws-config",
