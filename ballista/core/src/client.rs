@@ -25,7 +25,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::error::{BallistaError, Result};
+use crate::error::{BallistaError, Result as BResult};
 use crate::serde::scheduler::{Action, PartitionId};
 
 use arrow_flight;
@@ -42,6 +42,7 @@ use datafusion::arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::error::DataFusionError;
+use datafusion::error::Result;
 
 use crate::serde::protobuf;
 use crate::utils::create_grpc_client_connection;
@@ -64,7 +65,11 @@ const IO_RETRY_WAIT_TIME_MS: u64 = 3000;
 impl BallistaClient {
     /// Create a new BallistaClient to connect to the executor listening on the specified
     /// host and port
-    pub async fn try_new(host: &str, port: u16, max_message_size: usize) -> Result<Self> {
+    pub async fn try_new(
+        host: &str,
+        port: u16,
+        max_message_size: usize,
+    ) -> BResult<Self> {
         let addr = format!("http://{host}:{port}");
         debug!("BallistaClient connecting to {addr}");
         let connection =
@@ -92,7 +97,8 @@ impl BallistaClient {
         path: &str,
         host: &str,
         port: u16,
-    ) -> Result<SendableRecordBatchStream> {
+        flight_transport: bool,
+    ) -> BResult<SendableRecordBatchStream> {
         let action = Action::FetchPartition {
             job_id: partition_id.job_id.clone(),
             stage_id: partition_id.stage_id,
@@ -101,8 +107,14 @@ impl BallistaClient {
             host: host.to_owned(),
             port,
         };
-        self.execute_action(&action)
-            .await
+
+        let result = if flight_transport {
+            self.execute_do_get(&action).await
+        } else {
+            self.execute_do_action(&action).await
+        };
+
+        result
             .map_err(|error| match error {
                 // map grpc connection error to partition fetch error.
                 BallistaError::GrpcActionError(msg) => {
@@ -126,10 +138,10 @@ impl BallistaClient {
     }
 
     /// Execute an action and retrieve the results
-    pub async fn execute_action(
+    pub async fn execute_do_get(
         &mut self,
         action: &Action,
-    ) -> Result<SendableRecordBatchStream> {
+    ) -> BResult<SendableRecordBatchStream> {
         let serialized_action: protobuf::Action = action.to_owned().try_into()?;
 
         let mut buf: Vec<u8> = Vec::with_capacity(serialized_action.encoded_len());
@@ -200,6 +212,67 @@ impl BallistaClient {
         }
         unreachable!("Did not receive schema batch from flight server");
     }
+
+    /// Execute an action and retrieve the results
+    pub async fn execute_do_action(
+        &mut self,
+        action: &Action,
+    ) -> BResult<SendableRecordBatchStream> {
+        let serialized_action: protobuf::Action = action.to_owned().try_into()?;
+
+        let mut buf: Vec<u8> = Vec::with_capacity(serialized_action.encoded_len());
+
+        serialized_action
+            .encode(&mut buf)
+            .map_err(|e| BallistaError::GrpcActionError(format!("{e:?}")))?;
+
+        for i in 0..IO_RETRIES_TIMES {
+            if i > 0 {
+                warn!(
+                    "Remote shuffle read fail, retry {i} times, sleep {IO_RETRY_WAIT_TIME_MS} ms."
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    IO_RETRY_WAIT_TIME_MS,
+                ))
+                .await;
+            }
+
+            let request = tonic::Request::new(arrow_flight::Action {
+                body: buf.clone().into(),
+                r#type: "BLOCKTRANSPORT".to_string(),
+            });
+            let result = self.flight_client.do_action(request).await;
+            let res = match result {
+                Ok(res) => res,
+                Err(ref err) => {
+                    // IO related error like connection timeout, reset... will warp with Code::Unknown
+                    // This means IO related error will retry.
+                    if i == IO_RETRIES_TIMES - 1 || err.code() != Code::Unknown {
+                        return BallistaError::GrpcActionError(format!(
+                            "{:?}",
+                            result.unwrap_err()
+                        ))
+                        .into();
+                    }
+                    // retry request
+                    continue;
+                }
+            };
+
+            let stream = res.into_inner();
+            let stream = stream.map(|m| {
+                m.map(|b| b.body).map_err(|e| {
+                    DataFusionError::ArrowError(
+                        Box::new(ArrowError::IpcError(e.to_string())),
+                        None,
+                    )
+                })
+            });
+
+            return Ok(Box::pin(BlockDataStream::try_new(stream).await?));
+        }
+        unreachable!("Did not receive schema batch from flight server");
+    }
 }
 
 struct FlightDataStream {
@@ -261,7 +334,9 @@ pub struct BlockDataStream<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin
 const MAXIMUM_SCHEMA_BUFFER_SIZE: usize = 8_388_608;
 
 impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
-    pub async fn try_new(mut ipc_stream: S) -> std::result::Result<Self, ArrowError> {
+    pub async fn try_new(
+        mut ipc_stream: S,
+    ) -> std::result::Result<Self, DataFusionError> {
         let mut state_buffer = Buffer::default();
 
         loop {
@@ -270,7 +345,7 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
                     "Schema buffer length exceeded maximum buffer size, expected {} actual: {}",
                     MAXIMUM_SCHEMA_BUFFER_SIZE,
                     state_buffer.len()
-                )));
+                )).into());
             }
 
             match ipc_stream.next().await {
@@ -294,14 +369,15 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
                             // thus schema may not be extracted
                             //
                         }
-                        Err(e) => return Err(e),
+                        Err(e) => return Err(e.into()),
                     }
                 }
-                Some(Err(e)) => return Err(ArrowError::IpcError(e.to_string())),
+                Some(Err(e)) => return Err(ArrowError::IpcError(e.to_string()).into()),
                 None => {
                     return Err(ArrowError::IpcError(
                         "Premature end of the stream while decoding schema".to_owned(),
-                    ));
+                    )
+                    .into());
                 }
             }
         }

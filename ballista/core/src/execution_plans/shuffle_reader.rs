@@ -501,7 +501,7 @@ async fn fetch_partition_remote(
         })?;
 
     ballista_client
-        .fetch_partition(&metadata.id, partition_id, &location.path, host, port)
+        .fetch_partition(&metadata.id, partition_id, &location.path, host, port, true)
         .await
 }
 
