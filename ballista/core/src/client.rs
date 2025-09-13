@@ -405,12 +405,6 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
     }
 }
 
-impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> Drop for BlockDataStream<S> {
-    fn drop(&mut self) {
-        log::info!("block client transferred: {}", self.transmitted)
-    }
-}
-
 impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> Stream
     for BlockDataStream<S>
 {
