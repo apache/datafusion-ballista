@@ -212,7 +212,7 @@ impl FlightService for BallistaFlightService {
 
                         let flight_data_stream = file_stream.map(|result| {
                             result
-                                .map(|bytes| arrow_flight::Result { body: bytes.into() })
+                                .map(|bytes| arrow_flight::Result { body: bytes })
                                 .map_err(|e| Status::internal(format!("I/O error: {e}")))
                         });
 

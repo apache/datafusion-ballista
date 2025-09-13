@@ -353,7 +353,7 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
                     state_buffer =
                         Self::combine_buffers(&state_buffer, &Buffer::from(blob));
 
-                    match try_schema_from_ipc_buffer(&state_buffer.as_slice()) {
+                    match try_schema_from_ipc_buffer(state_buffer.as_slice()) {
                         Ok(schema) => {
                             return Ok(Self {
                                 decoder: StreamDecoder::new(),
@@ -440,7 +440,7 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> Stream
                                     std::task::Poll::Ready(Some(Ok(batch)))
                                 }
                                 Ok(None) => {
-                                    cx.waker().clone().wake();
+                                    cx.waker().wake_by_ref();
                                     std::task::Poll::Pending
                                 }
                                 Err(e) => std::task::Poll::Ready(Some(Err(
@@ -534,7 +534,7 @@ mod tests {
         let mut writer =
             StreamWriter::try_new(&mut result, &batches[0].schema()).unwrap();
         for b in batches {
-            writer.write(&b).unwrap();
+            writer.write(b).unwrap();
         }
 
         writer.finish().unwrap();
