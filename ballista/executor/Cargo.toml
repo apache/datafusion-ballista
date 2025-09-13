@@ -52,6 +52,7 @@ parking_lot = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true, features = ["net"] }
+tokio-util = { version = "0.7", features = ["io-util"] }
 tonic = { workspace = true }
 tracing = { workspace = true, optional = true }
 tracing-appender = { workspace = true, optional = true }

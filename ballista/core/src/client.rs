@@ -239,7 +239,7 @@ impl BallistaClient {
 
             let request = tonic::Request::new(arrow_flight::Action {
                 body: buf.clone().into(),
-                r#type: "BLOCKTRANSPORT".to_string(),
+                r#type: "IO_BLOCK_TRANSPORT".to_string(),
             });
             let result = self.flight_client.do_action(request).await;
             let res = match result {
