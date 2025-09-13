@@ -66,7 +66,8 @@ impl Default for BallistaFlightService {
 type BoxedFlightStream<T> =
     Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'static>>;
 
-const BUFFER_CAPACITY: usize = 8 * 1024 * 1024;
+/// shuffle file block transfer size    
+const BLOCK_BUFFER_CAPACITY: usize = 8 * 1024 * 1024;
 
 #[tonic::async_trait]
 impl FlightService for BallistaFlightService {
@@ -189,6 +190,13 @@ impl FlightService for BallistaFlightService {
         let action = request.into_inner();
 
         match action.r#type.as_str() {
+            // Block transfer will transfer arrow ipc file block by block
+            // without decoding or decompressing, this will provide less resource utilization
+            // as file are not decoded nor decompressed/compressed. Usually this would transfer less data across
+            // as files are better compressed due to its size.
+            //
+            // For further discussion regarding performance implications, refer to:
+            // https://github.com/apache/datafusion-ballista/issues/1315
             "IO_BLOCK_TRANSPORT" => {
                 let action =
                     decode_protobuf(&action.body).map_err(|e| from_ballista_err(&e))?;
@@ -205,10 +213,12 @@ impl FlightService for BallistaFlightService {
                             path,
                             file.metadata().await?.len()
                         );
-                        let reader =
-                            tokio::io::BufReader::with_capacity(BUFFER_CAPACITY, file);
+                        let reader = tokio::io::BufReader::with_capacity(
+                            BLOCK_BUFFER_CAPACITY,
+                            file,
+                        );
                         let file_stream =
-                            ReaderStream::with_capacity(reader, BUFFER_CAPACITY);
+                            ReaderStream::with_capacity(reader, BLOCK_BUFFER_CAPACITY);
 
                         let flight_data_stream = file_stream.map(|result| {
                             result
