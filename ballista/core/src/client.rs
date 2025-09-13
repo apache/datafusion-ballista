@@ -33,6 +33,9 @@ use arrow_flight::utils::flight_data_to_arrow_batch;
 use arrow_flight::Ticket;
 use arrow_flight::{flight_service_client::FlightServiceClient, FlightData};
 use datafusion::arrow::array::ArrayRef;
+use datafusion::arrow::buffer::{Buffer, MutableBuffer};
+use datafusion::arrow::ipc::convert::try_schema_from_ipc_buffer;
+use datafusion::arrow::ipc::reader::StreamDecoder;
 use datafusion::arrow::{
     datatypes::{Schema, SchemaRef},
     error::ArrowError,
@@ -244,5 +247,274 @@ impl Stream for FlightDataStream {
 impl RecordBatchStream for FlightDataStream {
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
+    }
+}
+
+pub struct BlockDataStream<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> {
+    decoder: StreamDecoder,
+    state_buffer: Buffer,
+    ipc_stream: S,
+    transmitted: usize,
+    pub schema: SchemaRef,
+}
+
+const MAXIMUM_SCHEMA_BUFFER_SIZE: usize = 8_388_608;
+
+impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
+    pub async fn try_new(mut ipc_stream: S) -> std::result::Result<Self, ArrowError> {
+        let mut state_buffer = Buffer::default();
+
+        loop {
+            if state_buffer.len() > MAXIMUM_SCHEMA_BUFFER_SIZE {
+                return Err(ArrowError::IpcError(format!(
+                    "Schema buffer length exceeded maximum buffer size, expected {} actual: {}",
+                    MAXIMUM_SCHEMA_BUFFER_SIZE,
+                    state_buffer.len()
+                )));
+            }
+
+            match ipc_stream.next().await {
+                Some(Ok(blob)) => {
+                    state_buffer =
+                        Self::combine_buffers(&state_buffer, &Buffer::from(blob));
+
+                    match try_schema_from_ipc_buffer(&state_buffer.as_slice()) {
+                        Ok(schema) => {
+                            return Ok(Self {
+                                decoder: StreamDecoder::new(),
+                                transmitted: state_buffer.len(),
+                                state_buffer,
+                                ipc_stream,
+                                schema: Arc::new(schema),
+                            });
+                        }
+                        Err(ArrowError::ParseError(_)) => {
+                            //
+                            // parse errors are ignored as may have not received whole message
+                            // thus schema may not be extracted
+                            //
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                Some(Err(e)) => return Err(ArrowError::IpcError(e.to_string())),
+                None => {
+                    return Err(ArrowError::IpcError(
+                        "Premature end of the stream while decoding schema".to_owned(),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
+    fn combine_buffers(first: &Buffer, second: &Buffer) -> Buffer {
+        let mut combined = MutableBuffer::new(first.len() + second.len());
+        combined.extend_from_slice(first.as_slice());
+        combined.extend_from_slice(second.as_slice());
+        combined.into()
+    }
+
+    fn decode(&mut self) -> std::result::Result<Option<RecordBatch>, ArrowError> {
+        self.decoder.decode(&mut self.state_buffer)
+    }
+
+    fn extend_bytes(&mut self, blob: prost::bytes::Bytes) {
+        //
+        //TODO: do we want to limit maximum buffer size here as well?
+        //
+        self.transmitted += blob.len();
+        self.state_buffer = Self::combine_buffers(&self.state_buffer, &Buffer::from(blob))
+    }
+}
+
+impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> Drop for BlockDataStream<S> {
+    fn drop(&mut self) {
+        log::info!("block client transferred: {}", self.transmitted)
+    }
+}
+
+impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> Stream
+    for BlockDataStream<S>
+{
+    type Item = datafusion::error::Result<RecordBatch>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        match self.decode() {
+            //
+            // if there is a batch to be read from state buffer return it
+            //
+            Ok(Some(batch)) => std::task::Poll::Ready(Some(Ok(batch))),
+            //
+            // there is no batch in the state buffer, try to pull new data
+            // from remote ipc decode it try to return next batch
+            //
+            Ok(None) => match self.ipc_stream.poll_next_unpin(cx) {
+                std::task::Poll::Ready(Some(flight_data_result)) => {
+                    match flight_data_result {
+                        Ok(blob) => {
+                            self.extend_bytes(blob);
+
+                            match self.decode() {
+                                Ok(Some(batch)) => {
+                                    std::task::Poll::Ready(Some(Ok(batch)))
+                                }
+                                Ok(None) => {
+                                    cx.waker().clone().wake();
+                                    std::task::Poll::Pending
+                                }
+                                Err(e) => std::task::Poll::Ready(Some(Err(
+                                    ArrowError::IpcError(e.to_string()).into(),
+                                ))),
+                            }
+                        }
+                        Err(e) => std::task::Poll::Ready(Some(Err(
+                            ArrowError::IpcError(e.to_string()).into(),
+                        ))),
+                    }
+                }
+                //
+                // end of IPC stream
+                //
+                std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+                // TODO: do we need to call waker here
+                //       i believe not as poll_next_unpin
+                //       should do it
+                std::task::Poll::Pending => std::task::Poll::Pending,
+            },
+            Err(e) => std::task::Poll::Ready(Some(Err(ArrowError::IpcError(
+                e.to_string(),
+            )
+            .into()))),
+        }
+    }
+}
+
+impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> RecordBatchStream
+    for BlockDataStream<S>
+{
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use datafusion::arrow::{
+        array::{DictionaryArray, Int32Array, RecordBatch},
+        datatypes::Int32Type,
+        ipc::writer::StreamWriter,
+    };
+    use futures::{StreamExt, TryStreamExt};
+    use prost::bytes::Bytes;
+
+    use crate::client::BlockDataStream;
+
+    fn generate_batches() -> Vec<RecordBatch> {
+        let batch0 = RecordBatch::try_from_iter([
+            ("a", Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])) as _),
+            (
+                "b",
+                Arc::new(Int32Array::from(vec![11, 22, 33, 44, 55])) as _,
+            ),
+            (
+                "c",
+                Arc::new(DictionaryArray::<Int32Type>::from_iter([
+                    "hello", "hello", "world", "some", "other",
+                ])) as _,
+            ),
+        ])
+        .unwrap();
+
+        let batch1 = RecordBatch::try_from_iter([
+            (
+                "a",
+                Arc::new(Int32Array::from(vec![10, 20, 30, 40, 50])) as _,
+            ),
+            (
+                "b",
+                Arc::new(Int32Array::from(vec![110, 220, 330, 440, 550])) as _,
+            ),
+            (
+                "c",
+                Arc::new(DictionaryArray::<Int32Type>::from_iter([
+                    "hello", "some", "world", "some", "other",
+                ])) as _,
+            ),
+        ])
+        .unwrap();
+
+        vec![batch0, batch1]
+    }
+
+    fn generate_ipc_stream(batches: &[RecordBatch]) -> Vec<u8> {
+        let mut result = vec![];
+        let mut writer =
+            StreamWriter::try_new(&mut result, &batches[0].schema()).unwrap();
+        for b in batches {
+            writer.write(&b).unwrap();
+        }
+
+        writer.finish().unwrap();
+        result
+    }
+
+    #[tokio::test]
+    async fn should_process_chunked() {
+        let batches = generate_batches();
+        let ipc_blob = generate_ipc_stream(&batches);
+        let stream = futures::stream::iter(ipc_blob)
+            .chunks(2)
+            .map(|b| Ok(Bytes::from(b)));
+
+        let result: datafusion::error::Result<Vec<RecordBatch>> =
+            BlockDataStream::try_new(stream)
+                .await
+                .unwrap()
+                .try_collect()
+                .await;
+
+        assert_eq!(batches, result.unwrap())
+    }
+
+    #[tokio::test]
+    async fn should_process_single_message() {
+        let batches = generate_batches();
+        let blob = generate_ipc_stream(&batches);
+        let stream = futures::stream::iter(vec![Ok(Bytes::from(blob))]);
+
+        let result: datafusion::error::Result<Vec<RecordBatch>> =
+            BlockDataStream::try_new(stream)
+                .await
+                .unwrap()
+                .try_collect()
+                .await;
+
+        assert_eq!(batches, result.unwrap())
+    }
+
+    #[tokio::test]
+    #[should_panic = "Premature end of the stream while decoding schema"]
+    async fn should_process_panic_if_not_correct_stream() {
+        let batches = generate_batches();
+        let ipc_blob = generate_ipc_stream(&batches);
+        let stream = futures::stream::iter(ipc_blob[..5].to_vec())
+            .chunks(2)
+            .map(|b| Ok(Bytes::from(b)));
+
+        let result: datafusion::error::Result<Vec<RecordBatch>> =
+            BlockDataStream::try_new(stream)
+                .await
+                .unwrap()
+                .try_collect()
+                .await;
+
+        assert_eq!(batches, result.unwrap())
     }
 }
