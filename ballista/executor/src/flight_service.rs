@@ -189,7 +189,7 @@ impl FlightService for BallistaFlightService {
         let action = request.into_inner();
 
         match action.r#type.as_str() {
-            "IO_BLOCK_TRANSFER" => {
+            "IO_BLOCK_TRANSPORT" => {
                 let action =
                     decode_protobuf(&action.body).map_err(|e| from_ballista_err(&e))?;
 
