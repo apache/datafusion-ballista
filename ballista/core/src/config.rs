@@ -37,7 +37,7 @@ pub const BALLISTA_SHUFFLE_READER_MAX_REQUESTS: &str =
 pub const BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ: &str =
     "ballista.shuffle.force_remote_read";
 pub const BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT: &str =
-    "ballista.shuffle.force_remote_prefer_flight";
+    "ballista.shuffle.remote_read_prefer_flight";
 
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;

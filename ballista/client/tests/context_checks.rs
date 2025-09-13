@@ -872,4 +872,67 @@ mod supported {
 
         Ok(())
     }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_force_local_read_with_flight(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) -> datafusion::error::Result<()> {
+        ctx.register_parquet(
+            "test",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        ctx.sql("SET ballista.shuffle.force_remote_read = true")
+            .await?
+            .show()
+            .await?;
+
+        ctx.sql("SET ballista.shuffle.remote_read_prefer_flight = true")
+            .await?
+            .show()
+            .await?;
+
+        let result = ctx
+            .sql("select name, value from information_schema.df_settings where name like 'ballista.shuffle.remote_read_prefer_flight' order by name limit 1")
+            .await?
+            .collect()
+            .await?;
+
+        let expected = [
+            "+--------------------------------------------+-------+",
+            "| name                                       | value |",
+            "+--------------------------------------------+-------+",
+            "| ballista.shuffle.remote_read_prefer_flight | true  |",
+            "+--------------------------------------------+-------+",
+        ];
+
+        assert_batches_eq!(expected, &result);
+
+        let expected = [
+            "+------------+----------+",
+            "| string_col | count(*) |",
+            "+------------+----------+",
+            "| 30         | 1        |",
+            "| 31         | 2        |",
+            "+------------+----------+",
+        ];
+
+        let result = ctx
+            .sql("select string_col, count(*) from test where id > 4 group by string_col order by string_col")
+            .await?
+            .collect()
+            .await?;
+
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
 }
