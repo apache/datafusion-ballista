@@ -89,7 +89,11 @@ impl BallistaClient {
         Ok(Self { flight_client })
     }
 
-    /// Fetch a partition from an executor
+    /// Retrieves a partition from an executor.
+    ///
+    /// Depending on the value of the `flight_transport` parameter, this method will utilize either
+    /// the Arrow Flight protocol for compatibility, or a more efficient block-based transfer mechanism.
+    /// The block-based transfer is optimized for performance and reduces computational overhead on the server.
     pub async fn fetch_partition(
         &mut self,
         executor_id: &str,
@@ -137,7 +141,11 @@ impl BallistaClient {
             })
     }
 
-    /// Execute an action and retrieve the results
+    /// Executes the specified action and retrieves the results from the remote executor.
+    ///
+    /// This method establishes a [FlightDataStream] to facilitate the transfer of data
+    /// using the Arrow Flight protocol. The [FlightDataStream] handles the streaming
+    /// of record batches from the server to the client in an efficient and structured manner.
     pub async fn execute_do_get(
         &mut self,
         action: &Action,
@@ -213,7 +221,10 @@ impl BallistaClient {
         unreachable!("Did not receive schema batch from flight server");
     }
 
-    /// Execute an action and retrieve the results
+    /// Executes the specified action and retrieves the results from the remote executor
+    /// using an optimized block-based transfer operation. This method establishes a
+    /// [BlockDataStream] to facilitate efficient transmission of data blocks, reducing
+    /// computational overhead and improving performance compared to flight protocols.
     pub async fn execute_do_action(
         &mut self,
         action: &Action,
@@ -275,6 +286,20 @@ impl BallistaClient {
     }
 }
 
+/// [FlightDataStream] facilitates the transfer of shuffle data using the Arrow Flight protocol.
+/// Internally, it invokes the `do_get` method on the Arrow Flight server, which returns a stream
+/// of messages, each representing a record batch.
+///
+/// The Flight server is responsible for decompressing and decoding the shuffle file, and then
+/// transmitting each batch as an individual message. Each message is compressed independently.
+///
+/// This approach increases the computational load on the Flight server due to repeated
+/// decompression and compression operations. Furthermore, compression efficiency is reduced
+/// compared to file-level compression, as it operates on smaller data segments.
+///
+/// For further discussion regarding performance implications, refer to:
+/// https://github.com/apache/datafusion-ballista/issues/1315
+
 struct FlightDataStream {
     stream: Streaming<FlightData>,
     schema: SchemaRef,
@@ -322,7 +347,14 @@ impl RecordBatchStream for FlightDataStream {
         self.schema.clone()
     }
 }
-
+/// [BlockDataStream] facilitates the transfer of original shuffle files in a block-by-block manner.
+/// This implementation utilizes a custom `do_action` method on the Arrow Flight server.
+/// The primary distinction from [FlightDataStream] is that it does not decompress or decode
+/// the original partition file on the server side. This approach reduces computational overhead
+/// on the Flight server and enables the transmission of less data, owing to improved file-level compression.
+///
+/// For a detailed discussion of the performance advantages, see:
+/// https://github.com/apache/datafusion-ballista/issues/1315
 pub struct BlockDataStream<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> {
     decoder: StreamDecoder,
     state_buffer: Buffer,
@@ -331,6 +363,7 @@ pub struct BlockDataStream<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin
     pub schema: SchemaRef,
 }
 
+/// maximum length of message with schema definition
 const MAXIMUM_SCHEMA_BUFFER_SIZE: usize = 8_388_608;
 
 impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
@@ -451,9 +484,7 @@ impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> Stream
                 // end of IPC stream
                 //
                 std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-                // TODO: do we need to call waker here
-                //       i believe not as poll_next_unpin
-                //       should do it
+                // its expected that underlying stream will register waker callback
                 std::task::Poll::Pending => std::task::Poll::Pending,
             },
             Err(e) => std::task::Poll::Ready(Some(Err(ArrowError::IpcError(
