@@ -161,6 +161,7 @@ impl ExecutionPlan for ShuffleReaderExec {
             config.ballista_shuffle_reader_maximum_concurrent_requests();
         let max_message_size = config.ballista_grpc_client_max_message_size();
         let force_remote_read = config.ballista_shuffle_reader_force_remote_read();
+        let prefer_flight = config.ballista_shuffle_reader_remote_prefer_flight();
 
         if force_remote_read {
             debug!(
@@ -193,6 +194,7 @@ impl ExecutionPlan for ShuffleReaderExec {
             max_request_num,
             max_message_size,
             force_remote_read,
+            prefer_flight,
         );
 
         let result = RecordBatchStreamAdapter::new(
@@ -386,6 +388,7 @@ fn send_fetch_partitions(
     max_request_num: usize,
     max_message_size: usize,
     force_remote_read: bool,
+    flight_transport: bool,
 ) -> AbortableReceiverStream {
     let (response_sender, response_receiver) = mpsc::channel(max_request_num);
     let semaphore = Arc::new(Semaphore::new(max_request_num));
@@ -405,7 +408,7 @@ fn send_fetch_partitions(
     spawned_tasks.push(SpawnedTask::spawn(async move {
         for p in local_locations {
             let r = PartitionReaderEnum::Local
-                .fetch_partition(&p, max_message_size)
+                .fetch_partition(&p, max_message_size, flight_transport)
                 .await;
             if let Err(e) = response_sender_c.send(r).await {
                 error!("Fail to send response event to the channel due to {e}");
@@ -420,7 +423,7 @@ fn send_fetch_partitions(
             // Block if exceeds max request number.
             let permit = semaphore.acquire_owned().await.unwrap();
             let r = PartitionReaderEnum::FlightRemote
-                .fetch_partition(&p, max_message_size)
+                .fetch_partition(&p, max_message_size, flight_transport)
                 .await;
             // Block if the channel buffer is full.
             if let Err(e) = response_sender.send(r).await {
@@ -446,6 +449,7 @@ trait PartitionReader: Send + Sync + Clone {
         &self,
         location: &PartitionLocation,
         max_message_size: usize,
+        flight_transport: bool,
     ) -> result::Result<SendableRecordBatchStream, BallistaError>;
 }
 
@@ -464,10 +468,11 @@ impl PartitionReader for PartitionReaderEnum {
         &self,
         location: &PartitionLocation,
         max_message_size: usize,
+        flight_transport: bool,
     ) -> result::Result<SendableRecordBatchStream, BallistaError> {
         match self {
             PartitionReaderEnum::FlightRemote => {
-                fetch_partition_remote(location, max_message_size).await
+                fetch_partition_remote(location, max_message_size, flight_transport).await
             }
             PartitionReaderEnum::Local => fetch_partition_local(location).await,
             PartitionReaderEnum::ObjectStoreRemote => {
@@ -480,6 +485,7 @@ impl PartitionReader for PartitionReaderEnum {
 async fn fetch_partition_remote(
     location: &PartitionLocation,
     max_message_size: usize,
+    flight_transport: bool,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
@@ -501,7 +507,14 @@ async fn fetch_partition_remote(
         })?;
 
     ballista_client
-        .fetch_partition(&metadata.id, partition_id, &location.path, host, port)
+        .fetch_partition(
+            &metadata.id,
+            partition_id,
+            &location.path,
+            host,
+            port,
+            flight_transport,
+        )
         .await
 }
 
@@ -936,6 +949,7 @@ mod tests {
             max_request_num,
             4 * 1024 * 1024,
             false,
+            true,
         );
 
         let stream = RecordBatchStreamAdapter::new(

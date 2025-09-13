@@ -36,6 +36,8 @@ pub const BALLISTA_SHUFFLE_READER_MAX_REQUESTS: &str =
     "ballista.shuffle.max_concurrent_read_requests";
 pub const BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ: &str =
     "ballista.shuffle.force_remote_read";
+pub const BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT: &str =
+    "ballista.shuffle.remote_read_prefer_flight";
 
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
@@ -58,6 +60,10 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          Some((64).to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ.to_string(),
                          "Forces the shuffle reader to always read partitions via the Arrow Flight client, even when partitions are local to the node.".to_string(),
+                         DataType::Boolean,
+                         Some((false).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT.to_string(),
+                         "Forces the shuffle reader to use flight reader instead of block reader for remote read. Block reader usually has better performance and resource utilization".to_string(),
                          DataType::Boolean,
                          Some((false).to_string())),
 
@@ -190,6 +196,13 @@ impl BallistaConfig {
     /// Use only when necessary, like in tests
     pub fn shuffle_reader_force_remote_read(&self) -> bool {
         self.get_bool_setting(BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ)
+    }
+    /// Forces the shuffle reader to prefer flight protocol over block protocol
+    /// to read remote shuffle partition.
+    ///
+    /// Block protocol is usually more performant than flight protocol
+    pub fn shuffle_reader_remote_prefer_flight(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT)
     }
 
     fn get_usize_setting(&self, key: &str) -> usize {

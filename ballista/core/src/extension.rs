@@ -18,7 +18,7 @@
 use crate::config::{
     BallistaConfig, BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, BALLISTA_JOB_NAME,
     BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
-    BALLISTA_STANDALONE_PARALLELISM,
+    BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
 };
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
@@ -132,6 +132,13 @@ pub trait SessionConfigExt {
     fn with_ballista_shuffle_reader_maximum_concurrent_requests(
         self,
         max_requests: usize,
+    ) -> Self;
+
+    fn ballista_shuffle_reader_remote_prefer_flight(&self) -> bool;
+
+    fn with_ballista_shuffle_reader_remote_prefer_flight(
+        self,
+        prefer_flight: bool,
     ) -> Self;
 }
 
@@ -355,6 +362,28 @@ impl SessionConfigExt for SessionConfig {
         } else {
             self.with_option_extension(BallistaConfig::default())
                 .set_bool(BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, force_remote_read)
+        }
+    }
+
+    fn ballista_shuffle_reader_remote_prefer_flight(&self) -> bool {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.shuffle_reader_remote_prefer_flight())
+            .unwrap_or_else(|| {
+                BallistaConfig::default().shuffle_reader_remote_prefer_flight()
+            })
+    }
+
+    fn with_ballista_shuffle_reader_remote_prefer_flight(
+        self,
+        prefer_flight: bool,
+    ) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_bool(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, prefer_flight)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_bool(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, prefer_flight)
         }
     }
 }

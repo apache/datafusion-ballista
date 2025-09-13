@@ -357,7 +357,7 @@ async fn execute_query(
 
                 info!("Job {job_id} finished executing in {duration:?} ");
                 let streams = partition_location.into_iter().map(move |partition| {
-                    let f = fetch_partition(partition, max_message_size)
+                    let f = fetch_partition(partition, max_message_size, true)
                         .map_err(|e| ArrowError::ExternalError(Box::new(e)));
 
                     futures::stream::once(f).try_flatten()
@@ -372,6 +372,7 @@ async fn execute_query(
 async fn fetch_partition(
     location: PartitionLocation,
     max_message_size: usize,
+    flight_transport: bool,
 ) -> Result<SendableRecordBatchStream> {
     let metadata = location.executor_meta.ok_or_else(|| {
         DataFusionError::Internal("Received empty executor metadata".to_owned())
@@ -391,6 +392,7 @@ async fn fetch_partition(
             &location.path,
             host,
             port,
+            flight_transport,
         )
         .await
         .map_err(|e| DataFusionError::External(Box::new(e)))

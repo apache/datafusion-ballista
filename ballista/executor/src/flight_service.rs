@@ -21,6 +21,7 @@ use datafusion::arrow::ipc::reader::StreamReader;
 use std::convert::TryFrom;
 use std::fs::File;
 use std::pin::Pin;
+use tokio_util::io::ReaderStream;
 
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
@@ -64,6 +65,9 @@ impl Default for BallistaFlightService {
 
 type BoxedFlightStream<T> =
     Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'static>>;
+
+/// shuffle file block transfer size    
+const BLOCK_BUFFER_CAPACITY: usize = 8 * 1024 * 1024;
 
 #[tonic::async_trait]
 impl FlightService for BallistaFlightService {
@@ -185,16 +189,68 @@ impl FlightService for BallistaFlightService {
     ) -> Result<Response<Self::DoActionStream>, Status> {
         let action = request.into_inner();
 
-        let _action = decode_protobuf(&action.body).map_err(|e| from_ballista_err(&e))?;
+        match action.r#type.as_str() {
+            // Block transfer will transfer arrow ipc file block by block
+            // without decoding or decompressing, this will provide less resource utilization
+            // as file are not decoded nor decompressed/compressed. Usually this would transfer less data across
+            // as files are better compressed due to its size.
+            //
+            // For further discussion regarding performance implications, refer to:
+            // https://github.com/apache/datafusion-ballista/issues/1315
+            "IO_BLOCK_TRANSPORT" => {
+                let action =
+                    decode_protobuf(&action.body).map_err(|e| from_ballista_err(&e))?;
 
-        Err(Status::unimplemented("do_action"))
+                match &action {
+                    BallistaAction::FetchPartition { path, .. } => {
+                        debug!("FetchPartition reading {path}");
+                        let file = tokio::fs::File::open(&path).await.map_err(|e| {
+                            Status::internal(format!("Failed to open file: {e}"))
+                        })?;
+
+                        debug!(
+                            "streaming file: {} with size: {}",
+                            path,
+                            file.metadata().await?.len()
+                        );
+                        let reader = tokio::io::BufReader::with_capacity(
+                            BLOCK_BUFFER_CAPACITY,
+                            file,
+                        );
+                        let file_stream =
+                            ReaderStream::with_capacity(reader, BLOCK_BUFFER_CAPACITY);
+
+                        let flight_data_stream = file_stream.map(|result| {
+                            result
+                                .map(|bytes| arrow_flight::Result { body: bytes })
+                                .map_err(|e| Status::internal(format!("I/O error: {e}")))
+                        });
+
+                        Ok(Response::new(
+                            Box::pin(flight_data_stream) as Self::DoActionStream
+                        ))
+                    }
+                }
+            }
+            action_type => Err(Status::unimplemented(format!(
+                "do_action does not implement: {}",
+                action_type
+            ))),
+        }
     }
 
     async fn list_actions(
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<Self::ListActionsStream>, Status> {
-        Err(Status::unimplemented("list_actions"))
+        let actions = vec![Ok(ActionType {
+            r#type: "IO_BLOCK_TRANSFER".to_owned(),
+            description: "optimized shuffle data transfer".to_owned(),
+        })];
+
+        Ok(Response::new(
+            Box::pin(futures::stream::iter(actions)) as Self::ListActionsStream
+        ))
     }
 
     async fn do_exchange(
