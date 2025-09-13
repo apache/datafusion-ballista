@@ -299,7 +299,6 @@ impl BallistaClient {
 ///
 /// For further discussion regarding performance implications, refer to:
 /// https://github.com/apache/datafusion-ballista/issues/1315
-
 struct FlightDataStream {
     stream: Streaming<FlightData>,
     schema: SchemaRef,
