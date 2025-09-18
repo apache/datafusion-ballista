@@ -267,7 +267,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
         &self,
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
-        registry: &dyn FunctionRegistry,
+        _registry: &dyn FunctionRegistry,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let ballista_plan: protobuf::BallistaPhysicalPlanNode =
             protobuf::BallistaPhysicalPlanNode::decode(buf).map_err(|e| {
@@ -284,6 +284,10 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
             })?;
         // FIXME this is wrong, we need to find out a way to
         //       create session context from registry
+        //       hopefully https://github.com/apache/datafusion/pull/17650
+        //       will help before we get
+        //       https://github.com/apache/datafusion/issues/17596
+        //       merged
         let ctx = SessionContext::new();
         match ballista_plan {
             PhysicalPlanType::ShuffleWriter(shuffle_writer) => {
