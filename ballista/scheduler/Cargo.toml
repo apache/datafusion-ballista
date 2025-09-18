@@ -66,7 +66,7 @@ rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true, features = ["net"] }
-tonic = { workspace = true , features = ["router"]}
+tonic = { workspace = true, features = ["router"] }
 tracing = { workspace = true, optional = true }
 tracing-appender = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
