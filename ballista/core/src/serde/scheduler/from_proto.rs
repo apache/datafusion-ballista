@@ -18,14 +18,16 @@
 use chrono::{TimeZone, Utc};
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 
+use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use datafusion::physical_plan::metrics::{
     Count, Gauge, MetricValue, MetricsSet, Time, Timestamp,
 };
 use datafusion::physical_plan::{ExecutionPlan, Metric};
-use datafusion::prelude::SessionConfig;
+use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
+use itertools::Itertools;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
@@ -293,30 +295,32 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     codec: BallistaCodec<T, U>,
 ) -> Result<TaskDefinition, BallistaError> {
     let session_config = session_config.update_from_key_value_pair(&task.props);
-
-    let mut task_scalar_functions = HashMap::new();
-    let mut task_aggregate_functions = HashMap::new();
-    let mut task_window_functions = HashMap::new();
-    // TODO combine the functions from Executor's functions and TaskDefinition's function resources
-    for scalar_func in scalar_functions {
-        task_scalar_functions.insert(scalar_func.0, scalar_func.1);
-    }
-    for agg_func in aggregate_functions {
-        task_aggregate_functions.insert(agg_func.0, agg_func.1);
-    }
-    for agg_func in window_functions {
-        task_window_functions.insert(agg_func.0, agg_func.1);
-    }
-    let function_registry = Arc::new(BallistaFunctionRegistry {
-        scalar_functions: task_scalar_functions,
-        aggregate_functions: task_aggregate_functions,
-        window_functions: task_window_functions,
-    });
     let runtime = produce_runtime(&session_config)?;
+
+    let function_registry = Arc::new(BallistaFunctionRegistry {
+        scalar_functions: scalar_functions.clone(),
+        aggregate_functions: aggregate_functions.clone(),
+        window_functions: window_functions.clone(),
+    });
+
+    // this is temporary fix until we get
+    // https://github.com/apache/datafusion/pull/17601
+    // merged
+    //
+    let session_state = SessionStateBuilder::new()
+        .with_aggregate_functions(aggregate_functions.values().cloned().collect_vec())
+        .with_scalar_functions(scalar_functions.values().cloned().collect_vec())
+        .with_window_functions(window_functions.values().cloned().collect_vec())
+        .with_config(session_config.clone())
+        .with_runtime_env(runtime.clone())
+        .build();
+    let ctx = SessionContext::new_with_state(session_state);
+    //
+
     let encoded_plan = task.plan.as_slice();
     let plan: Arc<dyn ExecutionPlan> = U::try_decode(encoded_plan).and_then(|proto| {
         proto.try_into_physical_plan(
-            function_registry.as_ref(),
+            &ctx,
             runtime.as_ref(),
             codec.physical_extension_codec(),
         )
@@ -359,32 +363,32 @@ pub fn get_task_definition_vec<
     codec: BallistaCodec<T, U>,
 ) -> Result<Vec<TaskDefinition>, BallistaError> {
     let session_config = session_config.update_from_key_value_pair(&multi_task.props);
+    let runtime = runtime_producer(&session_config)?;
 
-    let mut task_scalar_functions = HashMap::new();
-    let mut task_aggregate_functions = HashMap::new();
-    let mut task_window_functions = HashMap::new();
-    // TODO combine the functions from Executor's functions and TaskDefinition's function resources
-    for scalar_func in scalar_functions {
-        task_scalar_functions.insert(scalar_func.0, scalar_func.1);
-    }
-    for agg_func in aggregate_functions {
-        task_aggregate_functions.insert(agg_func.0, agg_func.1);
-    }
-    for agg_func in window_functions {
-        task_window_functions.insert(agg_func.0, agg_func.1);
-    }
     let function_registry = Arc::new(BallistaFunctionRegistry {
-        scalar_functions: task_scalar_functions,
-        aggregate_functions: task_aggregate_functions,
-        window_functions: task_window_functions,
+        scalar_functions: scalar_functions.clone(),
+        aggregate_functions: aggregate_functions.clone(),
+        window_functions: window_functions.clone(),
     });
 
-    let runtime = runtime_producer(&session_config)?;
+    // this is temporary fix until we get
+    // https://github.com/apache/datafusion/pull/17601
+    // merged
+    //
+    let session_state = SessionStateBuilder::new()
+        .with_aggregate_functions(aggregate_functions.values().cloned().collect_vec())
+        .with_scalar_functions(scalar_functions.values().cloned().collect_vec())
+        .with_window_functions(window_functions.values().cloned().collect_vec())
+        .with_config(session_config.clone())
+        .with_runtime_env(runtime.clone())
+        .build();
+    let ctx = SessionContext::new_with_state(session_state);
+    //
 
     let encoded_plan = multi_task.plan.as_slice();
     let plan: Arc<dyn ExecutionPlan> = U::try_decode(encoded_plan).and_then(|proto| {
         proto.try_into_physical_plan(
-            function_registry.as_ref(),
+            &ctx,
             runtime.as_ref(),
             codec.physical_extension_codec(),
         )

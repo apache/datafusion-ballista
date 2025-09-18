@@ -25,6 +25,7 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::FunctionRegistry;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
+use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::file_formats::{
     ArrowLogicalExtensionCodec, AvroLogicalExtensionCodec, CsvLogicalExtensionCodec,
     JsonLogicalExtensionCodec, ParquetLogicalExtensionCodec,
@@ -281,14 +282,16 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     "Could not deserialize BallistaPhysicalPlanNode because it's physical_plan_type is none".to_string()
                 )
             })?;
-
+        // FIXME this is wrong, we need to find out a way to
+        //       create session context from registry
+        let ctx = SessionContext::new();
         match ballista_plan {
             PhysicalPlanType::ShuffleWriter(shuffle_writer) => {
                 let input = inputs[0].clone();
 
                 let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
                     shuffle_writer.output_partitioning.as_ref(),
-                    registry,
+                    &ctx, //registry,
                     input.schema().as_ref(),
                     self.default_codec.as_ref(),
                 )?;
@@ -323,7 +326,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     .collect::<Result<Vec<_>, DataFusionError>>()?;
                 let partitioning = parse_protobuf_partitioning(
                     shuffle_reader.partitioning.as_ref(),
-                    registry,
+                    &ctx, //registry,
                     schema.as_ref(),
                     self.default_codec.as_ref(),
                 )?;
@@ -342,7 +345,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     Arc::new(convert_required!(unresolved_shuffle.schema)?);
                 let partitioning = parse_protobuf_partitioning(
                     unresolved_shuffle.partitioning.as_ref(),
-                    registry,
+                    &ctx, //registry,
                     schema.as_ref(),
                     self.default_codec.as_ref(),
                 )?;

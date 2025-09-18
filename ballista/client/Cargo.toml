@@ -44,7 +44,7 @@ ballista-scheduler = { path = "../scheduler", version = "49.0.0" }
 ctor = { workspace = true }
 datafusion-proto = { workspace = true }
 env_logger = { workspace = true }
-rstest = { version = "0.25" }
+rstest = { workspace = true }
 tempfile = { workspace = true }
 tonic = { workspace = true }
 

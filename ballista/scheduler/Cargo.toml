@@ -46,7 +46,7 @@ rest-api = []
 [dependencies]
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
-axum = "0.7.7"
+axum = "0.8.4"
 ballista-core = { path = "../core", version = "49.0.0" }
 clap = { workspace = true, optional = true }
 dashmap = { workspace = true }
@@ -66,14 +66,14 @@ rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true, features = ["net"] }
-tonic = { workspace = true }
+tonic = { workspace = true , features = ["router"]}
 tracing = { workspace = true, optional = true }
 tracing-appender = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-rstest = { version = "0.25" }
+rstest = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }
