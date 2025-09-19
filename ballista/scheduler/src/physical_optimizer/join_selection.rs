@@ -346,7 +346,9 @@ fn statistical_join_selection_subrule(
         } else if let Some(cross_join) = plan.as_any().downcast_ref::<CrossJoinExec>() {
             let left = cross_join.left();
             let right = cross_join.right();
-            if should_swap_join_order(&**left, &**right)? {
+            if right.properties().output_partitioning().partition_count() > 1 {
+                None
+            } else if should_swap_join_order(&**left, &**right)? {
                 cross_join.swap_inputs().map(Some)?
             } else {
                 None
@@ -659,6 +661,38 @@ mod test {
             )
             .unwrap(),
         ) as Arc<dyn ExecutionPlan>;
+
+        let optimized_join = JoinSelection::new()
+            .optimize(join.clone(), &ConfigOptions::new())
+            .unwrap();
+
+        assert_eq!(
+            displayable(join.as_ref()).one_line().to_string(),
+            displayable(optimized_join.as_ref()).one_line().to_string()
+        );
+    }
+
+    //
+    // join selection should not change order of joins for
+    // cross join as we're not able to insert new CoalescePartitions
+    // when stages are created
+    //
+    #[tokio::test]
+    async fn test_cross_join_with_swap() {
+        use std::sync::Arc;
+
+        use datafusion::{
+            config::ConfigOptions,
+            physical_optimizer::PhysicalOptimizerRule,
+            physical_plan::{displayable, joins::CrossJoinExec},
+        };
+
+        use crate::physical_optimizer::join_selection::JoinSelection;
+
+        let (big, small) = create_big_and_small();
+
+        let join = Arc::new(CrossJoinExec::new(Arc::clone(&big), Arc::clone(&small)))
+            as Arc<dyn ExecutionPlan>;
 
         let optimized_join = JoinSelection::new()
             .optimize(join.clone(), &ConfigOptions::new())
