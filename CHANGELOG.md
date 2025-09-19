@@ -57,6 +57,7 @@
 - feat: Feat force shuffle reader to read all files using arrow flight client [#1310](https://github.com/apache/datafusion-ballista/pull/1310) (milenkovicm)
 - feat: implement job data cleanup in pull-staged strategy #1219 [#1314](https://github.com/apache/datafusion-ballista/pull/1314) (KR-bluejay)
 - feat: Improve Remote Shuffle Read Speed and Resource Utilisation  [#1318](https://github.com/apache/datafusion-ballista/pull/1318) (milenkovicm)
+- fix: Issue with `JoinSelection` and `CrossJoinExec` when stages have been resoled [#1322](https://github.com/apache/datafusion-ballista/pull/1322) (ZihuanLing)
 
 ## [48.0.0](https://github.com/apache/datafusion-ballista/tree/48.0.0) (2025-07-30)
 
