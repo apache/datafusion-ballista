@@ -348,8 +348,7 @@ fn statistical_join_selection_subrule(
             let right = cross_join.right();
             if right.properties().output_partitioning().partition_count() > 1 {
                 None
-            } else if should_swap_join_order(&**left, &**right)?
-            {
+            } else if should_swap_join_order(&**left, &**right)? {
                 cross_join.swap_inputs().map(Some)?
             } else {
                 None
@@ -692,12 +691,8 @@ mod test {
 
         let (big, small) = create_big_and_small();
 
-        let join = Arc::new(
-            CrossJoinExec::new(
-                Arc::clone(&big),
-                Arc::clone(&small),
-            ),
-        ) as Arc<dyn ExecutionPlan>;
+        let join = Arc::new(CrossJoinExec::new(Arc::clone(&big), Arc::clone(&small)))
+            as Arc<dyn ExecutionPlan>;
 
         let optimized_join = JoinSelection::new()
             .optimize(join.clone(), &ConfigOptions::new())
