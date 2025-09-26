@@ -75,5 +75,3 @@ uuid = { workspace = true }
 [dev-dependencies]
 rstest = { workspace = true }
 
-[build-dependencies]
-tonic-build = { workspace = true }

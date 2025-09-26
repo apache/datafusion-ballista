@@ -34,15 +34,18 @@ path = "examples/standalone-sql.rs"
 required-features = ["ballista/standalone"]
 
 [dependencies]
+
+[dev-dependencies]
 ballista = { path = "../ballista/client", version = "50.0.0" }
 ballista-core = { path = "../ballista/core", version = "50.0.0", default-features = false }
 ballista-executor = { path = "../ballista/executor", version = "50.0.0", default-features = false }
 ballista-scheduler = { path = "../ballista/scheduler", version = "50.0.0", default-features = false }
+ctor = { workspace = true }
 datafusion = { workspace = true }
 env_logger = { workspace = true }
-futures = { workspace = true }
 log = { workspace = true }
 object_store = { workspace = true, features = ["aws"] }
+testcontainers-modules = { version = "0.13", features = ["minio"] }
 tokio = { workspace = true, features = [
     "macros",
     "rt",
@@ -50,13 +53,8 @@ tokio = { workspace = true, features = [
     "sync",
     "parking_lot"
 ] }
-url = { workspace = true }
-
-[dev-dependencies]
-ctor = { workspace = true }
-env_logger = { workspace = true }
-testcontainers-modules = { version = "0.12", features = ["minio"] }
 tonic = { workspace = true }
+url = { workspace = true }
 
 [features]
 default = []
