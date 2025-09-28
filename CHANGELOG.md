@@ -19,6 +19,46 @@
 
 # Changelog
 
+## [49.0.0](https://github.com/apache/datafusion-ballista/tree/49.0.0) (2025-09-12)
+
+[Full Changelog](https://github.com/apache/datafusion-ballista/compare/48.0.0...49.0.0)
+
+**Implemented enhancements:**
+
+- feat: Feat force shuffle reader to read all files using arrow flight client [#1310](https://github.com/apache/datafusion-ballista/pull/1310) (milenkovicm)
+- feat: implement job data cleanup in pull-staged strategy #1219 [#1314](https://github.com/apache/datafusion-ballista/pull/1314) (KR-bluejay)
+
+**Fixed bugs:**
+
+- fix: fail job in case of serde error (pull-mode) [#1297](https://github.com/apache/datafusion-ballista/pull/1297) (milenkovicm)
+- fix: Ensure stage-level sort requirements are enforced in distributed planning [#1306](https://github.com/apache/datafusion-ballista/pull/1306) (metegenez)
+- fix: `UnresolvedShuffleExec` should support `with_new_children` [#1300](https://github.com/apache/datafusion-ballista/pull/1300) (milenkovicm)
+- fix: `ShuffleReader` should return statistics [#1302](https://github.com/apache/datafusion-ballista/pull/1302) (milenkovicm)
+- fix: Disable CollectLeft join as it is broken in ballista [#1301](https://github.com/apache/datafusion-ballista/pull/1301) (milenkovicm)
+- fix: Issue with JoinSelection and NestedLoopJoin::swap_inputs when stage is resolved  [#1307](https://github.com/apache/datafusion-ballista/pull/1307) (milenkovicm)
+
+**Merged pull requests:**
+
+- chore: update datafusion to 49 [#1285](https://github.com/apache/datafusion-ballista/pull/1285) (milenkovicm)
+- chore: Improve GitHub actions/python workflows [#1289](https://github.com/apache/datafusion-ballista/pull/1289) (Huy1Ng)
+- chore: update datafusion to 49.0.2 [#1298](https://github.com/apache/datafusion-ballista/pull/1298) (milenkovicm)
+- minor: make shuffle exec display consistent [#1299](https://github.com/apache/datafusion-ballista/pull/1299) (milenkovicm)
+- fix: fail job in case of serde error (pull-mode) [#1297](https://github.com/apache/datafusion-ballista/pull/1297) (milenkovicm)
+- fix: Ensure stage-level sort requirements are enforced in distributed planning [#1306](https://github.com/apache/datafusion-ballista/pull/1306) (metegenez)
+- fix: `UnresolvedShuffleExec` should support `with_new_children` [#1300](https://github.com/apache/datafusion-ballista/pull/1300) (milenkovicm)
+- fix: `ShuffleReader` should return statistics [#1302](https://github.com/apache/datafusion-ballista/pull/1302) (milenkovicm)
+- fix: Disable CollectLeft join as it is broken in ballista [#1301](https://github.com/apache/datafusion-ballista/pull/1301) (milenkovicm)
+- chore: notice and cargo deps cleanup [#1295](https://github.com/apache/datafusion-ballista/pull/1295) (milenkovicm)
+- chore(deps): bump tracing-subscriber from 0.3.19 to 0.3.20 [#1303](https://github.com/apache/datafusion-ballista/pull/1303) (dependabot[bot])
+- chore(deps): bump tracing-subscriber from 0.3.19 to 0.3.20 in /python [#1308](https://github.com/apache/datafusion-ballista/pull/1308) (dependabot[bot])
+- refactor: expand ClusterEventSender visibility to public [#1312](https://github.com/apache/datafusion-ballista/pull/1312) (Th824)
+- fix: Issue with JoinSelection and NestedLoopJoin::swap_inputs when stage is resolved  [#1307](https://github.com/apache/datafusion-ballista/pull/1307) (milenkovicm)
+- minor: enable json write test [#1311](https://github.com/apache/datafusion-ballista/pull/1311) (milenkovicm)
+- feat: Feat force shuffle reader to read all files using arrow flight client [#1310](https://github.com/apache/datafusion-ballista/pull/1310) (milenkovicm)
+- feat: implement job data cleanup in pull-staged strategy #1219 [#1314](https://github.com/apache/datafusion-ballista/pull/1314) (KR-bluejay)
+- feat: Improve Remote Shuffle Read Speed and Resource Utilisation  [#1318](https://github.com/apache/datafusion-ballista/pull/1318) (milenkovicm)
+- fix: Issue with `JoinSelection` and `CrossJoinExec` when stages have been resoled [#1322](https://github.com/apache/datafusion-ballista/pull/1322) (ZihuanLing)
+
 ## [48.0.0](https://github.com/apache/datafusion-ballista/tree/48.0.0) (2025-07-30)
 
 [Full Changelog](https://github.com/apache/datafusion-ballista/compare/47.0.0...48.0.0)
