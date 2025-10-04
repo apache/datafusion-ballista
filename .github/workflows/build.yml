@@ -166,7 +166,7 @@ jobs:
   build-macos-x86_64:
     needs: [generate-license]
     name: Mac x86_64
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     strategy:
       fail-fast: false
       matrix:
