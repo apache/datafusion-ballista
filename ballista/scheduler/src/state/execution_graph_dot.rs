@@ -235,7 +235,8 @@ fn get_operator_name(plan: &dyn ExecutionPlan) -> String {
         let expr = exec
             .expr()
             .iter()
-            .map(|(e, _)| format!("{e}"))
+            // FIXME: not sure about this change
+            .map(|e| format!("{e:?}"))
             .collect::<Vec<String>>()
             .join(", ");
         format!("Projection: {}", sanitize_dot_label(&expr))

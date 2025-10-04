@@ -20,7 +20,6 @@ use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer;
 use ballista_core::serde::{
     BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
 };
-use ballista_core::utils::create_grpc_server;
 use ballista_core::BALLISTA_VERSION;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -28,6 +27,7 @@ use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use http::StatusCode;
 use log::info;
 use std::{net::SocketAddr, sync::Arc};
+use tonic::service::RoutesBuilder;
 
 #[cfg(feature = "rest-api")]
 use crate::api::get_routes;
@@ -93,13 +93,13 @@ pub async fn start_grpc_service<
         .max_encoding_message_size(config.grpc_server_max_encoding_message_size as usize)
         .max_decoding_message_size(config.grpc_server_max_decoding_message_size as usize);
 
-    let tonic_builder = create_grpc_server().add_service(scheduler_grpc_server);
+    let mut tonic_builder = RoutesBuilder::default();
+    tonic_builder.add_service(scheduler_grpc_server);
 
     #[cfg(feature = "keda-scaler")]
-    let tonic_builder =
-        tonic_builder.add_service(ExternalScalerServer::new(scheduler.clone()));
+    tonic_builder.add_service(ExternalScalerServer::new(scheduler.clone()));
 
-    let tonic = tonic_builder.into_service().into_axum_router();
+    let tonic = tonic_builder.routes().into_axum_router();
     let tonic = tonic.fallback(|| async { (StatusCode::NOT_FOUND, "404 - Not Found") });
 
     #[cfg(feature = "rest-api")]
