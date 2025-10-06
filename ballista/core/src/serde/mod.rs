@@ -23,7 +23,7 @@ use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 use arrow_flight::sql::ProstMessageExt;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result};
-use datafusion::execution::FunctionRegistry;
+use datafusion::execution::{FunctionRegistry, SessionStateBuilder};
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::file_formats::{
@@ -267,7 +267,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
         &self,
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
-        _registry: &dyn FunctionRegistry,
+        registry: &dyn FunctionRegistry,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let ballista_plan: protobuf::BallistaPhysicalPlanNode =
             protobuf::BallistaPhysicalPlanNode::decode(buf).map_err(|e| {
@@ -282,13 +282,34 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     "Could not deserialize BallistaPhysicalPlanNode because it's physical_plan_type is none".to_string()
                 )
             })?;
-        // FIXME this is wrong, we need to find out a way to
-        //       create session context from registry
-        //       hopefully https://github.com/apache/datafusion/pull/17650
-        //       will help before we get
-        //       https://github.com/apache/datafusion/issues/17596
-        //       merged
-        let ctx = SessionContext::new();
+        // FIXME: this is temporary until we get datafusion 51
+        //        more details at https://github.com/apache/datafusion/issues/17596
+        let mut state = SessionStateBuilder::new_with_default_features().build();
+
+        for function_name in registry.udfs() {
+            if let Ok(function) = registry.udf(&function_name) {
+                state.register_udf(function)?;
+            }
+        }
+
+        for function_name in registry.udafs() {
+            if let Ok(function) = registry.udaf(&function_name) {
+                state.register_udaf(function)?;
+            }
+        }
+
+        for function_name in registry.udafs() {
+            if let Ok(function) = registry.udaf(&function_name) {
+                state.register_udaf(function)?;
+            }
+        }
+
+        let ctx = SessionContext::new_with_state(state);
+
+        //
+        //
+        //
+
         match ballista_plan {
             PhysicalPlanType::ShuffleWriter(shuffle_writer) => {
                 let input = inputs[0].clone();
