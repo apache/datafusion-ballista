@@ -29,24 +29,24 @@ pub fn get_routes<
         .route("/api/state", get(handlers::get_scheduler_state::<T, U>))
         .route("/api/executors", get(handlers::get_executors::<T, U>))
         .route("/api/jobs", get(handlers::get_jobs::<T, U>))
-        .route("/api/job/:job_id", patch(handlers::cancel_job::<T, U>))
+        .route("/api/job/{job_id}", patch(handlers::cancel_job::<T, U>))
         .route(
-            "/api/job/:job_id/stages",
+            "/api/job/{job_id}/stages",
             get(handlers::get_query_stages::<T, U>),
         )
         .route(
-            "/api/job/:job_id/dot",
+            "/api/job/{job_id}/dot",
             get(handlers::get_job_dot_graph::<T, U>),
         )
         .route(
-            "/api/job/:job_id/stage/:stage_id/dot",
+            "/api/job/{job_id}/stage/{stage_id}/dot",
             get(handlers::get_query_stage_dot_graph::<T, U>),
         )
         .route("/api/metrics", get(handlers::get_scheduler_metrics::<T, U>));
 
     #[cfg(feature = "graphviz-support")]
     let router = router.route(
-        "/api/job/:job_id/dot_svg",
+        "/api/job/{job_id}/dot_svg",
         get(handlers::get_job_svg_graph::<T, U>),
     );
 
