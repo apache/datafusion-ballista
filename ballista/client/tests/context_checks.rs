@@ -935,4 +935,49 @@ mod supported {
 
         Ok(())
     }
+
+    // Sort Merge Join is supported since DF.v50
+    // testing if it will work in ballista
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_support_sort_merge_join(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) -> datafusion::error::Result<()> {
+        ctx.register_parquet(
+            "t0",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+
+        ctx.register_parquet(
+            "t1",
+            &format!("{test_data}/alltypes_plain.parquet"),
+            Default::default(),
+        )
+        .await?;
+        ctx.sql("SET datafusion.optimizer.prefer_hash_join = false")
+            .await?
+            .show()
+            .await?;
+        let result = ctx.sql(
+            "select t0.id from t0 join t1 on t0.id = t1.id order by t0.id desc limit 5",
+        )
+        .await?
+        .collect()
+        .await?;
+
+        let expected = [
+            "+----+", "| id |", "+----+", "| 7  |", "| 6  |", "| 5  |", "| 4  |",
+            "| 3  |", "+----+",
+        ];
+        assert_batches_eq!(expected, &result);
+
+        Ok(())
+    }
 }

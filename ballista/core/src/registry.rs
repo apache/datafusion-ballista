@@ -66,6 +66,14 @@ impl FunctionRegistry for BallistaFunctionRegistry {
         self.scalar_functions.keys().cloned().collect()
     }
 
+    fn udafs(&self) -> HashSet<String> {
+        self.aggregate_functions.keys().cloned().collect()
+    }
+
+    fn udwfs(&self) -> HashSet<String> {
+        self.window_functions.keys().cloned().collect()
+    }
+
     fn udf(&self, name: &str) -> datafusion::common::Result<Arc<ScalarUDF>> {
         let result = self.scalar_functions.get(name);
 
