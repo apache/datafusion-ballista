@@ -110,7 +110,7 @@ impl Executor {
     }
 
     /// Create a new executor instance with given [RuntimeEnv],
-    /// [ScalarUDF], [AggregateUDF] and [WindowUDF]
+    /// [datafusion::logical_expr::ScalarUDF], [datafusion::logical_expr::AggregateUDF] and [datafusion::logical_expr::WindowUDF]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         metadata: ExecutorRegistration,

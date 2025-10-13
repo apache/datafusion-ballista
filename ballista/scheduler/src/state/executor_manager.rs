@@ -70,7 +70,7 @@ impl ExecutorManager {
     }
 
     ///
-    /// Bind the ready to run tasks from [`active_jobs`] to available executors.
+    /// Bind the ready to run tasks from `active_jobs` to available executors.
     pub async fn bind_schedulable_tasks(
         &self,
         running_jobs: Arc<HashMap<String, JobInfoCache>>,
@@ -226,7 +226,7 @@ impl ExecutorManager {
 
     /// It's only used for pull-based task scheduling.
     ///
-    /// For push-based one, we should use [`register_executor`], instead.
+    /// For push-based one, we should use [`Self::register_executor`], instead.
     pub async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()> {
         trace!(
             "save executor metadata {} with {} task slots (pull-based registration)",

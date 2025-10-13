@@ -66,7 +66,7 @@ use crate::state::task_manager::UpdatedStages;
 ///
 ///   CoalesceBatchesExec: target_batch_size=4096
 ///     RepartitionExec: partitioning=Hash([Column { name: "id", index: 0 }], 4)
-///       AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[SUM(some_table.gmv)]
+///       AggregateExec: mode=Partial, gby=[id\@0 as id], aggr=[SUM(some_table.gmv)]
 ///         TableScan: some_table
 ///
 /// The Ballista `DistributedPlanner` will turn this into a distributed plan by creating a shuffle
@@ -78,12 +78,12 @@ use crate::state::task_manager::UpdatedStages;
 /// =========UnResolvedStage[id=2, children=1]=========
 /// Inputs{1: StageOutput { partition_locations: {}, complete: false }}
 /// ShuffleWriterExec: None
-///   AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[SUM(?table?.gmv)]
+///   AggregateExec: mode=FinalPartitioned, gby=[id\@0 as id], aggr=[SUM(?table?.gmv)]
 ///     CoalesceBatchesExec: target_batch_size=4096
 ///       UnresolvedShuffleExec
 /// =========ResolvedStage[id=1, partitions=1]=========
 /// ShuffleWriterExec: Some(Hash([Column { name: "id", index: 0 }], 4))
-///   AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[SUM(?table?.gmv)]
+///   AggregateExec: mode=Partial, gby=[id\@0 as id], aggr=[SUM(?table?.gmv)]
 ///     TableScan: some_table
 ///
 ///

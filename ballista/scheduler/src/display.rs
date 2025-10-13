@@ -16,7 +16,7 @@
 // under the License.
 
 //! Implementation of ballista physical plan display with metrics. See
-//! [`crate::physical_plan::displayable`] for examples of how to
+//! [`datafusion::physical_plan::display`] for examples of how to
 //! format
 
 use ballista_core::utils::collect_plan_metrics;

@@ -84,7 +84,7 @@ impl std::fmt::Debug for DedicatedExecutor {
 }
 
 impl DedicatedExecutor {
-    /// https://stackoverflow.com/questions/62536566
+    /// <https://stackoverflow.com/questions/62536566>
     /// Creates a new `DedicatedExecutor` with a dedicated tokio
     /// runtime that is separate from the `[tokio::main]` threadpool.
     ///
