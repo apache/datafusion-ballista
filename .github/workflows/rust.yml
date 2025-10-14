@@ -46,9 +46,10 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: true
+          fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
       - name: Prepare cargo build
@@ -64,9 +65,10 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: true
+          fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
       - name: Run tests
@@ -79,15 +81,32 @@ jobs:
           CARGO_HOME: "/github/home/.cargo"
           CARGO_TARGET_DIR: "/github/home/target"
 
+  # Run `cargo doc` to ensure the rustdoc is clean
+  linux-rustdoc:
+    name: cargo doc
+    needs: linux-build-lib
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: stable
+      - name: Run cargo doc
+        run: ci/scripts/rust_docs.sh
+
   linux-build-workspace:
     name: check linux workspace
     runs-on: ubuntu-latest
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: true
+          fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
       - name: Try to compile when `--no-default-features` is selected
@@ -106,9 +125,10 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: true
+          fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
       - name: Run Ballista tests
@@ -127,9 +147,10 @@ jobs:
     name: windows test
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: true
+          fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-windows-builder
       - name: Run tests
@@ -146,9 +167,10 @@ jobs:
     name: macos test
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: true
+          fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
       - name: Run tests
@@ -166,9 +188,10 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: true
+          fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
       - name: Verify that benchmark queries return expected results
@@ -181,7 +204,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Setup toolchain
         run: |
           rustup toolchain install stable
@@ -207,9 +230,10 @@ jobs:
         # "1" means line tables only, which is useful for panic tracebacks.
         RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: true
+          fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
@@ -237,9 +261,10 @@ jobs:
         # "1" means line tables only, which is useful for panic tracebacks.
         RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: true
+          fetch-depth: 1
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
@@ -274,7 +299,7 @@ jobs:
 #       arch: [amd64]
 #       rust: [stable]
 #   steps:
-#     - uses: actions/checkout@v4
+#     - uses: actions/checkout@v5
 #       with:
 #         submodules: true
 #     - name: Cache Cargo

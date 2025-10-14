@@ -149,7 +149,7 @@ pub trait ClusterState: Send + Sync + 'static {
         Ok(())
     }
 
-    /// Bind the ready to running tasks from [`active_jobs`] with available executors.
+    /// Bind the ready to running tasks from `active_jobs` with available executors.
     ///
     /// If `executors` is provided, only bind slots from the specified executor IDs
     async fn bind_schedulable_tasks(

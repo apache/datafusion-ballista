@@ -141,6 +141,7 @@ impl BallistaClient {
             })
     }
 
+    #[allow(rustdoc::private_intra_doc_links)]
     /// Executes the specified action and retrieves the results from the remote executor.
     ///
     /// This method establishes a [FlightDataStream] to facilitate the transfer of data
@@ -298,7 +299,7 @@ impl BallistaClient {
 /// compared to file-level compression, as it operates on smaller data segments.
 ///
 /// For further discussion regarding performance implications, refer to:
-/// https://github.com/apache/datafusion-ballista/issues/1315
+/// <https://github.com/apache/datafusion-ballista/issues/1315>
 struct FlightDataStream {
     stream: Streaming<FlightData>,
     schema: SchemaRef,
@@ -346,6 +347,7 @@ impl RecordBatchStream for FlightDataStream {
         self.schema.clone()
     }
 }
+#[allow(rustdoc::private_intra_doc_links)]
 /// [BlockDataStream] facilitates the transfer of original shuffle files in a block-by-block manner.
 /// This implementation utilizes a custom `do_action` method on the Arrow Flight server.
 /// The primary distinction from [FlightDataStream] is that it does not decompress or decode
@@ -353,7 +355,7 @@ impl RecordBatchStream for FlightDataStream {
 /// on the Flight server and enables the transmission of less data, owing to improved file-level compression.
 ///
 /// For a detailed discussion of the performance advantages, see:
-/// https://github.com/apache/datafusion-ballista/issues/1315
+/// <https://github.com/apache/datafusion-ballista/issues/1315>
 pub struct BlockDataStream<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> {
     decoder: StreamDecoder,
     state_buffer: Buffer,
