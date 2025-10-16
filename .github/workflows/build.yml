@@ -107,7 +107,7 @@ jobs:
 
   build-windows:
     needs: [generate-license]
-    name: Windows
+    name: Windows x86_64
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -154,7 +154,7 @@ jobs:
       - name: Archive wheels
         uses: actions/upload-artifact@v4
         with:
-          name: dist-windows
+          name: dist-windows-x86_64
           path: python/target/wheels/*
 
   build-macos-arm64:
