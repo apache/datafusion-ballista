@@ -35,6 +35,7 @@ message BallistaPhysicalPlanNode {
     ShuffleWriterExecNode shuffle_writer = 1;
     ShuffleReaderExecNode shuffle_reader = 2;
     UnresolvedShuffleExecNode unresolved_shuffle = 3;
+    BallistaExplainExecNode ballista_explain = 4;
   }
 }
 
@@ -64,6 +65,24 @@ message ShuffleReaderExecNode {
 message ShuffleReaderPartition {
   // each partition of a shuffle read can read data from multiple locations
   repeated PartitionLocation location = 1;
+}
+
+message BallistaExplainExecNode {
+  datafusion_common.Schema schema = 1;
+  repeated BallistaStringifiedPlan stringified_plans = 2;
+  bool verbose = 3;
+}
+
+message BallistaStringifiedPlan {
+  BallistaPlanType plan_type = 1;
+  string plan = 2;
+}
+
+message BallistaPlanType {
+  oneof plan_type {
+    datafusion.PlanType datafusion_plan_type = 1;
+    datafusion_common.EmptyMessage distributed_plan = 2;
+  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////

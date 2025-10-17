@@ -1349,7 +1349,7 @@ pub fn create_task_info(executor_id: String, task_id: usize) -> TaskInfo {
 ///
 /// This will infer the dependency structure for the stages
 /// so that we can construct a DAG from the stages.
-struct ExecutionStageBuilder {
+pub struct ExecutionStageBuilder {
     /// Stage ID which is currently being visited
     current_stage_id: usize,
     /// Map from stage ID -> List of child stage IDs

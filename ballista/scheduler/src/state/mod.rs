@@ -27,6 +27,7 @@ use std::time::Instant;
 
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
+use crate::state::distributed_explain_generator::generate_distributed_explain_plan;
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::session_manager::SessionManager;
 use crate::state::task_manager::{TaskLauncher, TaskManager};
@@ -36,6 +37,7 @@ use crate::config::SchedulerConfig;
 use crate::state::execution_graph::TaskDescription;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventSender;
+use ballista_core::execution_plans::BallistaExplainExec;
 use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::BallistaCodec;
 use datafusion::logical_expr::LogicalPlan;
@@ -47,6 +49,7 @@ use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info, warn};
 use prost::Message;
 
+mod distributed_explain_generator;
 pub mod execution_graph;
 pub mod execution_graph_dot;
 pub mod execution_stage;
@@ -363,7 +366,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             debug!("Optimized plan: {}", optimized_plan.display_indent());
         }
 
-        plan. apply(&mut |plan: &LogicalPlan| {
+        let mut explain_inner_logical_plan: Option<Arc<LogicalPlan>> = None;
+        plan.apply(&mut |plan: &LogicalPlan| {
             if let LogicalPlan::TableScan(scan) = plan {
                 let provider = source_as_provider(&scan.source)?;
                 if let Some(table) = provider.as_any().downcast_ref::<ListingTable>() {
@@ -398,9 +402,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                             })?;
                     }
                 }
+            } else if let LogicalPlan::Explain(explain_plan) = plan {
+                explain_inner_logical_plan = Some(explain_plan.plan.clone());
             }
             Ok(TreeNodeRecursion::Continue)
         })?;
+
+        let explain_distributed_plan = if let Some(inner_lp) = explain_inner_logical_plan
+        {
+            Some(
+                generate_distributed_explain_plan(job_id, session_ctx.clone(), inner_lp)
+                    .await?,
+            )
+        } else {
+            None
+        };
 
         let plan = session_ctx.state().create_physical_plan(plan).await?;
         debug!(
@@ -413,6 +429,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 let empty: Arc<dyn ExecutionPlan> =
                     Arc::new(EmptyExec::new(node.schema()));
                 Ok(Transformed::yes(empty))
+            } else if let (Some(explain), Some(explain_distributed_plan)) = (
+                node.as_any()
+                    .downcast_ref::<datafusion::physical_plan::explain::ExplainExec>(),
+                &explain_distributed_plan,
+            ) {
+                let replaced: Arc<dyn ExecutionPlan> =
+                    Arc::new(BallistaExplainExec::new(
+                        explain.schema(),
+                        explain.stringified_plans().to_vec(),
+                        explain_distributed_plan,
+                        explain.verbose(),
+                    ));
+                Ok(Transformed::yes(replaced))
             } else {
                 Ok(Transformed::no(node))
             }
