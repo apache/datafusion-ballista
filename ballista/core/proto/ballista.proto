@@ -692,6 +692,33 @@ message RunningTaskInfo {
   uint32 partition_id = 4;;
 }
 
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Catalog Metadata
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+message GetCatalogParams {
+  string session_id = 1;
+}
+
+message GetCatalogResult {
+  repeated CatalogInfo catalogs = 1;
+}
+
+message CatalogInfo {
+  string catalog_name = 1;
+  repeated SchemaInfo schemas = 2;
+}
+
+message SchemaInfo {
+  string schema_name = 1;
+  repeated TableInfo tables = 2;
+}
+
+message TableInfo {
+  string table_name = 1;
+  datafusion_common.Schema schema = 2;
+}
+
 service SchedulerGrpc {
   // Executors must poll the scheduler for heartbeat and to receive tasks
   rpc PollWork (PollWorkParams) returns (PollWorkResult) {}
@@ -718,6 +745,9 @@ service SchedulerGrpc {
   rpc CancelJob (CancelJobParams) returns (CancelJobResult) {}
 
   rpc CleanJobData (CleanJobDataParams) returns (CleanJobDataResult) {}
+
+  // Get catalog metadata for a session
+  rpc GetCatalog (GetCatalogParams) returns (GetCatalogResult) {}
 }
 
 service ExecutorGrpc {

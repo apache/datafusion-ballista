@@ -22,13 +22,15 @@ use ballista_core::serde::protobuf::execute_query_params::Query;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
     execute_query_failure_result, execute_query_result, AvailableTaskSlots,
-    CancelJobParams, CancelJobResult, CleanJobDataParams, CleanJobDataResult,
-    CreateUpdateSessionParams, CreateUpdateSessionResult, ExecuteQueryFailureResult,
-    ExecuteQueryParams, ExecuteQueryResult, ExecuteQuerySuccessResult, ExecutorHeartbeat,
-    ExecutorStoppedParams, ExecutorStoppedResult, GetJobStatusParams, GetJobStatusResult,
-    HeartBeatParams, HeartBeatResult, PollWorkParams, PollWorkResult,
+    CancelJobParams, CancelJobResult, CatalogInfo, CleanJobDataParams,
+    CleanJobDataResult, CreateUpdateSessionParams, CreateUpdateSessionResult,
+    ExecuteQueryFailureResult, ExecuteQueryParams, ExecuteQueryResult,
+    ExecuteQuerySuccessResult, ExecutorHeartbeat, ExecutorStoppedParams,
+    ExecutorStoppedResult, GetCatalogParams, GetCatalogResult, GetJobStatusParams,
+    GetJobStatusResult, HeartBeatParams, HeartBeatResult, PollWorkParams, PollWorkResult,
     RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
-    RemoveSessionResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
+    RemoveSessionResult, SchemaInfo, TableInfo, UpdateTaskStatusParams,
+    UpdateTaskStatusResult,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -41,6 +43,8 @@ use std::ops::Deref;
 use crate::cluster::{bind_task_bias, bind_task_round_robin};
 use crate::config::TaskDistributionPolicy;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use datafusion::logical_expr::UserDefinedLogicalNode;
+use futures::future::join_all;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
@@ -525,6 +529,89 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 Status::internal(msg)
             })?;
         Ok(Response::new(CleanJobDataResult {}))
+    }
+
+    async fn get_catalog(
+        &self,
+        request: Request<GetCatalogParams>,
+    ) -> Result<Response<GetCatalogResult>, Status> {
+        let GetCatalogParams { session_id } = request.into_inner();
+        let ctx = self
+            .state
+            .session_manager
+            .create_or_update_session(
+                session_id.as_str(),
+                &self.state.session_manager.produce_config(),
+            )
+            .await
+            .map_err(|e| Status::internal(format!("Error creating session {e}")))?;
+
+        let available_catalogs = ctx
+            .state()
+            .catalog_list()
+            .catalog_names()
+            .into_iter()
+            .filter_map(|n| {
+                ctx.state()
+                    .catalog_list()
+                    .catalog(&n)
+                    .map(|c| (n.clone(), c))
+            });
+
+        let mut catalog_infos = vec![];
+
+        for (catalog_name, catalog) in available_catalogs {
+            let schemas = catalog
+                .schema_names()
+                .iter()
+                .filter_map(|n| catalog.schema(n).map(|s| (n.clone(), s)))
+                .collect::<Vec<_>>();
+
+            let mut schema_infos = vec![];
+
+            for (schema_name, schema) in schemas {
+                let table_names = schema.table_names();
+
+                let tables = join_all(
+                    table_names
+                        .iter()
+                        .map(|table_name| schema.table(table_name)),
+                )
+                .await;
+
+                let tables = table_names
+                    .into_iter()
+                    .zip(tables.into_iter())
+                    .filter_map(|(table_name, maybe_provider)| match maybe_provider {
+                        Ok(Some(provider)) => Some(TableInfo {
+                            table_name,
+                            schema: Some(
+                                provider
+                                    .schema()
+                                    .as_ref()
+                                    .try_into()
+                                    .expect("Must serialize schema"),
+                            ),
+                        }),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+
+                schema_infos.push(SchemaInfo {
+                    schema_name,
+                    tables,
+                });
+            }
+
+            catalog_infos.push(CatalogInfo {
+                catalog_name,
+                schemas: schema_infos,
+            });
+        }
+
+        Ok(Response::new(GetCatalogResult {
+            catalogs: catalog_infos,
+        }))
     }
 }
 
