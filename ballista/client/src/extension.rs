@@ -17,9 +17,15 @@
 
 pub use ballista_core::extension::{SessionConfigExt, SessionStateExt};
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
+use ballista_core::serde::protobuf::GetCatalogParams;
+use datafusion::catalog::{
+    CatalogProvider, MemoryCatalogProvider, MemorySchemaProvider, SchemaProvider,
+};
+use datafusion::datasource::MemTable;
 use datafusion::{
     error::DataFusionError, execution::SessionState, prelude::SessionContext,
 };
+use std::sync::Arc;
 use url::Url;
 
 const DEFAULT_SCHEDULER_PORT: u16 = 50050;
@@ -86,6 +92,13 @@ pub trait SessionContextExt {
         url: &str,
         state: SessionState,
     ) -> datafusion::error::Result<SessionContext>;
+
+    /// Populates the local catalog with metadata from the remote scheduler.
+    /// This allows catalog queries like SHOW TABLES to work on the client.
+    async fn populate_catalog_from_scheduler(
+        &self,
+        scheduler_url: &str,
+    ) -> datafusion::error::Result<()>;
 }
 
 #[async_trait::async_trait]
@@ -100,14 +113,19 @@ impl SessionContextExt for SessionContext {
             scheduler_url.clone()
         );
 
-        let session_state = state.upgrade_for_ballista(scheduler_url)?;
+        let session_state = state.upgrade_for_ballista(scheduler_url.clone())?;
 
         log::info!(
             "Server side SessionContext created with session id: {}",
             session_state.session_id()
         );
 
-        Ok(SessionContext::new_with_state(session_state))
+        let ctx = SessionContext::new_with_state(session_state);
+
+        // Populate local catalog from scheduler
+        ctx.populate_catalog_from_scheduler(&scheduler_url).await?;
+
+        Ok(ctx)
     }
 
     async fn remote(url: &str) -> datafusion::error::Result<SessionContext> {
@@ -117,13 +135,18 @@ impl SessionContextExt for SessionContext {
             scheduler_url.clone()
         );
 
-        let session_state = SessionState::new_ballista_state(scheduler_url)?;
+        let session_state = SessionState::new_ballista_state(scheduler_url.clone())?;
         log::info!(
             "Server side SessionContext created with session id: {}",
             session_state.session_id()
         );
 
-        Ok(SessionContext::new_with_state(session_state))
+        let ctx = SessionContext::new_with_state(session_state);
+
+        // Populate local catalog from scheduler
+        ctx.populate_catalog_from_scheduler(&scheduler_url).await?;
+
+        Ok(ctx)
     }
 
     #[cfg(feature = "standalone")]
@@ -156,6 +179,83 @@ impl SessionContextExt for SessionContext {
         );
 
         Ok(SessionContext::new_with_state(session_state))
+    }
+
+    async fn populate_catalog_from_scheduler(
+        &self,
+        scheduler_url: &str,
+    ) -> datafusion::error::Result<()> {
+        let mut client = SchedulerGrpcClient::connect(scheduler_url.to_string())
+            .await
+            .map_err(|e| {
+                DataFusionError::External(
+                    format!("Failed to connect to scheduler: {}", e).into(),
+                )
+            })?;
+
+        let request = tonic::Request::new(GetCatalogParams {
+            session_id: self.state().session_id().to_string(),
+        });
+
+        let response = client.get_catalog(request).await.map_err(|e| {
+            DataFusionError::External(format!("Failed to fetch catalog: {}", e).into())
+        })?;
+
+        let catalog_result = response.into_inner();
+
+        log::info!(
+            "Received {} catalogs from scheduler",
+            catalog_result.catalogs.len()
+        );
+
+        for catalog_info in catalog_result.catalogs {
+            let catalog_name = catalog_info.catalog_name;
+
+            let catalog: Arc<dyn CatalogProvider> =
+                if let Some(_existing_catalog) = self.catalog(&catalog_name) {
+                    continue;
+                } else {
+                    let new_catalog: Arc<dyn CatalogProvider> =
+                        Arc::new(MemoryCatalogProvider::new());
+                    self.register_catalog(&catalog_name, Arc::clone(&new_catalog) as _);
+                    new_catalog
+                };
+
+            for schema_info in catalog_info.schemas {
+                let schema_name = schema_info.schema_name;
+
+                // Make in memory schemas to hold tables from our response
+                let schema = if let Some(_existing_schema) = catalog.schema(&schema_name)
+                {
+                    continue;
+                } else {
+                    let new_schema: Arc<dyn SchemaProvider> =
+                        Arc::new(MemorySchemaProvider::new());
+                    catalog.register_schema(&schema_name, Arc::clone(&new_schema))?;
+                    new_schema
+                };
+
+                // Make empty `MemTable`s with the table schemas
+                for table_info in schema_info.tables {
+                    if let Some(proto_schema) = table_info.schema {
+                        let arrow_schema: datafusion::arrow::datatypes::Schema =
+                            (&proto_schema)
+                                .try_into()
+                                .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+                        let stub_table =
+                            MemTable::try_new(Arc::new(arrow_schema), vec![vec![]])?;
+
+                        schema.register_table(
+                            table_info.table_name.clone(),
+                            Arc::new(stub_table),
+                        )?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

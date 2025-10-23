@@ -37,6 +37,7 @@ log = { workspace = true }
 
 tokio = { workspace = true }
 url = { workspace = true }
+tonic = { workspace = true }
 
 [dev-dependencies]
 ballista-executor = { path = "../executor", version = "49.0.0" }
@@ -46,7 +47,6 @@ datafusion-proto = { workspace = true }
 env_logger = { workspace = true }
 rstest = { version = "0.25" }
 tempfile = { workspace = true }
-tonic = { workspace = true }
 
 [features]
 default = ["standalone"]
