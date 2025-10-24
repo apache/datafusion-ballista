@@ -22,7 +22,6 @@ use ballista_core::serde::protobuf::GetCatalogParams;
 use datafusion::catalog::{
     CatalogProvider, MemoryCatalogProvider, MemorySchemaProvider, SchemaProvider,
 };
-use datafusion::datasource::MemTable;
 use datafusion::{
     error::DataFusionError, execution::SessionState, prelude::SessionContext,
 };

@@ -48,7 +48,6 @@ use crate::remote_catalog::remote_table_provider::RemoteTableProvider;
 use crate::serde::protobuf::ballista_physical_plan_node::PhysicalPlanType;
 use crate::serde::scheduler::PartitionLocation;
 use datafusion::catalog::TableProvider;
-use datafusion::logical_expr::UserDefinedLogicalNode;
 pub use generated::ballista as protobuf;
 use prost::Message;
 use std::fmt::Debug;
@@ -247,7 +246,7 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
 
     fn try_encode_table_provider(
         &self,
-        _table_ref: &datafusion::sql::TableReference,
+        table_ref: &datafusion::sql::TableReference,
         node: Arc<dyn datafusion::catalog::TableProvider>,
         buf: &mut Vec<u8>,
     ) -> Result<()> {
@@ -275,7 +274,7 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         }
 
         self.default_codec
-            .try_encode_table_provider(_table_ref, node, buf)
+            .try_encode_table_provider(table_ref, node, buf)
     }
 
     fn try_decode_file_format(

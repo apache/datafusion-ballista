@@ -23,14 +23,13 @@ use ballista_core::serde::protobuf::execute_query_params::Query;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
     execute_query_failure_result, execute_query_result, AvailableTaskSlots,
-    CancelJobParams, CancelJobResult, CatalogInfo, CleanJobDataParams,
-    CleanJobDataResult, CreateUpdateSessionParams, CreateUpdateSessionResult,
-    ExecuteQueryFailureResult, ExecuteQueryParams, ExecuteQueryResult,
-    ExecuteQuerySuccessResult, ExecutorHeartbeat, ExecutorStoppedParams,
-    ExecutorStoppedResult, GetCatalogParams, GetCatalogResult, GetJobStatusParams,
-    GetJobStatusResult, HeartBeatParams, HeartBeatResult, PollWorkParams, PollWorkResult,
-    RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
-    RemoveSessionResult, SchemaInfo, TableInfo, UpdateTaskStatusParams,
+    CancelJobParams, CancelJobResult, CleanJobDataParams, CleanJobDataResult,
+    CreateUpdateSessionParams, CreateUpdateSessionResult, ExecuteQueryFailureResult,
+    ExecuteQueryParams, ExecuteQueryResult, ExecuteQuerySuccessResult, ExecutorHeartbeat,
+    ExecutorStoppedParams, ExecutorStoppedResult, GetCatalogParams, GetCatalogResult,
+    GetJobStatusParams, GetJobStatusResult, HeartBeatParams, HeartBeatResult,
+    PollWorkParams, PollWorkResult, RegisterExecutorParams, RegisterExecutorResult,
+    RemoveSessionParams, RemoveSessionResult, UpdateTaskStatusParams,
     UpdateTaskStatusResult,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
@@ -44,8 +43,6 @@ use std::ops::Deref;
 use crate::cluster::{bind_task_bias, bind_task_round_robin};
 use crate::config::TaskDistributionPolicy;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
-use datafusion::logical_expr::UserDefinedLogicalNode;
-use futures::future::join_all;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
