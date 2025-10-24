@@ -1,4 +1,4 @@
-datafusion==47.0.0
+datafusion==49.0.0
 pyarrow
 pytest
 maturin==1.5.1

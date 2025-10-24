@@ -15,18 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::error::Error;
 use std::future::Future;
 use std::sync::OnceLock;
 use tokio::task::JoinHandle;
 
-use ballista_core::error::BallistaError;
 use pyo3::exceptions::PyException;
 use pyo3::{PyErr, Python};
 use tokio::runtime::Runtime;
 
 use crate::TokioRuntime;
 
-pub(crate) fn to_pyerr(err: BallistaError) -> PyErr {
+pub(crate) fn to_pyerr<T: Error>(err: T) -> PyErr {
     PyException::new_err(err.to_string())
 }
 
