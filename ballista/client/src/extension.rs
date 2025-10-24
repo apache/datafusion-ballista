@@ -16,6 +16,7 @@
 // under the License.
 
 pub use ballista_core::extension::{SessionConfigExt, SessionStateExt};
+use ballista_core::remote_catalog::table_provider::RemoteTableProvider;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_core::serde::protobuf::GetCatalogParams;
 use datafusion::catalog::{
@@ -217,14 +218,12 @@ impl SessionContextExt for SessionContext {
                 } else {
                     let new_catalog: Arc<dyn CatalogProvider> =
                         Arc::new(MemoryCatalogProvider::new());
-                    self.register_catalog(&catalog_name, Arc::clone(&new_catalog) as _);
+                    self.register_catalog(&catalog_name, Arc::clone(&new_catalog));
                     new_catalog
                 };
 
             for schema_info in catalog_info.schemas {
                 let schema_name = schema_info.schema_name;
-
-                // Make in memory schemas to hold tables from our response
                 let schema = if let Some(_existing_schema) = catalog.schema(&schema_name)
                 {
                     continue;
@@ -235,7 +234,7 @@ impl SessionContextExt for SessionContext {
                     new_schema
                 };
 
-                // Make empty `MemTable`s with the table schemas
+                // Bind `RemoteTableProvider` tables
                 for table_info in schema_info.tables {
                     if let Some(proto_schema) = table_info.schema {
                         let arrow_schema: datafusion::arrow::datatypes::Schema =
@@ -243,8 +242,12 @@ impl SessionContextExt for SessionContext {
                                 .try_into()
                                 .map_err(|e| DataFusionError::External(Box::new(e)))?;
 
-                        let stub_table =
-                            MemTable::try_new(Arc::new(arrow_schema), vec![vec![]])?;
+                        let stub_table = RemoteTableProvider::new(
+                            &catalog_name,
+                            &schema_name,
+                            &table_info.table_name,
+                            Arc::new(arrow_schema),
+                        );
 
                         schema.register_table(
                             table_info.table_name.clone(),
