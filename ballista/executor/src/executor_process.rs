@@ -163,10 +163,16 @@ pub async fn start_executor_process(
     let scheduler_port = opt.scheduler_port;
     let scheduler_url = format!("http://{scheduler_host}:{scheduler_port}");
 
-    let work_dir = opt
-        .work_dir
-        .clone()
-        .unwrap_or(TempDir::new()?.path().to_str().unwrap().to_string());
+    let work_dir = if let Some(work_dir) = opt.work_dir.clone() {
+        work_dir
+    } else if let Some(temp_dir) = TempDir::new()?.path().to_str().map(ToOwned::to_owned)
+    {
+        temp_dir
+    } else {
+        return Err(BallistaError::Configuration(
+            "Unable to bind work dir".to_string(),
+        ));
+    };
 
     let concurrent_tasks = if opt.concurrent_tasks == 0 {
         // use all available cores if no concurrency level is specified
