@@ -17,7 +17,7 @@
 
 [package]
 name = "pyballista"
-version = "43.0.0"
+version = "49.0.0"
 homepage = "https://datafusion.apache.org/ballista/"
 repository = "https://github.com/apache/datafusion-ballista"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
@@ -30,19 +30,22 @@ include = ["/src", "/ballista", "/LICENSE.txt", "pyproject.toml", "Cargo.toml", 
 publish = false
 
 [dependencies]
-async-trait = "0.1.77"
-ballista = { version = "47.0.0" }
-ballista-core = { version = "47.0.0" }
-ballista-executor = { version = "47.0.0", default-features = false }
-ballista-scheduler = { version = "47.0.0", default-features = false }
-datafusion = { version = "47", features = ["pyarrow", "avro"] }
-datafusion-proto = { version = "47" }
-datafusion-python = { version = "47" }
+async-trait = "0.1.89"
+ballista = { version = "49.0.0" }
+ballista-core = { version = "49.0.0" }
+ballista-executor = { version = "49.0.0", default-features = false }
+ballista-scheduler = { version = "49.0.0", default-features = false }
+datafusion = { version = "49", features = ["pyarrow", "avro"] }
+datafusion-proto = { version = "49" }
+datafusion-python = { version = "49" }
 
-pyo3 = { version = "0.24", features = ["extension-module", "abi3", "abi3-py38"] }
+pyo3 = { version = "0.24", features = ["extension-module", "abi3", "abi3-py39"] }
 pyo3-log = "0.12"
-tokio = { version = "1.46", features = ["macros", "rt", "rt-multi-thread", "sync"] }
+tokio = { version = "1.48", features = ["macros", "rt", "rt-multi-thread", "sync"] }
 
 [lib]
 crate-type = ["cdylib"]
 name = "ballista"
+
+[build-dependencies]
+pyo3-build-config = "0.24"
