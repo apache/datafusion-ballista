@@ -17,4 +17,4 @@
 //
 
 pub mod catalog_serialize_ext;
-pub mod table_provider;
+pub mod remote_table_provider;

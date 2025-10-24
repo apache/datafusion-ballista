@@ -16,7 +16,7 @@
 // under the License.
 
 pub use ballista_core::extension::{SessionConfigExt, SessionStateExt};
-use ballista_core::remote_catalog::table_provider::RemoteTableProvider;
+use ballista_core::remote_catalog::remote_table_provider::RemoteTableProvider;
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_core::serde::protobuf::GetCatalogParams;
 use datafusion::catalog::{
