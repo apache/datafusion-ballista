@@ -14,23 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+//
 
-#![doc = include_str ! ("../README.md")]
-#[cfg(feature = "rest-api")]
-pub mod api;
-pub mod cluster;
-pub mod config;
-pub mod display;
-pub mod metrics;
-pub mod physical_optimizer;
-pub mod planner;
-pub mod scheduler_process;
-pub mod scheduler_server;
-pub mod standalone;
-pub mod state;
-
-pub mod remote_catalog;
-#[cfg(test)]
-pub mod test_utils;
-
-pub use scheduler_server::SessionBuilder;
+pub mod catalog_serialize_ext;
+pub mod table_provider;

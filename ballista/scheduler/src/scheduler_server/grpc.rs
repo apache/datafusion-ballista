@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::remote_catalog::catalog_serialize_ext::CatalogSerializeExt;
 use axum::extract::ConnectInfo;
 use ballista_core::config::BALLISTA_JOB_NAME;
 use ballista_core::extension::SessionConfigHelperExt;
@@ -546,71 +547,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             .await
             .map_err(|e| Status::internal(format!("Error creating session {e}")))?;
 
-        let available_catalogs = ctx
-            .state()
-            .catalog_list()
-            .catalog_names()
-            .into_iter()
-            .filter_map(|n| {
-                ctx.state()
-                    .catalog_list()
-                    .catalog(&n)
-                    .map(|c| (n.clone(), c))
-            });
-
-        let mut catalog_infos = vec![];
-
-        for (catalog_name, catalog) in available_catalogs {
-            let schemas = catalog
-                .schema_names()
-                .iter()
-                .filter_map(|n| catalog.schema(n).map(|s| (n.clone(), s)))
-                .collect::<Vec<_>>();
-
-            let mut schema_infos = vec![];
-
-            for (schema_name, schema) in schemas {
-                let table_names = schema.table_names();
-
-                let tables = join_all(
-                    table_names
-                        .iter()
-                        .map(|table_name| schema.table(table_name)),
-                )
-                .await;
-
-                let tables = table_names
-                    .into_iter()
-                    .zip(tables.into_iter())
-                    .filter_map(|(table_name, maybe_provider)| match maybe_provider {
-                        Ok(Some(provider)) => Some(TableInfo {
-                            table_name,
-                            schema: Some(
-                                provider
-                                    .schema()
-                                    .as_ref()
-                                    .try_into()
-                                    .expect("Must serialize schema"),
-                            ),
-                        }),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-
-                schema_infos.push(SchemaInfo {
-                    schema_name,
-                    tables,
-                });
-            }
-
-            catalog_infos.push(CatalogInfo {
-                catalog_name,
-                schemas: schema_infos,
-            });
-        }
-
         Ok(Response::new(GetCatalogResult {
-            catalogs: catalog_infos,
+            catalogs: ctx.serialize_catalogs().await,
         }))
     }
 }
