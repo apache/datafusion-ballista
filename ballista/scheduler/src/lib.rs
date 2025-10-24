@@ -29,7 +29,6 @@ pub mod scheduler_server;
 pub mod standalone;
 pub mod state;
 
-pub mod remote_catalog;
 #[cfg(test)]
 pub mod test_utils;
 

@@ -22,7 +22,7 @@ use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 
 use arrow_flight::sql::ProstMessageExt;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::{DataFusionError, Result};
+use datafusion::common::{internal_err, DataFusionError, Result};
 use datafusion::execution::FunctionRegistry;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion_proto::logical_plan::file_formats::{
@@ -41,18 +41,22 @@ use datafusion_proto::{
     physical_plan::{AsExecutionPlan, PhysicalExtensionCodec},
 };
 
+use crate::execution_plans::{
+    ShuffleReaderExec, ShuffleWriterExec, UnresolvedShuffleExec,
+};
+use crate::remote_catalog::table_provider::RemoteTableProvider;
+use crate::serde::protobuf::ballista_physical_plan_node::PhysicalPlanType;
+use crate::serde::scheduler::PartitionLocation;
+use datafusion::catalog::TableProvider;
+use datafusion::logical_expr::UserDefinedLogicalNode;
+pub use generated::ballista as protobuf;
 use prost::Message;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::{convert::TryInto, io::Cursor};
-
-use crate::execution_plans::{
-    ShuffleReaderExec, ShuffleWriterExec, UnresolvedShuffleExec,
-};
-use crate::serde::protobuf::ballista_physical_plan_node::PhysicalPlanType;
-use crate::serde::scheduler::PartitionLocation;
-pub use generated::ballista as protobuf;
+use tokio::runtime::Handle;
+use tokio::task;
 
 pub mod generated;
 pub mod scheduler;
@@ -197,18 +201,81 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         schema: datafusion::arrow::datatypes::SchemaRef,
         ctx: &datafusion::prelude::SessionContext,
     ) -> Result<Arc<dyn datafusion::catalog::TableProvider>> {
+        if let Ok(remote_table) = protobuf::RemoteTableProviderNode::decode(buf) {
+            let resolved_table_ref = datafusion::sql::TableReference::full(
+                remote_table.catalog_name.clone(),
+                remote_table.schema_name.clone(),
+                remote_table.table_name.clone(),
+            );
+
+            let maybe_concrete_schema: Option<arrow::datatypes::Schema> = remote_table
+                .schema
+                .map(|s| (&s).try_into().expect("Must deserialize schema"));
+
+            let Some(remote_schema) = maybe_concrete_schema else {
+                return internal_err!("RemoteTableProvider missing schema");
+            };
+
+            let table = task::block_in_place(move || {
+                Handle::current().block_on(ctx.table_provider(resolved_table_ref))
+            })
+            .map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "Failed to resolve remote table {}.{}.{}: {}",
+                    remote_table.catalog_name,
+                    remote_table.schema_name,
+                    remote_table.table_name,
+                    e
+                ))
+            })?;
+
+            if table.schema().as_ref() != &remote_schema {
+                return internal_err!(
+                    "Schema mismatch for table {}.{}.{}: expected {:?}, got {:?}",
+                    remote_table.catalog_name,
+                    remote_table.schema_name,
+                    remote_table.table_name,
+                    remote_schema,
+                    table.schema()
+                );
+            }
+        }
+
         self.default_codec
             .try_decode_table_provider(buf, table_ref, schema, ctx)
     }
 
     fn try_encode_table_provider(
         &self,
-        table_ref: &datafusion::sql::TableReference,
+        _table_ref: &datafusion::sql::TableReference,
         node: Arc<dyn datafusion::catalog::TableProvider>,
         buf: &mut Vec<u8>,
     ) -> Result<()> {
+        if let Some(remote_table) = node.as_any().downcast_ref::<RemoteTableProvider>() {
+            let proto = protobuf::RemoteTableProviderNode {
+                catalog_name: remote_table.catalog_name().to_string(),
+                schema_name: remote_table.schema_name().to_string(),
+                table_name: remote_table.table_name().to_string(),
+                schema: Some(remote_table.schema().as_ref().try_into().map_err(|e| {
+                    DataFusionError::Internal(format!(
+                        "Failed to serialize schema: {:?}",
+                        e
+                    ))
+                })?),
+            };
+
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "Failed to encode RemoteTableProviderNode: {}",
+                    e
+                ))
+            })?;
+
+            return Ok(());
+        }
+
         self.default_codec
-            .try_encode_table_provider(table_ref, node, buf)
+            .try_encode_table_provider(_table_ref, node, buf)
     }
 
     fn try_decode_file_format(

@@ -38,6 +38,7 @@ pub mod extension;
 pub mod object_store;
 pub mod planner;
 pub mod registry;
+pub mod remote_catalog;
 pub mod serde;
 pub mod utils;
 

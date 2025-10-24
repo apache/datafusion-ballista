@@ -1070,6 +1070,17 @@ pub struct TableInfo {
     #[prost(message, optional, tag = "2")]
     pub schema: ::core::option::Option<::datafusion_proto_common::Schema>,
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RemoteTableProviderNode {
+    #[prost(string, tag = "1")]
+    pub catalog_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub schema_name: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub table_name: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "4")]
+    pub schema: ::core::option::Option<::datafusion_proto_common::Schema>,
+}
 /// Generated client implementations.
 pub mod scheduler_grpc_client {
     #![allow(

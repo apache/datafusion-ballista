@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use ballista_core::serde::protobuf::{CatalogInfo, SchemaInfo, TableInfo};
+use crate::serde::generated::ballista::{CatalogInfo, SchemaInfo, TableInfo};
 use datafusion::catalog::CatalogProvider;
 use datafusion::prelude::SessionContext;
 use futures::stream;

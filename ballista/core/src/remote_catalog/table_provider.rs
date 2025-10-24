@@ -49,6 +49,18 @@ impl RemoteTableProvider {
             schema,
         }
     }
+
+    pub fn catalog_name(&self) -> &str {
+        &self.catalog_name
+    }
+
+    pub fn schema_name(&self) -> &str {
+        &self.schema_name
+    }
+
+    pub fn table_name(&self) -> &str {
+        &self.table_name
+    }
 }
 
 #[async_trait::async_trait]

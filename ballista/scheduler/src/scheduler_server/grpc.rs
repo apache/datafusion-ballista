@@ -15,10 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::remote_catalog::catalog_serialize_ext::CatalogSerializeExt;
 use axum::extract::ConnectInfo;
 use ballista_core::config::BALLISTA_JOB_NAME;
 use ballista_core::extension::SessionConfigHelperExt;
+use ballista_core::remote_catalog::catalog_serialize_ext::CatalogSerializeExt;
 use ballista_core::serde::protobuf::execute_query_params::Query;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
