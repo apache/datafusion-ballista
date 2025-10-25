@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.9"
 
 [[package]]
@@ -16,6 +16,7 @@ name = "ballista"
 source = { editable = "." }
 dependencies = [
     { name = "cloudpickle" },
+    { name = "datafusion" },
     { name = "pyarrow" },
 ]
 
@@ -32,6 +33,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cloudpickle" },
+    { name = "datafusion", specifier = "==49" },
     { name = "pyarrow", specifier = ">=21.0.0" },
 ]
 
@@ -262,6 +264,23 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a3/b9/a2f747d2acd5e3075fdf5c145c7c3568895daaa38b3b0c960ef830db6cdc/cryptography-45.0.6-pp311-pypy311_pp73-manylinux_2_34_aarch64.whl", hash = "sha256:31a2b9a10530a1cb04ffd6aa1cd4d3be9ed49f7d77a4dafe198f3b382f41545c", size = 4152706, upload-time = "2025-08-05T23:59:20.044Z" },
     { url = "https://files.pythonhosted.org/packages/81/ec/381b3e8d0685a3f3f304a382aa3dfce36af2d76467da0fd4bb21ddccc7b2/cryptography-45.0.6-pp311-pypy311_pp73-manylinux_2_34_x86_64.whl", hash = "sha256:e5b3dda1b00fb41da3af4c5ef3f922a200e33ee5ba0f0bc9ecf0b0c173958385", size = 4386740, upload-time = "2025-08-05T23:59:21.525Z" },
     { url = "https://files.pythonhosted.org/packages/0a/76/cf8d69da8d0b5ecb0db406f24a63a3f69ba5e791a11b782aeeefef27ccbb/cryptography-45.0.6-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:629127cfdcdc6806dfe234734d7cb8ac54edaf572148274fa377a7d3405b0043", size = 3331874, upload-time = "2025-08-05T23:59:23.017Z" },
+]
+
+[[package]]
+name = "datafusion"
+version = "49.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyarrow" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1b/81/eb7f69e184eba6f8fc748f09aa6ac39a50a4aa54e66e1529769d68d7c9e4/datafusion-49.0.0.tar.gz", hash = "sha256:f3ba4f00d56a199a90df145f43667131dbba9aea9b170cc61cd3663241a74a94", size = 183558, upload-time = "2025-08-29T01:39:45.889Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/02/16/a1438058d784deea42105b869323007cf9dd8a52dbb4551a9ef23967a235/datafusion-49.0.0-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:bb419810c7b1032ec4a374260d289279c5911e3fcdcfb57c9513b6d256fe0330", size = 26455326, upload-time = "2025-08-29T01:39:19.759Z" },
+    { url = "https://files.pythonhosted.org/packages/83/8d/d906b27b61838002b1cf0880eaa75c741409f0f6386192f2fabee24684af/datafusion-49.0.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:95d82ceda75767714629c1b5572a41bc919066156163d1ca3777418ffdbf4916", size = 23623419, upload-time = "2025-08-29T01:39:26.613Z" },
+    { url = "https://files.pythonhosted.org/packages/66/4e/2a113bef5e51e56f7273f193959a80e4abd48a2ff6856cfa219dbba85600/datafusion-49.0.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e093a8d8cc68bf48376c2f553dcec35829be3ea2c9557516fcf93d2bf4695593", size = 29392602, upload-time = "2025-08-29T01:39:32.053Z" },
+    { url = "https://files.pythonhosted.org/packages/ea/80/f49809e61f28343f303059572d9fdfedcb6f08653f34c057c2018d98ab5e/datafusion-49.0.0-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:7e9286f92f9f292a57873f8b83f10796decba98f4c022e92d929511f68e2d79a", size = 27505100, upload-time = "2025-08-29T01:39:36.398Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/d7/54f1d73a9e8b084965ea40531988ca25e57f7f5c77560e198483b1c7bf25/datafusion-49.0.0-cp39-abi3-win_amd64.whl", hash = "sha256:2079a2ec6e73820a21d6f8d466a1410a94f8ef3171eba2cd2461790fc0437c91", size = 28352189, upload-time = "2025-08-29T01:39:43.546Z" },
 ]
 
 [[package]]
