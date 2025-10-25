@@ -28,6 +28,7 @@ use tonic::transport::Channel;
 use tonic::{Request, Response, Status};
 
 use ballista_core::error::BallistaError;
+use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::protobuf::{
     executor_grpc_server::{ExecutorGrpc, ExecutorGrpcServer},
     executor_metric, executor_status,
@@ -104,6 +105,8 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
         let executor_meta = executor.metadata.clone();
         let addr = format!("{}:{}", config.bind_host, executor_meta.grpc_port);
         let addr = addr.parse().unwrap();
+        let session_config = (executor_server.executor.config_producer)();
+        let ballista_config = session_config.ballista_config();
 
         info!(
             "Ballista v{BALLISTA_VERSION} Rust Executor Grpc Server listening on {addr:?}"
@@ -114,7 +117,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
         let mut grpc_shutdown = shutdown_noti.subscribe_for_shutdown();
         tokio::spawn(async move {
             let shutdown_signal = grpc_shutdown.recv();
-            let grpc_server_future = create_grpc_server()
+            let grpc_server_future = create_grpc_server(&ballista_config)
                 .add_service(server)
                 .serve_with_shutdown(addr, shutdown_signal);
             grpc_server_future.await.map_err(|e| {
@@ -235,7 +238,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             Ok(scheduler)
         } else {
             let scheduler_url = format!("http://{scheduler_id}");
-            let connection = create_grpc_client_connection(scheduler_url).await?;
+            let session_config = (self.executor.config_producer)();
+            let ballista_config = session_config.ballista_config();
+            let connection =
+                create_grpc_client_connection(scheduler_url, &ballista_config).await?;
             let scheduler = SchedulerGrpcClient::new(connection)
                 .max_encoding_message_size(self.grpc_max_encoding_message_size)
                 .max_decoding_message_size(self.grpc_max_decoding_message_size);

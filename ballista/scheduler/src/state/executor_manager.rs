@@ -427,7 +427,8 @@ impl ExecutorManager {
                 "http://{}:{}",
                 executor_metadata.host, executor_metadata.grpc_port
             );
-            let connection = create_grpc_client_connection(executor_url).await?;
+            let config = ballista_core::config::BallistaConfig::default();
+            let connection = create_grpc_client_connection(executor_url, &config).await?;
             let client = ExecutorGrpcClient::new(connection);
 
             {

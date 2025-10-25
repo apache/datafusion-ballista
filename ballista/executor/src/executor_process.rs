@@ -40,8 +40,9 @@ use uuid::Uuid;
 
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 
-use ballista_core::config::{LogRotationPolicy, TaskSchedulingPolicy};
+use ballista_core::config::{BallistaConfig, LogRotationPolicy, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
+use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::protobuf::executor_resource::Resource;
 use ballista_core::serde::protobuf::executor_status::Status;
 use ballista_core::serde::protobuf::{
@@ -245,8 +246,10 @@ pub async fn start_executor_process(
     ));
 
     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;
+    let session_config = (executor.config_producer)();
+    let ballista_config = session_config.ballista_config();
     let connection = if connect_timeout == 0 {
-        create_grpc_client_connection(scheduler_url)
+        create_grpc_client_connection(scheduler_url, &ballista_config)
             .await
             .map_err(|_| {
                 BallistaError::GrpcConnectionError(
@@ -262,7 +265,7 @@ pub async fn start_executor_process(
         while x.is_none()
             && Instant::now().elapsed().as_secs() - start_time < connect_timeout
         {
-            match create_grpc_client_connection(scheduler_url.clone())
+            match create_grpc_client_connection(scheduler_url.clone(), &ballista_config)
                 .await
                 .map_err(|_| {
                     BallistaError::GrpcConnectionError(
@@ -371,12 +374,13 @@ pub async fn start_executor_process(
                 shutdown,
                 opt.grpc_max_encoding_message_size as usize,
                 opt.grpc_max_decoding_message_size as usize,
+                ballista_config.clone(),
             )
             .await
         }
         Some(flight_provider) => {
             info!("Starting custom, user provided, arrow flight service");
-            (flight_provider)(address, shutdown)
+            (flight_provider)(address, shutdown, ballista_config.clone())
         }
     });
 
@@ -480,11 +484,12 @@ async fn flight_server_task(
     mut grpc_shutdown: Shutdown,
     max_encoding_message_size: usize,
     max_decoding_message_size: usize,
+    ballista_config: BallistaConfig,
 ) -> JoinHandle<Result<(), BallistaError>> {
     tokio::spawn(async move {
         info!("Built-in arrow flight server listening on: {address:?} max_encoding_size: {max_encoding_message_size} max_decoding_size: {max_decoding_message_size}");
 
-        let server_future = create_grpc_server()
+        let server_future = create_grpc_server(&ballista_config)
             .add_service(
                 FlightServiceServer::new(BallistaFlightService::new())
                     .max_decoding_message_size(max_decoding_message_size)
@@ -722,13 +727,15 @@ mod tests {
     async fn test_arrow_flight_provider_ergonomics() {
         let config = crate::executor_process::ExecutorProcessConfig {
             override_arrow_flight_service: Some(std::sync::Arc::new(
-                move |address, mut grpc_shutdown| {
+                move |address, mut grpc_shutdown, ballista_config| {
                     tokio::spawn(async move {
                         log::info!(
                             "custom arrow flight server listening on: {address:?}"
                         );
 
-                        let server_future = ballista_core::utils::create_grpc_server()
+                        let server_future = ballista_core::utils::create_grpc_server(
+                            &ballista_config,
+                        )
                         .add_service(
                             arrow_flight::flight_service_server::FlightServiceServer::new(
                                 crate::flight_service::BallistaFlightService::new(),

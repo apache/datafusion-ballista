@@ -68,6 +68,7 @@ pub async fn new_standalone_scheduler_with_builder(
     codec: BallistaCodec,
 ) -> Result<SocketAddr> {
     let config = config_producer();
+    let ballista_config = config.ballista_config();
 
     let cluster =
         BallistaCluster::new_memory("localhost:50050", session_builder, config_producer);
@@ -93,7 +94,7 @@ pub async fn new_standalone_scheduler_with_builder(
     let addr = listener.local_addr()?;
     info!("Ballista v{BALLISTA_VERSION} Rust Scheduler listening on {addr:?}");
     tokio::spawn(
-        create_grpc_server()
+        create_grpc_server(&ballista_config)
             .add_service(server)
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
                 listener,

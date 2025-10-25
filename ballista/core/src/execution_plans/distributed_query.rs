@@ -238,6 +238,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                 self.session_id.clone(),
                 query,
                 self.config.default_grpc_client_max_message_size(),
+                self.config.clone(),
             )
             .map_err(|e| ArrowError::ExternalError(Box::new(e))),
         )
@@ -274,10 +275,11 @@ async fn execute_query(
     session_id: String,
     query: ExecuteQueryParams,
     max_message_size: usize,
+    config: BallistaConfig,
 ) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
     info!("Connecting to Ballista scheduler at {scheduler_url}");
     // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
-    let connection = create_grpc_client_connection(scheduler_url)
+    let connection = create_grpc_client_connection(scheduler_url, &config)
         .await
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 

@@ -101,6 +101,7 @@ pub async fn new_standalone_executor_from_builder(
     };
 
     let config = config_producer();
+    let ballista_config = config.ballista_config();
     let max_message_size = config.ballista_grpc_client_max_message_size();
 
     let work_dir = TempDir::new()?.path().to_str().unwrap().to_string();
@@ -124,7 +125,7 @@ pub async fn new_standalone_executor_from_builder(
         .max_encoding_message_size(max_message_size);
 
     tokio::spawn(
-        create_grpc_server()
+        create_grpc_server(&ballista_config)
             .add_service(server)
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
                 listener,

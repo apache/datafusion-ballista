@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::config::BallistaConfig;
 use crate::error::{BallistaError, Result};
 use crate::extension::SessionConfigExt;
 use crate::serde::scheduler::PartitionStats;
@@ -106,31 +107,50 @@ pub async fn collect_stream(
 
 pub async fn create_grpc_client_connection<D>(
     dst: D,
+    config: &BallistaConfig,
 ) -> std::result::Result<Channel, Error>
 where
     D: std::convert::TryInto<tonic::transport::Endpoint>,
     D::Error: Into<StdError>,
 {
     let endpoint = tonic::transport::Endpoint::new(dst)?
-        .connect_timeout(Duration::from_secs(20))
-        .timeout(Duration::from_secs(20))
+        .connect_timeout(Duration::from_secs(
+            config.default_grpc_client_connect_timeout_seconds() as u64,
+        ))
+        .timeout(Duration::from_secs(
+            config.default_grpc_client_timeout_seconds() as u64,
+        ))
         // Disable Nagle's Algorithm since we don't want packets to wait
         .tcp_nodelay(true)
-        .tcp_keepalive(Option::Some(Duration::from_secs(3600)))
-        .http2_keep_alive_interval(Duration::from_secs(300))
-        .keep_alive_timeout(Duration::from_secs(20))
+        .tcp_keepalive(Option::Some(Duration::from_secs(
+            config.default_grpc_client_tcp_keepalive_seconds() as u64,
+        )))
+        .http2_keep_alive_interval(Duration::from_secs(
+            config.default_grpc_client_http2_keepalive_interval_seconds() as u64,
+        ))
+        .keep_alive_timeout(Duration::from_secs(
+            config.default_grpc_client_keepalive_timeout_seconds() as u64,
+        ))
         .keep_alive_while_idle(true);
     endpoint.connect().await
 }
 
-pub fn create_grpc_server() -> Server {
+pub fn create_grpc_server(config: &BallistaConfig) -> Server {
     Server::builder()
-        .timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(
+            config.default_grpc_server_timeout_seconds() as u64,
+        ))
         // Disable Nagle's Algorithm since we don't want packets to wait
         .tcp_nodelay(true)
-        .tcp_keepalive(Option::Some(Duration::from_secs(3600)))
-        .http2_keepalive_interval(Option::Some(Duration::from_secs(300)))
-        .http2_keepalive_timeout(Option::Some(Duration::from_secs(20)))
+        .tcp_keepalive(Option::Some(Duration::from_secs(
+            config.default_grpc_server_tcp_keepalive_seconds() as u64,
+        )))
+        .http2_keepalive_interval(Option::Some(Duration::from_secs(
+            config.default_grpc_server_http2_keepalive_interval_seconds() as u64,
+        )))
+        .http2_keepalive_timeout(Option::Some(Duration::from_secs(
+            config.default_grpc_server_http2_keepalive_timeout_seconds() as u64,
+        )))
 }
 
 pub fn collect_plan_metrics(plan: &dyn ExecutionPlan) -> Vec<MetricsSet> {

@@ -54,9 +54,14 @@ use ballista_core::serde::scheduler::PartitionId;
 /// The function should take two arguments:
 /// [SocketAddr] - the address to bind the server to
 /// [Shutdown] - a shutdown signal to gracefully shutdown the server
+/// [BallistaConfig] - the Ballista configuration for gRPC settings
 /// Returns a [tokio::task::JoinHandle] which will be registered as service handler
 ///
-pub type ArrowFlightServerProvider = dyn Fn(SocketAddr, Shutdown) -> tokio::task::JoinHandle<Result<(), BallistaError>>
+pub type ArrowFlightServerProvider = dyn Fn(
+        SocketAddr,
+        Shutdown,
+        ballista_core::config::BallistaConfig,
+    ) -> tokio::task::JoinHandle<Result<(), BallistaError>>
     + Send
     + Sync;
 
