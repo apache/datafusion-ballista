@@ -45,7 +45,7 @@ use datafusion::error::DataFusionError;
 use datafusion::error::Result;
 
 use crate::serde::protobuf;
-use crate::utils::create_grpc_client_connection;
+use crate::utils::{create_grpc_client_connection, GrpcClientConfig};
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 use futures::{Stream, StreamExt};
 use log::{debug, warn};
@@ -71,15 +71,15 @@ impl BallistaClient {
         max_message_size: usize,
     ) -> BResult<Self> {
         let addr = format!("http://{host}:{port}");
+        let grpc_config = GrpcClientConfig::default();
         debug!("BallistaClient connecting to {addr}");
-        let connection =
-            create_grpc_client_connection(addr.clone())
-                .await
-                .map_err(|e| {
-                    BallistaError::GrpcConnectionError(format!(
+        let connection = create_grpc_client_connection(addr.clone(), &grpc_config)
+            .await
+            .map_err(|e| {
+                BallistaError::GrpcConnectionError(format!(
                     "Error connecting to Ballista scheduler or executor at {addr}: {e:?}"
                 ))
-                })?;
+            })?;
         let flight_client = FlightServiceClient::new(connection)
             .max_decoding_message_size(max_message_size)
             .max_encoding_message_size(max_message_size);

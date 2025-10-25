@@ -139,6 +139,7 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             job_data_clean_up_interval_seconds: opt.job_data_clean_up_interval_seconds,
             grpc_max_decoding_message_size: opt.grpc_server_max_decoding_message_size,
             grpc_max_encoding_message_size: opt.grpc_server_max_encoding_message_size,
+            grpc_server_config: ballista_core::utils::GrpcServerConfig::default(),
             executor_heartbeat_interval_seconds: opt.executor_heartbeat_interval_seconds,
             override_execution_engine: None,
             override_function_registry: None,
