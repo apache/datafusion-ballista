@@ -23,7 +23,7 @@ use crate::serde::protobuf::{
     scheduler_grpc_client::SchedulerGrpcClient, ExecuteQueryParams, GetJobStatusParams,
     GetJobStatusResult, KeyValuePair, PartitionLocation,
 };
-use crate::utils::create_grpc_client_connection;
+use crate::utils::{create_grpc_client_connection, GrpcClientConfig};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -238,7 +238,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                 self.session_id.clone(),
                 query,
                 self.config.default_grpc_client_max_message_size(),
-                self.config.clone(),
+                GrpcClientConfig::from_ballista_config(&self.config),
             )
             .map_err(|e| ArrowError::ExternalError(Box::new(e))),
         )
@@ -275,11 +275,11 @@ async fn execute_query(
     session_id: String,
     query: ExecuteQueryParams,
     max_message_size: usize,
-    config: BallistaConfig,
+    grpc_config: GrpcClientConfig,
 ) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
     info!("Connecting to Ballista scheduler at {scheduler_url}");
     // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
-    let connection = create_grpc_client_connection(scheduler_url, &config)
+    let connection = create_grpc_client_connection(scheduler_url, &grpc_config)
         .await
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
