@@ -64,7 +64,7 @@ impl PyBallistaBuilder {
     ) -> PyResult<PyObject> {
         let _ = slf.session_config.options_mut().set(key, value);
 
-        Ok(slf.into_py(py))
+        Ok(slf.into_pyobject(py)?.into())
     }
 
     /// Construct the standalone instance from the SessionContext
