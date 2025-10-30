@@ -56,7 +56,8 @@ repository = "https://github.com/apache/datafusion-ballista"
 profile = "black"
 
 [tool.maturin]
-module-name = "ballista.ballista_internal"
+python-source = "python"
+module-name = "ballista._internal"
 include = [
     { path = "Cargo.lock", format = "sdist" }
 ]
