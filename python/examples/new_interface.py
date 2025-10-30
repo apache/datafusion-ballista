@@ -17,6 +17,7 @@
 # %%
 from ballista import BallistaSessionContext, BallistaExecutor, BallistaScheduler
 from datafusion import col, lit, DataFrame
+from datafusion import functions as f
 # from datafusion import SessionContext
 
 scheduler = BallistaScheduler()
@@ -49,7 +50,7 @@ ctx.sql("select * from t limit 3").show()
 df.collect()
 # %%
 
-from datafusion import functions as f
+
 df0 = ctx.sql("SELECT 1 as r")
 
 df0.aggregate(
