@@ -234,18 +234,17 @@ mod supported {
         assert!(ballista_config_extension.is_some());
 
         let result = ctx
-            .sql("select name, value from information_schema.df_settings where name like 'ballista.%' order by name limit 2")
+            .sql("select name, value from information_schema.df_settings where name = 'ballista.job.name'")
             .await?
             .collect()
             .await?;
 
         let expected = [
-            "+-------------------------------------------------------+-------+",
-            "| name                                                  | value |",
-            "+-------------------------------------------------------+-------+",
-            "| ballista.grpc.client.connect_timeout_seconds          | 20    |",
-            "| ballista.grpc.client.http2_keepalive_interval_seconds | 300   |",
-            "+-------------------------------------------------------+-------+",
+            "+-------------------+-------+",
+            "| name              | value |",
+            "+-------------------+-------+",
+            "| ballista.job.name |       |",
+            "+-------------------+-------+",
         ];
 
         assert_batches_eq!(expected, &result);

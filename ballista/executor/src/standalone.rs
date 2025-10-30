@@ -123,9 +123,8 @@ pub async fn new_standalone_executor_from_builder(
         .max_decoding_message_size(max_message_size)
         .max_encoding_message_size(max_message_size);
 
-    let grpc_server_config = GrpcServerConfig::default();
     tokio::spawn(
-        create_grpc_server(&grpc_server_config)
+        create_grpc_server(&GrpcServerConfig::default())
             .add_service(server)
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
                 listener,

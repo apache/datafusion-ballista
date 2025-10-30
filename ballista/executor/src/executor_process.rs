@@ -251,7 +251,7 @@ pub async fn start_executor_process(
     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;
     let session_config = (executor.config_producer)();
     let ballista_config = session_config.ballista_config();
-    let grpc_client_config = GrpcClientConfig::from_ballista_config(&ballista_config);
+    let grpc_client_config = GrpcClientConfig::from(&ballista_config);
     let connection = if connect_timeout == 0 {
         create_grpc_client_connection(scheduler_url, &grpc_client_config)
             .await

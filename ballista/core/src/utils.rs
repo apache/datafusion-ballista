@@ -37,17 +37,35 @@ use std::{fs::File, pin::Pin};
 use tonic::codegen::StdError;
 use tonic::transport::{Channel, Error, Server};
 
+/// Configuration for gRPC client connections.
+///
+/// This struct holds timeout and keep-alive settings that are applied
+/// when establishing gRPC connections from executors to schedulers or
+/// between distributed components.
+///
+/// # Examples
+///
+/// ```
+/// use ballista_core::config::BallistaConfig;
+/// use ballista_core::utils::GrpcClientConfig;
+///
+/// let ballista_config = BallistaConfig::default();
+/// let grpc_config = GrpcClientConfig::from(&ballista_config);
+/// ```
 #[derive(Debug, Clone)]
 pub struct GrpcClientConfig {
+    /// Connection timeout in seconds
     pub connect_timeout_seconds: u64,
+    /// Request timeout in seconds
     pub timeout_seconds: u64,
+    /// TCP keep-alive interval in seconds
     pub tcp_keepalive_seconds: u64,
+    /// HTTP/2 keep-alive ping interval in seconds
     pub http2_keepalive_interval_seconds: u64,
-    pub keepalive_timeout_seconds: u64,
 }
 
-impl GrpcClientConfig {
-    pub fn from_ballista_config(config: &BallistaConfig) -> Self {
+impl From<&BallistaConfig> for GrpcClientConfig {
+    fn from(config: &BallistaConfig) -> Self {
         Self {
             connect_timeout_seconds: config.default_grpc_client_connect_timeout_seconds()
                 as u64,
@@ -56,9 +74,6 @@ impl GrpcClientConfig {
                 as u64,
             http2_keepalive_interval_seconds: config
                 .default_grpc_client_http2_keepalive_interval_seconds()
-                as u64,
-            keepalive_timeout_seconds: config
-                .default_standalone_grpc_client_keepalive_timeout_seconds()
                 as u64,
         }
     }
@@ -71,16 +86,32 @@ impl Default for GrpcClientConfig {
             timeout_seconds: 20,
             tcp_keepalive_seconds: 3600,
             http2_keepalive_interval_seconds: 300,
-            keepalive_timeout_seconds: 20,
         }
     }
 }
 
+/// Configuration for gRPC server.
+///
+/// This struct holds timeout and keep-alive settings that are applied
+/// when creating gRPC servers in executors and schedulers.
+///
+/// # Examples
+///
+/// ```
+/// use ballista_core::utils::GrpcServerConfig;
+///
+/// let server_config = GrpcServerConfig::default();
+/// let server = ballista_core::utils::create_grpc_server(&server_config);
+/// ```
 #[derive(Debug, Clone)]
 pub struct GrpcServerConfig {
+    /// Request timeout in seconds
     pub timeout_seconds: u64,
+    /// TCP keep-alive interval in seconds
     pub tcp_keepalive_seconds: u64,
+    /// HTTP/2 keep-alive ping interval in seconds
     pub http2_keepalive_interval_seconds: u64,
+    /// HTTP/2 keep-alive ping timeout in seconds
     pub http2_keepalive_timeout_seconds: u64,
 }
 
@@ -180,7 +211,9 @@ where
         .http2_keep_alive_interval(Duration::from_secs(
             config.http2_keepalive_interval_seconds,
         ))
-        .keep_alive_timeout(Duration::from_secs(config.keepalive_timeout_seconds))
+        // Use a fixed timeout for keep-alive pings to keep configuration simple
+        // since this is a standalone configuration
+        .keep_alive_timeout(Duration::from_secs(20))
         .keep_alive_while_idle(true);
     endpoint.connect().await
 }

@@ -238,7 +238,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                 self.session_id.clone(),
                 query,
                 self.config.default_grpc_client_max_message_size(),
-                GrpcClientConfig::from_ballista_config(&self.config),
+                GrpcClientConfig::from(&self.config),
             )
             .map_err(|e| ArrowError::ExternalError(Box::new(e))),
         )

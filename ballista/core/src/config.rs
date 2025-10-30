@@ -48,8 +48,6 @@ pub const BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS: &str =
     "ballista.grpc.client.tcp_keepalive_seconds";
 pub const BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS: &str =
     "ballista.grpc.client.http2_keepalive_interval_seconds";
-pub const BALLISTA_STANDALONE_GRPC_CLIENT_KEEPALIVE_TIMEOUT_SECONDS: &str =
-    "ballista.standalone.grpc.client.keepalive_timeout_seconds";
 
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
@@ -93,11 +91,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS.to_string(),
                          "HTTP/2 keep-alive interval for gRPC client in seconds".to_string(),
                          DataType::UInt64,
-                         Some((300).to_string())),
-        ConfigEntry::new(BALLISTA_STANDALONE_GRPC_CLIENT_KEEPALIVE_TIMEOUT_SECONDS.to_string(),
-                         "Keep-alive timeout for gRPC client in seconds (standalone mode only)".to_string(),
-                         DataType::UInt64,
-                         Some((20).to_string()))
+                         Some((300).to_string()))
     ];
     entries
         .into_iter()
@@ -233,10 +227,6 @@ impl BallistaConfig {
 
     pub fn default_grpc_client_http2_keepalive_interval_seconds(&self) -> usize {
         self.get_usize_setting(BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS)
-    }
-
-    pub fn default_standalone_grpc_client_keepalive_timeout_seconds(&self) -> usize {
-        self.get_usize_setting(BALLISTA_STANDALONE_GRPC_CLIENT_KEEPALIVE_TIMEOUT_SECONDS)
     }
 
     /// Forces the shuffle reader to always read partitions via the Arrow Flight client,
