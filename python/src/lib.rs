@@ -34,7 +34,7 @@ mod utils;
 pub(crate) struct TokioRuntime(tokio::runtime::Runtime);
 
 #[pymodule]
-fn _internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
+fn _internal_ballista(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     pyo3_log::init();
 
     m.add_class::<PyBallistaBuilder>()?;

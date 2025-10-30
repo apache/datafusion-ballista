@@ -57,7 +57,7 @@ profile = "black"
 
 [tool.maturin]
 python-source = "python"
-module-name = "ballista._internal"
+module-name = "ballista._internal_ballista"
 include = [
     { path = "Cargo.lock", format = "sdist" }
 ]

@@ -20,7 +20,7 @@ try:
 except ImportError:
     import importlib_metadata
 
-from ._internal import BallistaBuilder, BallistaScheduler, BallistaExecutor
+from ._internal_ballista import BallistaBuilder, BallistaScheduler, BallistaExecutor
 from .extension import BallistaSessionContext
 
 __version__ = importlib_metadata.version(__name__)

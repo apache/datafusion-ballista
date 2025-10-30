@@ -17,7 +17,7 @@
 
 from datafusion import SessionContext
 from datafusion import DataFrame
-from ._internal import PyBallistaRemoteExecutor
+from ._internal_ballista import PyBallistaRemoteExecutor
 
 class RedefiningMeta(type):
     def __new__(cls, name, bases, attrs):
