@@ -455,7 +455,7 @@ impl ExecutorManager {
                 executor_metadata.host, executor_metadata.grpc_port
             );
             let connection =
-                create_grpc_client_connection(executor_url, &grpc_client_config).await?;
+                create_grpc_client_connection(executor_url, grpc_client_config).await?;
             let client = ExecutorGrpcClient::new(connection);
 
             {

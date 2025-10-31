@@ -241,9 +241,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             let scheduler_url = format!("http://{scheduler_id}");
             let session_config = (self.executor.config_producer)();
             let ballista_config = session_config.ballista_config();
-            let grpc_client_config = GrpcClientConfig::from(&ballista_config);
             let connection =
-                create_grpc_client_connection(scheduler_url, &grpc_client_config).await?;
+                create_grpc_client_connection(scheduler_url, &(&ballista_config).into()).await?;
             let scheduler = SchedulerGrpcClient::new(connection)
                 .max_encoding_message_size(self.grpc_max_encoding_message_size)
                 .max_decoding_message_size(self.grpc_max_decoding_message_size);
