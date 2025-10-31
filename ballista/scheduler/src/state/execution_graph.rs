@@ -63,17 +63,18 @@ use crate::state::task_manager::UpdatedStages;
 ///
 /// This will produce a DataFusion execution plan that looks something like
 ///
-///
+/// ```text
 ///   CoalesceBatchesExec: target_batch_size=4096
 ///     RepartitionExec: partitioning=Hash([Column { name: "id", index: 0 }], 4)
 ///       AggregateExec: mode=Partial, gby=[id\@0 as id], aggr=[SUM(some_table.gmv)]
 ///         TableScan: some_table
+/// ```
 ///
 /// The Ballista `DistributedPlanner` will turn this into a distributed plan by creating a shuffle
 /// boundary (called a "Stage") whenever the underlying plan needs to perform a repartition.
 /// In this case we end up with a distributed plan with two stages:
 ///
-///
+/// ```text
 /// ExecutionGraph[job_id=job, session_id=session, available_tasks=1, complete=false]
 /// =========UnResolvedStage[id=2, children=1]=========
 /// Inputs{1: StageOutput { partition_locations: {}, complete: false }}
@@ -85,7 +86,7 @@ use crate::state::task_manager::UpdatedStages;
 /// ShuffleWriterExec: Some(Hash([Column { name: "id", index: 0 }], 4))
 ///   AggregateExec: mode=Partial, gby=[id\@0 as id], aggr=[SUM(?table?.gmv)]
 ///     TableScan: some_table
-///
+/// ```
 ///
 /// The DAG structure of this `ExecutionGraph` is encoded in the stages. Each stage's `input` field
 /// will indicate which stages it depends on, and each stage's `output_links` will indicate which

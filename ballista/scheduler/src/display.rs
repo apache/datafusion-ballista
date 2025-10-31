@@ -66,7 +66,7 @@ pub struct DisplayableBallistaExecutionPlan<'a> {
 }
 
 impl<'a> DisplayableBallistaExecutionPlan<'a> {
-    /// Create a wrapper around an [`'ExecutionPlan'] which can be
+    /// Create a wrapper around an ['ExecutionPlan'] which can be
     /// pretty printed with aggregated metrics.
     pub fn new(inner: &'a dyn ExecutionPlan, metrics: &'a Vec<MetricsSet>) -> Self {
         Self { inner, metrics }
