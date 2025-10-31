@@ -54,7 +54,7 @@ use ballista_core::serde::{
 };
 use ballista_core::utils::{
     create_grpc_client_connection, create_grpc_server, default_config_producer,
-    get_time_before, GrpcClientConfig, GrpcServerConfig,
+    get_time_before, GrpcServerConfig,
 };
 use ballista_core::{ConfigProducer, RuntimeProducer, BALLISTA_VERSION};
 

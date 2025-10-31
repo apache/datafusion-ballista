@@ -44,9 +44,7 @@ use ballista_core::serde::scheduler::from_proto::{
 use ballista_core::serde::scheduler::PartitionId;
 use ballista_core::serde::scheduler::TaskDefinition;
 use ballista_core::serde::BallistaCodec;
-use ballista_core::utils::{
-    create_grpc_client_connection, create_grpc_server, GrpcClientConfig,
-};
+use ballista_core::utils::{create_grpc_client_connection, create_grpc_server};
 use dashmap::DashMap;
 use datafusion::execution::TaskContext;
 use datafusion_proto::{logical_plan::AsLogicalPlan, physical_plan::AsExecutionPlan};
