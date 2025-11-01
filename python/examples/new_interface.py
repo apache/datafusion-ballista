@@ -58,9 +58,9 @@ df0.show()
 # %%
 df.count()
 # %%
-# df.select("id").write_json("/Users/user/git/datafusion_ballista/python/target/a.json")
+df.select("id").write_json("/Users/marko/git/datafusion_ballista/python/target/a.json")
 # %%
-# df.select("id").write_csv("/Users/user/git/datafusion_ballista/python/target/a.cvs")
+df.select("id").write_csv("/Users/marko/git/datafusion_ballista/python/target/a.cvs")
 # %%
 df.write_parquet_with_options(
     "/Users/marko/git/datafusion_ballista/python/target/a.parquet",
@@ -68,4 +68,7 @@ df.write_parquet_with_options(
 )
 # %%
 df.write_parquet("/Users/marko/git/datafusion_ballista/python/target/b.parquet")
+# %%
+executor.close()
+scheduler.close()
 # %%

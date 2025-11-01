@@ -15,13 +15,22 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from datafusion import SessionContext
-from datafusion import DataFrame
-from datafusion import ParquetWriterOptions
+from datafusion import SessionContext, DataFrame, ParquetWriterOptions
+from datafusion.dataframe import Compression
+
+from typing import (
+    # TYPE_CHECKING,
+    Union,
+)
+
+# if TYPE_CHECKING:
+#    import pathlib
+#    from typing import Callable, Sequence
 
 from ._internal_ballista import PyBallistaRemoteExecutor
 from ._internal_ballista import ParquetColumnOptions as ParquetColumnOptionsInternal
 from ._internal_ballista import ParquetWriterOptions as ParquetWriterOptionsInternal
+import pathlib
 
 
 class RedefiningMeta(type):
@@ -59,13 +68,14 @@ class RedefiningMeta(type):
 #
 # this class keeps reference to remote ballista
 
+
 class DistributedDataFrame(DataFrame, metaclass=RedefiningMeta):
     def __init__(self, df: DataFrame, session_id: str, address: str):
         super().__init__(df.df)
         self.address = address
         self.session_id = session_id
 
-    # 
+    #
     # this will create a ballista dataframe, which has ballista
     # session context, and ballista planner.
     #
@@ -153,6 +163,30 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningMeta):
             column_specific_options_internal,
             # raw_write_options,
         )
+
+    def write_parquet(
+        self,
+        path: Union[str, pathlib.Path],
+        compression: Union[str, Compression, ParquetWriterOptions] = Compression.ZSTD,
+        compression_level: Union[int, None] = None,
+    ) -> None:
+        if isinstance(compression, ParquetWriterOptions):
+            if compression_level is not None:
+                msg = "compression_level should be None when using ParquetWriterOptions"
+                raise ValueError(msg)
+            self.write_parquet_with_options(path, compression)
+            return
+
+        if isinstance(compression, str):
+            compression = Compression.from_str(compression)
+
+        if (
+            compression in {Compression.GZIP, Compression.BROTLI, Compression.ZSTD}
+            and compression_level is None
+        ):
+            compression_level = compression.get_default_level()
+        df = self._to_internal_df()
+        df.write_parquet(str(path), compression.value, compression_level)
 
     # TODO we would need to override write methods
     #      and few others here

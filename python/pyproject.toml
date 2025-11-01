@@ -44,6 +44,7 @@ dependencies = [
     "pyarrow>=21.0.0",
     "cloudpickle",
     "datafusion==49",
+    "typing-extensions;python_version<'3.13'",
 ]
 dynamic = ["version"]
 
