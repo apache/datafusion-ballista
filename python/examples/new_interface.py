@@ -16,7 +16,7 @@
 # under the License.
 # %%
 from ballista import BallistaSessionContext, BallistaExecutor, BallistaScheduler
-from datafusion import col, lit, DataFrame
+from datafusion import col, lit, DataFrame, ParquetWriterOptions
 from datafusion import functions as f
 # from datafusion import SessionContext
 
@@ -49,10 +49,21 @@ ctx.sql("select * from t limit 3").show()
 # %%
 df.collect()
 # %%
-
-
+df.collect_partitioned()
+# %%
 df0 = ctx.sql("SELECT 1 as r")
 
 df0.aggregate([f.col("r")], [f.count_star()])
 df0.show()
+# %%
+df.count()
+# %%
+# df.select("id").write_json("/Users/user/git/datafusion_ballista/python/target/a.json")
+# %%
+# df.select("id").write_csv("/Users/user/git/datafusion_ballista/python/target/a.cvs")
+# %%
+df.write_parquet_with_options(
+    "/Users/user/git/datafusion_ballista/python/target/a.parquet",
+    ParquetWriterOptions(),
+)
 # %%

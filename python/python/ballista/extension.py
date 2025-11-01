@@ -25,8 +25,9 @@ class RedefiningMeta(type):
         def __wrap_dataframe_result(func):
             def method_wrapper(*args, **kwargs):
                 address = args[0].address
+                session_id = args[0].session_id
                 df = func(*args, **kwargs)
-                return DistributedDataFrame(df, address)
+                return DistributedDataFrame(df, session_id, address)
 
             return method_wrapper
 
@@ -56,25 +57,58 @@ class RedefiningMeta(type):
 
 
 class DistributedDataFrame(DataFrame, metaclass=RedefiningMeta):
-    def __init__(self, df: DataFrame, address: str):
+    def __init__(self, df: DataFrame, session_id: str, address: str):
         super().__init__(df.df)
         self.address = address
+        self.session_id = session_id
+
+    def _to_internal_df(self):
+        blob_plan = self.logical_plan().to_proto()
+        df = PyBallistaRemoteExecutor.create_data_frame(
+            blob_plan, self.address, self.session_id
+        )
+        return df
 
     def show(self, num: int = 20) -> None:
-        blob_plan = self.logical_plan().to_proto()
-        PyBallistaRemoteExecutor.show(blob_plan, self.address)
+        df = self._to_internal_df()
+        df.show(num)
+
+    def count(self):
+        df = self._to_internal_df()
+        return df.count()
 
     def collect(self):
-        blob_plan = self.logical_plan().to_proto()
-        batches = PyBallistaRemoteExecutor.collect(blob_plan, self.address)
+        df = self._to_internal_df()
+        return df.collect()
 
-        return batches
+    def collect_partitioned(self):
+        df = self._to_internal_df()
+        return df.collect_partitioned()
+
+    def write_csv(self, path, with_header=False):
+        df = self._to_internal_df()
+        df.write_csv(path, with_header)
+
+    def write_json(self, path):
+        df = self._to_internal_df()
+        df.write_json(path)
+
+    def write_parquet_with_options(self, path, options):
+        df = self._to_internal_df()
+        # TODO: does not work
+        df.write_parquet_with_options(path, options, dict())
 
     # TODO we would need to override write methods
     #      and few others here
+    #
+    #     - execute stream
+    #     - execute stream partitioned
+    #     - write_parquet
+    #     - __repr ...
 
 
 class BallistaSessionContext(SessionContext, metaclass=RedefiningMeta):
     def __init__(self, address: str, config=None, runtime=None):
         super().__init__(config, runtime)
         self.address = address
+        self.session_id = self.session_id()

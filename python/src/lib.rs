@@ -18,12 +18,11 @@
 use crate::utils::wait_for_future;
 use ballista::prelude::*;
 use cluster::{PyExecutor, PyScheduler};
-use datafusion::arrow::pyarrow::ToPyArrow;
-use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::*;
 use datafusion_proto::bytes::logical_plan_from_bytes;
 use datafusion_python::context::PySessionContext;
+use datafusion_python::dataframe::PyDataFrame;
 use pyo3::prelude::*;
 
 mod cluster;
@@ -38,7 +37,7 @@ fn _internal_ballista(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     pyo3_log::init();
 
     m.add_class::<PyBallistaBuilder>()?;
-    //m.add_class::<datafusion_python::dataframe::PyDataFrame>()?;
+    m.add_class::<datafusion_python::dataframe::PyDataFrame>()?;
     m.add_class::<PyScheduler>()?;
     m.add_class::<PyExecutor>()?;
     m.add_class::<PyBallistaRemoteExecutor>()?;
@@ -58,48 +57,65 @@ impl PyBallistaRemoteExecutor {
         Self {}
     }
 
-    //#[pyo3(signature = (count, offset=0))]
     #[staticmethod]
-    fn show(py: Python, plan_blob: &[u8], url: &str) -> PyResult<()> {
-        let ctx = wait_for_future(py, SessionContext::remote(url))?;
+    fn create_data_frame(
+        py: Python,
+        plan_blob: &[u8],
+        url: &str,
+        session_id: &str,
+    ) -> PyResult<PyDataFrame> {
+        let state = SessionStateBuilder::new_with_default_features()
+            .with_session_id(session_id.to_string())
+            .build();
+        let ctx = wait_for_future(py, SessionContext::remote_with_state(url, state))?;
         let plan = logical_plan_from_bytes(plan_blob, &ctx)?;
         let df = DataFrame::new(ctx.state(), plan);
 
-        print_dataframe(py, df)
+        Ok(PyDataFrame::new(df))
     }
 
-    #[staticmethod]
-    fn collect(py: Python, plan_blob: &[u8], url: &str) -> PyResult<Vec<PyObject>> {
-        let ctx = wait_for_future(py, SessionContext::remote(url))?;
-        let plan = logical_plan_from_bytes(plan_blob, &ctx)?;
-        let df = DataFrame::new(ctx.state(), plan);
-        let batches = wait_for_future(py, df.collect())?;
+    // //#[pyo3(signature = (count, offset=0))]
+    // #[staticmethod]
+    // fn show(py: Python, plan_blob: &[u8], url: &str) -> PyResult<()> {
+    //     let ctx = wait_for_future(py, SessionContext::remote(url))?;
+    //     let plan = logical_plan_from_bytes(plan_blob, &ctx)?;
+    //     let df = DataFrame::new(ctx.state(), plan);
 
-        // cannot use PyResult<Vec<RecordBatch>> return type due to
-        // https://github.com/PyO3/pyo3/issues/1813
-        batches.into_iter().map(|rb| rb.to_pyarrow(py)).collect()
-    }
+    //     print_dataframe(py, df)
+    // }
+
+    // #[staticmethod]
+    // fn collect(py: Python, plan_blob: &[u8], url: &str) -> PyResult<Vec<PyObject>> {
+    //     let ctx = wait_for_future(py, SessionContext::remote(url))?;
+    //     let plan = logical_plan_from_bytes(plan_blob, &ctx)?;
+    //     let df = DataFrame::new(ctx.state(), plan);
+    //     let batches = wait_for_future(py, df.collect())?;
+
+    //     // cannot use PyResult<Vec<RecordBatch>> return type due to
+    //     // https://github.com/PyO3/pyo3/issues/1813
+    //     batches.into_iter().map(|rb| rb.to_pyarrow(py)).collect()
+    // }
 }
 
 // taken from datafusion python
-fn print_dataframe(py: Python, df: DataFrame) -> PyResult<()> {
-    // Get string representation of record batches
-    let batches = wait_for_future(py, df.collect())?;
-    let result = if batches.is_empty() {
-        "DataFrame has no rows".to_string()
-    } else {
-        match pretty_format_batches(&batches) {
-            Ok(batch) => format!("DataFrame()\n{batch}"),
-            Err(err) => format!("Error: {:?}", err.to_string()),
-        }
-    };
+// fn print_dataframe(py: Python, df: DataFrame) -> PyResult<()> {
+//     // Get string representation of record batches
+//     let batches = wait_for_future(py, df.collect())?;
+//     let result = if batches.is_empty() {
+//         "DataFrame has no rows".to_string()
+//     } else {
+//         match pretty_format_batches(&batches) {
+//             Ok(batch) => format!("DataFrame()\n{batch}"),
+//             Err(err) => format!("Error: {:?}", err.to_string()),
+//         }
+//     };
 
-    // Import the Python 'builtins' module to access the print function
-    // Note that println! does not print to the Python debug console and is not visible in notebooks for instance
-    let print = py.import("builtins")?.getattr("print")?;
-    print.call1((result,))?;
-    Ok(())
-}
+//     // Import the Python 'builtins' module to access the print function
+//     // Note that println! does not print to the Python debug console and is not visible in notebooks for instance
+//     let print = py.import("builtins")?.getattr("print")?;
+//     print.call1((result,))?;
+//     Ok(())
+// }
 
 #[pyclass(name = "BallistaBuilder", module = "ballista", subclass)]
 pub struct PyBallistaBuilder {
