@@ -234,18 +234,17 @@ mod supported {
         assert!(ballista_config_extension.is_some());
 
         let result = ctx
-            .sql("select name, value from information_schema.df_settings where name like 'ballista.%' order by name limit 2")
+            .sql("select name, value from information_schema.df_settings where name = 'ballista.job.name'")
             .await?
             .collect()
             .await?;
 
         let expected = [
-            "+---------------------------------------+----------+",
-            "| name                                  | value    |",
-            "+---------------------------------------+----------+",
-            "| ballista.grpc_client_max_message_size | 16777216 |",
-            "| ballista.job.name                     |          |",
-            "+---------------------------------------+----------+",
+            "+-------------------+-------+",
+            "| name              | value |",
+            "+-------------------+-------+",
+            "| ballista.job.name |       |",
+            "+-------------------+-------+",
         ];
 
         assert_batches_eq!(expected, &result);

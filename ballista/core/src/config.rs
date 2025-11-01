@@ -39,6 +39,16 @@ pub const BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ: &str =
 pub const BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT: &str =
     "ballista.shuffle.remote_read_prefer_flight";
 
+// gRPC client timeout configurations
+pub const BALLISTA_GRPC_CLIENT_CONNECT_TIMEOUT_SECONDS: &str =
+    "ballista.grpc.client.connect_timeout_seconds";
+pub const BALLISTA_GRPC_CLIENT_TIMEOUT_SECONDS: &str =
+    "ballista.grpc.client.timeout_seconds";
+pub const BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS: &str =
+    "ballista.grpc.client.tcp_keepalive_seconds";
+pub const BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS: &str =
+    "ballista.grpc.client.http2_keepalive_interval_seconds";
+
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
 
@@ -48,8 +58,8 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Sets the job name that will appear in the web user interface for any submitted jobs".to_string(),
                          DataType::Utf8, None),
         ConfigEntry::new(BALLISTA_STANDALONE_PARALLELISM.to_string(),
-                        "Standalone processing parallelism ".to_string(),
-                        DataType::UInt16, Some(std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1).to_string())),
+                         "Standalone processing parallelism ".to_string(),
+                         DataType::UInt16, Some(std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1).to_string())),
         ConfigEntry::new(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE.to_string(),
                          "Configuration for max message size in gRPC clients".to_string(),
                          DataType::UInt64,
@@ -66,7 +76,22 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Forces the shuffle reader to use flight reader instead of block reader for remote read. Block reader usually has better performance and resource utilization".to_string(),
                          DataType::Boolean,
                          Some((false).to_string())),
-
+        ConfigEntry::new(BALLISTA_GRPC_CLIENT_CONNECT_TIMEOUT_SECONDS.to_string(),
+                         "Connection timeout for gRPC client in seconds".to_string(),
+                         DataType::UInt64,
+                         Some((20).to_string())),
+        ConfigEntry::new(BALLISTA_GRPC_CLIENT_TIMEOUT_SECONDS.to_string(),
+                         "Request timeout for gRPC client in seconds".to_string(),
+                         DataType::UInt64,
+                         Some((20).to_string())),
+        ConfigEntry::new(BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS.to_string(),
+                         "TCP keep-alive interval for gRPC client in seconds".to_string(),
+                         DataType::UInt64,
+                         Some((3600).to_string())),
+        ConfigEntry::new(BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS.to_string(),
+                         "HTTP/2 keep-alive interval for gRPC client in seconds".to_string(),
+                         DataType::UInt64,
+                         Some((300).to_string()))
     ];
     entries
         .into_iter()
@@ -186,6 +211,22 @@ impl BallistaConfig {
 
     pub fn shuffle_reader_maximum_concurrent_requests(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_READER_MAX_REQUESTS)
+    }
+
+    pub fn default_grpc_client_connect_timeout_seconds(&self) -> usize {
+        self.get_usize_setting(BALLISTA_GRPC_CLIENT_CONNECT_TIMEOUT_SECONDS)
+    }
+
+    pub fn default_grpc_client_timeout_seconds(&self) -> usize {
+        self.get_usize_setting(BALLISTA_GRPC_CLIENT_TIMEOUT_SECONDS)
+    }
+
+    pub fn default_grpc_client_tcp_keepalive_seconds(&self) -> usize {
+        self.get_usize_setting(BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS)
+    }
+
+    pub fn default_grpc_client_http2_keepalive_interval_seconds(&self) -> usize {
+        self.get_usize_setting(BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS)
     }
 
     /// Forces the shuffle reader to always read partitions via the Arrow Flight client,

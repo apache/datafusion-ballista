@@ -20,7 +20,7 @@ use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightSe
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::registry::BallistaFunctionRegistry;
-use ballista_core::utils::default_config_producer;
+use ballista_core::utils::{default_config_producer, GrpcServerConfig};
 use ballista_core::{
     error::Result,
     serde::protobuf::{scheduler_grpc_client::SchedulerGrpcClient, ExecutorRegistration},
@@ -124,7 +124,7 @@ pub async fn new_standalone_executor_from_builder(
         .max_encoding_message_size(max_message_size);
 
     tokio::spawn(
-        create_grpc_server()
+        create_grpc_server(&GrpcServerConfig::default())
             .add_service(server)
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(
                 listener,
