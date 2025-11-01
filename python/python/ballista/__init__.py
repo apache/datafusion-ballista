@@ -26,7 +26,6 @@ from .extension import BallistaSessionContext
 __version__ = importlib_metadata.version(__name__)
 
 __all__ = [
-    "PyBallistaRemoteExecutor",
     "BallistaBuilder",
     "BallistaScheduler",
     "BallistaExecutor",
