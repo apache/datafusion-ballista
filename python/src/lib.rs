@@ -22,7 +22,9 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::*;
 use datafusion_proto::bytes::logical_plan_from_bytes;
 use datafusion_python::context::PySessionContext;
-use datafusion_python::dataframe::PyDataFrame;
+use datafusion_python::dataframe::{
+    PyDataFrame, PyParquetColumnOptions, PyParquetWriterOptions,
+};
 use pyo3::prelude::*;
 
 mod cluster;
@@ -41,6 +43,9 @@ fn _internal_ballista(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyScheduler>()?;
     m.add_class::<PyExecutor>()?;
     m.add_class::<PyBallistaRemoteExecutor>()?;
+
+    m.add_class::<PyParquetWriterOptions>()?;
+    m.add_class::<PyParquetColumnOptions>()?;
 
     Ok(())
 }

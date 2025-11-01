@@ -17,7 +17,11 @@
 
 from datafusion import SessionContext
 from datafusion import DataFrame
+from datafusion import ParquetWriterOptions
+
 from ._internal_ballista import PyBallistaRemoteExecutor
+from ._internal_ballista import ParquetColumnOptions as ParquetColumnOptionsInternal
+from ._internal_ballista import ParquetWriterOptions as ParquetWriterOptionsInternal
 
 
 class RedefiningMeta(type):
@@ -55,13 +59,17 @@ class RedefiningMeta(type):
 #
 # this class keeps reference to remote ballista
 
-
 class DistributedDataFrame(DataFrame, metaclass=RedefiningMeta):
     def __init__(self, df: DataFrame, session_id: str, address: str):
         super().__init__(df.df)
         self.address = address
         self.session_id = session_id
 
+    # 
+    # this will create a ballista dataframe, which has ballista
+    # session context, and ballista planner.
+    #
+    #
     def _to_internal_df(self):
         blob_plan = self.logical_plan().to_proto()
         df = PyBallistaRemoteExecutor.create_data_frame(
@@ -93,17 +101,64 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningMeta):
         df = self._to_internal_df()
         df.write_json(path)
 
-    def write_parquet_with_options(self, path, options):
+    def write_parquet_with_options(
+        self,
+        path: str,
+        options: ParquetWriterOptions,
+    ):
+        options_internal = ParquetWriterOptionsInternal(
+            options.data_pagesize_limit,
+            options.write_batch_size,
+            options.writer_version,
+            options.skip_arrow_metadata,
+            options.compression,
+            options.dictionary_enabled,
+            options.dictionary_page_size_limit,
+            options.statistics_enabled,
+            options.max_row_group_size,
+            options.created_by,
+            options.column_index_truncate_length,
+            options.statistics_truncate_length,
+            options.data_page_row_count_limit,
+            options.encoding,
+            options.bloom_filter_on_write,
+            options.bloom_filter_fpp,
+            options.bloom_filter_ndv,
+            options.allow_single_file_parallelism,
+            options.maximum_parallel_row_group_writers,
+            options.maximum_buffered_record_batches_per_stream,
+        )
+
+        column_specific_options_internal = {}
+        for column, opts in (options.column_specific_options or {}).items():
+            column_specific_options_internal[column] = ParquetColumnOptionsInternal(
+                bloom_filter_enabled=opts.bloom_filter_enabled,
+                encoding=opts.encoding,
+                dictionary_enabled=opts.dictionary_enabled,
+                compression=opts.compression,
+                statistics_enabled=opts.statistics_enabled,
+                bloom_filter_fpp=opts.bloom_filter_fpp,
+                bloom_filter_ndv=opts.bloom_filter_ndv,
+            )
+
+        # raw_write_options = (
+        #     write_options._raw_write_options if write_options is not None else None
+        # )
+
         df = self._to_internal_df()
-        # TODO: does not work
-        df.write_parquet_with_options(path, options, dict())
+
+        df.write_parquet_with_options(
+            str(path),
+            options_internal,
+            column_specific_options_internal,
+            # raw_write_options,
+        )
 
     # TODO we would need to override write methods
     #      and few others here
     #
     #     - execute stream
     #     - execute stream partitioned
-    #     - write_parquet
     #     - __repr ...
 
 

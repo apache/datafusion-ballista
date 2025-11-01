@@ -63,7 +63,9 @@ df.count()
 # df.select("id").write_csv("/Users/user/git/datafusion_ballista/python/target/a.cvs")
 # %%
 df.write_parquet_with_options(
-    "/Users/user/git/datafusion_ballista/python/target/a.parquet",
+    "/Users/marko/git/datafusion_ballista/python/target/a.parquet",
     ParquetWriterOptions(),
 )
+# %%
+df.write_parquet("/Users/marko/git/datafusion_ballista/python/target/b.parquet")
 # %%
