@@ -20,11 +20,11 @@ from datafusion import col, lit, DataFrame, ParquetWriterOptions
 from datafusion import functions as f
 # from datafusion import SessionContext
 
-scheduler = BallistaScheduler()
-scheduler.start()
+# scheduler = BallistaScheduler()
+# scheduler.start()
 
-executor = BallistaExecutor()
-executor.start()
+# executor = BallistaExecutor()
+# executor.start()
 
 # we replace
 # ctx = SessionContext()
@@ -69,6 +69,8 @@ df.write_parquet_with_options(
 # %%
 df.write_parquet("/Users/marko/git/datafusion_ballista/python/target/b.parquet")
 # %%
-executor.close()
-scheduler.close()
+# executor.close()
+# scheduler.close()
+# %%
+
 # %%

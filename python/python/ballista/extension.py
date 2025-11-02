@@ -27,7 +27,7 @@ from typing import (
 #    import pathlib
 #    from typing import Callable, Sequence
 
-from ._internal_ballista import PyBallistaRemoteExecutor
+from ._internal_ballista import create_data_frame
 from ._internal_ballista import ParquetColumnOptions as ParquetColumnOptionsInternal
 from ._internal_ballista import ParquetWriterOptions as ParquetWriterOptionsInternal
 import pathlib
@@ -82,9 +82,7 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningMeta):
     #
     def _to_internal_df(self):
         blob_plan = self.logical_plan().to_proto()
-        df = PyBallistaRemoteExecutor.create_data_frame(
-            blob_plan, self.address, self.session_id
-        )
+        df = create_data_frame(blob_plan, self.address, self.session_id)
         return df
 
     def show(self, num: int = 20) -> None:
@@ -110,6 +108,42 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningMeta):
     def write_json(self, path):
         df = self._to_internal_df()
         df.write_json(path)
+
+    def to_arrow_table(self):
+        df = self._to_internal_df()
+        return df.to_arrow_table()
+
+    def to_pandas(self):
+        df = self._to_internal_df()
+        return df.to_pandas()
+
+    def to_pydict(self):
+        df = self._to_internal_df()
+        return df.to_pydict()
+
+    def to_polars(self):
+        df = self._to_internal_df()
+        return df.to_polars()
+
+    def to_pylist(self):
+        df = self._to_internal_df()
+        return df.to_pylist()
+
+    def _repr_html_(self):
+        df = self._to_internal_df()
+        return df._repr_html_()
+
+    def __repr__(self):
+        df = self._to_internal_df()
+        return df.__repr__()
+
+    def execute_stream(self):
+        df = self._to_internal_df()
+        return df.execute_stream()
+
+    def execute_stream_partitioned(self):
+        df = self._to_internal_df()
+        return df.execute_stream_partitioned()
 
     def write_parquet_with_options(
         self,
@@ -187,13 +221,6 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningMeta):
             compression_level = compression.get_default_level()
         df = self._to_internal_df()
         df.write_parquet(str(path), compression.value, compression_level)
-
-    # TODO we would need to override write methods
-    #      and few others here
-    #
-    #     - execute stream
-    #     - execute stream partitioned
-    #     - __repr ...
 
 
 class BallistaSessionContext(SessionContext, metaclass=RedefiningMeta):
