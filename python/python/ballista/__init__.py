@@ -31,7 +31,8 @@ from .extension import BallistaSessionContext
 __version__ = importlib_metadata.version(__name__)
 
 __all__ = [
-    "setup_test_clusterBallistaBuilder",
+    "setup_test_cluster",
+    "BallistaBuilder",
     "BallistaScheduler",
     "BallistaExecutor",
     "BallistaSessionContext",
