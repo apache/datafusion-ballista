@@ -45,6 +45,10 @@ fn _internal_ballista(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
 
     //m.add_class::<PyBallistaRemoteExecutor>()?;
     m.add_function(wrap_pyfunction!(create_data_frame, m.clone())?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::cluster::setup_test_cluster,
+        m.clone()
+    )?)?;
 
     Ok(())
 }

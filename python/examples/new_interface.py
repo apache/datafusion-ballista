@@ -15,21 +15,19 @@
 # specific language governing permissions and limitations
 # under the License.
 # %%
-from ballista import BallistaSessionContext, BallistaExecutor, BallistaScheduler
+from ballista import BallistaSessionContext, setup_test_cluster
 from datafusion import col, lit, DataFrame, ParquetWriterOptions
 from datafusion import functions as f
 # from datafusion import SessionContext
 
-# scheduler = BallistaScheduler()
-# scheduler.start()
+host, port = setup_test_cluster()
+# %%
 
-# executor = BallistaExecutor()
-# executor.start()
 
 # we replace
 # ctx = SessionContext()
 # with
-ctx = BallistaSessionContext(address="df://127.0.0.1:50050")
+ctx = BallistaSessionContext(address=f"df://{host}:{port}")
 
 ctx.sql("create external table t stored as parquet location '../testdata/test.parquet'")
 
@@ -68,9 +66,4 @@ df.write_parquet_with_options(
 )
 # %%
 df.write_parquet("/Users/marko/git/datafusion_ballista/python/target/b.parquet")
-# %%
-# executor.close()
-# scheduler.close()
-# %%
-
 # %%

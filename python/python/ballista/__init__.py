@@ -20,13 +20,18 @@ try:
 except ImportError:
     import importlib_metadata
 
-from ._internal_ballista import BallistaBuilder, BallistaScheduler, BallistaExecutor
+from ._internal_ballista import (
+    BallistaBuilder,
+    BallistaScheduler,
+    BallistaExecutor,
+    setup_test_cluster,
+)
 from .extension import BallistaSessionContext
 
 __version__ = importlib_metadata.version(__name__)
 
 __all__ = [
-    "BallistaBuilder",
+    "setup_test_clusterBallistaBuilder",
     "BallistaScheduler",
     "BallistaExecutor",
     "BallistaSessionContext",

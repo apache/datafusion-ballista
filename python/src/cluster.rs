@@ -21,6 +21,7 @@ use std::sync::Arc;
 use crate::codec::{PyLogicalCodec, PyPhysicalCodec};
 use crate::utils::to_pyerr;
 use crate::utils::{spawn_feature, wait_for_future};
+use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use ballista_executor::executor_process::{
     start_executor_process, ExecutorProcessConfig,
 };
@@ -262,5 +263,58 @@ impl PyExecutor {
             self.config.concurrent_tasks,
             self.handle.is_some()
         )
+    }
+}
+
+#[pyo3::pyfunction]
+pub fn setup_test_cluster(py: Python) -> PyResult<(String, u16)> {
+    let tuple = wait_for_future(py, _setup_test_cluster());
+    Ok(tuple)
+}
+
+async fn _setup_test_cluster() -> (String, u16) {
+    let config = <datafusion::prelude::SessionConfig as ballista::prelude::SessionConfigExt>::new_with_ballista();
+    let default_codec = ballista_core::serde::BallistaCodec::default();
+
+    let addr = ballista_scheduler::standalone::new_standalone_scheduler()
+        .await
+        .expect("scheduler to be created");
+
+    let host = "localhost".to_string();
+
+    let scheduler =
+        connect_to_scheduler(format!("http://{}:{}", host, addr.port())).await;
+
+    ballista_executor::new_standalone_executor(
+        scheduler,
+        ballista::prelude::SessionConfigExt::ballista_standalone_parallelism(&config),
+        default_codec,
+    )
+    .await
+    .expect("executor to be created");
+
+    log::info!("test scheduler created at: {}:{}", host, addr.port());
+
+    (host, addr.port())
+}
+
+async fn connect_to_scheduler(
+    scheduler_url: String,
+) -> SchedulerGrpcClient<tonic::transport::Channel> {
+    let mut retry = 50;
+    loop {
+        match SchedulerGrpcClient::connect(scheduler_url.clone()).await {
+            Err(_) if retry > 0 => {
+                retry -= 1;
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                log::debug!("Re-attempting to connect to test scheduler...");
+            }
+
+            Err(_) => {
+                log::error!("scheduler connection timed out");
+                panic!("scheduler connection timed out")
+            }
+            Ok(scheduler) => break scheduler,
+        }
     }
 }
