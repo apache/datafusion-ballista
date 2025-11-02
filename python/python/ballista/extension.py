@@ -32,8 +32,71 @@ from ._internal_ballista import ParquetColumnOptions as ParquetColumnOptionsInte
 from ._internal_ballista import ParquetWriterOptions as ParquetWriterOptionsInternal
 import pathlib
 
+# execution methods which should be automatically
+# generated
 
-class RedefiningMeta(type):
+OVERRIDDEN_EXECUTION_METHODS = [
+    "show",
+    "count",
+    "collect",
+    "collect_partitioned",
+    "write_json",
+    "to_arrow_table",
+    "to_pandas",
+    "to_pydict",
+    "to_polars",
+    "to_pylist",
+    "_repr_html_",
+    "execute_stream",
+    "execute_stream_partitioned",
+]
+
+
+class RedefiningDataFrameMeta(type):
+    def __new__(cls, name, bases, attrs):
+        # this function will create
+        # new function, create ballista
+        # dataframe and execute the same function on it
+        def __wrap_dataframe_execution(func):
+            def method_wrapper(*args, **kwargs):
+                slf, *argz = args
+                df = slf._to_internal_df()
+
+                return getattr(df, func)(*argz, **kwargs)
+
+            return method_wrapper
+
+        def __wrap_dataframe_result(func):
+            def method_wrapper(*args, **kwargs):
+                address = args[0].address
+                session_id = args[0].session_id
+                df = func(*args, **kwargs)
+                return DistributedDataFrame(df, session_id, address)
+
+            return method_wrapper
+
+        for base_name, base_value in bases[0].__dict__.items():
+            #
+            # could we not use 'DataFrame' as a string here?
+            #
+            if (
+                callable(base_value)
+                and not base_name.startswith("__")
+                and base_value.__annotations__.get("return") == "DataFrame"
+            ):
+                #
+                # functions which return DataFrame are redefined
+                # to return DistributedDataFrame
+                #
+                attrs[base_name] = __wrap_dataframe_result(base_value)
+
+        for function in OVERRIDDEN_EXECUTION_METHODS:
+            attrs[function] = __wrap_dataframe_execution(function)
+
+        return super().__new__(cls, name, bases, attrs)
+
+
+class RedefiningSessionContextMeta(type):
     def __new__(cls, name, bases, attrs):
         def __wrap_dataframe_result(func):
             def method_wrapper(*args, **kwargs):
@@ -69,7 +132,7 @@ class RedefiningMeta(type):
 # this class keeps reference to remote ballista
 
 
-class DistributedDataFrame(DataFrame, metaclass=RedefiningMeta):
+class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
     def __init__(self, df: DataFrame, session_id: str, address: str):
         super().__init__(df.df)
         self.address = address
@@ -79,71 +142,14 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningMeta):
     # this will create a ballista dataframe, which has ballista
     # session context, and ballista planner.
     #
-    #
     def _to_internal_df(self):
         blob_plan = self.logical_plan().to_proto()
         df = create_data_frame(blob_plan, self.address, self.session_id)
         return df
 
-    def show(self, num: int = 20) -> None:
-        df = self._to_internal_df()
-        df.show(num)
-
-    def count(self):
-        df = self._to_internal_df()
-        return df.count()
-
-    def collect(self):
-        df = self._to_internal_df()
-        return df.collect()
-
-    def collect_partitioned(self):
-        df = self._to_internal_df()
-        return df.collect_partitioned()
-
     def write_csv(self, path, with_header=False):
         df = self._to_internal_df()
         df.write_csv(path, with_header)
-
-    def write_json(self, path):
-        df = self._to_internal_df()
-        df.write_json(path)
-
-    def to_arrow_table(self):
-        df = self._to_internal_df()
-        return df.to_arrow_table()
-
-    def to_pandas(self):
-        df = self._to_internal_df()
-        return df.to_pandas()
-
-    def to_pydict(self):
-        df = self._to_internal_df()
-        return df.to_pydict()
-
-    def to_polars(self):
-        df = self._to_internal_df()
-        return df.to_polars()
-
-    def to_pylist(self):
-        df = self._to_internal_df()
-        return df.to_pylist()
-
-    def _repr_html_(self):
-        df = self._to_internal_df()
-        return df._repr_html_()
-
-    def __repr__(self):
-        df = self._to_internal_df()
-        return df.__repr__()
-
-    def execute_stream(self):
-        df = self._to_internal_df()
-        return df.execute_stream()
-
-    def execute_stream_partitioned(self):
-        df = self._to_internal_df()
-        return df.execute_stream_partitioned()
 
     def write_parquet_with_options(
         self,
@@ -223,7 +229,7 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningMeta):
         df.write_parquet(str(path), compression.value, compression_level)
 
 
-class BallistaSessionContext(SessionContext, metaclass=RedefiningMeta):
+class BallistaSessionContext(SessionContext, metaclass=RedefiningSessionContextMeta):
     def __init__(self, address: str, config=None, runtime=None):
         super().__init__(config, runtime)
         self.address = address

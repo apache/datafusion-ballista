@@ -37,7 +37,7 @@ ctx.sql("create external table t stored as parquet location '../testdata/test.pa
 df: DataFrame = ctx.table("t")
 
 # %%
-df.show()
+df.show(2)
 # %%
 
 # this did not work previously
