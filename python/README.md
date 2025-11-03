@@ -17,9 +17,9 @@
   under the License.
 -->
 
-# PyBallista
+# Ballista
 
-Python client for Ballista.
+Ballista support for datafusion python.
 
 This project is versioned and released independently from the main Ballista project and is intentionally not
 part of the default Cargo workspace so that it doesn't cause overhead for maintainers of the main Ballista codebase.
@@ -29,30 +29,53 @@ part of the default Cargo workspace so that it doesn't cause overhead for mainta
 > [!IMPORTANT]
 > Current approach is to support datafusion python API, there are know limitations of current approach,
 > with some cases producing errors.
+>
 > We are trying to come up with the best approach to support ballista python interface.
+>
 > More details could be found at [#1142](https://github.com/apache/datafusion-ballista/issues/1142)
 
-Creates a new context and connects to a Ballista scheduler process.
+Creates a new context which connects to a Ballista scheduler process.
 
 ```python
-from ballista import BallistaBuilder
->>> ctx = BallistaBuilder().standalone()
+from datafusion import col, lit
+from datafusion import DataFrame
+# we do not need datafusion context
+# it will be replaced by BallistaSessionContext
+# from datafusion import SessionContext
+from ballista import BallistaSessionContext
+
+# Change from:
+#
+# ctx = SessionContext()
+#
+# to: 
+
+ctx = BallistaSessionContext("df://localhost:50050")
+
+# all other functions and functions are from
+# datafusion module
+ctx.sql("create external table t stored as parquet location './testdata/test.parquet'")
+df : DataFrame = ctx.sql("select * from t limit 5")
+
+df.show()
 ```
 
-### Example SQL Usage
+Known limitation of current approach:
 
-```python
->>> ctx.sql("create external table t stored as parquet location './testdata/test.parquet'")
->>> df = ctx.sql("select * from t limit 5")
->>> pyarrow_batches = df.collect()
-```
+- no support for `UDF` as datafusion python does not serialize them.
+- client's `SessionConfig` in not propagated to ballista.
+- ballista connection will be created for each request.
 
 ### Example DataFrame Usage
 
 ```python
->>> df = ctx.read_parquet('./testdata/test.parquet').limit(5)
->>> pyarrow_batches = df.collect()
+ctx = BallistaSessionContext("df://localhost:50050")
+df = ctx.read_parquet('./testdata/test.parquet').filter(col(id) > lit(4)).limit(5)
+
+pyarrow_batches = df.collect()
 ```
+
+Check [DataFusion python](https://datafusion.apache.org/python/) provides more examples and manuals.
 
 ## Scheduler and Executor
 

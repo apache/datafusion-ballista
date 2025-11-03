@@ -18,7 +18,6 @@
 use std::future::IntoFuture;
 use std::sync::Arc;
 
-use crate::codec::{PyLogicalCodec, PyPhysicalCodec};
 use crate::utils::to_pyerr;
 use crate::utils::{spawn_feature, wait_for_future};
 use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
@@ -42,7 +41,7 @@ pub struct PyScheduler {
 impl PyScheduler {
     #[pyo3(signature = (bind_host=None, bind_port=None))]
     #[new]
-    pub fn new(py: Python, bind_host: Option<String>, bind_port: Option<u16>) -> Self {
+    pub fn new(_py: Python, bind_host: Option<String>, bind_port: Option<u16>) -> Self {
         let mut config = SchedulerConfig::default();
 
         if let Some(bind_port) = bind_port {
@@ -52,11 +51,6 @@ impl PyScheduler {
         if let Some(host) = bind_host {
             config.bind_host = host;
         }
-
-        config.override_logical_codec =
-            Some(Arc::new(PyLogicalCodec::try_new(py).unwrap()));
-        config.override_physical_codec =
-            Some(Arc::new(PyPhysicalCodec::try_new(py).unwrap()));
 
         Self {
             config,
@@ -143,12 +137,14 @@ pub struct PyExecutor {
     handle: Option<JoinHandle<()>>,
 }
 
+// FIXME: there is outstanding issue of executor outliving python process
+//        which forked it. This will be investigated further
 #[pymethods]
 impl PyExecutor {
     #[pyo3(signature = (bind_port=None, bind_host =None, scheduler_host = None, scheduler_port = None, concurrent_tasks = None))]
     #[new]
     pub fn new(
-        py: Python,
+        _py: Python,
         bind_port: Option<u16>,
         bind_host: Option<String>,
         scheduler_host: Option<String>,
@@ -175,9 +171,6 @@ impl PyExecutor {
         if let Some(concurrent_tasks) = concurrent_tasks {
             config.concurrent_tasks = concurrent_tasks as usize
         }
-
-        config.override_logical_codec = Some(Arc::new(PyLogicalCodec::try_new(py)?));
-        config.override_physical_codec = Some(Arc::new(PyPhysicalCodec::try_new(py)?));
 
         let config = Arc::new(config);
         Ok(Self {
@@ -265,6 +258,10 @@ impl PyExecutor {
         )
     }
 }
+
+/// a method which setups standalone ballista cluster for
+/// testing purposes. it returns address and port of
+/// running cluster
 
 #[pyo3::pyfunction]
 pub fn setup_test_cluster(py: Python) -> PyResult<(String, u16)> {

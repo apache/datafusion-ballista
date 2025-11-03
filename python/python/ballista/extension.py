@@ -19,21 +19,17 @@ from datafusion import SessionContext, DataFrame, ParquetWriterOptions
 from datafusion.dataframe import Compression
 
 from typing import (
-    # TYPE_CHECKING,
     Union,
 )
 
-# if TYPE_CHECKING:
-#    import pathlib
-#    from typing import Callable, Sequence
 
-from ._internal_ballista import create_data_frame
+from ._internal_ballista import create_ballista_data_frame
 from ._internal_ballista import ParquetColumnOptions as ParquetColumnOptionsInternal
 from ._internal_ballista import ParquetWriterOptions as ParquetWriterOptionsInternal
 import pathlib
 
-# execution methods which should be automatically
-# generated
+# DataFrame execution methods which should be automatically
+# overridden.
 
 OVERRIDDEN_EXECUTION_METHODS = [
     "show",
@@ -52,11 +48,13 @@ OVERRIDDEN_EXECUTION_METHODS = [
 ]
 
 
+# class used to redefine DataFrame object
+# intercepting execution methods and methods
+# which returns `DataFrame`
 class RedefiningDataFrameMeta(type):
     def __new__(cls, name, bases, attrs):
-        # this function will create
-        # new function, create ballista
-        # dataframe and execute the same function on it
+        # wrapper function intercept all execution functions
+        # replacing ordinary DataFrame with Ballista data frame
         def __wrap_dataframe_execution(func):
             def method_wrapper(*args, **kwargs):
                 slf, *argz = args
@@ -66,6 +64,8 @@ class RedefiningDataFrameMeta(type):
 
             return method_wrapper
 
+        # wrapper function intercepts all methods which
+        # return DataFrame and wraps DataFrame with DistributedDataFrame
         def __wrap_dataframe_result(func):
             def method_wrapper(*args, **kwargs):
                 address = args[0].address
@@ -77,7 +77,7 @@ class RedefiningDataFrameMeta(type):
 
         for base_name, base_value in bases[0].__dict__.items():
             #
-            # could we not use 'DataFrame' as a string here?
+            # TODO: could we not use 'DataFrame' as a string here?
             #
             if (
                 callable(base_value)
@@ -90,6 +90,7 @@ class RedefiningDataFrameMeta(type):
                 #
                 attrs[base_name] = __wrap_dataframe_result(base_value)
 
+        # TODO: we could do better here
         for function in OVERRIDDEN_EXECUTION_METHODS:
             attrs[function] = __wrap_dataframe_execution(function)
 
@@ -144,7 +145,7 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
     #
     def _to_internal_df(self):
         blob_plan = self.logical_plan().to_proto()
-        df = create_data_frame(blob_plan, self.address, self.session_id)
+        df = create_ballista_data_frame(blob_plan, self.address, self.session_id)
         return df
 
     def write_csv(self, path, with_header=False):

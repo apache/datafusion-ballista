@@ -21,7 +21,6 @@ except ImportError:
     import importlib_metadata
 
 from ._internal_ballista import (
-    BallistaBuilder,
     BallistaScheduler,
     BallistaExecutor,
     setup_test_cluster,
@@ -32,7 +31,6 @@ __version__ = importlib_metadata.version(__name__)
 
 __all__ = [
     "setup_test_cluster",
-    "BallistaBuilder",
     "BallistaScheduler",
     "BallistaExecutor",
     "BallistaSessionContext",

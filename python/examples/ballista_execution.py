@@ -15,18 +15,23 @@
 # specific language governing permissions and limitations
 # under the License.
 # %%
-from ballista import BallistaSessionContext, setup_test_cluster
+from ballista import setup_test_cluster
+from ballista import BallistaSessionContext
+
+# BallistaSessionContext replaces SessionContext
+# from datafusion import SessionContext
 from datafusion import col, lit, DataFrame, ParquetWriterOptions
 from datafusion import functions as f
-# from datafusion import SessionContext
 
+# this is helper to setup test
+# ballista cluster
 host, port = setup_test_cluster()
 # %%
 
 
-# we replace
+# we replace datafusion Session context
 # ctx = SessionContext()
-# with
+# with BallistaSessionContext
 ctx = BallistaSessionContext(address=f"df://{host}:{port}")
 
 ctx.sql("create external table t stored as parquet location '../testdata/test.parquet'")
@@ -56,14 +61,14 @@ df0.show()
 # %%
 df.count()
 # %%
-df.select("id").write_json("/Users/marko/git/datafusion_ballista/python/target/a.json")
+df.select("id").write_json("../target/a.json")
 # %%
-df.select("id").write_csv("/Users/marko/git/datafusion_ballista/python/target/a.cvs")
+df.select("id").write_csv("../target/a.cvs")
 # %%
 df.write_parquet_with_options(
-    "/Users/marko/git/datafusion_ballista/python/target/a.parquet",
+    "../target/a.parquet",
     ParquetWriterOptions(),
 )
 # %%
-df.write_parquet("/Users/marko/git/datafusion_ballista/python/target/b.parquet")
+df.write_parquet("../target/b.parquet")
 # %%
