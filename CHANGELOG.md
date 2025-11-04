@@ -19,6 +19,34 @@
 
 # Changelog
 
+## [50.0.0](https://github.com/apache/datafusion-ballista/tree/50.0.0) (2025-11-04)
+
+**Implemented enhancements:**
+
+- feat: make gRPC timeout configurations user-configurable [#1337](https://github.com/apache/datafusion-ballista/pull/1337) (CuteChuanChuan)
+
+**Fixed bugs:**
+
+- fix: update REST API route syntax for axum 0.8 compatibility [#1330](https://github.com/apache/datafusion-ballista/pull/1330) (tomsanbear)
+- fix: Executor does not panic if using unwritable work dir [#1332](https://github.com/apache/datafusion-ballista/pull/1332) (mach-kernel)
+- fix: failing documentation [#1339](https://github.com/apache/datafusion-ballista/pull/1339) (milenkovicm)
+
+**Merged pull requests:**
+
+- infra: macos-13 is deprecated [#1324](https://github.com/apache/datafusion-ballista/pull/1324) (kevinjqliu)
+- chore: update to datafusion v50 [#1320](https://github.com/apache/datafusion-ballista/pull/1320) (milenkovicm)
+- chore: Update datafusion to 50.2 [#1326](https://github.com/apache/datafusion-ballista/pull/1326) (milenkovicm)
+- document private items and update docs CI [#1327](https://github.com/apache/datafusion-ballista/pull/1327) (killzoner)
+- fix: update REST API route syntax for axum 0.8 compatibility [#1330](https://github.com/apache/datafusion-ballista/pull/1330) (tomsanbear)
+- add msrvcheck [#1328](https://github.com/apache/datafusion-ballista/pull/1328) (killzoner)
+- fix: Executor does not panic if using unwritable work dir [#1332](https://github.com/apache/datafusion-ballista/pull/1332) (mach-kernel)
+- chore: Pinning versions of external actions. [#1334](https://github.com/apache/datafusion-ballista/pull/1334) (samueleresca)
+- chore: update python deps to 49 [#1335](https://github.com/apache/datafusion-ballista/pull/1335) (milenkovicm)
+- chore: update datafusion to 50.3 [#1336](https://github.com/apache/datafusion-ballista/pull/1336) (milenkovicm)
+- fix: failing documentation [#1339](https://github.com/apache/datafusion-ballista/pull/1339) (milenkovicm)
+- feat: make gRPC timeout configurations user-configurable [#1337](https://github.com/apache/datafusion-ballista/pull/1337) (CuteChuanChuan)
+- minor: change log level [#1340](https://github.com/apache/datafusion-ballista/pull/1340) (milenkovicm)
+
 ## [49.0.0](https://github.com/apache/datafusion-ballista/tree/49.0.0) (2025-09-12)
 
 [Full Changelog](https://github.com/apache/datafusion-ballista/compare/48.0.0...49.0.0)
