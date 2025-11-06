@@ -15,11 +15,13 @@
 # specific language governing permissions and limitations
 # under the License.
 # %%
+import ballista
 from ballista import setup_test_cluster
 from ballista import BallistaSessionContext
 
 # BallistaSessionContext replaces SessionContext
 # from datafusion import SessionContext
+import datafusion
 from datafusion import col, lit, DataFrame, ParquetWriterOptions
 from datafusion import functions as f
 
@@ -27,8 +29,9 @@ from datafusion import functions as f
 # ballista cluster
 host, port = setup_test_cluster()
 # %%
-
-
+# checking ballista version, it should match with datafusion version
+ballista.__version__, datafusion.__version__
+# %%
 # we replace datafusion Session context
 # ctx = SessionContext()
 # with BallistaSessionContext
