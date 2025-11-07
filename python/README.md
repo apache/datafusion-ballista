@@ -60,11 +60,13 @@ df : DataFrame = ctx.sql("select * from t limit 5")
 df.show()
 ```
 
-Known limitation of current approach:
+Known limitations and inefficiencies of the current approach:
 
-- no support for `UDF` as datafusion python does not serialize them.
-- client's `SessionConfig` in not propagated to ballista.
-- ballista connection will be created for each request.
+- The client's `SessionConfig` is not propagated to Ballista.
+- Ballista-specific configuration cannot be set.
+- Anything requiring custom `datafusion_proto::logical_plan::LogicalExtensionCodec`.
+- No support for `UDF` as DataFusion Python does not serialise them.
+- A Ballista connection will be created for each request.
 
 ### Example DataFrame Usage
 
