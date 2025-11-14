@@ -38,56 +38,6 @@ mod unsupported {
     #[case::remote(remote_context())]
     #[tokio::test]
     #[should_panic]
-    async fn should_execute_explain_query_correctly(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
-        test_data: String,
-    ) {
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await
-        .unwrap();
-
-        let result = ctx
-            .sql("EXPLAIN select count(*), id from test where id > 4 group by id")
-            .await
-            .unwrap()
-            .collect()
-            .await
-            .unwrap();
-
-        let expected = vec![
-            "+---------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+",
-            "| plan_type     | plan                                                                                                                                                                                                                                                                                             |",
-            "+---------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+",
-            "| logical_plan  | Projection: count(*), test.id                                                                                                                                                                                                                                                                    |",
-            "|               |   Aggregate: groupBy=[[test.id]], aggr=[[count(Int64(1)) AS count(*)]]                                                                                                                                                                                                                           |",
-            "|               |     Filter: test.id > Int32(4)                                                                                                                                                                                                                                                                   |",
-            "|               |       TableScan: test projection=[id], partial_filters=[test.id > Int32(4)]                                                                                                                                                                                                                      |",
-            "| physical_plan | ProjectionExec: expr=[count(*)@1 as count(*), id@0 as id]                                                                                                                                                                                                                                        |",
-            "|               |   AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[count(*)]                                                                                                                                                                                                                        |",
-            "|               |     CoalesceBatchesExec: target_batch_size=8192                                                                                                                                                                                                                                                  |",
-            "|               |       RepartitionExec: partitioning=Hash([id@0], 16), input_partitions=1                                                                                                                                                                                                                         |",
-            "|               |         AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[count(*)]                                                                                                                                                                                                                           |",
-            "|               |           CoalesceBatchesExec: target_batch_size=8192                                                                                                                                                                                                                                            |",
-            "|               |             FilterExec: id@0 > 4                                                                                                                                                                                                                                                                 |",
-            "|               |               ParquetExec: file_groups={1 group: [[Users/ballista/git/datafusion-ballista/ballista/client/testdata/alltypes_plain.parquet]]}, projection=[id], predicate=id@0 > 4, pruning_predicate=CASE WHEN id_null_count@1 = id_row_count@2 THEN false ELSE id_max@0 > 4 END, required_guarantees=[] |",
-            "|               |                                                                                                                                                                                                                                                                                                  |",
-            "+---------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+",        
-        ];
-
-        assert_batches_eq!(expected, &result);
-    }
-
-    #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[tokio::test]
-    #[should_panic]
     async fn should_support_sql_create_table(
         #[future(awt)]
         #[case]

@@ -979,4 +979,83 @@ mod supported {
 
         Ok(())
     }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_execute_explain_query_correctly(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+        test_data: String,
+    ) {
+        let parquet_path = format!("{test_data}/alltypes_plain.parquet");
+        ctx.register_parquet("test", &parquet_path, Default::default())
+            .await
+            .unwrap();
+
+        let result = ctx
+            .sql("EXPLAIN select count(*), id from test where id > 4 group by id")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        let expected_raw = vec![
+            "+------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+",
+            "| plan_type        | plan                                                                                                                                                                                                                                                                                                     |",
+            "+------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+",
+            "| logical_plan     | Projection: count(Int64(1)) AS count(*), test.id                                                                                                                                                                                                                                                         |",
+            "|                  |   Aggregate: groupBy=[[test.id]], aggr=[[count(Int64(1))]]                                                                                                                                                                                                                                               |",
+            "|                  |     Filter: test.id > Int32(4)                                                                                                                                                                                                                                                                           |",
+            "|                  |       TableScan: test projection=[id], partial_filters=[test.id > Int32(4)]                                                                                                                                                                                                                              |",
+            "| physical_plan    | ProjectionExec: expr=[count(Int64(1))@1 as count(*), id@0 as id]                                                                                                                                                                                                                                         |",
+            "|                  |   AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[count(Int64(1))]                                                                                                                                                                                                                         |",
+            "|                  |     CoalesceBatchesExec: target_batch_size=8192                                                                                                                                                                                                                                                          |",
+            "|                  |       RepartitionExec: partitioning=Hash([id@0], 16), input_partitions=1                                                                                                                                                                                                                                 |",
+            "|                  |         AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[count(Int64(1))]                                                                                                                                                                                                                            |",
+            "|                  |           CoalesceBatchesExec: target_batch_size=8192                                                                                                                                                                                                                                                    |",
+            "|                  |             FilterExec: id@0 > 4                                                                                                                                                                                                                                                                         |",
+            "|                  |               DataSourceExec: file_groups={1 group: [[Users/ballista/git/datafusion-ballista/ballista/client/testdata/alltypes_plain.parquet]]}, projection=[id], file_type=parquet, predicate=id@0 > 4, pruning_predicate=id_null_count@1 != row_count@2 AND id_max@0 > 4, required_guarantees=[] |",
+            "|                  |                                                                                                                                                                                                                                                                                                          |",
+            "|                  |                                                                                                                                                                                                                                                                                                          |",
+            "| distributed_plan | =========ResolvedStage[stage_id=1.0, partitions=1]=========                                                                                                                                                                                                                                              |",
+            "|                  | ShuffleWriterExec: partitioning:Some(Hash([Column { name: \"id\", index: 0 }], 16))                                                                                                                                                                                                                        |",
+            "|                  |   AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[count(Int64(1))]                                                                                                                                                                                                                                  |",
+            "|                  |     CoalesceBatchesExec: target_batch_size=8192                                                                                                                                                                                                                                                          |",
+            "|                  |       FilterExec: id@0 > 4                                                                                                                                                                                                                                                                               |",
+            "|                  |         DataSourceExec: file_groups={1 group: [[Users/ballista/git/datafusion-ballista/ballista/client/testdata/alltypes_plain.parquet]]}, projection=[id], file_type=parquet, predicate=id@0 > 4, pruning_predicate=id_null_count@1 != row_count@2 AND id_max@0 > 4, required_guarantees=[]       |",
+            "|                  |                                                                                                                                                                                                                                                                                                          |",
+            "|                  |                                                                                                                                                                                                                                                                                                          |",
+            "|                  | =========UnResolvedStage[stage_id=2.0, children=1]=========                                                                                                                                                                                                                                              |",
+            "|                  | Inputs{1: StageOutput { partition_locations: {}, complete: false }}                                                                                                                                                                                                                                      |",
+            "|                  | ShuffleWriterExec: partitioning:None                                                                                                                                                                                                                                                                       |",
+            "|                  |   ProjectionExec: expr=[count(Int64(1))@1 as count(*), id@0 as id]                                                                                                                                                                                                                                       |",
+            "|                  |     AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[count(Int64(1))]                                                                                                                                                                                                                       |",
+            "|                  |       CoalesceBatchesExec: target_batch_size=8192                                                                                                                                                                                                                                                        |",
+            "|                  |         UnresolvedShuffleExec: partitioning=Hash([Column { name: \"id\", index: 0 }], 16)                                                                                                                                                                                                                  |",
+            "|                  |                                                                                                                                                                                                                                                                                                          |",
+            "|                  |                                                                                                                                                                                                                                                                                                          |",
+            "+------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+",    
+        ];
+
+        let parquet_path_in_explain =
+            parquet_path.strip_prefix('/').unwrap_or(&parquet_path);
+
+        let expected_owned: Vec<String> = expected_raw
+            .into_iter()
+            .map(|line| {
+                line.replace(
+                    "Users/ballista/git/datafusion-ballista/ballista/client/testdata/alltypes_plain.parquet",
+                    &parquet_path_in_explain,
+                )
+            })
+            .collect();
+
+        let expected: Vec<&str> = expected_owned.iter().map(|s| s.as_str()).collect();
+
+        assert_batches_eq!(expected, &result);
+    }
 }
