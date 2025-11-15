@@ -75,7 +75,7 @@ echo ""
 echo "---------------------------------------------------------"
 cat <<MAIL
 To: dev@datafusion.apache.org
-Subject: [VOTE][RUST][Ballista] Release Apache DataFusion Ballista ${version} RC${rc}
+Subject: [VOTE] Release Apache DataFusion Ballista ${version} RC${rc}
 Hi,
 
 I would like to propose a release of Apache DataFusion Ballista version ${version}.
