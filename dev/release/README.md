@@ -181,7 +181,7 @@ svn commit KEYS -m "Add key for John Doe"
 Run `create-tarball.sh` with the `<version>` tag and `<rc>` and you found in previous steps:
 
 ```shell
-GH_TOKEN=<TOKEN> ./dev/release/create-tarball.sh 0.11.0 1
+./dev/release/create-tarball.sh 0.11.0 1
 ```
 
 The `create-tarball.sh` script
