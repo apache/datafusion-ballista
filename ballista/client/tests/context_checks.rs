@@ -1056,4 +1056,63 @@ mod supported {
 
         assert_batches_eq!(expected, &result);
     }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_explain_constant_table_query(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+    ) {
+        let result = ctx
+            .sql("EXPLAIN select count(*), id from (select unnest([1,2,3,4,5]) as id) group by id")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        let expected: Vec<&str> = vec![
+                "+------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+",
+                "| plan_type        | plan                                                                                                                                                                             |",
+                "+------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+",
+                "| logical_plan     | Projection: count(Int64(1)) AS count(*), id                                                                                                                                      |",
+                "|                  |   Aggregate: groupBy=[[id]], aggr=[[count(Int64(1))]]                                                                                                                            |",
+                "|                  |     Projection: __unnest_placeholder(make_array(Int64(1),Int64(2),Int64(3),Int64(4),Int64(5)),depth=1) AS UNNEST(make_array(Int64(1),Int64(2),Int64(3),Int64(4),Int64(5))) AS id |",
+                "|                  |       Unnest: lists[__unnest_placeholder(make_array(Int64(1),Int64(2),Int64(3),Int64(4),Int64(5)))|depth=1] structs[]                                                            |",
+                "|                  |         Projection: List([1, 2, 3, 4, 5]) AS __unnest_placeholder(make_array(Int64(1),Int64(2),Int64(3),Int64(4),Int64(5)))                                                      |",
+                "|                  |           EmptyRelation: rows=1                                                                                                                                                  |",
+                "| physical_plan    | ProjectionExec: expr=[count(Int64(1))@1 as count(*), id@0 as id]                                                                                                                 |",
+                "|                  |   AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[count(Int64(1))]                                                                                                 |",
+                "|                  |     CoalesceBatchesExec: target_batch_size=8192                                                                                                                                  |",
+                "|                  |       RepartitionExec: partitioning=Hash([id@0], 16), input_partitions=1                                                                                                         |",
+                "|                  |         AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[count(Int64(1))]                                                                                                    |",
+                "|                  |           ProjectionExec: expr=[__unnest_placeholder(make_array(Int64(1),Int64(2),Int64(3),Int64(4),Int64(5)),depth=1)@0 as id]                                                  |",
+                "|                  |             UnnestExec                                                                                                                                                           |",
+                "|                  |               ProjectionExec: expr=[[1, 2, 3, 4, 5] as __unnest_placeholder(make_array(Int64(1),Int64(2),Int64(3),Int64(4),Int64(5)))]                                           |",
+                "|                  |                 PlaceholderRowExec                                                                                                                                               |",
+                "|                  |                                                                                                                                                                                  |",
+                "| distributed_plan | =========ResolvedStage[stage_id=1.0, partitions=1]=========                                                                                                                      |",
+                "|                  | ShuffleWriterExec: partitioning:Some(Hash([Column { name: \"id\", index: 0 }], 16))                                                                                                |",
+                "|                  |   AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[count(Int64(1))]                                                                                                          |",
+                "|                  |     ProjectionExec: expr=[__unnest_placeholder(make_array(Int64(1),Int64(2),Int64(3),Int64(4),Int64(5)),depth=1)@0 as id]                                                        |",
+                "|                  |       UnnestExec                                                                                                                                                                 |",
+                "|                  |         ProjectionExec: expr=[[1, 2, 3, 4, 5] as __unnest_placeholder(make_array(Int64(1),Int64(2),Int64(3),Int64(4),Int64(5)))]                                                 |",
+                "|                  |           PlaceholderRowExec                                                                                                                                                     |",
+                "|                  |                                                                                                                                                                                  |",
+                "|                  | =========UnResolvedStage[stage_id=2.0, children=1]=========                                                                                                                      |",
+                "|                  | Inputs{1: StageOutput { partition_locations: {}, complete: false }}                                                                                                              |",
+                "|                  | ShuffleWriterExec: partitioning:None                                                                                                                                             |",
+                "|                  |   ProjectionExec: expr=[count(Int64(1))@1 as count(*), id@0 as id]                                                                                                               |",
+                "|                  |     AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[count(Int64(1))]                                                                                               |",
+                "|                  |       CoalesceBatchesExec: target_batch_size=8192                                                                                                                                |",
+                "|                  |         UnresolvedShuffleExec: partitioning=Hash([Column { name: \"id\", index: 0 }], 16)                                                                                          |",
+                "|                  |                                                                                                                                                                                  |",
+                "|                  |                                                                                                                                                                                  |",
+                "+------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+",
+        ];
+        assert_batches_eq!(expected, &result);
+    }
 }
