@@ -83,7 +83,7 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
         plan: LogicalPlan,
         session_id: String,
     ) -> Self {
-        let properties = Self::compute_properties(plan.schema().as_ref().clone().into());
+        let properties = Self::compute_properties(plan.schema().as_arrow().clone().into());
         Self {
             scheduler_url,
             config,
@@ -103,7 +103,7 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
         extension_codec: Arc<dyn LogicalExtensionCodec>,
         session_id: String,
     ) -> Self {
-        let properties = Self::compute_properties(plan.schema().as_ref().clone().into());
+        let properties = Self::compute_properties(plan.schema().as_arrow().clone().into());
         Self {
             scheduler_url,
             config,
@@ -157,7 +157,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     }
 
     fn schema(&self) -> SchemaRef {
-        self.plan.schema().as_ref().clone().into()
+        self.plan.schema().as_arrow().clone().into()
     }
 
     fn properties(&self) -> &PlanProperties {
@@ -180,7 +180,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             plan_repr: self.plan_repr,
             session_id: self.session_id.clone(),
             properties: Self::compute_properties(
-                self.plan.schema().as_ref().clone().into(),
+                self.plan.schema().as_arrow().clone().into(),
             ),
             metrics: ExecutionPlanMetricsSet::new(),
         }))

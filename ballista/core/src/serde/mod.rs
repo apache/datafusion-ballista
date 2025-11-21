@@ -23,7 +23,7 @@ use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 use arrow_flight::sql::ProstMessageExt;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result};
-use datafusion::execution::{FunctionRegistry, SessionStateBuilder};
+use datafusion::execution::{FunctionRegistry, SessionStateBuilder, TaskContext};
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::file_formats::{
@@ -178,7 +178,7 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         &self,
         buf: &[u8],
         inputs: &[datafusion::logical_expr::LogicalPlan],
-        ctx: &datafusion::prelude::SessionContext,
+        ctx: &TaskContext,
     ) -> Result<datafusion::logical_expr::Extension> {
         self.default_codec.try_decode(buf, inputs, ctx)
     }
@@ -196,7 +196,7 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         buf: &[u8],
         table_ref: &datafusion::sql::TableReference,
         schema: datafusion::arrow::datatypes::SchemaRef,
-        ctx: &datafusion::prelude::SessionContext,
+        ctx: &TaskContext,
     ) -> Result<Arc<dyn datafusion::catalog::TableProvider>> {
         self.default_codec
             .try_decode_table_provider(buf, table_ref, schema, ctx)
@@ -215,7 +215,7 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
     fn try_decode_file_format(
         &self,
         buf: &[u8],
-        ctx: &datafusion::prelude::SessionContext,
+        ctx: &TaskContext,
     ) -> Result<Arc<dyn datafusion::datasource::file_format::FileFormatFactory>> {
         let proto = FileFormatProto::decode(buf)
             .map_err(|e| DataFusionError::Internal(e.to_string()))?;
@@ -267,7 +267,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
         &self,
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
-        registry: &dyn FunctionRegistry,
+        ctx: &TaskContext,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let ballista_plan: protobuf::BallistaPhysicalPlanNode =
             protobuf::BallistaPhysicalPlanNode::decode(buf).map_err(|e| {
@@ -286,29 +286,25 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
         //        more details at https://github.com/apache/datafusion/issues/17596
         let mut state = SessionStateBuilder::new_with_default_features().build();
 
-        for function_name in registry.udfs() {
-            if let Ok(function) = registry.udf(&function_name) {
+        for function_name in ctx.udfs() {
+            if let Ok(function) = ctx.udf(&function_name) {
                 state.register_udf(function)?;
             }
         }
 
-        for function_name in registry.udafs() {
-            if let Ok(function) = registry.udaf(&function_name) {
+        for function_name in ctx.udafs() {
+            if let Ok(function) = ctx.udaf(&function_name) {
                 state.register_udaf(function)?;
             }
         }
 
-        for function_name in registry.udafs() {
-            if let Ok(function) = registry.udaf(&function_name) {
+        for function_name in ctx.udafs() {
+            if let Ok(function) = ctx.udaf(&function_name) {
                 state.register_udaf(function)?;
             }
         }
 
-        let ctx = SessionContext::new_with_state(state);
-
-        //
-        //
-        //
+        let ctx = SessionContext::new_with_state(state).task_ctx();
 
         match ballista_plan {
             PhysicalPlanType::ShuffleWriter(shuffle_writer) => {
@@ -316,7 +312,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
 
                 let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
                     shuffle_writer.output_partitioning.as_ref(),
-                    &ctx, //registry,
+                    &ctx, // task context,
                     input.schema().as_ref(),
                     self.default_codec.as_ref(),
                 )?;

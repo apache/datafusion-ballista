@@ -314,14 +314,12 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         .with_config(session_config.clone())
         .with_runtime_env(runtime.clone())
         .build();
-    let ctx = SessionContext::new_with_state(session_state);
-    //
+    let ctx = SessionContext::new_with_state(session_state).task_ctx();
 
     let encoded_plan = task.plan.as_slice();
     let plan: Arc<dyn ExecutionPlan> = U::try_decode(encoded_plan).and_then(|proto| {
         proto.try_into_physical_plan(
             &ctx,
-            runtime.as_ref(),
             codec.physical_extension_codec(),
         )
     })?;
@@ -382,14 +380,12 @@ pub fn get_task_definition_vec<
         .with_config(session_config.clone())
         .with_runtime_env(runtime.clone())
         .build();
-    let ctx = SessionContext::new_with_state(session_state);
-    //
+    let ctx = SessionContext::new_with_state(session_state).task_ctx();
 
     let encoded_plan = multi_task.plan.as_slice();
     let plan: Arc<dyn ExecutionPlan> = U::try_decode(encoded_plan).and_then(|proto| {
         proto.try_into_physical_plan(
             &ctx,
-            runtime.as_ref(),
             codec.physical_extension_codec(),
         )
     })?;
