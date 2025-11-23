@@ -21,7 +21,7 @@ use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use datafusion::physical_plan::metrics::{
-    Count, Gauge, MetricValue, MetricsSet, Time, Timestamp,
+    Count, Gauge, MetricValue, MetricsSet, PruningMetrics, RatioMetrics, Time, Timestamp,
 };
 use datafusion::physical_plan::{ExecutionPlan, Metric};
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -35,6 +35,7 @@ use std::time::Duration;
 
 use crate::error::BallistaError;
 use crate::extension::SessionConfigHelperExt;
+use crate::serde::protobuf::{NamedPruningMetrics, NamedRatio};
 use crate::serde::scheduler::{
     Action, BallistaFunctionRegistry, ExecutorData, ExecutorMetadata,
     ExecutorSpecification, PartitionId, PartitionLocation, PartitionStats,
@@ -201,6 +202,33 @@ impl TryInto<MetricValue> for protobuf::OperatorMetric {
                 timestamp.set(Utc.timestamp_nanos(value));
                 Ok(MetricValue::EndTimestamp(timestamp))
             }
+            Some(operator_metric::Metric::OutputBytes(value)) => {
+                let count = Count::new();
+                count.add(value as usize);
+                Ok(MetricValue::OutputBytes(count))
+            }
+            Some(operator_metric::Metric::PruningMetrics(NamedPruningMetrics {
+                name,
+                pruned,
+                matched,
+            })) => {
+                let pruning_metrics = PruningMetrics::new();
+                pruning_metrics.add_pruned(pruned as usize);
+                pruning_metrics.add_matched(matched as usize);
+                Ok(MetricValue::PruningMetrics {
+                    name: name.into(),
+                    pruning_metrics,
+                })
+            }
+            Some(operator_metric::Metric::Ratio(NamedRatio { name, part, total })) => {
+                let ratio_metrics = RatioMetrics::new();
+                ratio_metrics.add_part(part as usize);
+                ratio_metrics.add_total(total as usize);
+                Ok(MetricValue::Ratio {
+                    name: name.into(),
+                    ratio_metrics,
+                })
+            }
             None => Err(BallistaError::General(
                 "scheduler::from_proto(OperatorMetric) metric is None.".to_owned(),
             )),
@@ -318,10 +346,7 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
 
     let encoded_plan = task.plan.as_slice();
     let plan: Arc<dyn ExecutionPlan> = U::try_decode(encoded_plan).and_then(|proto| {
-        proto.try_into_physical_plan(
-            &ctx,
-            codec.physical_extension_codec(),
-        )
+        proto.try_into_physical_plan(&ctx, codec.physical_extension_codec())
     })?;
 
     let job_id = task.job_id;
@@ -384,10 +409,7 @@ pub fn get_task_definition_vec<
 
     let encoded_plan = multi_task.plan.as_slice();
     let plan: Arc<dyn ExecutionPlan> = U::try_decode(encoded_plan).and_then(|proto| {
-        proto.try_into_physical_plan(
-            &ctx,
-            codec.physical_extension_codec(),
-        )
+        proto.try_into_physical_plan(&ctx, codec.physical_extension_codec())
     })?;
 
     let job_id = multi_task.job_id;

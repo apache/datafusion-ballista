@@ -388,10 +388,28 @@ pub struct NamedTime {
     pub value: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NamedPruningMetrics {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub pruned: u64,
+    #[prost(uint64, tag = "3")]
+    pub matched: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NamedRatio {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub part: u64,
+    #[prost(uint64, tag = "3")]
+    pub total: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct OperatorMetric {
     #[prost(
         oneof = "operator_metric::Metric",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14"
     )]
     pub metric: ::core::option::Option<operator_metric::Metric>,
 }
@@ -421,6 +439,12 @@ pub mod operator_metric {
         EndTimestamp(i64),
         #[prost(uint64, tag = "11")]
         SpilledRows(u64),
+        #[prost(uint64, tag = "12")]
+        OutputBytes(u64),
+        #[prost(message, tag = "13")]
+        PruningMetrics(super::NamedPruningMetrics),
+        #[prost(message, tag = "14")]
+        Ratio(super::NamedRatio),
     }
 }
 /// Used by scheduler

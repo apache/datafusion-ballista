@@ -38,7 +38,6 @@ use log::{debug, error, info, warn};
 use std::any::Any;
 use std::convert::TryInto;
 use std::error::Error;
-use std::ops::Deref;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{sync::Arc, time::Duration};
@@ -251,8 +250,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         .with_config(session_config.clone())
         .with_runtime_env(runtime.clone())
         .build();
-    let ctx = SessionContext::new_with_state(session_state);
-    //
+    let ctx = SessionContext::new_with_state(session_state).task_ctx();
 
     let session_id = task.session_id.clone();
     let task_context = Arc::new(TaskContext::new(
@@ -267,11 +265,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
 
     let plan: Arc<dyn ExecutionPlan> =
         U::try_decode(task.plan.as_slice()).and_then(|proto| {
-            proto.try_into_physical_plan(
-                &ctx,
-                runtime.deref(),
-                codec.physical_extension_codec(),
-            )
+            proto.try_into_physical_plan(&ctx, codec.physical_extension_codec())
         })?;
 
     let query_stage_exec = executor.execution_engine.create_query_stage_exec(

@@ -515,7 +515,6 @@ struct FileFormatProto {
 mod test {
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::execution::registry::MemoryFunctionRegistry;
     use datafusion::physical_plan::expressions::col;
     use datafusion::physical_plan::Partitioning;
     use datafusion::{
@@ -529,7 +528,7 @@ mod test {
 
     #[tokio::test]
     async fn file_format_serialization_roundtrip() {
-        let ctx = SessionContext::new();
+        let ctx = SessionContext::new().task_ctx();
         let empty = EmptyRelation {
             produce_one_row: false,
             schema: Arc::new(DFSchema::empty()),
@@ -589,8 +588,8 @@ mod test {
             .try_encode(Arc::new(original_exec.clone()), &mut buf)
             .unwrap();
 
-        let registry = MemoryFunctionRegistry::new();
-        let decoded_plan = codec.try_decode(&buf, &[], &registry).unwrap();
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
 
         let decoded_exec = decoded_plan
             .as_any()
@@ -622,8 +621,8 @@ mod test {
             .try_encode(Arc::new(original_exec.clone()), &mut buf)
             .unwrap();
 
-        let registry = MemoryFunctionRegistry::new();
-        let decoded_plan = codec.try_decode(&buf, &[], &registry).unwrap();
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
 
         let decoded_exec = decoded_plan
             .as_any()

@@ -156,7 +156,7 @@ pub(crate) fn construct_distributed_explain_exec(
         Vec::new(),
         out_schema,
         UnnestOptions::default(),
-    ));
+    )?);
 
     // Final projection: rename columns to (plan_type, plan)
     let proj_final = Arc::new(ProjectionExec::try_new(

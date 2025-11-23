@@ -110,7 +110,9 @@ mod standalone {
     use datafusion::{
         assert_batches_eq,
         common::exec_err,
-        execution::{context::QueryPlanner, SessionState, SessionStateBuilder},
+        execution::{
+            context::QueryPlanner, SessionState, SessionStateBuilder, TaskContext,
+        },
         logical_expr::LogicalPlan,
         physical_plan::ExecutionPlan,
         prelude::{SessionConfig, SessionContext},
