@@ -63,9 +63,9 @@ serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true }
 tokio-stream = { workspace = true, features = ["net"] }
 tonic = { workspace = true }
+tonic-prost = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
-tonic-prost = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -73,4 +73,4 @@ tempfile = { workspace = true }
 [build-dependencies]
 rustc_version = "0.4.1"
 tonic-build = { workspace = true }
-tonic-prost-build = { workspace = true}
+tonic-prost-build = { workspace = true }

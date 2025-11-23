@@ -27,7 +27,7 @@ resolver = "2"
 # 
 edition = "2021"
 # we should try to follow datafusion version 
-rust-version = "1.86.0"
+rust-version = "1.88.0"
 
 [workspace.dependencies]
 arrow = { version = "57", features = ["ipc_compression"] }
