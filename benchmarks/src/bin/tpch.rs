@@ -1672,7 +1672,6 @@ mod ballista_round_trip {
     use datafusion_proto::logical_plan::AsLogicalPlan;
     use datafusion_proto::physical_plan::AsExecutionPlan;
     use std::env;
-    use std::ops::Deref;
 
     async fn round_trip_logical_plan(n: usize) -> Result<()> {
         let config = SessionConfig::new()
@@ -1719,7 +1718,7 @@ mod ballista_round_trip {
                 )
                 .unwrap();
             let round_trip: LogicalPlan = proto
-                .try_into_logical_plan(&ctx, codec.logical_extension_codec())
+                .try_into_logical_plan(&ctx.task_ctx(), codec.logical_extension_codec())
                 .unwrap();
             assert_eq!(
                 format!("{plan:?}"),
@@ -1777,11 +1776,9 @@ mod ballista_round_trip {
                     codec.physical_extension_codec(),
                 )
                 .unwrap();
-            let runtime = ctx.runtime_env();
             let round_trip: Arc<dyn ExecutionPlan> = proto
                 .try_into_physical_plan(
-                    &ctx,
-                    runtime.deref(),
+                    &ctx.task_ctx(),
                     codec.physical_extension_codec(),
                 )
                 .unwrap();
