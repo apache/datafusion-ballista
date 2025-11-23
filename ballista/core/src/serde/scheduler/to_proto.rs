@@ -21,7 +21,7 @@ use std::convert::TryInto;
 
 use crate::error::BallistaError;
 
-use crate::serde::protobuf::{self};
+use crate::serde::protobuf::{self, NamedPruningMetrics, NamedRatio};
 use datafusion_proto::protobuf as datafusion_protobuf;
 
 use crate::serde::scheduler::{
@@ -176,6 +176,31 @@ impl TryInto<protobuf::OperatorMetric> for &MetricValue {
                         .and_then(|m| m.timestamp_nanos_opt())
                         .unwrap_or(0),
                 )),
+            }),
+            MetricValue::OutputBytes(count) => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::OutputBytes(count.value() as u64)),
+            }),
+            MetricValue::PruningMetrics {
+                name,
+                pruning_metrics,
+            } => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::PruningMetrics(
+                    NamedPruningMetrics {
+                        name: name.to_string(),
+                        pruned: pruning_metrics.pruned() as u64,
+                        matched: pruning_metrics.matched() as u64,
+                    },
+                )),
+            }),
+            MetricValue::Ratio {
+                name,
+                ratio_metrics,
+            } => Ok(protobuf::OperatorMetric {
+                metric: Some(operator_metric::Metric::Ratio(NamedRatio {
+                    name: name.to_string(),
+                    part: ratio_metrics.part() as u64,
+                    total: ratio_metrics.total() as u64,
+                })),
             }),
             // at the moment there there is no way to serialize custom metrics
             // thus at the moment we can't support it

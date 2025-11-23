@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::env;
 use std::path::Path;
+use std::{env, sync::Arc};
 
 use ballista::{extension::SessionConfigExt, prelude::SessionContextExt};
 use ballista_cli::{
@@ -28,7 +28,9 @@ use datafusion::{
     execution::SessionStateBuilder,
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_cli::print_options::MaxRows;
+use datafusion_cli::{
+    object_storage::instrumented::InstrumentedObjectStoreRegistry, print_options::MaxRows,
+};
 use mimalloc::MiMalloc;
 
 #[global_allocator]
@@ -151,6 +153,7 @@ pub async fn main() -> Result<()> {
         quiet: args.quiet,
         maxrows: MaxRows::Unlimited,
         color: args.color,
+        instrumented_registry: Arc::new(InstrumentedObjectStoreRegistry::new()),
     };
 
     let files = args.file;

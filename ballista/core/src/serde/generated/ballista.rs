@@ -95,7 +95,7 @@ pub struct ExecutionGraph {
     #[prost(uint64, tag = "13")]
     pub queued_at: u64,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StageAttempts {
     #[prost(uint32, tag = "1")]
     pub stage_id: u32,
@@ -247,7 +247,7 @@ pub struct TaskInputPartitions {
     #[prost(message, repeated, tag = "2")]
     pub partition_location: ::prost::alloc::vec::Vec<PartitionLocation>,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct KeyValuePair {
     #[prost(string, tag = "1")]
     pub key: ::prost::alloc::string::String,
@@ -264,7 +264,7 @@ pub struct Action {
 }
 /// Nested message and enum types in `Action`.
 pub mod action {
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum ActionType {
         /// Fetch a partition from an executor
         #[prost(message, tag = "3")]
@@ -290,7 +290,7 @@ pub struct ExecutePartition {
         ::datafusion_proto::protobuf::PhysicalHashRepartition,
     >,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FetchPartition {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
@@ -321,7 +321,7 @@ pub struct PartitionLocation {
     pub path: ::prost::alloc::string::String,
 }
 /// Unique identifier for a materialized partition of data
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PartitionId {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
@@ -330,7 +330,7 @@ pub struct PartitionId {
     #[prost(uint32, tag = "4")]
     pub partition_id: u32,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TaskId {
     #[prost(uint32, tag = "1")]
     pub task_id: u32,
@@ -366,38 +366,56 @@ pub struct OperatorMetricsSet {
     #[prost(message, repeated, tag = "1")]
     pub metrics: ::prost::alloc::vec::Vec<OperatorMetric>,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NamedCount {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
     #[prost(uint64, tag = "2")]
     pub value: u64,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NamedGauge {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
     #[prost(uint64, tag = "2")]
     pub value: u64,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NamedTime {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
     #[prost(uint64, tag = "2")]
     pub value: u64,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NamedPruningMetrics {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub pruned: u64,
+    #[prost(uint64, tag = "3")]
+    pub matched: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NamedRatio {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub part: u64,
+    #[prost(uint64, tag = "3")]
+    pub total: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct OperatorMetric {
     #[prost(
         oneof = "operator_metric::Metric",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14"
     )]
     pub metric: ::core::option::Option<operator_metric::Metric>,
 }
 /// Nested message and enum types in `OperatorMetric`.
 pub mod operator_metric {
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Metric {
         #[prost(uint64, tag = "1")]
         OutputRows(u64),
@@ -421,6 +439,12 @@ pub mod operator_metric {
         EndTimestamp(i64),
         #[prost(uint64, tag = "11")]
         SpilledRows(u64),
+        #[prost(uint64, tag = "12")]
+        OutputBytes(u64),
+        #[prost(message, tag = "13")]
+        PruningMetrics(super::NamedPruningMetrics),
+        #[prost(message, tag = "14")]
+        Ratio(super::NamedRatio),
     }
 }
 /// Used by scheduler
@@ -464,7 +488,7 @@ pub struct ExecutorHeartbeat {
     #[prost(message, optional, tag = "4")]
     pub status: ::core::option::Option<ExecutorStatus>,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorMetric {
     /// TODO add more metrics
     #[prost(oneof = "executor_metric::Metric", tags = "1")]
@@ -473,20 +497,20 @@ pub struct ExecutorMetric {
 /// Nested message and enum types in `ExecutorMetric`.
 pub mod executor_metric {
     /// TODO add more metrics
-    #[derive(Clone, Copy, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Metric {
         #[prost(uint64, tag = "1")]
         AvailableMemory(u64),
     }
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorStatus {
     #[prost(oneof = "executor_status::Status", tags = "1, 2, 3, 4")]
     pub status: ::core::option::Option<executor_status::Status>,
 }
 /// Nested message and enum types in `ExecutorStatus`.
 pub mod executor_status {
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Status {
         #[prost(string, tag = "1")]
         Active(::prost::alloc::string::String),
@@ -503,7 +527,7 @@ pub struct ExecutorSpecification {
     #[prost(message, repeated, tag = "1")]
     pub resources: ::prost::alloc::vec::Vec<ExecutorResource>,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorResource {
     /// TODO add more resources
     #[prost(oneof = "executor_resource::Resource", tags = "1")]
@@ -512,13 +536,13 @@ pub struct ExecutorResource {
 /// Nested message and enum types in `ExecutorResource`.
 pub mod executor_resource {
     /// TODO add more resources
-    #[derive(Clone, Copy, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Resource {
         #[prost(uint32, tag = "1")]
         TaskSlots(u32),
     }
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AvailableTaskSlots {
     #[prost(string, tag = "1")]
     pub executor_id: ::prost::alloc::string::String,
@@ -537,19 +561,19 @@ pub struct ExecutorData {
     #[prost(message, repeated, tag = "2")]
     pub resources: ::prost::alloc::vec::Vec<ExecutorResourcePair>,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorResourcePair {
     #[prost(message, optional, tag = "1")]
     pub total: ::core::option::Option<ExecutorResource>,
     #[prost(message, optional, tag = "2")]
     pub available: ::core::option::Option<ExecutorResource>,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RunningTask {
     #[prost(string, tag = "1")]
     pub executor_id: ::prost::alloc::string::String,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FailedTask {
     #[prost(string, tag = "1")]
     pub error: ::prost::alloc::string::String,
@@ -563,7 +587,7 @@ pub struct FailedTask {
 }
 /// Nested message and enum types in `FailedTask`.
 pub mod failed_task {
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum FailedReason {
         #[prost(message, tag = "4")]
         ExecutionError(super::ExecutionError),
@@ -589,9 +613,9 @@ pub struct SuccessfulTask {
     #[prost(message, repeated, tag = "2")]
     pub partitions: ::prost::alloc::vec::Vec<ShuffleWritePartition>,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutionError {}
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FetchPartitionError {
     #[prost(string, tag = "1")]
     pub executor_id: ::prost::alloc::string::String,
@@ -600,15 +624,15 @@ pub struct FetchPartitionError {
     #[prost(uint32, tag = "3")]
     pub map_partition_id: u32,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct IoError {}
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorLost {}
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ResultLost {}
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TaskKilled {}
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ShuffleWritePartition {
     #[prost(uint64, tag = "1")]
     pub partition_id: u64,
@@ -728,7 +752,7 @@ pub struct RegisterExecutorParams {
     #[prost(message, optional, tag = "1")]
     pub metadata: ::core::option::Option<ExecutorRegistration>,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RegisterExecutorResult {
     #[prost(bool, tag = "1")]
     pub success: bool,
@@ -744,13 +768,13 @@ pub struct HeartBeatParams {
     #[prost(message, optional, tag = "4")]
     pub metadata: ::core::option::Option<ExecutorRegistration>,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct HeartBeatResult {
     /// TODO it's from Spark for BlockManager
     #[prost(bool, tag = "1")]
     pub reregister: bool,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StopExecutorParams {
     #[prost(string, tag = "1")]
     pub executor_id: ::prost::alloc::string::String,
@@ -761,9 +785,9 @@ pub struct StopExecutorParams {
     #[prost(bool, tag = "3")]
     pub force: bool,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StopExecutorResult {}
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorStoppedParams {
     #[prost(string, tag = "1")]
     pub executor_id: ::prost::alloc::string::String,
@@ -771,7 +795,7 @@ pub struct ExecutorStoppedParams {
     #[prost(string, tag = "2")]
     pub reason: ::prost::alloc::string::String,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecutorStoppedResult {}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UpdateTaskStatusParams {
@@ -781,7 +805,7 @@ pub struct UpdateTaskStatusParams {
     #[prost(message, repeated, tag = "2")]
     pub task_status: ::prost::alloc::vec::Vec<TaskStatus>,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateTaskStatusResult {
     #[prost(bool, tag = "1")]
     pub success: bool,
@@ -802,7 +826,7 @@ pub struct ExecuteQueryParams {
 }
 /// Nested message and enum types in `ExecuteQueryParams`.
 pub mod execute_query_params {
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Query {
         #[prost(bytes, tag = "1")]
         LogicalPlan(::prost::alloc::vec::Vec<u8>),
@@ -818,7 +842,7 @@ pub struct CreateUpdateSessionParams {
     #[prost(message, repeated, tag = "1")]
     pub settings: ::prost::alloc::vec::Vec<KeyValuePair>,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreateUpdateSessionResult {
     #[prost(string, tag = "1")]
     pub session_id: ::prost::alloc::string::String,
@@ -830,27 +854,27 @@ pub struct UpdateSessionParams {
     #[prost(message, repeated, tag = "2")]
     pub settings: ::prost::alloc::vec::Vec<KeyValuePair>,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateSessionResult {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RemoveSessionParams {
     #[prost(string, tag = "1")]
     pub session_id: ::prost::alloc::string::String,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RemoveSessionResult {
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecuteSqlParams {
     #[prost(string, tag = "1")]
     pub sql: ::prost::alloc::string::String,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecuteQueryResult {
     #[prost(string, tag = "3")]
     pub operation_id: ::prost::alloc::string::String,
@@ -859,7 +883,7 @@ pub struct ExecuteQueryResult {
 }
 /// Nested message and enum types in `ExecuteQueryResult`.
 pub mod execute_query_result {
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Result {
         #[prost(message, tag = "1")]
         Success(super::ExecuteQuerySuccessResult),
@@ -867,21 +891,21 @@ pub mod execute_query_result {
         Failure(super::ExecuteQueryFailureResult),
     }
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecuteQuerySuccessResult {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub session_id: ::prost::alloc::string::String,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExecuteQueryFailureResult {
     #[prost(oneof = "execute_query_failure_result::Failure", tags = "1, 2, 3")]
     pub failure: ::core::option::Option<execute_query_failure_result::Failure>,
 }
 /// Nested message and enum types in `ExecuteQueryFailureResult`.
 pub mod execute_query_failure_result {
-    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Failure {
         #[prost(string, tag = "1")]
         SessionNotFound(::prost::alloc::string::String),
@@ -891,7 +915,7 @@ pub mod execute_query_failure_result {
         SqlParsingFailure(::prost::alloc::string::String),
     }
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetJobStatusParams {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
@@ -907,13 +931,13 @@ pub struct SuccessfulJob {
     #[prost(uint64, tag = "4")]
     pub ended_at: u64,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct QueuedJob {
     #[prost(uint64, tag = "1")]
     pub queued_at: u64,
 }
 /// TODO: add progress report
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RunningJob {
     #[prost(uint64, tag = "1")]
     pub queued_at: u64,
@@ -922,7 +946,7 @@ pub struct RunningJob {
     #[prost(string, tag = "3")]
     pub scheduler: ::prost::alloc::string::String,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FailedJob {
     #[prost(string, tag = "1")]
     pub error: ::prost::alloc::string::String,
@@ -961,27 +985,27 @@ pub struct GetJobStatusResult {
     #[prost(message, optional, tag = "1")]
     pub status: ::core::option::Option<JobStatus>,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FilePartitionMetadata {
     #[prost(string, repeated, tag = "1")]
     pub filename: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CancelJobParams {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CancelJobResult {
     #[prost(bool, tag = "1")]
     pub cancelled: bool,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CleanJobDataParams {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CleanJobDataResult {}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LaunchTaskParams {
@@ -999,13 +1023,13 @@ pub struct LaunchMultiTaskParams {
     #[prost(string, tag = "2")]
     pub scheduler_id: ::prost::alloc::string::String,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LaunchTaskResult {
     /// TODO when part of the task set are scheduled successfully
     #[prost(bool, tag = "1")]
     pub success: bool,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LaunchMultiTaskResult {
     /// TODO when part of the task set are scheduled successfully
     #[prost(bool, tag = "1")]
@@ -1016,19 +1040,19 @@ pub struct CancelTasksParams {
     #[prost(message, repeated, tag = "1")]
     pub task_infos: ::prost::alloc::vec::Vec<RunningTaskInfo>,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CancelTasksResult {
     #[prost(bool, tag = "1")]
     pub cancelled: bool,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RemoveJobDataParams {
     #[prost(string, tag = "1")]
     pub job_id: ::prost::alloc::string::String,
 }
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RemoveJobDataResult {}
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RunningTaskInfo {
     #[prost(uint32, tag = "1")]
     pub task_id: u32,
@@ -1143,7 +1167,7 @@ pub mod scheduler_grpc_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/PollWork",
             );
@@ -1167,7 +1191,7 @@ pub mod scheduler_grpc_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/RegisterExecutor",
             );
@@ -1198,7 +1222,7 @@ pub mod scheduler_grpc_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/HeartBeatFromExecutor",
             );
@@ -1227,7 +1251,7 @@ pub mod scheduler_grpc_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/UpdateTaskStatus",
             );
@@ -1256,7 +1280,7 @@ pub mod scheduler_grpc_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/CreateUpdateSession",
             );
@@ -1285,7 +1309,7 @@ pub mod scheduler_grpc_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/RemoveSession",
             );
@@ -1311,7 +1335,7 @@ pub mod scheduler_grpc_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/ExecuteQuery",
             );
@@ -1337,7 +1361,7 @@ pub mod scheduler_grpc_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/GetJobStatus",
             );
@@ -1364,7 +1388,7 @@ pub mod scheduler_grpc_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/ExecutorStopped",
             );
@@ -1390,7 +1414,7 @@ pub mod scheduler_grpc_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/CancelJob",
             );
@@ -1414,7 +1438,7 @@ pub mod scheduler_grpc_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
-            let codec = tonic::codec::ProstCodec::default();
+            let codec = tonic_prost::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/ballista.protobuf.SchedulerGrpc/CleanJobData",
             );
@@ -1422,227 +1446,6 @@ pub mod scheduler_grpc_client {
             req.extensions_mut()
                 .insert(
                     GrpcMethod::new("ballista.protobuf.SchedulerGrpc", "CleanJobData"),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-    }
-}
-/// Generated client implementations.
-pub mod executor_grpc_client {
-    #![allow(
-        unused_variables,
-        dead_code,
-        missing_docs,
-        clippy::wildcard_imports,
-        clippy::let_unit_value,
-    )]
-    use tonic::codegen::*;
-    use tonic::codegen::http::Uri;
-    #[derive(Debug, Clone)]
-    pub struct ExecutorGrpcClient<T> {
-        inner: tonic::client::Grpc<T>,
-    }
-    impl ExecutorGrpcClient<tonic::transport::Channel> {
-        /// Attempt to create a new client by connecting to a given endpoint.
-        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
-        where
-            D: TryInto<tonic::transport::Endpoint>,
-            D::Error: Into<StdError>,
-        {
-            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
-            Ok(Self::new(conn))
-        }
-    }
-    impl<T> ExecutorGrpcClient<T>
-    where
-        T: tonic::client::GrpcService<tonic::body::Body>,
-        T::Error: Into<StdError>,
-        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
-        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
-    {
-        pub fn new(inner: T) -> Self {
-            let inner = tonic::client::Grpc::new(inner);
-            Self { inner }
-        }
-        pub fn with_origin(inner: T, origin: Uri) -> Self {
-            let inner = tonic::client::Grpc::with_origin(inner, origin);
-            Self { inner }
-        }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> ExecutorGrpcClient<InterceptedService<T, F>>
-        where
-            F: tonic::service::Interceptor,
-            T::ResponseBody: Default,
-            T: tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-                Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
-                >,
-            >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
-        {
-            ExecutorGrpcClient::new(InterceptedService::new(inner, interceptor))
-        }
-        /// Compress requests with the given encoding.
-        ///
-        /// This requires the server to support it otherwise it might respond with an
-        /// error.
-        #[must_use]
-        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.inner = self.inner.send_compressed(encoding);
-            self
-        }
-        /// Enable decompressing responses.
-        #[must_use]
-        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
-            self.inner = self.inner.accept_compressed(encoding);
-            self
-        }
-        /// Limits the maximum size of a decoded message.
-        ///
-        /// Default: `4MB`
-        #[must_use]
-        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_decoding_message_size(limit);
-            self
-        }
-        /// Limits the maximum size of an encoded message.
-        ///
-        /// Default: `usize::MAX`
-        #[must_use]
-        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
-            self.inner = self.inner.max_encoding_message_size(limit);
-            self
-        }
-        pub async fn launch_task(
-            &mut self,
-            request: impl tonic::IntoRequest<super::LaunchTaskParams>,
-        ) -> std::result::Result<
-            tonic::Response<super::LaunchTaskResult>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/ballista.protobuf.ExecutorGrpc/LaunchTask",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("ballista.protobuf.ExecutorGrpc", "LaunchTask"));
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn launch_multi_task(
-            &mut self,
-            request: impl tonic::IntoRequest<super::LaunchMultiTaskParams>,
-        ) -> std::result::Result<
-            tonic::Response<super::LaunchMultiTaskResult>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/ballista.protobuf.ExecutorGrpc/LaunchMultiTask",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("ballista.protobuf.ExecutorGrpc", "LaunchMultiTask"),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn stop_executor(
-            &mut self,
-            request: impl tonic::IntoRequest<super::StopExecutorParams>,
-        ) -> std::result::Result<
-            tonic::Response<super::StopExecutorResult>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/ballista.protobuf.ExecutorGrpc/StopExecutor",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("ballista.protobuf.ExecutorGrpc", "StopExecutor"),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn cancel_tasks(
-            &mut self,
-            request: impl tonic::IntoRequest<super::CancelTasksParams>,
-        ) -> std::result::Result<
-            tonic::Response<super::CancelTasksResult>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/ballista.protobuf.ExecutorGrpc/CancelTasks",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("ballista.protobuf.ExecutorGrpc", "CancelTasks"),
-                );
-            self.inner.unary(req, path, codec).await
-        }
-        pub async fn remove_job_data(
-            &mut self,
-            request: impl tonic::IntoRequest<super::RemoveJobDataParams>,
-        ) -> std::result::Result<
-            tonic::Response<super::RemoveJobDataResult>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/ballista.protobuf.ExecutorGrpc/RemoveJobData",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new("ballista.protobuf.ExecutorGrpc", "RemoveJobData"),
                 );
             self.inner.unary(req, path, codec).await
         }
@@ -1840,7 +1643,7 @@ pub mod scheduler_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = PollWorkSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -1886,7 +1689,7 @@ pub mod scheduler_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = RegisterExecutorSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -1935,7 +1738,7 @@ pub mod scheduler_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = HeartBeatFromExecutorSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -1981,7 +1784,7 @@ pub mod scheduler_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = UpdateTaskStatusSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -2027,7 +1830,7 @@ pub mod scheduler_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = CreateUpdateSessionSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -2072,7 +1875,7 @@ pub mod scheduler_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = RemoveSessionSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -2117,7 +1920,7 @@ pub mod scheduler_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ExecuteQuerySvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -2162,7 +1965,7 @@ pub mod scheduler_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = GetJobStatusSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -2208,7 +2011,7 @@ pub mod scheduler_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ExecutorStoppedSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -2253,7 +2056,7 @@ pub mod scheduler_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = CancelJobSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -2298,7 +2101,7 @@ pub mod scheduler_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = CleanJobDataSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -2351,6 +2154,227 @@ pub mod scheduler_grpc_server {
     pub const SERVICE_NAME: &str = "ballista.protobuf.SchedulerGrpc";
     impl<T> tonic::server::NamedService for SchedulerGrpcServer<T> {
         const NAME: &'static str = SERVICE_NAME;
+    }
+}
+/// Generated client implementations.
+pub mod executor_grpc_client {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
+    #[derive(Debug, Clone)]
+    pub struct ExecutorGrpcClient<T> {
+        inner: tonic::client::Grpc<T>,
+    }
+    impl ExecutorGrpcClient<tonic::transport::Channel> {
+        /// Attempt to create a new client by connecting to a given endpoint.
+        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
+        where
+            D: TryInto<tonic::transport::Endpoint>,
+            D::Error: Into<StdError>,
+        {
+            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
+            Ok(Self::new(conn))
+        }
+    }
+    impl<T> ExecutorGrpcClient<T>
+    where
+        T: tonic::client::GrpcService<tonic::body::Body>,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
+    {
+        pub fn new(inner: T) -> Self {
+            let inner = tonic::client::Grpc::new(inner);
+            Self { inner }
+        }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> ExecutorGrpcClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
+            T: tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                >,
+            >,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+        {
+            ExecutorGrpcClient::new(InterceptedService::new(inner, interceptor))
+        }
+        /// Compress requests with the given encoding.
+        ///
+        /// This requires the server to support it otherwise it might respond with an
+        /// error.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
+            self
+        }
+        /// Enable decompressing responses.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
+        pub async fn launch_task(
+            &mut self,
+            request: impl tonic::IntoRequest<super::LaunchTaskParams>,
+        ) -> std::result::Result<
+            tonic::Response<super::LaunchTaskResult>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/ballista.protobuf.ExecutorGrpc/LaunchTask",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("ballista.protobuf.ExecutorGrpc", "LaunchTask"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn launch_multi_task(
+            &mut self,
+            request: impl tonic::IntoRequest<super::LaunchMultiTaskParams>,
+        ) -> std::result::Result<
+            tonic::Response<super::LaunchMultiTaskResult>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/ballista.protobuf.ExecutorGrpc/LaunchMultiTask",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("ballista.protobuf.ExecutorGrpc", "LaunchMultiTask"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn stop_executor(
+            &mut self,
+            request: impl tonic::IntoRequest<super::StopExecutorParams>,
+        ) -> std::result::Result<
+            tonic::Response<super::StopExecutorResult>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/ballista.protobuf.ExecutorGrpc/StopExecutor",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("ballista.protobuf.ExecutorGrpc", "StopExecutor"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn cancel_tasks(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CancelTasksParams>,
+        ) -> std::result::Result<
+            tonic::Response<super::CancelTasksResult>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/ballista.protobuf.ExecutorGrpc/CancelTasks",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("ballista.protobuf.ExecutorGrpc", "CancelTasks"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn remove_job_data(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RemoveJobDataParams>,
+        ) -> std::result::Result<
+            tonic::Response<super::RemoveJobDataResult>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/ballista.protobuf.ExecutorGrpc/RemoveJobData",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("ballista.protobuf.ExecutorGrpc", "RemoveJobData"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -2508,7 +2532,7 @@ pub mod executor_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = LaunchTaskSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -2554,7 +2578,7 @@ pub mod executor_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = LaunchMultiTaskSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -2599,7 +2623,7 @@ pub mod executor_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = StopExecutorSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -2644,7 +2668,7 @@ pub mod executor_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = CancelTasksSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,
@@ -2689,7 +2713,7 @@ pub mod executor_grpc_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = RemoveJobDataSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
+                        let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
                                 accept_compression_encodings,

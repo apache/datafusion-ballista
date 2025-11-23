@@ -328,6 +328,7 @@ mod test {
     use ballista_core::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
     use ballista_core::serde::BallistaCodec;
     use datafusion::arrow::compute::SortOptions;
+    use datafusion::execution::TaskContext;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
     use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
@@ -339,11 +340,9 @@ mod test {
     use datafusion::physical_plan::windows::BoundedWindowAggExec;
     use datafusion::physical_plan::{displayable, ExecutionPlan};
     use datafusion::physical_plan::{InputOrderMode, Partitioning};
-    use datafusion::prelude::SessionContext;
     use datafusion_proto::physical_plan::AsExecutionPlan;
     use datafusion_proto::protobuf::LogicalPlanNode;
     use datafusion_proto::protobuf::PhysicalPlanNode;
-    use std::ops::Deref;
     use std::sync::Arc;
     use uuid::Uuid;
 
@@ -789,7 +788,8 @@ order by
         )?;
 
         let partial_hash = stages[0].children()[0].clone();
-        let partial_hash_serde = roundtrip_operator(&ctx, partial_hash.clone())?;
+        let partial_hash_serde =
+            roundtrip_operator(&ctx.task_ctx(), partial_hash.clone())?;
 
         let partial_hash = downcast_exec!(partial_hash, AggregateExec);
         let partial_hash_serde = downcast_exec!(partial_hash_serde, AggregateExec);
@@ -803,7 +803,7 @@ order by
     }
 
     fn roundtrip_operator(
-        ctx: &SessionContext,
+        ctx: &TaskContext,
         plan: Arc<dyn ExecutionPlan>,
     ) -> Result<Arc<dyn ExecutionPlan>, BallistaError> {
         let codec: BallistaCodec<LogicalPlanNode, PhysicalPlanNode> =
@@ -813,12 +813,8 @@ order by
                 plan.clone(),
                 codec.physical_extension_codec(),
             )?;
-        let runtime = ctx.runtime_env();
-        let result_exec_plan: Arc<dyn ExecutionPlan> = (proto).try_into_physical_plan(
-            ctx,
-            runtime.deref(),
-            codec.physical_extension_codec(),
-        )?;
+        let result_exec_plan: Arc<dyn ExecutionPlan> =
+            (proto).try_into_physical_plan(ctx, codec.physical_extension_codec())?;
         Ok(result_exec_plan)
     }
 }
