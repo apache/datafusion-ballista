@@ -1777,10 +1777,7 @@ mod ballista_round_trip {
                 )
                 .unwrap();
             let round_trip: Arc<dyn ExecutionPlan> = proto
-                .try_into_physical_plan(
-                    &ctx.task_ctx(),
-                    codec.physical_extension_codec(),
-                )
+                .try_into_physical_plan(&ctx.task_ctx(), codec.physical_extension_codec())
                 .unwrap();
             assert_eq!(
                 format!("{}", displayable(physical_plan.as_ref()).indent(false)),
