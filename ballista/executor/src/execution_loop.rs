@@ -250,10 +250,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
 
     let plan: Arc<dyn ExecutionPlan> =
         U::try_decode(task.plan.as_slice()).and_then(|proto| {
-            proto.try_into_physical_plan(
-                &task_context.clone(),
-                codec.physical_extension_codec(),
-            )
+            proto.try_into_physical_plan(&task_context, codec.physical_extension_codec())
         })?;
 
     let query_stage_exec = executor.execution_engine.create_query_stage_exec(
