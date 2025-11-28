@@ -18,16 +18,15 @@
 use chrono::{TimeZone, Utc};
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 
-use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use datafusion::physical_plan::metrics::{
     Count, Gauge, MetricValue, MetricsSet, PruningMetrics, RatioMetrics, Time, Timestamp,
 };
 use datafusion::physical_plan::{ExecutionPlan, Metric};
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::prelude::SessionConfig;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
-use itertools::Itertools;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
@@ -331,18 +330,15 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         window_functions: window_functions.clone(),
     });
 
-    // this is temporary fix until we get
-    // https://github.com/apache/datafusion/pull/17601
-    // merged
-    //
-    let session_state = SessionStateBuilder::new()
-        .with_aggregate_functions(aggregate_functions.values().cloned().collect_vec())
-        .with_scalar_functions(scalar_functions.values().cloned().collect_vec())
-        .with_window_functions(window_functions.values().cloned().collect_vec())
-        .with_config(session_config.clone())
-        .with_runtime_env(runtime.clone())
-        .build();
-    let ctx = SessionContext::new_with_state(session_state).task_ctx();
+    let ctx = TaskContext::new(
+        None,
+        task.session_id.clone(),
+        session_config.clone(),
+        scalar_functions.clone(),
+        aggregate_functions.clone(),
+        window_functions.clone(),
+        runtime.clone(),
+    );
 
     let encoded_plan = task.plan.as_slice();
     let plan: Arc<dyn ExecutionPlan> = U::try_decode(encoded_plan).and_then(|proto| {
@@ -394,18 +390,15 @@ pub fn get_task_definition_vec<
         window_functions: window_functions.clone(),
     });
 
-    // this is temporary fix until we get
-    // https://github.com/apache/datafusion/pull/17601
-    // merged
-    //
-    let session_state = SessionStateBuilder::new()
-        .with_aggregate_functions(aggregate_functions.values().cloned().collect_vec())
-        .with_scalar_functions(scalar_functions.values().cloned().collect_vec())
-        .with_window_functions(window_functions.values().cloned().collect_vec())
-        .with_config(session_config.clone())
-        .with_runtime_env(runtime.clone())
-        .build();
-    let ctx = SessionContext::new_with_state(session_state).task_ctx();
+    let ctx = TaskContext::new(
+        None,
+        uuid::Uuid::new_v4().to_string(),
+        session_config.clone(),
+        scalar_functions.clone(),
+        aggregate_functions.clone(),
+        window_functions.clone(),
+        runtime.clone(),
+    );
 
     let encoded_plan = multi_task.plan.as_slice();
     let plan: Arc<dyn ExecutionPlan> = U::try_decode(encoded_plan).and_then(|proto| {

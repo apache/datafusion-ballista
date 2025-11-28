@@ -288,7 +288,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
 
                 let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
                     shuffle_writer.output_partitioning.as_ref(),
-                    ctx, // task context,
+                    ctx,
                     input.schema().as_ref(),
                     self.default_codec.as_ref(),
                 )?;
@@ -323,7 +323,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     .collect::<Result<Vec<_>, DataFusionError>>()?;
                 let partitioning = parse_protobuf_partitioning(
                     shuffle_reader.partitioning.as_ref(),
-                    ctx, //registry,
+                    ctx,
                     schema.as_ref(),
                     self.default_codec.as_ref(),
                 )?;
@@ -342,7 +342,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     Arc::new(convert_required!(unresolved_shuffle.schema)?);
                 let partitioning = parse_protobuf_partitioning(
                     unresolved_shuffle.partitioning.as_ref(),
-                    ctx, //registry,
+                    ctx,
                     schema.as_ref(),
                     self.default_codec.as_ref(),
                 )?;
