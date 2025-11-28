@@ -282,29 +282,6 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     "Could not deserialize BallistaPhysicalPlanNode because it's physical_plan_type is none".to_string()
                 )
             })?;
-        // FIXME: this is temporary until we get datafusion 51
-        //        more details at https://github.com/apache/datafusion/issues/17596
-        let mut state = SessionStateBuilder::new_with_default_features().build();
-
-        for function_name in ctx.udfs() {
-            if let Ok(function) = ctx.udf(&function_name) {
-                state.register_udf(function)?;
-            }
-        }
-
-        for function_name in ctx.udafs() {
-            if let Ok(function) = ctx.udaf(&function_name) {
-                state.register_udaf(function)?;
-            }
-        }
-
-        for function_name in ctx.udafs() {
-            if let Ok(function) = ctx.udaf(&function_name) {
-                state.register_udaf(function)?;
-            }
-        }
-
-        let ctx = SessionContext::new_with_state(state).task_ctx();
 
         match ballista_plan {
             PhysicalPlanType::ShuffleWriter(shuffle_writer) => {

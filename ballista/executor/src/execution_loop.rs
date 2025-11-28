@@ -250,7 +250,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         .with_config(session_config.clone())
         .with_runtime_env(runtime.clone())
         .build();
-    let ctx = SessionContext::new_with_state(session_state).task_ctx();
+    let ctx = TaskContext::from(&session_state);
 
     let session_id = task.session_id.clone();
     let task_context = Arc::new(TaskContext::new(
