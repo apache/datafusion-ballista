@@ -18,16 +18,15 @@
 use chrono::{TimeZone, Utc};
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 
-use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use datafusion::physical_plan::metrics::{
-    Count, Gauge, MetricValue, MetricsSet, Time, Timestamp,
+    Count, Gauge, MetricValue, MetricsSet, PruningMetrics, RatioMetrics, Time, Timestamp,
 };
 use datafusion::physical_plan::{ExecutionPlan, Metric};
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::prelude::SessionConfig;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
-use itertools::Itertools;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
@@ -35,6 +34,7 @@ use std::time::Duration;
 
 use crate::error::BallistaError;
 use crate::extension::SessionConfigHelperExt;
+use crate::serde::protobuf::{NamedPruningMetrics, NamedRatio};
 use crate::serde::scheduler::{
     Action, BallistaFunctionRegistry, ExecutorData, ExecutorMetadata,
     ExecutorSpecification, PartitionId, PartitionLocation, PartitionStats,
@@ -201,6 +201,33 @@ impl TryInto<MetricValue> for protobuf::OperatorMetric {
                 timestamp.set(Utc.timestamp_nanos(value));
                 Ok(MetricValue::EndTimestamp(timestamp))
             }
+            Some(operator_metric::Metric::OutputBytes(value)) => {
+                let count = Count::new();
+                count.add(value as usize);
+                Ok(MetricValue::OutputBytes(count))
+            }
+            Some(operator_metric::Metric::PruningMetrics(NamedPruningMetrics {
+                name,
+                pruned,
+                matched,
+            })) => {
+                let pruning_metrics = PruningMetrics::new();
+                pruning_metrics.add_pruned(pruned as usize);
+                pruning_metrics.add_matched(matched as usize);
+                Ok(MetricValue::PruningMetrics {
+                    name: name.into(),
+                    pruning_metrics,
+                })
+            }
+            Some(operator_metric::Metric::Ratio(NamedRatio { name, part, total })) => {
+                let ratio_metrics = RatioMetrics::new();
+                ratio_metrics.add_part(part as usize);
+                ratio_metrics.add_total(total as usize);
+                Ok(MetricValue::Ratio {
+                    name: name.into(),
+                    ratio_metrics,
+                })
+            }
             None => Err(BallistaError::General(
                 "scheduler::from_proto(OperatorMetric) metric is None.".to_owned(),
             )),
@@ -303,27 +330,19 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         window_functions: window_functions.clone(),
     });
 
-    // this is temporary fix until we get
-    // https://github.com/apache/datafusion/pull/17601
-    // merged
-    //
-    let session_state = SessionStateBuilder::new()
-        .with_aggregate_functions(aggregate_functions.values().cloned().collect_vec())
-        .with_scalar_functions(scalar_functions.values().cloned().collect_vec())
-        .with_window_functions(window_functions.values().cloned().collect_vec())
-        .with_config(session_config.clone())
-        .with_runtime_env(runtime.clone())
-        .build();
-    let ctx = SessionContext::new_with_state(session_state);
-    //
+    let ctx = TaskContext::new(
+        None,
+        task.session_id.clone(),
+        session_config.clone(),
+        scalar_functions.clone(),
+        aggregate_functions.clone(),
+        window_functions.clone(),
+        runtime.clone(),
+    );
 
     let encoded_plan = task.plan.as_slice();
     let plan: Arc<dyn ExecutionPlan> = U::try_decode(encoded_plan).and_then(|proto| {
-        proto.try_into_physical_plan(
-            &ctx,
-            runtime.as_ref(),
-            codec.physical_extension_codec(),
-        )
+        proto.try_into_physical_plan(&ctx, codec.physical_extension_codec())
     })?;
 
     let job_id = task.job_id;
@@ -371,27 +390,19 @@ pub fn get_task_definition_vec<
         window_functions: window_functions.clone(),
     });
 
-    // this is temporary fix until we get
-    // https://github.com/apache/datafusion/pull/17601
-    // merged
-    //
-    let session_state = SessionStateBuilder::new()
-        .with_aggregate_functions(aggregate_functions.values().cloned().collect_vec())
-        .with_scalar_functions(scalar_functions.values().cloned().collect_vec())
-        .with_window_functions(window_functions.values().cloned().collect_vec())
-        .with_config(session_config.clone())
-        .with_runtime_env(runtime.clone())
-        .build();
-    let ctx = SessionContext::new_with_state(session_state);
-    //
+    let ctx = TaskContext::new(
+        None,
+        uuid::Uuid::new_v4().to_string(),
+        session_config.clone(),
+        scalar_functions.clone(),
+        aggregate_functions.clone(),
+        window_functions.clone(),
+        runtime.clone(),
+    );
 
     let encoded_plan = multi_task.plan.as_slice();
     let plan: Arc<dyn ExecutionPlan> = U::try_decode(encoded_plan).and_then(|proto| {
-        proto.try_into_physical_plan(
-            &ctx,
-            runtime.as_ref(),
-            codec.physical_extension_codec(),
-        )
+        proto.try_into_physical_plan(&ctx, codec.physical_extension_codec())
     })?;
 
     let job_id = multi_task.job_id;

@@ -28,9 +28,7 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::scheduler::{ExecutorSpecification, PartitionId};
 use ballista_core::serde::BallistaCodec;
 use datafusion::execution::context::TaskContext;
-use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::FutureExt;
@@ -38,7 +36,6 @@ use log::{debug, error, info, warn};
 use std::any::Any;
 use std::convert::TryInto;
 use std::error::Error;
-use std::ops::Deref;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{sync::Arc, time::Duration};
@@ -240,20 +237,6 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
 
     let runtime = executor.produce_runtime(&session_config)?;
 
-    // this is temporary fix until we get
-    // https://github.com/apache/datafusion/pull/17601
-    // merged
-    //
-    let session_state = SessionStateBuilder::new()
-        .with_aggregate_functions(task_aggregate_functions.values().cloned().collect())
-        .with_scalar_functions(task_scalar_functions.values().cloned().collect())
-        .with_window_functions(task_window_functions.values().cloned().collect())
-        .with_config(session_config.clone())
-        .with_runtime_env(runtime.clone())
-        .build();
-    let ctx = SessionContext::new_with_state(session_state);
-    //
-
     let session_id = task.session_id.clone();
     let task_context = Arc::new(TaskContext::new(
         Some(task_identity.clone()),
@@ -267,11 +250,7 @@ async fn run_received_task<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
 
     let plan: Arc<dyn ExecutionPlan> =
         U::try_decode(task.plan.as_slice()).and_then(|proto| {
-            proto.try_into_physical_plan(
-                &ctx,
-                runtime.deref(),
-                codec.physical_extension_codec(),
-            )
+            proto.try_into_physical_plan(&task_context, codec.physical_extension_codec())
         })?;
 
     let query_stage_exec = executor.execution_engine.create_query_stage_exec(

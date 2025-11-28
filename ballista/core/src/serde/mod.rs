@@ -23,9 +23,8 @@ use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 use arrow_flight::sql::ProstMessageExt;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result};
-use datafusion::execution::{FunctionRegistry, SessionStateBuilder};
+use datafusion::execution::TaskContext;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
-use datafusion::prelude::SessionContext;
 use datafusion_proto::logical_plan::file_formats::{
     ArrowLogicalExtensionCodec, AvroLogicalExtensionCodec, CsvLogicalExtensionCodec,
     JsonLogicalExtensionCodec, ParquetLogicalExtensionCodec,
@@ -178,7 +177,7 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         &self,
         buf: &[u8],
         inputs: &[datafusion::logical_expr::LogicalPlan],
-        ctx: &datafusion::prelude::SessionContext,
+        ctx: &TaskContext,
     ) -> Result<datafusion::logical_expr::Extension> {
         self.default_codec.try_decode(buf, inputs, ctx)
     }
@@ -196,7 +195,7 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         buf: &[u8],
         table_ref: &datafusion::sql::TableReference,
         schema: datafusion::arrow::datatypes::SchemaRef,
-        ctx: &datafusion::prelude::SessionContext,
+        ctx: &TaskContext,
     ) -> Result<Arc<dyn datafusion::catalog::TableProvider>> {
         self.default_codec
             .try_decode_table_provider(buf, table_ref, schema, ctx)
@@ -215,7 +214,7 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
     fn try_decode_file_format(
         &self,
         buf: &[u8],
-        ctx: &datafusion::prelude::SessionContext,
+        ctx: &TaskContext,
     ) -> Result<Arc<dyn datafusion::datasource::file_format::FileFormatFactory>> {
         let proto = FileFormatProto::decode(buf)
             .map_err(|e| DataFusionError::Internal(e.to_string()))?;
@@ -267,7 +266,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
         &self,
         buf: &[u8],
         inputs: &[Arc<dyn ExecutionPlan>],
-        registry: &dyn FunctionRegistry,
+        ctx: &TaskContext,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let ballista_plan: protobuf::BallistaPhysicalPlanNode =
             protobuf::BallistaPhysicalPlanNode::decode(buf).map_err(|e| {
@@ -282,33 +281,6 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     "Could not deserialize BallistaPhysicalPlanNode because it's physical_plan_type is none".to_string()
                 )
             })?;
-        // FIXME: this is temporary until we get datafusion 51
-        //        more details at https://github.com/apache/datafusion/issues/17596
-        let mut state = SessionStateBuilder::new_with_default_features().build();
-
-        for function_name in registry.udfs() {
-            if let Ok(function) = registry.udf(&function_name) {
-                state.register_udf(function)?;
-            }
-        }
-
-        for function_name in registry.udafs() {
-            if let Ok(function) = registry.udaf(&function_name) {
-                state.register_udaf(function)?;
-            }
-        }
-
-        for function_name in registry.udafs() {
-            if let Ok(function) = registry.udaf(&function_name) {
-                state.register_udaf(function)?;
-            }
-        }
-
-        let ctx = SessionContext::new_with_state(state);
-
-        //
-        //
-        //
 
         match ballista_plan {
             PhysicalPlanType::ShuffleWriter(shuffle_writer) => {
@@ -316,7 +288,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
 
                 let shuffle_output_partitioning = parse_protobuf_hash_partitioning(
                     shuffle_writer.output_partitioning.as_ref(),
-                    &ctx, //registry,
+                    ctx,
                     input.schema().as_ref(),
                     self.default_codec.as_ref(),
                 )?;
@@ -351,7 +323,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     .collect::<Result<Vec<_>, DataFusionError>>()?;
                 let partitioning = parse_protobuf_partitioning(
                     shuffle_reader.partitioning.as_ref(),
-                    &ctx, //registry,
+                    ctx,
                     schema.as_ref(),
                     self.default_codec.as_ref(),
                 )?;
@@ -370,7 +342,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     Arc::new(convert_required!(unresolved_shuffle.schema)?);
                 let partitioning = parse_protobuf_partitioning(
                     unresolved_shuffle.partitioning.as_ref(),
-                    &ctx, //registry,
+                    ctx,
                     schema.as_ref(),
                     self.default_codec.as_ref(),
                 )?;
@@ -519,7 +491,6 @@ struct FileFormatProto {
 mod test {
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::execution::registry::MemoryFunctionRegistry;
     use datafusion::physical_plan::expressions::col;
     use datafusion::physical_plan::Partitioning;
     use datafusion::{
@@ -533,7 +504,7 @@ mod test {
 
     #[tokio::test]
     async fn file_format_serialization_roundtrip() {
-        let ctx = SessionContext::new();
+        let ctx = SessionContext::new().task_ctx();
         let empty = EmptyRelation {
             produce_one_row: false,
             schema: Arc::new(DFSchema::empty()),
@@ -593,8 +564,8 @@ mod test {
             .try_encode(Arc::new(original_exec.clone()), &mut buf)
             .unwrap();
 
-        let registry = MemoryFunctionRegistry::new();
-        let decoded_plan = codec.try_decode(&buf, &[], &registry).unwrap();
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
 
         let decoded_exec = decoded_plan
             .as_any()
@@ -626,8 +597,8 @@ mod test {
             .try_encode(Arc::new(original_exec.clone()), &mut buf)
             .unwrap();
 
-        let registry = MemoryFunctionRegistry::new();
-        let decoded_plan = codec.try_decode(&buf, &[], &registry).unwrap();
+        let ctx = SessionContext::new().task_ctx();
+        let decoded_plan = codec.try_decode(&buf, &[], &ctx).unwrap();
 
         let decoded_exec = decoded_plan
             .as_any()

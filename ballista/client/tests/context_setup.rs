@@ -110,7 +110,9 @@ mod standalone {
     use datafusion::{
         assert_batches_eq,
         common::exec_err,
-        execution::{context::QueryPlanner, SessionState, SessionStateBuilder},
+        execution::{
+            context::QueryPlanner, SessionState, SessionStateBuilder, TaskContext,
+        },
         logical_expr::LogicalPlan,
         physical_plan::ExecutionPlan,
         prelude::{SessionConfig, SessionContext},
@@ -275,7 +277,7 @@ mod standalone {
             &self,
             _buf: &[u8],
             _inputs: &[datafusion::logical_expr::LogicalPlan],
-            _ctx: &SessionContext,
+            _ctx: &TaskContext,
         ) -> datafusion::error::Result<datafusion::logical_expr::Extension> {
             self.invoked
                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -297,7 +299,7 @@ mod standalone {
             _buf: &[u8],
             _table_ref: &datafusion::sql::TableReference,
             _schema: datafusion::arrow::datatypes::SchemaRef,
-            _ctx: &SessionContext,
+            _ctx: &TaskContext,
         ) -> datafusion::error::Result<
             std::sync::Arc<dyn datafusion::catalog::TableProvider>,
         > {
@@ -320,7 +322,7 @@ mod standalone {
         fn try_decode_file_format(
             &self,
             _buf: &[u8],
-            _ctx: &SessionContext,
+            _ctx: &TaskContext,
         ) -> datafusion::error::Result<
             Arc<dyn datafusion::datasource::file_format::FileFormatFactory>,
         > {
@@ -361,12 +363,12 @@ mod standalone {
             &self,
             buf: &[u8],
             inputs: &[Arc<dyn datafusion::physical_plan::ExecutionPlan>],
-            registry: &dyn datafusion::execution::FunctionRegistry,
+            ctx: &TaskContext,
         ) -> datafusion::error::Result<Arc<dyn datafusion::physical_plan::ExecutionPlan>>
         {
             self.invoked
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.codec.try_decode(buf, inputs, registry)
+            self.codec.try_decode(buf, inputs, ctx)
         }
 
         fn try_encode(

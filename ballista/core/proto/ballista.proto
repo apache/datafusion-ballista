@@ -264,6 +264,18 @@ message NamedTime {
   uint64 value = 2;
 }
 
+message NamedPruningMetrics {
+  string name = 1;
+  uint64 pruned = 2;
+  uint64 matched = 3;
+}
+
+message NamedRatio {
+  string name = 1;
+  uint64 part = 2;
+  uint64 total = 3;
+}
+
 message OperatorMetric {
   oneof metric {
     uint64 output_rows = 1;
@@ -277,6 +289,9 @@ message OperatorMetric {
     int64 start_timestamp = 9;
     int64 end_timestamp = 10;
     uint64 spilled_rows = 11;
+    uint64 output_bytes = 12;
+    NamedPruningMetrics pruning_metrics = 13;
+    NamedRatio ratio = 14;
   }
 }
 

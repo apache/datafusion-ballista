@@ -113,12 +113,14 @@ mod basic {
 
         let result = df.unwrap().collect().await.unwrap();
 
-        let expected = ["+---------------+--------------+---------------------+-------------+-----------------------------+-------------+",
-            "| table_catalog | table_schema | table_name          | column_name | data_type                   | is_nullable |",
-            "+---------------+--------------+---------------------+-------------+-----------------------------+-------------+",
-            "| datafusion    | public       | csv_with_timestamps | name        | Utf8                        | YES         |",
-            "| datafusion    | public       | csv_with_timestamps | ts          | Timestamp(Nanosecond, None) | YES         |",
-            "+---------------+--------------+---------------------+-------------+-----------------------------+-------------+"];
+        let expected = [
+            "+---------------+--------------+---------------------+-------------+---------------+-------------+",
+            "| table_catalog | table_schema | table_name          | column_name | data_type     | is_nullable |",
+            "+---------------+--------------+---------------------+-------------+---------------+-------------+",
+            "| datafusion    | public       | csv_with_timestamps | name        | Utf8          | YES         |",
+            "| datafusion    | public       | csv_with_timestamps | ts          | Timestamp(ns) | YES         |",
+            "+---------------+--------------+---------------------+-------------+---------------+-------------+",
+        ];
         datafusion::assert_batches_eq!(expected, &result);
     }
 
@@ -359,7 +361,7 @@ mod basic {
         let res = df.collect().await.unwrap();
         let expected = vec![
             "+-------------------+",
-            "| var(test.id)      |",
+            "| var_samp(test.id) |",
             "+-------------------+",
             "| 6.000000000000001 |",
             "+-------------------+",
@@ -390,11 +392,11 @@ mod basic {
             .unwrap();
         let res = df.collect().await.unwrap();
         let expected = vec![
-            "+--------------------+",
-            "| stddev(test.id)    |",
-            "+--------------------+",
-            "| 2.4494897427831783 |",
-            "+--------------------+",
+            "+----------------------+",
+            "| stddev_samp(test.id) |",
+            "+----------------------+",
+            "| 2.4494897427831783   |",
+            "+----------------------+",
         ];
         assert_result_eq(expected, &res);
     }
@@ -408,11 +410,11 @@ mod basic {
             .unwrap();
         let res = df.collect().await.unwrap();
         let expected = vec![
-            "+--------------------------------------+",
-            "| covar_samp(test.id,test.tinyint_col) |",
-            "+--------------------------------------+",
-            "| 0.28571428571428586                  |",
-            "+--------------------------------------+",
+            "+---------------------------------+",
+            "| covar(test.id,test.tinyint_col) |",
+            "+---------------------------------+",
+            "| 0.28571428571428586             |",
+            "+---------------------------------+",
         ];
         assert_result_eq(expected, &res);
     }
