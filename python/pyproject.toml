@@ -42,8 +42,8 @@ classifiers = [
 ]
 dependencies = [
     "pyarrow>=21.0.0",
-    "cloudpickle",
     "datafusion==49",
+    "typing-extensions;python_version<'3.13'",
 ]
 dynamic = ["version"]
 
@@ -56,7 +56,8 @@ repository = "https://github.com/apache/datafusion-ballista"
 profile = "black"
 
 [tool.maturin]
-module-name = "ballista.ballista_internal"
+python-source = "python"
+module-name = "ballista._internal_ballista"
 include = [
     { path = "Cargo.lock", format = "sdist" }
 ]
