@@ -103,12 +103,12 @@ impl DisplayAs for ShuffleReaderExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(
                     f,
-                    "ShuffleReaderExec: partitioning={:?}",
+                    "ShuffleReaderExec: partitioning: {}",
                     self.properties.partitioning,
                 )
             }
             DisplayFormatType::TreeRender => {
-                write!(f, "partitioning={:?}", self.properties.partitioning)
+                write!(f, "partitioning={}", self.properties.partitioning)
             }
         }
     }

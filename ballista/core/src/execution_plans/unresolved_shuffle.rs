@@ -72,14 +72,14 @@ impl DisplayAs for UnresolvedShuffleExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(
                     f,
-                    "UnresolvedShuffleExec: partitioning={:?}",
+                    "UnresolvedShuffleExec: partitioning: {}",
                     self.properties().output_partitioning()
                 )
             }
             DisplayFormatType::TreeRender => {
                 write!(
                     f,
-                    "partitioning={:?}",
+                    "partitioning={}",
                     self.properties().output_partitioning()
                 )
             }

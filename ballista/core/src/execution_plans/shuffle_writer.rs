@@ -359,12 +359,22 @@ impl DisplayAs for ShuffleWriterExec {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(
                     f,
-                    "ShuffleWriterExec: partitioning:{:?}",
+                    "ShuffleWriterExec: partitioning: {}",
                     self.shuffle_output_partitioning
+                        .as_ref()
+                        .map(|p| p.to_string())
+                        .unwrap_or("None".to_string())
                 )
             }
             DisplayFormatType::TreeRender => {
-                write!(f, "partitioning={:?}", self.shuffle_output_partitioning)
+                write!(
+                    f,
+                    "partitioning={}",
+                    self.shuffle_output_partitioning
+                        .as_ref()
+                        .map(|p| p.to_string())
+                        .unwrap_or("None".to_string())
+                )
             }
         }
     }
