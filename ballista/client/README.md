@@ -117,6 +117,8 @@ To build a simple ballista example, run the following command to add the depende
 cargo add ballista datafusion tokio
 ```
 
+**Important**: Make sure the version of `datafusion` is the same as `ballista`'s! You may need to use a bit older version of `datafusion`!
+
 ```rust,no_run
 use ballista::prelude::*;
 use datafusion::common::Result;
