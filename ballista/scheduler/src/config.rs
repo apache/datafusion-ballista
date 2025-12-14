@@ -38,11 +38,6 @@ use std::sync::Arc;
 #[derive(clap::Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Config {
-    #[arg(
-        long,
-        help = "Route for proxying flight results via scheduler. Should be of the form 'IP:PORT"
-    )]
-    pub advertise_flight_sql_endpoint: Option<String>,
     #[arg(short = 'n', long, default_value_t = String::from("ballista"), help = "Namespace for the ballista cluster that this executor will join. Default: ballista")]
     pub namespace: String,
     #[arg(long, default_value_t = String::from("0.0.0.0"), help = "Local host name or IP address to bind to. Default: 0.0.0.0")]
@@ -188,8 +183,6 @@ pub struct SchedulerConfig {
     pub finished_job_data_clean_up_interval_seconds: u64,
     /// The delayed interval for cleaning up finished job state stored in the backend, 0 means the cleaning up is disabled.
     pub finished_job_state_clean_up_interval_seconds: u64,
-    /// The route endpoint for proxying flight sql results via scheduler
-    pub advertise_flight_sql_endpoint: Option<String>,
     /// If provided, submitted jobs which do not have tasks scheduled will be resubmitted after `job_resubmit_interval_ms`
     /// milliseconds
     pub job_resubmit_interval_ms: Option<u64>,
@@ -229,7 +222,6 @@ impl Default for SchedulerConfig {
             task_distribution: Default::default(),
             finished_job_data_clean_up_interval_seconds: 300,
             finished_job_state_clean_up_interval_seconds: 3600,
-            advertise_flight_sql_endpoint: None,
             job_resubmit_interval_ms: None,
             executor_termination_grace_period: 0,
             scheduler_event_expected_processing_duration: 0,
@@ -292,14 +284,6 @@ impl SchedulerConfig {
         interval_seconds: u64,
     ) -> Self {
         self.finished_job_state_clean_up_interval_seconds = interval_seconds;
-        self
-    }
-
-    pub fn with_advertise_flight_sql_endpoint(
-        mut self,
-        endpoint: Option<String>,
-    ) -> Self {
-        self.advertise_flight_sql_endpoint = endpoint;
         self
     }
 
@@ -433,7 +417,6 @@ impl TryFrom<Config> for SchedulerConfig {
                 .finished_job_data_clean_up_interval_seconds,
             finished_job_state_clean_up_interval_seconds: opt
                 .finished_job_state_clean_up_interval_seconds,
-            advertise_flight_sql_endpoint: opt.advertise_flight_sql_endpoint,
             job_resubmit_interval_ms: (opt.job_resubmit_interval_ms > 0)
                 .then_some(opt.job_resubmit_interval_ms),
             executor_termination_grace_period: opt.executor_termination_grace_period,
