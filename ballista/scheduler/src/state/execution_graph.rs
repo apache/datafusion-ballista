@@ -52,6 +52,9 @@ pub(crate) use crate::state::execution_stage::{
 };
 use crate::state::task_manager::UpdatedStages;
 
+/// Boxed [ExecutionGraph]
+pub type ExecutionGraphBox = Box<dyn ExecutionGraph + Send + Sync>;
+
 /// Represents the DAG for a distributed query plan.
 ///
 /// A distributed query plan consists of a set of stages which must be executed sequentially.
@@ -96,8 +99,141 @@ use crate::state::task_manager::UpdatedStages;
 ///
 /// If a stage has `output_links` is empty then it is the final stage in this query, and it should
 /// publish its outputs to the `ExecutionGraph`s `output_locations` representing the final query results.
+pub trait ExecutionGraph: Debug {
+    /// Returns the job ID for this execution graph.
+    fn job_id(&self) -> &str;
+
+    /// Returns the job name for this execution graph.
+    fn job_name(&self) -> &str;
+
+    /// Returns the session ID associated with this job.
+    fn session_id(&self) -> &str;
+
+    /// Returns the current job status.
+    fn status(&self) -> &JobStatus;
+
+    /// Returns the timestamp when this job started execution.
+    fn start_time(&self) -> u64;
+
+    /// Returns the timestamp when this job started execution.
+    fn end_time(&self) -> u64;
+
+    /// Number of completed stages
+    fn completed_stages(&self) -> usize;
+
+    /// An ExecutionGraph is successful if all its stages are successful
+    fn is_successful(&self) -> bool;
+
+    /// Revive the execution graph by converting the resolved stages to running stages
+    /// If any stages are converted, return true; else false.
+    fn revive(&mut self) -> bool;
+
+    /// Update task statuses and task metrics in the graph.
+    /// This will also push shuffle partitions to their respective shuffle read stages.
+    fn update_task_status(
+        &mut self,
+        executor: &ExecutorMetadata,
+        task_statuses: Vec<TaskStatus>,
+        max_task_failures: usize,
+        max_stage_failures: usize,
+    ) -> Result<Vec<QueryStageSchedulerEvent>>;
+
+    /// Returns all the currently running stage IDs.
+    fn running_stages(&self) -> Vec<usize>;
+
+    /// Returns all currently running tasks along with the executor ID on which they are assigned.
+    fn running_tasks(&self) -> Vec<RunningTaskInfo>;
+
+    /// Returns the total number of tasks in this plan that are ready for scheduling.
+    fn available_tasks(&self) -> usize;
+
+    /// Fetches a running stage that has available tasks, excluding stages in the blacklist.
+    ///
+    /// Returns a mutable reference to the running stage and the task ID generator
+    /// if a suitable stage is found.
+    fn fetch_running_stage(
+        &mut self,
+        black_list: &[usize],
+    ) -> Option<(&mut RunningStage, &mut usize)>;
+
+    /// Updates the job status.
+    fn update_status(&mut self, status: JobStatus);
+
+    /// Returns the output partition locations for the final stage results.
+    fn output_locations(&self) -> Vec<PartitionLocation>;
+
+    /// Reset running and successful stages on a given executor
+    /// This will first check the unresolved/resolved/running stages and reset the running tasks and successful tasks.
+    /// Then it will check the successful stage and whether there are running parent stages need to read shuffle from it.
+    /// If yes, reset the successful tasks and roll back the resolved shuffle recursively.
+    ///
+    /// Returns the reset stage ids and running tasks should be killed
+    fn reset_stages_on_lost_executor(
+        &mut self,
+        executor_id: &str,
+    ) -> Result<(HashSet<usize>, Vec<RunningTaskInfo>)>;
+
+    /// Converts an unresolved stage to resolved state.
+    ///
+    /// Returns true if the stage was successfully resolved, false if the stage
+    /// was not found or not in unresolved state.
+    fn resolve_stage(&mut self, stage_id: usize) -> Result<bool>;
+
+    /// Converts a running stage to successful state.
+    ///
+    /// Returns true if the stage was successfully marked as complete.
+    fn succeed_stage(&mut self, stage_id: usize) -> bool;
+
+    /// Converts a running stage to failed state with the given error message.
+    ///
+    /// Returns true if the stage was found and marked as failed.
+    fn fail_stage(&mut self, stage_id: usize, err_msg: String) -> bool;
+
+    /// Convert running stage to be unresolved,
+    /// Returns a Vec of RunningTaskInfo for running tasks in this stage.
+    fn rollback_running_stage(
+        &mut self,
+        stage_id: usize,
+        failure_reasons: HashSet<String>,
+    ) -> Result<Vec<RunningTaskInfo>>;
+
+    /// Convert resolved stage to be unresolved
+    fn rollback_resolved_stage(&mut self, stage_id: usize) -> Result<bool>;
+
+    /// Converts a successful stage back to running state for re-execution.
+    ///
+    /// This is used when some outputs from the stage have been lost and tasks
+    /// need to be re-run.
+    fn rerun_successful_stage(&mut self, stage_id: usize) -> bool;
+
+    /// fail job with error message
+    fn fail_job(&mut self, error: String);
+
+    /// Marks the job as successfully completed.
+    ///
+    /// This should only be called after all stages have completed successfully.
+    /// Returns an error if the job is not in a successful state.
+    fn succeed_job(&mut self) -> Result<()>;
+
+    /// Exposes executions stages and stage id's
+    fn stages(&self) -> &HashMap<usize, ExecutionStage>;
+
+    /// returns next task to run
+    /// (used for testing only)
+    #[cfg(test)]
+    fn pop_next_task(&mut self, executor_id: &str) -> Result<Option<TaskDescription>>;
+
+    /// Returns the total number of stages in this execution graph.
+    fn stage_count(&self) -> usize;
+
+    /// Clones execution graph
+    fn cloned(&self) -> ExecutionGraphBox;
+}
+
+/// [ExecutionGraph] implementation which generates
+/// all stages on job submission time
 #[derive(Clone)]
-pub struct ExecutionGraph {
+pub struct StaticExecutionGraph {
     /// Curator scheduler name. Can be `None` is `ExecutionGraph` is not currently curated by any scheduler
     #[allow(dead_code)] // not used at the moment, will be used later
     scheduler_id: Option<String>,
@@ -117,9 +253,7 @@ pub struct ExecutionGraph {
     end_time: u64,
     /// Map from Stage ID -> ExecutionStage
     stages: HashMap<usize, ExecutionStage>,
-    /// Total number fo output partitions
-    #[allow(dead_code)] // not used at the moment, will be used later
-    output_partitions: usize,
+
     /// Locations of this `ExecutionGraph` final output locations
     output_locations: Vec<PartitionLocation>,
     /// Task ID generator, generate unique TID in the execution graph
@@ -149,7 +283,7 @@ pub struct RunningTaskInfo {
     pub executor_id: String,
 }
 
-impl ExecutionGraph {
+impl StaticExecutionGraph {
     /// Creates a new `ExecutionGraph` from a physical execution plan.
     ///
     /// This will use the `DistributedPlanner` to break the plan into stages
@@ -165,7 +299,6 @@ impl ExecutionGraph {
         session_config: Arc<SessionConfig>,
         planner: &mut dyn DistributedPlanner,
     ) -> Result<Self> {
-        let output_partitions = plan.properties().output_partitioning().partition_count();
         let shuffle_stages =
             planner.plan_query_stages(job_id, plan, session_config.options())?;
 
@@ -193,7 +326,6 @@ impl ExecutionGraph {
             start_time: started_at,
             end_time: 0,
             stages,
-            output_partitions,
             output_locations: vec![],
             task_id_gen: 0,
             failed_stage_attempts: HashMap::new(),
@@ -201,70 +333,341 @@ impl ExecutionGraph {
         })
     }
 
-    /// Returns the job ID for this execution graph.
-    pub fn job_id(&self) -> &str {
-        self.job_id.as_str()
-    }
-
-    /// Returns the job name for this execution graph.
-    pub fn job_name(&self) -> &str {
-        self.job_name.as_str()
-    }
-
-    /// Returns the session ID associated with this job.
-    pub fn session_id(&self) -> &str {
-        self.session_id.as_str()
-    }
-
-    /// Returns the current job status.
-    pub fn status(&self) -> &JobStatus {
-        &self.status
-    }
-
-    /// Returns the timestamp when this job started execution.
-    pub fn start_time(&self) -> u64 {
-        self.start_time
-    }
-
-    /// Returns the timestamp when this job completed (0 if still running).
-    pub fn end_time(&self) -> u64 {
-        self.end_time
-    }
-
-    /// Returns the total number of stages in this execution graph.
-    pub fn stage_count(&self) -> usize {
-        self.stages.len()
-    }
-
-    /// Generates and returns the next unique task ID for this execution graph.
-    pub fn next_task_id(&mut self) -> usize {
+    #[cfg(test)]
+    fn next_task_id(&mut self) -> usize {
         let new_tid = self.task_id_gen;
         self.task_id_gen += 1;
         new_tid
     }
 
-    /// Exposes executions stages and stage id's
-    pub fn stages(&self) -> &HashMap<usize, ExecutionStage> {
-        &self.stages
+    /// Processing stage status update after task status changing
+    fn processing_stages_update(
+        &mut self,
+        updated_stages: UpdatedStages,
+    ) -> Result<Vec<QueryStageSchedulerEvent>> {
+        let job_id = self.job_id().to_owned();
+        let mut has_resolved = false;
+        let mut job_err_msg = "".to_owned();
+
+        for stage_id in updated_stages.resolved_stages {
+            self.resolve_stage(stage_id)?;
+            has_resolved = true;
+        }
+
+        for stage_id in updated_stages.successful_stages {
+            self.succeed_stage(stage_id);
+        }
+
+        // Fail the stage and also abort the job
+        for (stage_id, err_msg) in &updated_stages.failed_stages {
+            job_err_msg =
+                format!("Job failed due to stage {stage_id} failed: {err_msg}\n");
+        }
+
+        let mut events = vec![];
+        // Only handle the rollback logic when there are no failed stages
+        if updated_stages.failed_stages.is_empty() {
+            let mut running_tasks_to_cancel = vec![];
+            for (stage_id, failure_reasons) in updated_stages.rollback_running_stages {
+                let tasks = self.rollback_running_stage(stage_id, failure_reasons)?;
+                running_tasks_to_cancel.extend(tasks);
+            }
+
+            for stage_id in updated_stages.resubmit_successful_stages {
+                self.rerun_successful_stage(stage_id);
+            }
+
+            if !running_tasks_to_cancel.is_empty() {
+                events.push(QueryStageSchedulerEvent::CancelTasks(
+                    running_tasks_to_cancel,
+                ));
+            }
+        }
+
+        if !updated_stages.failed_stages.is_empty() {
+            info!("Job {job_id} is failed");
+            self.fail_job(job_err_msg.clone());
+            events.push(QueryStageSchedulerEvent::JobRunningFailed {
+                job_id,
+                fail_message: job_err_msg,
+                queued_at: self.queued_at,
+                failed_at: timestamp_millis(),
+            });
+        } else if self.is_successful() {
+            // If this ExecutionGraph is successful, finish it
+            info!("Job {job_id} is success, finalizing output partitions");
+            self.succeed_job()?;
+            events.push(QueryStageSchedulerEvent::JobFinished {
+                job_id,
+                queued_at: self.queued_at,
+                completed_at: timestamp_millis(),
+            });
+        } else if has_resolved {
+            events.push(QueryStageSchedulerEvent::JobUpdated(job_id))
+        }
+        Ok(events)
     }
 
+    /// Return a Vec of resolvable stage ids
+    fn update_stage_output_links(
+        &mut self,
+        stage_id: usize,
+        is_completed: bool,
+        locations: Vec<PartitionLocation>,
+        output_links: Vec<usize>,
+    ) -> Result<Vec<usize>> {
+        let mut resolved_stages = vec![];
+        let job_id = &self.job_id;
+        if output_links.is_empty() {
+            // If `output_links` is empty, then this is a final stage
+            self.output_locations.extend(locations);
+        } else {
+            for link in output_links.iter() {
+                // If this is an intermediate stage, we need to push its `PartitionLocation`s to the parent stage
+                if let Some(linked_stage) = self.stages.get_mut(link) {
+                    if let ExecutionStage::UnResolved(linked_unresolved_stage) =
+                        linked_stage
+                    {
+                        linked_unresolved_stage
+                            .add_input_partitions(stage_id, locations.clone())?;
+
+                        // If all tasks for this stage are complete, mark the input complete in the parent stage
+                        if is_completed {
+                            linked_unresolved_stage.complete_input(stage_id);
+                        }
+
+                        // If all input partitions are ready, we can resolve any UnresolvedShuffleExec in the parent stage plan
+                        if linked_unresolved_stage.resolvable() {
+                            resolved_stages.push(linked_unresolved_stage.stage_id);
+                        }
+                    } else {
+                        return Err(BallistaError::Internal(format!(
+                            "Error updating job {job_id}: The stage {link} as the output link of stage {stage_id}  should be unresolved"
+                        )));
+                    }
+                } else {
+                    return Err(BallistaError::Internal(format!(
+                        "Error updating job {job_id}: Invalid output link {stage_id} for stage {link}"
+                    )));
+                }
+            }
+        }
+        Ok(resolved_stages)
+    }
+
+    fn get_running_stage_id(&mut self, black_list: &[usize]) -> Option<usize> {
+        let mut running_stage_id = self.stages.iter().find_map(|(stage_id, stage)| {
+            if black_list.contains(stage_id) {
+                None
+            } else if let ExecutionStage::Running(stage) = stage {
+                if stage.available_tasks() > 0 {
+                    Some(*stage_id)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        });
+
+        // If no available tasks found in the running stage,
+        // try to find a resolved stage and convert it to the running stage
+        if running_stage_id.is_none() {
+            if self.revive() {
+                running_stage_id = self.get_running_stage_id(black_list);
+            } else {
+                running_stage_id = None;
+            }
+        }
+
+        running_stage_id
+    }
+
+    fn reset_stages_internal(
+        &mut self,
+        executor_id: &str,
+    ) -> Result<(HashSet<usize>, Vec<RunningTaskInfo>)> {
+        let job_id = self.job_id.clone();
+        // collect the input stages that need to resubmit
+        let mut resubmit_inputs: HashSet<usize> = HashSet::new();
+
+        let mut reset_running_stage = HashSet::new();
+        let mut rollback_resolved_stages = HashSet::new();
+        let mut rollback_running_stages = HashSet::new();
+        let mut resubmit_successful_stages = HashSet::new();
+
+        let mut empty_inputs: HashMap<usize, StageOutput> = HashMap::new();
+        // check the unresolved, resolved and running stages
+        self.stages
+            .iter_mut()
+            .for_each(|(stage_id, stage)| {
+                let stage_inputs = match stage {
+                    ExecutionStage::UnResolved(stage) => {
+                        &mut stage.inputs
+                    }
+                    ExecutionStage::Resolved(stage) => {
+                        &mut stage.inputs
+                    }
+                    ExecutionStage::Running(stage) => {
+                        let reset = stage.reset_tasks(executor_id);
+                        if reset > 0 {
+                            warn!(
+                        "Reset {reset} tasks for running job/stage {job_id}/{stage_id} on lost Executor {executor_id}"
+                        );
+                            reset_running_stage.insert(*stage_id);
+                        }
+                        &mut stage.inputs
+                    }
+                    _ => &mut empty_inputs
+                };
+
+                // For each stage input, check whether there are input locations match that executor
+                // and calculate the resubmit input stages if the input stages are successful.
+                let mut rollback_stage = false;
+                stage_inputs.iter_mut().for_each(|(input_stage_id, stage_output)| {
+                    let mut match_found = false;
+                    stage_output.partition_locations.iter_mut().for_each(
+                        |(_partition, locs)| {
+                            let before_len = locs.len();
+                            locs.retain(|loc| loc.executor_meta.id != executor_id);
+                            if locs.len() < before_len {
+                                match_found = true;
+                            }
+                        },
+                    );
+                    if match_found {
+                        stage_output.complete = false;
+                        rollback_stage = true;
+                        resubmit_inputs.insert(*input_stage_id);
+                    }
+                });
+
+                if rollback_stage {
+                    match stage {
+                        ExecutionStage::Resolved(_) => {
+                            rollback_resolved_stages.insert(*stage_id);
+                            warn!(
+                            "Roll back resolved job/stage {job_id}/{stage_id} and change ShuffleReaderExec back to UnresolvedShuffleExec");
+                        }
+                        ExecutionStage::Running(_) => {
+                            rollback_running_stages.insert(*stage_id);
+                            warn!(
+                            "Roll back running job/stage {job_id}/{stage_id} and change ShuffleReaderExec back to UnresolvedShuffleExec");
+                        }
+                        _ => {}
+                    }
+                }
+            });
+
+        // check and reset the successful stages
+        if !resubmit_inputs.is_empty() {
+            self.stages
+                .iter_mut()
+                .filter(|(stage_id, _stage)| resubmit_inputs.contains(stage_id))
+                .filter_map(|(_stage_id, stage)| {
+                    if let ExecutionStage::Successful(success) = stage {
+                        Some(success)
+                    } else {
+                        None
+                    }
+                })
+                .for_each(|stage| {
+                    let reset = stage.reset_tasks(executor_id);
+                    if reset > 0 {
+                        resubmit_successful_stages.insert(stage.stage_id);
+                        warn!(
+                            "Reset {} tasks for successful job/stage {}/{} on lost Executor {}",
+                            reset, job_id, stage.stage_id, executor_id
+                        )
+                    }
+                });
+        }
+
+        for stage_id in rollback_resolved_stages.iter() {
+            self.rollback_resolved_stage(*stage_id)?;
+        }
+
+        let mut all_running_tasks = vec![];
+        for stage_id in rollback_running_stages.iter() {
+            let tasks = self.rollback_running_stage(
+                *stage_id,
+                HashSet::from([executor_id.to_owned()]),
+            )?;
+            all_running_tasks.extend(tasks);
+        }
+
+        for stage_id in resubmit_successful_stages.iter() {
+            self.rerun_successful_stage(*stage_id);
+        }
+
+        let mut reset_stage = HashSet::new();
+        reset_stage.extend(reset_running_stage);
+        reset_stage.extend(rollback_resolved_stages);
+        reset_stage.extend(rollback_running_stages);
+        reset_stage.extend(resubmit_successful_stages);
+        Ok((reset_stage, all_running_tasks))
+    }
+
+    /// Clear the stage failure count for this stage if the stage is finally success
+    fn clear_stage_failure(&mut self, stage_id: usize) {
+        self.failed_stage_attempts.remove(&stage_id);
+    }
+}
+
+impl ExecutionGraph for StaticExecutionGraph {
+    fn cloned(&self) -> ExecutionGraphBox {
+        Box::new(self.clone())
+    }
+
+    fn job_id(&self) -> &str {
+        self.job_id.as_str()
+    }
+
+    fn job_name(&self) -> &str {
+        self.job_name.as_str()
+    }
+
+    fn session_id(&self) -> &str {
+        self.session_id.as_str()
+    }
+
+    fn status(&self) -> &JobStatus {
+        &self.status
+    }
+
+    fn start_time(&self) -> u64 {
+        self.start_time
+    }
+
+    fn end_time(&self) -> u64 {
+        self.end_time
+    }
+
+    fn completed_stages(&self) -> usize {
+        let mut completed_stages = 0;
+        for stage in self.stages.values() {
+            if let ExecutionStage::Successful(_) = stage {
+                completed_stages += 1;
+            }
+        }
+        completed_stages
+    }
     /// An ExecutionGraph is successful if all its stages are successful
-    pub fn is_successful(&self) -> bool {
+    fn is_successful(&self) -> bool {
         self.stages
             .values()
             .all(|s| matches!(s, ExecutionStage::Successful(_)))
     }
 
-    /// Returns true if all stages in this graph have completed successfully.
-    pub fn is_complete(&self) -> bool {
-        self.stages
-            .values()
-            .all(|s| matches!(s, ExecutionStage::Successful(_)))
-    }
+    // pub fn is_complete(&self) -> bool {
+    //     self.stages
+    //         .values()
+    //         .all(|s| matches!(s, ExecutionStage::Successful(_)))
+    // }
 
     /// Revive the execution graph by converting the resolved stages to running stages
     /// If any stages are converted, return true; else false.
-    pub fn revive(&mut self) -> bool {
+    fn revive(&mut self) -> bool {
         let running_stages = self
             .stages
             .values()
@@ -292,7 +695,7 @@ impl ExecutionGraph {
 
     /// Update task statuses and task metrics in the graph.
     /// This will also push shuffle partitions to their respective shuffle read stages.
-    pub fn update_task_status(
+    fn update_task_status(
         &mut self,
         executor: &ExecutorMetadata,
         task_statuses: Vec<TaskStatus>,
@@ -687,123 +1090,8 @@ impl ExecutionGraph {
         })
     }
 
-    /// Processing stage status update after task status changing
-    fn processing_stages_update(
-        &mut self,
-        updated_stages: UpdatedStages,
-    ) -> Result<Vec<QueryStageSchedulerEvent>> {
-        let job_id = self.job_id().to_owned();
-        let mut has_resolved = false;
-        let mut job_err_msg = "".to_owned();
-
-        for stage_id in updated_stages.resolved_stages {
-            self.resolve_stage(stage_id)?;
-            has_resolved = true;
-        }
-
-        for stage_id in updated_stages.successful_stages {
-            self.succeed_stage(stage_id);
-        }
-
-        // Fail the stage and also abort the job
-        for (stage_id, err_msg) in &updated_stages.failed_stages {
-            job_err_msg =
-                format!("Job failed due to stage {stage_id} failed: {err_msg}\n");
-        }
-
-        let mut events = vec![];
-        // Only handle the rollback logic when there are no failed stages
-        if updated_stages.failed_stages.is_empty() {
-            let mut running_tasks_to_cancel = vec![];
-            for (stage_id, failure_reasons) in updated_stages.rollback_running_stages {
-                let tasks = self.rollback_running_stage(stage_id, failure_reasons)?;
-                running_tasks_to_cancel.extend(tasks);
-            }
-
-            for stage_id in updated_stages.resubmit_successful_stages {
-                self.rerun_successful_stage(stage_id);
-            }
-
-            if !running_tasks_to_cancel.is_empty() {
-                events.push(QueryStageSchedulerEvent::CancelTasks(
-                    running_tasks_to_cancel,
-                ));
-            }
-        }
-
-        if !updated_stages.failed_stages.is_empty() {
-            info!("Job {job_id} is failed");
-            self.fail_job(job_err_msg.clone());
-            events.push(QueryStageSchedulerEvent::JobRunningFailed {
-                job_id,
-                fail_message: job_err_msg,
-                queued_at: self.queued_at,
-                failed_at: timestamp_millis(),
-            });
-        } else if self.is_successful() {
-            // If this ExecutionGraph is successful, finish it
-            info!("Job {job_id} is success, finalizing output partitions");
-            self.succeed_job()?;
-            events.push(QueryStageSchedulerEvent::JobFinished {
-                job_id,
-                queued_at: self.queued_at,
-                completed_at: timestamp_millis(),
-            });
-        } else if has_resolved {
-            events.push(QueryStageSchedulerEvent::JobUpdated(job_id))
-        }
-        Ok(events)
-    }
-
-    /// Return a Vec of resolvable stage ids
-    fn update_stage_output_links(
-        &mut self,
-        stage_id: usize,
-        is_completed: bool,
-        locations: Vec<PartitionLocation>,
-        output_links: Vec<usize>,
-    ) -> Result<Vec<usize>> {
-        let mut resolved_stages = vec![];
-        let job_id = &self.job_id;
-        if output_links.is_empty() {
-            // If `output_links` is empty, then this is a final stage
-            self.output_locations.extend(locations);
-        } else {
-            for link in output_links.iter() {
-                // If this is an intermediate stage, we need to push its `PartitionLocation`s to the parent stage
-                if let Some(linked_stage) = self.stages.get_mut(link) {
-                    if let ExecutionStage::UnResolved(linked_unresolved_stage) =
-                        linked_stage
-                    {
-                        linked_unresolved_stage
-                            .add_input_partitions(stage_id, locations.clone())?;
-
-                        // If all tasks for this stage are complete, mark the input complete in the parent stage
-                        if is_completed {
-                            linked_unresolved_stage.complete_input(stage_id);
-                        }
-
-                        // If all input partitions are ready, we can resolve any UnresolvedShuffleExec in the parent stage plan
-                        if linked_unresolved_stage.resolvable() {
-                            resolved_stages.push(linked_unresolved_stage.stage_id);
-                        }
-                    } else {
-                        return Err(BallistaError::Internal(format!(
-                            "Error updating job {job_id}: The stage {link} as the output link of stage {stage_id}  should be unresolved"
-                        )));
-                    }
-                } else {
-                    return Err(BallistaError::Internal(format!(
-                        "Error updating job {job_id}: Invalid output link {stage_id} for stage {link}"
-                    )));
-                }
-            }
-        }
-        Ok(resolved_stages)
-    }
-
-    /// Returns all the currently running stage IDs.
-    pub fn running_stages(&self) -> Vec<usize> {
+    /// Return all the currently running stage ids
+    fn running_stages(&self) -> Vec<usize> {
         self.stages
             .iter()
             .filter_map(|(stage_id, stage)| {
@@ -816,8 +1104,8 @@ impl ExecutionGraph {
             .collect::<Vec<_>>()
     }
 
-    /// Returns all currently running tasks along with the executor ID on which they are assigned.
-    pub fn running_tasks(&self) -> Vec<RunningTaskInfo> {
+    /// Return all currently running tasks along with the executor ID on which they are assigned
+    fn running_tasks(&self) -> Vec<RunningTaskInfo> {
         self.stages
             .iter()
             .flat_map(|(_, stage)| {
@@ -842,8 +1130,8 @@ impl ExecutionGraph {
             .collect::<Vec<RunningTaskInfo>>()
     }
 
-    /// Returns the total number of tasks in this plan that are ready for scheduling.
-    pub fn available_tasks(&self) -> usize {
+    /// Total number of tasks in this plan that are ready for scheduling
+    fn available_tasks(&self) -> usize {
         self.stages
             .values()
             .map(|stage| {
@@ -856,16 +1144,253 @@ impl ExecutionGraph {
             .sum()
     }
 
+    fn fetch_running_stage(
+        &mut self,
+        black_list: &[usize],
+    ) -> Option<(&mut RunningStage, &mut usize)> {
+        if matches!(
+            self.status,
+            JobStatus {
+                status: Some(job_status::Status::Failed(_)),
+                ..
+            }
+        ) {
+            debug!("Call fetch_runnable_stage on failed Job");
+            return None;
+        }
+
+        let running_stage_id = self.get_running_stage_id(black_list);
+        if let Some(running_stage_id) = running_stage_id {
+            if let Some(ExecutionStage::Running(running_stage)) =
+                self.stages.get_mut(&running_stage_id)
+            {
+                Some((running_stage, &mut self.task_id_gen))
+            } else {
+                warn!("Fail to find running stage with id {running_stage_id}");
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    fn update_status(&mut self, status: JobStatus) {
+        self.status = status;
+    }
+
+    fn output_locations(&self) -> Vec<PartitionLocation> {
+        self.output_locations.clone()
+    }
+
+    /// Reset running and successful stages on a given executor
+    /// This will first check the unresolved/resolved/running stages and reset the running tasks and successful tasks.
+    /// Then it will check the successful stage and whether there are running parent stages need to read shuffle from it.
+    /// If yes, reset the successful tasks and roll back the resolved shuffle recursively.
+    ///
+    /// Returns the reset stage ids and running tasks should be killed
+    fn reset_stages_on_lost_executor(
+        &mut self,
+        executor_id: &str,
+    ) -> Result<(HashSet<usize>, Vec<RunningTaskInfo>)> {
+        let mut reset = HashSet::new();
+        let mut tasks_to_cancel = vec![];
+        loop {
+            let reset_stage = self.reset_stages_internal(executor_id)?;
+            if !reset_stage.0.is_empty() {
+                reset.extend(reset_stage.0.iter());
+                tasks_to_cancel.extend(reset_stage.1)
+            } else {
+                return Ok((reset, tasks_to_cancel));
+            }
+        }
+    }
+
+    /// Convert unresolved stage to be resolved
+    fn resolve_stage(&mut self, stage_id: usize) -> Result<bool> {
+        if let Some(ExecutionStage::UnResolved(stage)) = self.stages.remove(&stage_id) {
+            self.stages.insert(
+                stage_id,
+                ExecutionStage::Resolved(
+                    stage.to_resolved(self.session_config.options())?,
+                ),
+            );
+            Ok(true)
+        } else {
+            warn!(
+                "Fail to find a unresolved stage {}/{} to resolve",
+                self.job_id(),
+                stage_id
+            );
+            Ok(false)
+        }
+    }
+
+    /// Convert running stage to be successful
+    fn succeed_stage(&mut self, stage_id: usize) -> bool {
+        if let Some(ExecutionStage::Running(stage)) = self.stages.remove(&stage_id) {
+            self.stages
+                .insert(stage_id, ExecutionStage::Successful(stage.to_successful()));
+            self.clear_stage_failure(stage_id);
+            true
+        } else {
+            warn!(
+                "Fail to find a running stage {}/{} to make it success",
+                self.job_id(),
+                stage_id
+            );
+            false
+        }
+    }
+
+    /// Convert running stage to be failed
+    fn fail_stage(&mut self, stage_id: usize, err_msg: String) -> bool {
+        if let Some(ExecutionStage::Running(stage)) = self.stages.remove(&stage_id) {
+            self.stages
+                .insert(stage_id, ExecutionStage::Failed(stage.to_failed(err_msg)));
+            true
+        } else {
+            info!(
+                "Fail to find a running stage {}/{} to fail",
+                self.job_id(),
+                stage_id
+            );
+            false
+        }
+    }
+
+    /// Convert running stage to be unresolved,
+    /// Returns a Vec of RunningTaskInfo for running tasks in this stage.
+    fn rollback_running_stage(
+        &mut self,
+        stage_id: usize,
+        failure_reasons: HashSet<String>,
+    ) -> Result<Vec<RunningTaskInfo>> {
+        if let Some(ExecutionStage::Running(stage)) = self.stages.remove(&stage_id) {
+            let running_tasks = stage
+                .running_tasks()
+                .into_iter()
+                .map(
+                    |(task_id, stage_id, partition_id, executor_id)| RunningTaskInfo {
+                        task_id,
+                        job_id: self.job_id.clone(),
+                        stage_id,
+                        partition_id,
+                        executor_id,
+                    },
+                )
+                .collect();
+            self.stages.insert(
+                stage_id,
+                ExecutionStage::UnResolved(stage.to_unresolved(failure_reasons)?),
+            );
+            Ok(running_tasks)
+        } else {
+            warn!(
+                "Fail to find a running stage {}/{} to rollback",
+                self.job_id(),
+                stage_id
+            );
+            Ok(vec![])
+        }
+    }
+
+    /// Convert resolved stage to be unresolved
+    fn rollback_resolved_stage(&mut self, stage_id: usize) -> Result<bool> {
+        if let Some(ExecutionStage::Resolved(stage)) = self.stages.remove(&stage_id) {
+            self.stages
+                .insert(stage_id, ExecutionStage::UnResolved(stage.to_unresolved()?));
+            Ok(true)
+        } else {
+            warn!(
+                "Fail to find a resolved stage {}/{} to rollback",
+                self.job_id(),
+                stage_id
+            );
+            Ok(false)
+        }
+    }
+
+    /// Convert successful stage to be running
+    fn rerun_successful_stage(&mut self, stage_id: usize) -> bool {
+        if let Some(ExecutionStage::Successful(stage)) = self.stages.remove(&stage_id) {
+            self.stages
+                .insert(stage_id, ExecutionStage::Running(stage.to_running()));
+            true
+        } else {
+            warn!(
+                "Fail to find a successful stage {}/{} to rerun",
+                self.job_id(),
+                stage_id
+            );
+            false
+        }
+    }
+
+    /// fail job with error message
+    fn fail_job(&mut self, error: String) {
+        self.status = JobStatus {
+            job_id: self.job_id.clone(),
+            job_name: self.job_name.clone(),
+            status: Some(Status::Failed(FailedJob {
+                error,
+                queued_at: self.queued_at,
+                started_at: self.start_time,
+                ended_at: self.end_time,
+            })),
+        };
+    }
+
+    /// Mark the job success
+    fn succeed_job(&mut self) -> Result<()> {
+        if !self.is_successful() {
+            return Err(BallistaError::Internal(format!(
+                "Attempt to finalize an incomplete job {}",
+                self.job_id()
+            )));
+        }
+
+        let partition_location = self
+            .output_locations()
+            .into_iter()
+            .map(|l| l.try_into())
+            .collect::<Result<Vec<_>>>()?;
+
+        self.end_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        self.status = JobStatus {
+            job_id: self.job_id.clone(),
+            job_name: self.job_name.clone(),
+            status: Some(job_status::Status::Successful(SuccessfulJob {
+                partition_location,
+
+                queued_at: self.queued_at,
+                started_at: self.start_time,
+                ended_at: self.end_time,
+            })),
+        };
+
+        Ok(())
+    }
+
+    fn stages(&self) -> &HashMap<usize, ExecutionStage> {
+        &self.stages
+    }
+
+    fn stage_count(&self) -> usize {
+        self.stages.len()
+    }
+
     /// Get next task that can be assigned to the given executor.
     /// This method should only be called when the resulting task is immediately
     /// being launched as the status will be set to Running and it will not be
     /// available to the scheduler.
     /// If the task is not launched the status must be reset to allow the task to
     /// be scheduled elsewhere.
-    pub fn pop_next_task(
-        &mut self,
-        executor_id: &str,
-    ) -> Result<Option<TaskDescription>> {
+    #[cfg(test)]
+    fn pop_next_task(&mut self, executor_id: &str) -> Result<Option<TaskDescription>> {
         if matches!(
             self.status,
             JobStatus {
@@ -963,417 +1488,9 @@ impl ExecutionGraph {
 
         Ok(next_task)
     }
-
-    /// Fetches a running stage that has available tasks, excluding stages in the blacklist.
-    ///
-    /// Returns a mutable reference to the running stage and the task ID generator
-    /// if a suitable stage is found.
-    pub fn fetch_running_stage(
-        &mut self,
-        black_list: &[usize],
-    ) -> Option<(&mut RunningStage, &mut usize)> {
-        if matches!(
-            self.status,
-            JobStatus {
-                status: Some(job_status::Status::Failed(_)),
-                ..
-            }
-        ) {
-            debug!("Call fetch_runnable_stage on failed Job");
-            return None;
-        }
-
-        let running_stage_id = self.get_running_stage_id(black_list);
-        if let Some(running_stage_id) = running_stage_id {
-            if let Some(ExecutionStage::Running(running_stage)) =
-                self.stages.get_mut(&running_stage_id)
-            {
-                Some((running_stage, &mut self.task_id_gen))
-            } else {
-                warn!("Fail to find running stage with id {running_stage_id}");
-                None
-            }
-        } else {
-            None
-        }
-    }
-
-    fn get_running_stage_id(&mut self, black_list: &[usize]) -> Option<usize> {
-        let mut running_stage_id = self.stages.iter().find_map(|(stage_id, stage)| {
-            if black_list.contains(stage_id) {
-                None
-            } else if let ExecutionStage::Running(stage) = stage {
-                if stage.available_tasks() > 0 {
-                    Some(*stage_id)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        });
-
-        // If no available tasks found in the running stage,
-        // try to find a resolved stage and convert it to the running stage
-        if running_stage_id.is_none() {
-            if self.revive() {
-                running_stage_id = self.get_running_stage_id(black_list);
-            } else {
-                running_stage_id = None;
-            }
-        }
-
-        running_stage_id
-    }
-
-    /// Updates the job status.
-    pub fn update_status(&mut self, status: JobStatus) {
-        self.status = status;
-    }
-
-    /// Returns the output partition locations for the final stage results.
-    pub fn output_locations(&self) -> Vec<PartitionLocation> {
-        self.output_locations.clone()
-    }
-
-    /// Reset running and successful stages on a given executor
-    /// This will first check the unresolved/resolved/running stages and reset the running tasks and successful tasks.
-    /// Then it will check the successful stage and whether there are running parent stages need to read shuffle from it.
-    /// If yes, reset the successful tasks and roll back the resolved shuffle recursively.
-    ///
-    /// Returns the reset stage ids and running tasks should be killed
-    pub fn reset_stages_on_lost_executor(
-        &mut self,
-        executor_id: &str,
-    ) -> Result<(HashSet<usize>, Vec<RunningTaskInfo>)> {
-        let mut reset = HashSet::new();
-        let mut tasks_to_cancel = vec![];
-        loop {
-            let reset_stage = self.reset_stages_internal(executor_id)?;
-            if !reset_stage.0.is_empty() {
-                reset.extend(reset_stage.0.iter());
-                tasks_to_cancel.extend(reset_stage.1)
-            } else {
-                return Ok((reset, tasks_to_cancel));
-            }
-        }
-    }
-
-    fn reset_stages_internal(
-        &mut self,
-        executor_id: &str,
-    ) -> Result<(HashSet<usize>, Vec<RunningTaskInfo>)> {
-        let job_id = self.job_id.clone();
-        // collect the input stages that need to resubmit
-        let mut resubmit_inputs: HashSet<usize> = HashSet::new();
-
-        let mut reset_running_stage = HashSet::new();
-        let mut rollback_resolved_stages = HashSet::new();
-        let mut rollback_running_stages = HashSet::new();
-        let mut resubmit_successful_stages = HashSet::new();
-
-        let mut empty_inputs: HashMap<usize, StageOutput> = HashMap::new();
-        // check the unresolved, resolved and running stages
-        self.stages
-            .iter_mut()
-            .for_each(|(stage_id, stage)| {
-                let stage_inputs = match stage {
-                    ExecutionStage::UnResolved(stage) => {
-                        &mut stage.inputs
-                    }
-                    ExecutionStage::Resolved(stage) => {
-                        &mut stage.inputs
-                    }
-                    ExecutionStage::Running(stage) => {
-                        let reset = stage.reset_tasks(executor_id);
-                        if reset > 0 {
-                            warn!(
-                        "Reset {reset} tasks for running job/stage {job_id}/{stage_id} on lost Executor {executor_id}"
-                        );
-                            reset_running_stage.insert(*stage_id);
-                        }
-                        &mut stage.inputs
-                    }
-                    _ => &mut empty_inputs
-                };
-
-                // For each stage input, check whether there are input locations match that executor
-                // and calculate the resubmit input stages if the input stages are successful.
-                let mut rollback_stage = false;
-                stage_inputs.iter_mut().for_each(|(input_stage_id, stage_output)| {
-                    let mut match_found = false;
-                    stage_output.partition_locations.iter_mut().for_each(
-                        |(_partition, locs)| {
-                            let before_len = locs.len();
-                            locs.retain(|loc| loc.executor_meta.id != executor_id);
-                            if locs.len() < before_len {
-                                match_found = true;
-                            }
-                        },
-                    );
-                    if match_found {
-                        stage_output.complete = false;
-                        rollback_stage = true;
-                        resubmit_inputs.insert(*input_stage_id);
-                    }
-                });
-
-                if rollback_stage {
-                    match stage {
-                        ExecutionStage::Resolved(_) => {
-                            rollback_resolved_stages.insert(*stage_id);
-                            warn!(
-                            "Roll back resolved job/stage {job_id}/{stage_id} and change ShuffleReaderExec back to UnresolvedShuffleExec");
-                        }
-                        ExecutionStage::Running(_) => {
-                            rollback_running_stages.insert(*stage_id);
-                            warn!(
-                            "Roll back running job/stage {job_id}/{stage_id} and change ShuffleReaderExec back to UnresolvedShuffleExec");
-                        }
-                        _ => {}
-                    }
-                }
-            });
-
-        // check and reset the successful stages
-        if !resubmit_inputs.is_empty() {
-            self.stages
-                .iter_mut()
-                .filter(|(stage_id, _stage)| resubmit_inputs.contains(stage_id))
-                .filter_map(|(_stage_id, stage)| {
-                    if let ExecutionStage::Successful(success) = stage {
-                        Some(success)
-                    } else {
-                        None
-                    }
-                })
-                .for_each(|stage| {
-                    let reset = stage.reset_tasks(executor_id);
-                    if reset > 0 {
-                        resubmit_successful_stages.insert(stage.stage_id);
-                        warn!(
-                            "Reset {} tasks for successful job/stage {}/{} on lost Executor {}",
-                            reset, job_id, stage.stage_id, executor_id
-                        )
-                    }
-                });
-        }
-
-        for stage_id in rollback_resolved_stages.iter() {
-            self.rollback_resolved_stage(*stage_id)?;
-        }
-
-        let mut all_running_tasks = vec![];
-        for stage_id in rollback_running_stages.iter() {
-            let tasks = self.rollback_running_stage(
-                *stage_id,
-                HashSet::from([executor_id.to_owned()]),
-            )?;
-            all_running_tasks.extend(tasks);
-        }
-
-        for stage_id in resubmit_successful_stages.iter() {
-            self.rerun_successful_stage(*stage_id);
-        }
-
-        let mut reset_stage = HashSet::new();
-        reset_stage.extend(reset_running_stage);
-        reset_stage.extend(rollback_resolved_stages);
-        reset_stage.extend(rollback_running_stages);
-        reset_stage.extend(resubmit_successful_stages);
-        Ok((reset_stage, all_running_tasks))
-    }
-
-    /// Converts an unresolved stage to resolved state.
-    ///
-    /// Returns true if the stage was successfully resolved, false if the stage
-    /// was not found or not in unresolved state.
-    pub fn resolve_stage(&mut self, stage_id: usize) -> Result<bool> {
-        if let Some(ExecutionStage::UnResolved(stage)) = self.stages.remove(&stage_id) {
-            self.stages.insert(
-                stage_id,
-                ExecutionStage::Resolved(
-                    stage.to_resolved(self.session_config.options())?,
-                ),
-            );
-            Ok(true)
-        } else {
-            warn!(
-                "Fail to find a unresolved stage {}/{} to resolve",
-                self.job_id(),
-                stage_id
-            );
-            Ok(false)
-        }
-    }
-
-    /// Converts a running stage to successful state.
-    ///
-    /// Returns true if the stage was successfully marked as complete.
-    pub fn succeed_stage(&mut self, stage_id: usize) -> bool {
-        if let Some(ExecutionStage::Running(stage)) = self.stages.remove(&stage_id) {
-            self.stages
-                .insert(stage_id, ExecutionStage::Successful(stage.to_successful()));
-            self.clear_stage_failure(stage_id);
-            true
-        } else {
-            warn!(
-                "Fail to find a running stage {}/{} to make it success",
-                self.job_id(),
-                stage_id
-            );
-            false
-        }
-    }
-
-    /// Converts a running stage to failed state with the given error message.
-    ///
-    /// Returns true if the stage was found and marked as failed.
-    pub fn fail_stage(&mut self, stage_id: usize, err_msg: String) -> bool {
-        if let Some(ExecutionStage::Running(stage)) = self.stages.remove(&stage_id) {
-            self.stages
-                .insert(stage_id, ExecutionStage::Failed(stage.to_failed(err_msg)));
-            true
-        } else {
-            info!(
-                "Fail to find a running stage {}/{} to fail",
-                self.job_id(),
-                stage_id
-            );
-            false
-        }
-    }
-
-    /// Convert running stage to be unresolved,
-    /// Returns a Vec of RunningTaskInfo for running tasks in this stage.
-    pub fn rollback_running_stage(
-        &mut self,
-        stage_id: usize,
-        failure_reasons: HashSet<String>,
-    ) -> Result<Vec<RunningTaskInfo>> {
-        if let Some(ExecutionStage::Running(stage)) = self.stages.remove(&stage_id) {
-            let running_tasks = stage
-                .running_tasks()
-                .into_iter()
-                .map(
-                    |(task_id, stage_id, partition_id, executor_id)| RunningTaskInfo {
-                        task_id,
-                        job_id: self.job_id.clone(),
-                        stage_id,
-                        partition_id,
-                        executor_id,
-                    },
-                )
-                .collect();
-            self.stages.insert(
-                stage_id,
-                ExecutionStage::UnResolved(stage.to_unresolved(failure_reasons)?),
-            );
-            Ok(running_tasks)
-        } else {
-            warn!(
-                "Fail to find a running stage {}/{} to rollback",
-                self.job_id(),
-                stage_id
-            );
-            Ok(vec![])
-        }
-    }
-
-    /// Convert resolved stage to be unresolved
-    pub fn rollback_resolved_stage(&mut self, stage_id: usize) -> Result<bool> {
-        if let Some(ExecutionStage::Resolved(stage)) = self.stages.remove(&stage_id) {
-            self.stages
-                .insert(stage_id, ExecutionStage::UnResolved(stage.to_unresolved()?));
-            Ok(true)
-        } else {
-            warn!(
-                "Fail to find a resolved stage {}/{} to rollback",
-                self.job_id(),
-                stage_id
-            );
-            Ok(false)
-        }
-    }
-
-    /// Converts a successful stage back to running state for re-execution.
-    ///
-    /// This is used when some outputs from the stage have been lost and tasks
-    /// need to be re-run.
-    pub fn rerun_successful_stage(&mut self, stage_id: usize) -> bool {
-        if let Some(ExecutionStage::Successful(stage)) = self.stages.remove(&stage_id) {
-            self.stages
-                .insert(stage_id, ExecutionStage::Running(stage.to_running()));
-            true
-        } else {
-            warn!(
-                "Fail to find a successful stage {}/{} to rerun",
-                self.job_id(),
-                stage_id
-            );
-            false
-        }
-    }
-
-    /// fail job with error message
-    pub fn fail_job(&mut self, error: String) {
-        self.status = JobStatus {
-            job_id: self.job_id.clone(),
-            job_name: self.job_name.clone(),
-            status: Some(Status::Failed(FailedJob {
-                error,
-                queued_at: self.queued_at,
-                started_at: self.start_time,
-                ended_at: self.end_time,
-            })),
-        };
-    }
-
-    /// Marks the job as successfully completed.
-    ///
-    /// This should only be called after all stages have completed successfully.
-    /// Returns an error if the job is not in a successful state.
-    pub fn succeed_job(&mut self) -> Result<()> {
-        if !self.is_successful() {
-            return Err(BallistaError::Internal(format!(
-                "Attempt to finalize an incomplete job {}",
-                self.job_id()
-            )));
-        }
-
-        let partition_location = self
-            .output_locations()
-            .into_iter()
-            .map(|l| l.try_into())
-            .collect::<Result<Vec<_>>>()?;
-
-        self.end_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-
-        self.status = JobStatus {
-            job_id: self.job_id.clone(),
-            job_name: self.job_name.clone(),
-            status: Some(job_status::Status::Successful(SuccessfulJob {
-                partition_location,
-
-                queued_at: self.queued_at,
-                started_at: self.start_time,
-                ended_at: self.end_time,
-            })),
-        };
-
-        Ok(())
-    }
-
-    /// Clear the stage failure count for this stage if the stage is finally success
-    fn clear_stage_failure(&mut self, stage_id: usize) {
-        self.failed_stage_attempts.remove(&stage_id);
-    }
 }
 
-impl Debug for ExecutionGraph {
+impl Debug for StaticExecutionGraph {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let stages = self
             .stages
@@ -1704,8 +1821,6 @@ mod test {
 
         let outputs = agg_graph.output_locations();
 
-        assert_eq!(outputs.len(), agg_graph.output_partitions);
-
         for location in outputs {
             assert_eq!(location.executor_meta.host, "localhost2".to_owned());
         }
@@ -1965,7 +2080,7 @@ mod test {
 
         assert!(
             matches!(
-                agg_graph.status,
+                agg_graph.status(),
                 JobStatus {
                     status: Some(job_status::Status::Failed(_)),
                     ..
@@ -2242,7 +2357,7 @@ mod test {
         drain_tasks(&mut agg_graph)?;
         assert!(!agg_graph.is_successful(), "Expect to fail the agg plan");
 
-        let failure_reason = format!("{:?}", agg_graph.status);
+        let failure_reason = format!("{:?}", agg_graph.status());
         assert!(failure_reason.contains("Job failed due to stage 2 failed: Stage 2 has failed 4 times, most recent failure reason"));
         assert!(failure_reason.contains("FetchPartitionError"));
 
@@ -2723,7 +2838,7 @@ mod test {
     //     todo!()
     // }
 
-    fn drain_tasks(graph: &mut ExecutionGraph) -> Result<()> {
+    fn drain_tasks(graph: &mut dyn ExecutionGraph) -> Result<()> {
         let executor = mock_executor("executor-id1".to_string());
         while let Some(task) = graph.pop_next_task(&executor.id)? {
             let task_status = mock_completed_task(task, &executor.id);
