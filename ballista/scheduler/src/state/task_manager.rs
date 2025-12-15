@@ -19,7 +19,7 @@ use crate::planner::DefaultDistributedPlanner;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
 use crate::state::execution_graph::{
-    ExecutionGraph, ExecutionStage, RunningTaskInfo, TaskDescription,
+    ExecutionGraphBox, RunningTaskInfo, StaticExecutionGraph, TaskDescription,
 };
 use crate::state::executor_manager::ExecutorManager;
 
@@ -123,7 +123,7 @@ pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 #[derive(Clone)]
 pub struct JobInfoCache {
     // Cache for active execution graphs curated by this scheduler
-    pub execution_graph: Arc<RwLock<ExecutionGraph>>,
+    pub execution_graph: Arc<RwLock<ExecutionGraphBox>>,
     // Cache for job status
     pub status: Option<job_status::Status>,
     #[cfg(not(feature = "disable-stage-plan-cache"))]
@@ -132,7 +132,7 @@ pub struct JobInfoCache {
 }
 
 impl JobInfoCache {
-    pub fn new(graph: ExecutionGraph) -> Self {
+    pub fn new(graph: ExecutionGraphBox) -> Self {
         let status = graph.status().status.clone();
         Self {
             execution_graph: Arc::new(RwLock::new(graph)),
@@ -244,7 +244,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         session_config: Arc<SessionConfig>,
     ) -> Result<()> {
         let mut planner = DefaultDistributedPlanner::new();
-        let mut graph = ExecutionGraph::new(
+        let mut graph = Box::new(StaticExecutionGraph::new(
             &self.scheduler_id,
             job_id,
             job_name,
@@ -253,7 +253,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             queued_at,
             session_config,
             &mut planner,
-        )?;
+        )?) as ExecutionGraphBox;
         info!("Submitting execution graph: {graph:?}");
 
         self.state.submit_job(job_id.to_string(), &graph).await?;
@@ -318,15 +318,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     pub(crate) async fn get_job_execution_graph(
         &self,
         job_id: &str,
-    ) -> Result<Option<Arc<ExecutionGraph>>> {
+    ) -> Result<Option<ExecutionGraphBox>> {
         if let Some(cached) = self.get_active_execution_graph(job_id) {
             let guard = cached.read().await;
 
-            Ok(Some(Arc::new(guard.deref().clone())))
+            Ok(Some(guard.deref().cloned()))
         } else {
             let graph = self.state.get_execution_graph(job_id).await?;
 
-            Ok(graph.map(Arc::new))
+            Ok(graph)
         }
     }
 
@@ -384,7 +384,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         debug!("Moving job {job_id} from Active to Success");
 
         if let Some(graph) = self.remove_active_execution_graph(job_id) {
-            let graph = graph.read().await.clone();
+            let graph = graph.read().await;
             if graph.is_successful() {
                 self.state.save_job(job_id, &graph).await?;
             } else {
@@ -481,15 +481,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     pub async fn executor_lost(&self, executor_id: &str) -> Result<Vec<RunningTaskInfo>> {
         // Collect all the running task need to cancel when there are running stages rolled back.
         let mut running_tasks_to_cancel: Vec<RunningTaskInfo> = vec![];
-        // Collect graphs we update so we can update them in storage
-        let updated_graphs: DashMap<String, ExecutionGraph> = DashMap::new();
+
         {
             for pairs in self.active_job_cache.iter() {
-                let (job_id, job_info) = pairs.pair();
+                let (_job_id, job_info) = pairs.pair();
                 let mut graph = job_info.execution_graph.write().await;
                 let reset = graph.reset_stages_on_lost_executor(executor_id)?;
                 if !reset.0.is_empty() {
-                    updated_graphs.insert(job_id.to_owned(), graph.clone());
                     running_tasks_to_cancel.extend(reset.1);
                 }
             }
@@ -647,7 +645,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     pub(crate) fn get_active_execution_graph(
         &self,
         job_id: &str,
-    ) -> Option<Arc<RwLock<ExecutionGraph>>> {
+    ) -> Option<Arc<RwLock<ExecutionGraphBox>>> {
         self.active_job_cache
             .get(job_id)
             .as_deref()
@@ -658,7 +656,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     pub(crate) fn remove_active_execution_graph(
         &self,
         job_id: &str,
-    ) -> Option<Arc<RwLock<ExecutionGraph>>> {
+    ) -> Option<Arc<RwLock<ExecutionGraphBox>>> {
         self.active_job_cache
             .remove(job_id)
             .map(|value| value.1.execution_graph)
@@ -703,14 +701,9 @@ pub struct JobOverview {
     pub completed_stages: usize,
 }
 
-impl From<&ExecutionGraph> for JobOverview {
-    fn from(value: &ExecutionGraph) -> Self {
-        let mut completed_stages = 0;
-        for stage in value.stages().values() {
-            if let ExecutionStage::Successful(_) = stage {
-                completed_stages += 1;
-            }
-        }
+impl From<&ExecutionGraphBox> for JobOverview {
+    fn from(value: &ExecutionGraphBox) -> Self {
+        let completed_stages = value.completed_stages();
 
         Self {
             job_id: value.job_id().to_string(),
