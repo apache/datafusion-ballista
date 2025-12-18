@@ -707,9 +707,9 @@ message RunningTaskInfo {
   uint32 partition_id = 4;;
 }
 
-message FlightEndpointAddressInfoParams {
+message FlightEndpointInfoParams {
 }
-message FlightEndpointAddressInfo {
+message FlightEndpointInfo {
   optional string address = 1;
 }
 
@@ -741,7 +741,7 @@ service SchedulerGrpc {
   rpc CleanJobData (CleanJobDataParams) returns (CleanJobDataResult) {}
 
   // Provide info on flight proxy address
-  rpc GetFlightEndpointInfo (FlightEndpointAddressInfoParams) returns (FlightEndpointAddressInfo) {}
+  rpc GetFlightEndpointInfo (FlightEndpointInfoParams) returns (FlightEndpointInfo) {}
 }
 
 service ExecutorGrpc {

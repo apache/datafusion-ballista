@@ -23,7 +23,7 @@ use crate::serde::protobuf::{
     GetJobStatusResult, KeyValuePair, PartitionLocation,
 };
 use crate::serde::protobuf::{
-    FlightEndpointAddressInfo, FlightEndpointAddressInfoParams, SuccessfulJob,
+    FlightEndpointInfo, FlightEndpointInfoParams, SuccessfulJob,
 };
 use crate::utils::{create_grpc_client_connection, GrpcClientConfig};
 use datafusion::arrow::datatypes::SchemaRef;
@@ -363,10 +363,10 @@ async fn execute_query(
                 let duration = Duration::from_millis(duration);
 
                 info!("Job {job_id} finished executing in {duration:?} ");
-                let FlightEndpointAddressInfo {
+                let FlightEndpointInfo {
                     address: flight_proxy_address,
                 } = scheduler
-                    .get_flight_endpoint_info(FlightEndpointAddressInfoParams {})
+                    .get_flight_endpoint_info(FlightEndpointInfoParams {})
                     .await
                     .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
                     .into_inner();
