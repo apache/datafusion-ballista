@@ -93,11 +93,8 @@ impl FlightService for BallistaFlightProxyService {
                 let mut client = get_flight_client(host, port)
                     .map_err(|e| from_ballista_err(&e))
                     .await?;
-                let request = Request::new(Ticket {
-                    ticket: ticket.ticket.clone().into(),
-                });
                 client
-                    .do_get(request)
+                    .do_get(Request::new(ticket))
                     .await
                     .map(|r| Response::new(Box::pin(r.into_inner()) as Self::DoGetStream))
             }
