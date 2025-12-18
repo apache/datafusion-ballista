@@ -25,7 +25,8 @@ use ballista_core::serde::protobuf::{
     CancelJobParams, CancelJobResult, CleanJobDataParams, CleanJobDataResult,
     CreateUpdateSessionParams, CreateUpdateSessionResult, ExecuteQueryFailureResult,
     ExecuteQueryParams, ExecuteQueryResult, ExecuteQuerySuccessResult, ExecutorHeartbeat,
-    ExecutorStoppedParams, ExecutorStoppedResult, GetJobStatusParams, GetJobStatusResult,
+    ExecutorStoppedParams, ExecutorStoppedResult, FlightEndpointAddressInfo,
+    FlightEndpointAddressInfoParams, GetJobStatusParams, GetJobStatusResult,
     HeartBeatParams, HeartBeatResult, PollWorkParams, PollWorkResult,
     RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
     RemoveSessionResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
@@ -525,6 +526,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 Status::internal(msg)
             })?;
         Ok(Response::new(CleanJobDataResult {}))
+    }
+    async fn get_flight_endpoint_info(
+        &self,
+        _request: tonic::Request<FlightEndpointAddressInfoParams>,
+    ) -> Result<Response<FlightEndpointAddressInfo>, Status> {
+        let address = self.state.config.advertise_flight_sql_endpoint.clone();
+        Ok(Response::new(FlightEndpointAddressInfo { address }))
     }
 }
 

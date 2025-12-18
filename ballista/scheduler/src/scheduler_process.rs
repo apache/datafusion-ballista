@@ -15,29 +15,31 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#[cfg(feature = "rest-api")]
+use crate::api::get_routes;
+use crate::cluster::BallistaCluster;
+use crate::config::SchedulerConfig;
+use crate::flight_proxy_service::BallistaFlightProxyService;
+use crate::metrics::default_metrics_collector;
+#[cfg(feature = "keda-scaler")]
+use crate::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
+use crate::scheduler_server::SchedulerServer;
+use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer;
 use ballista_core::serde::{
     BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
 };
+use ballista_core::utils::{create_grpc_server, GrpcServerConfig};
 use ballista_core::BALLISTA_VERSION;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use http::StatusCode;
-use log::info;
+use log::{error, info};
 use std::{net::SocketAddr, sync::Arc};
+use tokio::task::JoinHandle;
 use tonic::service::RoutesBuilder;
-
-#[cfg(feature = "rest-api")]
-use crate::api::get_routes;
-use crate::cluster::BallistaCluster;
-use crate::config::SchedulerConfig;
-
-use crate::metrics::default_metrics_collector;
-#[cfg(feature = "keda-scaler")]
-use crate::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
-use crate::scheduler_server::SchedulerServer;
 
 /// Creates as initialized scheduler service
 /// without exposing it as a grpc service
@@ -121,6 +123,49 @@ pub async fn start_grpc_service<
         .map_err(BallistaError::from)
 }
 
+fn start_flight_proxy_server(
+    config: Arc<SchedulerConfig>,
+) -> JoinHandle<Result<(), BallistaError>> {
+    tokio::spawn(async move {
+        let address = match config.advertise_flight_sql_endpoint.clone() {
+            Some(flight_sql_endpoint) => flight_sql_endpoint
+                .parse::<SocketAddr>()
+                .map_err(|e: std::net::AddrParseError| {
+                    error!(
+                        "Error parsing advertise_flight_sql_endpoint: {}",
+                        e.to_string()
+                    );
+                    BallistaError::Configuration(e.to_string())
+                })?,
+            _ => {
+                return Err(BallistaError::Configuration(
+                    "Expected advertise flight sql endpoint".into(),
+                ));
+            }
+        };
+
+        let max_encoding_message_size =
+            config.grpc_server_max_encoding_message_size as usize;
+        let max_decoding_message_size =
+            config.grpc_server_max_decoding_message_size as usize;
+        info!("Built-in arrow flight server proxy listening on: {address:?} max_encoding_size: {max_encoding_message_size} max_decoding_size: {max_decoding_message_size}");
+
+        let grpc_server_config = GrpcServerConfig::default();
+        let server_future = create_grpc_server(&grpc_server_config)
+            .add_service(
+                FlightServiceServer::new(BallistaFlightProxyService::new())
+                    .max_decoding_message_size(max_decoding_message_size)
+                    .max_encoding_message_size(max_encoding_message_size),
+            )
+            .serve(address);
+
+        server_future.await.map_err(|e| {
+            error!("Could not start built-in arrow flight server.");
+            BallistaError::TonicError(e)
+        })
+    })
+}
+
 /// Creates scheduler and exposes it as grpc service
 ///
 /// Method is a helper method which calls [create_scheduler] and [start_grpc_service]
@@ -131,7 +176,19 @@ pub async fn start_server(
 ) -> ballista_core::error::Result<()> {
     info!("Ballista v{BALLISTA_VERSION} Scheduler listening on {address:?}");
     let scheduler =
-        create_scheduler::<LogicalPlanNode, PhysicalPlanNode>(cluster, config).await?;
+        create_scheduler::<LogicalPlanNode, PhysicalPlanNode>(cluster, config.clone())
+            .await?;
 
-    start_grpc_service(address, scheduler).await
+    info!(
+        "advertise_flight_sql_endpoint: {:?}",
+        config.advertise_flight_sql_endpoint
+    );
+    match config.advertise_flight_sql_endpoint {
+        Some(_) => {
+            info!("Starting flight proxy");
+            let _flight_proxy = start_flight_proxy_server(config);
+            start_grpc_service(address, scheduler).await
+        }
+        None => start_grpc_service(address, scheduler).await,
+    }
 }

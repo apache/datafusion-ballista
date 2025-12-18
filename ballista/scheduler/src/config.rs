@@ -40,7 +40,7 @@ use std::sync::Arc;
 pub struct Config {
     #[arg(
         long,
-        help = "Route for proxying flight results via scheduler. Should be of the form 'IP:PORT"
+        help = "Route for proxying flight results via scheduler. Should be of the form 'IP:PORT'"
     )]
     pub advertise_flight_sql_endpoint: Option<String>,
     #[arg(short = 'n', long, default_value_t = String::from("ballista"), help = "Namespace for the ballista cluster that this executor will join. Default: ballista")]

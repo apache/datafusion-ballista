@@ -17,11 +17,13 @@
 
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
-use crate::serde::protobuf::SuccessfulJob;
 use crate::serde::protobuf::{
     execute_query_params::Query, execute_query_result, job_status,
     scheduler_grpc_client::SchedulerGrpcClient, ExecuteQueryParams, GetJobStatusParams,
     GetJobStatusResult, KeyValuePair, PartitionLocation,
+};
+use crate::serde::protobuf::{
+    FlightEndpointAddressInfo, FlightEndpointAddressInfoParams, SuccessfulJob,
 };
 use crate::utils::{create_grpc_client_connection, GrpcClientConfig};
 use datafusion::arrow::datatypes::SchemaRef;
@@ -47,6 +49,7 @@ use log::{debug, error, info};
 use std::any::Any;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -360,9 +363,22 @@ async fn execute_query(
                 let duration = Duration::from_millis(duration);
 
                 info!("Job {job_id} finished executing in {duration:?} ");
+                let FlightEndpointAddressInfo {
+                    address: flight_proxy_address,
+                } = scheduler
+                    .get_flight_endpoint_info(FlightEndpointAddressInfoParams {})
+                    .await
+                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
+                    .into_inner();
+
                 let streams = partition_location.into_iter().map(move |partition| {
-                    let f = fetch_partition(partition, max_message_size, true)
-                        .map_err(|e| ArrowError::ExternalError(Box::new(e)));
+                    let f = fetch_partition(
+                        partition,
+                        max_message_size,
+                        true,
+                        flight_proxy_address.clone(),
+                    )
+                    .map_err(|e| ArrowError::ExternalError(Box::new(e)));
 
                     futures::stream::once(f).try_flatten()
                 });
@@ -377,6 +393,7 @@ async fn fetch_partition(
     location: PartitionLocation,
     max_message_size: usize,
     flight_transport: bool,
+    flight_endpoint_address: Option<String>,
 ) -> Result<SendableRecordBatchStream> {
     let metadata = location.executor_meta.ok_or_else(|| {
         DataFusionError::Internal("Received empty executor metadata".to_owned())
@@ -386,9 +403,25 @@ async fn fetch_partition(
     })?;
     let host = metadata.host.as_str();
     let port = metadata.port as u16;
-    let mut ballista_client = BallistaClient::try_new(host, port, max_message_size)
-        .await
-        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+
+    let (client_host, client_port) = match flight_endpoint_address {
+        Some(flight_proxy_address) => {
+            let sock_addr: SocketAddr = flight_proxy_address
+                .parse()
+                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+            info!("Fetching results from flight proxy at: {sock_addr:#?}");
+            (sock_addr.ip().to_string(), sock_addr.port())
+        }
+        None => {
+            info!("Fetching results from executor at: {host}:{port}");
+            (host.to_string(), port)
+        }
+    };
+
+    let mut ballista_client =
+        BallistaClient::try_new(client_host.as_str(), client_port, max_message_size)
+            .await
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
     ballista_client
         .fetch_partition(
             &metadata.id,
