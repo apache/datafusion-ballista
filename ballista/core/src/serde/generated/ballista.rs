@@ -1064,9 +1064,9 @@ pub struct RunningTaskInfo {
     pub partition_id: u32,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct FlightEndpointAddressInfoParams {}
+pub struct FlightEndpointInfoParams {}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct FlightEndpointAddressInfo {
+pub struct FlightEndpointInfo {
     #[prost(string, optional, tag = "1")]
     pub address: ::core::option::Option<::prost::alloc::string::String>,
 }
@@ -1459,9 +1459,9 @@ pub mod scheduler_grpc_client {
         /// Provide info on flight proxy address
         pub async fn get_flight_endpoint_info(
             &mut self,
-            request: impl tonic::IntoRequest<super::FlightEndpointAddressInfoParams>,
+            request: impl tonic::IntoRequest<super::FlightEndpointInfoParams>,
         ) -> std::result::Result<
-            tonic::Response<super::FlightEndpointAddressInfo>,
+            tonic::Response<super::FlightEndpointInfo>,
             tonic::Status,
         > {
             self.inner
@@ -1576,9 +1576,9 @@ pub mod scheduler_grpc_server {
         /// Provide info on flight proxy address
         async fn get_flight_endpoint_info(
             &self,
-            request: tonic::Request<super::FlightEndpointAddressInfoParams>,
+            request: tonic::Request<super::FlightEndpointInfoParams>,
         ) -> std::result::Result<
-            tonic::Response<super::FlightEndpointAddressInfo>,
+            tonic::Response<super::FlightEndpointInfo>,
             tonic::Status,
         >;
     }
@@ -2166,18 +2166,16 @@ pub mod scheduler_grpc_server {
                     struct GetFlightEndpointInfoSvc<T: SchedulerGrpc>(pub Arc<T>);
                     impl<
                         T: SchedulerGrpc,
-                    > tonic::server::UnaryService<super::FlightEndpointAddressInfoParams>
+                    > tonic::server::UnaryService<super::FlightEndpointInfoParams>
                     for GetFlightEndpointInfoSvc<T> {
-                        type Response = super::FlightEndpointAddressInfo;
+                        type Response = super::FlightEndpointInfo;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<
-                                super::FlightEndpointAddressInfoParams,
-                            >,
+                            request: tonic::Request<super::FlightEndpointInfoParams>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
