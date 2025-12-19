@@ -334,9 +334,9 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         None,
         task.session_id.clone(),
         session_config.clone(),
-        scalar_functions.clone(),
-        aggregate_functions.clone(),
-        window_functions.clone(),
+        scalar_functions,
+        aggregate_functions,
+        window_functions,
         runtime.clone(),
     );
 
@@ -394,9 +394,9 @@ pub fn get_task_definition_vec<
         None,
         uuid::Uuid::new_v4().to_string(),
         session_config.clone(),
-        scalar_functions.clone(),
-        aggregate_functions.clone(),
-        window_functions.clone(),
+        scalar_functions,
+        aggregate_functions,
+        window_functions,
         runtime.clone(),
     );
 
