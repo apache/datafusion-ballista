@@ -24,6 +24,7 @@ use crate::metrics::default_metrics_collector;
 #[cfg(feature = "keda-scaler")]
 use crate::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
 use crate::scheduler_server::SchedulerServer;
+use crate::state::SchedulerState;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer;
@@ -123,8 +124,9 @@ pub async fn start_grpc_service<
         .map_err(BallistaError::from)
 }
 
-fn start_flight_proxy_server(
+fn start_flight_proxy_server<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     config: Arc<SchedulerConfig>,
+    state: Arc<SchedulerState<T, U>>,
 ) -> JoinHandle<Result<(), BallistaError>> {
     tokio::spawn(async move {
         let address = match config.advertise_flight_sql_endpoint.clone() {
@@ -153,7 +155,7 @@ fn start_flight_proxy_server(
         let grpc_server_config = GrpcServerConfig::default();
         let server_future = create_grpc_server(&grpc_server_config)
             .add_service(
-                FlightServiceServer::new(BallistaFlightProxyService::new())
+                FlightServiceServer::new(BallistaFlightProxyService::new(state))
                     .max_decoding_message_size(max_decoding_message_size)
                     .max_encoding_message_size(max_encoding_message_size),
             )
@@ -186,8 +188,13 @@ pub async fn start_server(
     match config.advertise_flight_sql_endpoint {
         Some(_) => {
             info!("Starting flight proxy");
-            let _flight_proxy = start_flight_proxy_server(config);
-            start_grpc_service(address, scheduler).await
+            let flight_proxy = start_flight_proxy_server(config, scheduler.state.clone());
+            tokio::select! {
+                result = start_grpc_service(address, scheduler) => result,
+                result = flight_proxy => {
+                    result.map_err(|e| BallistaError::Internal(format!("Flight proxy task panicked: {e:?}")))?
+                }
+            }
         }
         None => start_grpc_service(address, scheduler).await,
     }

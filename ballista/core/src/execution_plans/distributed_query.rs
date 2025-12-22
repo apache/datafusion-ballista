@@ -17,13 +17,11 @@
 
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
+use crate::serde::protobuf::SuccessfulJob;
 use crate::serde::protobuf::{
     execute_query_params::Query, execute_query_result, job_status,
     scheduler_grpc_client::SchedulerGrpcClient, ExecuteQueryParams, GetJobStatusParams,
     GetJobStatusResult, KeyValuePair, PartitionLocation,
-};
-use crate::serde::protobuf::{
-    FlightEndpointInfo, FlightEndpointInfoParams, SuccessfulJob,
 };
 use crate::utils::{create_grpc_client_connection, GrpcClientConfig};
 use datafusion::arrow::datatypes::SchemaRef;
@@ -316,7 +314,10 @@ async fn execute_query(
     let mut prev_status: Option<job_status::Status> = None;
 
     loop {
-        let GetJobStatusResult { status } = scheduler
+        let GetJobStatusResult {
+            status,
+            flight_endpoint,
+        } = scheduler
             .get_job_status(GetJobStatusParams {
                 job_id: job_id.clone(),
             })
@@ -363,20 +364,13 @@ async fn execute_query(
                 let duration = Duration::from_millis(duration);
 
                 info!("Job {job_id} finished executing in {duration:?} ");
-                let FlightEndpointInfo {
-                    address: flight_proxy_address,
-                } = scheduler
-                    .get_flight_endpoint_info(FlightEndpointInfoParams {})
-                    .await
-                    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
-                    .into_inner();
 
                 let streams = partition_location.into_iter().map(move |partition| {
                     let f = fetch_partition(
                         partition,
                         max_message_size,
                         true,
-                        flight_proxy_address.clone(),
+                        flight_endpoint.clone(),
                     )
                     .map_err(|e| ArrowError::ExternalError(Box::new(e)));
 

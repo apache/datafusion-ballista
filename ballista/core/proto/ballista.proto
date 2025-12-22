@@ -642,6 +642,7 @@ message JobStatus {
 
 message GetJobStatusResult {
   JobStatus status = 1;
+  optional string flight_endpoint = 2;
 }
 
 message FilePartitionMetadata {
@@ -704,13 +705,7 @@ message RunningTaskInfo {
   uint32 task_id = 1;
   string job_id = 2;
   uint32 stage_id = 3;
-  uint32 partition_id = 4;;
-}
-
-message FlightEndpointInfoParams {
-}
-message FlightEndpointInfo {
-  optional string address = 1;
+  uint32 partition_id = 4;
 }
 
 service SchedulerGrpc {
@@ -739,9 +734,6 @@ service SchedulerGrpc {
   rpc CancelJob (CancelJobParams) returns (CancelJobResult) {}
 
   rpc CleanJobData (CleanJobDataParams) returns (CleanJobDataResult) {}
-
-  // Provide info on flight proxy address
-  rpc GetFlightEndpointInfo (FlightEndpointInfoParams) returns (FlightEndpointInfo) {}
 }
 
 service ExecutorGrpc {

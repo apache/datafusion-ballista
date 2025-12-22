@@ -21,15 +21,14 @@ use ballista_core::extension::SessionConfigHelperExt;
 use ballista_core::serde::protobuf::execute_query_params::Query;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
-    execute_query_failure_result, execute_query_result, AvailableTaskSlots,
+    execute_query_failure_result, execute_query_result, job_status, AvailableTaskSlots,
     CancelJobParams, CancelJobResult, CleanJobDataParams, CleanJobDataResult,
     CreateUpdateSessionParams, CreateUpdateSessionResult, ExecuteQueryFailureResult,
     ExecuteQueryParams, ExecuteQueryResult, ExecuteQuerySuccessResult, ExecutorHeartbeat,
-    ExecutorStoppedParams, ExecutorStoppedResult, FlightEndpointInfo,
-    FlightEndpointInfoParams, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
-    HeartBeatResult, PollWorkParams, PollWorkResult, RegisterExecutorParams,
-    RegisterExecutorResult, RemoveSessionParams, RemoveSessionResult,
-    UpdateTaskStatusParams, UpdateTaskStatusResult,
+    ExecutorStoppedParams, ExecutorStoppedResult, GetJobStatusParams, GetJobStatusResult,
+    HeartBeatParams, HeartBeatResult, PollWorkParams, PollWorkResult,
+    RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
+    RemoveSessionResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -448,7 +447,23 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let job_id = request.into_inner().job_id;
         trace!("Received get_job_status request for job {}", job_id);
         match self.state.task_manager.get_job_status(&job_id).await {
-            Ok(status) => Ok(Response::new(GetJobStatusResult { status })),
+            Ok(status) => {
+                let flight_endpoint = status
+                    .as_ref()
+                    .map(|s| match s.status {
+                        Some(job_status::Status::Successful(_)) => {
+                            self.state.config.advertise_flight_sql_endpoint.clone()
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(None);
+
+                Ok(Response::new(GetJobStatusResult {
+                    status,
+                    flight_endpoint,
+                }))
+            }
+
             Err(e) => {
                 let msg = format!("Error getting status for job {job_id}: {e:?}");
                 error!("{msg}");
@@ -526,13 +541,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 Status::internal(msg)
             })?;
         Ok(Response::new(CleanJobDataResult {}))
-    }
-    async fn get_flight_endpoint_info(
-        &self,
-        _request: tonic::Request<FlightEndpointInfoParams>,
-    ) -> Result<Response<FlightEndpointInfo>, Status> {
-        let address = self.state.config.advertise_flight_sql_endpoint.clone();
-        Ok(Response::new(FlightEndpointInfo { address }))
     }
 }
 

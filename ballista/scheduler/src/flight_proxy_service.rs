@@ -1,3 +1,4 @@
+use crate::state::SchedulerState;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::{
@@ -8,24 +9,29 @@ use ballista_core::error::BallistaError;
 use ballista_core::serde::decode_protobuf;
 use ballista_core::serde::scheduler::Action as BallistaAction;
 use ballista_core::utils::{create_grpc_client_connection, GrpcClientConfig};
+use datafusion_proto::logical_plan::AsLogicalPlan;
+use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::{Stream, TryFutureExt};
 use log::debug;
+use std::collections::HashSet;
 use std::pin::Pin;
+use std::sync::Arc;
 use tonic::{Request, Response, Status, Streaming};
 
 /// Service implementing a proxy from scheduler to executor Apache Arrow Flight Protocol
 #[derive(Clone)]
-pub struct BallistaFlightProxyService {}
-
-impl BallistaFlightProxyService {
-    pub fn new() -> Self {
-        Self {}
-    }
+pub struct BallistaFlightProxyService<
+    T: 'static + AsLogicalPlan,
+    U: 'static + AsExecutionPlan,
+> {
+    pub state: Arc<SchedulerState<T, U>>,
 }
 
-impl Default for BallistaFlightProxyService {
-    fn default() -> Self {
-        Self::new()
+impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
+    BallistaFlightProxyService<T, U>
+{
+    pub fn new(state: Arc<SchedulerState<T, U>>) -> Self {
+        Self { state }
     }
 }
 
@@ -33,7 +39,9 @@ type BoxedFlightStream<T> =
     Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'static>>;
 
 #[tonic::async_trait]
-impl FlightService for BallistaFlightProxyService {
+impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> FlightService
+    for BallistaFlightProxyService<T, U>
+{
     type DoActionStream = BoxedFlightStream<arrow_flight::Result>;
     type DoExchangeStream = BoxedFlightStream<FlightData>;
     type DoGetStream = BoxedFlightStream<FlightData>;
@@ -85,18 +93,42 @@ impl FlightService for BallistaFlightProxyService {
         let action =
             decode_protobuf(&ticket.ticket).map_err(|e| from_ballista_err(&e))?;
 
+        debug!("Fetching current executors and valid hosts");
+        let alive_executors = self.state.executor_manager.get_alive_executors();
+
+        let valid_hosts: HashSet<String> = HashSet::from_iter(
+            self.state
+                .executor_manager
+                .get_executor_state()
+                .map_err(|e| from_ballista_err(&e))
+                .await?
+                .iter()
+                .map(|(meta, _)| meta)
+                .filter(|m| alive_executors.contains(&m.id))
+                .map(|m| format!("{}:{}", m.host, m.port)),
+        );
+        debug!("Active executors: {:?}", valid_hosts);
+
         match &action {
             BallistaAction::FetchPartition {
                 host, port, job_id, ..
             } => {
-                debug!("Fetching results for job id: {job_id} from {host}:{port}");
-                let mut client = get_flight_client(host, port)
+                if valid_hosts.contains::<str>(format!("{}:{}", host, port).as_ref()) {
+                    debug!("Fetching results for job id: {job_id} from {host}:{port}");
+                    let mut client = get_flight_client(
+                        host,
+                        *port,
+                        self.state.config.grpc_server_max_decoding_message_size as usize,
+                        self.state.config.grpc_server_max_encoding_message_size as usize,
+                    )
                     .map_err(|e| from_ballista_err(&e))
                     .await?;
-                client
-                    .do_get(Request::new(ticket))
-                    .await
-                    .map(|r| Response::new(Box::pin(r.into_inner()) as Self::DoGetStream))
+                    client.do_get(Request::new(ticket)).await.map(|r| {
+                        Response::new(Box::pin(r.into_inner()) as Self::DoGetStream)
+                    })
+                } else {
+                    Err(Status::internal(format!("Not a valid host: {host}")))
+                }
             }
         }
     }
@@ -135,8 +167,10 @@ fn from_ballista_err(e: &ballista_core::error::BallistaError) -> Status {
 }
 
 async fn get_flight_client(
-    host: &String,
-    port: &u16,
+    host: &str,
+    port: u16,
+    max_decoding_message_size: usize,
+    max_encoding_message_size: usize,
 ) -> Result<FlightServiceClient<tonic::transport::channel::Channel>, BallistaError> {
     let addr = format!("http://{host}:{port}");
     let grpc_config = GrpcClientConfig::default();
@@ -149,8 +183,8 @@ async fn get_flight_client(
             ))
         })?;
     let flight_client = FlightServiceClient::new(connection)
-        .max_decoding_message_size(16 * 1024 * 1024)
-        .max_encoding_message_size(16 * 1024 * 1024);
+        .max_decoding_message_size(max_decoding_message_size)
+        .max_encoding_message_size(max_encoding_message_size);
 
     debug!("FlightProxyService connected OK: {flight_client:?}");
     Ok(flight_client)
