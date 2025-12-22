@@ -47,6 +47,7 @@ use log::{debug, error, info};
 use std::any::Any;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -313,7 +314,10 @@ async fn execute_query(
     let mut prev_status: Option<job_status::Status> = None;
 
     loop {
-        let GetJobStatusResult { status } = scheduler
+        let GetJobStatusResult {
+            status,
+            flight_endpoint,
+        } = scheduler
             .get_job_status(GetJobStatusParams {
                 job_id: job_id.clone(),
             })
@@ -360,9 +364,15 @@ async fn execute_query(
                 let duration = Duration::from_millis(duration);
 
                 info!("Job {job_id} finished executing in {duration:?} ");
+
                 let streams = partition_location.into_iter().map(move |partition| {
-                    let f = fetch_partition(partition, max_message_size, true)
-                        .map_err(|e| ArrowError::ExternalError(Box::new(e)));
+                    let f = fetch_partition(
+                        partition,
+                        max_message_size,
+                        true,
+                        flight_endpoint.clone(),
+                    )
+                    .map_err(|e| ArrowError::ExternalError(Box::new(e)));
 
                     futures::stream::once(f).try_flatten()
                 });
@@ -377,6 +387,7 @@ async fn fetch_partition(
     location: PartitionLocation,
     max_message_size: usize,
     flight_transport: bool,
+    flight_endpoint_address: Option<String>,
 ) -> Result<SendableRecordBatchStream> {
     let metadata = location.executor_meta.ok_or_else(|| {
         DataFusionError::Internal("Received empty executor metadata".to_owned())
@@ -386,9 +397,25 @@ async fn fetch_partition(
     })?;
     let host = metadata.host.as_str();
     let port = metadata.port as u16;
-    let mut ballista_client = BallistaClient::try_new(host, port, max_message_size)
-        .await
-        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+
+    let (client_host, client_port) = match flight_endpoint_address {
+        Some(flight_proxy_address) => {
+            let sock_addr: SocketAddr = flight_proxy_address
+                .parse()
+                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+            info!("Fetching results from flight proxy at: {sock_addr:#?}");
+            (sock_addr.ip().to_string(), sock_addr.port())
+        }
+        None => {
+            info!("Fetching results from executor at: {host}:{port}");
+            (host.to_string(), port)
+        }
+    };
+
+    let mut ballista_client =
+        BallistaClient::try_new(client_host.as_str(), client_port, max_message_size)
+            .await
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
     ballista_client
         .fetch_partition(
             &metadata.id,
