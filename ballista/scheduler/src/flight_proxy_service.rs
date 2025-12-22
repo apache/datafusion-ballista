@@ -93,9 +93,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> FlightService
         let action =
             decode_protobuf(&ticket.ticket).map_err(|e| from_ballista_err(&e))?;
 
-        debug!("Fetching current executors and valid hosts");
         let alive_executors = self.state.executor_manager.get_alive_executors();
-
         let valid_hosts: HashSet<String> = HashSet::from_iter(
             self.state
                 .executor_manager
@@ -174,7 +172,6 @@ async fn get_flight_client(
 ) -> Result<FlightServiceClient<tonic::transport::channel::Channel>, BallistaError> {
     let addr = format!("http://{host}:{port}");
     let grpc_config = GrpcClientConfig::default();
-    debug!("FlightProxyService connecting to {addr}");
     let connection = create_grpc_client_connection(addr.clone(), &grpc_config)
         .await
         .map_err(|e| {
@@ -186,6 +183,6 @@ async fn get_flight_client(
         .max_decoding_message_size(max_decoding_message_size)
         .max_encoding_message_size(max_encoding_message_size);
 
-    debug!("FlightProxyService connected OK: {flight_client:?}");
+    debug!("FlightProxyService connected: {flight_client:?}");
     Ok(flight_client)
 }
