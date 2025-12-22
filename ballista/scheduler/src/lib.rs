@@ -29,8 +29,8 @@ pub mod scheduler_server;
 pub mod standalone;
 pub mod state;
 
+mod flight_proxy_service;
 #[cfg(test)]
 pub mod test_utils;
-mod flight_proxy_service;
 
 pub use scheduler_server::SessionBuilder;
