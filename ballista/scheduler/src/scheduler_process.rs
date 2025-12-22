@@ -133,10 +133,7 @@ fn start_flight_proxy_server<T: 'static + AsLogicalPlan, U: 'static + AsExecutio
             Some(flight_sql_endpoint) => flight_sql_endpoint
                 .parse::<SocketAddr>()
                 .map_err(|e: std::net::AddrParseError| {
-                    error!(
-                        "Error parsing advertise_flight_sql_endpoint: {}",
-                        e.to_string()
-                    );
+                    error!("Error parsing advertise_flight_sql_endpoint: {}", e);
                     BallistaError::Configuration(e.to_string())
                 })?,
             _ => {
