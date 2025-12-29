@@ -247,8 +247,8 @@ kubectl delete -f cluster.yaml
 
 ## Autoscaling Executors
 
-Ballista supports autoscaling for executors through [Keda](http://keda.sh). Keda allows for the scaling of a 
-deployment through custom metrics which are exposed through the Ballista scheduler, and it 
+Ballista supports autoscaling for executors through [Keda](http://keda.sh). Keda allows for the scaling of a
+deployment through custom metrics which are exposed through the Ballista scheduler, and it
 can even scale the number of executors down to 0 if there is no activity in the cluster.
 
 Keda can be installed in your kubernetes cluster through a single command line:

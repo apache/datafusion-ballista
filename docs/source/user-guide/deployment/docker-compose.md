@@ -22,6 +22,7 @@
 Docker Compose is a convenient way to launch a cluster when testing locally.
 
 ## Build Docker Images
+
 To create the required Docker images please refer to the [docker deployment page](docker.md).
 
 ## Start a Cluster
