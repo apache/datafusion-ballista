@@ -23,8 +23,8 @@ Docker Compose is a convenient way to launch a cluster when testing locally.
 
 ## Build Docker Images
 
-To create the required Docker images please refer to the previous page.
-
+To create the required Docker images please refer to the [docker deployment page](docker.md).
+[](docker.md)
 ## Start a Cluster
 
 Using the [docker-compose.yml](https://github.com/apache/datafusion-ballista/blob/main/docker-compose.yml) from the

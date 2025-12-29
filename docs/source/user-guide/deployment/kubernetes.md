@@ -41,7 +41,7 @@ microk8s enable dns
 
 ## Build Docker Images
 
-To create the required Docker images please refer to the Deployment/Docker page.
+To create the required Docker images please refer to the [docker deployment page](docker.md).
 
 ## Publishing Docker Images
 
