@@ -23,27 +23,7 @@ Docker Compose is a convenient way to launch a cluster when testing locally.
 
 ## Build Docker Images
 
-Run the following commands to download the [official Docker image](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone):
-
-```bash
-docker pull ghcr.io/apache/datafusion-ballista-standalone:latest
-```
-
-Altenatively run the following commands to clone the source repository and build the Docker images from source:
-
-```bash
-git clone git@github.com:apache/datafusion-ballista.git -b latest
-cd datafusion-ballista
-./dev/build-ballista-docker.sh
-```
-
-This will create the following images:
-
-- `apache/datafusion-ballista-benchmarks:latest`
-- `apache/datafusion-ballista-cli:latest`
-- `apache/datafusion-ballista-executor:latest`
-- `apache/datafusion-ballista-scheduler:latest`
-- `apache/datafusion-ballista-standalone:latest`
+To create the required Docker images please refer to the previous page.
 
 ## Start a Cluster
 
