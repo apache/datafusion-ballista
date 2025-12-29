@@ -24,7 +24,7 @@ Ballista is a distributed compute platform primarily implemented in Rust, and po
 Ballista has both scheduler and an executor component processes that are standard Rust executables.
 
 Dockerfiles are also provided to build images for use in containerized environments, such as Docker, Docker Compose,
-and Kubernetes. See the [deployment guide](deployment.md) for more information
+and Kubernetes. See the [deployment guide](deployment.md) for more information.
 
 SQL and DataFrame queries can be submitted from Python and Rust, and SQL queries can be submitted via the Arrow
 Flight SQL JDBC driver, supporting your favorite JDBC compliant tools such as [DataGrip](datagrip)
