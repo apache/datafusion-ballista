@@ -25,13 +25,13 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::{ScalarValue, UnnestOptions};
 use datafusion::logical_expr::{LogicalPlan, PlanType, StringifiedPlan};
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::expressions::col;
 use datafusion::physical_plan::expressions::lit;
 use datafusion::physical_plan::placeholder_row::PlaceholderRowExec;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
-use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionContext;
 
 use crate::state::execution_graph::ExecutionStage;

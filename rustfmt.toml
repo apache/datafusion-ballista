@@ -15,6 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-edition = "2021"
+edition = "2024"
 max_width = 90
 

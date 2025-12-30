@@ -20,8 +20,8 @@ use ballista_core::error::{BallistaError, Result};
 
 use once_cell::sync::OnceCell;
 use prometheus::{
-    register_counter_with_registry, register_gauge_with_registry,
-    register_histogram_with_registry, Counter, Gauge, Histogram, Registry,
+    Counter, Gauge, Histogram, Registry, register_counter_with_registry,
+    register_gauge_with_registry, register_histogram_with_registry,
 };
 use prometheus::{Encoder, TextEncoder};
 use std::sync::Arc;

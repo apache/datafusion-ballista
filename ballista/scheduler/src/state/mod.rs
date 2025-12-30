@@ -40,8 +40,8 @@ use crate::config::SchedulerConfig;
 use crate::state::execution_graph::TaskDescription;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventSender;
-use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::BallistaCodec;
+use ballista_core::serde::protobuf::TaskStatus;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
@@ -197,13 +197,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                     if_revive = true;
                 }
             }
-            if if_revive {
-                if let Err(e) = sender
+            if if_revive
+                && let Err(e) = sender
                     .post_event(QueryStageSchedulerEvent::ReviveOffers)
                     .await
-                {
-                    error!("Fail to send revive offers event due to {e:?}");
-                }
+            {
+                error!("Fail to send revive offers event due to {e:?}");
             }
         });
 
@@ -229,12 +228,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
         match self.task_manager.executor_lost(executor_id).await {
             Ok(tasks) => {
-                if !tasks.is_empty() {
-                    if let Err(e) =
+                if !tasks.is_empty()
+                    && let Err(e) =
                         self.executor_manager.cancel_running_tasks(tasks).await
-                    {
-                        warn!("Fail to cancel running tasks due to {e:?}");
-                    }
+                {
+                    warn!("Fail to cancel running tasks due to {e:?}");
                 }
             }
             Err(e) => {
@@ -308,7 +306,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                         }
                     }
                     Err(e) => {
-                        error!("Failed to launch new task, could not get executor metadata: {e}");
+                        error!(
+                            "Failed to launch new task, could not get executor metadata: {e}"
+                        );
                         false
                     }
                 };

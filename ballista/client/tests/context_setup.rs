@@ -103,7 +103,7 @@ mod remote {
 #[cfg(feature = "standalone")]
 mod standalone {
 
-    use std::sync::{atomic::AtomicBool, Arc};
+    use std::sync::{Arc, atomic::AtomicBool};
 
     use ballista::extension::{SessionConfigExt, SessionContextExt};
     use ballista_core::serde::BallistaPhysicalExtensionCodec;
@@ -111,7 +111,7 @@ mod standalone {
         assert_batches_eq,
         common::exec_err,
         execution::{
-            context::QueryPlanner, SessionState, SessionStateBuilder, TaskContext,
+            SessionState, SessionStateBuilder, TaskContext, context::QueryPlanner,
         },
         logical_expr::LogicalPlan,
         physical_plan::ExecutionPlan,
@@ -226,9 +226,11 @@ mod standalone {
             .collect()
             .await;
 
-        assert!(physical_codec
-            .invoked
-            .load(std::sync::atomic::Ordering::Relaxed));
+        assert!(
+            physical_codec
+                .invoked
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
         Ok(())
     }
 

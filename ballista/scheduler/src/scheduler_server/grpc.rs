@@ -21,14 +21,15 @@ use ballista_core::extension::SessionConfigHelperExt;
 use ballista_core::serde::protobuf::execute_query_params::Query;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
 use ballista_core::serde::protobuf::{
-    execute_query_failure_result, execute_query_result, AvailableTaskSlots,
-    CancelJobParams, CancelJobResult, CleanJobDataParams, CleanJobDataResult,
-    CreateUpdateSessionParams, CreateUpdateSessionResult, ExecuteQueryFailureResult,
-    ExecuteQueryParams, ExecuteQueryResult, ExecuteQuerySuccessResult, ExecutorHeartbeat,
-    ExecutorStoppedParams, ExecutorStoppedResult, GetJobStatusParams, GetJobStatusResult,
-    HeartBeatParams, HeartBeatResult, PollWorkParams, PollWorkResult,
-    RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
-    RemoveSessionResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
+    AvailableTaskSlots, CancelJobParams, CancelJobResult, CleanJobDataParams,
+    CleanJobDataResult, CreateUpdateSessionParams, CreateUpdateSessionResult,
+    ExecuteQueryFailureResult, ExecuteQueryParams, ExecuteQueryResult,
+    ExecuteQuerySuccessResult, ExecutorHeartbeat, ExecutorStoppedParams,
+    ExecutorStoppedResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
+    HeartBeatResult, PollWorkParams, PollWorkResult, RegisterExecutorParams,
+    RegisterExecutorResult, RemoveSessionParams, RemoveSessionResult,
+    UpdateTaskStatusParams, UpdateTaskStatusResult, execute_query_failure_result,
+    execute_query_result,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -116,16 +117,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 TaskDistributionPolicy::RoundRobin => {
                     bind_task_round_robin(available_slots, running_jobs, |_| false).await
                 }
-                TaskDistributionPolicy::ConsistentHash{..} => {
+                TaskDistributionPolicy::ConsistentHash { .. } => {
                     return Err(Status::unimplemented(
-                        "ConsistentHash TaskDistribution is not feasible for pull-based task scheduling"))
+                        "ConsistentHash TaskDistribution is not feasible for pull-based task scheduling",
+                    ));
                 }
 
-                TaskDistributionPolicy::Custom(ref policy) =>{
-                    policy.bind_tasks(available_slots, running_jobs).await.map_err(|e| {
-                        Status::internal(e.to_string())
-                    })?
-                }
+                TaskDistributionPolicy::Custom(ref policy) => policy
+                    .bind_tasks(available_slots, running_jobs)
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?,
             };
 
             let mut tasks = vec![];
@@ -345,7 +346,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
             let job_id = self.state.task_manager.generate_job_id();
 
-            info!("execution query - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}, job_id: {job_id}");
+            info!(
+                "execution query - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}, job_id: {job_id}"
+            );
 
             let (session_id, session_ctx) = {
                 let session_config = self.state.session_manager.produce_config();
@@ -547,12 +550,12 @@ mod test {
     use crate::config::SchedulerConfig;
     use crate::metrics::default_metrics_collector;
     use ballista_core::error::BallistaError;
+    use ballista_core::serde::BallistaCodec;
     use ballista_core::serde::protobuf::{
-        executor_status, ExecutorRegistration, ExecutorStatus, ExecutorStoppedParams,
-        HeartBeatParams, PollWorkParams, RegisterExecutorParams,
+        ExecutorRegistration, ExecutorStatus, ExecutorStoppedParams, HeartBeatParams,
+        PollWorkParams, RegisterExecutorParams, executor_status,
     };
     use ballista_core::serde::scheduler::ExecutorSpecification;
-    use ballista_core::serde::BallistaCodec;
 
     use crate::state::SchedulerState;
     use crate::test_utils::await_condition;

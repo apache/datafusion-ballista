@@ -21,7 +21,7 @@ use std::path::PathBuf;
 
 use ballista::prelude::{SessionConfigExt, SessionContextExt};
 use ballista_core::serde::{
-    protobuf::scheduler_grpc_client::SchedulerGrpcClient, BallistaCodec,
+    BallistaCodec, protobuf::scheduler_grpc_client::SchedulerGrpcClient,
 };
 use ballista_core::{ConfigProducer, RuntimeProducer};
 use ballista_scheduler::SessionBuilder;

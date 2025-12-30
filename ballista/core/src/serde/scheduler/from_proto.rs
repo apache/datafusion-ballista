@@ -41,9 +41,9 @@ use crate::serde::scheduler::{
     TaskDefinition,
 };
 
-use crate::serde::{protobuf, BallistaCodec};
 use crate::RuntimeProducer;
-use protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
+use crate::serde::{BallistaCodec, protobuf};
+use protobuf::{NamedCount, NamedGauge, NamedTime, operator_metric};
 
 impl TryInto<Action> for protobuf::Action {
     type Error = BallistaError;
@@ -90,11 +90,7 @@ impl Into<PartitionStats> for protobuf::PartitionStats {
 }
 
 fn foo(n: i64) -> Option<u64> {
-    if n < 0 {
-        None
-    } else {
-        Some(n as u64)
-    }
+    if n < 0 { None } else { Some(n as u64) }
 }
 
 impl TryInto<PartitionLocation> for protobuf::PartitionLocation {
@@ -291,21 +287,17 @@ impl Into<ExecutorData> for protobuf::ExecutorData {
             available_task_slots: 0,
         };
         for resource in self.resources {
-            if let Some(task_slots) = resource.total {
-                if let Some(protobuf::executor_resource::Resource::TaskSlots(
-                    task_slots,
-                )) = task_slots.resource
-                {
-                    ret.total_task_slots = task_slots
-                }
+            if let Some(task_slots) = resource.total
+                && let Some(protobuf::executor_resource::Resource::TaskSlots(task_slots)) =
+                    task_slots.resource
+            {
+                ret.total_task_slots = task_slots
             };
-            if let Some(task_slots) = resource.available {
-                if let Some(protobuf::executor_resource::Resource::TaskSlots(
-                    task_slots,
-                )) = task_slots.resource
-                {
-                    ret.available_task_slots = task_slots
-                }
+            if let Some(task_slots) = resource.available
+                && let Some(protobuf::executor_resource::Resource::TaskSlots(task_slots)) =
+                    task_slots.resource
+            {
+                ret.available_task_slots = task_slots
             };
         }
         ret

@@ -23,7 +23,7 @@ use ballista_core::utils::collect_plan_metrics;
 use datafusion::logical_expr::{StringifiedPlan, ToStringifiedPlan};
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{
-    accept, DisplayFormatType, ExecutionPlan, ExecutionPlanVisitor,
+    DisplayFormatType, ExecutionPlan, ExecutionPlanVisitor, accept,
 };
 use log::{error, info};
 use std::fmt;
