@@ -47,6 +47,12 @@ pub struct PyBallistaBuilder {
     session_config: SessionConfig,
 }
 
+impl Default for PyBallistaBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[pymethods]
 impl PyBallistaBuilder {
     #[new]

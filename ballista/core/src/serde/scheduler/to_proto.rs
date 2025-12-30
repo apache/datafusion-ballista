@@ -29,7 +29,7 @@ use crate::serde::scheduler::{
     PartitionLocation, PartitionStats,
 };
 use datafusion::physical_plan::Partitioning;
-use protobuf::{action::ActionType, operator_metric, NamedCount, NamedGauge, NamedTime};
+use protobuf::{NamedCount, NamedGauge, NamedTime, action::ActionType, operator_metric};
 
 impl TryInto<protobuf::Action> for Action {
     type Error = BallistaError;

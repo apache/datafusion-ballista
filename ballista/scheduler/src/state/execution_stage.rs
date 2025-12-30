@@ -34,10 +34,10 @@ use log::{debug, warn};
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::execution_plans::ShuffleWriterExec;
 use ballista_core::serde::protobuf::failed_task::FailedReason;
-use ballista_core::serde::protobuf::{task_status, RunningTask};
 use ballista_core::serde::protobuf::{
     FailedTask, OperatorMetricsSet, ResultLost, SuccessfulTask, TaskStatus,
 };
+use ballista_core::serde::protobuf::{RunningTask, task_status};
 use ballista_core::serde::scheduler::PartitionLocation;
 
 use crate::display::DisplayableBallistaExecutionPlan;
@@ -302,7 +302,10 @@ impl UnresolvedStage {
                 stage_inputs.add_partition(partition);
             }
         } else {
-            return Err(BallistaError::Internal(format!("Error adding input partitions to stage {}, {} is not a valid child stage ID", self.stage_id, stage_id)));
+            return Err(BallistaError::Internal(format!(
+                "Error adding input partitions to stage {}, {} is not a valid child stage ID",
+                self.stage_id, stage_id
+            )));
         }
 
         Ok(())
@@ -333,7 +336,10 @@ impl UnresolvedStage {
             stage_output.complete = false;
             Ok(bad_map_partitions)
         } else {
-            Err(BallistaError::Internal(format!("Error remove input partition for Stage {}, {} is not a valid child stage ID", self.stage_id, input_stage_id)))
+            Err(BallistaError::Internal(format!(
+                "Error remove input partition for Stage {}, {} is not a valid child stage ID",
+                self.stage_id, input_stage_id
+            )))
         }
     }
 
@@ -623,8 +629,10 @@ impl RunningStage {
         let task_info = self.task_infos[partition_id].as_ref().unwrap();
         let task_id = task_info.task_id;
         if (status.task_id as usize) < task_id {
-            warn!("Ignore TaskStatus update with TID {} because there is more recent task attempt with TID {} running for partition {}",
-                status.task_id, task_id, partition_id);
+            warn!(
+                "Ignore TaskStatus update with TID {} because there is more recent task attempt with TID {} running for partition {}",
+                status.task_id, task_id, partition_id
+            );
             return false;
         }
         let scheduled_time = task_info.scheduled_time;
@@ -667,8 +675,14 @@ impl RunningStage {
 
         let new_metrics_set = if let Some(combined_metrics) = &mut self.stage_metrics {
             if metrics.len() != combined_metrics.len() {
-                return Err(BallistaError::Internal(format!("Error updating task metrics to stage {}, task metrics array size {} does not equal \
-                with the stage metrics array size {} for task {}", self.stage_id, metrics.len(), combined_metrics.len(), partition)));
+                return Err(BallistaError::Internal(format!(
+                    "Error updating task metrics to stage {}, task metrics array size {} does not equal \
+                with the stage metrics array size {} for task {}",
+                    self.stage_id,
+                    metrics.len(),
+                    combined_metrics.len(),
+                    partition
+                )));
             }
             let metrics_values_array = metrics
                 .into_iter()
@@ -776,7 +790,10 @@ impl RunningStage {
             stage_output.complete = false;
             Ok(bad_map_partitions)
         } else {
-            Err(BallistaError::Internal(format!("Error remove input partition for Stage {}, {} is not a valid child stage ID", self.stage_id, input_stage_id)))
+            Err(BallistaError::Internal(format!(
+                "Error remove input partition for Stage {}, {} is not a valid child stage ID",
+                self.stage_id, input_stage_id
+            )))
         }
     }
 }

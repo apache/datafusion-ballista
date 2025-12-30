@@ -20,8 +20,8 @@ use log::debug;
 use parking_lot::RwLock;
 use std::collections::BTreeMap;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll, Waker};
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::TryRecvError;
@@ -157,8 +157,8 @@ impl<T: Clone> Stream for EventSubscriber<T> {
 #[cfg(test)]
 mod test {
     use crate::cluster::event::{ClusterEventSender, EventSubscriber};
-    use futures::stream::FuturesUnordered;
     use futures::StreamExt;
+    use futures::stream::FuturesUnordered;
 
     async fn collect_events<T: Clone>(mut rx: EventSubscriber<T>) -> Vec<T> {
         let mut events = vec![];

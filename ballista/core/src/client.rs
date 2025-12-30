@@ -29,9 +29,9 @@ use crate::error::{BallistaError, Result as BResult};
 use crate::serde::scheduler::{Action, PartitionId};
 
 use arrow_flight;
-use arrow_flight::utils::flight_data_to_arrow_batch;
 use arrow_flight::Ticket;
-use arrow_flight::{flight_service_client::FlightServiceClient, FlightData};
+use arrow_flight::utils::flight_data_to_arrow_batch;
+use arrow_flight::{FlightData, flight_service_client::FlightServiceClient};
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::buffer::{Buffer, MutableBuffer};
 use datafusion::arrow::ipc::convert::try_schema_from_ipc_buffer;
@@ -45,7 +45,7 @@ use datafusion::error::DataFusionError;
 use datafusion::error::Result;
 
 use crate::serde::protobuf;
-use crate::utils::{create_grpc_client_connection, GrpcClientConfig};
+use crate::utils::{GrpcClientConfig, create_grpc_client_connection};
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 use futures::{Stream, StreamExt};
 use log::{debug, warn};

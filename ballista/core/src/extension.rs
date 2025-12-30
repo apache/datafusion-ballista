@@ -16,9 +16,10 @@
 // under the License.
 
 use crate::config::{
-    BallistaConfig, BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, BALLISTA_JOB_NAME,
+    BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, BALLISTA_JOB_NAME,
     BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
     BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
+    BallistaConfig,
 };
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
@@ -563,8 +564,10 @@ mod test {
         let pairs = config.to_key_value_pairs();
 
         assert!(pairs.iter().any(|p| p.key == BALLISTA_JOB_NAME));
-        assert!(pairs
-            .iter()
-            .any(|p| p.key == "datafusion.catalog.information_schema"))
+        assert!(
+            pairs
+                .iter()
+                .any(|p| p.key == "datafusion.catalog.information_schema")
+        )
     }
 }

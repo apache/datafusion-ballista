@@ -52,7 +52,7 @@ use itertools::Itertools;
 use log::{debug, error, trace};
 use rand::prelude::SliceRandom;
 use rand::rng;
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{Semaphore, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
 /// ShuffleReaderExec reads partitions that have already been materialized by a ShuffleWriterExec
@@ -165,9 +165,9 @@ impl ExecutionPlan for ShuffleReaderExec {
 
         if force_remote_read {
             debug!(
-            "All shuffle partitions will be read as remote partitions! To disable this behavior set: `{}=false`",
-            crate::config::BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ
-        );
+                "All shuffle partitions will be read as remote partitions! To disable this behavior set: `{}=false`",
+                crate::config::BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ
+            );
         }
 
         log::debug!(
@@ -223,9 +223,7 @@ impl ExecutionPlan for ShuffleReaderExec {
 
             trace!(
                 "shuffle reader at stage: {} and partition {} returned statistics: {:?}",
-                self.stage_id,
-                idx,
-                stat_for_partition
+                self.stage_id, idx, stat_for_partition
             );
             stat_for_partition
         } else {
@@ -236,7 +234,10 @@ impl ExecutionPlan for ShuffleReaderExec {
                     .flatten()
                     .map(|loc| loc.partition_stats),
             );
-            trace!("shuffle reader at stage: {} returned statistics for all partitions: {:?}", self.stage_id, stats_for_partitions);
+            trace!(
+                "shuffle reader at stage: {} returned statistics for all partitions: {:?}",
+                self.stage_id, stats_for_partitions
+            );
             Ok(stats_for_partitions)
         }
     }
@@ -575,7 +576,7 @@ mod tests {
     use datafusion::physical_plan::common;
 
     use datafusion::prelude::SessionContext;
-    use tempfile::{tempdir, TempDir};
+    use tempfile::{TempDir, tempdir};
 
     #[tokio::test]
     async fn test_stats_for_partitions_empty() {
@@ -740,8 +741,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_stats_for_partition_statistics_specific_partition_out_of_range(
-    ) -> Result<()> {
+    async fn test_stats_for_partition_statistics_specific_partition_out_of_range()
+    -> Result<()> {
         let schema = Schema::new(vec![
             Field::new("a", DataType::Int32, false),
             Field::new("b", DataType::Int32, false),

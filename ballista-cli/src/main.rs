@@ -20,7 +20,7 @@ use std::{env, sync::Arc};
 
 use ballista::{extension::SessionConfigExt, prelude::SessionContextExt};
 use ballista_cli::{
-    exec, print_format::PrintFormat, print_options::PrintOptions, BALLISTA_CLI_VERSION,
+    BALLISTA_CLI_VERSION, exec, print_format::PrintFormat, print_options::PrintOptions,
 };
 use clap::Parser;
 use datafusion::{

@@ -19,11 +19,11 @@ use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
 use crate::serde::protobuf::SuccessfulJob;
 use crate::serde::protobuf::{
-    execute_query_params::Query, execute_query_result, job_status,
-    scheduler_grpc_client::SchedulerGrpcClient, ExecuteQueryParams, GetJobStatusParams,
-    GetJobStatusResult, KeyValuePair, PartitionLocation,
+    ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
+    PartitionLocation, execute_query_params::Query, execute_query_result, job_status,
+    scheduler_grpc_client::SchedulerGrpcClient,
 };
-use crate::utils::{create_grpc_client_connection, GrpcClientConfig};
+use crate::utils::{GrpcClientConfig, create_grpc_client_connection};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;

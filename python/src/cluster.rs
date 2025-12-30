@@ -22,13 +22,13 @@ use crate::codec::{PyLogicalCodec, PyPhysicalCodec};
 use crate::utils::to_pyerr;
 use crate::utils::{spawn_feature, wait_for_future};
 use ballista_executor::executor_process::{
-    start_executor_process, ExecutorProcessConfig,
+    ExecutorProcessConfig, start_executor_process,
 };
 use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::config::SchedulerConfig;
 use ballista_scheduler::scheduler_process::start_server;
 use pyo3::exceptions::PyException;
-use pyo3::{pyclass, pymethods, PyResult, Python};
+use pyo3::{PyResult, Python, pyclass, pymethods};
 use tokio::task::JoinHandle;
 
 #[pyclass(name = "BallistaScheduler", module = "ballista", subclass)]

@@ -279,15 +279,14 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
             QueryStageSchedulerEvent::ExecutorLost(executor_id, _) => {
                 match self.state.task_manager.executor_lost(&executor_id).await {
                     Ok(tasks) => {
-                        if !tasks.is_empty() {
-                            if let Err(e) = self
+                        if !tasks.is_empty()
+                            && let Err(e) = self
                                 .state
                                 .executor_manager
                                 .cancel_running_tasks(tasks)
                                 .await
-                            {
-                                warn!("Fail to cancel running tasks due to {e:?}");
-                            }
+                        {
+                            warn!("Fail to cancel running tasks due to {e:?}");
                         }
                     }
                     Err(e) => {
@@ -335,12 +334,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
 #[cfg(test)]
 mod tests {
     use crate::config::SchedulerConfig;
-    use crate::test_utils::{await_condition, SchedulerTest, TestMetricsCollector};
+    use crate::test_utils::{SchedulerTest, TestMetricsCollector, await_condition};
     use ballista_core::config::TaskSchedulingPolicy;
     use ballista_core::error::Result;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::functions_aggregate::sum::sum;
-    use datafusion::logical_expr::{col, LogicalPlan};
+    use datafusion::logical_expr::{LogicalPlan, col};
     use datafusion::test_util::scan_empty_with_partitions;
     use std::sync::Arc;
     use std::time::Duration;
