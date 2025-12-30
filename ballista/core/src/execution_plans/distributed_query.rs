@@ -75,8 +75,8 @@ pub struct DistributedQueryExec<T: 'static + AsLogicalPlan> {
     /// - transferred_bytes: Total bytes transferred from executors
     /// - job_execution_time_ms: Time spent executing on the cluster (server-side)
     /// - job_scheduling_in_ms: Time from query submission to job start (includes queue time)
-    /// - total_query_time_ms: Total end-to-end query latency from client perspective
-    /// - data_transfer_time_ms: Time spent fetching results (not yet implemented)
+    /// - job_execution_time_ms: Time spent executing on the cluster (ended_at - started_at)
+    /// - job_scheduling_in_ms: Time job waited in scheduler queue (started_at - queued_at)
     metrics: ExecutionPlanMetricsSet,
 }
 
@@ -301,8 +301,6 @@ async fn execute_query(
         .max_encoding_message_size(max_message_size)
         .max_decoding_message_size(max_message_size);
 
-    let query_submit_time = std::time::Instant::now();
-
     let query_result = scheduler
         .execute_query(query)
         .await
@@ -365,6 +363,7 @@ async fn execute_query(
                 break Err(DataFusionError::Execution(msg));
             }
             Some(job_status::Status::Successful(SuccessfulJob {
+                queued_at,
                 started_at,
                 ended_at,
                 partition_location,
@@ -376,12 +375,9 @@ async fn execute_query(
 
                 info!("Job {job_id} finished executing in {duration:?} ");
 
-                // Calculate scheduling time (client-perceived time from query submission to job start)
+                // Calculate scheduling time (server-side queue time)
                 // This includes network latency and actual queue time
-                let scheduling_elapsed = query_submit_time.elapsed();
-                let scheduling_ms = scheduling_elapsed
-                    .as_millis()
-                    .saturating_sub(job_execution_ms as u128);
+                let scheduling_ms = started_at.saturating_sub(queued_at);
 
                 // Calculate total query time (end-to-end from client perspective)
                 let total_elapsed = query_start_time.elapsed();
