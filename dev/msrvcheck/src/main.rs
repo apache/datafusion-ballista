@@ -27,45 +27,49 @@ fn main() -> CargoResult<()> {
     let gctx = GlobalContext::default()?;
     // This is the path for the depcheck binary
     let path = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let root_cargo_toml = Path::new(&path)
+    let root_folder = Path::new(&path)
         // dev directory
         .parent()
         .expect("Can not find dev directory")
         // project root directory
         .parent()
-        .expect("Can not find project root directory")
-        .join("Cargo.toml");
+        .expect("Can not find project root directory");
 
-    println!(
-        "Checking for MSRV dependencies in {}",
-        root_cargo_toml.display()
-    );
+    let rust_folder = root_folder.join("Cargo.toml");
+    let python_folder = root_folder.join("python").join("Cargo.toml");
 
-    let workspace = cargo::core::Workspace::new(&root_cargo_toml, &gctx)?;
-    let project_msrv = workspace.lowest_rust_version().unwrap(); // there should be a MSRV project wise
+    for root_cargo_toml in [rust_folder, python_folder] {
+        println!(
+            "Checking for MSRV dependencies in {}",
+            root_cargo_toml.display()
+        );
 
-    let (_, resolve) = cargo::ops::resolve_ws(&workspace, false)?;
-    let packages_with_rust_version: Vec<_> = resolve
-        .iter()
-        .filter(|id| id.name().starts_with("datafusion"))
-        .map(|e| resolve.summary(e))
-        .map(|e| (e.name(), e.rust_version()))
-        .collect();
+        let workspace = cargo::core::Workspace::new(&root_cargo_toml, &gctx)?;
+        let project_msrv = workspace.lowest_rust_version().unwrap(); // there should be a MSRV project wise
 
-    println!("Current project MSRV: {}", project_msrv);
+        let (_, resolve) = cargo::ops::resolve_ws(&workspace, false)?;
+        let packages_with_rust_version: Vec<_> = resolve
+            .iter()
+            .filter(|id| id.name().starts_with("datafusion"))
+            .map(|e| resolve.summary(e))
+            .map(|e| (e.name(), e.rust_version()))
+            .collect();
 
-    for (package, version) in packages_with_rust_version {
-        if let Some(v) = version {
-            if !v.is_compatible_with(project_msrv.as_partial()) {
-                panic!(
-                    "package '{package}' has MSRV {v} not compatible with current project MSRV {project_msrv}",
-                );
+        println!("Current project MSRV: {}", project_msrv);
+
+        for (package, version) in packages_with_rust_version {
+            if let Some(v) = version {
+                if !project_msrv.is_compatible_with(v.as_partial()) {
+                    panic!(
+                        "package '{package}' has MSRV {v} not compatible with current project MSRV {project_msrv}",
+                    );
+                }
+
+                println!("{package} MSRV: {v}");
             }
-
-            println!("{package} MSRV: {v}");
         }
-    }
 
-    println!("No inconsistent MSRV found");
+        println!("No inconsistent MSRV found");
+    }
     Ok(())
 }
