@@ -33,7 +33,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cloudpickle" },
-    { name = "datafusion", specifier = "==49" },
+    { name = "datafusion", specifier = "==50" },
     { name = "pyarrow", specifier = ">=21.0.0" },
 ]
 
@@ -268,19 +268,19 @@ wheels = [
 
 [[package]]
 name = "datafusion"
-version = "49.0.0"
+version = "50.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyarrow" },
     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1b/81/eb7f69e184eba6f8fc748f09aa6ac39a50a4aa54e66e1529769d68d7c9e4/datafusion-49.0.0.tar.gz", hash = "sha256:f3ba4f00d56a199a90df145f43667131dbba9aea9b170cc61cd3663241a74a94", size = 183558, upload-time = "2025-08-29T01:39:45.889Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/99/af/536d79db4676564d118a9cea0775774e144b57d98942b7481e5cebc95932/datafusion-50.0.0.tar.gz", hash = "sha256:da6e2be2c56fe64319acc8e3611b7855a7429091fdf27baa7e850fbb798a8302", size = 184983, upload-time = "2025-09-23T10:49:45.015Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/02/16/a1438058d784deea42105b869323007cf9dd8a52dbb4551a9ef23967a235/datafusion-49.0.0-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:bb419810c7b1032ec4a374260d289279c5911e3fcdcfb57c9513b6d256fe0330", size = 26455326, upload-time = "2025-08-29T01:39:19.759Z" },
-    { url = "https://files.pythonhosted.org/packages/83/8d/d906b27b61838002b1cf0880eaa75c741409f0f6386192f2fabee24684af/datafusion-49.0.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:95d82ceda75767714629c1b5572a41bc919066156163d1ca3777418ffdbf4916", size = 23623419, upload-time = "2025-08-29T01:39:26.613Z" },
-    { url = "https://files.pythonhosted.org/packages/66/4e/2a113bef5e51e56f7273f193959a80e4abd48a2ff6856cfa219dbba85600/datafusion-49.0.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e093a8d8cc68bf48376c2f553dcec35829be3ea2c9557516fcf93d2bf4695593", size = 29392602, upload-time = "2025-08-29T01:39:32.053Z" },
-    { url = "https://files.pythonhosted.org/packages/ea/80/f49809e61f28343f303059572d9fdfedcb6f08653f34c057c2018d98ab5e/datafusion-49.0.0-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:7e9286f92f9f292a57873f8b83f10796decba98f4c022e92d929511f68e2d79a", size = 27505100, upload-time = "2025-08-29T01:39:36.398Z" },
-    { url = "https://files.pythonhosted.org/packages/f6/d7/54f1d73a9e8b084965ea40531988ca25e57f7f5c77560e198483b1c7bf25/datafusion-49.0.0-cp39-abi3-win_amd64.whl", hash = "sha256:2079a2ec6e73820a21d6f8d466a1410a94f8ef3171eba2cd2461790fc0437c91", size = 28352189, upload-time = "2025-08-29T01:39:43.546Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/93/8d0c750cfbde77cf55a647f160cac5373e0f481a0fcd984aad38d0738518/datafusion-50.0.0-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:40089b27ed8a6f0e4503b6ae1c56a61ded99782e703ed4baa37365020c4041fd", size = 28922036, upload-time = "2025-09-23T10:49:05.43Z" },
+    { url = "https://files.pythonhosted.org/packages/e7/91/8af3a666f1ae5e797c5efaae0edc9f2e2b4a500e1df64ece108c4f614fd9/datafusion-50.0.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:803bf3b28ee3c7446b06ec7448cf6f061ab0d32b5e5b986a525c42bfdd138e3f", size = 25811025, upload-time = "2025-09-23T10:49:08.941Z" },
+    { url = "https://files.pythonhosted.org/packages/18/47/ced6fcd33a0ef3e469b9e7059e974b5603b5e81e7a2d76859bffbf945b60/datafusion-50.0.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:20342283580526f6f9492d1615407fbe1329ef61a8fe98dbf507649fe8d4593b", size = 32100223, upload-time = "2025-09-23T10:49:13.09Z" },
+    { url = "https://files.pythonhosted.org/packages/56/93/ab5474c9b26064139a8cfa7c8a785bf811f3ba8ae45ff9544069c2173dd9/datafusion-50.0.0-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:fceeb075fc7a13841f87259e0940591d1e9c4a179ece5d84fada302ee48d8a04", size = 29924005, upload-time = "2025-09-23T10:49:16.919Z" },
+    { url = "https://files.pythonhosted.org/packages/4c/c6/029b23f731062d0c51d6cddadc44a263523688ce3d51740d2b365add46ec/datafusion-50.0.0-cp39-abi3-win_amd64.whl", hash = "sha256:d3102e1a78464d6758cf1811ef2d0c55e50d482b68674fea0abeb75a61ce6cd6", size = 31044416, upload-time = "2025-09-23T10:49:20.259Z" },
 ]
 
 [[package]]

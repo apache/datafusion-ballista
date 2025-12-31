@@ -132,3 +132,10 @@ python3 -m pytest
 ```shell
 uv run --no-project pytest
 ```
+
+### Updating requirements.txt
+
+```shell
+uv pip compile pyproject.toml -o requirements.txt
+uv pip compile pyproject.toml --group dev -o requirements-dev.txt
+```
