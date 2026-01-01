@@ -31,7 +31,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
     apt-get install -y nodejs && \
     npm install -g yarn
 
-RUN adduser -q builder --home /home/builder && \
+# create build user with same UID as
+RUN adduser -q -u $EXT_UID builder --home /home/builder && \
     mkdir -p /home/builder/workspace
 USER builder
 
