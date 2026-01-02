@@ -27,7 +27,7 @@ Run the following commands to download the [official Docker image](https://githu
 docker pull ghcr.io/apache/datafusion-ballista-standalone:latest
 ```
 
-Altenatively run the following commands to clone the source repository and build the Docker images from source:
+Alternatively run the following commands to clone the source repository and build the Docker images from source:
 
 ```bash
 git clone git@github.com:apache/datafusion-ballista.git

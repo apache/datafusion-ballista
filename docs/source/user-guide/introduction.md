@@ -21,9 +21,10 @@
 
 Ballista is a distributed compute platform primarily implemented in Rust, and powered by Apache DataFusion.
 
-Ballista has a scheduler and an executor process that are standard Rust executables and can be executed directly, but
-Dockerfiles are provided to build images for use in containerized environments, such as Docker, Docker Compose, and
-Kubernetes. See the [deployment guide](deployment.md) for more information
+Ballista has both scheduler and an executor component processes that are standard Rust executables.
+
+Dockerfiles are also provided to build images for use in containerized environments, such as Docker, Docker Compose,
+and Kubernetes. See the [deployment guide](deployment.md) for more information.
 
 SQL and DataFrame queries can be submitted from Python and Rust, and SQL queries can be submitted via the Arrow
 Flight SQL JDBC driver, supporting your favorite JDBC compliant tools such as [DataGrip](datagrip)
@@ -31,7 +32,7 @@ or [tableau](tableau). For setup instructions, please see the [FlightSQL guide](
 
 ## How does this compare to Apache Spark?
 
-Although Ballista is largely inspired by Apache Spark, there are some key differences.
+Although Ballista is largely inspired by Apache Spark, there are some key differences:
 
 - The choice of Rust as the main execution language means that memory usage is deterministic and avoids the overhead
   of GC pauses.
