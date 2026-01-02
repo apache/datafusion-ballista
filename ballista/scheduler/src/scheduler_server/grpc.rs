@@ -392,27 +392,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                         }
                     }
                 }
-                Query::Sql(sql) => {
-                    match session_ctx
-                        .sql(&sql)
-                        .await
-                        .and_then(|df| df.into_optimized_plan())
-                    {
-                        Ok(plan) => plan,
-                        Err(e) => {
-                            let msg = format!("Error parsing SQL: {e}");
-                            error!("{msg}");
-                            return Ok(Response::new(ExecuteQueryResult {
-                                operation_id,
-                                result: Some(execute_query_result::Result::Failure(
-                                    ExecuteQueryFailureResult {
-                                        failure: Some(execute_query_failure_result::Failure::PlanParsingFailure(msg)),
-                                    },
-                                )),
-                            }));
-                        }
-                    }
-                }
             };
 
             debug!(

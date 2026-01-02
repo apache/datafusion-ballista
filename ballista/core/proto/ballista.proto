@@ -537,8 +537,10 @@ message UpdateTaskStatusResult {
 message ExecuteQueryParams {
   oneof query {
     bytes logical_plan = 1;
-    string sql = 2 [deprecated=true]; // I'd suggest to remove this, if SQL needed use `flight-sql`
   }
+  // reserved after removing deprecated `sql` query type.
+  reserved 2;
+  reserved "sql";
 
   string session_id = 3;
   repeated KeyValuePair settings = 4;
