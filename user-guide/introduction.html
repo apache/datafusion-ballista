@@ -309,15 +309,15 @@
 <section id="overview">
 <h1>Overview<a class="headerlink" href="#overview" title="Link to this heading">¶</a></h1>
 <p>Ballista is a distributed compute platform primarily implemented in Rust, and powered by Apache DataFusion.</p>
-<p>Ballista has a scheduler and an executor process that are standard Rust executables and can be executed directly, but
-Dockerfiles are provided to build images for use in containerized environments, such as Docker, Docker Compose, and
-Kubernetes. See the <a class="reference internal" href="#deployment.md"><span class="xref myst">deployment guide</span></a> for more information</p>
+<p>Ballista has both scheduler and an executor component processes that are standard Rust executables.</p>
+<p>Dockerfiles are also provided to build images for use in containerized environments, such as Docker, Docker Compose,
+and Kubernetes. See the <a class="reference internal" href="#deployment.md"><span class="xref myst">deployment guide</span></a> for more information.</p>
 <p>SQL and DataFrame queries can be submitted from Python and Rust, and SQL queries can be submitted via the Arrow
 Flight SQL JDBC driver, supporting your favorite JDBC compliant tools such as <a class="reference internal" href="#datagrip"><span class="xref myst">DataGrip</span></a>
 or <a class="reference internal" href="#tableau"><span class="xref myst">tableau</span></a>. For setup instructions, please see the <a class="reference internal" href="#flightsql.md"><span class="xref myst">FlightSQL guide</span></a>.</p>
 <section id="how-does-this-compare-to-apache-spark">
 <h2>How does this compare to Apache Spark?<a class="headerlink" href="#how-does-this-compare-to-apache-spark" title="Link to this heading">¶</a></h2>
-<p>Although Ballista is largely inspired by Apache Spark, there are some key differences.</p>
+<p>Although Ballista is largely inspired by Apache Spark, there are some key differences:</p>
 <ul class="simple">
 <li><p>The choice of Rust as the main execution language means that memory usage is deterministic and avoids the overhead
 of GC pauses.</p></li>
