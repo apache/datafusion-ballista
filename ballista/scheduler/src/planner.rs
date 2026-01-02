@@ -26,13 +26,13 @@ use ballista_core::{
     serde::scheduler::PartitionLocation,
 };
 use datafusion::config::ConfigOptions;
-use datafusion::physical_optimizer::enforce_sorting::EnforceSorting;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
+use datafusion::physical_optimizer::enforce_sorting::EnforceSorting;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::{
-    with_new_children_if_necessary, ExecutionPlan, Partitioning,
+    ExecutionPlan, Partitioning, with_new_children_if_necessary,
 };
 
 use log::{debug, info};
@@ -338,7 +338,7 @@ mod test {
     use datafusion::physical_plan::sorts::sort::SortExec;
     use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
     use datafusion::physical_plan::windows::BoundedWindowAggExec;
-    use datafusion::physical_plan::{displayable, ExecutionPlan};
+    use datafusion::physical_plan::{ExecutionPlan, displayable};
     use datafusion::physical_plan::{InputOrderMode, Partitioning};
     use datafusion_proto::physical_plan::AsExecutionPlan;
     use datafusion_proto::protobuf::LogicalPlanNode;

@@ -18,14 +18,14 @@
 [workspace]
 exclude = ["dev/msrvcheck", "python"]
 members = ["ballista-cli", "ballista/client", "ballista/core", "ballista/executor", "ballista/scheduler", "benchmarks", "examples"]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 # edition to be changed to 2024 when we update 
 # Minimum Supported Rust Version (MSRV) to 1.85.0
 # which is datafusion 49
 # 
-edition = "2021"
+edition = "2024"
 # we should try to follow datafusion version 
 rust-version = "1.88.0"
 

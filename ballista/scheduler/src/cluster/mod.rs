@@ -33,17 +33,17 @@ use log::debug;
 use ballista_core::consistent_hash::ConsistentHash;
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf::{
-    job_status, AvailableTaskSlots, ExecutorHeartbeat, JobStatus,
+    AvailableTaskSlots, ExecutorHeartbeat, JobStatus, job_status,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata, PartitionId};
 use ballista_core::utils::{default_config_producer, default_session_builder};
-use ballista_core::{consistent_hash, ConfigProducer};
+use ballista_core::{ConfigProducer, consistent_hash};
 
 use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
 
 use crate::config::{SchedulerConfig, TaskDistributionPolicy};
 use crate::scheduler_server::SessionBuilder;
-use crate::state::execution_graph::{create_task_info, ExecutionGraph, TaskDescription};
+use crate::state::execution_graph::{ExecutionGraph, TaskDescription, create_task_info};
 use crate::state::task_manager::JobInfoCache;
 
 pub mod event;
@@ -532,7 +532,9 @@ pub(crate) async fn bind_task_consistent_hash(
         total_slots += node.available_slots as usize;
     }
     if total_slots == 0 {
-        debug!("Not enough available executor slots for binding tasks with consistent hashing policy!!!");
+        debug!(
+            "Not enough available executor slots for binding tasks with consistent hashing policy!!!"
+        );
         return Ok((vec![], None));
     }
     debug!("Total slot number for consistent hash binding is {total_slots}");
@@ -704,16 +706,16 @@ mod test {
     use std::sync::Arc;
 
     use datafusion::datasource::listing::PartitionedFile;
-    use object_store::path::Path;
     use object_store::ObjectMeta;
+    use object_store::path::Path;
 
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::AvailableTaskSlots;
     use ballista_core::serde::scheduler::{ExecutorMetadata, ExecutorSpecification};
 
     use crate::cluster::{
-        bind_task_bias, bind_task_consistent_hash, bind_task_round_robin, BoundTask,
-        TopologyNode,
+        BoundTask, TopologyNode, bind_task_bias, bind_task_consistent_hash,
+        bind_task_round_robin,
     };
     use crate::state::execution_graph::ExecutionGraph;
     use crate::state::task_manager::JobInfoCache;

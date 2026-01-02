@@ -19,7 +19,7 @@
 name = "ballista-benchmarks"
 description = "Ballista Benchmarks"
 version = "50.0.0"
-edition = "2021"
+edition = "2024"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
 homepage = "https://datafusion.apache.org/ballista/"
 repository = "https://github.com/apache/datafusion-ballista"

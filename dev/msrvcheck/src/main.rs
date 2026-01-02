@@ -56,7 +56,7 @@ fn main() -> CargoResult<()> {
 
     for (package, version) in packages_with_rust_version {
         if let Some(v) = version {
-            if !v.is_compatible_with(project_msrv.as_partial()) {
+            if !project_msrv.is_compatible_with(v.as_partial()) {
                 panic!(
                     "package '{package}' has MSRV {v} not compatible with current project MSRV {project_msrv}",
                 );

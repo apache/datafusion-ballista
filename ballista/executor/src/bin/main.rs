@@ -23,7 +23,7 @@ use ballista_core::object_store::{
 };
 use ballista_executor::config::Config;
 use ballista_executor::executor_process::{
-    start_executor_process, ExecutorProcessConfig,
+    ExecutorProcessConfig, start_executor_process,
 };
 use clap::Parser;
 use std::env;

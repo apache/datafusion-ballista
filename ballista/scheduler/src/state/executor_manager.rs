@@ -30,12 +30,12 @@ use crate::state::task_manager::JobInfoCache;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::protobuf::executor_grpc_client::ExecutorGrpcClient;
 use ballista_core::serde::protobuf::{
-    executor_status, CancelTasksParams, ExecutorHeartbeat, MultiTaskDefinition,
-    RemoveJobDataParams, StopExecutorParams,
+    CancelTasksParams, ExecutorHeartbeat, MultiTaskDefinition, RemoveJobDataParams,
+    StopExecutorParams, executor_status,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::utils::{
-    create_grpc_client_connection, get_time_before, GrpcClientConfig,
+    GrpcClientConfig, create_grpc_client_connection, get_time_before,
 };
 use dashmap::DashMap;
 use log::{debug, error, info, warn};
@@ -201,8 +201,8 @@ impl ExecutorManager {
                             .await
                         {
                             warn!(
-                                    "Failed to call remove_job_data on Executor {executor} due to {err:?}"
-                                )
+                                "Failed to call remove_job_data on Executor {executor} due to {err:?}"
+                            )
                         }
                     });
                 } else {
@@ -248,8 +248,7 @@ impl ExecutorManager {
     pub async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()> {
         trace!(
             "save executor metadata {} with {} task slots (pull-based registration)",
-            metadata.id,
-            metadata.specification.task_slots
+            metadata.id, metadata.specification.task_slots
         );
         self.cluster_state.save_executor_metadata(metadata).await
     }

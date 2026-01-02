@@ -130,14 +130,14 @@ order by sum_sales - avg_monthly_sales, s_store_name
 
         let result = ctx.sql(query).await?.collect().await?;
         let expected = [
-    "+-------------+-----------+----------------+----------------+--------+-------+--------------------+-----------+---------+---------+",
-    "| i_category  | i_brand   | s_store_name   | s_company_name | d_year | d_moy | avg_monthly_sales  | sum_sales | psum    | nsum    |",
-    "+-------------+-----------+----------------+----------------+--------+-------+--------------------+-----------+---------+---------+",
-    "| Electronics | TechBrand | Downtown Store | Retail Corp    | 1999   | 4     | 1499.9850000000001 | 999.99    | 999.99  | 999.99  |",
-    "| Electronics | TechBrand | Downtown Store | Retail Corp    | 1999   | 3     | 1499.9850000000001 | 999.99    | 1999.98 | 999.99  |",
-    "| Electronics | TechBrand | Downtown Store | Retail Corp    | 1999   | 1     | 1499.9850000000001 | 1999.98   | 1999.98 | 1999.98 |",
-    "| Electronics | TechBrand | Downtown Store | Retail Corp    | 1999   | 2     | 1499.9850000000001 | 1999.98   | 1999.98 | 999.99  |",
-    "+-------------+-----------+----------------+----------------+--------+-------+--------------------+-----------+---------+---------+",
+            "+-------------+-----------+----------------+----------------+--------+-------+--------------------+-----------+---------+---------+",
+            "| i_category  | i_brand   | s_store_name   | s_company_name | d_year | d_moy | avg_monthly_sales  | sum_sales | psum    | nsum    |",
+            "+-------------+-----------+----------------+----------------+--------+-------+--------------------+-----------+---------+---------+",
+            "| Electronics | TechBrand | Downtown Store | Retail Corp    | 1999   | 4     | 1499.9850000000001 | 999.99    | 999.99  | 999.99  |",
+            "| Electronics | TechBrand | Downtown Store | Retail Corp    | 1999   | 3     | 1499.9850000000001 | 999.99    | 1999.98 | 999.99  |",
+            "| Electronics | TechBrand | Downtown Store | Retail Corp    | 1999   | 1     | 1499.9850000000001 | 1999.98   | 1999.98 | 1999.98 |",
+            "| Electronics | TechBrand | Downtown Store | Retail Corp    | 1999   | 2     | 1499.9850000000001 | 1999.98   | 1999.98 | 999.99  |",
+            "+-------------+-----------+----------------+----------------+--------+-------+--------------------+-----------+---------+---------+",
         ];
 
         assert_batches_eq!(expected, &result);

@@ -29,10 +29,10 @@ use datafusion_proto::logical_plan::file_formats::{
     ArrowLogicalExtensionCodec, AvroLogicalExtensionCodec, CsvLogicalExtensionCodec,
     JsonLogicalExtensionCodec, ParquetLogicalExtensionCodec,
 };
+use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_hash_partitioning;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
-use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
 use datafusion_proto::protobuf::proto_error;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use datafusion_proto::{
@@ -491,12 +491,12 @@ struct FileFormatProto {
 mod test {
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use datafusion::physical_plan::expressions::col;
     use datafusion::physical_plan::Partitioning;
+    use datafusion::physical_plan::expressions::col;
     use datafusion::{
         common::DFSchema,
-        datasource::file_format::{parquet::ParquetFormatFactory, DefaultFileType},
-        logical_expr::{dml::CopyTo, EmptyRelation, LogicalPlan},
+        datasource::file_format::{DefaultFileType, parquet::ParquetFormatFactory},
+        logical_expr::{EmptyRelation, LogicalPlan, dml::CopyTo},
         prelude::SessionContext,
     };
     use datafusion_proto::{logical_plan::AsLogicalPlan, protobuf::LogicalPlanNode};

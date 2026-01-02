@@ -221,11 +221,11 @@ mod custom_s3_config {
     use crate::common::{ACCESS_KEY_ID, SECRET_KEY};
     use ballista::extension::SessionContextExt;
     use ballista::prelude::SessionConfigExt;
-    use ballista_core::object_store::{CustomObjectStoreRegistry, S3Options};
     use ballista_core::RuntimeProducer;
+    use ballista_core::object_store::{CustomObjectStoreRegistry, S3Options};
     use ballista_examples::test_util::examples_test_data;
-    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::execution::SessionState;
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::prelude::SessionConfig;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
     use datafusion::{error::DataFusionError, execution::SessionStateBuilder};
@@ -233,8 +233,8 @@ mod custom_s3_config {
     use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
     #[tokio::test]
-    async fn should_configure_s3_execute_sql_write_remote(
-    ) -> datafusion::error::Result<()> {
+    async fn should_configure_s3_execute_sql_write_remote()
+    -> datafusion::error::Result<()> {
         let test_data = examples_test_data();
 
         //
@@ -378,8 +378,8 @@ mod custom_s3_config {
     // SessionConfig propagation across ballista cluster.
 
     #[tokio::test]
-    async fn should_configure_s3_execute_sql_write_standalone(
-    ) -> datafusion::error::Result<()> {
+    async fn should_configure_s3_execute_sql_write_standalone()
+    -> datafusion::error::Result<()> {
         let test_data = examples_test_data();
 
         //
