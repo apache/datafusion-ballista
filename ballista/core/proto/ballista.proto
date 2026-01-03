@@ -537,6 +537,7 @@ message UpdateTaskStatusResult {
 message ExecuteQueryParams {
   oneof query {
     bytes logical_plan = 1;
+    bytes substrait_plan = 6;
   }
   // reserved after removing deprecated `sql` query type.
   reserved 2;

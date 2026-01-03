@@ -34,7 +34,7 @@ required-features = ["build-binary"]
 
 [features]
 build-binary = ["clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary"]
-default = ["build-binary"]
+default = ["build-binary", "substrait"]
 # job info can cache stage plans, in some cases where 
 # task plans can be re-computed, cache behavior may need to be disabled.
 disable-stage-plan-cache = []
@@ -42,6 +42,7 @@ graphviz-support = ["dep:graphviz-rust"]
 keda-scaler = []
 prometheus-metrics = ["prometheus", "once_cell"]
 rest-api = []
+substrait = ["dep:datafusion-substrait"]
 
 [dependencies]
 arrow-flight = { workspace = true }
@@ -52,6 +53,7 @@ clap = { workspace = true, optional = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
+datafusion-substrait = { workspace = true, optional = true }
 futures = { workspace = true }
 graphviz-rust = { version = "0.9", optional = true }
 http = "1.1"
