@@ -52,6 +52,7 @@ clap = { workspace = true, optional = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
+datafusion-substrait = { workspace = true }
 futures = { workspace = true }
 graphviz-rust = { version = "0.9", optional = true }
 http = "1.1"
