@@ -43,7 +43,9 @@ use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
 
 use crate::config::{SchedulerConfig, TaskDistributionPolicy};
 use crate::scheduler_server::SessionBuilder;
-use crate::state::execution_graph::{ExecutionGraph, TaskDescription, create_task_info};
+use crate::state::execution_graph::{
+    ExecutionGraphBox, TaskDescription, create_task_info,
+};
 use crate::state::task_manager::JobInfoCache;
 
 pub mod event;
@@ -260,7 +262,7 @@ pub trait JobState: Send + Sync {
     /// Submit a new job to the `JobState`. It is assumed that the submitter owns the job.
     /// In local state the job should be save as `JobStatus::Active` and in shared state
     /// it should be saved as `JobStatus::Running` with `scheduler` set to the current scheduler
-    async fn submit_job(&self, job_id: String, graph: &ExecutionGraph) -> Result<()>;
+    async fn submit_job(&self, job_id: String, graph: &ExecutionGraphBox) -> Result<()>;
 
     /// Return a `Vec` of all active job IDs in the `JobState`
     async fn get_jobs(&self) -> Result<HashSet<String>>;
@@ -272,11 +274,14 @@ pub trait JobState: Send + Sync {
     /// and should return the `ExecutionGraph` for the given job (if it exists) at the
     /// time this method is called with no guarantees that the graph has not been
     /// subsequently updated by another scheduler.
-    async fn get_execution_graph(&self, job_id: &str) -> Result<Option<ExecutionGraph>>;
+    async fn get_execution_graph(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<ExecutionGraphBox>>;
 
     /// Persist the current state of an owned job to global state. This should fail
     /// if the job is not owned by the caller.
-    async fn save_job(&self, job_id: &str, graph: &ExecutionGraph) -> Result<()>;
+    async fn save_job(&self, job_id: &str, graph: &ExecutionGraphBox) -> Result<()>;
 
     /// Mark a job which has not been submitted as failed. This should be called if a job fails
     /// during planning (and does not yet have an `ExecutionGraph`)
@@ -288,7 +293,7 @@ pub trait JobState: Send + Sync {
     /// Attempt to acquire ownership of the given job. If the job is still in a running state
     /// and is successfully acquired by the caller, return the current `ExecutionGraph`,
     /// otherwise return `None`
-    async fn try_acquire_job(&self, job_id: &str) -> Result<Option<ExecutionGraph>>;
+    async fn try_acquire_job(&self, job_id: &str) -> Result<Option<ExecutionGraphBox>>;
 
     /// Get a stream of all `JobState` events. An event should be published any time that status
     /// of a job changes in state
@@ -717,7 +722,7 @@ mod test {
         BoundTask, TopologyNode, bind_task_bias, bind_task_consistent_hash,
         bind_task_round_robin,
     };
-    use crate::state::execution_graph::ExecutionGraph;
+    use crate::state::execution_graph::{ExecutionGraph, StaticExecutionGraph};
     use crate::state::task_manager::JobInfoCache;
     use crate::test_utils::{
         mock_completed_task, revive_graph_and_complete_next_stage,
@@ -948,8 +953,14 @@ mod test {
         let graph_b = mock_graph("job_b", num_partition, 7).await?;
 
         let mut active_jobs = HashMap::new();
-        active_jobs.insert(graph_a.job_id().to_string(), JobInfoCache::new(graph_a));
-        active_jobs.insert(graph_b.job_id().to_string(), JobInfoCache::new(graph_b));
+        active_jobs.insert(
+            graph_a.job_id().to_string(),
+            JobInfoCache::new(Box::new(graph_a)),
+        );
+        active_jobs.insert(
+            graph_b.job_id().to_string(),
+            JobInfoCache::new(Box::new(graph_b)),
+        );
 
         Ok(active_jobs)
     }
@@ -958,7 +969,7 @@ mod test {
         job_id: &str,
         num_target_partitions: usize,
         num_pending_task: usize,
-    ) -> Result<ExecutionGraph> {
+    ) -> Result<StaticExecutionGraph> {
         let mut graph =
             test_aggregation_plan_with_job_id(num_target_partitions, job_id).await;
         let executor = ExecutorMetadata {
