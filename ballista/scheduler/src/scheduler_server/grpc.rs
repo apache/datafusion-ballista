@@ -34,6 +34,8 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
+use datafusion_substrait::logical_plan::consumer::from_substrait_plan;
+use datafusion_substrait::serializer::deserialize_bytes;
 use log::{debug, error, info, trace, warn};
 use std::net::SocketAddr;
 
@@ -392,26 +394,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                         }
                     }
                 }
-                Query::Sql(sql) => {
-                    match session_ctx
-                        .sql(&sql)
+                Query::SubstraitPlan(bytes) => {
+                    let plan = deserialize_bytes(bytes).await.map_err(|e| {
+                        let msg = format!("Could not parse substrait plan: {e}");
+                        error!("{}", msg);
+                        Status::internal(msg)
+                    })?;
+
+                    let ctx = session_ctx.as_ref().clone();
+                    from_substrait_plan(&ctx.state(), &plan)
                         .await
-                        .and_then(|df| df.into_optimized_plan())
-                    {
-                        Ok(plan) => plan,
-                        Err(e) => {
-                            let msg = format!("Error parsing SQL: {e}");
-                            error!("{msg}");
-                            return Ok(Response::new(ExecuteQueryResult {
-                                operation_id,
-                                result: Some(execute_query_result::Result::Failure(
-                                    ExecuteQueryFailureResult {
-                                        failure: Some(execute_query_failure_result::Failure::PlanParsingFailure(msg)),
-                                    },
-                                )),
-                            }));
-                        }
-                    }
+                        .map_err(|e| {
+                            let msg = format!("Could not parse substrait plan: {e}");
+                            error!("{}", msg);
+                            Status::internal(msg)
+                        })?
                 }
             };
 
