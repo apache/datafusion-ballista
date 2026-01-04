@@ -132,7 +132,7 @@ The physical (non-distributed) plan for this query would look something like thi
 
 ```
 Projection: #customer.id, #total_amount
-  HashAggregate: groupBy=[customer.id], aggr=[MAX(max_fare) AS total_amount]
+  HashAggregate: groupBy=[customer.id], aggr=[SUM(order.amount) AS total_amount]
     Join: condition=[customer.id = order.customer_id]
       Scan: customer
       Scan: order
@@ -157,7 +157,7 @@ remains partitioned by customer id.
 
 ```
 Query Stage #3: repartition=[]
-  HashAggregate: groupBy=[customer.id], aggr=[MAX(max_fare) AS total_amount]
+  HashAggregate: groupBy=[customer.id], aggr=[SUM(order.amount) AS total_amount]
     Join: condition=[customer.id = order.customer_id]
       Query Stage #1
       Query Stage #2
@@ -169,7 +169,7 @@ stage.
 ```
 Query Stage #4:
   Projection: #customer.id, #total_amount
-    HashAggregate: groupBy=[customer.id], aggr=[MAX(max_fare) AS total_amount]
+    HashAggregate: groupBy=[customer.id], aggr=[SUM(order.amount) AS total_amount]
       QueryStage #3
 ```
 
@@ -179,9 +179,9 @@ repartitioned or exchanged between pipelined operations.
 ```
 Query Stage #4:
   Projection: #customer.id, #total_amount
-    HashAggregate: groupBy=[customer.id], aggr=[MAX(max_fare) AS total_amount]
+    HashAggregate: groupBy=[customer.id], aggr=[SUM(order.amount) AS total_amount]
       Query Stage #3: repartition=[]
-        HashAggregate: groupBy=[customer.id], aggr=[MAX(max_fare) AS total_amount]
+        HashAggregate: groupBy=[customer.id], aggr=[SUM(order.amount) AS total_amount]
           Join: condition=[customer.id = order.customer_id]
             Query Stage #1: repartition=[customer.id]
               Scan: customer
