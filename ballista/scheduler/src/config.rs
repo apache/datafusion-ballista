@@ -33,22 +33,27 @@ use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use std::fmt::Display;
 use std::sync::Arc;
 
-/// Configuration of the application
+/// Command-line configuration for the scheduler binary.
 #[cfg(feature = "build-binary")]
 #[derive(clap::Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Config {
+    /// Route for proxying flight results via scheduler (IP:PORT format).
     #[arg(
         long,
         help = "Route for proxying flight results via scheduler. Should be of the form 'IP:PORT"
     )]
     pub advertise_flight_sql_endpoint: Option<String>,
+    /// Namespace for the ballista cluster.
     #[arg(short = 'n', long, default_value_t = String::from("ballista"), help = "Namespace for the ballista cluster that this executor will join. Default: ballista")]
     pub namespace: String,
+    /// Local host name or IP address to bind to.
     #[arg(long, default_value_t = String::from("0.0.0.0"), help = "Local host name or IP address to bind to. Default: 0.0.0.0")]
     pub bind_host: String,
+    /// External host name for executors to connect to.
     #[arg(long, default_value_t = String::from("localhost"), help = "Host name or IP address so that executors can connect to this scheduler. Default: localhost")]
     pub external_host: String,
+    /// Port to bind the scheduler gRPC service.
     #[arg(
         short = 'p',
         long,
@@ -56,6 +61,7 @@ pub struct Config {
         help = "bind port. Default: 50050"
     )]
     pub bind_port: u16,
+    /// Task scheduling policy (pull-staged or push-staged).
     #[arg(
         short = 's',
         long,
@@ -63,101 +69,118 @@ pub struct Config {
         help = "The scheduling policy for the scheduler, possible values: pull-staged, push-staged. Default: pull-staged"
     )]
     pub scheduler_policy: ballista_core::config::TaskSchedulingPolicy,
+    /// Event loop buffer size for high throughput systems.
     #[arg(
         long,
         default_value_t = 1000,
         help = "Event loop buffer size. Default: 10000"
     )]
     pub event_loop_buffer_size: u32,
+    /// Interval in seconds for cleaning up finished job data.
     #[arg(
         long,
         default_value_t = 300,
         help = "Delayed interval for cleaning up finished job data. Default: 300"
     )]
     pub finished_job_data_clean_up_interval_seconds: u64,
+    /// Interval in seconds for cleaning up finished job state.
     #[arg(
         long,
         default_value_t = 3600,
         help = "Delayed interval for cleaning up finished job state. Default: 3600"
     )]
     pub finished_job_state_clean_up_interval_seconds: u64,
+    /// Task distribution policy (bias, round-robin, consistent-hash).
     #[arg(
         long,
         default_value_t = crate::config::TaskDistribution::Bias,
         help = "The policy of distributing tasks to available executor slots, possible values: bias, round-robin, consistent-hash. Default: bias"
     )]
     pub task_distribution: crate::config::TaskDistribution,
+    /// Replica count per node for consistent hashing.
     #[arg(
         long,
         default_value_t = 31,
         help = "Replica number of each node for the consistent hashing. Default: 31"
     )]
     pub consistent_hash_num_replicas: u32,
+    /// Tolerance for consistent hashing task scheduling.
     #[arg(
         long,
         default_value_t = 0,
         help = "Tolerance of the consistent hashing policy for task scheduling. Default: 0"
     )]
     pub consistent_hash_tolerance: u32,
+    /// Directory path for log files.
     #[arg(
         long,
         help = "Log dir: a path to save log. This will create a new storage directory at the specified path if it does not already exist."
     )]
     pub log_dir: Option<String>,
+    /// Whether to print thread IDs and names in log files.
     #[arg(
         long,
         default_value_t = true,
         help = "Enable print thread ids and names in log file."
     )]
     pub print_thread_info: bool,
+    /// Log level configuration for modules.
     #[arg(
         long,
         default_value_t = String::from("INFO,datafusion=INFO"),
         help = "special log level for sub mod. link: https://docs.rs/env_logger/latest/env_logger/#enabling-logging. For example we want whole level is INFO but datafusion mode is DEBUG"
     )]
     pub log_level_setting: String,
+    /// Log rotation policy (minutely, hourly, daily, never).
     #[arg(
         long,
         default_value_t = ballista_core::config::LogRotationPolicy::Daily,
         help = "Tracing log rotation policy, possible values: minutely, hourly, daily, never. Default: daily"
     )]
     pub log_rotation_policy: ballista_core::config::LogRotationPolicy,
+    /// Interval in ms to wait before resubmitting unscheduled jobs.
     #[arg(
         long,
         default_value_t = 0,
         help = "If job is not able to be scheduled on submission, wait for this interval and resubmit. Default value of 0 indicates that job should not be resubmitted"
     )]
     pub job_resubmit_interval_ms: u64,
+    /// Grace period in seconds for executor termination.
     #[arg(
         long,
         default_value_t = 30,
         help = "Time in seconds an executor should be considered lost after it enters terminating status"
     )]
     pub executor_termination_grace_period: u64,
+    /// Expected processing time for scheduler events in microseconds.
     #[arg(
         long,
         default_value_t = 0,
         help = "The maximum expected processing time of a scheduler event (microseconds). Zero means disable."
     )]
     pub scheduler_event_expected_processing_duration: u64,
+    /// Maximum size of decoded gRPC messages.
     #[arg(
         long,
         default_value_t = 16777216,
         help = "The maximum size of a decoded message at the grpc server side. Default: 16MB"
     )]
     pub grpc_server_max_decoding_message_size: u32,
+    /// Maximum size of encoded gRPC messages.
     #[arg(
         long,
         default_value_t = 16777216,
         help = "The maximum size of an encoded message at the grpc server side. Default: 16MB"
     )]
     pub grpc_server_max_encoding_message_size: u32,
+    /// Timeout in seconds before marking an executor as dead.
     #[arg(
         long,
         default_value_t = 180,
         help = "The executor timeout in seconds. It should be longer than executor's heartbeat intervals. Only after missing two or tree consecutive heartbeats from a executor, the executor is mark to be dead"
     )]
     pub executor_timeout_seconds: u64,
+    /// Interval in seconds to check for dead executors.
     #[arg(
         long,
         default_value_t = 15,
@@ -246,39 +269,47 @@ impl Default for SchedulerConfig {
 }
 
 impl SchedulerConfig {
+    /// Returns the scheduler name in host:port format.
     pub fn scheduler_name(&self) -> String {
         format!("{}:{}", self.external_host, self.bind_port)
     }
 
+    /// Returns whether push-staged scheduling policy is being used.
     pub fn is_push_staged_scheduling(&self) -> bool {
         matches!(self.scheduling_policy, TaskSchedulingPolicy::PushStaged)
     }
 
+    /// Sets the namespace for this scheduler.
     pub fn with_namespace(mut self, namespace: impl Into<String>) -> Self {
         self.namespace = namespace.into();
         self
     }
 
+    /// Sets the external hostname for this scheduler.
     pub fn with_hostname(mut self, hostname: impl Into<String>) -> Self {
         self.external_host = hostname.into();
         self
     }
 
+    /// Sets the bind port for this scheduler.
     pub fn with_port(mut self, port: u16) -> Self {
         self.bind_port = port;
         self
     }
 
+    /// Sets the task scheduling policy.
     pub fn with_scheduler_policy(mut self, policy: TaskSchedulingPolicy) -> Self {
         self.scheduling_policy = policy;
         self
     }
 
+    /// Sets the event loop buffer size.
     pub fn with_event_loop_buffer_size(mut self, buffer_size: u32) -> Self {
         self.event_loop_buffer_size = buffer_size;
         self
     }
 
+    /// Sets the interval for cleaning up finished job data.
     pub fn with_finished_job_data_clean_up_interval_seconds(
         mut self,
         interval_seconds: u64,
@@ -287,6 +318,7 @@ impl SchedulerConfig {
         self
     }
 
+    /// Sets the interval for cleaning up finished job state.
     pub fn with_finished_job_state_clean_up_interval_seconds(
         mut self,
         interval_seconds: u64,
@@ -295,6 +327,7 @@ impl SchedulerConfig {
         self
     }
 
+    /// Sets the Flight SQL endpoint to advertise.
     pub fn with_advertise_flight_sql_endpoint(
         mut self,
         endpoint: Option<String>,
@@ -303,31 +336,37 @@ impl SchedulerConfig {
         self
     }
 
+    /// Sets the task distribution policy.
     pub fn with_task_distribution(mut self, policy: TaskDistributionPolicy) -> Self {
         self.task_distribution = policy;
         self
     }
 
+    /// Sets the job resubmit interval in milliseconds.
     pub fn with_job_resubmit_interval_ms(mut self, interval_ms: u64) -> Self {
         self.job_resubmit_interval_ms = Some(interval_ms);
         self
     }
 
+    /// Sets the executor termination grace period in seconds.
     pub fn with_remove_executor_wait_secs(mut self, value: u64) -> Self {
         self.executor_termination_grace_period = value;
         self
     }
 
+    /// Sets the maximum gRPC server decoding message size.
     pub fn with_grpc_server_max_decoding_message_size(mut self, value: u32) -> Self {
         self.grpc_server_max_decoding_message_size = value;
         self
     }
 
+    /// Sets the maximum gRPC server encoding message size.
     pub fn with_grpc_server_max_encoding_message_size(mut self, value: u32) -> Self {
         self.grpc_server_max_encoding_message_size = value;
         self
     }
 
+    /// Sets a custom config producer.
     pub fn with_override_config_producer(
         mut self,
         override_config_producer: ConfigProducer,
@@ -336,6 +375,7 @@ impl SchedulerConfig {
         self
     }
 
+    /// Sets a custom session builder.
     pub fn with_override_session_builder(
         mut self,
         override_session_builder: SessionBuilder,
@@ -382,6 +422,7 @@ impl std::str::FromStr for TaskDistribution {
     }
 }
 
+/// Policy for distributing tasks to available executor slots.
 #[derive(Debug, Clone, Default)]
 pub enum TaskDistributionPolicy {
     /// Eagerly assign tasks to executor slots. This will assign as many task slots per executor
@@ -396,7 +437,9 @@ pub enum TaskDistributionPolicy {
     ///    And then bind it with an execute according to consistent hashing policy.
     /// 3. If needed, work stealing can be enabled based on the tolerance of the consistent hashing.
     ConsistentHash {
+        /// Number of virtual nodes per executor on the consistent hash ring.
         num_replicas: usize,
+        /// Tolerance for work stealing when slots are imbalanced.
         tolerance: usize,
     },
     /// User provided task distribution policy

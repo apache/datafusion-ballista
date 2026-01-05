@@ -117,6 +117,7 @@ pub struct CustomObjectStoreRegistry {
 }
 
 impl CustomObjectStoreRegistry {
+    /// Creates a new custom object store registry with the given S3 options.
     pub fn new(s3options: S3Options) -> Self {
         Self {
             s3options,

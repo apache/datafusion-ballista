@@ -41,6 +41,7 @@ pub mod standalone;
 /// Scheduler state management.
 pub mod state;
 
+/// Test utilities for scheduler testing.
 #[cfg(test)]
 pub mod test_utils;
 

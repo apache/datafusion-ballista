@@ -81,6 +81,7 @@ pub struct DistributedQueryExec<T: 'static + AsLogicalPlan> {
 }
 
 impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
+    /// Creates a new distributed query execution plan.
     pub fn new(
         scheduler_url: String,
         config: BallistaConfig,
@@ -101,6 +102,7 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
         }
     }
 
+    /// Creates a new distributed query execution plan with a custom extension codec.
     pub fn with_extension(
         scheduler_url: String,
         config: BallistaConfig,

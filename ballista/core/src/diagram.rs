@@ -33,6 +33,10 @@ use std::io::{BufWriter, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// Produces a Graphviz DOT diagram of the execution stages.
+///
+/// Writes a DOT file to the specified filename that visualizes the relationships
+/// between execution stages and their operators.
 pub fn produce_diagram(filename: &str, stages: &[Arc<ShuffleWriterExec>]) -> Result<()> {
     let write_file = File::create(filename)?;
     let mut w = BufWriter::new(&write_file);

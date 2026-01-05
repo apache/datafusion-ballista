@@ -33,15 +33,21 @@ use datafusion::{error::Result, physical_plan::RecordBatchStream};
 use futures::Stream;
 use futures::stream::SelectAll;
 
-/// The CollectExec operator retrieves results from the cluster and returns them as a single
-/// vector of [RecordBatch].
+/// Execution plan that collects results from multiple partitions into a single stream.
+///
+/// The CollectExec operator merges all partitions of its input plan into a single
+/// output partition, combining results from distributed query execution into one
+/// unified result set.
 #[derive(Debug, Clone)]
 pub struct CollectExec {
+    /// The underlying execution plan whose partitions will be merged.
     plan: Arc<dyn ExecutionPlan>,
+    /// Properties describing this plan's partitioning and ordering.
     properties: PlanProperties,
 }
 
 impl CollectExec {
+    /// Creates a new CollectExec that merges all partitions of the given plan.
     pub fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
         let properties = PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(plan.schema()),

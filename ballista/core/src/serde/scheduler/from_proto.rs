@@ -304,6 +304,10 @@ impl Into<ExecutorData> for protobuf::ExecutorData {
     }
 }
 
+/// Converts a protobuf task definition to a native Ballista task definition.
+///
+/// This function deserializes the execution plan from the protobuf representation
+/// and constructs a complete task definition with the provided runtime configuration.
 pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     task: protobuf::TaskDefinition,
     produce_runtime: RuntimeProducer,
@@ -361,6 +365,10 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     })
 }
 
+/// Converts a protobuf multi-task definition to a vector of native Ballista task definitions.
+///
+/// This function handles batch task definitions where multiple partitions share
+/// the same execution plan, creating individual task definitions for each partition.
 pub fn get_task_definition_vec<
     T: 'static + AsLogicalPlan,
     U: 'static + AsExecutionPlan,

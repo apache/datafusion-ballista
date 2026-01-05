@@ -28,7 +28,9 @@ use serde::Serialize;
 use std::fmt::Debug;
 use std::{collections::HashMap, fmt, sync::Arc};
 
+/// Conversions from protobuf types to Ballista types.
 pub mod from_proto;
+/// Conversions from Ballista types to protobuf types.
 pub mod to_proto;
 
 /// Action that can be sent to an executor
@@ -36,11 +38,17 @@ pub mod to_proto;
 pub enum Action {
     /// Collect a shuffle partition
     FetchPartition {
+        /// The job identifier.
         job_id: String,
+        /// The stage identifier within the job.
         stage_id: usize,
+        /// The partition identifier within the stage.
         partition_id: usize,
+        /// File path to the partition data.
         path: String,
+        /// Hostname or IP address of the executor hosting this partition.
         host: String,
+        /// Port number for data transfer.
         port: u16,
     },
 }
@@ -48,12 +56,16 @@ pub enum Action {
 /// Unique identifier for the output partition of an operator.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PartitionId {
+    /// The job identifier.
     pub job_id: String,
+    /// The stage identifier within the job.
     pub stage_id: usize,
+    /// The partition identifier within the stage.
     pub partition_id: usize,
 }
 
 impl PartitionId {
+    /// Creates a new partition ID with the given job, stage, and partition identifiers.
     pub fn new(job_id: &str, stage_id: usize, partition_id: usize) -> Self {
         Self {
             job_id: job_id.to_string(),
@@ -63,41 +75,59 @@ impl PartitionId {
     }
 }
 
+/// Location information for a shuffle partition.
 #[derive(Debug, Clone)]
 pub struct PartitionLocation {
+    /// The source partition ID from the map stage.
     pub map_partition_id: usize,
+    /// The partition identifier.
     pub partition_id: PartitionId,
+    /// Metadata about the executor hosting this partition.
     pub executor_meta: ExecutorMetadata,
+    /// Statistics about the partition data.
     pub partition_stats: PartitionStats,
+    /// File path to the partition data.
     pub path: String,
 }
 
-/// Meta-data for an executor, used when fetching shuffle partitions from other executors
+/// Meta-data for an executor, used when fetching shuffle partitions from other executors.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExecutorMetadata {
+    /// Unique executor identifier.
     pub id: String,
+    /// Hostname or IP address of the executor.
     pub host: String,
+    /// Port number for data transfer.
     pub port: u16,
+    /// Port number for gRPC communication.
     pub grpc_port: u16,
+    /// Resource specification for this executor.
     pub specification: ExecutorSpecification,
 }
 
-/// Specification of an executor, indicting executor resources, like total task slots
+/// Specification of an executor, indicating executor resources, like total task slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ExecutorSpecification {
+    /// Number of concurrent task slots available on this executor.
     pub task_slots: u32,
 }
 
-/// From Spark, available resources for an executor, like available task slots
+/// Available resources for an executor, including total and available task slots.
 #[derive(Debug, Clone, Serialize)]
 pub struct ExecutorData {
+    /// Unique executor identifier.
     pub executor_id: String,
+    /// Total number of task slots.
     pub total_task_slots: u32,
+    /// Currently available task slots.
     pub available_task_slots: u32,
 }
 
+/// Represents a change in executor task slot availability.
 pub struct ExecutorDataChange {
+    /// Unique executor identifier.
     pub executor_id: String,
+    /// Change in available task slots (positive or negative).
     pub task_slots: i32,
 }
 
@@ -120,6 +150,7 @@ impl fmt::Display for PartitionStats {
 }
 
 impl PartitionStats {
+    /// Creates new partition statistics with the given values.
     pub fn new(
         num_rows: Option<u64>,
         num_batches: Option<u64>,
@@ -132,6 +163,7 @@ impl PartitionStats {
         }
     }
 
+    /// Returns the Arrow struct field representation of these statistics.
     pub fn arrow_struct_repr(self) -> Field {
         Field::new(
             "partition_stats",
@@ -140,6 +172,7 @@ impl PartitionStats {
         )
     }
 
+    /// Returns the Arrow fields for the statistics struct.
     pub fn arrow_struct_fields(self) -> Vec<Field> {
         vec![
             Field::new("num_rows", DataType::UInt64, false),
@@ -148,6 +181,7 @@ impl PartitionStats {
         ]
     }
 
+    /// Converts these statistics to an Arrow struct array.
     pub fn to_arrow_arrayref(self) -> Result<Arc<StructArray>, BallistaError> {
         let mut field_builders = Vec::new();
 
@@ -178,6 +212,7 @@ impl PartitionStats {
         Ok(Arc::new(struct_builder.finish()))
     }
 
+    /// Creates partition statistics from an Arrow struct array.
     pub fn from_arrow_struct_array(struct_array: &StructArray) -> PartitionStats {
         let num_rows = struct_array
             .column_by_name("num_rows")
@@ -225,6 +260,7 @@ pub struct ExecutePartition {
 }
 
 impl ExecutePartition {
+    /// Creates a new execute partition task.
     pub fn new(
         job_id: String,
         stage_id: usize,
@@ -243,19 +279,23 @@ impl ExecutePartition {
         }
     }
 
+    /// Returns a unique key string for this partition task.
     pub fn key(&self) -> String {
         format!("{}.{}.{:?}", self.job_id, self.stage_id, self.partition_id)
     }
 }
 
+/// Result of executing a partition, containing the output path and statistics.
 #[derive(Debug)]
 pub struct ExecutePartitionResult {
-    /// Path containing results for this partition
+    /// Path containing results for this partition.
     path: String,
+    /// Statistics about the executed partition.
     stats: PartitionStats,
 }
 
 impl ExecutePartitionResult {
+    /// Creates a new execution result with the given path and statistics.
     pub fn new(path: &str, stats: PartitionStats) -> Self {
         Self {
             path: path.to_owned(),
@@ -263,26 +303,40 @@ impl ExecutePartitionResult {
         }
     }
 
+    /// Returns the output file path.
     pub fn path(&self) -> &str {
         &self.path
     }
 
+    /// Returns the partition statistics.
     pub fn statistics(&self) -> &PartitionStats {
         &self.stats
     }
 }
 
+/// Definition of a task to be executed on an executor.
 #[derive(Clone, Debug)]
 pub struct TaskDefinition {
+    /// Unique task identifier.
     pub task_id: usize,
+    /// Current attempt number for this task.
     pub task_attempt_num: usize,
+    /// Job identifier this task belongs to.
     pub job_id: String,
+    /// Stage identifier within the job.
     pub stage_id: usize,
+    /// Current attempt number for the stage.
     pub stage_attempt_num: usize,
+    /// Partition to process.
     pub partition_id: usize,
+    /// Physical execution plan for this task.
     pub plan: Arc<dyn ExecutionPlan>,
+    /// Timestamp when the task was launched.
     pub launch_time: u64,
+    /// Session identifier.
     pub session_id: String,
+    /// Session configuration.
     pub session_config: SessionConfig,
+    /// Function registry for UDFs.
     pub function_registry: Arc<BallistaFunctionRegistry>,
 }

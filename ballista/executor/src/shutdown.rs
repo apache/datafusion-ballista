@@ -15,6 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Graceful shutdown coordination for executor components.
+//!
+//! This module provides primitives for coordinating shutdown across multiple
+//! async components. Based on the mini-redis example from Tokio.
+
 use tokio::sync::{broadcast, mpsc};
 
 /// Listens for the server shutdown signal(copied from mini-redis example).
@@ -65,6 +70,10 @@ impl Shutdown {
     }
 }
 
+/// Coordinates graceful shutdown across multiple components.
+///
+/// The notifier broadcasts shutdown signals and waits for all components
+/// to complete their cleanup before the process terminates.
 pub struct ShutdownNotifier {
     /// Broadcasts a shutdown signal to all related components.
     pub notify_shutdown: broadcast::Sender<()>,
@@ -77,11 +86,12 @@ pub struct ShutdownNotifier {
     /// leveraged to detect all shutdown processing completing.
     pub shutdown_complete_rx: mpsc::Receiver<()>,
 
+    /// Sender handle cloned to each component; dropped when component finishes cleanup.
     pub shutdown_complete_tx: mpsc::Sender<()>,
 }
 
 impl ShutdownNotifier {
-    /// Create a new ShutdownNotifier instance
+    /// Creates a new ShutdownNotifier instance with initialized channels.
     pub fn new() -> Self {
         let (notify_shutdown, _) = broadcast::channel(1);
         let (shutdown_complete_tx, shutdown_complete_rx) = mpsc::channel(1);
@@ -92,7 +102,10 @@ impl ShutdownNotifier {
         }
     }
 
-    /// Subscribe for shutdown notification
+    /// Creates a new [`Shutdown`] handle that will receive the shutdown signal.
+    ///
+    /// Each component that needs to handle graceful shutdown should call this
+    /// method to obtain its own shutdown listener.
     pub fn subscribe_for_shutdown(&self) -> Shutdown {
         Shutdown::new(self.notify_shutdown.subscribe())
     }

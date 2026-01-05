@@ -129,16 +129,29 @@ pub struct ExecutionGraph {
     session_config: Arc<SessionConfig>,
 }
 
+/// Information about a currently running task.
+///
+/// Used to track tasks that are in progress and may need to be cancelled
+/// when an executor is lost or a job is cancelled.
 #[derive(Clone, Debug)]
 pub struct RunningTaskInfo {
+    /// Unique identifier for this task within the execution graph.
     pub task_id: usize,
+    /// The job ID this task belongs to.
     pub job_id: String,
+    /// The stage ID this task belongs to.
     pub stage_id: usize,
+    /// The partition this task is processing.
     pub partition_id: usize,
+    /// The executor ID where this task is running.
     pub executor_id: String,
 }
 
 impl ExecutionGraph {
+    /// Creates a new `ExecutionGraph` from a physical execution plan.
+    ///
+    /// This will use the `DistributedPlanner` to break the plan into stages
+    /// and build the DAG structure needed for distributed execution.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         scheduler_id: &str,
@@ -186,34 +199,42 @@ impl ExecutionGraph {
         })
     }
 
+    /// Returns the job ID for this execution graph.
     pub fn job_id(&self) -> &str {
         self.job_id.as_str()
     }
 
+    /// Returns the job name for this execution graph.
     pub fn job_name(&self) -> &str {
         self.job_name.as_str()
     }
 
+    /// Returns the session ID associated with this job.
     pub fn session_id(&self) -> &str {
         self.session_id.as_str()
     }
 
+    /// Returns the current job status.
     pub fn status(&self) -> &JobStatus {
         &self.status
     }
 
+    /// Returns the timestamp when this job started execution.
     pub fn start_time(&self) -> u64 {
         self.start_time
     }
 
+    /// Returns the timestamp when this job completed (0 if still running).
     pub fn end_time(&self) -> u64 {
         self.end_time
     }
 
+    /// Returns the total number of stages in this execution graph.
     pub fn stage_count(&self) -> usize {
         self.stages.len()
     }
 
+    /// Generates and returns the next unique task ID for this execution graph.
     pub fn next_task_id(&mut self) -> usize {
         let new_tid = self.task_id_gen;
         self.task_id_gen += 1;
@@ -232,6 +253,7 @@ impl ExecutionGraph {
             .all(|s| matches!(s, ExecutionStage::Successful(_)))
     }
 
+    /// Returns true if all stages in this graph have completed successfully.
     pub fn is_complete(&self) -> bool {
         self.stages
             .values()
@@ -778,7 +800,7 @@ impl ExecutionGraph {
         Ok(resolved_stages)
     }
 
-    /// Return all the currently running stage ids
+    /// Returns all the currently running stage IDs.
     pub fn running_stages(&self) -> Vec<usize> {
         self.stages
             .iter()
@@ -792,7 +814,7 @@ impl ExecutionGraph {
             .collect::<Vec<_>>()
     }
 
-    /// Return all currently running tasks along with the executor ID on which they are assigned
+    /// Returns all currently running tasks along with the executor ID on which they are assigned.
     pub fn running_tasks(&self) -> Vec<RunningTaskInfo> {
         self.stages
             .iter()
@@ -818,7 +840,7 @@ impl ExecutionGraph {
             .collect::<Vec<RunningTaskInfo>>()
     }
 
-    /// Total number of tasks in this plan that are ready for scheduling
+    /// Returns the total number of tasks in this plan that are ready for scheduling.
     pub fn available_tasks(&self) -> usize {
         self.stages
             .values()
@@ -940,6 +962,10 @@ impl ExecutionGraph {
         Ok(next_task)
     }
 
+    /// Fetches a running stage that has available tasks, excluding stages in the blacklist.
+    ///
+    /// Returns a mutable reference to the running stage and the task ID generator
+    /// if a suitable stage is found.
     pub fn fetch_running_stage(
         &mut self,
         black_list: &[usize],
@@ -998,10 +1024,12 @@ impl ExecutionGraph {
         running_stage_id
     }
 
+    /// Updates the job status.
     pub fn update_status(&mut self, status: JobStatus) {
         self.status = status;
     }
 
+    /// Returns the output partition locations for the final stage results.
     pub fn output_locations(&self) -> Vec<PartitionLocation> {
         self.output_locations.clone()
     }
@@ -1154,7 +1182,10 @@ impl ExecutionGraph {
         Ok((reset_stage, all_running_tasks))
     }
 
-    /// Convert unresolved stage to be resolved
+    /// Converts an unresolved stage to resolved state.
+    ///
+    /// Returns true if the stage was successfully resolved, false if the stage
+    /// was not found or not in unresolved state.
     pub fn resolve_stage(&mut self, stage_id: usize) -> Result<bool> {
         if let Some(ExecutionStage::UnResolved(stage)) = self.stages.remove(&stage_id) {
             self.stages.insert(
@@ -1174,7 +1205,9 @@ impl ExecutionGraph {
         }
     }
 
-    /// Convert running stage to be successful
+    /// Converts a running stage to successful state.
+    ///
+    /// Returns true if the stage was successfully marked as complete.
     pub fn succeed_stage(&mut self, stage_id: usize) -> bool {
         if let Some(ExecutionStage::Running(stage)) = self.stages.remove(&stage_id) {
             self.stages
@@ -1191,7 +1224,9 @@ impl ExecutionGraph {
         }
     }
 
-    /// Convert running stage to be failed
+    /// Converts a running stage to failed state with the given error message.
+    ///
+    /// Returns true if the stage was found and marked as failed.
     pub fn fail_stage(&mut self, stage_id: usize, err_msg: String) -> bool {
         if let Some(ExecutionStage::Running(stage)) = self.stages.remove(&stage_id) {
             self.stages
@@ -1259,7 +1294,10 @@ impl ExecutionGraph {
         }
     }
 
-    /// Convert successful stage to be running
+    /// Converts a successful stage back to running state for re-execution.
+    ///
+    /// This is used when some outputs from the stage have been lost and tasks
+    /// need to be re-run.
     pub fn rerun_successful_stage(&mut self, stage_id: usize) -> bool {
         if let Some(ExecutionStage::Successful(stage)) = self.stages.remove(&stage_id) {
             self.stages
@@ -1289,7 +1327,10 @@ impl ExecutionGraph {
         };
     }
 
-    /// Mark the job success
+    /// Marks the job as successfully completed.
+    ///
+    /// This should only be called after all stages have completed successfully.
+    /// Returns an error if the job is not in a successful state.
     pub fn succeed_job(&mut self) -> Result<()> {
         if !self.is_successful() {
             return Err(BallistaError::Internal(format!(
@@ -1350,6 +1391,7 @@ impl Debug for ExecutionGraph {
     }
 }
 
+/// Creates a new `TaskInfo` for a task that is about to be scheduled on an executor.
 pub fn create_task_info(executor_id: String, task_id: usize) -> TaskInfo {
     TaskInfo {
         task_id,
@@ -1473,16 +1515,25 @@ impl ExecutionPlanVisitor for ExecutionStageBuilder {
     }
 }
 
-/// Represents the basic unit of work for the Ballista executor. Will execute
-/// one partition of one stage on one task slot.
+/// Represents the basic unit of work for the Ballista executor.
+///
+/// A `TaskDescription` contains all the information needed to execute
+/// one partition of one stage on a single executor task slot.
 #[derive(Clone)]
 pub struct TaskDescription {
+    /// The session ID associated with this task's job.
     pub session_id: String,
+    /// The partition identifier (job_id, stage_id, partition_id).
     pub partition: PartitionId,
+    /// The attempt number for this stage (for retry tracking).
     pub stage_attempt_num: usize,
+    /// Unique task ID within the execution graph.
     pub task_id: usize,
+    /// The attempt number for this specific task (for retry tracking).
     pub task_attempt: usize,
+    /// The physical execution plan to run for this task.
     pub plan: Arc<dyn ExecutionPlan>,
+    /// Session configuration for this task's execution context.
     pub session_config: Arc<SessionConfig>,
 }
 
@@ -1505,6 +1556,7 @@ impl Debug for TaskDescription {
 }
 
 impl TaskDescription {
+    /// Returns the number of output partitions this task will produce.
     pub fn get_output_partition_number(&self) -> usize {
         let shuffle_writer = self
             .plan

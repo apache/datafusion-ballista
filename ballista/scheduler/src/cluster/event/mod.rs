@@ -54,12 +54,19 @@ impl Shared {
     }
 }
 
+/// Broadcasts cluster events to multiple subscribers.
+///
+/// Uses a bounded broadcast channel to deliver events to all active subscribers.
+/// Events sent when no subscribers exist are dropped.
 pub struct ClusterEventSender<T: Clone> {
+    /// The underlying broadcast channel sender.
     sender: broadcast::Sender<T>,
+    /// Shared state for managing subscriptions and wakers.
     shared: Arc<Shared>,
 }
 
 impl<T: Clone> ClusterEventSender<T> {
+    /// Creates a new event sender with the specified buffer capacity.
     pub fn new(capacity: usize) -> Self {
         let (sender, _) = broadcast::channel(capacity);
 
@@ -69,6 +76,9 @@ impl<T: Clone> ClusterEventSender<T> {
         }
     }
 
+    /// Sends an event to all active subscribers.
+    ///
+    /// Events are dropped if no subscribers exist.
     pub fn send(&self, event: &T) {
         if self.shared.subscriptions.load(Ordering::Acquire) > 0 {
             if let Err(e) = self.sender.send(event.clone()) {
@@ -80,6 +90,7 @@ impl<T: Clone> ClusterEventSender<T> {
         }
     }
 
+    /// Creates a new subscriber to receive events.
     pub fn subscribe(&self) -> EventSubscriber<T> {
         self.shared.subscriptions.fetch_add(1, Ordering::AcqRel);
         let id = ID_GEN.fetch_add(1, Ordering::AcqRel);
@@ -92,6 +103,7 @@ impl<T: Clone> ClusterEventSender<T> {
         }
     }
 
+    /// Returns the number of registered wakers (for testing only).
     #[cfg(test)]
     pub fn registered_wakers(&self) -> usize {
         self.shared.wakers.read().len()
@@ -104,14 +116,22 @@ impl<T: Clone> Default for ClusterEventSender<T> {
     }
 }
 
+/// A subscriber that receives events from a `ClusterEventSender`.
+///
+/// Implements the `Stream` trait for async iteration over events.
 pub struct EventSubscriber<T: Clone> {
+    /// Unique identifier for this subscriber.
     id: usize,
+    /// The underlying broadcast receiver.
     receiver: broadcast::Receiver<T>,
+    /// Shared state with the sender.
     shared: Arc<Shared>,
+    /// Whether this subscriber's waker has been registered.
     registered: bool,
 }
 
 impl<T: Clone> EventSubscriber<T> {
+    /// Registers the subscriber's waker for notifications.
     pub fn register(&mut self, waker: Waker) {
         if !self.registered {
             self.shared.register(self.id, waker);
