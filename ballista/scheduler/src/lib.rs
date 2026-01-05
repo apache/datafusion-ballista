@@ -16,17 +16,29 @@
 // under the License.
 
 #![doc = include_str ! ("../README.md")]
+#![warn(missing_docs)]
 #[cfg(feature = "rest-api")]
+/// REST API endpoints for scheduler operations.
 pub mod api;
+/// Cluster management and executor coordination.
 pub mod cluster;
+/// Scheduler configuration options.
 pub mod config;
+/// Display utilities for execution plans and state.
 pub mod display;
+/// Metrics collection and reporting.
 pub mod metrics;
+/// Physical query plan optimizers.
 pub mod physical_optimizer;
+/// Query planning utilities for distributed execution.
 pub mod planner;
+/// Scheduler process management and lifecycle.
 pub mod scheduler_process;
+/// Core scheduler server implementation.
 pub mod scheduler_server;
+/// Standalone scheduler mode utilities.
 pub mod standalone;
+/// Scheduler state management.
 pub mod state;
 
 #[cfg(test)]
