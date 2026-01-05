@@ -17,7 +17,7 @@
 
 //! Command-line configuration parsing for the Ballista executor binary.
 //!
-//! This module provides the [`Config`] struct which captures all command-line
+//! This module provides the `Config` struct which captures all command-line
 //! arguments for configuring an executor instance.
 
 //

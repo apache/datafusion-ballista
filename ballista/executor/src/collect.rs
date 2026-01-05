@@ -16,7 +16,7 @@
 // under the License.
 
 //! The CollectExec operator retrieves results from the cluster and returns them as a single
-//! vector of [RecordBatch].
+//! vector of [`RecordBatch`](datafusion::arrow::record_batch::RecordBatch).
 
 use std::sync::Arc;
 use std::task::{Context, Poll};
