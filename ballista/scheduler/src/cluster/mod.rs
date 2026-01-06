@@ -33,30 +33,34 @@ use log::debug;
 use ballista_core::consistent_hash::ConsistentHash;
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf::{
-    job_status, AvailableTaskSlots, ExecutorHeartbeat, JobStatus,
+    AvailableTaskSlots, ExecutorHeartbeat, JobStatus, job_status,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata, PartitionId};
 use ballista_core::utils::{default_config_producer, default_session_builder};
-use ballista_core::{consistent_hash, ConfigProducer};
+use ballista_core::{ConfigProducer, consistent_hash};
 
 use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
 
 use crate::config::{SchedulerConfig, TaskDistributionPolicy};
 use crate::scheduler_server::SessionBuilder;
-use crate::state::execution_graph::{create_task_info, ExecutionGraph, TaskDescription};
+use crate::state::execution_graph::{ExecutionGraph, TaskDescription, create_task_info};
 use crate::state::task_manager::JobInfoCache;
 
+/// Event broadcasting and subscription for cluster state changes.
 pub mod event;
+/// In-memory cluster state implementation.
 pub mod memory;
 
+/// Test utilities for cluster state testing.
 #[cfg(test)]
 #[allow(clippy::uninlined_format_args)]
 pub mod test_util;
 
-// an enum used to configure the backend
+/// Enum to configure the cluster state storage backend.
 #[derive(Debug, Clone, serde::Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "build-binary", derive(clap::ValueEnum))]
 pub enum ClusterStorage {
+    /// In-memory storage (non-persistent).
     Memory,
 }
 
@@ -69,13 +73,20 @@ impl std::str::FromStr for ClusterStorage {
     }
 }
 
+/// Manages the distributed state of a Ballista cluster.
+///
+/// Combines cluster state (executor registration, heartbeats) with job state
+/// (job submissions, execution graphs).
 #[derive(Clone)]
 pub struct BallistaCluster {
+    /// State for tracking executors and their resources.
     cluster_state: Arc<dyn ClusterState>,
+    /// State for tracking jobs and their execution progress.
     job_state: Arc<dyn JobState>,
 }
 
 impl BallistaCluster {
+    /// Creates a new `BallistaCluster` with the given state backends.
     pub fn new(
         cluster_state: Arc<dyn ClusterState>,
         job_state: Arc<dyn JobState>,
@@ -86,6 +97,7 @@ impl BallistaCluster {
         }
     }
 
+    /// Creates a new `BallistaCluster` with in-memory state backends.
     pub fn new_memory(
         scheduler: impl Into<String>,
         session_builder: SessionBuilder,
@@ -101,6 +113,7 @@ impl BallistaCluster {
         }
     }
 
+    /// Creates a new `BallistaCluster` from scheduler configuration.
     pub async fn new_from_config(config: &SchedulerConfig) -> Result<Self> {
         let scheduler = config.scheduler_name();
 
@@ -121,37 +134,47 @@ impl BallistaCluster {
         ))
     }
 
+    /// Returns the cluster state backend.
     pub fn cluster_state(&self) -> Arc<dyn ClusterState> {
         self.cluster_state.clone()
     }
 
+    /// Returns the job state backend.
     pub fn job_state(&self) -> Arc<dyn JobState> {
         self.job_state.clone()
     }
 }
 
-/// Stream of `ExecutorHeartbeat`. This stream should contain all `ExecutorHeartbeats` received
-/// by any schedulers with a shared `ClusterState`
+/// Stream of `ExecutorHeartbeat` messages.
+///
+/// This stream contains all heartbeats received by any schedulers sharing a `ClusterState`.
 pub type ExecutorHeartbeatStream = Pin<Box<dyn Stream<Item = ExecutorHeartbeat> + Send>>;
 
-/// A task bound with an executor to execute.
-/// BoundTask.0 is the executor id; While BoundTask.1 is the task description.
+/// A task bound to an executor for execution.
+///
+/// Tuple of (executor_id, task_description).
 pub type BoundTask = (String, TaskDescription);
 
-/// ExecutorSlot.0 is the executor id; While ExecutorSlot.1 is for slot number.
+/// An executor slot representing available task capacity.
+///
+/// Tuple of (executor_id, slot_count).
 pub type ExecutorSlot = (String, u32);
 
-/// A trait that contains the necessary method to maintain a globally consistent view of cluster resources
+/// Trait for maintaining a globally consistent view of cluster resources.
+///
+/// Implementations track executor registration, heartbeats, and available task slots.
 #[tonic::async_trait]
 pub trait ClusterState: Send + Sync + 'static {
-    /// Initialize when it's necessary, especially for state with backend storage
+    /// Initializes the cluster state backend.
+    ///
+    /// This is particularly important for backends with external storage.
     async fn init(&self) -> Result<()> {
         Ok(())
     }
 
-    /// Bind the ready to running tasks from `active_jobs` with available executors.
+    /// Binds ready-to-run tasks from active jobs to available executor slots.
     ///
-    /// If `executors` is provided, only bind slots from the specified executor IDs
+    /// If `executors` is provided, only bind slots from the specified executor IDs.
     async fn bind_schedulable_tasks(
         &self,
         distribution: TaskDistributionPolicy,
@@ -159,42 +182,44 @@ pub trait ClusterState: Send + Sync + 'static {
         executors: Option<HashSet<String>>,
     ) -> Result<Vec<BoundTask>>;
 
-    /// Unbind executor and task when a task finishes or fails. It will increase the executor
-    /// available task slots.
+    /// Unbinds executor slots when tasks finish or fail.
     ///
-    /// This operations should be atomic. Either all reservations are cancelled or none are
+    /// This operation is atomic: either all slots are released or none are.
     async fn unbind_tasks(&self, executor_slots: Vec<ExecutorSlot>) -> Result<()>;
 
-    /// Register a new executor in the cluster.
+    /// Registers a new executor in the cluster.
     async fn register_executor(
         &self,
         metadata: ExecutorMetadata,
         spec: ExecutorData,
     ) -> Result<()>;
 
-    /// Save the executor metadata. This will overwrite existing metadata for the executor ID
+    /// Saves executor metadata, overwriting any existing metadata for the executor ID.
     async fn save_executor_metadata(&self, metadata: ExecutorMetadata) -> Result<()>;
 
-    /// Get executor metadata for the provided executor ID. Returns an error if the executor does not exist
+    /// Returns executor metadata for the given executor ID.
+    ///
+    /// Returns an error if the executor does not exist.
     async fn get_executor_metadata(&self, executor_id: &str) -> Result<ExecutorMetadata>;
 
-    /// return list of registered executors
+    /// Returns a list of all registered executor metadata.
     async fn registered_executor_metadata(&self) -> Vec<ExecutorMetadata>;
 
-    /// Save the executor heartbeat
+    /// Saves an executor heartbeat.
     async fn save_executor_heartbeat(&self, heartbeat: ExecutorHeartbeat) -> Result<()>;
 
-    /// Remove the executor from the cluster
+    /// Removes an executor from the cluster.
     async fn remove_executor(&self, executor_id: &str) -> Result<()>;
 
-    /// Return a map of the last seen heartbeat for all active executors
+    /// Returns the last seen heartbeat for all active executors.
     fn executor_heartbeats(&self) -> HashMap<String, ExecutorHeartbeat>;
 
-    /// Get executor heartbeat for the provided executor ID. Return None if the executor does not exist
+    /// Returns the executor heartbeat for the given executor ID, or None if not found.
     fn get_executor_heartbeat(&self, executor_id: &str) -> Option<ExecutorHeartbeat>;
 
-    /// Get a stream of all `ClusterState` events. An event should be published any time that status
-    /// of a cluster changes in state
+    /// Returns a stream of cluster state events.
+    ///
+    /// Events are published whenever the cluster state changes (e.g., executor registration/removal).
     async fn cluster_state_events(&self) -> Result<ClusterStateEventStream>;
 }
 
@@ -223,87 +248,104 @@ pub enum JobStateEvent {
         /// Job ID of the released job
         job_id: String,
     },
-    /// Event when a new session has been created
-    SessionAccessed { session_id: String },
-    /// Event when a session configuration has been removed
-    SessionRemoved { session_id: String },
+    /// Event when a new session has been created.
+    SessionAccessed {
+        /// Session ID that was accessed.
+        session_id: String,
+    },
+    /// Event when a session configuration has been removed.
+    SessionRemoved {
+        /// Session ID that was removed.
+        session_id: String,
+    },
 }
 
-/// Events related to the state of cluster.
+/// Events related to the state of the cluster.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClusterStateEvent {
-    /// Executor registered
-    RegisteredExecutor { executor_id: String },
-    /// Executor removed
-    RemovedExecutor { executor_id: String },
+    /// An executor has been registered with the cluster.
+    RegisteredExecutor {
+        /// ID of the registered executor.
+        executor_id: String,
+    },
+    /// An executor has been removed from the cluster.
+    RemovedExecutor {
+        /// ID of the removed executor.
+        executor_id: String,
+    },
 }
 
-/// Stream of `ClusterStateEvent`.
+/// Stream of cluster state events.
 pub type ClusterStateEventStream = Pin<Box<dyn Stream<Item = ClusterStateEvent> + Send>>;
 
-/// Stream of `JobStateEvent`. This stream should contain all `JobStateEvent`s received
-/// by any schedulers with a shared `ClusterState`
+/// Stream of job state events.
+///
+/// This stream contains all events received by schedulers sharing a `ClusterState`.
 pub type JobStateEventStream = Pin<Box<dyn Stream<Item = JobStateEvent> + Send>>;
 
-/// A trait that contains the necessary methods for persisting state related to executing jobs
+/// Trait for persisting state related to executing jobs.
+///
+/// Implementations handle job lifecycle, execution graphs, and session management.
 #[tonic::async_trait]
 pub trait JobState: Send + Sync {
-    /// Accept job into  a scheduler's job queue. This should be called when a job is
-    /// received by the scheduler but before it is planned and may or may not be saved
-    /// in global state
+    /// Accepts a job into the scheduler's queue.
+    ///
+    /// Called when a job is received but before it is planned.
     fn accept_job(&self, job_id: &str, job_name: &str, queued_at: u64) -> Result<()>;
 
-    /// Get the number of queued jobs. If it's big, then it means the scheduler is too busy.
-    /// In normal case, it's better to be 0.
+    /// Returns the number of queued jobs waiting to be scheduled.
     fn pending_job_number(&self) -> usize;
 
-    /// Submit a new job to the `JobState`. It is assumed that the submitter owns the job.
-    /// In local state the job should be save as `JobStatus::Active` and in shared state
-    /// it should be saved as `JobStatus::Running` with `scheduler` set to the current scheduler
+    /// Submits a new job to the job state.
+    ///
+    /// The submitter is assumed to own the job.
     async fn submit_job(&self, job_id: String, graph: &ExecutionGraph) -> Result<()>;
 
-    /// Return a `Vec` of all active job IDs in the `JobState`
+    /// Returns the set of all active job IDs.
     async fn get_jobs(&self) -> Result<HashSet<String>>;
 
-    /// Fetch the job status
+    /// Returns the status of the specified job.
     async fn get_job_status(&self, job_id: &str) -> Result<Option<JobStatus>>;
 
-    /// Get the `ExecutionGraph` for job. The job may or may not belong to the caller
-    /// and should return the `ExecutionGraph` for the given job (if it exists) at the
-    /// time this method is called with no guarantees that the graph has not been
-    /// subsequently updated by another scheduler.
+    /// Returns the execution graph for a job.
+    ///
+    /// The job may not belong to the caller, and the graph may be updated
+    /// by another scheduler after this call returns.
     async fn get_execution_graph(&self, job_id: &str) -> Result<Option<ExecutionGraph>>;
 
-    /// Persist the current state of an owned job to global state. This should fail
-    /// if the job is not owned by the caller.
+    /// Persists the current state of an owned job.
+    ///
+    /// Returns an error if the job is not owned by the caller.
     async fn save_job(&self, job_id: &str, graph: &ExecutionGraph) -> Result<()>;
 
-    /// Mark a job which has not been submitted as failed. This should be called if a job fails
-    /// during planning (and does not yet have an `ExecutionGraph`)
+    /// Marks an unscheduled job as failed.
+    ///
+    /// Called when a job fails during planning before an execution graph is created.
     async fn fail_unscheduled_job(&self, job_id: &str, reason: String) -> Result<()>;
 
-    /// Delete a job from the global state
+    /// Deletes a job from the state.
     async fn remove_job(&self, job_id: &str) -> Result<()>;
 
-    /// Attempt to acquire ownership of the given job. If the job is still in a running state
-    /// and is successfully acquired by the caller, return the current `ExecutionGraph`,
-    /// otherwise return `None`
+    /// Attempts to acquire ownership of a job.
+    ///
+    /// Returns the execution graph if the job is still running and successfully acquired,
+    /// otherwise returns None.
     async fn try_acquire_job(&self, job_id: &str) -> Result<Option<ExecutionGraph>>;
 
-    /// Get a stream of all `JobState` events. An event should be published any time that status
-    /// of a job changes in state
+    /// Returns a stream of job state events.
     async fn job_state_events(&self) -> Result<JobStateEventStream>;
 
-    /// Create new session or update existing one
+    /// Creates a new session or updates an existing one.
     async fn create_or_update_session(
         &self,
         session_id: &str,
         config: &SessionConfig,
     ) -> Result<Arc<SessionContext>>;
 
+    /// Removes a session from the state.
     async fn remove_session(&self, session_id: &str) -> Result<()>;
 
-    // TODO MM not sure this is the best place to put config producer
+    /// Produces a session configuration for new sessions.
     fn produce_config(&self) -> SessionConfig;
 }
 
@@ -532,7 +574,9 @@ pub(crate) async fn bind_task_consistent_hash(
         total_slots += node.available_slots as usize;
     }
     if total_slots == 0 {
-        debug!("Not enough available executor slots for binding tasks with consistent hashing policy!!!");
+        debug!(
+            "Not enough available executor slots for binding tasks with consistent hashing policy!!!"
+        );
         return Ok((vec![], None));
     }
     debug!("Total slot number for consistent hash binding is {total_slots}");
@@ -663,11 +707,16 @@ pub(crate) fn get_scan_files(
     Ok(collector)
 }
 
+/// Represents a node in the cluster topology for consistent hashing.
 #[derive(Clone)]
 pub struct TopologyNode {
+    /// Unique executor ID.
     pub id: String,
+    /// Host:port name for the node.
     pub name: String,
+    /// Timestamp of last heartbeat received.
     pub last_seen_ts: u64,
+    /// Number of available task slots on this node.
     pub available_slots: u32,
 }
 
@@ -704,16 +753,16 @@ mod test {
     use std::sync::Arc;
 
     use datafusion::datasource::listing::PartitionedFile;
-    use object_store::path::Path;
     use object_store::ObjectMeta;
+    use object_store::path::Path;
 
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::AvailableTaskSlots;
     use ballista_core::serde::scheduler::{ExecutorMetadata, ExecutorSpecification};
 
     use crate::cluster::{
-        bind_task_bias, bind_task_consistent_hash, bind_task_round_robin, BoundTask,
-        TopologyNode,
+        BoundTask, TopologyNode, bind_task_bias, bind_task_consistent_hash,
+        bind_task_round_robin,
     };
     use crate::state::execution_graph::ExecutionGraph;
     use crate::state::task_manager::JobInfoCache;

@@ -19,16 +19,16 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::registry::BallistaFunctionRegistry;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
-use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use log::{error, info, warn};
 use tempfile::TempDir;
 use tokio::fs::DirEntry;
@@ -46,17 +46,17 @@ use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::protobuf::executor_resource::Resource;
 use ballista_core::serde::protobuf::executor_status::Status;
 use ballista_core::serde::protobuf::{
-    scheduler_grpc_client::SchedulerGrpcClient, ExecutorRegistration, ExecutorResource,
-    ExecutorSpecification, ExecutorStatus, ExecutorStoppedParams, HeartBeatParams,
+    ExecutorRegistration, ExecutorResource, ExecutorSpecification, ExecutorStatus,
+    ExecutorStoppedParams, HeartBeatParams, scheduler_grpc_client::SchedulerGrpcClient,
 };
 use ballista_core::serde::{
     BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
 };
 use ballista_core::utils::{
-    create_grpc_client_connection, create_grpc_server, default_config_producer,
-    get_time_before, GrpcServerConfig,
+    GrpcServerConfig, create_grpc_client_connection, create_grpc_server,
+    default_config_producer, get_time_before,
 };
-use ballista_core::{ConfigProducer, RuntimeProducer, BALLISTA_VERSION};
+use ballista_core::{BALLISTA_VERSION, ConfigProducer, RuntimeProducer};
 
 use crate::execution_engine::ExecutionEngine;
 use crate::executor::{Executor, TasksDrainedFuture};
@@ -65,25 +65,46 @@ use crate::flight_service::BallistaFlightService;
 use crate::metrics::LoggingMetricsCollector;
 use crate::shutdown::Shutdown;
 use crate::shutdown::ShutdownNotifier;
+use crate::{ArrowFlightServerProvider, terminate};
 use crate::{execution_loop, executor_server};
-use crate::{terminate, ArrowFlightServerProvider};
 
+/// Configuration for the executor process.
+///
+/// This struct contains all settings needed to run an executor, including
+/// network configuration, scheduler connection details, resource limits,
+/// and optional overrides for customizing executor behavior.
 pub struct ExecutorProcessConfig {
+    /// Local IP address for binding executor services.
     pub bind_host: String,
+    /// External hostname/IP advertised to other components for connectivity.
     pub external_host: Option<String>,
+    /// Port for the Arrow Flight service.
     pub port: u16,
+    /// Port for the executor's gRPC service.
     pub grpc_port: u16,
+    /// Hostname of the scheduler to connect to.
     pub scheduler_host: String,
+    /// Port of the scheduler's gRPC service.
     pub scheduler_port: u16,
+    /// Timeout in seconds for establishing scheduler connection.
     pub scheduler_connect_timeout_seconds: u16,
+    /// Maximum number of concurrent tasks this executor can run.
     pub concurrent_tasks: usize,
+    /// Task scheduling policy (pull-staged or push-staged).
     pub task_scheduling_policy: TaskSchedulingPolicy,
+    /// Directory for storing log files.
     pub log_dir: Option<String>,
+    /// Directory for storing temporary shuffle data.
     pub work_dir: Option<String>,
+    /// Log level configuration for specific modules.
     pub special_mod_log_level: String,
+    /// Whether to include thread info in log output.
     pub print_thread_info: bool,
+    /// Log file rotation policy.
     pub log_rotation_policy: LogRotationPolicy,
+    /// Time-to-live in seconds for job data before cleanup.
     pub job_data_ttl_seconds: u64,
+    /// Interval in seconds between cleanup runs.
     pub job_data_clean_up_interval_seconds: u64,
     /// The maximum size of a decoded message
     pub grpc_max_decoding_message_size: u32,
@@ -91,6 +112,7 @@ pub struct ExecutorProcessConfig {
     pub grpc_max_encoding_message_size: u32,
     /// gRPC server timeout configuration
     pub grpc_server_config: GrpcServerConfig,
+    /// Interval in seconds between heartbeat messages.
     pub executor_heartbeat_interval_seconds: u64,
     /// Optional execution engine to use to execute physical plans, will default to
     /// DataFusion if none is provided.
@@ -110,6 +132,7 @@ pub struct ExecutorProcessConfig {
 }
 
 impl ExecutorProcessConfig {
+    /// Generates a prefix for log file names based on executor host and port.
     pub fn log_file_name_prefix(&self) -> String {
         format!(
             "executor_{}_{}",
@@ -155,6 +178,16 @@ impl Default for ExecutorProcessConfig {
     }
 }
 
+/// Starts the main executor process with the given configuration.
+///
+/// This function initializes all executor components including:
+/// - Arrow Flight service for shuffle data transfer
+/// - gRPC service for task management
+/// - Scheduler connection and registration
+/// - Heartbeat and cleanup background tasks
+///
+/// The function blocks until the executor receives a shutdown signal
+/// (SIGTERM, Ctrl+C, or stop request from scheduler).
 pub async fn start_executor_process(
     opt: Arc<ExecutorProcessConfig>,
 ) -> ballista_core::error::Result<()> {
@@ -493,7 +526,9 @@ async fn flight_server_task(
     grpc_server_config: GrpcServerConfig,
 ) -> JoinHandle<Result<(), BallistaError>> {
     tokio::spawn(async move {
-        info!("Built-in arrow flight server listening on: {address:?} max_encoding_size: {max_encoding_message_size} max_decoding_size: {max_decoding_message_size}");
+        info!(
+            "Built-in arrow flight server listening on: {address:?} max_encoding_size: {max_encoding_message_size} max_decoding_size: {max_decoding_message_size}"
+        );
 
         let server_future = create_grpc_server(&grpc_server_config)
             .add_service(
@@ -556,7 +591,9 @@ async fn clean_shuffle_data_loop(
                     Ok(_) => {}
                 }
             } else {
-                warn!("{child_path:?} under the working directory is a not a directory and will be ignored when doing cleanup")
+                warn!(
+                    "{child_path:?} under the working directory is a not a directory and will be ignored when doing cleanup"
+                )
             }
         } else {
             error!("Fail to get metadata for file {:?}", child.path())
@@ -644,8 +681,11 @@ pub(crate) fn is_subdirectory(path: &Path, base_path: &Path) -> bool {
     path.parent().is_some_and(|p| p.starts_with(&base))
 }
 
-/// Determines if a directory contains files newer than the cutoff time.
-/// If return true, it means the directory contains files newer than the cutoff time. It satisfy the ttl and should not be deleted.
+/// Checks if a directory should be retained based on its TTL.
+///
+/// Returns `Ok(true)` if the directory or any of its contents have been
+/// modified within the TTL period, meaning it should be kept.
+/// Returns `Ok(false)` if the directory is older than the TTL and can be deleted.
 pub async fn satisfy_dir_ttl(
     dir: DirEntry,
     ttl_seconds: u64,

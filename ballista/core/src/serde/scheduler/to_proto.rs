@@ -29,7 +29,7 @@ use crate::serde::scheduler::{
     PartitionLocation, PartitionStats,
 };
 use datafusion::physical_plan::Partitioning;
-use protobuf::{action::ActionType, operator_metric, NamedCount, NamedGauge, NamedTime};
+use protobuf::{NamedCount, NamedGauge, NamedTime, action::ActionType, operator_metric};
 
 impl TryInto<protobuf::Action> for Action {
     type Error = BallistaError;
@@ -96,6 +96,9 @@ impl Into<protobuf::PartitionStats> for PartitionStats {
     }
 }
 
+/// Converts a hash partitioning scheme to its protobuf representation.
+///
+/// Returns `None` if the partitioning is not hash-based or if no partitioning is specified.
 pub fn hash_partitioning_to_proto(
     output_partitioning: Option<&Partitioning>,
 ) -> Result<Option<datafusion_protobuf::PhysicalHashRepartition>, BallistaError> {

@@ -15,6 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Cross-platform signal handling for process termination.
+//!
+//! This module provides a unified interface for handling termination signals
+//! across Unix (SIGTERM) and Windows (Ctrl+Break) platforms.
+
 #[cfg(unix)]
 use tokio::signal::unix::SignalKind;
 #[cfg(unix)]
@@ -24,6 +29,12 @@ use tokio::signal::windows::{self as os_impl};
 
 use std::io;
 
+/// Waits for a termination signal from the operating system.
+///
+/// On Unix systems, this waits for SIGTERM.
+/// On Windows, this waits for Ctrl+Break.
+///
+/// Returns when the signal is received.
 pub async fn sig_term() -> io::Result<()> {
     #[cfg(unix)]
     os_impl::signal(SignalKind::terminate())?.recv().await;

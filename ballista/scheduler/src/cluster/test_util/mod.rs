@@ -20,19 +20,21 @@ use crate::scheduler_server::timestamp_millis;
 use crate::state::execution_graph::ExecutionGraph;
 use crate::test_utils::{await_condition, mock_completed_task, mock_executor};
 use ballista_core::error::Result;
-use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::JobStatus;
+use ballista_core::serde::protobuf::job_status::Status;
 use futures::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
+/// Test harness for verifying job state transitions.
 pub struct JobStateTest<S: JobState> {
     state: Arc<S>,
     events: Arc<RwLock<Vec<JobStateEvent>>>,
 }
 
 impl<S: JobState> JobStateTest<S> {
+    /// Creates a new job state test harness that listens for state events.
     pub async fn new(state: S) -> Result<Self> {
         let events = Arc::new(RwLock::new(vec![]));
 
@@ -52,11 +54,13 @@ impl<S: JobState> JobStateTest<S> {
         })
     }
 
+    /// Queues a job with the given ID.
     pub fn queue_job(self, job_id: &str) -> Result<Self> {
         self.state.accept_job(job_id, "", timestamp_millis())?;
         Ok(self)
     }
 
+    /// Marks a job as failed during planning.
     pub async fn fail_planning(self, job_id: &str) -> Result<Self> {
         self.state
             .fail_unscheduled_job(job_id, "failed planning".to_string())
@@ -64,6 +68,7 @@ impl<S: JobState> JobStateTest<S> {
         Ok(self)
     }
 
+    /// Asserts the job is in queued status.
     pub async fn assert_queued(self, job_id: &str) -> Result<Self> {
         let status = self.state.get_job_status(job_id).await?;
 
@@ -81,6 +86,7 @@ impl<S: JobState> JobStateTest<S> {
         Ok(self)
     }
 
+    /// Submits a job with the given execution graph.
     pub async fn submit_job(self, graph: &ExecutionGraph) -> Result<Self> {
         self.state
             .submit_job(graph.job_id().to_string(), graph)
@@ -88,6 +94,7 @@ impl<S: JobState> JobStateTest<S> {
         Ok(self)
     }
 
+    /// Asserts the job is in running status.
     pub async fn assert_job_running(self, job_id: &str) -> Result<Self> {
         let status = self.state.get_job_status(job_id).await?;
 
@@ -105,11 +112,13 @@ impl<S: JobState> JobStateTest<S> {
         Ok(self)
     }
 
+    /// Updates the job with the given execution graph.
     pub async fn update_job(self, graph: &ExecutionGraph) -> Result<Self> {
         self.state.save_job(graph.job_id(), graph).await?;
         Ok(self)
     }
 
+    /// Asserts the job is in failed status.
     pub async fn assert_job_failed(self, job_id: &str) -> Result<Self> {
         let status = self.state.get_job_status(job_id).await?;
 
@@ -127,6 +136,7 @@ impl<S: JobState> JobStateTest<S> {
         Ok(self)
     }
 
+    /// Asserts the job completed successfully.
     pub async fn assert_job_successful(self, job_id: &str) -> Result<Self> {
         let status = self.state.get_job_status(job_id).await?;
 
@@ -143,6 +153,7 @@ impl<S: JobState> JobStateTest<S> {
         Ok(self)
     }
 
+    /// Asserts that a specific event was received.
     pub async fn assert_event(self, event: JobStateEvent) -> Result<Self> {
         let events = self.events.clone();
         let found = await_condition(Duration::from_millis(50), 10, || async {
@@ -158,6 +169,7 @@ impl<S: JobState> JobStateTest<S> {
     }
 }
 
+/// Tests the complete job lifecycle from queued to successful.
 pub async fn test_job_lifecycle<S: JobState>(
     state: S,
     mut graph: ExecutionGraph,
@@ -186,6 +198,7 @@ pub async fn test_job_lifecycle<S: JobState>(
     Ok(())
 }
 
+/// Tests job failure during the planning phase.
 pub async fn test_job_planning_failure<S: JobState>(
     state: S,
     graph: ExecutionGraph,

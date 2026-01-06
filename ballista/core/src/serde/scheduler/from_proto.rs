@@ -41,9 +41,9 @@ use crate::serde::scheduler::{
     TaskDefinition,
 };
 
-use crate::serde::{protobuf, BallistaCodec};
 use crate::RuntimeProducer;
-use protobuf::{operator_metric, NamedCount, NamedGauge, NamedTime};
+use crate::serde::{BallistaCodec, protobuf};
+use protobuf::{NamedCount, NamedGauge, NamedTime, operator_metric};
 
 impl TryInto<Action> for protobuf::Action {
     type Error = BallistaError;
@@ -90,11 +90,7 @@ impl Into<PartitionStats> for protobuf::PartitionStats {
 }
 
 fn foo(n: i64) -> Option<u64> {
-    if n < 0 {
-        None
-    } else {
-        Some(n as u64)
-    }
+    if n < 0 { None } else { Some(n as u64) }
 }
 
 impl TryInto<PartitionLocation> for protobuf::PartitionLocation {
@@ -291,27 +287,27 @@ impl Into<ExecutorData> for protobuf::ExecutorData {
             available_task_slots: 0,
         };
         for resource in self.resources {
-            if let Some(task_slots) = resource.total {
-                if let Some(protobuf::executor_resource::Resource::TaskSlots(
-                    task_slots,
-                )) = task_slots.resource
-                {
-                    ret.total_task_slots = task_slots
-                }
+            if let Some(task_slots) = resource.total
+                && let Some(protobuf::executor_resource::Resource::TaskSlots(task_slots)) =
+                    task_slots.resource
+            {
+                ret.total_task_slots = task_slots
             };
-            if let Some(task_slots) = resource.available {
-                if let Some(protobuf::executor_resource::Resource::TaskSlots(
-                    task_slots,
-                )) = task_slots.resource
-                {
-                    ret.available_task_slots = task_slots
-                }
+            if let Some(task_slots) = resource.available
+                && let Some(protobuf::executor_resource::Resource::TaskSlots(task_slots)) =
+                    task_slots.resource
+            {
+                ret.available_task_slots = task_slots
             };
         }
         ret
     }
 }
 
+/// Converts a protobuf task definition to a native Ballista task definition.
+///
+/// This function deserializes the execution plan from the protobuf representation
+/// and constructs a complete task definition with the provided runtime configuration.
 pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     task: protobuf::TaskDefinition,
     produce_runtime: RuntimeProducer,
@@ -334,9 +330,9 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         None,
         task.session_id.clone(),
         session_config.clone(),
-        scalar_functions.clone(),
-        aggregate_functions.clone(),
-        window_functions.clone(),
+        scalar_functions,
+        aggregate_functions,
+        window_functions,
         runtime.clone(),
     );
 
@@ -369,6 +365,10 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     })
 }
 
+/// Converts a protobuf multi-task definition to a vector of native Ballista task definitions.
+///
+/// This function handles batch task definitions where multiple partitions share
+/// the same execution plan, creating individual task definitions for each partition.
 pub fn get_task_definition_vec<
     T: 'static + AsLogicalPlan,
     U: 'static + AsExecutionPlan,
@@ -394,9 +394,9 @@ pub fn get_task_definition_vec<
         None,
         uuid::Uuid::new_v4().to_string(),
         session_config.clone(),
-        scalar_functions.clone(),
-        aggregate_functions.clone(),
-        window_functions.clone(),
+        scalar_functions,
+        aggregate_functions,
+        window_functions,
         runtime.clone(),
     );
 

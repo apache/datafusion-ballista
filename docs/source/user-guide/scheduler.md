@@ -23,7 +23,7 @@
 
 The scheduler also provides a REST API that allows jobs to be monitored.
 
-> This is optional scheduler feature which should be enabled with `rest-api` feature
+> This is optional scheduler feature which should be enabled with the `rest-api` feature.
 
 | API                                  | Method | Description                                                       |
 | ------------------------------------ | ------ | ----------------------------------------------------------------- |

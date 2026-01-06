@@ -15,18 +15,24 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Pull-based task execution loop for the executor.
+//!
+//! This module implements the polling mechanism where executors actively
+//! request work from the scheduler, as opposed to push-based scheduling
+//! where the scheduler sends tasks to executors.
+
 use crate::cpu_bound_executor::DedicatedExecutor;
 use crate::executor::Executor;
 use crate::executor_process::remove_job_dir;
-use crate::{as_task_status, TaskExecutionTimes};
+use crate::{TaskExecutionTimes, as_task_status};
 use ballista_core::error::BallistaError;
 use ballista_core::extension::SessionConfigHelperExt;
+use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::{
-    scheduler_grpc_client::SchedulerGrpcClient, PollWorkParams, PollWorkResult,
-    TaskDefinition, TaskStatus,
+    PollWorkParams, PollWorkResult, TaskDefinition, TaskStatus,
+    scheduler_grpc_client::SchedulerGrpcClient,
 };
 use ballista_core::serde::scheduler::{ExecutorSpecification, PartitionId};
-use ballista_core::serde::BallistaCodec;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -42,6 +48,14 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tonic::transport::Channel;
 
+/// Main execution loop that polls the scheduler for available tasks.
+///
+/// This function runs indefinitely, periodically asking the scheduler for
+/// work. When tasks are received, they are executed on a dedicated thread
+/// pool and results are reported back to the scheduler.
+///
+/// The loop respects the executor's concurrent task limit via a semaphore,
+/// ensuring no more than the configured number of tasks run simultaneously.
 pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     mut scheduler: SchedulerGrpcClient<Channel>,
     executor: Arc<Executor>,
@@ -176,7 +190,9 @@ pub async fn poll_loop<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 }
             }
             Err(error) => {
-                warn!("Executor poll work loop failed. If this continues to happen the Scheduler might be marked as dead. Error: {error}");
+                warn!(
+                    "Executor poll work loop failed. If this continues to happen the Scheduler might be marked as dead. Error: {error}"
+                );
             }
         }
 

@@ -41,27 +41,7 @@ microk8s enable dns
 
 ## Build Docker Images
 
-Run the following commands to download the [official Docker image](https://github.com/apache/datafusion-ballista/pkgs/container/datafusion-ballista-standalone):
-
-```bash
-docker pull ghcr.io/apache/datafusion-ballista-standalone:0.12.0-rc4
-```
-
-Altenatively run the following commands to clone the source repository and build the Docker images from source:
-
-```bash
-git clone git@github.com:apache/datafusion-ballista.git -b 0.12.0
-cd datafusion-ballista
-./dev/build-ballista-docker.sh
-```
-
-This will create the following images:
-
-- `apache/datafusion-ballista-benchmarks:0.12.0`
-- `apache/datafusion-ballista-cli:0.12.0`
-- `apache/datafusion-ballista-executor:0.12.0`
-- `apache/datafusion-ballista-scheduler:0.12.0`
-- `apache/datafusion-ballista-standalone:0.12.0`
+To create the required Docker images please refer to the [docker deployment page](docker.md).
 
 ## Publishing Docker Images
 
@@ -267,9 +247,9 @@ kubectl delete -f cluster.yaml
 
 ## Autoscaling Executors
 
-Ballista supports autoscaling for executors through [Keda](http://keda.sh). Keda allows scaling a deployment
-through custom metrics which are exposed through the Ballista scheduler, and it can even scale the number of
-executors down to 0 if there is no activity in the cluster.
+Ballista supports autoscaling for executors through [Keda](http://keda.sh). Keda allows for the scaling of a
+deployment through custom metrics which are exposed through the Ballista scheduler, and it
+can even scale the number of executors down to 0 if there is no activity in the cluster.
 
 Keda can be installed in your kubernetes cluster through a single command line:
 

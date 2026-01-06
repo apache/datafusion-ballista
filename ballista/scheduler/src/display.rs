@@ -23,11 +23,12 @@ use ballista_core::utils::collect_plan_metrics;
 use datafusion::logical_expr::{StringifiedPlan, ToStringifiedPlan};
 use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{
-    accept, DisplayFormatType, ExecutionPlan, ExecutionPlanVisitor,
+    DisplayFormatType, ExecutionPlan, ExecutionPlanVisitor, accept,
 };
 use log::{error, info};
 use std::fmt;
 
+/// Prints the physical plan for a completed stage with its aggregated metrics.
 pub fn print_stage_metrics(
     job_id: &str,
     stage_id: usize,
@@ -58,16 +59,18 @@ pub fn print_stage_metrics(
     }
 }
 
-/// Wraps an `ExecutionPlan` to display this plan with metrics collected/aggregated.
-/// The metrics must be collected in the same order as how we visit and display the plan.
+/// Wraps an `ExecutionPlan` to display it with aggregated metrics.
+///
+/// The metrics must be collected in the same order as nodes are visited during display.
 pub struct DisplayableBallistaExecutionPlan<'a> {
+    /// The execution plan to display.
     inner: &'a dyn ExecutionPlan,
+    /// Metrics for each node in the plan tree.
     metrics: &'a Vec<MetricsSet>,
 }
 
 impl<'a> DisplayableBallistaExecutionPlan<'a> {
-    /// Create a wrapper around an ['ExecutionPlan'] which can be
-    /// pretty printed with aggregated metrics.
+    /// Creates a wrapper around an [`ExecutionPlan`] for pretty printing with metrics.
     pub fn new(inner: &'a dyn ExecutionPlan, metrics: &'a Vec<MetricsSet>) -> Self {
         Self { inner, metrics }
     }

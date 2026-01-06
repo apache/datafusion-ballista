@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM rust:1.85-bullseye
+FROM rust:1.92-trixie
 
 ARG EXT_UID
 

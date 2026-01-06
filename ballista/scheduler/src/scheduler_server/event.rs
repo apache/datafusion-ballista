@@ -24,45 +24,75 @@ use ballista_core::serde::protobuf::TaskStatus;
 use datafusion::prelude::SessionContext;
 use std::sync::Arc;
 
+/// Events that drive the query stage scheduler state machine.
 #[derive(Clone)]
 pub enum QueryStageSchedulerEvent {
+    /// A new job has been queued for execution.
     JobQueued {
+        /// Unique job identifier.
         job_id: String,
+        /// Human-readable job name.
         job_name: String,
+        /// Session context for the job.
         session_ctx: Arc<SessionContext>,
+        /// Logical plan to execute.
         plan: Box<LogicalPlan>,
+        /// Timestamp when the job was queued.
         queued_at: u64,
     },
+    /// A job has been submitted for execution.
     JobSubmitted {
+        /// Unique job identifier.
         job_id: String,
+        /// Timestamp when the job was queued.
         queued_at: u64,
+        /// Timestamp when the job was submitted.
         submitted_at: u64,
     },
-    // For a job which failed during planning
+    /// A job failed during the planning phase.
     JobPlanningFailed {
+        /// Unique job identifier.
         job_id: String,
+        /// Error message describing the failure.
         fail_message: String,
+        /// Timestamp when the job was queued.
         queued_at: u64,
+        /// Timestamp when the job failed.
         failed_at: u64,
     },
+    /// A job has completed successfully.
     JobFinished {
+        /// Unique job identifier.
         job_id: String,
+        /// Timestamp when the job was queued.
         queued_at: u64,
+        /// Timestamp when the job completed.
         completed_at: u64,
     },
-    // For a job fails with its execution graph setting failed
+    /// A job failed during execution.
     JobRunningFailed {
+        /// Unique job identifier.
         job_id: String,
+        /// Error message describing the failure.
         fail_message: String,
+        /// Timestamp when the job was queued.
         queued_at: u64,
+        /// Timestamp when the job failed.
         failed_at: u64,
     },
+    /// A job's execution graph has been updated.
     JobUpdated(String),
+    /// Request to cancel a job.
     JobCancel(String),
+    /// Request to clean up job data.
     JobDataClean(String),
+    /// Task status updates received.
     TaskUpdating(String, Vec<TaskStatus>),
+    /// Signal to revive task offers.
     ReviveOffers,
+    /// An executor has been lost.
     ExecutorLost(String, Option<String>),
+    /// Request to cancel specific running tasks.
     CancelTasks(Vec<RunningTaskInfo>),
 }
 

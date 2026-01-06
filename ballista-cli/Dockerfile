@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM rust:1.76-bullseye as builder
+FROM rust:1.92-trixie as builder
 
 COPY ./ballista-cli /usr/src/ballista-cli
 

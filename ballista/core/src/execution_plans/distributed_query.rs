@@ -19,11 +19,11 @@ use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
 use crate::serde::protobuf::SuccessfulJob;
 use crate::serde::protobuf::{
-    execute_query_params::Query, execute_query_result, job_status,
-    scheduler_grpc_client::SchedulerGrpcClient, ExecuteQueryParams, GetJobStatusParams,
-    GetJobStatusResult, KeyValuePair, PartitionLocation,
+    ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
+    PartitionLocation, execute_query_params::Query, execute_query_result, job_status,
+    scheduler_grpc_client::SchedulerGrpcClient,
 };
-use crate::utils::{create_grpc_client_connection, GrpcClientConfig};
+use crate::utils::{GrpcClientConfig, create_grpc_client_connection};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -72,12 +72,17 @@ pub struct DistributedQueryExec<T: 'static + AsLogicalPlan> {
     /// Plan properties
     properties: PlanProperties,
     /// Execution metrics, currently exposes:
-    /// - row count
-    /// - transferred_bytes
+    /// - output_rows: Total number of rows returned
+    /// - transferred_bytes: Total bytes transferred from executors
+    /// - job_execution_time_ms: Time spent executing on the cluster (server-side)
+    /// - job_scheduling_in_ms: Time from query submission to job start (includes queue time)
+    /// - job_execution_time_ms: Time spent executing on the cluster (ended_at - started_at)
+    /// - job_scheduling_in_ms: Time job waited in scheduler queue (started_at - queued_at)
     metrics: ExecutionPlanMetricsSet,
 }
 
 impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
+    /// Creates a new distributed query execution plan.
     pub fn new(
         scheduler_url: String,
         config: BallistaConfig,
@@ -98,6 +103,7 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
         }
     }
 
+    /// Creates a new distributed query execution plan with a custom extension codec.
     pub fn with_extension(
         scheduler_url: String,
         config: BallistaConfig,
@@ -235,6 +241,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         let metric_row_count = MetricBuilder::new(&self.metrics).output_rows(partition);
         let metric_total_bytes =
             MetricBuilder::new(&self.metrics).counter("transferred_bytes", partition);
+
         let stream = futures::stream::once(
             execute_query(
                 self.scheduler_url.clone(),
@@ -242,6 +249,8 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                 query,
                 self.config.default_grpc_client_max_message_size(),
                 GrpcClientConfig::from(&self.config),
+                Arc::new(self.metrics.clone()),
+                partition,
             )
             .map_err(|e| ArrowError::ExternalError(Box::new(e))),
         )
@@ -279,7 +288,12 @@ async fn execute_query(
     query: ExecuteQueryParams,
     max_message_size: usize,
     grpc_config: GrpcClientConfig,
+    metrics: Arc<ExecutionPlanMetricsSet>,
+    partition: usize,
 ) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
+    // Capture query submission time for total_query_time_ms
+    let query_start_time = std::time::Instant::now();
+
     info!("Connecting to Ballista scheduler at {scheduler_url}");
     // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
     let connection = create_grpc_client_connection(scheduler_url, &grpc_config)
@@ -355,15 +369,42 @@ async fn execute_query(
                 break Err(DataFusionError::Execution(msg));
             }
             Some(job_status::Status::Successful(SuccessfulJob {
+                queued_at,
                 started_at,
                 ended_at,
                 partition_location,
                 ..
             })) => {
-                let duration = ended_at.saturating_sub(started_at);
-                let duration = Duration::from_millis(duration);
+                // Calculate job execution time (server-side execution)
+                let job_execution_ms = ended_at.saturating_sub(started_at);
+                let duration = Duration::from_millis(job_execution_ms);
 
                 info!("Job {job_id} finished executing in {duration:?} ");
+
+                // Calculate scheduling time (server-side queue time)
+                // This includes network latency and actual queue time
+                let scheduling_ms = started_at.saturating_sub(queued_at);
+
+                // Calculate total query time (end-to-end from client perspective)
+                let total_elapsed = query_start_time.elapsed();
+                let total_ms = total_elapsed.as_millis();
+
+                // Set timing metrics
+                let metric_job_execution = MetricBuilder::new(&metrics)
+                    .gauge("job_execution_time_ms", partition);
+                metric_job_execution.set(job_execution_ms as usize);
+
+                let metric_scheduling =
+                    MetricBuilder::new(&metrics).gauge("job_scheduling_in_ms", partition);
+                metric_scheduling.set(scheduling_ms as usize);
+
+                let metric_total_time =
+                    MetricBuilder::new(&metrics).gauge("total_query_time_ms", partition);
+                metric_total_time.set(total_ms as usize);
+
+                // Note: data_transfer_time_ms is not set here because partition fetching
+                // happens lazily when the stream is consumed, not during execute_query.
+                // This could be added in a future enhancement by wrapping the stream.
 
                 let streams = partition_location.into_iter().map(move |partition| {
                     let f = fetch_partition(

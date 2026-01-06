@@ -19,7 +19,7 @@
 
 # Deploying a standalone Ballista cluster using cargo install
 
-A simple way to start a local cluster for testing purposes is to use cargo to install
+Another simple way to start a local cluster for testing purposes is to use cargo to install
 the scheduler and executor crates.
 
 ```bash

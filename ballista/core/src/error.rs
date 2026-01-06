@@ -29,26 +29,41 @@ use datafusion::error::DataFusionError;
 use datafusion::{arrow::error::ArrowError, sql::sqlparser::parser};
 use futures::future::Aborted;
 
+/// Result type alias for Ballista operations.
 pub type Result<T> = result::Result<T, BallistaError>;
 
-/// Ballista error
+/// Ballista error types for distributed query execution.
 #[derive(Debug)]
 pub enum BallistaError {
+    /// Feature is not yet implemented.
     NotImplemented(String),
+    /// General error with a descriptive message.
     General(String),
+    /// Internal error indicating a bug or unexpected state.
     Internal(String),
+    /// Configuration error with invalid settings.
     Configuration(String),
+    /// Error from Arrow operations.
     ArrowError(Box<ArrowError>),
+    /// Error from DataFusion operations.
     DataFusionError(Box<DataFusionError>),
+    /// SQL parsing error.
     SqlError(parser::ParserError),
+    /// I/O operation error.
     IoError(io::Error),
+    /// gRPC transport error.
     TonicError(tonic::transport::Error),
+    /// gRPC status error.
     GrpcError(Box<tonic::Status>),
+    /// gRPC connection failure.
     GrpcConnectionError(String),
+    /// Tokio task join error.
     TokioError(tokio::task::JoinError),
+    /// gRPC action error.
     GrpcActionError(String),
-    // (executor_id, map_stage_id, map_partition_id, message)
+    /// Shuffle fetch failed: (executor_id, map_stage_id, map_partition_id, message).
     FetchFailed(String, usize, usize, String),
+    /// Operation was cancelled.
     Cancelled,
 }
 
@@ -59,6 +74,7 @@ impl<T> Into<Result<T>> for BallistaError {
     }
 }
 
+/// Creates a general Ballista error from a string message.
 pub fn ballista_error(message: &str) -> BallistaError {
     BallistaError::General(message.to_owned())
 }

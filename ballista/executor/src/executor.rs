@@ -22,13 +22,13 @@ use crate::execution_engine::ExecutionEngine;
 use crate::execution_engine::QueryStageExecutor;
 use crate::metrics::ExecutorMetricsCollector;
 use crate::metrics::LoggingMetricsCollector;
+use ballista_core::ConfigProducer;
+use ballista_core::RuntimeProducer;
 use ballista_core::error::BallistaError;
 use ballista_core::registry::BallistaFunctionRegistry;
 use ballista_core::serde::protobuf;
 use ballista_core::serde::protobuf::ExecutorRegistration;
 use ballista_core::serde::scheduler::PartitionId;
-use ballista_core::ConfigProducer;
-use ballista_core::RuntimeProducer;
 use dashmap::DashMap;
 use datafusion::execution::context::TaskContext;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -39,7 +39,14 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-pub struct TasksDrainedFuture(pub Arc<Executor>);
+/// A future that resolves when all active tasks on an executor have completed.
+///
+/// This is used during graceful shutdown to wait for in-flight tasks to drain
+/// before terminating the executor process.
+pub struct TasksDrainedFuture(
+    /// The executor instance to monitor for task completion.
+    pub Arc<Executor>,
+);
 
 impl Future for TasksDrainedFuture {
     type Output = ();
@@ -138,6 +145,7 @@ impl Executor {
 }
 
 impl Executor {
+    /// Creates a [`RuntimeEnv`] using the configured runtime producer.
     pub fn produce_runtime(
         &self,
         config: &SessionConfig,
@@ -145,6 +153,7 @@ impl Executor {
         (self.runtime_producer)(config)
     }
 
+    /// Creates a default [`SessionConfig`] using the configured config producer.
     pub fn produce_config(&self) -> SessionConfig {
         (self.config_producer)()
     }
@@ -180,6 +189,9 @@ impl Executor {
         Ok(partitions)
     }
 
+    /// Cancels a running task by aborting its execution.
+    ///
+    /// Returns `Ok(true)` if the task was found and cancelled, `Ok(false)` if not found.
     pub async fn cancel_task(
         &self,
         task_id: usize,
@@ -202,10 +214,12 @@ impl Executor {
         }
     }
 
+    /// Returns the working directory path for this executor.
     pub fn work_dir(&self) -> &str {
         &self.work_dir
     }
 
+    /// Returns the number of tasks currently executing on this executor.
     pub fn active_task_count(&self) -> usize {
         self.abort_handles.len()
     }
@@ -215,11 +229,11 @@ impl Executor {
 mod test {
     use crate::execution_engine::DefaultQueryStageExec;
     use crate::executor::Executor;
+    use ballista_core::RuntimeProducer;
     use ballista_core::execution_plans::ShuffleWriterExec;
     use ballista_core::serde::protobuf::ExecutorRegistration;
     use ballista_core::serde::scheduler::PartitionId;
     use ballista_core::utils::default_config_producer;
-    use ballista_core::RuntimeProducer;
     use datafusion::arrow::datatypes::{Schema, SchemaRef};
     use datafusion::arrow::record_batch::RecordBatch;
     use datafusion::error::{DataFusionError, Result};
