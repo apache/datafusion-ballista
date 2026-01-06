@@ -18,10 +18,10 @@
 //! # Extending Ballista
 //!
 //! This example demonstrates extending standard ballista behavior,
-//! integrating external [ObjectStoreRegistry].
+//! integrating external `ObjectStoreRegistry`.
 //!
-//! [ObjectStore] is provided by  [ObjectStoreRegistry], and configured
-//! using [ExtensionOptions], which can be configured using SQL `SET` command.
+//! `ObjectStore` is provided by `ObjectStoreRegistry`, and configured
+//! using `ExtensionOptions`, which can be configured using SQL `SET` command.
 
 use datafusion::common::{config_err, exec_err};
 use datafusion::config::{
@@ -117,6 +117,7 @@ pub struct CustomObjectStoreRegistry {
 }
 
 impl CustomObjectStoreRegistry {
+    /// Creates a new custom object store registry with the given S3 options.
     pub fn new(s3options: S3Options) -> Self {
         Self {
             s3options,

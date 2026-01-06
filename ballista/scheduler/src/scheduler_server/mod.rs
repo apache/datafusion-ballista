@@ -50,27 +50,43 @@ pub mod externalscaler {
     include!(concat!(env!("OUT_DIR"), "/externalscaler.rs"));
 }
 
+/// Events for the scheduler event loop.
 pub mod event;
 #[cfg(feature = "keda-scaler")]
 mod external_scaler;
 mod grpc;
 pub(crate) mod query_stage_scheduler;
 
+/// Function type for building DataFusion session states from configuration.
 pub type SessionBuilder =
     Arc<dyn Fn(SessionConfig) -> datafusion::common::Result<SessionState> + Send + Sync>;
 
+/// The main scheduler server that coordinates distributed query execution.
+///
+/// The `SchedulerServer` is responsible for:
+/// - Accepting job submissions from clients
+/// - Planning and scheduling query execution across executors
+/// - Managing executor lifecycle and health
+/// - Tracking job progress and handling failures
 #[derive(Clone)]
 pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
+    /// Unique name identifying this scheduler instance.
     pub scheduler_name: String,
+    /// Timestamp when this scheduler was started.
     pub start_time: u128,
+    /// Shared scheduler state for job and executor management.
     pub state: Arc<SchedulerState<T, U>>,
+    /// Event loop for processing query stage scheduling events.
     pub(crate) query_stage_event_loop: EventLoop<QueryStageSchedulerEvent>,
     #[cfg(feature = "rest-api")]
+    /// Query stage scheduler for REST API access.
     query_stage_scheduler: Arc<QueryStageScheduler<T, U>>,
+    /// Scheduler configuration.
     config: Arc<SchedulerConfig>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
+    /// Creates a new `SchedulerServer` with the given configuration.
     pub fn new(
         scheduler_name: String,
         cluster: BallistaCluster,
@@ -106,6 +122,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         }
     }
 
+    /// Creates a new `SchedulerServer` with a custom task launcher.
     #[allow(dead_code)]
     pub fn new_with_task_launcher(
         scheduler_name: String,
@@ -144,6 +161,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         }
     }
 
+    /// Initializes the scheduler and starts background tasks.
     pub async fn init(&mut self) -> Result<()> {
         self.state.init().await?;
         self.query_stage_event_loop.start()?;
@@ -152,10 +170,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         Ok(())
     }
 
+    /// Returns the number of jobs waiting in the queue.
     pub fn pending_job_number(&self) -> usize {
         self.state.task_manager.pending_job_number()
     }
 
+    /// Returns the number of currently running jobs.
     pub fn running_job_number(&self) -> usize {
         self.state.task_manager.running_job_number()
     }
@@ -368,6 +388,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     }
 }
 
+/// Returns the current timestamp in seconds since UNIX epoch.
 pub fn timestamp_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -375,6 +396,7 @@ pub fn timestamp_secs() -> u64 {
         .as_secs()
 }
 
+/// Returns the current timestamp in milliseconds since UNIX epoch.
 pub fn timestamp_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

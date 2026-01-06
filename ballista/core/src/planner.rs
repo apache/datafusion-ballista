@@ -58,6 +58,7 @@ impl<T: AsLogicalPlan> std::fmt::Debug for BallistaQueryPlanner<T> {
 }
 
 impl<T: 'static + AsLogicalPlan> BallistaQueryPlanner<T> {
+    /// Creates a new Ballista query planner with the specified scheduler URL and configuration.
     pub fn new(scheduler_url: String, config: BallistaConfig) -> Self {
         Self {
             scheduler_url,
@@ -68,6 +69,7 @@ impl<T: 'static + AsLogicalPlan> BallistaQueryPlanner<T> {
         }
     }
 
+    /// Creates a new Ballista query planner with a custom extension codec.
     pub fn with_extension(
         scheduler_url: String,
         config: BallistaConfig,
@@ -82,6 +84,7 @@ impl<T: 'static + AsLogicalPlan> BallistaQueryPlanner<T> {
         }
     }
 
+    /// Creates a new Ballista query planner with a custom local physical planner.
     pub fn with_local_planner(
         scheduler_url: String,
         config: BallistaConfig,

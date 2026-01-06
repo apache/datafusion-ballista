@@ -137,6 +137,7 @@ pub fn default_session_builder(
         .build())
 }
 
+/// Creates a default session configuration with Ballista extensions.
 pub fn default_config_producer() -> SessionConfig {
     SessionConfig::new_with_ballista()
 }
@@ -184,6 +185,7 @@ pub async fn write_stream_to_disk(
     ))
 }
 
+/// Collects all record batches from a stream into a vector.
 pub async fn collect_stream(
     stream: &mut Pin<Box<dyn RecordBatchStream + Send>>,
 ) -> Result<Vec<RecordBatch>> {
@@ -194,6 +196,7 @@ pub async fn collect_stream(
     Ok(batches)
 }
 
+/// Creates a gRPC client connection with the specified configuration.
 pub async fn create_grpc_client_connection<D>(
     dst: D,
     config: &GrpcClientConfig,
@@ -218,6 +221,7 @@ where
     endpoint.connect().await
 }
 
+/// Creates a gRPC server builder with the specified configuration.
 pub fn create_grpc_server(config: &GrpcServerConfig) -> Server {
     Server::builder()
         .timeout(Duration::from_secs(config.timeout_seconds))
@@ -232,6 +236,7 @@ pub fn create_grpc_server(config: &GrpcServerConfig) -> Server {
         )))
 }
 
+/// Recursively collects metrics from an execution plan and all its children.
 pub fn collect_plan_metrics(plan: &dyn ExecutionPlan) -> Vec<MetricsSet> {
     let mut metrics_array = Vec::<MetricsSet>::new();
     if let Some(metrics) = plan.metrics() {

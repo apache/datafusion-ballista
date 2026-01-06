@@ -47,11 +47,17 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataValue;
 use tonic::{Request, Response, Status, Streaming};
 
-/// Service implementing the Apache Arrow Flight Protocol
+/// Arrow Flight service for transferring shuffle data between executors.
+///
+/// This service implements the Apache Arrow Flight protocol to enable efficient
+/// transfer of intermediate query results (shuffle data) between executor nodes.
+/// It supports both decoded streaming via `do_get` and optimized block transfer
+/// via the `IO_BLOCK_TRANSPORT` action.
 #[derive(Clone)]
 pub struct BallistaFlightService {}
 
 impl BallistaFlightService {
+    /// Creates a new BallistaFlightService instance.
     pub fn new() -> Self {
         Self {}
     }

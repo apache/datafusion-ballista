@@ -42,21 +42,34 @@ use ballista_core::serde::scheduler::PartitionLocation;
 
 use crate::display::DisplayableBallistaExecutionPlan;
 
-/// A stage in the ExecutionGraph,
-/// represents a set of tasks (one per each `partition`) which can be executed concurrently.
-/// For a stage, there are five states. And the state machine is as follows:
+/// A stage in the ExecutionGraph representing a set of tasks that can be executed concurrently.
 ///
+/// Each stage contains one task per partition. The stage progresses through a state machine:
+///
+/// ```text
 /// UnResolvedStage           FailedStage
 ///       ↓            ↙           ↑
 ///  ResolvedStage     →     RunningStage
 ///                                ↓
 ///                         SuccessfulStage
+/// ```
+///
+/// - `UnResolved`: Input stages are not yet complete
+/// - `Resolved`: All inputs are ready, stage can be scheduled
+/// - `Running`: Tasks are being executed
+/// - `Successful`: All tasks completed successfully
+/// - `Failed`: Stage execution failed
 #[derive(Clone)]
 pub enum ExecutionStage {
+    /// Stage whose input stages are not all completed.
     UnResolved(UnresolvedStage),
+    /// Stage with all inputs ready, waiting to be scheduled.
     Resolved(ResolvedStage),
+    /// Stage with tasks currently being executed.
     Running(RunningStage),
+    /// Stage that completed all tasks successfully.
     Successful(SuccessfulStage),
+    /// Stage that failed during execution.
     Failed(FailedStage),
 }
 
@@ -228,26 +241,28 @@ pub struct FailedStage {
     pub error_message: String,
 }
 
+/// Information about a task's execution lifecycle and current status.
 #[derive(Clone)]
 #[allow(dead_code)] // we may use the fields later
 pub struct TaskInfo {
-    /// Task ID
+    /// Unique task identifier within the execution graph.
     pub task_id: usize,
-    /// Task scheduled time
+    /// Timestamp when the task was scheduled (in milliseconds since epoch).
     pub scheduled_time: u128,
-    /// Task launch time
+    /// Timestamp when the task was launched on an executor (in milliseconds since epoch).
     pub launch_time: u128,
-    /// Start execution time
+    /// Timestamp when actual execution started (in milliseconds since epoch).
     pub start_exec_time: u128,
-    /// Finish execution time
+    /// Timestamp when execution finished (in milliseconds since epoch).
     pub end_exec_time: u128,
-    /// Task finish time
+    /// Timestamp when the task result was received (in milliseconds since epoch).
     pub finish_time: u128,
-    /// Task Status
+    /// Current status of the task (Running, Successful, Failed).
     pub task_status: task_status::Status,
 }
 
 impl UnresolvedStage {
+    /// Creates a new unresolved stage with the given child stage dependencies.
     pub fn new(
         stage_id: usize,
         plan: Arc<dyn ExecutionPlan>,
@@ -271,6 +286,7 @@ impl UnresolvedStage {
         }
     }
 
+    /// Creates a new unresolved stage with pre-populated inputs (used for stage rollback).
     pub fn new_with_inputs(
         stage_id: usize,
         stage_attempt_num: usize,
@@ -411,6 +427,7 @@ impl Debug for UnresolvedStage {
 }
 
 impl ResolvedStage {
+    /// Creates a new resolved stage ready for task scheduling.
     pub fn new(
         stage_id: usize,
         stage_attempt_num: usize,
@@ -477,6 +494,7 @@ impl Debug for ResolvedStage {
 }
 
 impl RunningStage {
+    /// Creates a new running stage with task tracking initialized.
     pub fn new(
         stage_id: usize,
         stage_attempt_num: usize,
@@ -504,6 +522,7 @@ impl RunningStage {
         }
     }
 
+    /// Converts this running stage to a successful stage after all tasks complete.
     pub fn to_successful(&self) -> SuccessfulStage {
         let task_infos = self
             .task_infos
@@ -535,6 +554,7 @@ impl RunningStage {
         }
     }
 
+    /// Converts this running stage to a failed stage with the given error message.
     pub fn to_failed(&self, error_message: String) -> FailedStage {
         FailedStage {
             stage_id: self.stage_id,
@@ -712,6 +732,7 @@ impl RunningStage {
         Ok(())
     }
 
+    /// Combines metrics from a completed task into the stage's aggregate metrics.
     pub fn combine_metrics_set(
         first: &mut MetricsSet,
         second: Vec<MetricValue>,
@@ -725,6 +746,7 @@ impl RunningStage {
         first.aggregate_by_name()
     }
 
+    /// Returns the number of times the task for the given partition has failed.
     pub fn task_failure_number(&self, partition_id: usize) -> usize {
         self.task_failure_numbers[partition_id]
     }
@@ -979,6 +1001,7 @@ pub struct StageOutput {
 }
 
 impl StageOutput {
+    /// Creates a new empty stage output.
     pub fn new() -> Self {
         Self {
             partition_locations: HashMap::new(),
@@ -986,7 +1009,7 @@ impl StageOutput {
         }
     }
 
-    /// Add a `PartitionLocation` to the `StageOutput`
+    /// Adds a `PartitionLocation` to this stage output.
     pub fn add_partition(&mut self, partition_location: PartitionLocation) {
         if let Some(parts) = self
             .partition_locations
@@ -1001,6 +1024,7 @@ impl StageOutput {
         }
     }
 
+    /// Returns true if all partitions for this stage output are complete.
     pub fn is_complete(&self) -> bool {
         self.complete
     }

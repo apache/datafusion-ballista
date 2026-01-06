@@ -135,8 +135,10 @@ pub trait SessionConfigExt {
         max_requests: usize,
     ) -> Self;
 
+    /// Returns whether to prefer Flight protocol for remote shuffle reads.
     fn ballista_shuffle_reader_remote_prefer_flight(&self) -> bool;
 
+    /// Sets whether to prefer Flight protocol for remote shuffle reads.
     fn with_ballista_shuffle_reader_remote_prefer_flight(
         self,
         prefer_flight: bool,

@@ -15,8 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Node trait for consistent hashing.
+
+/// A trait representing a node in a consistent hash ring.
 pub trait Node {
+    /// Returns the unique name identifier for this node.
     fn name(&self) -> &str;
 
+    /// Returns whether this node is currently valid and can receive requests.
     fn is_valid(&self) -> bool;
 }

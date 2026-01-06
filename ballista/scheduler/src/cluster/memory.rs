@@ -49,15 +49,20 @@ use tokio::sync::{Mutex, MutexGuard};
 
 use super::{ClusterStateEvent, ClusterStateEventStream};
 
+/// In-memory implementation of cluster state.
+///
+/// This stores all cluster state (executor registration, task slots, heartbeats)
+/// in memory without persistence. Suitable for single-scheduler deployments
+/// or testing scenarios.
 #[derive(Default)]
 pub struct InMemoryClusterState {
-    /// Current available task slots for each executor
+    /// Current available task slots for each executor.
     task_slots: Mutex<HashMap<String, AvailableTaskSlots>>,
-    /// Current executors
+    /// Current executors and their metadata.
     executors: DashMap<String, ExecutorMetadata>,
-    /// Last heartbeat received for each executor
+    /// Last heartbeat received for each executor.
     heartbeats: DashMap<String, ExecutorHeartbeat>,
-
+    /// Broadcast sender for cluster state change events.
     cluster_event_sender: ClusterEventSender<ClusterStateEvent>,
 }
 
@@ -356,6 +361,7 @@ pub struct InMemoryJobState {
 }
 
 impl InMemoryJobState {
+    /// Creates a new in-memory job state with the given scheduler ID and session builder.
     pub fn new(
         scheduler: impl Into<String>,
         session_builder: SessionBuilder,

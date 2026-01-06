@@ -15,6 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Executor gRPC server for push-based task scheduling.
+//!
+//! This module implements the executor-side gRPC service that receives tasks
+//! from the scheduler in push-based scheduling mode. It handles task execution,
+//! heartbeat communication, and status reporting.
+
 use ballista_core::BALLISTA_VERSION;
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -74,6 +80,15 @@ struct CuratorTaskStatus {
     task_status: TaskStatus,
 }
 
+/// Starts the executor gRPC server and registers with the scheduler.
+///
+/// This function initializes the push-based task scheduling infrastructure:
+/// - Creates the executor gRPC server for receiving tasks
+/// - Registers the executor with the scheduler
+/// - Starts the heartbeat loop
+/// - Starts the task runner pool
+///
+/// Returns a handle to the server task that can be awaited for completion.
 pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     mut scheduler: SchedulerGrpcClient<Channel>,
     config: Arc<ExecutorProcessConfig>,
@@ -175,15 +190,27 @@ async fn register_executor(
     }
 }
 
+/// The executor's gRPC server that handles incoming task requests.
+///
+/// This server implements the ExecutorGrpc trait and manages task execution,
+/// cancellation, and status reporting for push-based scheduling.
 #[derive(Clone)]
 pub struct ExecutorServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
+    /// Timestamp when the server was started (milliseconds since epoch).
     _start_time: u128,
+    /// The executor instance that runs tasks.
     executor: Arc<Executor>,
+    /// Environment containing task communication channels.
     executor_env: ExecutorEnv,
+    /// Codec for serializing/deserializing execution plans.
     codec: BallistaCodec<T, U>,
+    /// gRPC client for the scheduler this executor registered with.
     scheduler_to_register: SchedulerGrpcClient<Channel>,
+    /// Cache of scheduler clients for communicating with multiple schedulers.
     schedulers: SchedulerClients,
+    /// Maximum size for outgoing gRPC messages.
     grpc_max_encoding_message_size: usize,
+    /// Maximum size for incoming gRPC messages.
     grpc_max_decoding_message_size: usize,
 }
 

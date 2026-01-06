@@ -53,13 +53,17 @@ use tokio::sync::RwLock;
 type ActiveJobCache = Arc<DashMap<String, JobInfoCache>>;
 
 // TODO move to configuration file
-/// Default max failure attempts for task level retry
+/// Default maximum number of failure attempts for task-level retry before the task is considered failed.
 pub const TASK_MAX_FAILURES: usize = 4;
-/// Default max failure attempts for stage level retry
+/// Default maximum number of failure attempts for stage-level retry before the stage is considered failed.
 pub const STAGE_MAX_FAILURES: usize = 4;
 
+/// Trait for launching tasks on executors.
+///
+/// Implementations handle the communication with executors to start task execution.
 #[async_trait::async_trait]
 pub trait TaskLauncher: Send + Sync + 'static {
+    /// Launches the given tasks on the specified executor.
     async fn launch_tasks(
         &self,
         executor: &ExecutorMetadata,
@@ -110,28 +114,45 @@ impl TaskLauncher for DefaultTaskLauncher {
     }
 }
 
+/// Manages task scheduling and execution for the Ballista scheduler.
+///
+/// The `TaskManager` is responsible for:
+/// - Queuing and submitting jobs
+/// - Tracking job and task status
+/// - Launching tasks on executors
+/// - Handling task failures and retries
+/// - Managing the lifecycle of execution graphs
 #[derive(Clone)]
 pub struct TaskManager<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
+    /// Persistent job state storage.
     state: Arc<dyn JobState>,
+    /// Codec for serializing/deserializing logical and physical plans.
     codec: BallistaCodec<T, U>,
+    /// Unique identifier for this scheduler instance.
     scheduler_id: String,
-    // Cache for active jobs curated by this scheduler
+    /// Cache for active jobs curated by this scheduler.
     active_job_cache: ActiveJobCache,
+    /// Task launcher implementation.
     launcher: Arc<dyn TaskLauncher>,
 }
 
+/// Cache for active job information managed by this scheduler.
+///
+/// Contains the execution graph and cached data to improve performance
+/// when scheduling tasks for the job.
 #[derive(Clone)]
 pub struct JobInfoCache {
-    // Cache for active execution graphs curated by this scheduler
+    /// The execution graph for this job, protected by a read-write lock.
     pub execution_graph: Arc<RwLock<ExecutionGraph>>,
-    // Cache for job status
+    /// Cached job status for quick access.
     pub status: Option<job_status::Status>,
     #[cfg(not(feature = "disable-stage-plan-cache"))]
-    // Cache for encoded execution stage plan to avoid duplicated encoding for multiple tasks
+    /// Cache for encoded execution stage plans to avoid redundant serialization.
     encoded_stage_plans: HashMap<usize, Vec<u8>>,
 }
 
 impl JobInfoCache {
+    /// Creates a new `JobInfoCache` from an execution graph.
     pub fn new(graph: ExecutionGraph) -> Self {
         let status = graph.status().status.clone();
         Self {
@@ -175,16 +196,26 @@ impl JobInfoCache {
     }
 }
 
+/// Tracks stage state changes during task status updates.
+///
+/// This struct is used internally to batch stage state transitions
+/// after processing task status updates.
 #[derive(Clone)]
 pub struct UpdatedStages {
+    /// Stage IDs that have been resolved and are ready to run.
     pub resolved_stages: HashSet<usize>,
+    /// Stage IDs that have completed successfully.
     pub successful_stages: HashSet<usize>,
+    /// Stage IDs that have failed, mapped to their error messages.
     pub failed_stages: HashMap<usize, String>,
+    /// Running stages that need to be rolled back, mapped to failure reasons.
     pub rollback_running_stages: HashMap<usize, HashSet<String>>,
+    /// Successful stages that need to be re-run due to lost outputs.
     pub resubmit_successful_stages: HashSet<usize>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U> {
+    /// Creates a new `TaskManager` with the default task launcher.
     pub fn new(
         state: Arc<dyn JobState>,
         codec: BallistaCodec<T, U>,
@@ -264,6 +295,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(())
     }
 
+    /// Returns a snapshot of currently running jobs from the cache.
     pub fn get_running_job_cache(&self) -> Arc<HashMap<String, JobInfoCache>> {
         let ret = self
             .active_job_cache
@@ -454,6 +486,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .await
     }
 
+    /// Updates the job state and returns the number of new available tasks.
     pub async fn update_job(&self, job_id: &str) -> Result<usize> {
         debug!("Update active job {job_id}");
         if let Some(graph) = self.get_active_execution_graph(job_id) {
@@ -477,7 +510,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         }
     }
 
-    /// return a Vec of running tasks need to cancel
+    /// Handles executor loss by resetting affected tasks and stages.
+    ///
+    /// Returns a list of running tasks that need to be cancelled.
     pub async fn executor_lost(&self, executor_id: &str) -> Result<Vec<RunningTaskInfo>> {
         // Collect all the running task need to cancel when there are running stages rolled back.
         let mut running_tasks_to_cancel: Vec<RunningTaskInfo> = vec![];
@@ -498,8 +533,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         Ok(running_tasks_to_cancel)
     }
 
-    /// Retrieve the number of available tasks for the given job. The value returned
-    /// is strictly a point-in-time snapshot
+    /// Retrieves the number of available tasks for the given job.
+    ///
+    /// The value returned is a point-in-time snapshot and may change immediately.
     pub async fn get_available_task_count(&self, job_id: &str) -> Result<usize> {
         if let Some(graph) = self.get_active_execution_graph(job_id) {
             let available_tasks = graph.read().await.available_tasks();
@@ -510,6 +546,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         }
     }
 
+    /// Prepares a task definition for a single task to be sent to an executor.
     #[allow(dead_code)]
     pub fn prepare_task_definition(
         &self,
@@ -664,7 +701,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             .map(|value| value.1.execution_graph)
     }
 
-    /// Generate a new random Job ID
+    /// Generates a new random 7-character alphanumeric job ID.
     pub fn generate_job_id(&self) -> String {
         let mut rng = rng();
         std::iter::repeat(())
@@ -693,13 +730,21 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     }
 }
 
+/// Summary information about a job for display purposes.
 pub struct JobOverview {
+    /// Unique identifier for this job.
     pub job_id: String,
+    /// Human-readable name for this job.
     pub job_name: String,
+    /// Current status of the job.
     pub status: JobStatus,
+    /// Timestamp when the job started.
     pub start_time: u64,
+    /// Timestamp when the job ended (0 if still running).
     pub end_time: u64,
+    /// Total number of stages in the job.
     pub num_stages: usize,
+    /// Number of stages that have completed successfully.
     pub completed_stages: usize,
 }
 

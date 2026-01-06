@@ -15,6 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Execution engine abstraction for query stage execution.
+//!
+//! This module provides traits and default implementations for executing
+//! query stages in a distributed setting. The execution engine is responsible
+//! for creating query stage executors from physical plans.
+
 use async_trait::async_trait;
 use ballista_core::execution_plans::ShuffleWriterExec;
 use ballista_core::serde::protobuf::ShuffleWritePartition;
@@ -26,8 +32,17 @@ use datafusion::physical_plan::metrics::MetricsSet;
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
 
-/// Execution engine extension point
+/// Extension point for customizing query stage execution.
+///
+/// Implement this trait to provide a custom execution engine that can
+/// transform physical plans into query stage executors. This allows
+/// for custom execution strategies beyond the default DataFusion-based
+/// execution.
 pub trait ExecutionEngine: Sync + Send {
+    /// Creates a query stage executor from a physical plan.
+    ///
+    /// The returned executor will be responsible for executing the given
+    /// plan partition and writing shuffle output to the specified work directory.
     fn create_query_stage_exec(
         &self,
         job_id: String,
@@ -37,21 +52,32 @@ pub trait ExecutionEngine: Sync + Send {
     ) -> Result<Arc<dyn QueryStageExecutor>>;
 }
 
-/// QueryStageExecutor executes a section of a query plan that has consistent partitioning and
-/// can be executed as one unit with each partition being executed in parallel. The output of each
-/// partition is re-partitioned and streamed to disk in Arrow IPC format. Future stages of the query
-/// will use the ShuffleReaderExec to read these results.
+/// Executor for a single query stage in a distributed query.
+///
+/// A query stage is a section of a query plan that has consistent partitioning
+/// and can be executed as one unit with each partition running in parallel.
+/// The output of each partition is re-partitioned and written to disk in
+/// Arrow IPC format. Subsequent stages read these results via ShuffleReaderExec.
 #[async_trait]
 pub trait QueryStageExecutor: Sync + Send + Debug + Display {
+    /// Executes a single partition of this query stage.
+    ///
+    /// Returns metadata about the shuffle partitions written to disk,
+    /// including file paths and statistics.
     async fn execute_query_stage(
         &self,
         input_partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<Vec<ShuffleWritePartition>>;
 
+    /// Collects execution metrics from all operators in the plan.
     fn collect_plan_metrics(&self) -> Vec<MetricsSet>;
 }
 
+/// Default execution engine using DataFusion's ShuffleWriterExec.
+///
+/// This implementation expects the input plan to be wrapped in a
+/// ShuffleWriterExec and creates a DefaultQueryStageExec to execute it.
 pub struct DefaultExecutionEngine {}
 
 impl ExecutionEngine for DefaultExecutionEngine {
@@ -84,12 +110,18 @@ impl ExecutionEngine for DefaultExecutionEngine {
     }
 }
 
+/// Default query stage executor that wraps a ShuffleWriterExec.
+///
+/// This executor delegates to the ShuffleWriterExec to perform the actual
+/// shuffle write operation, which partitions the data and writes it to disk.
 #[derive(Debug)]
 pub struct DefaultQueryStageExec {
+    /// The underlying shuffle writer execution plan.
     shuffle_writer: ShuffleWriterExec,
 }
 
 impl DefaultQueryStageExec {
+    /// Creates a new DefaultQueryStageExec wrapping the given shuffle writer.
     pub fn new(shuffle_writer: ShuffleWriterExec) -> Self {
         Self { shuffle_writer }
     }

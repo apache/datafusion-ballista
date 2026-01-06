@@ -52,13 +52,20 @@ use log::{debug, error, info, warn};
 use prost::Message;
 
 mod distributed_explain;
+/// Execution graph representation and management.
 pub mod execution_graph;
+/// DOT format export for execution graphs.
 pub mod execution_graph_dot;
+/// Execution stage tracking and status management.
 pub mod execution_stage;
+/// Executor registration and management.
 pub mod executor_manager;
+/// Session state management.
 pub mod session_manager;
+/// Task scheduling and lifecycle management.
 pub mod task_manager;
 
+/// Decodes a protobuf message from bytes.
 pub fn decode_protobuf<T: Message + Default>(bytes: &[u8]) -> Result<T> {
     T::decode(bytes).map_err(|e| {
         BallistaError::Internal(format!(
@@ -69,6 +76,7 @@ pub fn decode_protobuf<T: Message + Default>(bytes: &[u8]) -> Result<T> {
     })
 }
 
+/// Decodes a protobuf message and converts it to another type.
 pub fn decode_into<T: Message + Default + Into<U>, U>(bytes: &[u8]) -> Result<U> {
     T::decode(bytes)
         .map_err(|e| {
@@ -81,6 +89,7 @@ pub fn decode_into<T: Message + Default + Into<U>, U>(bytes: &[u8]) -> Result<U>
         .map(|t| t.into())
 }
 
+/// Encodes a protobuf message to bytes.
 pub fn encode_protobuf<T: Message + Default>(msg: &T) -> Result<Vec<u8>> {
     let mut value: Vec<u8> = Vec::with_capacity(msg.encoded_len());
     msg.encode(&mut value).map_err(|e| {
@@ -93,16 +102,25 @@ pub fn encode_protobuf<T: Message + Default>(msg: &T) -> Result<Vec<u8>> {
     Ok(value)
 }
 
+/// Shared state for the Ballista scheduler.
+///
+/// Contains managers for executors, tasks, and sessions.
 #[derive(Clone)]
 pub struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
+    /// Manager for executor registration and task slot allocation.
     pub executor_manager: ExecutorManager,
+    /// Manager for job and task scheduling.
     pub task_manager: TaskManager<T, U>,
+    /// Manager for DataFusion session contexts.
     pub session_manager: SessionManager,
+    /// Codec for serializing logical and physical plans.
     pub codec: BallistaCodec<T, U>,
+    /// Scheduler configuration.
     pub config: Arc<SchedulerConfig>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T, U> {
+    /// Creates a new `SchedulerState` with the given cluster and configuration.
     pub fn new(
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
@@ -125,6 +143,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         }
     }
 
+    /// Creates a new `SchedulerState` with default scheduler name (for testing only).
     #[cfg(test)]
     pub fn new_with_default_scheduler_name(
         cluster: BallistaCluster,
@@ -159,6 +178,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         }
     }
 
+    /// Initializes the scheduler state.
     pub async fn init(&self) -> Result<()> {
         self.executor_manager.init().await
     }

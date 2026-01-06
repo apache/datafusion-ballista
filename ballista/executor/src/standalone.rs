@@ -15,6 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Standalone executor for embedded or testing scenarios.
+//!
+//! This module provides functions for creating executors that run in the same
+//! process as the client, useful for testing and development purposes.
+
 use crate::metrics::LoggingMetricsCollector;
 use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightService};
 use arrow_flight::flight_service_server::FlightServiceServer;
@@ -73,6 +78,13 @@ pub async fn new_standalone_executor_from_state(
     .await
 }
 
+/// Creates a standalone executor with custom configuration.
+///
+/// This function provides fine-grained control over executor configuration
+/// by accepting custom producers for session config, runtime environment,
+/// codec, and function registry.
+///
+/// The executor binds to a random available port on localhost.
 pub async fn new_standalone_executor_from_builder(
     scheduler: SchedulerGrpcClient<Channel>,
     concurrent_tasks: usize,

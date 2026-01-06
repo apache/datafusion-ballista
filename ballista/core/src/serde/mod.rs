@@ -54,7 +54,9 @@ use crate::serde::protobuf::ballista_physical_plan_node::PhysicalPlanType;
 use crate::serde::scheduler::PartitionLocation;
 pub use generated::ballista as protobuf;
 
+/// Generated protobuf code from Ballista protocol definitions.
 pub mod generated;
+/// Scheduler-specific serialization types and conversions.
 pub mod scheduler;
 
 impl ProstMessageExt for protobuf::Action {
@@ -70,6 +72,7 @@ impl ProstMessageExt for protobuf::Action {
     }
 }
 
+/// Decodes a Ballista action from protobuf bytes.
 pub fn decode_protobuf(bytes: &[u8]) -> Result<BallistaAction, BallistaError> {
     let mut buf = Cursor::new(bytes);
 
@@ -78,6 +81,7 @@ pub fn decode_protobuf(bytes: &[u8]) -> Result<BallistaAction, BallistaError> {
         .and_then(|node| node.try_into())
 }
 
+/// Codec for serializing and deserializing Ballista logical and physical plans.
 #[derive(Clone, Debug)]
 pub struct BallistaCodec<
     T: 'static + AsLogicalPlan = LogicalPlanNode,
@@ -101,6 +105,7 @@ impl Default for BallistaCodec {
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> BallistaCodec<T, U> {
+    /// Creates a new Ballista codec with custom extension codecs.
     pub fn new(
         logical_extension_codec: Arc<dyn LogicalExtensionCodec>,
         physical_extension_codec: Arc<dyn PhysicalExtensionCodec>,
@@ -113,15 +118,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> BallistaCodec<T, 
         }
     }
 
+    /// Returns the logical extension codec.
     pub fn logical_extension_codec(&self) -> &dyn LogicalExtensionCodec {
         self.logical_extension_codec.as_ref()
     }
 
+    /// Returns the physical extension codec.
     pub fn physical_extension_codec(&self) -> &dyn PhysicalExtensionCodec {
         self.physical_extension_codec.as_ref()
     }
 }
 
+/// Logical extension codec for Ballista-specific plan nodes.
 #[derive(Debug)]
 pub struct BallistaLogicalExtensionCodec {
     default_codec: Arc<dyn LogicalExtensionCodec>,
@@ -248,6 +256,7 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
     }
 }
 
+/// Physical extension codec for Ballista-specific execution plan nodes.
 #[derive(Debug)]
 pub struct BallistaPhysicalExtensionCodec {
     default_codec: Arc<dyn PhysicalExtensionCodec>,

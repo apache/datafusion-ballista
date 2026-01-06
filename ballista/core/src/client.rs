@@ -361,6 +361,7 @@ pub struct BlockDataStream<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin
     state_buffer: Buffer,
     ipc_stream: S,
     transmitted: usize,
+    /// The schema of the data being streamed.
     pub schema: SchemaRef,
 }
 
@@ -368,6 +369,9 @@ pub struct BlockDataStream<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin
 const MAXIMUM_SCHEMA_BUFFER_SIZE: usize = 8_388_608;
 
 impl<S: Stream<Item = Result<prost::bytes::Bytes>> + Unpin> BlockDataStream<S> {
+    /// Creates a new `BlockDataStream` from the given IPC byte stream.
+    ///
+    /// Reads the schema from the stream header and initializes the decoder.
     pub async fn try_new(
         mut ipc_stream: S,
     ) -> std::result::Result<Self, DataFusionError> {

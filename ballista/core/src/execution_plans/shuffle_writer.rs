@@ -191,6 +191,7 @@ impl ShuffleWriterExec {
         self.shuffle_output_partitioning.as_ref()
     }
 
+    /// Executes the shuffle write operation for a single input partition.
     pub fn execute_shuffle_write(
         self,
         input_partition: usize,
