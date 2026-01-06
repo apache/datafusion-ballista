@@ -93,6 +93,9 @@ rpath = false
 [profile.ci]
 inherits = "dev"
 incremental = false
+debug = false
+debug-assertions = false
+strip = "debuginfo"
 
 # ci turns off debug info, etc. for dependencies to allow for smaller binaries making caching more effective
 [profile.ci.package."*"]
