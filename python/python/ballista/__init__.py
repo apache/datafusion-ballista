@@ -15,13 +15,23 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# %%
-from ballista import BallistaBuilder
-from datafusion.context import SessionContext
+try:
+    import importlib.metadata as importlib_metadata
+except ImportError:
+    import importlib_metadata
 
-ctx: SessionContext = BallistaBuilder().remote("df://127.0.0.1:50050")
+from ._internal_ballista import (
+    BallistaScheduler,
+    BallistaExecutor,
+    setup_test_cluster,
+)
+from .extension import BallistaSessionContext
 
-# Select 1 to verify its working
-ctx.sql("SELECT 1").show()
+__version__ = importlib_metadata.version(__name__)
 
-# %%
+__all__ = [
+    "setup_test_cluster",
+    "BallistaScheduler",
+    "BallistaExecutor",
+    "BallistaSessionContext",
+]

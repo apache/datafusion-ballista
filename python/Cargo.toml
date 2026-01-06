@@ -38,10 +38,11 @@ ballista-scheduler = { version = "49.0.0", default-features = false }
 datafusion = { version = "49", features = ["pyarrow", "avro"] }
 datafusion-proto = { version = "49" }
 datafusion-python = { version = "49" }
-
+log = { version = "0.4" }
 pyo3 = { version = "0.24", features = ["extension-module", "abi3", "abi3-py39"] }
 pyo3-log = "0.12"
 tokio = { version = "1.48", features = ["macros", "rt", "rt-multi-thread", "sync"] }
+tonic = { version = "0.12" }
 
 [lib]
 crate-type = ["cdylib"]
