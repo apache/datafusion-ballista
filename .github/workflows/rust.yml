@@ -151,7 +151,6 @@ jobs:
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-windows-builder
       - name: Run tests
-        shell: bash
         run: |
           export ARROW_TEST_DATA=$(pwd)/testing/data
           export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
@@ -170,7 +169,6 @@ jobs:
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-macos-builder
       - name: Run tests
-        shell: bash
         run: |
           export ARROW_TEST_DATA=$(pwd)/testing/data
           export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
