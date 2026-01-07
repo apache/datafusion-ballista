@@ -8,7 +8,7 @@ use arrow_flight::{
 use ballista_core::error::BallistaError;
 use ballista_core::serde::decode_protobuf;
 use ballista_core::serde::scheduler::Action as BallistaAction;
-use ballista_core::utils::{create_grpc_client_connection, GrpcClientConfig};
+use ballista_core::utils::{GrpcClientConfig, create_grpc_client_connection};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use futures::{Stream, TryFutureExt};

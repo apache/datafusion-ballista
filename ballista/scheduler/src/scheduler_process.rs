@@ -15,12 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::flight_proxy_service::BallistaFlightProxyService;
+use crate::state::SchedulerState;
+
+use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::BALLISTA_VERSION;
 use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer;
 use ballista_core::serde::{
     BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
 };
+use ballista_core::utils::{GrpcServerConfig, create_grpc_server};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
@@ -145,7 +150,9 @@ fn start_flight_proxy_server<T: 'static + AsLogicalPlan, U: 'static + AsExecutio
             config.grpc_server_max_encoding_message_size as usize;
         let max_decoding_message_size =
             config.grpc_server_max_decoding_message_size as usize;
-        info!("Built-in arrow flight server proxy listening on: {address:?} max_encoding_size: {max_encoding_message_size} max_decoding_size: {max_decoding_message_size}");
+        info!(
+            "Built-in arrow flight server proxy listening on: {address:?} max_encoding_size: {max_encoding_message_size} max_decoding_size: {max_decoding_message_size}"
+        );
 
         let grpc_server_config = GrpcServerConfig::default();
         let server_future = create_grpc_server(&grpc_server_config)
