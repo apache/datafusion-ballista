@@ -28,8 +28,14 @@ runs:
     - name: Install protobuf compiler
       shell: bash
       run: |
-        apt-get update
-        apt-get install -y protobuf-compiler
+        mkdir -p $HOME/d/protoc
+        cd $HOME/d/protoc
+        export PROTO_ZIP="protoc-29.1-linux-x86_64.zip"
+        curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v29.1/$PROTO_ZIP
+        unzip $PROTO_ZIP
+        echo "$HOME/d/protoc/bin" >> $GITHUB_PATH
+        export PATH=$PATH:$HOME/d/protoc/bin
+        protoc --version
     - name: Setup Rust toolchain
       shell: bash
       run: |

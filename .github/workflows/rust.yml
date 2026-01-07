@@ -73,7 +73,6 @@ jobs:
         uses: ./.github/actions/setup-builder
       - name: Run tests
         run: |
-          export PATH=$PATH:$HOME/d/protoc/bin
           export ARROW_TEST_DATA=$(pwd)/testing/data
           export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
           cargo test --profile ci --features=testcontainers
@@ -111,7 +110,6 @@ jobs:
         uses: ./.github/actions/setup-builder
       - name: Try to compile when `--no-default-features` is selected
         run: |
-          export PATH=$PATH:$HOME/d/protoc/bin
           export ARROW_TEST_DATA=$(pwd)/testing/data
           export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
           cargo check --profile ci -p ballista-scheduler -p ballista-executor -p ballista-core -p ballista --no-default-features --locked
@@ -133,7 +131,6 @@ jobs:
         uses: ./.github/actions/setup-builder
       - name: Run Ballista tests
         run: |
-          export PATH=$PATH:$HOME/d/protoc/bin
           export ARROW_TEST_DATA=$(pwd)/testing/data
           export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
           cd ballista
@@ -156,7 +153,6 @@ jobs:
       - name: Run tests
         shell: bash
         run: |
-          export PATH=$PATH:$HOME/d/protoc/bin
           export ARROW_TEST_DATA=$(pwd)/testing/data
           export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
           export TMP=$(pwd)/.temp
@@ -176,7 +172,6 @@ jobs:
       - name: Run tests
         shell: bash
         run: |
-          export PATH=$PATH:$HOME/d/protoc/bin
           export ARROW_TEST_DATA=$(pwd)/testing/data
           export PARQUET_TEST_DATA=$(pwd)/parquet-testing/data
           cargo test --profile ci --locked
