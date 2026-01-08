@@ -101,9 +101,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> FlightService
                 .map_err(|e| from_ballista_err(&e))
                 .await?
                 .iter()
-                .map(|(meta, _)| meta)
-                .filter(|m| alive_executors.contains(&m.id))
-                .map(|m| format!("{}:{}", m.host, m.port)),
+                .filter_map(|(meta, _)| {
+                    if alive_executors.contains(&meta.id) {
+                        Some(format!("{}:{}", meta.host, meta.port))
+                    } else {
+                        None
+                    }
+                }),
         );
         debug!("Active executors: {:?}", valid_hosts);
 
@@ -185,4 +189,28 @@ async fn get_flight_client(
 
     debug!("FlightProxyService connected: {flight_client:?}");
     Ok(flight_client)
+}
+
+#[cfg(test)]
+mod test {
+    use crate::config::SchedulerConfig;
+    use crate::test_utils::{SchedulerTest, TestMetricsCollector};
+    use ballista_core::config::TaskSchedulingPolicy;
+    use std::sync::Arc;
+    #[tokio::test]
+    async fn test_flight_proxy_service() -> ballista_core::error::Result<()> {
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector.clone(),
+            4,
+            1,
+            None,
+        )
+        .await?;
+
+        todo!()
+    }
 }
