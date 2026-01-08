@@ -983,6 +983,8 @@ pub mod job_status {
 pub struct GetJobStatusResult {
     #[prost(message, optional, tag = "1")]
     pub status: ::core::option::Option<JobStatus>,
+    #[prost(string, optional, tag = "2")]
+    pub flight_endpoint: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FilePartitionMetadata {
