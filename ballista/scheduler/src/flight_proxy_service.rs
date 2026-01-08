@@ -94,7 +94,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> FlightService
             decode_protobuf(&ticket.ticket).map_err(|e| from_ballista_err(&e))?;
 
         let alive_executors = self.state.executor_manager.get_alive_executors();
-        let valid_hosts: HashSet<String> = HashSet::from_iter(
+        let valid_hosts: HashSet<(String, u16)> = HashSet::from_iter(
             self.state
                 .executor_manager
                 .get_executor_state()
@@ -103,7 +103,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> FlightService
                 .iter()
                 .filter_map(|(meta, _)| {
                     if alive_executors.contains(&meta.id) {
-                        Some(format!("{}:{}", meta.host, meta.port))
+                        Some((meta.host.clone(), meta.port))
                     } else {
                         None
                     }
@@ -115,7 +115,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> FlightService
             BallistaAction::FetchPartition {
                 host, port, job_id, ..
             } => {
-                if valid_hosts.contains::<str>(format!("{}:{}", host, port).as_ref()) {
+                if valid_hosts.contains(&(host.to_owned(), *port)) {
                     debug!("Fetching results for job id: {job_id} from {host}:{port}");
                     let mut client = get_flight_client(
                         host,
