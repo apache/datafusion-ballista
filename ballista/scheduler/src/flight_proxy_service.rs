@@ -190,27 +190,3 @@ async fn get_flight_client(
     debug!("FlightProxyService connected: {flight_client:?}");
     Ok(flight_client)
 }
-
-#[cfg(test)]
-mod test {
-    use crate::config::SchedulerConfig;
-    use crate::test_utils::{SchedulerTest, TestMetricsCollector};
-    use ballista_core::config::TaskSchedulingPolicy;
-    use std::sync::Arc;
-    #[tokio::test]
-    async fn test_flight_proxy_service() -> ballista_core::error::Result<()> {
-        let metrics_collector = Arc::new(TestMetricsCollector::default());
-
-        let mut test = SchedulerTest::new(
-            SchedulerConfig::default()
-                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
-            metrics_collector.clone(),
-            4,
-            1,
-            None,
-        )
-        .await?;
-
-        todo!()
-    }
-}
