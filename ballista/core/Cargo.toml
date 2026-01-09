@@ -35,7 +35,9 @@ exclude = ["*.proto"]
 rustc-args = ["--cfg", "docsrs"]
 
 [features]
+arrow-ipc-optimizations = []
 build-binary = ["aws-config", "aws-credential-types", "clap", "object_store"]
+default = ["arrow-ipc-optimizations"]
 docsrs = []
 # Used for testing ONLY: causes all values to hash to the same value (test for collisions)
 force_hash_collisions = ["datafusion/force_hash_collisions"]
