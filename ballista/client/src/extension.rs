@@ -93,7 +93,7 @@ impl SessionContextExt for SessionContext {
     async fn remote_with_state(
         url: &str,
         state: SessionState,
-    ) -> datafusion::error::Result<SessionContext> {
+    ) -> datafusion::error::Result<Self> {
         let scheduler_url = Extension::parse_url(url)?;
         log::info!(
             "Connecting to Ballista scheduler at {}",
@@ -110,7 +110,7 @@ impl SessionContextExt for SessionContext {
         Ok(SessionContext::new_with_state(session_state))
     }
 
-    async fn remote(url: &str) -> datafusion::error::Result<SessionContext> {
+    async fn remote(url: &str) -> datafusion::error::Result<Self> {
         let scheduler_url = Extension::parse_url(url)?;
         log::info!(
             "Connecting to Ballista scheduler at: {}",
@@ -129,7 +129,9 @@ impl SessionContextExt for SessionContext {
     #[cfg(feature = "standalone")]
     async fn standalone_with_state(
         state: SessionState,
-    ) -> datafusion::error::Result<SessionContext> {
+    ) -> datafusion::error::Result<Self> {
+        log::info!("Running in local mode. Scheduler will be run in-proc");
+
         let scheduler_url = Extension::setup_standalone(Some(&state)).await?;
 
         let session_state = state.upgrade_for_ballista(scheduler_url)?;

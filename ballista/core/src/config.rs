@@ -31,31 +31,42 @@ use datafusion::{
 pub const BALLISTA_JOB_NAME: &str = "ballista.job.name";
 /// Configuration key for standalone processing parallelism.
 pub const BALLISTA_STANDALONE_PARALLELISM: &str = "ballista.standalone.parallelism";
-/// max message size for gRPC clients
-pub const BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE: &str =
-    "ballista.grpc_client_max_message_size";
-/// Configuration key for maximum concurrent shuffle read requests.
-pub const BALLISTA_SHUFFLE_READER_MAX_REQUESTS: &str =
-    "ballista.shuffle.max_concurrent_read_requests";
-/// Configuration key to force remote reads even for local partitions.
-pub const BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ: &str =
-    "ballista.shuffle.force_remote_read";
-/// Configuration key to prefer Flight protocol for remote shuffle reads.
-pub const BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT: &str =
-    "ballista.shuffle.remote_read_prefer_flight";
+
+// Arrow IPC configuration
+
+/// Configuration key for skipping redundant reader validation of Arrow IPC valid data.
+pub const BALLISTA_ARROW_IPC_READER_SKIP_VALIDATION: &str =
+    "ballista.arrow.ipc.reader_skip_validation";
+
+// gRPC configuration
 
 /// Configuration key for gRPC client connection timeout in seconds.
 pub const BALLISTA_GRPC_CLIENT_CONNECT_TIMEOUT_SECONDS: &str =
     "ballista.grpc.client.connect_timeout_seconds";
-/// Configuration key for gRPC client request timeout in seconds.
-pub const BALLISTA_GRPC_CLIENT_TIMEOUT_SECONDS: &str =
-    "ballista.grpc.client.timeout_seconds";
-/// Configuration key for TCP keep-alive interval for gRPC clients in seconds.
-pub const BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS: &str =
-    "ballista.grpc.client.tcp_keepalive_seconds";
 /// Configuration key for HTTP/2 keep-alive interval for gRPC clients in seconds.
 pub const BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS: &str =
     "ballista.grpc.client.http2_keepalive_interval_seconds";
+/// max message size for gRPC clients
+pub const BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE: &str =
+    "ballista.grpc_client_max_message_size";
+/// Configuration key for TCP keep-alive interval for gRPC clients in seconds.
+pub const BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS: &str =
+    "ballista.grpc.client.tcp_keepalive_seconds";
+/// Configuration key for gRPC client request timeout in seconds.
+pub const BALLISTA_GRPC_CLIENT_TIMEOUT_SECONDS: &str =
+    "ballista.grpc.client.timeout_seconds";
+
+// Shuffle reader configuration
+
+/// Configuration key to force remote reads even for local partitions.
+pub const BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ: &str =
+    "ballista.shuffle.force_remote_read";
+/// Configuration key for maximum concurrent shuffle read requests.
+pub const BALLISTA_SHUFFLE_READER_MAX_REQUESTS: &str =
+    "ballista.shuffle.max_concurrent_read_requests";
+/// Configuration key to prefer Flight protocol for remote shuffle reads.
+pub const BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT: &str =
+    "ballista.shuffle.remote_read_prefer_flight";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -69,38 +80,49 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_STANDALONE_PARALLELISM.to_string(),
                          "Standalone processing parallelism ".to_string(),
                          DataType::UInt16, Some(std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1).to_string())),
-        ConfigEntry::new(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE.to_string(),
-                         "Configuration for max message size in gRPC clients".to_string(),
-                         DataType::UInt64,
-                         Some((16 * 1024 * 1024).to_string())),
-        ConfigEntry::new(BALLISTA_SHUFFLE_READER_MAX_REQUESTS.to_string(),
-                         "Maximum concurrent requests shuffle reader can process".to_string(),
-                         DataType::UInt64,
-                         Some((64).to_string())),
-        ConfigEntry::new(BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ.to_string(),
-                         "Forces the shuffle reader to always read partitions via the Arrow Flight client, even when partitions are local to the node.".to_string(),
+
+        // Arrow IPC configuration
+        ConfigEntry::new(BALLISTA_ARROW_IPC_READER_SKIP_VALIDATION.to_string(),
+                         "Skip redundant reader validation of Arrow IPC valid data".to_string(),
                          DataType::Boolean,
-                         Some((false).to_string())),
-        ConfigEntry::new(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT.to_string(),
-                         "Forces the shuffle reader to use flight reader instead of block reader for remote read. Block reader usually has better performance and resource utilization".to_string(),
-                         DataType::Boolean,
-                         Some((false).to_string())),
+                         Some(true.to_string())),
+
+        // gRPC configuration
         ConfigEntry::new(BALLISTA_GRPC_CLIENT_CONNECT_TIMEOUT_SECONDS.to_string(),
                          "Connection timeout for gRPC client in seconds".to_string(),
                          DataType::UInt64,
                          Some((20).to_string())),
-        ConfigEntry::new(BALLISTA_GRPC_CLIENT_TIMEOUT_SECONDS.to_string(),
-                         "Request timeout for gRPC client in seconds".to_string(),
+        ConfigEntry::new(BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS.to_string(),
+                         "HTTP/2 keep-alive interval for gRPC client in seconds".to_string(),
                          DataType::UInt64,
-                         Some((20).to_string())),
+                         Some((300).to_string())),
+        ConfigEntry::new(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE.to_string(),
+                         "Configuration for max message size in gRPC clients".to_string(),
+                         DataType::UInt64,
+                         Some((16 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS.to_string(),
                          "TCP keep-alive interval for gRPC client in seconds".to_string(),
                          DataType::UInt64,
                          Some((3600).to_string())),
-        ConfigEntry::new(BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS.to_string(),
-                         "HTTP/2 keep-alive interval for gRPC client in seconds".to_string(),
+        ConfigEntry::new(BALLISTA_GRPC_CLIENT_TIMEOUT_SECONDS.to_string(),
+                         "Request timeout for gRPC client in seconds".to_string(),
                          DataType::UInt64,
-                         Some((300).to_string()))
+                         Some((20).to_string())),
+
+
+        // Shuffle reader configuration
+        ConfigEntry::new(BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ.to_string(),
+                         "Forces the shuffle reader to always read partitions via the Arrow Flight client, even when partitions are local to the node.".to_string(),
+                         DataType::Boolean,
+                         Some((false).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_READER_MAX_REQUESTS.to_string(),
+                         "Maximum concurrent requests shuffle reader can process".to_string(),
+                         DataType::UInt64,
+                         Some((64).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT.to_string(),
+                         "Forces the shuffle reader to use flight reader instead of block reader for remote read. Block reader usually has better performance and resource utilization".to_string(),
+                         DataType::Boolean,
+                         Some((false).to_string())),
     ];
     entries
         .into_iter()
@@ -262,6 +284,11 @@ impl BallistaConfig {
     /// Block protocol is usually more performant than flight protocol
     pub fn shuffle_reader_remote_prefer_flight(&self) -> bool {
         self.get_bool_setting(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT)
+    }
+
+    /// Allows skipping redundant validation of arrow IPC valid data.
+    pub fn ballista_arrow_ipc_reader_skip_validation(&self) -> bool {
+        self.get_bool_setting(BALLISTA_ARROW_IPC_READER_SKIP_VALIDATION)
     }
 
     fn get_usize_setting(&self, key: &str) -> usize {

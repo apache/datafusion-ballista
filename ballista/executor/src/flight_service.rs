@@ -54,18 +54,22 @@ use tonic::{Request, Response, Status, Streaming};
 /// It supports both decoded streaming via `do_get` and optimized block transfer
 /// via the `IO_BLOCK_TRANSPORT` action.
 #[derive(Clone)]
-pub struct BallistaFlightService {}
+pub struct BallistaFlightService {
+    arrow_ipc_reader_skip_validation: bool,
+}
 
 impl BallistaFlightService {
     /// Creates a new BallistaFlightService instance.
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(arrow_ipc_reader_skip_validation: bool) -> Self {
+        Self {
+            arrow_ipc_reader_skip_validation,
+        }
     }
 }
 
 impl Default for BallistaFlightService {
     fn default() -> Self {
-        Self::new()
+        Self::new(true)
     }
 }
 
@@ -105,8 +109,12 @@ impl FlightService for BallistaFlightService {
                     })
                     .map_err(|e| from_ballista_err(&e))?;
                 let file = BufReader::new(file);
-                let reader =
-                    StreamReader::try_new(file, None).map_err(|e| from_arrow_err(&e))?;
+                // Safety: setting `skip_validation` requires `unsafe`, user assures data is valid
+                let reader = unsafe {
+                    StreamReader::try_new(file, None)
+                        .map_err(|e| from_arrow_err(&e))?
+                        .with_skip_validation(self.arrow_ipc_reader_skip_validation)
+                };
 
                 let (tx, rx) = channel(2);
                 let schema = reader.schema();

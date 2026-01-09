@@ -16,10 +16,10 @@
 // under the License.
 
 use crate::config::{
-    BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, BALLISTA_JOB_NAME,
-    BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
-    BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
-    BallistaConfig,
+    BALLISTA_ARROW_IPC_READER_SKIP_VALIDATION, BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE,
+    BALLISTA_JOB_NAME, BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ,
+    BALLISTA_SHUFFLE_READER_MAX_REQUESTS, BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT,
+    BALLISTA_STANDALONE_PARALLELISM, BallistaConfig,
 };
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
@@ -95,8 +95,31 @@ pub trait SessionConfigExt {
         &self,
     ) -> Option<Arc<dyn QueryPlanner + Send + Sync + 'static>>;
 
+    /// Sets parallelism of standalone cluster
+    ///
+    /// This option to be used to configure standalone session context
+    fn with_ballista_standalone_parallelism(self, parallelism: usize) -> Self;
+
     /// Returns parallelism of standalone cluster
     fn ballista_standalone_parallelism(&self) -> usize;
+
+    /// Sets ballista job name
+    fn with_ballista_job_name(self, job_name: &str) -> Self;
+
+    /// Returns whether to skip arrow IPC validation when reading trusted data
+    fn ballista_arrow_ipc_reader_skip_validation(&self) -> bool;
+
+    /// Sets whether to skip arrow IPC validation when reading trusted data
+    fn with_ballista_arrow_ipc_reader_skip_validation(
+        self,
+        arrow_ipc_reader_skip_validation: bool,
+    ) -> Self;
+
+    /// retrieves grpc client max message size
+    fn ballista_grpc_client_max_message_size(&self) -> usize;
+
+    /// sets grpc client max message size
+    fn with_ballista_grpc_client_max_message_size(self, max_size: usize) -> Self;
 
     /// Forces the shuffle reader to always read partitions via the Arrow Flight client,
     /// even when partitions are local to the node.
@@ -111,20 +134,6 @@ pub trait SessionConfigExt {
         self,
         force_remote_read: bool,
     ) -> Self;
-
-    /// Sets parallelism of standalone cluster
-    ///
-    /// This option to be used to configure standalone session context
-    fn with_ballista_standalone_parallelism(self, parallelism: usize) -> Self;
-
-    /// retrieves grpc client max message size
-    fn ballista_grpc_client_max_message_size(&self) -> usize;
-
-    /// sets grpc client max message size
-    fn with_ballista_grpc_client_max_message_size(self, max_size: usize) -> Self;
-
-    /// Sets ballista job name
-    fn with_ballista_job_name(self, job_name: &str) -> Self;
 
     /// get maximum in flight requests for shuffle reader
     fn ballista_shuffle_reader_maximum_concurrent_requests(&self) -> usize;
@@ -279,12 +288,58 @@ impl SessionConfigExt for SessionConfig {
             .map(|c| c.planner())
     }
 
+    fn with_ballista_standalone_parallelism(self, parallelism: usize) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_usize(BALLISTA_STANDALONE_PARALLELISM, parallelism)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_usize(BALLISTA_STANDALONE_PARALLELISM, parallelism)
+        }
+    }
+
     fn ballista_standalone_parallelism(&self) -> usize {
         self.options()
             .extensions
             .get::<BallistaConfig>()
             .map(|c| c.default_standalone_parallelism())
             .unwrap_or_else(|| BallistaConfig::default().default_standalone_parallelism())
+    }
+
+    fn with_ballista_job_name(self, job_name: &str) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_str(BALLISTA_JOB_NAME, job_name)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_str(BALLISTA_JOB_NAME, job_name)
+        }
+    }
+
+    fn ballista_arrow_ipc_reader_skip_validation(&self) -> bool {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.ballista_arrow_ipc_reader_skip_validation())
+            .unwrap_or_else(|| {
+                BallistaConfig::default().ballista_arrow_ipc_reader_skip_validation()
+            })
+    }
+
+    fn with_ballista_arrow_ipc_reader_skip_validation(
+        self,
+        arrow_ipc_reader_skip_validation: bool,
+    ) -> Self {
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_bool(
+                BALLISTA_ARROW_IPC_READER_SKIP_VALIDATION,
+                arrow_ipc_reader_skip_validation,
+            )
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_bool(
+                    BALLISTA_ARROW_IPC_READER_SKIP_VALIDATION,
+                    arrow_ipc_reader_skip_validation,
+                )
+        }
     }
 
     fn ballista_grpc_client_max_message_size(&self) -> usize {
@@ -297,30 +352,12 @@ impl SessionConfigExt for SessionConfig {
             })
     }
 
-    fn with_ballista_job_name(self, job_name: &str) -> Self {
-        if self.options().extensions.get::<BallistaConfig>().is_some() {
-            self.set_str(BALLISTA_JOB_NAME, job_name)
-        } else {
-            self.with_option_extension(BallistaConfig::default())
-                .set_str(BALLISTA_JOB_NAME, job_name)
-        }
-    }
-
     fn with_ballista_grpc_client_max_message_size(self, max_size: usize) -> Self {
         if self.options().extensions.get::<BallistaConfig>().is_some() {
             self.set_usize(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, max_size)
         } else {
             self.with_option_extension(BallistaConfig::default())
                 .set_usize(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, max_size)
-        }
-    }
-
-    fn with_ballista_standalone_parallelism(self, parallelism: usize) -> Self {
-        if self.options().extensions.get::<BallistaConfig>().is_some() {
-            self.set_usize(BALLISTA_STANDALONE_PARALLELISM, parallelism)
-        } else {
-            self.with_option_extension(BallistaConfig::default())
-                .set_usize(BALLISTA_STANDALONE_PARALLELISM, parallelism)
         }
     }
 

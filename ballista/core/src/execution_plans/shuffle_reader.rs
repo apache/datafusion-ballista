@@ -162,6 +162,8 @@ impl ExecutionPlan for ShuffleReaderExec {
         let max_message_size = config.ballista_grpc_client_max_message_size();
         let force_remote_read = config.ballista_shuffle_reader_force_remote_read();
         let prefer_flight = config.ballista_shuffle_reader_remote_prefer_flight();
+        let arrow_ipc_reader_skip_validation =
+            config.ballista_arrow_ipc_reader_skip_validation();
 
         if force_remote_read {
             debug!(
@@ -195,6 +197,7 @@ impl ExecutionPlan for ShuffleReaderExec {
             max_message_size,
             force_remote_read,
             prefer_flight,
+            arrow_ipc_reader_skip_validation,
         );
 
         let result = RecordBatchStreamAdapter::new(
@@ -390,6 +393,7 @@ fn send_fetch_partitions(
     max_message_size: usize,
     force_remote_read: bool,
     flight_transport: bool,
+    arrow_ipc_reader_skip_validation: bool,
 ) -> AbortableReceiverStream {
     let (response_sender, response_receiver) = mpsc::channel(max_request_num);
     let semaphore = Arc::new(Semaphore::new(max_request_num));
@@ -409,7 +413,12 @@ fn send_fetch_partitions(
     spawned_tasks.push(SpawnedTask::spawn(async move {
         for p in local_locations {
             let r = PartitionReaderEnum::Local
-                .fetch_partition(&p, max_message_size, flight_transport)
+                .fetch_partition(
+                    &p,
+                    max_message_size,
+                    flight_transport,
+                    arrow_ipc_reader_skip_validation,
+                )
                 .await;
             if let Err(e) = response_sender_c.send(r).await {
                 error!("Fail to send response event to the channel due to {e}");
@@ -424,7 +433,12 @@ fn send_fetch_partitions(
             // Block if exceeds max request number.
             let permit = semaphore.acquire_owned().await.unwrap();
             let r = PartitionReaderEnum::FlightRemote
-                .fetch_partition(&p, max_message_size, flight_transport)
+                .fetch_partition(
+                    &p,
+                    max_message_size,
+                    flight_transport,
+                    arrow_ipc_reader_skip_validation,
+                )
                 .await;
             // Block if the channel buffer is full.
             if let Err(e) = response_sender.send(r).await {
@@ -451,6 +465,7 @@ trait PartitionReader: Send + Sync + Clone {
         location: &PartitionLocation,
         max_message_size: usize,
         flight_transport: bool,
+        arrow_ipc_reader_skip_validation: bool,
     ) -> result::Result<SendableRecordBatchStream, BallistaError>;
 }
 
@@ -470,12 +485,15 @@ impl PartitionReader for PartitionReaderEnum {
         location: &PartitionLocation,
         max_message_size: usize,
         flight_transport: bool,
+        arrow_ipc_reader_skip_validation: bool,
     ) -> result::Result<SendableRecordBatchStream, BallistaError> {
         match self {
             PartitionReaderEnum::FlightRemote => {
                 fetch_partition_remote(location, max_message_size, flight_transport).await
             }
-            PartitionReaderEnum::Local => fetch_partition_local(location).await,
+            PartitionReaderEnum::Local => {
+                fetch_partition_local(location, arrow_ipc_reader_skip_validation).await
+            }
             PartitionReaderEnum::ObjectStoreRemote => {
                 fetch_partition_object_store(location).await
             }
@@ -521,33 +539,44 @@ async fn fetch_partition_remote(
 
 async fn fetch_partition_local(
     location: &PartitionLocation,
+    arrow_ipc_reader_skip_validation: bool,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
     let path = &location.path;
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
 
-    let reader = fetch_partition_local_inner(path).map_err(|e| {
-        // return BallistaError::FetchFailed may let scheduler retry this task.
-        BallistaError::FetchFailed(
-            metadata.id.clone(),
-            partition_id.stage_id,
-            partition_id.partition_id,
-            e.to_string(),
-        )
-    })?;
+    let reader = fetch_partition_local_inner(path, arrow_ipc_reader_skip_validation)
+        .map_err(|e| {
+            // return BallistaError::FetchFailed may let scheduler retry this task.
+            BallistaError::FetchFailed(
+                metadata.id.clone(),
+                partition_id.stage_id,
+                partition_id.partition_id,
+                e.to_string(),
+            )
+        })?;
     Ok(Box::pin(LocalShuffleStream::new(reader)))
 }
 
 fn fetch_partition_local_inner(
     path: &str,
+    arrow_ipc_reader_skip_validation: bool,
 ) -> result::Result<StreamReader<BufReader<File>>, BallistaError> {
     let file = File::open(path).map_err(|e| {
         BallistaError::General(format!("Failed to open partition file at {path}: {e:?}"))
     })?;
     let file = BufReader::new(file);
-    let reader = StreamReader::try_new(file, None).map_err(|e| {
-        BallistaError::General(format!("Failed to new arrow FileReader at {path}: {e:?}"))
-    })?;
+    // Safety: setting `skip_validation` requires `unsafe`, user assures data is valid
+    let reader = unsafe {
+        StreamReader::try_new(file, None)
+            .map_err(|e| {
+                BallistaError::General(format!(
+                    "Failed to create new arrow StreamReader at {path}: {e:?}"
+                ))
+            })?
+            .with_skip_validation(arrow_ipc_reader_skip_validation)
+    };
+
     Ok(reader)
 }
 
@@ -881,7 +910,7 @@ mod tests {
 
         // from to input partitions test the first one with two batches
         let file_path = path.value(0);
-        let reader = fetch_partition_local_inner(file_path).unwrap();
+        let reader = fetch_partition_local_inner(file_path, true).unwrap();
 
         let mut stream: Pin<Box<dyn RecordBatchStream + Send>> =
             async { Box::pin(LocalShuffleStream::new(reader)) }.await;
@@ -950,6 +979,7 @@ mod tests {
             max_request_num,
             4 * 1024 * 1024,
             false,
+            true,
             true,
         );
 
