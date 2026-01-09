@@ -414,6 +414,7 @@ pub async fn start_executor_process(
                 opt.grpc_max_encoding_message_size as usize,
                 opt.grpc_max_decoding_message_size as usize,
                 opt.grpc_server_config.clone(),
+                ballista_config.ballista_arrow_ipc_reader_skip_validation(),
             )
             .await
         }
@@ -524,6 +525,7 @@ async fn flight_server_task(
     max_encoding_message_size: usize,
     max_decoding_message_size: usize,
     grpc_server_config: GrpcServerConfig,
+    arrow_ipc_reader_skip_validation: bool,
 ) -> JoinHandle<Result<(), BallistaError>> {
     tokio::spawn(async move {
         info!(
@@ -532,9 +534,11 @@ async fn flight_server_task(
 
         let server_future = create_grpc_server(&grpc_server_config)
             .add_service(
-                FlightServiceServer::new(BallistaFlightService::new())
-                    .max_decoding_message_size(max_decoding_message_size)
-                    .max_encoding_message_size(max_encoding_message_size),
+                FlightServiceServer::new(BallistaFlightService::new(
+                    arrow_ipc_reader_skip_validation,
+                ))
+                .max_decoding_message_size(max_decoding_message_size)
+                .max_encoding_message_size(max_encoding_message_size),
             )
             .serve_with_shutdown(address, grpc_shutdown.recv());
 
@@ -773,18 +777,18 @@ mod tests {
     async fn test_arrow_flight_provider_ergonomics() {
         let config = crate::executor_process::ExecutorProcessConfig {
             override_arrow_flight_service: Some(std::sync::Arc::new(
-                move |address, mut grpc_shutdown, ballista_config| {
+                move |address, mut grpc_shutdown, grpc_server_config| {
                     tokio::spawn(async move {
                         log::info!(
                             "custom arrow flight server listening on: {address:?}"
                         );
 
                         let server_future = ballista_core::utils::create_grpc_server(
-                            &ballista_config,
+                            &grpc_server_config,
                         )
                         .add_service(
                             arrow_flight::flight_service_server::FlightServiceServer::new(
-                                crate::flight_service::BallistaFlightService::new(),
+                                crate::flight_service::BallistaFlightService::default(),
                             ),
                         )
                         .serve_with_shutdown(address, grpc_shutdown.recv());

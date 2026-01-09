@@ -114,6 +114,8 @@ pub async fn new_standalone_executor_from_builder(
 
     let config = config_producer();
     let max_message_size = config.ballista_grpc_client_max_message_size();
+    let arrow_ipc_reader_skip_validation =
+        config.ballista_arrow_ipc_reader_skip_validation();
 
     let work_dir = TempDir::new()?.path().to_str().unwrap().to_string();
 
@@ -130,7 +132,7 @@ pub async fn new_standalone_executor_from_builder(
         None,
     ));
 
-    let service = BallistaFlightService::new();
+    let service = BallistaFlightService::new(arrow_ipc_reader_skip_validation);
     let server = FlightServiceServer::new(service)
         .max_decoding_message_size(max_message_size)
         .max_encoding_message_size(max_message_size);
