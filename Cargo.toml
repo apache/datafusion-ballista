@@ -33,8 +33,6 @@ rust-version = "1.88.0"
 arrow = { version = "57", features = ["ipc_compression"] }
 arrow-flight = { version = "57", features = ["flight-sql-experimental"] }
 clap = { version = "4.5", features = ["derive", "cargo"] }
-configure_me = { version = "0.4.0" }
-configure_me_codegen = { version = "0.4.4" }
 datafusion = "51.0.0"
 datafusion-cli = "51.0.0"
 datafusion-proto = "51.0.0"
