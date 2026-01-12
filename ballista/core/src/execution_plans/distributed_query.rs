@@ -47,9 +47,9 @@ use log::{debug, error, info};
 use std::any::Any;
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use url::Url;
 
 /// This operator sends a logical plan to a Ballista scheduler for execution and
 /// polls the scheduler until the query is complete and then fetches the resulting
@@ -330,7 +330,7 @@ async fn execute_query(
     loop {
         let GetJobStatusResult {
             status,
-            flight_endpoint,
+            flight_proxy,
         } = scheduler
             .get_job_status(GetJobStatusParams {
                 job_id: job_id.clone(),
@@ -411,7 +411,7 @@ async fn execute_query(
                         partition,
                         max_message_size,
                         true,
-                        flight_endpoint.clone(),
+                        flight_proxy.clone(),
                     )
                     .map_err(|e| ArrowError::ExternalError(Box::new(e)));
 
@@ -441,11 +441,24 @@ async fn fetch_partition(
 
     let (client_host, client_port) = match flight_endpoint_address {
         Some(flight_proxy_address) => {
-            let sock_addr: SocketAddr = flight_proxy_address
-                .parse()
-                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-            info!("Fetching results from flight proxy at: {sock_addr:#?}");
-            (sock_addr.ip().to_string(), sock_addr.port())
+            let url: Url =
+                format!("http://{flight_proxy_address}")
+                    .parse()
+                    .map_err(|e| {
+                        DataFusionError::Execution(format!(
+                            "Cannot parse host:port in {flight_proxy_address:?}: {e}"
+                        ))
+                    })?;
+            let host = url
+                .host_str()
+                .ok_or(DataFusionError::Execution(format!(
+                    "No host in {flight_proxy_address:?}"
+                )))?
+                .to_string();
+            let port: u16 = url.port().ok_or(DataFusionError::Execution(format!(
+                "No port in {flight_proxy_address:?}"
+            )))?;
+            (host, port)
         }
         None => {
             info!("Fetching results from executor at: {host}:{port}");

@@ -452,7 +452,18 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         match self.state.task_manager.get_job_status(&job_id).await {
             Ok(status) => Ok(Response::new(GetJobStatusResult {
                 status,
-                flight_endpoint: self.state.config.advertise_flight_sql_endpoint.clone(),
+                flight_proxy: self
+                    .state
+                    .config
+                    .advertise_flight_sql_endpoint
+                    .clone()
+                    .map(|s| match s {
+                        s if s.is_empty() => format!(
+                            "{}:{}",
+                            self.config.external_host, self.config.bind_port
+                        ),
+                        s => s,
+                    }),
             })),
 
             Err(e) => {

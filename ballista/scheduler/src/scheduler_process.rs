@@ -93,6 +93,7 @@ pub async fn start_grpc_service<
 >(
     address: SocketAddr,
     scheduler: SchedulerServer<T, U>,
+    add_flight_proxy: bool,
 ) -> ballista_core::error::Result<()> {
     let config = &scheduler.state.config;
     let scheduler_grpc_server = SchedulerGrpcServer::new(scheduler.clone())
@@ -101,6 +102,16 @@ pub async fn start_grpc_service<
 
     let mut tonic_builder = RoutesBuilder::default();
     tonic_builder.add_service(scheduler_grpc_server);
+
+    if add_flight_proxy {
+        info!("Adding flight proxy service on scheduler port");
+        let flight_proxy = FlightServiceServer::new(BallistaFlightProxyService::new(
+            scheduler.clone().state,
+        ))
+        .max_decoding_message_size(config.grpc_server_max_decoding_message_size as usize)
+        .max_encoding_message_size(config.grpc_server_max_encoding_message_size as usize);
+        tonic_builder.add_service(flight_proxy);
+    }
 
     #[cfg(feature = "keda-scaler")]
     tonic_builder.add_service(ExternalScalerServer::new(scheduler.clone()));
@@ -187,17 +198,17 @@ pub async fn start_server(
         "advertise_flight_sql_endpoint: {:?}",
         config.advertise_flight_sql_endpoint
     );
-    match config.advertise_flight_sql_endpoint {
-        Some(_) => {
-            info!("Starting flight proxy");
+    match config.advertise_flight_sql_endpoint.clone() {
+        Some(s) if s != "" => {
+            info!("Starting flight proxy on custom addresses {address:?}");
             let flight_proxy = start_flight_proxy_server(config, scheduler.state.clone());
             tokio::select! {
-                result = start_grpc_service(address, scheduler) => result,
+                result = start_grpc_service(address, scheduler, false) => result,
                 result = flight_proxy => {
                     result.map_err(|e| BallistaError::Internal(format!("Flight proxy task panicked: {e:?}")))?
                 }
             }
         }
-        None => start_grpc_service(address, scheduler).await,
+        other => start_grpc_service(address, scheduler, other.is_some()).await,
     }
 }
