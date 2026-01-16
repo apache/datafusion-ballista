@@ -23,7 +23,6 @@ This project demonstrates possible extensions mechanisms for the [Ballista distr
 
 The goal of this small project is to enhance Ballista's capabilities by providing new logical and physical operators, utilities, and integration tools to support additional data processing workflows.
 
->
 > [!NOTE]
 >
 > This project has been part of "Extending DataFusion Ballista" show case series
@@ -31,7 +30,6 @@ The goal of this small project is to enhance Ballista's capabilities by providin
 > - [DataFusion Ballista Python UDF Support](https://github.com/milenkovicm/ballista_python)
 > - [DataFusion Ballista Read Support For Delta Table](https://github.com/milenkovicm/ballista_delta)
 > - [Extending DataFusion Ballista](https://github.com/milenkovicm/ballista_extensions)
->
 
 This example will implement [`sample()`](https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/api/pyspark.sql.DataFrame.sample.html) operator which will return a sampled subset of original `DataFrame`:
 
@@ -46,10 +44,8 @@ let df = df.sample(0.30, None)?;
 
 To implement this functionality, it is necessary to implement new logical plan extension, physical operators and extend `DataFrame` to expose new operator.
 
->
 > [!WARNING]  
 > Please do not use implemented sampling operator for production, statisticians would not approve it, probably.
->
 
 This demo will provide:
 
@@ -222,7 +218,7 @@ The logical extension codec typically consists of two components: Google Protoco
 ```proto
 message LMessage {
     oneof Extension {
-        LSample sample = 1; 
+        LSample sample = 1;
     }
 }
 
@@ -482,6 +478,7 @@ This project demonstrates how to extend Ballista with custom logical and physica
 For more details, refer to the source code and the linked example files. Contributions and feedback are welcome!
 
 ---
+
 **Related links:**
 
 - [Ballista Extensions Source Code](https://github.com/milenkovicm/ballista_extensions)
@@ -490,5 +487,5 @@ For more details, refer to the source code and the linked example files. Contrib
 - [Rust Tonic (GRPC) support](https://docs.rs/tonic/latest/tonic/)
 
 ---
-**License:** MIT
 
+**License:** MIT
