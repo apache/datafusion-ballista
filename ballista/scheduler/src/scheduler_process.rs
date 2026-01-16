@@ -15,12 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use ballista_core::BALLISTA_VERSION;
 use ballista_core::error::BallistaError;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer;
 use ballista_core::serde::{
     BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
 };
-use ballista_core::BALLISTA_VERSION;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
@@ -35,9 +35,9 @@ use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
 
 use crate::metrics::default_metrics_collector;
+use crate::scheduler_server::SchedulerServer;
 #[cfg(feature = "keda-scaler")]
 use crate::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
-use crate::scheduler_server::SchedulerServer;
 
 /// Creates as initialized scheduler service
 /// without exposing it as a grpc service

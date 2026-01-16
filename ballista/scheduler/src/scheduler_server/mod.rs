@@ -20,8 +20,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ballista_core::error::Result;
 use ballista_core::event_loop::{EventLoop, EventSender};
-use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::BallistaCodec;
+use ballista_core::serde::protobuf::TaskStatus;
 
 use datafusion::execution::context::SessionState;
 use datafusion::logical_expr::LogicalPlan;
@@ -40,8 +40,8 @@ use crate::scheduler_server::query_stage_scheduler::QueryStageScheduler;
 
 use crate::state::executor_manager::ExecutorManager;
 
-use crate::state::task_manager::TaskLauncher;
 use crate::state::SchedulerState;
+use crate::state::task_manager::TaskLauncher;
 
 // include the generated protobuf source as a submodule
 #[cfg(feature = "keda-scaler")]
@@ -50,27 +50,43 @@ pub mod externalscaler {
     include!(concat!(env!("OUT_DIR"), "/externalscaler.rs"));
 }
 
+/// Events for the scheduler event loop.
 pub mod event;
 #[cfg(feature = "keda-scaler")]
 mod external_scaler;
 mod grpc;
 pub(crate) mod query_stage_scheduler;
 
+/// Function type for building DataFusion session states from configuration.
 pub type SessionBuilder =
     Arc<dyn Fn(SessionConfig) -> datafusion::common::Result<SessionState> + Send + Sync>;
 
+/// The main scheduler server that coordinates distributed query execution.
+///
+/// The `SchedulerServer` is responsible for:
+/// - Accepting job submissions from clients
+/// - Planning and scheduling query execution across executors
+/// - Managing executor lifecycle and health
+/// - Tracking job progress and handling failures
 #[derive(Clone)]
 pub struct SchedulerServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
+    /// Unique name identifying this scheduler instance.
     pub scheduler_name: String,
+    /// Timestamp when this scheduler was started.
     pub start_time: u128,
+    /// Shared scheduler state for job and executor management.
     pub state: Arc<SchedulerState<T, U>>,
+    /// Event loop for processing query stage scheduling events.
     pub(crate) query_stage_event_loop: EventLoop<QueryStageSchedulerEvent>,
     #[cfg(feature = "rest-api")]
+    /// Query stage scheduler for REST API access.
     query_stage_scheduler: Arc<QueryStageScheduler<T, U>>,
+    /// Scheduler configuration.
     config: Arc<SchedulerConfig>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
+    /// Creates a new `SchedulerServer` with the given configuration.
     pub fn new(
         scheduler_name: String,
         cluster: BallistaCluster,
@@ -106,6 +122,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         }
     }
 
+    /// Creates a new `SchedulerServer` with a custom task launcher.
     #[allow(dead_code)]
     pub fn new_with_task_launcher(
         scheduler_name: String,
@@ -144,6 +161,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         }
     }
 
+    /// Initializes the scheduler and starts background tasks.
     pub async fn init(&mut self) -> Result<()> {
         self.state.init().await?;
         self.query_stage_event_loop.start()?;
@@ -152,10 +170,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         Ok(())
     }
 
+    /// Returns the number of jobs waiting in the queue.
     pub fn pending_job_number(&self) -> usize {
         self.state.task_manager.pending_job_number()
     }
 
+    /// Returns the number of currently running jobs.
     pub fn running_job_number(&self) -> usize {
         self.state.task_manager.running_job_number()
     }
@@ -276,8 +296,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
 
                     let stop_reason = if terminating {
                         format!(
-                        "TERMINATING executor {executor_id} heartbeat timed out after {}s", state.config.executor_termination_grace_period,
-                    )
+                            "TERMINATING executor {executor_id} heartbeat timed out after {}s",
+                            state.config.executor_termination_grace_period,
+                        )
                     } else {
                         format!(
                             "ACTIVE executor {executor_id} heartbeat timed out after {}s",
@@ -367,6 +388,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
     }
 }
 
+/// Returns the current timestamp in seconds since UNIX epoch.
 pub fn timestamp_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -374,6 +396,7 @@ pub fn timestamp_secs() -> u64 {
         .as_secs()
 }
 
+/// Returns the current timestamp in milliseconds since UNIX epoch.
 pub fn timestamp_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -388,7 +411,7 @@ mod test {
     use ballista_core::extension::SessionConfigExt;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::functions_aggregate::sum::sum;
-    use datafusion::logical_expr::{col, LogicalPlan};
+    use datafusion::logical_expr::{LogicalPlan, col};
 
     use datafusion::prelude::SessionConfig;
     use datafusion::test_util::scan_empty_with_partitions;
@@ -400,22 +423,22 @@ mod test {
 
     use crate::config::SchedulerConfig;
 
+    use ballista_core::serde::BallistaCodec;
     use ballista_core::serde::protobuf::{
-        failed_task, job_status, task_status, ExecutionError, FailedTask, JobStatus,
-        MultiTaskDefinition, ShuffleWritePartition, SuccessfulJob, SuccessfulTask,
-        TaskId, TaskStatus,
+        ExecutionError, FailedTask, JobStatus, MultiTaskDefinition,
+        ShuffleWritePartition, SuccessfulJob, SuccessfulTask, TaskId, TaskStatus,
+        failed_task, job_status, task_status,
     };
     use ballista_core::serde::scheduler::{
         ExecutorData, ExecutorMetadata, ExecutorSpecification,
     };
-    use ballista_core::serde::BallistaCodec;
 
-    use crate::scheduler_server::{timestamp_millis, SchedulerServer};
+    use crate::scheduler_server::{SchedulerServer, timestamp_millis};
 
     use crate::test_utils::{
+        ExplodingTableProvider, SchedulerTest, TaskRunnerFn, TestMetricsCollector,
         assert_completed_event, assert_failed_event, assert_no_submitted_event,
-        assert_submitted_event, test_cluster_context, ExplodingTableProvider,
-        SchedulerTest, TaskRunnerFn, TestMetricsCollector,
+        assert_submitted_event, test_cluster_context,
     };
 
     #[tokio::test]

@@ -74,12 +74,19 @@ impl SchedulerMetricsCollector for NoopMetricsCollector {
     }
 }
 
-/// Return a reference to the systems default metrics collector.
+/// Returns the default metrics collector for the system.
+///
+/// When the `prometheus` feature is enabled, returns a Prometheus-based collector.
+/// Otherwise, returns a no-op collector.
 #[cfg(feature = "prometheus")]
 pub fn default_metrics_collector() -> Result<Arc<dyn SchedulerMetricsCollector>> {
     PrometheusMetricsCollector::current()
 }
 
+/// Returns the default metrics collector for the system.
+///
+/// When the `prometheus` feature is enabled, returns a Prometheus-based collector.
+/// Otherwise, returns a no-op collector.
 #[cfg(not(feature = "prometheus"))]
 pub fn default_metrics_collector() -> Result<Arc<dyn SchedulerMetricsCollector>> {
     Ok(Arc::new(NoopMetricsCollector::default()))

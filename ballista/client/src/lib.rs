@@ -16,7 +16,11 @@
 // under the License.
 
 #![doc = include_str!("../README.md")]
+#![warn(missing_docs)]
 
+/// Extension traits for integrating DataFusion with Ballista distributed execution.
 pub mod extension;
+/// Prelude module providing commonly used imports for Ballista client applications.
 pub mod prelude;
+/// Re-export of the DataFusion crate for convenience.
 pub use datafusion;

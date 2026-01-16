@@ -16,18 +16,30 @@
 // under the License.
 
 #![doc = include_str!("../README.md")]
+#![warn(missing_docs)]
 
+/// Execution plan for collecting distributed query results into a single partition.
 pub mod collect;
+/// Command-line configuration for the executor binary.
 #[cfg(feature = "build-binary")]
 pub mod config;
+/// Extension point for custom query stage execution engines.
 pub mod execution_engine;
+/// Pull-based task execution loop that polls the scheduler for work.
 pub mod execution_loop;
+/// Core executor implementation for running distributed query tasks.
 pub mod executor;
+/// Executor process lifecycle management and configuration.
 pub mod executor_process;
+/// gRPC server for receiving pushed tasks from the scheduler.
 pub mod executor_server;
+/// Arrow Flight service for streaming shuffle data between executors.
 pub mod flight_service;
+/// Metrics collection for executor runtime statistics.
 pub mod metrics;
+/// Graceful shutdown coordination for executor components.
 pub mod shutdown;
+/// Signal handling for process termination.
 pub mod terminate;
 
 mod cpu_bound_executor;
@@ -44,8 +56,8 @@ use log::info;
 
 use crate::shutdown::Shutdown;
 use ballista_core::serde::protobuf::{
-    task_status, FailedTask, OperatorMetricsSet, ShuffleWritePartition, SuccessfulTask,
-    TaskStatus,
+    FailedTask, OperatorMetricsSet, ShuffleWritePartition, SuccessfulTask, TaskStatus,
+    task_status,
 };
 use ballista_core::serde::scheduler::PartitionId;
 use ballista_core::utils::GrpcServerConfig;
@@ -66,13 +78,22 @@ pub type ArrowFlightServerProvider = dyn Fn(
     + Send
     + Sync;
 
+/// Timestamps capturing the lifecycle of a task execution.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TaskExecutionTimes {
+    /// Timestamp when the task was launched by the scheduler (milliseconds since epoch).
     launch_time: u64,
+    /// Timestamp when task execution started on the executor (milliseconds since epoch).
     start_exec_time: u64,
+    /// Timestamp when task execution completed (milliseconds since epoch).
     end_exec_time: u64,
 }
 
+/// Converts a task execution result into a [`TaskStatus`] protobuf message.
+///
+/// This function wraps the outcome of task execution (success or failure)
+/// along with timing and metrics information into a status message that
+/// can be sent back to the scheduler.
 pub fn as_task_status(
     execution_result: ballista_core::error::Result<Vec<ShuffleWritePartition>>,
     executor_id: String,

@@ -32,13 +32,13 @@ use datafusion::physical_plan::{
 /// is used as a signal so the scheduler knows it can't start computation until the dependent shuffle has completed.
 #[derive(Debug, Clone)]
 pub struct UnresolvedShuffleExec {
-    // The query stage ids which needs to be computed
+    /// The query stage ID which needs to be computed.
     pub stage_id: usize,
 
-    // The schema this node will have once it is replaced with a ShuffleReaderExec
+    /// The schema this node will have once it is replaced with a ShuffleReaderExec.
     pub schema: SchemaRef,
 
-    // The partition count this node will have once it is replaced with a ShuffleReaderExec
+    /// The partition count this node will have once it is replaced with a ShuffleReaderExec.
     pub output_partition_count: usize,
 
     properties: PlanProperties,

@@ -25,10 +25,14 @@ use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+/// A function registry containing scalar, aggregate, and window functions for Ballista.
 #[derive(Debug)]
 pub struct BallistaFunctionRegistry {
+    /// Scalar user-defined functions.
     pub scalar_functions: HashMap<String, Arc<ScalarUDF>>,
+    /// Aggregate user-defined functions.
     pub aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
+    /// Window user-defined functions.
     pub window_functions: HashMap<String, Arc<WindowUDF>>,
 }
 

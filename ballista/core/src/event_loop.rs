@@ -15,8 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+//! Event loop infrastructure for asynchronous message processing.
+
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use log::{error, info};
@@ -24,12 +26,16 @@ use tokio::sync::mpsc;
 
 use crate::error::{BallistaError, Result};
 
+/// Trait defining actions to be performed in response to events in an event loop.
 #[async_trait]
 pub trait EventAction<E>: Send + Sync {
+    /// Called when the event loop starts.
     fn on_start(&self);
 
+    /// Called when the event loop stops.
     fn on_stop(&self);
 
+    /// Called when an event is received. Processes the event and optionally sends new events.
     async fn on_receive(
         &self,
         event: E,
@@ -37,12 +43,16 @@ pub trait EventAction<E>: Send + Sync {
         rx_event: &mpsc::Receiver<E>,
     ) -> Result<()>;
 
+    /// Called when an error occurs during event processing.
     fn on_error(&self, error: BallistaError);
 }
 
+/// An asynchronous event loop that processes events through a channel.
 #[derive(Clone)]
 pub struct EventLoop<E> {
+    /// The name of this event loop for logging purposes.
     pub name: String,
+    /// The buffer size for the event channel.
     pub buffer_size: usize,
     stopped: Arc<AtomicBool>,
     action: Arc<dyn EventAction<E>>,
@@ -50,6 +60,7 @@ pub struct EventLoop<E> {
 }
 
 impl<E: Send + 'static> EventLoop<E> {
+    /// Creates a new event loop with the specified name, buffer size, and action handler.
     pub fn new(
         name: String,
         buffer_size: usize,
@@ -90,6 +101,7 @@ impl<E: Send + 'static> EventLoop<E> {
         });
     }
 
+    /// Starts the event loop, spawning a background task to process events.
     pub fn start(&mut self) -> Result<()> {
         if self.stopped.load(Ordering::SeqCst) {
             return Err(BallistaError::General(format!(
@@ -106,6 +118,7 @@ impl<E: Send + 'static> EventLoop<E> {
         Ok(())
     }
 
+    /// Stops the event loop.
     pub fn stop(&self) {
         if !self.stopped.swap(true, Ordering::SeqCst) {
             self.action.on_stop();
@@ -114,6 +127,7 @@ impl<E: Send + 'static> EventLoop<E> {
         }
     }
 
+    /// Returns an event sender for posting events to this loop.
     pub fn get_sender(&self) -> Result<EventSender<E>> {
         Ok(EventSender {
             tx_event: self.tx_event.as_ref().cloned().ok_or_else(|| {
@@ -123,16 +137,19 @@ impl<E: Send + 'static> EventLoop<E> {
     }
 }
 
+/// A sender handle for posting events to an event loop.
 #[derive(Clone)]
 pub struct EventSender<E> {
     tx_event: mpsc::Sender<E>,
 }
 
 impl<E> EventSender<E> {
+    /// Creates a new event sender wrapping the given channel sender.
     pub fn new(tx_event: mpsc::Sender<E>) -> Self {
         Self { tx_event }
     }
 
+    /// Posts an event to the event loop asynchronously.
     pub async fn post_event(&self, event: E) -> Result<()> {
         self.tx_event
             .send(event)

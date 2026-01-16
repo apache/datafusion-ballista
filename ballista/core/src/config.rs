@@ -27,28 +27,37 @@ use datafusion::{
     arrow::datatypes::DataType, common::config_err, config::ConfigExtension,
 };
 
+/// Configuration key for setting the job name displayed in the web UI.
 pub const BALLISTA_JOB_NAME: &str = "ballista.job.name";
+/// Configuration key for standalone processing parallelism.
 pub const BALLISTA_STANDALONE_PARALLELISM: &str = "ballista.standalone.parallelism";
 /// max message size for gRPC clients
 pub const BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE: &str =
     "ballista.grpc_client_max_message_size";
+/// Configuration key for maximum concurrent shuffle read requests.
 pub const BALLISTA_SHUFFLE_READER_MAX_REQUESTS: &str =
     "ballista.shuffle.max_concurrent_read_requests";
+/// Configuration key to force remote reads even for local partitions.
 pub const BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ: &str =
     "ballista.shuffle.force_remote_read";
+/// Configuration key to prefer Flight protocol for remote shuffle reads.
 pub const BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT: &str =
     "ballista.shuffle.remote_read_prefer_flight";
 
-// gRPC client timeout configurations
+/// Configuration key for gRPC client connection timeout in seconds.
 pub const BALLISTA_GRPC_CLIENT_CONNECT_TIMEOUT_SECONDS: &str =
     "ballista.grpc.client.connect_timeout_seconds";
+/// Configuration key for gRPC client request timeout in seconds.
 pub const BALLISTA_GRPC_CLIENT_TIMEOUT_SECONDS: &str =
     "ballista.grpc.client.timeout_seconds";
+/// Configuration key for TCP keep-alive interval for gRPC clients in seconds.
 pub const BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS: &str =
     "ballista.grpc.client.tcp_keepalive_seconds";
+/// Configuration key for HTTP/2 keep-alive interval for gRPC clients in seconds.
 pub const BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS: &str =
     "ballista.grpc.client.http2_keepalive_interval_seconds";
 
+/// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
 
@@ -159,6 +168,7 @@ impl BallistaConfig {
         Ok(Self { settings })
     }
 
+    /// Validates that a string value can be parsed as the specified data type.
     pub fn parse_value(val: &str, data_type: DataType) -> ParseResult<()> {
         match data_type {
             DataType::UInt16 => {
@@ -192,39 +202,47 @@ impl BallistaConfig {
         Ok(())
     }
 
-    // All available configuration options
+    /// Returns all available configuration entries with their metadata.
     pub fn valid_entries() -> &'static HashMap<String, ConfigEntry> {
         &CONFIG_ENTRIES
     }
 
+    /// Returns the current configuration settings as a map.
     pub fn settings(&self) -> &HashMap<String, String> {
         &self.settings
     }
 
+    /// Returns the maximum message size for gRPC clients in bytes.
     pub fn default_grpc_client_max_message_size(&self) -> usize {
         self.get_usize_setting(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE)
     }
 
+    /// Returns the standalone processing parallelism level.
     pub fn default_standalone_parallelism(&self) -> usize {
         self.get_usize_setting(BALLISTA_STANDALONE_PARALLELISM)
     }
 
+    /// Returns the maximum number of concurrent shuffle reader requests.
     pub fn shuffle_reader_maximum_concurrent_requests(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_READER_MAX_REQUESTS)
     }
 
+    /// Returns the gRPC client connection timeout in seconds.
     pub fn default_grpc_client_connect_timeout_seconds(&self) -> usize {
         self.get_usize_setting(BALLISTA_GRPC_CLIENT_CONNECT_TIMEOUT_SECONDS)
     }
 
+    /// Returns the gRPC client request timeout in seconds.
     pub fn default_grpc_client_timeout_seconds(&self) -> usize {
         self.get_usize_setting(BALLISTA_GRPC_CLIENT_TIMEOUT_SECONDS)
     }
 
+    /// Returns the TCP keep-alive interval for gRPC clients in seconds.
     pub fn default_grpc_client_tcp_keepalive_seconds(&self) -> usize {
         self.get_usize_setting(BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS)
     }
 
+    /// Returns the HTTP/2 keep-alive interval for gRPC clients in seconds.
     pub fn default_grpc_client_http2_keepalive_interval_seconds(&self) -> usize {
         self.get_usize_setting(BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS)
     }
@@ -360,13 +378,17 @@ impl std::str::FromStr for TaskSchedulingPolicy {
     }
 }
 
-// an enum used to configure the log rolling policy
+/// Configures the log file rotation policy.
 #[derive(Clone, Copy, Debug, serde::Deserialize, Default)]
 #[cfg_attr(feature = "build-binary", derive(clap::ValueEnum))]
 pub enum LogRotationPolicy {
+    /// Rotate log files every minute.
     Minutely,
+    /// Rotate log files every hour.
     Hourly,
+    /// Rotate log files daily.
     Daily,
+    /// Never rotate log files.
     #[default]
     Never,
 }

@@ -15,19 +15,24 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Standalone executor for embedded or testing scenarios.
+//!
+//! This module provides functions for creating executors that run in the same
+//! process as the client, useful for testing and development purposes.
+
 use crate::metrics::LoggingMetricsCollector;
 use crate::{execution_loop, executor::Executor, flight_service::BallistaFlightService};
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::registry::BallistaFunctionRegistry;
-use ballista_core::utils::{default_config_producer, GrpcServerConfig};
+use ballista_core::utils::{GrpcServerConfig, default_config_producer};
 use ballista_core::{
-    error::Result,
-    serde::protobuf::{scheduler_grpc_client::SchedulerGrpcClient, ExecutorRegistration},
-    serde::scheduler::ExecutorSpecification,
-    serde::BallistaCodec,
-    utils::create_grpc_server,
     BALLISTA_VERSION,
+    error::Result,
+    serde::BallistaCodec,
+    serde::protobuf::{ExecutorRegistration, scheduler_grpc_client::SchedulerGrpcClient},
+    serde::scheduler::ExecutorSpecification,
+    utils::create_grpc_server,
 };
 use ballista_core::{ConfigProducer, RuntimeProducer};
 use datafusion::execution::{SessionState, SessionStateBuilder};
@@ -73,6 +78,13 @@ pub async fn new_standalone_executor_from_state(
     .await
 }
 
+/// Creates a standalone executor with custom configuration.
+///
+/// This function provides fine-grained control over executor configuration
+/// by accepting custom producers for session config, runtime environment,
+/// codec, and function registry.
+///
+/// The executor binds to a random available port on localhost.
 pub async fn new_standalone_executor_from_builder(
     scheduler: SchedulerGrpcClient<Channel>,
     concurrent_tasks: usize,

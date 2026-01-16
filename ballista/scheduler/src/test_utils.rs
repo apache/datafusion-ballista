@@ -29,29 +29,29 @@ use async_trait::async_trait;
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
 use crate::planner::DefaultDistributedPlanner;
-use crate::scheduler_server::{timestamp_millis, SchedulerServer};
+use crate::scheduler_server::{SchedulerServer, timestamp_millis};
 
 use crate::state::executor_manager::ExecutorManager;
 use crate::state::task_manager::TaskLauncher;
 
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{
-    task_status, FailedTask, JobStatus, MultiTaskDefinition, ShuffleWritePartition,
-    SuccessfulTask, TaskId, TaskStatus,
+    FailedTask, JobStatus, MultiTaskDefinition, ShuffleWritePartition, SuccessfulTask,
+    TaskId, TaskStatus, task_status,
 };
 use ballista_core::serde::scheduler::{
     ExecutorData, ExecutorMetadata, ExecutorSpecification,
 };
-use ballista_core::serde::{protobuf, BallistaCodec};
+use ballista_core::serde::{BallistaCodec, protobuf};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::DataFusionError;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::context::{SessionConfig, SessionContext};
 use datafusion::functions_aggregate::{count::count, sum::sum};
 use datafusion::logical_expr::{Expr, LogicalPlan, SortExpr};
-use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::{col, CsvReadOptions, JoinType};
+use datafusion::physical_plan::display::DisplayableExecutionPlan;
+use datafusion::prelude::{CsvReadOptions, JoinType, col};
 use datafusion::test_util::scan_empty_with_partitions;
 
 use crate::cluster::BallistaCluster;
@@ -61,8 +61,9 @@ use crate::state::execution_graph::{ExecutionGraph, ExecutionStage, TaskDescript
 use ballista_core::utils::{default_config_producer, default_session_builder};
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use parking_lot::Mutex;
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::sync::mpsc::{Receiver, Sender, channel};
 
+/// List of TPC-H benchmark table names.
 pub const TPCH_TABLES: &[&str] = &[
     "part", "supplier", "partsupp", "customer", "orders", "lineitem", "nation", "region",
 ];
@@ -125,6 +126,7 @@ pub async fn await_condition<Fut: Future<Output = Result<bool>>, F: Fn() -> Fut>
     Ok(false)
 }
 
+/// Creates a test cluster context with in-memory state.
 pub fn test_cluster_context() -> BallistaCluster {
     BallistaCluster::new_memory(
         TEST_SCHEDULER_NAME,
@@ -133,6 +135,7 @@ pub fn test_cluster_context() -> BallistaCluster {
     )
 }
 
+/// Creates a DataFusion session context with TPC-H tables registered from the given path.
 pub async fn datafusion_test_context(path: &str) -> Result<SessionContext> {
     let default_shuffle_partitions = 2;
     let config = SessionConfig::new().with_target_partitions(default_shuffle_partitions);
@@ -150,6 +153,7 @@ pub async fn datafusion_test_context(path: &str) -> Result<SessionContext> {
     Ok(ctx)
 }
 
+/// Returns the schema for a TPC-H table by name.
 pub fn get_tpch_schema(table: &str) -> Schema {
     // note that the schema intentionally uses signed integers so that any generated Parquet
     // files can also be used to benchmark tools that only support signed integers, such as
@@ -245,10 +249,13 @@ pub fn get_tpch_schema(table: &str) -> Schema {
     }
 }
 
+/// Trait for running tasks in tests.
 pub trait TaskRunner: Send + Sync + 'static {
+    /// Executes tasks and returns their status.
     fn run(&self, executor_id: String, tasks: MultiTaskDefinition) -> Vec<TaskStatus>;
 }
 
+/// A task runner that wraps a function.
 #[derive(Clone)]
 pub struct TaskRunnerFn<F> {
     f: F,
@@ -258,6 +265,7 @@ impl<F> TaskRunnerFn<F>
 where
     F: Fn(String, MultiTaskDefinition) -> Vec<TaskStatus> + Send + Sync + 'static,
 {
+    /// Creates a new task runner from a function.
     pub fn new(f: F) -> Self {
         Self { f }
     }
@@ -272,6 +280,7 @@ where
     }
 }
 
+/// Returns a default task runner that marks all tasks as successful.
 pub fn default_task_runner() -> impl TaskRunner {
     TaskRunnerFn::new(|executor_id: String, task: MultiTaskDefinition| {
         let mut statuses = vec![];
@@ -344,6 +353,7 @@ impl TaskLauncher for BlackholeTaskLauncher {
     }
 }
 
+/// A task launcher that sends tasks to virtual executors for testing.
 pub struct VirtualTaskLauncher {
     sender: Sender<(String, Vec<TaskStatus>)>,
     executors: HashMap<String, VirtualExecutor>,
@@ -378,6 +388,7 @@ impl TaskLauncher for VirtualTaskLauncher {
     }
 }
 
+/// Test harness for scheduler integration tests.
 pub struct SchedulerTest {
     scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
     session_config: SessionConfig,
@@ -385,6 +396,7 @@ pub struct SchedulerTest {
 }
 
 impl SchedulerTest {
+    /// Creates a new scheduler test harness with the specified configuration.
     pub async fn new(
         config: SchedulerConfig,
         metrics_collector: Arc<dyn SchedulerMetricsCollector>,
@@ -464,14 +476,17 @@ impl SchedulerTest {
         })
     }
 
+    /// Returns the number of pending jobs.
     pub fn pending_job_number(&self) -> usize {
         self.scheduler.pending_job_number()
     }
 
+    /// Returns the number of running jobs.
     pub fn running_job_number(&self) -> usize {
         self.scheduler.running_job_number()
     }
 
+    /// Returns the session context for tests.
     pub async fn ctx(&self) -> Result<Arc<SessionContext>> {
         self.scheduler
             .state
@@ -480,6 +495,7 @@ impl SchedulerTest {
             .await
     }
 
+    /// Submits a job and returns its ID.
     pub async fn submit(&mut self, job_name: &str, plan: &LogicalPlan) -> Result<String> {
         println!("{:?}", self.session_config);
         let ctx = self
@@ -494,6 +510,7 @@ impl SchedulerTest {
         Ok(job_id)
     }
 
+    /// Posts a scheduler event to the event loop.
     pub async fn post_scheduler_event(
         &self,
         event: QueryStageSchedulerEvent,
@@ -505,6 +522,7 @@ impl SchedulerTest {
             .await
     }
 
+    /// Processes the next task status update.
     pub async fn tick(&mut self) -> Result<()> {
         if let Some(receiver) = self.status_receiver.as_mut() {
             if let Some((executor_id, status)) = receiver.recv().await {
@@ -523,6 +541,7 @@ impl SchedulerTest {
         Ok(())
     }
 
+    /// Cancels a job by ID.
     pub async fn cancel(&self, job_id: &str) -> Result<()> {
         self.scheduler
             .query_stage_event_loop
@@ -531,6 +550,7 @@ impl SchedulerTest {
             .await
     }
 
+    /// Waits for job completion with a timeout in milliseconds.
     pub async fn await_completion_timeout(
         &self,
         job_id: &str,
@@ -552,7 +572,7 @@ impl SchedulerTest {
             {
                 match inner {
                     Status::Failed(_) | Status::Successful(_) => {
-                        break Ok(status.unwrap())
+                        break Ok(status.unwrap());
                     }
                     _ => {
                         if time >= timeout_ms {
@@ -571,6 +591,7 @@ impl SchedulerTest {
         final_status
     }
 
+    /// Waits for job completion indefinitely.
     pub async fn await_completion(&self, job_id: &str) -> Result<JobStatus> {
         let final_status: Result<JobStatus> = loop {
             let status = self
@@ -587,7 +608,7 @@ impl SchedulerTest {
             {
                 match inner {
                     Status::Failed(_) | Status::Successful(_) => {
-                        break Ok(status.unwrap())
+                        break Ok(status.unwrap());
                     }
                     _ => continue,
                 }
@@ -641,7 +662,7 @@ impl SchedulerTest {
             {
                 match inner {
                     Status::Failed(_) | Status::Successful(_) => {
-                        break Ok(status.unwrap())
+                        break Ok(status.unwrap());
                     }
                     _ => continue,
                 }
@@ -654,15 +675,21 @@ impl SchedulerTest {
     }
 }
 
+/// Events recorded by the test metrics collector.
 #[derive(Clone)]
 pub enum MetricEvent {
+    /// Job submitted event (job_id, queued_at, submitted_at).
     Submitted(String, u64, u64),
+    /// Job completed event (job_id, queued_at, completed_at).
     Completed(String, u64, u64),
+    /// Job cancelled event (job_id).
     Cancelled(String),
+    /// Job failed event (job_id, queued_at, failed_at).
     Failed(String, u64, u64),
 }
 
 impl MetricEvent {
+    /// Returns the job ID associated with this event.
     pub fn job_id(&self) -> &str {
         match self {
             MetricEvent::Submitted(job, _, _) => job.as_str(),
@@ -673,12 +700,15 @@ impl MetricEvent {
     }
 }
 
+/// A metrics collector that stores events for test assertions.
 #[derive(Default, Clone)]
 pub struct TestMetricsCollector {
+    /// Collected metric events.
     pub events: Arc<Mutex<Vec<MetricEvent>>>,
 }
 
 impl TestMetricsCollector {
+    /// Returns all events for the given job ID.
     pub fn job_events(&self, job_id: &str) -> Vec<MetricEvent> {
         let guard = self.events.lock();
 
@@ -731,6 +761,7 @@ impl SchedulerMetricsCollector for TestMetricsCollector {
     }
 }
 
+/// Asserts that a submitted event was recorded for the job.
 pub fn assert_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
     let found = collector
         .job_events(job_id)
@@ -740,6 +771,7 @@ pub fn assert_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
     assert!(found, "Expected submitted event for job {job_id}");
 }
 
+/// Asserts that no submitted event was recorded for the job.
 pub fn assert_no_submitted_event(job_id: &str, collector: &TestMetricsCollector) {
     let found = collector
         .job_events(job_id)
@@ -749,6 +781,7 @@ pub fn assert_no_submitted_event(job_id: &str, collector: &TestMetricsCollector)
     assert!(!found, "Expected no submitted event for job {job_id}");
 }
 
+/// Asserts that a completed event was recorded for the job.
 pub fn assert_completed_event(job_id: &str, collector: &TestMetricsCollector) {
     let found = collector
         .job_events(job_id)
@@ -758,6 +791,7 @@ pub fn assert_completed_event(job_id: &str, collector: &TestMetricsCollector) {
     assert!(found, "{}", "Expected completed event for job {job_id}");
 }
 
+/// Asserts that a cancelled event was recorded for the job.
 pub fn assert_cancelled_event(job_id: &str, collector: &TestMetricsCollector) {
     let found = collector
         .job_events(job_id)
@@ -767,6 +801,7 @@ pub fn assert_cancelled_event(job_id: &str, collector: &TestMetricsCollector) {
     assert!(found, "{}", "Expected cancelled event for job {job_id}");
 }
 
+/// Asserts that a failed event was recorded for the job.
 pub fn assert_failed_event(job_id: &str, collector: &TestMetricsCollector) {
     let found = collector
         .job_events(job_id)
@@ -776,11 +811,13 @@ pub fn assert_failed_event(job_id: &str, collector: &TestMetricsCollector) {
     assert!(found, "Expected failed event for job {job_id}");
 }
 
+/// Revives the execution graph and completes all tasks in the next stage.
 pub fn revive_graph_and_complete_next_stage(graph: &mut ExecutionGraph) -> Result<usize> {
     let executor = mock_executor("executor-id1".to_string());
     revive_graph_and_complete_next_stage_with_executor(graph, &executor)
 }
 
+/// Revives the execution graph and completes all tasks in the next stage using the given executor.
 pub fn revive_graph_and_complete_next_stage_with_executor(
     graph: &mut ExecutionGraph,
     executor: &ExecutorMetadata,
@@ -817,10 +854,12 @@ pub fn revive_graph_and_complete_next_stage_with_executor(
     Ok(num_available_tasks)
 }
 
+/// Creates a test execution graph with a simple aggregation plan.
 pub async fn test_aggregation_plan(partition: usize) -> ExecutionGraph {
     test_aggregation_plan_with_job_id(partition, "job").await
 }
 
+/// Creates a test execution graph with a simple aggregation plan and custom job ID.
 pub async fn test_aggregation_plan_with_job_id(
     partition: usize,
     job_id: &str,
@@ -867,6 +906,7 @@ pub async fn test_aggregation_plan_with_job_id(
     .unwrap()
 }
 
+/// Creates a test execution graph with two nested aggregations.
 pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::new_with_config(config));
@@ -913,6 +953,7 @@ pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
     .unwrap()
 }
 
+/// Creates a test execution graph with a coalesce (limit) operation.
 pub async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::new_with_config(config));
@@ -951,6 +992,7 @@ pub async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
     .unwrap()
 }
 
+/// Creates a test execution graph with a join operation.
 pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
     let mut config = SessionConfig::new().with_target_partitions(partition);
     config
@@ -1014,6 +1056,7 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
     graph
 }
 
+/// Creates a test execution graph with a UNION ALL operation.
 pub async fn test_union_all_plan(partition: usize) -> ExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::new_with_config(config));
@@ -1055,6 +1098,7 @@ pub async fn test_union_all_plan(partition: usize) -> ExecutionGraph {
     graph
 }
 
+/// Creates a test execution graph with a UNION (distinct) operation.
 pub async fn test_union_plan(partition: usize) -> ExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::new_with_config(config));
@@ -1096,6 +1140,7 @@ pub async fn test_union_plan(partition: usize) -> ExecutionGraph {
     graph
 }
 
+/// Creates a mock executor metadata with the given ID.
 pub fn mock_executor(executor_id: String) -> ExecutorMetadata {
     ExecutorMetadata {
         id: executor_id,
@@ -1106,6 +1151,7 @@ pub fn mock_executor(executor_id: String) -> ExecutorMetadata {
     }
 }
 
+/// Creates a mock successful task status for the given task.
 pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStatus {
     let mut partitions: Vec<protobuf::ShuffleWritePartition> = vec![];
 
@@ -1144,6 +1190,7 @@ pub fn mock_completed_task(task: TaskDescription, executor_id: &str) -> TaskStat
     }
 }
 
+/// Creates a mock failed task status for the given task.
 pub fn mock_failed_task(task: TaskDescription, failed_task: FailedTask) -> TaskStatus {
     let mut partitions: Vec<protobuf::ShuffleWritePartition> = vec![];
 
