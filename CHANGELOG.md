@@ -19,6 +19,33 @@
 
 # Changelog
 
+## [51.0.0](https://github.com/apache/datafusion-ballista/tree/51.0.0) (2026-01-11)
+
+**Implemented enhancements:**
+
+- feat: Support distributed plan in `EXPLAIN` command [#1309](https://github.com/apache/datafusion-ballista/pull/1309) (danielhumanmod)
+- feat: update rust edition to 2024 [#1355](https://github.com/apache/datafusion-ballista/pull/1355) (killzoner)
+- feat: capture more metrics in distributed_query [#1353](https://github.com/apache/datafusion-ballista/pull/1353) (PhVHoang)
+- feat: Bump docker rust to `rust:1.92-trixie` [#1365](https://github.com/apache/datafusion-ballista/pull/1365) (mattcuento)
+- feat: Scheduler supports `substrait` logical plan and remove deprecated `sql` support [#1360](https://github.com/apache/datafusion-ballista/pull/1360) (mattcuento)
+
+**Merged pull requests:**
+
+- minor: minor changes to release script/docs [#1342](https://github.com/apache/datafusion-ballista/pull/1342) (andygrove)
+- feat: Support distributed plan in `EXPLAIN` command [#1309](https://github.com/apache/datafusion-ballista/pull/1309) (danielhumanmod)
+- chore: update datafusion to 51.0 [#1345](https://github.com/apache/datafusion-ballista/pull/1345) (danielhumanmod)
+- doc: Add a note that datafusion may need to be downgraded after installing it [#1348](https://github.com/apache/datafusion-ballista/pull/1348) (martin-g)
+- minor: Make `DisplayAs` consistent and more readable for ShuffleExec [#1347](https://github.com/apache/datafusion-ballista/pull/1347) (milenkovicm)
+- minor: remove unnecessary clone functions  [#1352](https://github.com/apache/datafusion-ballista/pull/1352) (mmooyyii)
+- feat: update rust edition to 2024 [#1355](https://github.com/apache/datafusion-ballista/pull/1355) (killzoner)
+- chore(doc): Clean up deployment docs. [#1354](https://github.com/apache/datafusion-ballista/pull/1354) (LouisBurke)
+- feat: capture more metrics in distributed_query [#1353](https://github.com/apache/datafusion-ballista/pull/1353) (PhVHoang)
+- doc: Fix plan translation example to use correct aggregation and column [#1362](https://github.com/apache/datafusion-ballista/pull/1362) (mattcuento)
+- chore: update ballista version to 51.0.0 (from 50.0.0) [#1363](https://github.com/apache/datafusion-ballista/pull/1363) (milenkovicm)
+- feat: Bump docker rust to `rust:1.92-trixie` [#1365](https://github.com/apache/datafusion-ballista/pull/1365) (mattcuento)
+- chore: Add missing public API documentation/comments  [#1364](https://github.com/apache/datafusion-ballista/pull/1364) (killzoner)
+- feat: Scheduler supports `substrait` logical plan and remove deprecated `sql` support [#1360](https://github.com/apache/datafusion-ballista/pull/1360) (mattcuento)
+
 ## [50.0.0](https://github.com/apache/datafusion-ballista/tree/50.0.0) (2025-11-04)
 
 **Implemented enhancements:**

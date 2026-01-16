@@ -19,16 +19,16 @@ use crate::cluster::BallistaCluster;
 use crate::config::SchedulerConfig;
 use crate::metrics::default_metrics_collector;
 use crate::scheduler_server::SchedulerServer;
+use ballista_core::ConfigProducer;
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::utils::{
-    create_grpc_server, default_config_producer, default_session_builder,
-    GrpcServerConfig,
+    GrpcServerConfig, create_grpc_server, default_config_producer,
+    default_session_builder,
 };
-use ballista_core::ConfigProducer;
 use ballista_core::{
-    error::Result, serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer,
-    BALLISTA_VERSION,
+    BALLISTA_VERSION, error::Result,
+    serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer,
 };
 use datafusion::execution::SessionState;
 use datafusion::prelude::SessionConfig;
@@ -39,6 +39,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
+/// Creates a standalone scheduler with default configuration.
+///
+/// Returns the socket address the scheduler is listening on.
+/// Useful for testing and single-node deployments.
 pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
     let codec = BallistaCodec::default();
     new_standalone_scheduler_with_builder(
@@ -49,6 +53,9 @@ pub async fn new_standalone_scheduler() -> Result<SocketAddr> {
     .await
 }
 
+/// Creates a standalone scheduler from an existing session state.
+///
+/// Uses the session state's configuration and codecs to create the scheduler.
 pub async fn new_standalone_scheduler_from_state(
     session_state: &SessionState,
 ) -> Result<SocketAddr> {
@@ -63,6 +70,9 @@ pub async fn new_standalone_scheduler_from_state(
     new_standalone_scheduler_with_builder(session_builder, config_producer, codec).await
 }
 
+/// Creates a standalone scheduler with custom session builder, config producer, and codec.
+///
+/// Returns the socket address the scheduler is listening on.
 pub async fn new_standalone_scheduler_with_builder(
     session_builder: crate::scheduler_server::SessionBuilder,
     config_producer: ConfigProducer,

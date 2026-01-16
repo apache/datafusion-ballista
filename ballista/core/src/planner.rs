@@ -25,8 +25,8 @@ use datafusion::common::tree_node::{TreeNode, TreeNodeVisitor};
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::{QueryPlanner, SessionState};
 use datafusion::logical_expr::{LogicalPlan, TableScan};
-use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::empty::EmptyExec;
 use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 use datafusion_proto::logical_plan::{AsLogicalPlan, LogicalExtensionCodec};
 use std::marker::PhantomData;
@@ -58,6 +58,7 @@ impl<T: AsLogicalPlan> std::fmt::Debug for BallistaQueryPlanner<T> {
 }
 
 impl<T: 'static + AsLogicalPlan> BallistaQueryPlanner<T> {
+    /// Creates a new Ballista query planner with the specified scheduler URL and configuration.
     pub fn new(scheduler_url: String, config: BallistaConfig) -> Self {
         Self {
             scheduler_url,
@@ -68,6 +69,7 @@ impl<T: 'static + AsLogicalPlan> BallistaQueryPlanner<T> {
         }
     }
 
+    /// Creates a new Ballista query planner with a custom extension codec.
     pub fn with_extension(
         scheduler_url: String,
         config: BallistaConfig,
@@ -82,6 +84,7 @@ impl<T: 'static + AsLogicalPlan> BallistaQueryPlanner<T> {
         }
     }
 
+    /// Creates a new Ballista query planner with a custom local physical planner.
     pub fn with_local_planner(
         scheduler_url: String,
         config: BallistaConfig,
@@ -180,7 +183,7 @@ mod test {
     use datafusion::{
         common::tree_node::TreeNode,
         error::Result,
-        execution::{runtime_env::RuntimeEnvBuilder, SessionStateBuilder},
+        execution::{SessionStateBuilder, runtime_env::RuntimeEnvBuilder},
         prelude::{SessionConfig, SessionContext},
     };
 

@@ -26,24 +26,29 @@ use ballista_core::{
     serde::scheduler::PartitionLocation,
 };
 use datafusion::config::ConfigOptions;
-use datafusion::physical_optimizer::enforce_sorting::EnforceSorting;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
+use datafusion::physical_optimizer::enforce_sorting::EnforceSorting;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
 use datafusion::physical_plan::{
-    with_new_children_if_necessary, ExecutionPlan, Partitioning,
+    ExecutionPlan, Partitioning, with_new_children_if_necessary,
 };
 
 use log::{debug, info};
 
 type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<ShuffleWriterExec>>);
 
-/// [DistributedPlanner] breaks out plan into vector of stages
+/// Trait for breaking an execution plan into distributed query stages.
+///
+/// The planner creates a DAG of stages where each stage can be executed
+/// independently once its input stages are complete.
 pub trait DistributedPlanner {
-    /// Returns a vector of ExecutionPlans, where the root node is a [ShuffleWriterExec].
-    /// Plans that depend on the input of other plans will have leaf nodes of type [UnresolvedShuffleExec].
-    /// A [ShuffleWriterExec] is created whenever the partitioning changes.
+    /// Returns a vector of ExecutionPlans, where the root node is a [`ShuffleWriterExec`].
+    ///
+    /// Plans that depend on the input of other plans will have leaf nodes of type
+    /// [`UnresolvedShuffleExec`]. A [`ShuffleWriterExec`] is created whenever the
+    /// partitioning changes.
     fn plan_query_stages<'a>(
         &'a mut self,
         job_id: &'a str,
@@ -51,13 +56,19 @@ pub trait DistributedPlanner {
         config: &ConfigOptions,
     ) -> Result<Vec<Arc<ShuffleWriterExec>>>;
 }
-/// Default implementation of [DistributedPlanner]
+
+/// Default implementation of [`DistributedPlanner`].
+///
+/// Breaks execution plans into stages at shuffle boundaries (repartition, coalesce).
 pub struct DefaultDistributedPlanner {
+    /// Counter for generating unique stage IDs.
     next_stage_id: usize,
+    /// Optimizer rule for enforcing sort requirements after stage splitting.
     optimizer_enforce_sorting: EnforceSorting,
 }
 
 impl DefaultDistributedPlanner {
+    /// Creates a new `DefaultDistributedPlanner`.
     pub fn new() -> Self {
         Self {
             next_stage_id: 0,
@@ -202,7 +213,9 @@ fn create_unresolved_shuffle(
     ))
 }
 
-/// Returns the unresolved shuffles in the execution plan
+/// Returns all unresolved shuffle nodes in the execution plan.
+///
+/// Used to identify which input stages a plan depends on.
 pub fn find_unresolved_shuffles(
     plan: &Arc<dyn ExecutionPlan>,
 ) -> Result<Vec<UnresolvedShuffleExec>> {
@@ -222,6 +235,9 @@ pub fn find_unresolved_shuffles(
     }
 }
 
+/// Replaces [`UnresolvedShuffleExec`] nodes with [`ShuffleReaderExec`] nodes.
+///
+/// Called after input stages complete to connect stages with their actual partition locations.
 pub fn remove_unresolved_shuffles(
     stage: Arc<dyn ExecutionPlan>,
     partition_locations: &HashMap<usize, HashMap<usize, Vec<PartitionLocation>>>,
@@ -338,7 +354,7 @@ mod test {
     use datafusion::physical_plan::sorts::sort::SortExec;
     use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
     use datafusion::physical_plan::windows::BoundedWindowAggExec;
-    use datafusion::physical_plan::{displayable, ExecutionPlan};
+    use datafusion::physical_plan::{ExecutionPlan, displayable};
     use datafusion::physical_plan::{InputOrderMode, Partitioning};
     use datafusion_proto::physical_plan::AsExecutionPlan;
     use datafusion_proto::protobuf::LogicalPlanNode;

@@ -40,8 +40,8 @@ use crate::config::SchedulerConfig;
 use crate::state::execution_graph::TaskDescription;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventSender;
-use ballista_core::serde::protobuf::TaskStatus;
 use ballista_core::serde::BallistaCodec;
+use ballista_core::serde::protobuf::TaskStatus;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::display::DisplayableExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
@@ -52,13 +52,20 @@ use log::{debug, error, info, warn};
 use prost::Message;
 
 mod distributed_explain;
+/// Execution graph representation and management.
 pub mod execution_graph;
+/// DOT format export for execution graphs.
 pub mod execution_graph_dot;
+/// Execution stage tracking and status management.
 pub mod execution_stage;
+/// Executor registration and management.
 pub mod executor_manager;
+/// Session state management.
 pub mod session_manager;
+/// Task scheduling and lifecycle management.
 pub mod task_manager;
 
+/// Decodes a protobuf message from bytes.
 pub fn decode_protobuf<T: Message + Default>(bytes: &[u8]) -> Result<T> {
     T::decode(bytes).map_err(|e| {
         BallistaError::Internal(format!(
@@ -69,6 +76,7 @@ pub fn decode_protobuf<T: Message + Default>(bytes: &[u8]) -> Result<T> {
     })
 }
 
+/// Decodes a protobuf message and converts it to another type.
 pub fn decode_into<T: Message + Default + Into<U>, U>(bytes: &[u8]) -> Result<U> {
     T::decode(bytes)
         .map_err(|e| {
@@ -81,6 +89,7 @@ pub fn decode_into<T: Message + Default + Into<U>, U>(bytes: &[u8]) -> Result<U>
         .map(|t| t.into())
 }
 
+/// Encodes a protobuf message to bytes.
 pub fn encode_protobuf<T: Message + Default>(msg: &T) -> Result<Vec<u8>> {
     let mut value: Vec<u8> = Vec::with_capacity(msg.encoded_len());
     msg.encode(&mut value).map_err(|e| {
@@ -93,16 +102,25 @@ pub fn encode_protobuf<T: Message + Default>(msg: &T) -> Result<Vec<u8>> {
     Ok(value)
 }
 
+/// Shared state for the Ballista scheduler.
+///
+/// Contains managers for executors, tasks, and sessions.
 #[derive(Clone)]
 pub struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> {
+    /// Manager for executor registration and task slot allocation.
     pub executor_manager: ExecutorManager,
+    /// Manager for job and task scheduling.
     pub task_manager: TaskManager<T, U>,
+    /// Manager for DataFusion session contexts.
     pub session_manager: SessionManager,
+    /// Codec for serializing logical and physical plans.
     pub codec: BallistaCodec<T, U>,
+    /// Scheduler configuration.
     pub config: Arc<SchedulerConfig>,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T, U> {
+    /// Creates a new `SchedulerState` with the given cluster and configuration.
     pub fn new(
         cluster: BallistaCluster,
         codec: BallistaCodec<T, U>,
@@ -125,6 +143,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         }
     }
 
+    /// Creates a new `SchedulerState` with default scheduler name (for testing only).
     #[cfg(test)]
     pub fn new_with_default_scheduler_name(
         cluster: BallistaCluster,
@@ -159,6 +178,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         }
     }
 
+    /// Initializes the scheduler state.
     pub async fn init(&self) -> Result<()> {
         self.executor_manager.init().await
     }
@@ -197,13 +217,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                     if_revive = true;
                 }
             }
-            if if_revive {
-                if let Err(e) = sender
+            if if_revive
+                && let Err(e) = sender
                     .post_event(QueryStageSchedulerEvent::ReviveOffers)
                     .await
-                {
-                    error!("Fail to send revive offers event due to {e:?}");
-                }
+            {
+                error!("Fail to send revive offers event due to {e:?}");
             }
         });
 
@@ -229,12 +248,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
 
         match self.task_manager.executor_lost(executor_id).await {
             Ok(tasks) => {
-                if !tasks.is_empty() {
-                    if let Err(e) =
+                if !tasks.is_empty()
+                    && let Err(e) =
                         self.executor_manager.cancel_running_tasks(tasks).await
-                    {
-                        warn!("Fail to cancel running tasks due to {e:?}");
-                    }
+                {
+                    warn!("Fail to cancel running tasks due to {e:?}");
                 }
             }
             Err(e) => {
@@ -308,7 +326,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                         }
                     }
                     Err(e) => {
-                        error!("Failed to launch new task, could not get executor metadata: {e}");
+                        error!(
+                            "Failed to launch new task, could not get executor metadata: {e}"
+                        );
                         false
                     }
                 };

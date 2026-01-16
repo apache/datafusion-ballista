@@ -31,9 +31,9 @@ use ballista_core::serde::scheduler::Action as BallistaAction;
 use datafusion::arrow::ipc::CompressionType;
 
 use arrow_flight::{
-    flight_service_server::FlightService, Action, ActionType, Criteria, Empty,
-    FlightData, FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse,
-    PollInfo, PutResult, SchemaResult, Ticket,
+    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
+    HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
+    flight_service_server::FlightService,
 };
 use datafusion::arrow::ipc::writer::IpcWriteOptions;
 use datafusion::arrow::{error::ArrowError, record_batch::RecordBatch};
@@ -47,11 +47,17 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::metadata::MetadataValue;
 use tonic::{Request, Response, Status, Streaming};
 
-/// Service implementing the Apache Arrow Flight Protocol
+/// Arrow Flight service for transferring shuffle data between executors.
+///
+/// This service implements the Apache Arrow Flight protocol to enable efficient
+/// transfer of intermediate query results (shuffle data) between executor nodes.
+/// It supports both decoded streaming via `do_get` and optimized block transfer
+/// via the `IO_BLOCK_TRANSPORT` action.
 #[derive(Clone)]
 pub struct BallistaFlightService {}
 
 impl BallistaFlightService {
+    /// Creates a new BallistaFlightService instance.
     pub fn new() -> Self {
         Self {}
     }

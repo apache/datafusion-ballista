@@ -18,10 +18,10 @@
 //! # Extending Ballista
 //!
 //! This example demonstrates extending standard ballista behavior,
-//! integrating external [ObjectStoreRegistry].
+//! integrating external `ObjectStoreRegistry`.
 //!
-//! [ObjectStore] is provided by  [ObjectStoreRegistry], and configured
-//! using [ExtensionOptions], which can be configured using SQL `SET` command.
+//! `ObjectStore` is provided by `ObjectStoreRegistry`, and configured
+//! using `ExtensionOptions`, which can be configured using SQL `SET` command.
 
 use datafusion::common::{config_err, exec_err};
 use datafusion::config::{
@@ -117,6 +117,7 @@ pub struct CustomObjectStoreRegistry {
 }
 
 impl CustomObjectStoreRegistry {
+    /// Creates a new custom object store registry with the given S3 options.
     pub fn new(s3options: S3Options) -> Self {
         Self {
             s3options,
@@ -196,10 +197,13 @@ impl CustomObjectStoreRegistry {
         }
 
         if let Some(endpoint) = endpoint {
-            if let Ok(endpoint_url) = Url::try_from(endpoint.as_str()) {
-                if !matches!(allow_http, Some(true)) && endpoint_url.scheme() == "http" {
-                    return config_err!("Invalid endpoint: {endpoint}. HTTP is not allowed for S3 endpoints. To allow HTTP, set 's3.allow_http' to true");
-                }
+            if let Ok(endpoint_url) = Url::try_from(endpoint.as_str())
+                && !matches!(allow_http, Some(true))
+                && endpoint_url.scheme() == "http"
+            {
+                return config_err!(
+                    "Invalid endpoint: {endpoint}. HTTP is not allowed for S3 endpoints. To allow HTTP, set 's3.allow_http' to true"
+                );
             }
 
             builder = builder.with_endpoint(endpoint);

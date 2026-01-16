@@ -17,7 +17,7 @@
 
 use ballista::prelude::SessionConfigExt;
 use ballista_core::serde::{
-    protobuf::scheduler_grpc_client::SchedulerGrpcClient, BallistaCodec,
+    BallistaCodec, protobuf::scheduler_grpc_client::SchedulerGrpcClient,
 };
 use ballista_core::{ConfigProducer, RuntimeProducer};
 use ballista_scheduler::SessionBuilder;
@@ -25,8 +25,8 @@ use datafusion::execution::SessionState;
 use datafusion::prelude::SessionConfig;
 use object_store::aws::AmazonS3Builder;
 use testcontainers_modules::minio::MinIO;
-use testcontainers_modules::testcontainers::core::{CmdWaitFor, ExecCommand};
 use testcontainers_modules::testcontainers::ContainerRequest;
+use testcontainers_modules::testcontainers::core::{CmdWaitFor, ExecCommand};
 use testcontainers_modules::{minio, testcontainers::ImageExt};
 
 pub const REGION: &str = "eu-west-1";

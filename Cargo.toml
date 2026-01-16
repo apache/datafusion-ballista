@@ -18,14 +18,14 @@
 [workspace]
 exclude = ["dev/msrvcheck", "python"]
 members = ["ballista-cli", "ballista/client", "ballista/core", "ballista/executor", "ballista/scheduler", "benchmarks", "examples"]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 # edition to be changed to 2024 when we update 
 # Minimum Supported Rust Version (MSRV) to 1.85.0
 # which is datafusion 49
 # 
-edition = "2021"
+edition = "2024"
 # we should try to follow datafusion version 
 rust-version = "1.88.0"
 
@@ -39,6 +39,7 @@ datafusion = "51.0.0"
 datafusion-cli = "51.0.0"
 datafusion-proto = "51.0.0"
 datafusion-proto-common = "51.0.0"
+datafusion-substrait = "51.0.0"
 object_store = "0.12"
 prost = "0.14"
 prost-types = "0.14"
@@ -92,6 +93,9 @@ rpath = false
 [profile.ci]
 inherits = "dev"
 incremental = false
+debug = false
+debug-assertions = false
+strip = "debuginfo"
 
 # ci turns off debug info, etc. for dependencies to allow for smaller binaries making caching more effective
 [profile.ci.package."*"]

@@ -123,6 +123,31 @@ mod supported {
                 > 0
         );
 
+        // Verify timing metrics
+        let job_execution_time = metrics.sum_by_name("job_execution_time_ms").unwrap();
+        assert!(
+            job_execution_time.as_usize() > 0,
+            "job_execution_time_ms should be greater than 0"
+        );
+
+        let scheduling_time = metrics.sum_by_name("job_scheduling_in_ms").unwrap();
+        assert!(
+            scheduling_time.as_usize() > 0,
+            "job_scheduling_in_ms should be non-negative"
+        );
+
+        let total_time = metrics.sum_by_name("total_query_time_ms").unwrap();
+        assert!(
+            total_time.as_usize() > 0,
+            "total_query_time_ms should be greater than 0"
+        );
+
+        // Total time should be at least as long as execution time
+        assert!(
+            total_time.as_usize() >= job_execution_time.as_usize(),
+            "total_query_time_ms should be >= job_execution_time_ms"
+        );
+
         Ok(())
     }
 
@@ -181,6 +206,20 @@ mod supported {
         ];
 
         assert_batches_eq!(expected, &result);
+
+        // Verify timing metrics
+        let metrics = plan.metrics().unwrap();
+        let job_execution_time = metrics.sum_by_name("job_execution_time_ms").unwrap();
+        assert!(
+            job_execution_time.as_usize() > 0,
+            "job_execution_time_ms should be greater than 0"
+        );
+
+        let total_time = metrics.sum_by_name("total_query_time_ms").unwrap();
+        assert!(
+            total_time.as_usize() >= job_execution_time.as_usize(),
+            "total_query_time_ms should be >= job_execution_time_ms"
+        );
 
         Ok(())
     }

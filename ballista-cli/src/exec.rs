@@ -18,15 +18,15 @@
 //! Execution functions
 
 use std::fs::File;
-use std::io::prelude::*;
 use std::io::BufReader;
+use std::io::prelude::*;
 use std::sync::Arc;
 use std::time::Instant;
 
 use datafusion::common::Result;
 use datafusion::prelude::SessionContext;
-use rustyline::error::ReadlineError;
 use rustyline::Editor;
+use rustyline::error::ReadlineError;
 
 use crate::{
     command::{Command, OutputFormat},

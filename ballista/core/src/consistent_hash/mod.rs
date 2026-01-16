@@ -15,14 +15,22 @@
 // specific language governing permissions and limitations
 // under the License.
 
+//! Consistent hashing implementation for distributing data across nodes.
+
 use crate::consistent_hash::node::Node;
 use md5::{Digest, Md5};
 use std::collections::{BTreeMap, HashMap};
 
+/// Node trait and implementations for consistent hashing.
 pub mod node;
 
+/// Function type for computing hash values from byte slices.
 pub type HashFunction = fn(&[u8]) -> Vec<u8>;
 
+/// A consistent hash ring for distributing keys across nodes.
+///
+/// Uses virtual nodes (replicas) to ensure even distribution of keys
+/// and provides tolerance for node failures.
 pub struct ConsistentHash<N>
 where
     N: Node,
@@ -36,6 +44,9 @@ impl<N> ConsistentHash<N>
 where
     N: Node,
 {
+    /// Creates a new consistent hash ring with the given nodes and replica counts.
+    ///
+    /// Uses MD5 as the default hash function.
     pub fn new(node_replicas: Vec<(N, usize)>) -> Self {
         let consistent_hash = Self {
             virtual_nodes: BTreeMap::new(),
@@ -45,6 +56,7 @@ where
         consistent_hash.init(node_replicas)
     }
 
+    /// Creates a new consistent hash ring with a custom hash function.
     pub fn new_with_hash(
         node_replicas: Vec<(N, usize)>,
         hash_func: HashFunction,
@@ -64,6 +76,7 @@ where
         self
     }
 
+    /// Returns references to all nodes in the hash ring.
     pub fn nodes(&self) -> Vec<&N> {
         self.node_replicas
             .values()
@@ -71,6 +84,7 @@ where
             .collect::<Vec<_>>()
     }
 
+    /// Returns mutable references to all nodes in the hash ring.
     pub fn nodes_mut(&mut self) -> Vec<&mut N> {
         self.node_replicas
             .values_mut()
@@ -78,6 +92,7 @@ where
             .collect::<Vec<_>>()
     }
 
+    /// Adds a node to the hash ring with the specified number of virtual replicas.
     pub fn add(&mut self, node: N, num_replicas: usize) {
         // Remove existing ones
         self.remove(node.name());
@@ -92,6 +107,7 @@ where
             .insert(node.name().to_string(), (node, num_replicas));
     }
 
+    /// Removes a node from the hash ring by name, returning the node and replica count if found.
     pub fn remove(&mut self, node_name: &str) -> Option<(N, usize)> {
         if let Some((node, num_replicas)) = self.node_replicas.remove(node_name) {
             for i in 0..num_replicas {
@@ -105,10 +121,12 @@ where
         }
     }
 
+    /// Gets the node responsible for the given key.
     pub fn get(&self, key: &[u8]) -> Option<&N> {
         self.get_with_tolerance(key, 0)
     }
 
+    /// Gets the node responsible for the given key, skipping up to `tolerance` invalid nodes.
     pub fn get_with_tolerance(&self, key: &[u8], tolerance: usize) -> Option<&N> {
         self.get_position_key(key, tolerance)
             .and_then(move |position_key| {
@@ -118,10 +136,12 @@ where
             })
     }
 
+    /// Gets a mutable reference to the node responsible for the given key.
     pub fn get_mut(&mut self, key: &[u8]) -> Option<&mut N> {
         self.get_mut_with_tolerance(key, 0)
     }
 
+    /// Gets a mutable reference to the node for the given key, with failure tolerance.
     pub fn get_mut_with_tolerance(
         &mut self,
         key: &[u8],
@@ -153,10 +173,10 @@ where
             .range(hashed_key..)
             .chain(self.virtual_nodes.iter())
         {
-            if let Some((node, _)) = self.node_replicas.get(node_name) {
-                if node.is_valid() {
-                    return Some(position_key.clone());
-                }
+            if let Some((node, _)) = self.node_replicas.get(node_name)
+                && node.is_valid()
+            {
+                return Some(position_key.clone());
             }
             if tolerance == 0 {
                 return None;
@@ -169,6 +189,7 @@ where
     }
 }
 
+/// Computes an MD5 hash of the input data.
 pub fn md5_hash(data: &[u8]) -> Vec<u8> {
     let mut digest = Md5::default();
     digest.update(data);
@@ -177,8 +198,8 @@ pub fn md5_hash(data: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod test {
-    use crate::consistent_hash::node::Node;
     use crate::consistent_hash::ConsistentHash;
+    use crate::consistent_hash::node::Node;
 
     #[test]
     fn test_topology() {
@@ -219,9 +240,11 @@ mod test {
         for (i, key) in keys.iter().enumerate() {
             if i == 2 {
                 assert!(consistent_hash.get(key.as_bytes()).is_none());
-                assert!(consistent_hash
-                    .get_with_tolerance(key.as_bytes(), 1)
-                    .is_some());
+                assert!(
+                    consistent_hash
+                        .get_with_tolerance(key.as_bytes(), 1)
+                        .is_some()
+                );
             } else {
                 assert_eq!(
                     consistent_hash.get(key.as_bytes()).unwrap().name(),

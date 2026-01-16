@@ -22,19 +22,29 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use crate::cluster::JobState;
 use std::sync::Arc;
 
+/// Manages DataFusion session contexts for the Ballista scheduler.
+///
+/// Sessions hold configuration and state for query execution.
 #[derive(Clone)]
 pub struct SessionManager {
+    /// Job state storage for persisting session information.
     state: Arc<dyn JobState>,
 }
 
 impl SessionManager {
+    /// Creates a new `SessionManager` with the given job state backend.
     pub fn new(state: Arc<dyn JobState>) -> Self {
         Self { state }
     }
+
+    /// Removes a session from the state store.
     pub async fn remove_session(&self, session_id: &str) -> Result<()> {
         self.state.remove_session(session_id).await
     }
 
+    /// Creates a new session or updates an existing one with the given configuration.
+    ///
+    /// Returns the session context that can be used for query execution.
     pub async fn create_or_update_session(
         &self,
         session_id: &str,
@@ -50,7 +60,10 @@ impl SessionManager {
     }
 }
 
-/// Create a DataFusion session context that is compatible with Ballista Configuration
+/// Creates a DataFusion session context that is compatible with Ballista configuration.
+///
+/// This function disables round-robin repartitioning if it was enabled, as Ballista
+/// handles partitioning differently.
 pub fn create_datafusion_context(
     session_config: &SessionConfig,
     session_builder: SessionBuilder,
@@ -61,7 +74,9 @@ pub fn create_datafusion_context(
             // should we disable catalog on the scheduler side
             .with_round_robin_repartition(false);
 
-        log::warn!("session manager will override `datafusion.optimizer.enable_round_robin_repartition` to `false` ");
+        log::warn!(
+            "session manager will override `datafusion.optimizer.enable_round_robin_repartition` to `false` "
+        );
         session_builder(session_config)?
     } else {
         session_builder(session_config.clone())?
