@@ -41,7 +41,7 @@ use datafusion::arrow::array::{
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::error::ArrowError;
-use datafusion::arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
+use datafusion::arrow::ipc::writer::{FileWriter, IpcWriteOptions};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
@@ -378,13 +378,16 @@ fn finalize_output(
 
     debug!("Writing consolidated shuffle output to {:?}", data_path);
 
+    // Use FileWriter for random access support via FileReader
     let file = File::create(&data_path)?;
-    let buffered = BufWriter::new(file);
+    let mut buffered = BufWriter::new(file);
+
     let options =
         IpcWriteOptions::default().try_with_compression(Some(config.compression))?;
-    let mut writer = StreamWriter::try_new_with_options(buffered, schema, options)?;
+    let mut writer = FileWriter::try_new_with_options(&mut buffered, schema, options)?;
 
     // Track cumulative batch counts - index stores the starting batch index for each partition
+    // FileReader supports random access to batches by index
     let mut cumulative_batch_count: i64 = 0;
 
     // Write partitions in order
@@ -394,6 +397,7 @@ fn finalize_output(
 
         let mut partition_rows: u64 = 0;
         let mut partition_batches: u64 = 0;
+        let mut partition_bytes: u64 = 0;
 
         // First, write any spill files for this partition
         if spill_manager.has_spill_files(partition_id) {
@@ -403,6 +407,7 @@ fn finalize_output(
 
             for batch in spill_batches {
                 partition_rows += batch.num_rows() as u64;
+                partition_bytes += batch.get_array_memory_size() as u64;
                 partition_batches += 1;
                 writer.write(&batch)?;
             }
@@ -412,6 +417,7 @@ fn finalize_output(
         let buffered_batches = buffers[partition_id].take_batches();
         for batch in buffered_batches {
             partition_rows += batch.num_rows() as u64;
+            partition_bytes += batch.get_array_memory_size() as u64;
             partition_batches += 1;
             writer.write(&batch)?;
         }
@@ -420,30 +426,22 @@ fn finalize_output(
             partition_id,
             partition_batches,
             partition_rows,
-            0, // Will update with actual bytes below
+            partition_bytes,
         ));
 
         cumulative_batch_count += partition_batches as i64;
     }
 
-    // Finish writing
+    // Finish writing (this writes the IPC footer for random access)
     writer.finish()?;
 
-    // Store total batch count as the "total_length"
-    // The reader uses this to know the range for the last partition
+    // Store total batch count
     index.set_total_length(cumulative_batch_count);
 
     // Write index file
     index
         .write_to_file(&index_path)
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-
-    // Get actual file size for stats
-    let file_size = std::fs::metadata(&data_path)?.len() as u64;
-    let avg_size = file_size / num_partitions.max(1) as u64;
-    for stats in &mut partition_stats {
-        stats.3 = avg_size;
-    }
 
     Ok((data_path, index_path, partition_stats))
 }
