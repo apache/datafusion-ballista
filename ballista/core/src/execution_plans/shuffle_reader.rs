@@ -28,7 +28,7 @@ use std::result;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use crate::client::BallistaClient;
+use crate::client::global_client_pool;
 use crate::extension::SessionConfigExt;
 use crate::serde::scheduler::{PartitionLocation, PartitionStats};
 
@@ -490,11 +490,13 @@ async fn fetch_partition_remote(
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
-    // TODO for shuffle client connections, we should avoid creating new connections again and again.
-    // And we should also avoid to keep alive too many connections for long time.
     let host = metadata.host.as_str();
     let port = metadata.port;
-    let mut ballista_client = BallistaClient::try_new(host, port, max_message_size)
+
+    // Use the global connection pool to reuse connections across partition fetches
+    let pool = global_client_pool();
+    let mut ballista_client = pool
+        .get_or_connect(host, port, max_message_size)
         .await
         .map_err(|error| match error {
             // map grpc connection error to partition fetch error.
@@ -507,7 +509,7 @@ async fn fetch_partition_remote(
             other => other,
         })?;
 
-    ballista_client
+    let result = ballista_client
         .fetch_partition(
             &metadata.id,
             partition_id,
@@ -516,7 +518,20 @@ async fn fetch_partition_remote(
             port,
             flight_transport,
         )
-        .await
+        .await;
+
+    // On connection-related errors, remove the connection from the pool
+    // so the next request will create a fresh connection
+    if let Err(BallistaError::FetchFailed(..)) | Err(BallistaError::GrpcActionError(_)) =
+        &result
+    {
+        debug!(
+            "Removing potentially stale connection to {host}:{port} from pool after error"
+        );
+        pool.remove(host, port);
+    }
+
+    result
 }
 
 async fn fetch_partition_local(

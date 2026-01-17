@@ -18,12 +18,14 @@
 //! Client API for sending requests to executors.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use std::{
     convert::{TryFrom, TryInto},
     task::{Context, Poll},
 };
+
+use parking_lot::RwLock;
 
 use crate::error::{BallistaError, Result as BResult};
 use crate::serde::scheduler::{Action, PartitionId};
@@ -285,6 +287,122 @@ impl BallistaClient {
         }
         unreachable!("Did not receive schema batch from flight server");
     }
+}
+
+/// A connection pool for reusing `BallistaClient` connections to executors.
+///
+/// This pool caches connections by (host, port) to avoid the overhead of
+/// establishing new gRPC connections for each partition fetch during shuffle reads.
+/// Connections are stored indefinitely and reused across multiple fetch operations.
+///
+/// # Thread Safety
+///
+/// The pool uses a `RwLock` to allow concurrent reads while ensuring exclusive
+/// access during connection creation. The `BallistaClient` itself is `Clone`
+/// (wrapping an `Arc`), so cloned clients share the underlying connection.
+#[derive(Default)]
+pub struct BallistaClientPool {
+    /// Map from (host, port) to cached client connection
+    connections: RwLock<HashMap<(String, u16), BallistaClient>>,
+}
+
+impl BallistaClientPool {
+    /// Creates a new empty connection pool.
+    pub fn new() -> Self {
+        Self {
+            connections: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Gets an existing connection or creates a new one for the given host and port.
+    ///
+    /// If a connection already exists in the pool, it is cloned and returned.
+    /// Otherwise, a new connection is established, cached, and returned.
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - The hostname or IP address of the executor
+    /// * `port` - The port number of the executor's Flight service
+    /// * `max_message_size` - Maximum gRPC message size for new connections
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if connection establishment fails for a new connection.
+    pub async fn get_or_connect(
+        &self,
+        host: &str,
+        port: u16,
+        max_message_size: usize,
+    ) -> BResult<BallistaClient> {
+        let key = (host.to_string(), port);
+
+        // Fast path: check if connection exists with read lock
+        {
+            let connections = self.connections.read();
+            if let Some(client) = connections.get(&key) {
+                debug!("Reusing cached connection to {host}:{port}");
+                return Ok(client.clone());
+            }
+        }
+
+        // Slow path: create new connection without holding lock
+        // Multiple tasks might race to create connections to the same host,
+        // but only one will be cached (the others will be dropped)
+        debug!("Creating new connection to {host}:{port}");
+        let client = BallistaClient::try_new(host, port, max_message_size).await?;
+
+        // Now acquire write lock to cache the connection
+        let mut connections = self.connections.write();
+
+        // Check if another task created a connection while we were connecting
+        if let Some(existing_client) = connections.get(&key) {
+            debug!("Using connection to {host}:{port} created by another task");
+            return Ok(existing_client.clone());
+        }
+
+        // Cache our new connection
+        connections.insert(key, client.clone());
+        Ok(client)
+    }
+
+    /// Removes a connection from the pool.
+    ///
+    /// This can be used to force reconnection on the next request,
+    /// for example after a connection error.
+    pub fn remove(&self, host: &str, port: u16) {
+        let key = (host.to_string(), port);
+        let mut connections = self.connections.write();
+        if connections.remove(&key).is_some() {
+            debug!("Removed cached connection to {host}:{port}");
+        }
+    }
+
+    /// Returns the number of cached connections.
+    pub fn len(&self) -> usize {
+        self.connections.read().len()
+    }
+
+    /// Returns true if the pool has no cached connections.
+    pub fn is_empty(&self) -> bool {
+        self.connections.read().is_empty()
+    }
+
+    /// Clears all cached connections.
+    pub fn clear(&self) {
+        let mut connections = self.connections.write();
+        let count = connections.len();
+        connections.clear();
+        debug!("Cleared {count} cached connections from pool");
+    }
+}
+
+/// Returns the global connection pool instance.
+///
+/// This pool is shared across all shuffle read operations within the executor
+/// process, enabling connection reuse across different tasks and queries.
+pub fn global_client_pool() -> &'static BallistaClientPool {
+    static POOL: OnceLock<BallistaClientPool> = OnceLock::new();
+    POOL.get_or_init(BallistaClientPool::new)
 }
 
 /// [FlightDataStream] facilitates the transfer of shuffle data using the Arrow Flight protocol.
