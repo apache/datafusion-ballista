@@ -15,17 +15,27 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! This module contains execution plans that are needed to distribute DataFusion's execution plans into
-//! several Ballista executors.
+//! Sort-based shuffle implementation for Ballista.
+//!
+//! This module provides an alternative to the hash-based shuffle that writes
+//! a single consolidated file per input partition (sorted by output partition ID)
+//! along with an index file mapping partition IDs to byte offsets.
+//!
+//! This approach reduces file count from `N × M` (N input partitions × M output partitions)
+//! to `2 × N` files (one data + one index per input partition).
 
-mod distributed_query;
-mod shuffle_reader;
-mod shuffle_writer;
-pub mod sort_shuffle;
-mod unresolved_shuffle;
+mod buffer;
+mod config;
+mod index;
+mod reader;
+mod spill;
+mod writer;
 
-pub use distributed_query::DistributedQueryExec;
-pub use shuffle_reader::ShuffleReaderExec;
-pub use shuffle_writer::ShuffleWriterExec;
-pub use sort_shuffle::SortShuffleWriterExec;
-pub use unresolved_shuffle::UnresolvedShuffleExec;
+pub use buffer::PartitionBuffer;
+pub use config::SortShuffleConfig;
+pub use index::ShuffleIndex;
+pub use reader::{
+    get_index_path, is_sort_shuffle_output, read_all_batches, read_sort_shuffle_partition,
+};
+pub use spill::SpillManager;
+pub use writer::SortShuffleWriterExec;

@@ -57,6 +57,19 @@ pub const BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS: &str =
 pub const BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS: &str =
     "ballista.grpc.client.http2_keepalive_interval_seconds";
 
+/// Configuration key for enabling sort-based shuffle.
+pub const BALLISTA_SHUFFLE_SORT_BASED_ENABLED: &str =
+    "ballista.shuffle.sort_based.enabled";
+/// Configuration key for sort shuffle per-partition buffer size in bytes.
+pub const BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE: &str =
+    "ballista.shuffle.sort_based.buffer_size";
+/// Configuration key for sort shuffle total memory limit in bytes.
+pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT: &str =
+    "ballista.shuffle.sort_based.memory_limit";
+/// Configuration key for sort shuffle spill threshold (0.0-1.0).
+pub const BALLISTA_SHUFFLE_SORT_BASED_SPILL_THRESHOLD: &str =
+    "ballista.shuffle.sort_based.spill_threshold";
+
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
 use std::sync::LazyLock;
@@ -100,7 +113,23 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS.to_string(),
                          "HTTP/2 keep-alive interval for gRPC client in seconds".to_string(),
                          DataType::UInt64,
-                         Some((300).to_string()))
+                         Some((300).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_ENABLED.to_string(),
+                         "Enable sort-based shuffle which writes consolidated files with index".to_string(),
+                         DataType::Boolean,
+                         Some((false).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE.to_string(),
+                         "Per-partition buffer size in bytes for sort shuffle".to_string(),
+                         DataType::UInt64,
+                         Some((1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT.to_string(),
+                         "Total memory limit in bytes for sort shuffle buffers".to_string(),
+                         DataType::UInt64,
+                         Some((256 * 1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_SPILL_THRESHOLD.to_string(),
+                         "Spill threshold as decimal fraction (0.0-1.0) of memory limit".to_string(),
+                         DataType::Utf8,
+                         Some("0.8".to_string()))
     ];
     entries
         .into_iter()
@@ -264,6 +293,29 @@ impl BallistaConfig {
         self.get_bool_setting(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT)
     }
 
+    /// Returns whether sort-based shuffle is enabled.
+    ///
+    /// When enabled, shuffle writes produce a single consolidated file per input
+    /// partition with an index file, rather than one file per output partition.
+    pub fn shuffle_sort_based_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_SHUFFLE_SORT_BASED_ENABLED)
+    }
+
+    /// Returns the per-partition buffer size for sort-based shuffle in bytes.
+    pub fn shuffle_sort_based_buffer_size(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE)
+    }
+
+    /// Returns the total memory limit for sort-based shuffle buffers in bytes.
+    pub fn shuffle_sort_based_memory_limit(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT)
+    }
+
+    /// Returns the spill threshold for sort-based shuffle (0.0-1.0).
+    pub fn shuffle_sort_based_spill_threshold(&self) -> f64 {
+        self.get_f64_setting(BALLISTA_SHUFFLE_SORT_BASED_SPILL_THRESHOLD)
+    }
+
     fn get_usize_setting(&self, key: &str) -> usize {
         if let Some(v) = self.settings.get(key) {
             // infallible because we validate all configs in the constructor
@@ -298,6 +350,16 @@ impl BallistaConfig {
             // infallible because we validate all configs in the constructor
             let v = entries.get(key).unwrap().default_value.as_ref().unwrap();
             v.to_string()
+        }
+    }
+
+    fn get_f64_setting(&self, key: &str) -> f64 {
+        if let Some(v) = self.settings.get(key) {
+            v.parse::<f64>().unwrap()
+        } else {
+            let entries = Self::valid_entries();
+            let v = entries.get(key).unwrap().default_value.as_ref().unwrap();
+            v.parse::<f64>().unwrap()
         }
     }
 }
