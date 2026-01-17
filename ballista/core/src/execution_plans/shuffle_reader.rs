@@ -29,6 +29,9 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use crate::client::BallistaClient;
+use crate::execution_plans::sort_shuffle::{
+    get_index_path, is_sort_shuffle_output, read_sort_shuffle_partition,
+};
 use crate::extension::SessionConfigExt;
 use crate::serde::scheduler::{PartitionLocation, PartitionStats};
 
@@ -525,7 +528,58 @@ async fn fetch_partition_local(
     let path = &location.path;
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
+    let data_path = std::path::Path::new(path);
 
+    // Check if this is a sort-based shuffle output (has index file)
+    if is_sort_shuffle_output(data_path) {
+        debug!(
+            "Reading sort-based shuffle for partition {} from {:?}",
+            partition_id.partition_id, data_path
+        );
+        let index_path = get_index_path(data_path);
+        let batches = read_sort_shuffle_partition(
+            data_path,
+            &index_path,
+            partition_id.partition_id,
+        )
+        .map_err(|e| {
+            BallistaError::FetchFailed(
+                metadata.id.clone(),
+                partition_id.stage_id,
+                partition_id.partition_id,
+                e.to_string(),
+            )
+        })?;
+
+        // Create a stream from the batches
+        let schema = if let Some(first_batch) = batches.first() {
+            first_batch.schema()
+        } else {
+            // Empty partition - we need to get schema from the file
+            let file = File::open(data_path).map_err(|e| {
+                BallistaError::FetchFailed(
+                    metadata.id.clone(),
+                    partition_id.stage_id,
+                    partition_id.partition_id,
+                    e.to_string(),
+                )
+            })?;
+            let reader = StreamReader::try_new(file, None).map_err(|e| {
+                BallistaError::FetchFailed(
+                    metadata.id.clone(),
+                    partition_id.stage_id,
+                    partition_id.partition_id,
+                    e.to_string(),
+                )
+            })?;
+            reader.schema()
+        };
+
+        let stream = futures::stream::iter(batches.into_iter().map(Ok));
+        return Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)));
+    }
+
+    // Standard hash-based shuffle - read the file directly
     let reader = fetch_partition_local_inner(path).map_err(|e| {
         // return BallistaError::FetchFailed may let scheduler retry this task.
         BallistaError::FetchFailed(
