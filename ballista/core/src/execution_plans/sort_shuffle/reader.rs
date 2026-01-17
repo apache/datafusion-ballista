@@ -58,7 +58,7 @@ pub fn read_sort_shuffle_partition(
     index_path: &Path,
     partition_id: usize,
 ) -> Result<Vec<RecordBatch>> {
-    // Load the index to verify the partition exists
+    // Load the index
     let index = ShuffleIndex::read_from_file(index_path)?;
 
     if partition_id >= index.partition_count() {
@@ -73,37 +73,30 @@ pub fn read_sort_shuffle_partition(
         return Ok(Vec::new());
     }
 
-    // Read the data file
-    // Note: In the current implementation, we write all partitions sequentially
-    // without proper byte offset tracking. A more sophisticated implementation
-    // would use the index offsets to seek directly to the partition's data.
-    // For now, we read the entire file.
+    // Get the batch range for this partition from the index
+    // The index stores cumulative batch counts:
+    // - offset[i] = starting batch index for partition i
+    // - offset[i+1] (or total_length for last partition) = ending batch index (exclusive)
+    let (start_batch, end_batch) = index.get_partition_range(partition_id);
+    let start_batch = start_batch as usize;
+    let end_batch = end_batch as usize;
 
+    // Read the data file
     let file = File::open(data_path).map_err(BallistaError::IoError)?;
     let reader = StreamReader::try_new(file, None)?;
 
     let mut batches = Vec::new();
-    let num_partitions = index.partition_count();
-    let mut batches_per_partition: Vec<Vec<RecordBatch>> =
-        vec![Vec::new(); num_partitions];
 
-    // Read all batches sequentially - they are written in partition order
-    // This is a simplified approach - in production we'd want proper offset tracking
-    let mut batch_idx = 0;
-    for batch_result in reader {
-        let batch = batch_result?;
-        // For now, put all batches in a single partition (partition 0)
-        // TODO: Implement proper partition detection based on index offsets
-        if batch_idx < num_partitions {
-            let target_partition = batch_idx % num_partitions;
-            batches_per_partition[target_partition].push(batch);
+    // Read batches and collect only those belonging to our partition
+    for (batch_idx, batch_result) in reader.enumerate() {
+        if batch_idx >= end_batch {
+            // We've passed the partition's range, stop reading
+            break;
         }
-        batch_idx += 1;
-    }
-
-    // Return batches for requested partition
-    if partition_id < batches_per_partition.len() {
-        batches = std::mem::take(&mut batches_per_partition[partition_id]);
+        if batch_idx >= start_batch {
+            // This batch belongs to our partition
+            batches.push(batch_result?);
+        }
     }
 
     Ok(batches)

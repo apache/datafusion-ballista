@@ -384,11 +384,13 @@ fn finalize_output(
         IpcWriteOptions::default().try_with_compression(Some(config.compression))?;
     let mut writer = StreamWriter::try_new_with_options(buffered, schema, options)?;
 
-    let mut current_offset: i64 = 0;
+    // Track cumulative batch counts - index stores the starting batch index for each partition
+    let mut cumulative_batch_count: i64 = 0;
 
     // Write partitions in order
     for partition_id in 0..num_partitions {
-        index.set_offset(partition_id, current_offset);
+        // Set the starting batch index for this partition
+        index.set_offset(partition_id, cumulative_batch_count);
 
         let mut partition_rows: u64 = 0;
         let mut partition_batches: u64 = 0;
@@ -414,11 +416,6 @@ fn finalize_output(
             writer.write(&batch)?;
         }
 
-        // Flush to get accurate offset
-        // Note: We need to track the actual bytes written per partition
-        // For now, we estimate based on data written
-        // A more accurate approach would require the writer to expose position info
-
         partition_stats.push((
             partition_id,
             partition_batches,
@@ -426,38 +423,24 @@ fn finalize_output(
             0, // Will update with actual bytes below
         ));
 
-        // We don't have direct access to byte offsets during writing,
-        // so we need to write all data first, then calculate sizes from the index
-        current_offset = partition_id as i64 + 1; // Placeholder, will recalculate
+        cumulative_batch_count += partition_batches as i64;
     }
 
     // Finish writing
     writer.finish()?;
 
-    // Get actual file size
-    let file_size = std::fs::metadata(&data_path)?.len() as i64;
-    index.set_total_length(file_size);
-
-    // Since IPC streaming doesn't give us per-partition offsets easily,
-    // we write a simpler index where each partition's data is sequential
-    // The reader will need to read the whole file and filter by partition
-    // For a more sophisticated implementation, we'd need to track byte positions
-
-    // For now, set offsets to 0 (reader will scan the file)
-    // TODO: Implement proper offset tracking by using a custom writer wrapper
-    for i in 0..num_partitions {
-        index.set_offset(i, 0);
-    }
-    index.set_total_length(file_size);
+    // Store total batch count as the "total_length"
+    // The reader uses this to know the range for the last partition
+    index.set_total_length(cumulative_batch_count);
 
     // Write index file
     index
         .write_to_file(&index_path)
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
-    // Update partition stats with file size (divided equally for now)
-    // In a proper implementation, we'd track actual sizes per partition
-    let avg_size = (file_size as u64) / num_partitions.max(1) as u64;
+    // Get actual file size for stats
+    let file_size = std::fs::metadata(&data_path)?.len() as u64;
+    let avg_size = file_size / num_partitions.max(1) as u64;
     for stats in &mut partition_stats {
         stats.3 = avg_size;
     }

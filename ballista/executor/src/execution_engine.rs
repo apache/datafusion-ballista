@@ -23,6 +23,7 @@
 
 use async_trait::async_trait;
 use ballista_core::execution_plans::ShuffleWriterExec;
+use ballista_core::execution_plans::sort_shuffle::SortShuffleWriterExec;
 use ballista_core::serde::protobuf::ShuffleWritePartition;
 use ballista_core::utils;
 use datafusion::error::{DataFusionError, Result};
@@ -88,61 +89,102 @@ impl ExecutionEngine for DefaultExecutionEngine {
         plan: Arc<dyn ExecutionPlan>,
         work_dir: &str,
     ) -> Result<Arc<dyn QueryStageExecutor>> {
-        // the query plan created by the scheduler always starts with a ShuffleWriterExec
-        let exec = if let Some(shuffle_writer) =
-            plan.as_any().downcast_ref::<ShuffleWriterExec>()
-        {
+        // the query plan created by the scheduler always starts with a shuffle writer
+        // (either ShuffleWriterExec or SortShuffleWriterExec)
+        if let Some(shuffle_writer) = plan.as_any().downcast_ref::<ShuffleWriterExec>() {
             // recreate the shuffle writer with the correct working directory
-            ShuffleWriterExec::try_new(
+            let exec = ShuffleWriterExec::try_new(
                 job_id,
                 stage_id,
                 plan.children()[0].clone(),
                 work_dir.to_string(),
                 shuffle_writer.shuffle_output_partitioning().cloned(),
-            )
+            )?;
+            Ok(Arc::new(DefaultQueryStageExec::new(
+                ShuffleWriterVariant::Hash(exec),
+            )))
+        } else if let Some(sort_shuffle_writer) =
+            plan.as_any().downcast_ref::<SortShuffleWriterExec>()
+        {
+            // recreate the sort shuffle writer with the correct working directory
+            let exec = SortShuffleWriterExec::try_new(
+                job_id,
+                stage_id,
+                plan.children()[0].clone(),
+                work_dir.to_string(),
+                sort_shuffle_writer.shuffle_output_partitioning().clone(),
+                sort_shuffle_writer.config().clone(),
+            )?;
+            Ok(Arc::new(DefaultQueryStageExec::new(
+                ShuffleWriterVariant::Sort(exec),
+            )))
         } else {
             Err(DataFusionError::Internal(
-                "Plan passed to new_query_stage_exec is not a ShuffleWriterExec"
+                "Plan passed to new_query_stage_exec is not a ShuffleWriterExec or SortShuffleWriterExec"
                     .to_string(),
             ))
-        }?;
-        Ok(Arc::new(DefaultQueryStageExec::new(exec)))
+        }
     }
 }
 
-/// Default query stage executor that wraps a ShuffleWriterExec.
+/// Enum representing the different shuffle writer implementations.
+#[derive(Debug, Clone)]
+pub enum ShuffleWriterVariant {
+    /// Hash-based shuffle writer (original implementation).
+    Hash(ShuffleWriterExec),
+    /// Sort-based shuffle writer.
+    Sort(SortShuffleWriterExec),
+}
+
+/// Default query stage executor that wraps a shuffle writer.
 ///
-/// This executor delegates to the ShuffleWriterExec to perform the actual
+/// This executor delegates to the underlying shuffle writer to perform the actual
 /// shuffle write operation, which partitions the data and writes it to disk.
 #[derive(Debug)]
 pub struct DefaultQueryStageExec {
     /// The underlying shuffle writer execution plan.
-    shuffle_writer: ShuffleWriterExec,
+    shuffle_writer: ShuffleWriterVariant,
 }
 
 impl DefaultQueryStageExec {
     /// Creates a new DefaultQueryStageExec wrapping the given shuffle writer.
-    pub fn new(shuffle_writer: ShuffleWriterExec) -> Self {
+    pub fn new(shuffle_writer: ShuffleWriterVariant) -> Self {
         Self { shuffle_writer }
     }
 }
 
 impl Display for DefaultQueryStageExec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let stage_metrics: Vec<String> = self
-            .shuffle_writer
-            .metrics()
-            .unwrap_or_default()
-            .iter()
-            .map(|m| m.to_string())
-            .collect();
-
-        write!(
-            f,
-            "DefaultQueryStageExec: ({})\n{}",
-            stage_metrics.join(", "),
-            self.shuffle_writer
-        )
+        match &self.shuffle_writer {
+            ShuffleWriterVariant::Hash(writer) => {
+                let stage_metrics: Vec<String> = writer
+                    .metrics()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|m| m.to_string())
+                    .collect();
+                write!(
+                    f,
+                    "DefaultQueryStageExec(Hash): ({})\n{}",
+                    stage_metrics.join(", "),
+                    writer
+                )
+            }
+            ShuffleWriterVariant::Sort(writer) => {
+                let stage_metrics: Vec<String> = writer
+                    .metrics()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|m| m.to_string())
+                    .collect();
+                write!(
+                    f,
+                    "DefaultQueryStageExec(Sort): ({})\n{:?}",
+                    stage_metrics.join(", "),
+                    writer
+                )
+            }
+        }
     }
 }
 
@@ -153,13 +195,26 @@ impl QueryStageExecutor for DefaultQueryStageExec {
         input_partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<Vec<ShuffleWritePartition>> {
-        self.shuffle_writer
-            .clone()
-            .execute_shuffle_write(input_partition, context)
-            .await
+        match &self.shuffle_writer {
+            ShuffleWriterVariant::Hash(writer) => {
+                writer
+                    .clone()
+                    .execute_shuffle_write(input_partition, context)
+                    .await
+            }
+            ShuffleWriterVariant::Sort(writer) => {
+                writer
+                    .clone()
+                    .execute_shuffle_write(input_partition, context)
+                    .await
+            }
+        }
     }
 
     fn collect_plan_metrics(&self) -> Vec<MetricsSet> {
-        utils::collect_plan_metrics(&self.shuffle_writer)
+        match &self.shuffle_writer {
+            ShuffleWriterVariant::Hash(writer) => utils::collect_plan_metrics(writer),
+            ShuffleWriterVariant::Sort(writer) => utils::collect_plan_metrics(writer),
+        }
     }
 }
