@@ -71,7 +71,7 @@ It is also possible to run the CLI in standalone mode, where it will create a sc
 ```bash
 $ ballista-cli
 
-Ballista CLI v8.0.0
+Ballista CLI v51.0.0
 
 > CREATE EXTERNAL TABLE foo (a INT, b INT) STORED AS CSV LOCATION 'data.csv';
 0 rows in set. Query took 0.001 seconds.

@@ -102,3 +102,6 @@ dev/dist
 
 # logs
 logs/
+
+# Claude Code guidance file (local only)
+CLAUDE.md

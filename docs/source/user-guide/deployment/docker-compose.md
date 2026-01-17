@@ -39,15 +39,11 @@ This should show output similar to the following:
 ```bash
 $ docker-compose up
 Creating network "ballista-benchmarks_default" with the default driver
-Creating ballista-benchmarks_etcd_1 ... done
 Creating ballista-benchmarks_ballista-scheduler_1 ... done
 Creating ballista-benchmarks_ballista-executor_1  ... done
-Attaching to ballista-benchmarks_etcd_1, ballista-benchmarks_ballista-scheduler_1, ballista-benchmarks_ballista-executor_1
-ballista-executor_1   | [2021-08-28T15:55:22Z INFO  ballista_executor] Running with config:
-ballista-executor_1   | [2021-08-28T15:55:22Z INFO  ballista_executor] work_dir: /tmp/.tmpLVx39c
-ballista-executor_1   | [2021-08-28T15:55:22Z INFO  ballista_executor] concurrent_tasks: 4
-ballista-scheduler_1  | [2021-08-28T15:55:22Z INFO  ballista_scheduler] Ballista v0.12.0 Scheduler listening on 0.0.0.0:50050
-ballista-executor_1   | [2021-08-28T15:55:22Z INFO  ballista_executor] Ballista v0.12.0 Rust Executor listening on 0.0.0.0:50051
+Attaching to ballista-benchmarks_ballista-scheduler_1, ballista-benchmarks_ballista-executor_1
+ballista-scheduler_1  | INFO ballista_scheduler: Ballista v51.0.0 Scheduler listening on 0.0.0.0:50050
+ballista-executor_1   | INFO ballista_executor: Ballista v51.0.0 Rust Executor listening on 0.0.0.0:50051
 ```
 
 The scheduler listens on port 50050 and this is the port that clients will need to connect to.
