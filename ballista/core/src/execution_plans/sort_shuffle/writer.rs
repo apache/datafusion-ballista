@@ -60,6 +60,10 @@ use log::{debug, info};
 
 use crate::serde::scheduler::PartitionStats;
 
+/// Result of finalizing shuffle output: (data_path, index_path, partition_write_stats)
+/// where partition_write_stats is (partition_id, num_batches, num_rows, num_bytes)
+type FinalizeResult = (PathBuf, PathBuf, Vec<(usize, u64, u64, u64)>);
+
 /// Sort-based shuffle writer that produces a single consolidated output file
 /// per input partition with an index file for partition offsets.
 #[derive(Debug, Clone)]
@@ -352,6 +356,7 @@ fn spill_largest_buffers(
 ///
 /// Returns (data_path, index_path, partition_stats) where partition_stats is
 /// a vector of (partition_id, num_batches, num_rows, num_bytes) tuples.
+#[allow(clippy::too_many_arguments)]
 fn finalize_output(
     work_dir: &str,
     job_id: &str,
@@ -361,7 +366,7 @@ fn finalize_output(
     spill_manager: &mut SpillManager,
     schema: &SchemaRef,
     config: &SortShuffleConfig,
-) -> Result<(PathBuf, PathBuf, Vec<(usize, u64, u64, u64)>)> {
+) -> Result<FinalizeResult> {
     let num_partitions = buffers.len();
     let mut index = ShuffleIndex::new(num_partitions);
     let mut partition_stats = Vec::with_capacity(num_partitions);
@@ -391,7 +396,7 @@ fn finalize_output(
     let mut cumulative_batch_count: i64 = 0;
 
     // Write partitions in order
-    for partition_id in 0..num_partitions {
+    for (partition_id, buffer) in buffers.iter_mut().enumerate() {
         // Set the starting batch index for this partition
         index.set_offset(partition_id, cumulative_batch_count);
 
@@ -414,7 +419,7 @@ fn finalize_output(
         }
 
         // Then write remaining buffered data
-        let buffered_batches = buffers[partition_id].take_batches();
+        let buffered_batches = buffer.take_batches();
         for batch in buffered_batches {
             partition_rows += batch.num_rows() as u64;
             partition_bytes += batch.get_array_memory_size() as u64;
