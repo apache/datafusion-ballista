@@ -65,3 +65,14 @@ cargo test
 cd examples
 cargo run --example standalone_sql --features=ballista/standalone
 ```
+
+## Benchmarking
+
+For performance testing and benchmarking with TPC-H and other datasets, see the [benchmarks README](../../../benchmarks/README.md).
+
+This includes instructions for:
+
+- Generating TPC-H test data
+- Running benchmarks against DataFusion and Ballista
+- Comparing performance with Apache Spark
+- Running load tests
