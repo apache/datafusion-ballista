@@ -80,9 +80,6 @@ plan or a SQL string. The scheduler then creates an execution graph, which conta
 stages (pipelines) that can be scheduled independently. This process is explained in detail in the Distributed
 Query Scheduling section of this guide.
 
-It is possible to have multiple schedulers running with shared state in etcd, so that jobs can continue to run
-even if a scheduler process fails.
-
 ### Executor
 
 The executor processes connect to a scheduler and poll for tasks to perform. These tasks are physical plans in
