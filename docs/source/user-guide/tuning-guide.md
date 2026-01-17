@@ -73,8 +73,8 @@ which is the best for your use case.
 
 Pull-based scheduling works in a similar way to Apache Spark and push-based scheduling can result in lower latency.
 
-The scheduling policy can be specified in the `--scheduler_policy` parameter when starting the scheduler and executor
-processes. The default is `pull-based`.
+The scheduling policy can be specified in the `--scheduler-policy` parameter when starting the scheduler and executor
+processes. The default is `pull-staged`.
 
 ## Viewing Query Plans and Metrics
 

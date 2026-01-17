@@ -60,7 +60,7 @@ The scheduler process implements a gRPC interface (defined in
 | GetJobStatus         | Get the status of a submitted query                                  |
 | RegisterExecutor     | Executors call this method to register themselves with the scheduler |
 
-The scheduler can run in standalone mode, or can be run in clustered mode using etcd as backing store for state.
+The scheduler currently uses in-memory state storage.
 
 ## Executor Process
 

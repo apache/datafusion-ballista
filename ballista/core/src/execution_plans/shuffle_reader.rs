@@ -599,9 +599,17 @@ fn fetch_partition_local_inner(
         BallistaError::General(format!("Failed to open partition file at {path}: {e:?}"))
     })?;
     let file = BufReader::new(file);
-    let reader = StreamReader::try_new(file, None).map_err(|e| {
-        BallistaError::General(format!("Failed to new arrow FileReader at {path}: {e:?}"))
-    })?;
+    // Safety: setting `skip_validation` requires `unsafe`, user assures data is valid
+    let reader = unsafe {
+        StreamReader::try_new(file, None)
+            .map_err(|e| {
+                BallistaError::General(format!(
+                    "Failed to create new arrow StreamReader at {path}: {e:?}"
+                ))
+            })?
+            .with_skip_validation(cfg!(feature = "arrow-ipc-optimizations"))
+    };
+
     Ok(reader)
 }
 
