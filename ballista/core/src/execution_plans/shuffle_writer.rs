@@ -62,6 +62,8 @@ use datafusion::physical_plan::repartition::BatchPartitioner;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use log::{debug, info};
 
+use super::shuffle_writer_trait::ShuffleWriter;
+
 /// ShuffleWriterExec represents a section of a query plan that has consistent partitioning and
 /// can be executed as one unit with each partition being executed in parallel. The output of each
 /// partition is re-partitioned and streamed to disk in Arrow IPC format. Future stages of the query
@@ -497,6 +499,31 @@ impl ExecutionPlan for ShuffleWriterExec {
 
     fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
         self.plan.partition_statistics(partition)
+    }
+}
+
+impl ShuffleWriter for ShuffleWriterExec {
+    fn job_id(&self) -> &str {
+        &self.job_id
+    }
+
+    fn stage_id(&self) -> usize {
+        self.stage_id
+    }
+
+    fn shuffle_output_partitioning(&self) -> Option<&Partitioning> {
+        self.shuffle_output_partitioning.as_ref()
+    }
+
+    fn input_partition_count(&self) -> usize {
+        self.plan
+            .properties()
+            .output_partitioning()
+            .partition_count()
+    }
+
+    fn clone_box(&self) -> Arc<dyn ShuffleWriter> {
+        Arc::new(self.clone())
     }
 }
 

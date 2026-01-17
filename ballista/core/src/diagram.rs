@@ -16,7 +16,9 @@
 // under the License.
 
 use crate::error::Result;
-use crate::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
+use crate::execution_plans::{
+    ShuffleWriter, ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
+};
 
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_plan::ExecutionPlan;
@@ -37,7 +39,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 ///
 /// Writes a DOT file to the specified filename that visualizes the relationships
 /// between execution stages and their operators.
-pub fn produce_diagram(filename: &str, stages: &[Arc<ShuffleWriterExec>]) -> Result<()> {
+pub fn produce_diagram(filename: &str, stages: &[Arc<dyn ShuffleWriter>]) -> Result<()> {
     let write_file = File::create(filename)?;
     let mut w = BufWriter::new(&write_file);
     writeln!(w, "digraph G {{")?;
@@ -94,6 +96,12 @@ fn build_exec_plan_diagram(
         "FilterExec"
     } else if plan.as_any().downcast_ref::<ShuffleWriterExec>().is_some() {
         "ShuffleWriterExec"
+    } else if plan
+        .as_any()
+        .downcast_ref::<SortShuffleWriterExec>()
+        .is_some()
+    {
+        "SortShuffleWriterExec"
     } else if plan
         .as_any()
         .downcast_ref::<UnresolvedShuffleExec>()

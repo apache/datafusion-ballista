@@ -28,7 +28,9 @@ use datafusion::prelude::SessionConfig;
 use log::{debug, error, info, warn};
 
 use ballista_core::error::{BallistaError, Result};
-use ballista_core::execution_plans::{ShuffleWriterExec, UnresolvedShuffleExec};
+use ballista_core::execution_plans::{
+    ShuffleWriter, ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
+};
 use ballista_core::serde::protobuf::failed_task::FailedReason;
 use ballista_core::serde::protobuf::job_status::Status;
 use ballista_core::serde::protobuf::{FailedJob, ShuffleWritePartition, job_status};
@@ -1435,7 +1437,7 @@ impl ExecutionStageBuilder {
 
     pub fn build(
         mut self,
-        stages: Vec<Arc<ShuffleWriterExec>>,
+        stages: Vec<Arc<dyn ShuffleWriter>>,
     ) -> Result<HashMap<usize, ExecutionStage>> {
         let mut execution_stages: HashMap<usize, ExecutionStage> = HashMap::new();
         // First, build the dependency graph
@@ -1486,7 +1488,12 @@ impl ExecutionPlanVisitor for ExecutionStageBuilder {
         &mut self,
         plan: &dyn ExecutionPlan,
     ) -> std::result::Result<bool, Self::Error> {
+        // Handle both ShuffleWriterExec and SortShuffleWriterExec
         if let Some(shuffle_write) = plan.as_any().downcast_ref::<ShuffleWriterExec>() {
+            self.current_stage_id = shuffle_write.stage_id();
+        } else if let Some(shuffle_write) =
+            plan.as_any().downcast_ref::<SortShuffleWriterExec>()
+        {
             self.current_stage_id = shuffle_write.stage_id();
         } else if let Some(unresolved_shuffle) =
             plan.as_any().downcast_ref::<UnresolvedShuffleExec>()
@@ -1558,15 +1565,25 @@ impl Debug for TaskDescription {
 impl TaskDescription {
     /// Returns the number of output partitions this task will produce.
     pub fn get_output_partition_number(&self) -> usize {
-        let shuffle_writer = self
-            .plan
-            .as_any()
-            .downcast_ref::<ShuffleWriterExec>()
-            .unwrap();
-        shuffle_writer
-            .shuffle_output_partitioning()
-            .map(|partitioning| partitioning.partition_count())
-            .unwrap_or_else(|| 1)
+        // Try ShuffleWriterExec first
+        if let Some(shuffle_writer) =
+            self.plan.as_any().downcast_ref::<ShuffleWriterExec>()
+        {
+            return shuffle_writer
+                .shuffle_output_partitioning()
+                .map(|partitioning| partitioning.partition_count())
+                .unwrap_or(1);
+        }
+        // Try SortShuffleWriterExec
+        if let Some(shuffle_writer) =
+            self.plan.as_any().downcast_ref::<SortShuffleWriterExec>()
+        {
+            return shuffle_writer
+                .shuffle_output_partitioning()
+                .partition_count();
+        }
+        // Default fallback
+        1
     }
 }
 

@@ -4,7 +4,10 @@
 /// /////////////////////////////////////////////////////////////////////////////////////////////////
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BallistaPhysicalPlanNode {
-    #[prost(oneof = "ballista_physical_plan_node::PhysicalPlanType", tags = "1, 2, 3")]
+    #[prost(
+        oneof = "ballista_physical_plan_node::PhysicalPlanType",
+        tags = "1, 2, 3, 4"
+    )]
     pub physical_plan_type: ::core::option::Option<
         ballista_physical_plan_node::PhysicalPlanType,
     >,
@@ -19,6 +22,8 @@ pub mod ballista_physical_plan_node {
         ShuffleReader(super::ShuffleReaderExecNode),
         #[prost(message, tag = "3")]
         UnresolvedShuffle(super::UnresolvedShuffleExecNode),
+        #[prost(message, tag = "4")]
+        SortShuffleWriter(super::SortShuffleWriterExecNode),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -35,6 +40,27 @@ pub struct ShuffleWriterExecNode {
     pub output_partitioning: ::core::option::Option<
         ::datafusion_proto::protobuf::PhysicalHashRepartition,
     >,
+}
+/// Sort-based shuffle writer that produces consolidated files with index
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SortShuffleWriterExecNode {
+    #[prost(string, tag = "1")]
+    pub job_id: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub stage_id: u32,
+    #[prost(message, optional, tag = "3")]
+    pub input: ::core::option::Option<::datafusion_proto::protobuf::PhysicalPlanNode>,
+    #[prost(message, optional, tag = "4")]
+    pub output_partitioning: ::core::option::Option<
+        ::datafusion_proto::protobuf::PhysicalHashRepartition,
+    >,
+    /// Configuration for sort shuffle
+    #[prost(uint64, tag = "5")]
+    pub buffer_size: u64,
+    #[prost(uint64, tag = "6")]
+    pub memory_limit: u64,
+    #[prost(double, tag = "7")]
+    pub spill_threshold: f64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UnresolvedShuffleExecNode {

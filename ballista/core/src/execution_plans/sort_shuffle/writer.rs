@@ -29,6 +29,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use super::super::shuffle_writer_trait::ShuffleWriter;
 use super::buffer::PartitionBuffer;
 use super::config::SortShuffleConfig;
 use super::index::ShuffleIndex;
@@ -171,6 +172,14 @@ impl SortShuffleWriterExec {
     /// Get the sort shuffle configuration
     pub fn config(&self) -> &SortShuffleConfig {
         &self.config
+    }
+
+    /// Get the input partition count
+    pub fn input_partition_count(&self) -> usize {
+        self.plan
+            .properties()
+            .output_partitioning()
+            .partition_count()
     }
 
     /// Execute the sort-based shuffle write for a single input partition.
@@ -594,6 +603,31 @@ impl ExecutionPlan for SortShuffleWriterExec {
 
     fn partition_statistics(&self, partition: Option<usize>) -> Result<Statistics> {
         self.plan.partition_statistics(partition)
+    }
+}
+
+impl ShuffleWriter for SortShuffleWriterExec {
+    fn job_id(&self) -> &str {
+        &self.job_id
+    }
+
+    fn stage_id(&self) -> usize {
+        self.stage_id
+    }
+
+    fn shuffle_output_partitioning(&self) -> Option<&Partitioning> {
+        Some(&self.shuffle_output_partitioning)
+    }
+
+    fn input_partition_count(&self) -> usize {
+        self.plan
+            .properties()
+            .output_partitioning()
+            .partition_count()
+    }
+
+    fn clone_box(&self) -> Arc<dyn ShuffleWriter> {
+        Arc::new(self.clone())
     }
 }
 
