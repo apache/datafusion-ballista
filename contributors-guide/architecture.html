@@ -430,8 +430,6 @@ between the executor(s) and the scheduler for fetching tasks and reporting task 
 plan or a SQL string. The scheduler then creates an execution graph, which contains a physical plan broken down into
 stages (pipelines) that can be scheduled independently. This process is explained in detail in the Distributed
 Query Scheduling section of this guide.</p>
-<p>It is possible to have multiple schedulers running with shared state in etcd, so that jobs can continue to run
-even if a scheduler process fails.</p>
 </section>
 <section id="executor">
 <h3>Executor<a class="headerlink" href="#executor" title="Link to this heading">¶</a></h3>

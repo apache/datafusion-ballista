@@ -368,10 +368,10 @@ must be enabled using the following command.</p>
 <section id="publishing-docker-images">
 <h2>Publishing Docker Images<a class="headerlink" href="#publishing-docker-images" title="Link to this heading">¶</a></h2>
 <p>Once the images have been built, you can retag them and can push them to your favourite Docker registry.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>tag<span class="w"> </span>apache/datafusion-ballista-scheduler:0.12.0<span class="w"> </span>&lt;your-repo&gt;/datafusion-ballista-scheduler:0.12.0
-docker<span class="w"> </span>tag<span class="w"> </span>apache/datafusion-ballista-executor:0.12.0<span class="w"> </span>&lt;your-repo&gt;/datafusion-ballista-executor:0.12.0
-docker<span class="w"> </span>push<span class="w"> </span>&lt;your-repo&gt;/datafusion-ballista-scheduler:0.12.0
-docker<span class="w"> </span>push<span class="w"> </span>&lt;your-repo&gt;/datafusion-ballista-executor:0.12.0
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>tag<span class="w"> </span>apache/datafusion-ballista-scheduler:latest<span class="w"> </span>&lt;your-repo&gt;/datafusion-ballista-scheduler:latest
+docker<span class="w"> </span>tag<span class="w"> </span>apache/datafusion-ballista-executor:latest<span class="w"> </span>&lt;your-repo&gt;/datafusion-ballista-executor:latest
+docker<span class="w"> </span>push<span class="w"> </span>&lt;your-repo&gt;/datafusion-ballista-scheduler:latest
+docker<span class="w"> </span>push<span class="w"> </span>&lt;your-repo&gt;/datafusion-ballista-executor:latest
 </pre></div>
 </div>
 </section>
@@ -453,7 +453,7 @@ persistentvolumeclaim/data-pv-claim<span class="w"> </span>created
 <span class="w">    </span><span class="nt">spec</span><span class="p">:</span>
 <span class="w">      </span><span class="nt">containers</span><span class="p">:</span>
 <span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-scheduler</span>
-<span class="w">          </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">&lt;your-repo&gt;/datafusion-ballista-scheduler:0.12.0</span>
+<span class="w">          </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">&lt;your-repo&gt;/datafusion-ballista-scheduler:latest</span>
 <span class="w">          </span><span class="nt">args</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;--bind-port=50050&quot;</span><span class="p p-Indicator">]</span>
 <span class="w">          </span><span class="nt">ports</span><span class="p">:</span>
 <span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">containerPort</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50050</span>
@@ -483,7 +483,7 @@ persistentvolumeclaim/data-pv-claim<span class="w"> </span>created
 <span class="w">    </span><span class="nt">spec</span><span class="p">:</span>
 <span class="w">      </span><span class="nt">containers</span><span class="p">:</span>
 <span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ballista-executor</span>
-<span class="w">          </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">&lt;your-repo&gt;/datafusion-ballista-executor:0.12.0</span>
+<span class="w">          </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">&lt;your-repo&gt;/datafusion-ballista-executor:latest</span>
 <span class="w">          </span><span class="nt">args</span><span class="p">:</span>
 <span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;--bind-port=50051&quot;</span>
 <span class="w">            </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;--scheduler-host=ballista-scheduler&quot;</span>
@@ -517,11 +517,11 @@ ballista-executor-78cc5b6486-7crdm<span class="w">   </span><span class="m">0</s
 ballista-scheduler-879f874c5-rnbd6<span class="w">   </span><span class="m">0</span>/1<span class="w">     </span>Pending<span class="w">   </span><span class="m">0</span><span class="w">          </span>42s
 </pre></div>
 </div>
-<p>You can view the scheduler logs with <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">logs</span> <span class="pre">ballista-scheduler-0</span></code>:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl logs ballista-scheduler-0
-[2021-02-19T00:24:01Z INFO  scheduler] Ballista v0.7.0 Scheduler listening on 0.0.0.0:50050
-[2021-02-19T00:24:16Z INFO  ballista::scheduler] Received register_executor request for ExecutorMetadata { id: &quot;b5e81711-1c5c-46ec-8522-d8b359793188&quot;, host: &quot;10.1.23.149&quot;, port: 50051 }
-[2021-02-19T00:24:17Z INFO  ballista::scheduler] Received register_executor request for ExecutorMetadata { id: &quot;816e4502-a876-4ed8-b33f-86d243dcf63f&quot;, host: &quot;10.1.23.150&quot;, port: 50051 }
+<p>You can view the scheduler logs with <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">logs</span> <span class="pre">ballista-scheduler-&lt;pod-id&gt;</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>$ kubectl logs ballista-scheduler-&lt;pod-id&gt;
+INFO ballista_scheduler::scheduler_process: Ballista v51.0.0 Scheduler listening on 0.0.0.0:50050
+INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: &quot;b5e81711-1c5c-46ec-8522-d8b359793188&quot;, host: &quot;10.1.23.149&quot;, port: 50051 }
+INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: &quot;816e4502-a876-4ed8-b33f-86d243dcf63f&quot;, host: &quot;10.1.23.150&quot;, port: 50051 }
 </pre></div>
 </div>
 </section>

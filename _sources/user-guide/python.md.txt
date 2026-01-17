@@ -117,12 +117,8 @@ The following example demonstrates creating arrays with PyArrow and then creatin
 from ballista import BallistaBuilder
 import pyarrow
 
-# an alias
-# TODO implement Functions
-f = ballista.functions
-
 # create a context
-ctx = Ballista().standalone()
+ctx = BallistaBuilder().standalone()
 
 # create a RecordBatch and a new DataFrame from it
 batch = pyarrow.RecordBatch.from_arrays(
@@ -132,9 +128,10 @@ batch = pyarrow.RecordBatch.from_arrays(
 df = ctx.create_dataframe([[batch]])
 
 # create a new statement
+from datafusion import col
 df = df.select(
-    f.col("a") + f.col("b"),
-    f.col("a") - f.col("b"),
+    col("a") + col("b"),
+    col("a") - col("b"),
 )
 
 # execute and collect the first (and only) batch

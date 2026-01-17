@@ -378,8 +378,7 @@
 <p>Besides the BallistaContext configuration settings, a few configuration settings for the Ballista scheduler to better
 manage the whole cluster are also needed to be taken care of.</p>
 <p><em>Example: Specifying configuration options when starting the scheduler</em></p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./ballista-scheduler<span class="w"> </span>--scheduler-policy<span class="w"> </span>push-staged<span class="w"> </span>--event-loop-buffer-size<span class="w"> </span><span class="m">1000000</span><span class="w"> </span>--executor-slots-policy
-round-robin-local
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./ballista-scheduler<span class="w"> </span>--scheduler-policy<span class="w"> </span>push-staged<span class="w"> </span>--event-loop-buffer-size<span class="w"> </span><span class="m">1000000</span><span class="w"> </span>--task-distribution<span class="w"> </span>round-robin
 </pre></div>
 </div>
 <table class="table">
@@ -401,10 +400,10 @@ round-robin-local
 <td><p>10000</p></td>
 <td><p>Sets the event loop buffer size. for a system of high throughput, a larger value like 1000000 is recommended.</p></td>
 </tr>
-<tr class="row-even"><td><p>executor-slots-policy</p></td>
+<tr class="row-even"><td><p>task-distribution</p></td>
 <td><p>Utf8</p></td>
 <td><p>bias</p></td>
-<td><p>Sets the executor slots policy for the scheduler, possible values: bias, round-robin, round-robin-local. For a cluster with single scheduler, round-robin-local is recommended.</p></td>
+<td><p>Sets the task distribution policy for the scheduler, possible values: bias, round-robin, consistent-hash.</p></td>
 </tr>
 <tr class="row-odd"><td><p>finished-job-data-clean-up-interval-seconds</p></td>
 <td><p>UInt64</p></td>
