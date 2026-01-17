@@ -45,11 +45,6 @@ cargo install tpchgen-cli
 
 ### Generating Data
 
-Generate SF=1 data in tbl format:
-```bash
-tpchgen-cli -s 1 --output-dir data
-```
-
 Generate SF=1 data in Parquet format:
 ```bash
 tpchgen-cli -s 1 --format parquet --output-dir data
@@ -57,7 +52,7 @@ tpchgen-cli -s 1 --format parquet --output-dir data
 
 For larger scale factors (e.g., SF=10):
 ```bash
-tpchgen-cli -s 10 --output-dir data
+tpchgen-cli -s 10 --format parquet --output-dir data
 ```
 
 Data will be generated into the `data` subdirectory and will not be checked in because this directory has been added
