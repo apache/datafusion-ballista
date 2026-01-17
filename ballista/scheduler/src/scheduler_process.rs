@@ -16,7 +16,6 @@
 // under the License.
 
 use crate::flight_proxy_service::BallistaFlightProxyService;
-use crate::state::SchedulerState;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::BALLISTA_VERSION;
@@ -25,14 +24,12 @@ use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer;
 use ballista_core::serde::{
     BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
 };
-use ballista_core::utils::{GrpcServerConfig, create_grpc_server};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use http::StatusCode;
-use log::{error, info};
+use log::info;
 use std::{net::SocketAddr, sync::Arc};
-use tokio::task::JoinHandle;
 use tonic::service::RoutesBuilder;
 
 #[cfg(feature = "rest-api")]
@@ -93,7 +90,6 @@ pub async fn start_grpc_service<
 >(
     address: SocketAddr,
     scheduler: SchedulerServer<T, U>,
-    add_flight_proxy: bool,
 ) -> ballista_core::error::Result<()> {
     let config = &scheduler.state.config;
     let scheduler_grpc_server = SchedulerGrpcServer::new(scheduler.clone())
@@ -103,10 +99,17 @@ pub async fn start_grpc_service<
     let mut tonic_builder = RoutesBuilder::default();
     tonic_builder.add_service(scheduler_grpc_server);
 
-    if add_flight_proxy {
-        info!("Adding flight proxy service on scheduler port");
+    let embed_flight_proxy = config
+        .advertise_flight_sql_endpoint
+        .clone()
+        .map(|s| s.is_empty())
+        .unwrap_or(false);
+
+    if embed_flight_proxy {
+        info!("Adding embeddded flight proxy service on scheduler");
         let flight_proxy = FlightServiceServer::new(BallistaFlightProxyService::new(
-            scheduler.clone().state,
+            config.grpc_server_max_encoding_message_size as usize,
+            config.grpc_server_max_decoding_message_size as usize,
         ))
         .max_decoding_message_size(config.grpc_server_max_decoding_message_size as usize)
         .max_encoding_message_size(config.grpc_server_max_encoding_message_size as usize);
@@ -138,49 +141,6 @@ pub async fn start_grpc_service<
         .map_err(BallistaError::from)
 }
 
-fn start_flight_proxy_server<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
-    config: Arc<SchedulerConfig>,
-    state: Arc<SchedulerState<T, U>>,
-) -> JoinHandle<Result<(), BallistaError>> {
-    tokio::spawn(async move {
-        let address = match config.advertise_flight_sql_endpoint.clone() {
-            Some(flight_sql_endpoint) => flight_sql_endpoint
-                .parse::<SocketAddr>()
-                .map_err(|e: std::net::AddrParseError| {
-                    error!("Error parsing advertise_flight_sql_endpoint: {}", e);
-                    BallistaError::Configuration(e.to_string())
-                })?,
-            _ => {
-                return Err(BallistaError::Configuration(
-                    "Expected advertise flight sql endpoint".into(),
-                ));
-            }
-        };
-
-        let max_encoding_message_size =
-            config.grpc_server_max_encoding_message_size as usize;
-        let max_decoding_message_size =
-            config.grpc_server_max_decoding_message_size as usize;
-        info!(
-            "Built-in arrow flight server proxy listening on: {address:?} max_encoding_size: {max_encoding_message_size} max_decoding_size: {max_decoding_message_size}"
-        );
-
-        let grpc_server_config = GrpcServerConfig::default();
-        let server_future = create_grpc_server(&grpc_server_config)
-            .add_service(
-                FlightServiceServer::new(BallistaFlightProxyService::new(state))
-                    .max_decoding_message_size(max_decoding_message_size)
-                    .max_encoding_message_size(max_encoding_message_size),
-            )
-            .serve(address);
-
-        server_future.await.map_err(|e| {
-            error!("Could not start built-in arrow flight server.");
-            BallistaError::TonicError(e)
-        })
-    })
-}
-
 /// Creates scheduler and exposes it as grpc service
 ///
 /// Method is a helper method which calls [create_scheduler] and [start_grpc_service]
@@ -190,25 +150,9 @@ pub async fn start_server(
     config: Arc<SchedulerConfig>,
 ) -> ballista_core::error::Result<()> {
     info!("Ballista v{BALLISTA_VERSION} Scheduler listening on {address:?}");
-    let scheduler =
-        create_scheduler::<LogicalPlanNode, PhysicalPlanNode>(cluster, config.clone())
-            .await?;
 
-    info!(
-        "advertise_flight_sql_endpoint: {:?}",
-        config.advertise_flight_sql_endpoint
-    );
-    match config.advertise_flight_sql_endpoint.clone() {
-        Some(s) if s != "" => {
-            info!("Starting flight proxy on custom addresses {address:?}");
-            let flight_proxy = start_flight_proxy_server(config, scheduler.state.clone());
-            tokio::select! {
-                result = start_grpc_service(address, scheduler, false) => result,
-                result = flight_proxy => {
-                    result.map_err(|e| BallistaError::Internal(format!("Flight proxy task panicked: {e:?}")))?
-                }
-            }
-        }
-        other => start_grpc_service(address, scheduler, other.is_some()).await,
-    }
+    let scheduler =
+        create_scheduler::<LogicalPlanNode, PhysicalPlanNode>(cluster, config).await?;
+
+    start_grpc_service(address, scheduler).await
 }

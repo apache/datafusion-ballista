@@ -17,12 +17,13 @@
 
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
-use crate::serde::protobuf::SuccessfulJob;
+use crate::serde::protobuf::get_job_status_result::FlightProxy;
 use crate::serde::protobuf::{
     ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
     PartitionLocation, execute_query_params::Query, execute_query_result, job_status,
     scheduler_grpc_client::SchedulerGrpcClient,
 };
+use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
 use crate::utils::{GrpcClientConfig, create_grpc_client_connection};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
@@ -296,7 +297,7 @@ async fn execute_query(
 
     info!("Connecting to Ballista scheduler at {scheduler_url}");
     // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
-    let connection = create_grpc_client_connection(scheduler_url, &grpc_config)
+    let connection = create_grpc_client_connection(scheduler_url.clone(), &grpc_config)
         .await
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
@@ -411,6 +412,7 @@ async fn execute_query(
                         partition,
                         max_message_size,
                         true,
+                        scheduler_url.clone(),
                         flight_proxy.clone(),
                     )
                     .map_err(|e| ArrowError::ExternalError(Box::new(e)));
@@ -424,47 +426,69 @@ async fn execute_query(
     }
 }
 
+fn get_client_host_port(
+    executor_metadata: &ExecutorMetadata,
+    scheduler_url: String,
+    flight_proxy: Option<FlightProxy>,
+) -> Result<(String, u16)> {
+    fn split_host_port(address: &str) -> Result<(String, u16)> {
+        let url: Url = format!("http://{address}").parse().map_err(|e| {
+            DataFusionError::Execution(format!(
+                "Cannot parse host:port in {address:?}: {e}"
+            ))
+        })?;
+        let host = url
+            .host_str()
+            .ok_or(DataFusionError::Execution(format!(
+                "No host in {address:?}"
+            )))?
+            .to_string();
+        let port: u16 = url.port().ok_or(DataFusionError::Execution(format!(
+            "No port in {address:?}"
+        )))?;
+        Ok((host, port))
+    }
+
+    match flight_proxy {
+        Some(FlightProxy::External(address)) => {
+            info!("Fetching results from external flight proxy: {}", address);
+            split_host_port(address.as_str())
+        }
+        Some(FlightProxy::Local(true)) => {
+            info!("Fetching results from scheduler: {}", scheduler_url);
+            split_host_port(&scheduler_url)
+        }
+        Some(FlightProxy::Local(false)) | None => {
+            info!(
+                "Fetching results from executor: {}:{}",
+                executor_metadata.host, executor_metadata.port
+            );
+            Ok((
+                executor_metadata.host.clone(),
+                executor_metadata.port as u16,
+            ))
+        }
+    }
+}
+
 async fn fetch_partition(
     location: PartitionLocation,
     max_message_size: usize,
     flight_transport: bool,
-    flight_endpoint_address: Option<String>,
+    scheduler_url: String,
+    flight_proxy: Option<FlightProxy>,
 ) -> Result<SendableRecordBatchStream> {
     let metadata = location.executor_meta.ok_or_else(|| {
         DataFusionError::Internal("Received empty executor metadata".to_owned())
     })?;
+
+    let (client_host, client_port) =
+        get_client_host_port(&metadata, scheduler_url, flight_proxy)?;
     let partition_id = location.partition_id.ok_or_else(|| {
         DataFusionError::Internal("Received empty partition id".to_owned())
     })?;
     let host = metadata.host.as_str();
     let port = metadata.port as u16;
-
-    let (client_host, client_port) = match flight_endpoint_address {
-        Some(flight_proxy_address) => {
-            let url: Url =
-                format!("http://{flight_proxy_address}")
-                    .parse()
-                    .map_err(|e| {
-                        DataFusionError::Execution(format!(
-                            "Cannot parse host:port in {flight_proxy_address:?}: {e}"
-                        ))
-                    })?;
-            let host = url
-                .host_str()
-                .ok_or(DataFusionError::Execution(format!(
-                    "No host in {flight_proxy_address:?}"
-                )))?
-                .to_string();
-            let port: u16 = url.port().ok_or(DataFusionError::Execution(format!(
-                "No port in {flight_proxy_address:?}"
-            )))?;
-            (host, port)
-        }
-        None => {
-            info!("Fetching results from executor at: {host}:{port}");
-            (host.to_string(), port)
-        }
-    };
 
     let mut ballista_client =
         BallistaClient::try_new(client_host.as_str(), client_port, max_message_size)

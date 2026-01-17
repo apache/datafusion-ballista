@@ -984,8 +984,18 @@ pub mod job_status {
 pub struct GetJobStatusResult {
     #[prost(message, optional, tag = "1")]
     pub status: ::core::option::Option<JobStatus>,
-    #[prost(string, optional, tag = "2")]
-    pub flight_proxy: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(oneof = "get_job_status_result::FlightProxy", tags = "2, 3")]
+    pub flight_proxy: ::core::option::Option<get_job_status_result::FlightProxy>,
+}
+/// Nested message and enum types in `GetJobStatusResult`.
+pub mod get_job_status_result {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum FlightProxy {
+        #[prost(bool, tag = "2")]
+        Local(bool),
+        #[prost(string, tag = "3")]
+        External(::prost::alloc::string::String),
+    }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FilePartitionMetadata {
