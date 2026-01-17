@@ -115,7 +115,7 @@ impl ShuffleIndex {
         let file_size = metadata.len() as usize;
 
         // Each offset is 8 bytes (i64)
-        if file_size % 8 != 0 {
+        if !file_size.is_multiple_of(8) {
             return Err(BallistaError::General(format!(
                 "Invalid index file size: {file_size} (must be multiple of 8)"
             )));
