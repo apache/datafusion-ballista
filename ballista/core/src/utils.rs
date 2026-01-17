@@ -31,6 +31,7 @@ use datafusion::physical_plan::metrics::MetricsSet;
 use datafusion::physical_plan::{ExecutionPlan, RecordBatchStream, metrics};
 use futures::StreamExt;
 use log::error;
+use std::io::BufWriter;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs::File, pin::Pin};
@@ -148,10 +149,10 @@ pub async fn write_stream_to_disk(
     path: &str,
     disk_write_metric: &metrics::Time,
 ) -> Result<PartitionStats> {
-    let file = File::create(path).map_err(|e| {
+    let file = BufWriter::new(File::create(path).map_err(|e| {
         error!("Failed to create partition file at {path}: {e:?}");
         BallistaError::IoError(e)
-    })?;
+    })?);
 
     let mut num_rows = 0;
     let mut num_batches = 0;
