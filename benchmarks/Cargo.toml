@@ -52,3 +52,6 @@ tokio = { version = "^1.44", features = [
 
 [dev-dependencies]
 ballista-core = { path = "../ballista/core", version = "51.0.0" }
+ballista-scheduler = { path = "../ballista/scheduler", version = "51.0.0" }
+ballista-executor = { path = "../ballista/executor", version = "51.0.0" }
+tracing-subscriber = { workspace = true }

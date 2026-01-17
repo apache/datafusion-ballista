@@ -942,6 +942,8 @@ version = "51.0.0"
 dependencies = [
  "ballista",
  "ballista-core",
+ "ballista-executor",
+ "ballista-scheduler",
  "datafusion",
  "datafusion-proto",
  "env_logger",
@@ -953,6 +955,7 @@ dependencies = [
  "snmalloc-rs",
  "structopt",
  "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]
