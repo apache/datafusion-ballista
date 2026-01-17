@@ -401,12 +401,7 @@ fn find_query_file(root: &Path, query_no: usize) -> Option<PathBuf> {
         root.join(format!("benchmarks/queries/q{}.sql", query_no)),
         root.join(format!("queries/q{}.sql", query_no)),
     ];
-    for p in paths {
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    None
+    paths.into_iter().find(|p| p.exists())
 }
 
 tpch_test!(q1, 1);
