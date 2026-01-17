@@ -27,9 +27,13 @@ concurrency:
 on:
   pull_request:
     branches: ["main"]
+    paths:
+      - 'python/**'
   push:
     tags: ["*-rc*"]
     branches: ["branch-*"]
+    paths:
+      - 'python/**'
 
 jobs:
   test-release:
