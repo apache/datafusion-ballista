@@ -41,11 +41,12 @@ use std::ops::Deref;
 
 use crate::cluster::{bind_task_bias, bind_task_round_robin};
 use crate::config::TaskDistributionPolicy;
-use crate::scheduler_server::SchedulerServer;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use ballista_core::serde::protobuf::get_job_status_result::FlightProxy;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
+
+use crate::scheduler_server::SchedulerServer;
 
 #[tonic::async_trait]
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc

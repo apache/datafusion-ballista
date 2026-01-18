@@ -150,7 +150,6 @@ pub async fn start_server(
     config: Arc<SchedulerConfig>,
 ) -> ballista_core::error::Result<()> {
     info!("Ballista v{BALLISTA_VERSION} Scheduler listening on {address:?}");
-
     let scheduler =
         create_scheduler::<LogicalPlanNode, PhysicalPlanNode>(cluster, config).await?;
 
