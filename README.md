@@ -17,6 +17,8 @@
   under the License.
 -->
 
+ignore
+
 # Ballista: Making DataFusion Applications Distributed
 
 [![Apache licensed][license-badge]][license-url]
