@@ -128,7 +128,7 @@ fn create_test_data(
     partition_count: usize,
 ) -> Vec<Vec<RecordBatch>> {
     let rows_per_partition = rows / input_partitions;
-    let batches_per_partition = (rows_per_partition + batch_size - 1) / batch_size;
+    let batches_per_partition = rows_per_partition.div_ceil(batch_size);
 
     let mut partitions = Vec::with_capacity(input_partitions);
     for p in 0..input_partitions {
