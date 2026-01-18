@@ -19,6 +19,9 @@
 //!
 //! These tests verify that the sort-based shuffle implementation produces
 //! correct results for various query patterns that involve shuffling.
+//!
+//! Tests are parameterized to run with both local reads and remote reads
+//! (via the flight service) to ensure both paths work correctly.
 
 mod common;
 
@@ -27,21 +30,42 @@ mod common;
 mod sort_shuffle_tests {
     use ballista::prelude::{SessionConfigExt, SessionContextExt};
     use ballista_core::config::{
-        BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE, BALLISTA_SHUFFLE_SORT_BASED_ENABLED,
-        BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT,
+        BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ,
+        BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE,
+        BALLISTA_SHUFFLE_SORT_BASED_ENABLED, BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT,
     };
     use datafusion::arrow::util::pretty::pretty_format_batches;
     use datafusion::common::Result;
     use datafusion::execution::SessionStateBuilder;
     use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
+    use rstest::rstest;
     use std::collections::HashSet;
 
+    /// Read mode for shuffle data
+    #[derive(Debug, Clone, Copy)]
+    enum ReadMode {
+        /// Read shuffle data locally (default)
+        Local,
+        /// Read shuffle data via flight service (remote read)
+        RemoteFlight,
+    }
+
     /// Creates a standalone session context with sort-based shuffle enabled.
-    async fn create_sort_shuffle_context() -> SessionContext {
-        let config = SessionConfig::new_with_ballista()
+    async fn create_sort_shuffle_context(read_mode: ReadMode) -> SessionContext {
+        let mut config = SessionConfig::new_with_ballista()
             .set_str(BALLISTA_SHUFFLE_SORT_BASED_ENABLED, "true")
             .set_str(BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE, "1048576") // 1MB
             .set_str(BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT, "268435456"); // 256MB
+
+        // Configure read mode
+        match read_mode {
+            ReadMode::Local => {}
+            ReadMode::RemoteFlight => {
+                config = config
+                    .set_str(BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, "true")
+                    .set_str(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, "true");
+            }
+        }
 
         let state = SessionStateBuilder::new()
             .with_config(config)
@@ -99,9 +123,12 @@ mod sort_shuffle_tests {
 
     // ==================== Basic Aggregation Tests ====================
 
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
     #[tokio::test]
-    async fn test_sort_shuffle_group_by_single_column() -> Result<()> {
-        let ctx = create_sort_shuffle_context().await;
+    async fn test_sort_shuffle_group_by_single_column(#[case] read_mode: ReadMode) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
         register_test_data(&ctx).await;
 
         let df = ctx
@@ -121,9 +148,14 @@ mod sort_shuffle_tests {
         Ok(())
     }
 
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
     #[tokio::test]
-    async fn test_sort_shuffle_group_by_multiple_columns() -> Result<()> {
-        let ctx = create_sort_shuffle_context().await;
+    async fn test_sort_shuffle_group_by_multiple_columns(
+        #[case] read_mode: ReadMode,
+    ) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
         register_test_data(&ctx).await;
 
         let df = ctx
@@ -143,9 +175,12 @@ mod sort_shuffle_tests {
         Ok(())
     }
 
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
     #[tokio::test]
-    async fn test_sort_shuffle_aggregate_sum() -> Result<()> {
-        let ctx = create_sort_shuffle_context().await;
+    async fn test_sort_shuffle_aggregate_sum(#[case] read_mode: ReadMode) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
         register_test_data(&ctx).await;
 
         let df = ctx.sql("SELECT SUM(id) FROM test").await?;
@@ -162,9 +197,12 @@ mod sort_shuffle_tests {
         Ok(())
     }
 
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
     #[tokio::test]
-    async fn test_sort_shuffle_aggregate_avg() -> Result<()> {
-        let ctx = create_sort_shuffle_context().await;
+    async fn test_sort_shuffle_aggregate_avg(#[case] read_mode: ReadMode) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
         register_test_data(&ctx).await;
 
         let df = ctx.sql("SELECT AVG(id) FROM test").await?;
@@ -181,9 +219,12 @@ mod sort_shuffle_tests {
         Ok(())
     }
 
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
     #[tokio::test]
-    async fn test_sort_shuffle_aggregate_count() -> Result<()> {
-        let ctx = create_sort_shuffle_context().await;
+    async fn test_sort_shuffle_aggregate_count(#[case] read_mode: ReadMode) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
         register_test_data(&ctx).await;
 
         let df = ctx.sql("SELECT COUNT(*) FROM test").await?;
@@ -200,9 +241,12 @@ mod sort_shuffle_tests {
         Ok(())
     }
 
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
     #[tokio::test]
-    async fn test_sort_shuffle_aggregate_min_max() -> Result<()> {
-        let ctx = create_sort_shuffle_context().await;
+    async fn test_sort_shuffle_aggregate_min_max(#[case] read_mode: ReadMode) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
         register_test_data(&ctx).await;
 
         let df = ctx.sql("SELECT MIN(id), MAX(id) FROM test").await?;
@@ -223,8 +267,8 @@ mod sort_shuffle_tests {
 
     #[tokio::test]
     async fn test_sort_vs_hash_shuffle_group_by() -> Result<()> {
-        // Test with sort shuffle
-        let sort_ctx = create_sort_shuffle_context().await;
+        // Test with sort shuffle (local read is sufficient for comparison)
+        let sort_ctx = create_sort_shuffle_context(ReadMode::Local).await;
         register_test_data(&sort_ctx).await;
         let sort_results = sort_ctx
             .sql("SELECT bool_col, SUM(id) as total FROM test GROUP BY bool_col")
@@ -250,8 +294,8 @@ mod sort_shuffle_tests {
 
     #[tokio::test]
     async fn test_sort_vs_hash_shuffle_distinct() -> Result<()> {
-        // Test with sort shuffle
-        let sort_ctx = create_sort_shuffle_context().await;
+        // Test with sort shuffle (local read is sufficient for comparison)
+        let sort_ctx = create_sort_shuffle_context(ReadMode::Local).await;
         register_test_data(&sort_ctx).await;
         let sort_results = sort_ctx
             .sql("SELECT DISTINCT bool_col FROM test")
@@ -277,9 +321,12 @@ mod sort_shuffle_tests {
 
     // ==================== Edge Cases ====================
 
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
     #[tokio::test]
-    async fn test_sort_shuffle_empty_result() -> Result<()> {
-        let ctx = create_sort_shuffle_context().await;
+    async fn test_sort_shuffle_empty_result(#[case] read_mode: ReadMode) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
         register_test_data(&ctx).await;
 
         let df = ctx.sql("SELECT id FROM test WHERE id > 100").await?;
@@ -291,9 +338,12 @@ mod sort_shuffle_tests {
         Ok(())
     }
 
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
     #[tokio::test]
-    async fn test_sort_shuffle_single_partition() -> Result<()> {
-        let ctx = create_sort_shuffle_context().await;
+    async fn test_sort_shuffle_single_partition(#[case] read_mode: ReadMode) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
         register_test_data(&ctx).await;
 
         // Query that results in single partition output
@@ -304,9 +354,12 @@ mod sort_shuffle_tests {
         Ok(())
     }
 
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
     #[tokio::test]
-    async fn test_sort_shuffle_multiple_aggregates() -> Result<()> {
-        let ctx = create_sort_shuffle_context().await;
+    async fn test_sort_shuffle_multiple_aggregates(#[case] read_mode: ReadMode) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
         register_test_data(&ctx).await;
 
         let df = ctx
@@ -332,9 +385,12 @@ mod sort_shuffle_tests {
         Ok(())
     }
 
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
     #[tokio::test]
-    async fn test_sort_shuffle_having_clause() -> Result<()> {
-        let ctx = create_sort_shuffle_context().await;
+    async fn test_sort_shuffle_having_clause(#[case] read_mode: ReadMode) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
         register_test_data(&ctx).await;
 
         let df = ctx
@@ -356,9 +412,12 @@ mod sort_shuffle_tests {
 
     // ==================== Subquery and Complex Queries ====================
 
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
     #[tokio::test]
-    async fn test_sort_shuffle_subquery() -> Result<()> {
-        let ctx = create_sort_shuffle_context().await;
+    async fn test_sort_shuffle_subquery(#[case] read_mode: ReadMode) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
         register_test_data(&ctx).await;
 
         let df = ctx
@@ -377,9 +436,12 @@ mod sort_shuffle_tests {
         Ok(())
     }
 
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
     #[tokio::test]
-    async fn test_sort_shuffle_union() -> Result<()> {
-        let ctx = create_sort_shuffle_context().await;
+    async fn test_sort_shuffle_union(#[case] read_mode: ReadMode) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
         register_test_data(&ctx).await;
 
         let df = ctx
@@ -399,9 +461,12 @@ mod sort_shuffle_tests {
 
     // ==================== Order By with Shuffle ====================
 
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
     #[tokio::test]
-    async fn test_sort_shuffle_order_by() -> Result<()> {
-        let ctx = create_sort_shuffle_context().await;
+    async fn test_sort_shuffle_order_by(#[case] read_mode: ReadMode) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
         register_test_data(&ctx).await;
 
         let df = ctx.sql("SELECT id FROM test ORDER BY id").await?;
@@ -416,9 +481,12 @@ mod sort_shuffle_tests {
         Ok(())
     }
 
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
     #[tokio::test]
-    async fn test_sort_shuffle_order_by_desc() -> Result<()> {
-        let ctx = create_sort_shuffle_context().await;
+    async fn test_sort_shuffle_order_by_desc(#[case] read_mode: ReadMode) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
         register_test_data(&ctx).await;
 
         let df = ctx.sql("SELECT id FROM test ORDER BY id DESC").await?;
@@ -433,9 +501,12 @@ mod sort_shuffle_tests {
         Ok(())
     }
 
+    #[rstest]
+    #[case::local(ReadMode::Local)]
+    #[case::remote_flight(ReadMode::RemoteFlight)]
     #[tokio::test]
-    async fn test_sort_shuffle_limit() -> Result<()> {
-        let ctx = create_sort_shuffle_context().await;
+    async fn test_sort_shuffle_limit(#[case] read_mode: ReadMode) -> Result<()> {
+        let ctx = create_sort_shuffle_context(read_mode).await;
         register_test_data(&ctx).await;
 
         let df = ctx.sql("SELECT id FROM test ORDER BY id LIMIT 3").await?;
