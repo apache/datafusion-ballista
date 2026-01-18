@@ -33,7 +33,7 @@
     <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Ballista Architecture" href="../contributors-guide/architecture.html" />
+    <link rel="next" title="Extensions Example" href="extensions-example.html" />
     <link rel="prev" title="Frequently Asked Questions" href="faq.html" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="docsearch:language" content="en">
@@ -182,6 +182,11 @@
    Extending Ballista Scheduler And Executors
   </a>
  </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="extensions-example.html">
+   Extensions Example
+  </a>
+ </li>
 </ul>
 <p aria-level="2" class="caption" role="heading">
  <span class="caption-text">
@@ -276,11 +281,6 @@
     </a>
    </li>
   </ul>
- </li>
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#example-client-side-logical-physical-codec">
-   Example: Client Side Logical/Physical Codec
-  </a>
  </li>
 </ul>
 
@@ -534,23 +534,6 @@ new configuration extensions, object stores, logical and physical codecs …</p>
 </div>
 </section>
 </section>
-<section id="example-client-side-logical-physical-codec">
-<h2>Example: Client Side Logical/Physical Codec<a class="headerlink" href="#example-client-side-logical-physical-codec" title="Link to this heading">¶</a></h2>
-<p>Default physical and logical codecs can be replaced if needed. For scheduler and executor procedure is similar to previous example. At the client side procedure is slightly different, <code class="docutils literal notranslate"><span class="pre">ballista::prelude::SessionConfigExt</span></code> provides methods to be used to override physical and logical codecs on client side.</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">session_config</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionConfig</span><span class="p">::</span><span class="n">new_with_ballista</span><span class="p">()</span>
-<span class="w">    </span><span class="p">.</span><span class="n">with_information_schema</span><span class="p">(</span><span class="kc">true</span><span class="p">)</span>
-<span class="w">    </span><span class="p">.</span><span class="n">with_ballista_physical_extension_codec</span><span class="p">(</span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">BetterPhysicalCodec</span><span class="p">::</span><span class="n">default</span><span class="p">()))</span>
-<span class="w">    </span><span class="p">.</span><span class="n">with_ballista_logical_extension_codec</span><span class="p">(</span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">BetterLogicalCodec</span><span class="p">::</span><span class="n">default</span><span class="p">()));</span>
-
-<span class="kd">let</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionStateBuilder</span><span class="p">::</span><span class="n">new</span><span class="p">()</span>
-<span class="w">    </span><span class="p">.</span><span class="n">with_default_features</span><span class="p">()</span>
-<span class="w">    </span><span class="p">.</span><span class="n">with_config</span><span class="p">(</span><span class="n">session_config</span><span class="p">)</span>
-<span class="w">    </span><span class="p">.</span><span class="n">build</span><span class="p">();</span>
-
-<span class="kd">let</span><span class="w"> </span><span class="n">ctx</span><span class="p">:</span><span class="w"> </span><span class="nc">SessionContext</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SessionContext</span><span class="p">::</span><span class="n">standalone_with_state</span><span class="p">(</span><span class="n">state</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-</pre></div>
-</div>
-</section>
 </section>
 
 
@@ -566,10 +549,10 @@ new configuration extensions, object stores, logical and physical codecs …</p>
             <p class="prev-next-title">Frequently Asked Questions</p>
         </div>
     </a>
-    <a class='right-next' id="next-link" href="../contributors-guide/architecture.html" title="next page">
+    <a class='right-next' id="next-link" href="extensions-example.html" title="next page">
     <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Ballista Architecture</p>
+        <p class="prev-next-title">Extensions Example</p>
     </div>
     <i class="fas fa-angle-right"></i>
     </a>
