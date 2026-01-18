@@ -20,12 +20,16 @@
 use datafusion::arrow::ipc::reader::StreamReader;
 use std::convert::TryFrom;
 use std::fs::File;
+use std::path::Path;
 use std::pin::Pin;
 use tokio_util::io::ReaderStream;
 
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use ballista_core::error::BallistaError;
+use ballista_core::execution_plans::sort_shuffle::{
+    get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition,
+};
 use ballista_core::serde::decode_protobuf;
 use ballista_core::serde::scheduler::Action as BallistaAction;
 use datafusion::arrow::ipc::CompressionType;
@@ -95,8 +99,42 @@ impl FlightService for BallistaFlightService {
             decode_protobuf(&ticket.ticket).map_err(|e| from_ballista_err(&e))?;
 
         match &action {
-            BallistaAction::FetchPartition { path, .. } => {
-                debug!("FetchPartition reading {path}");
+            BallistaAction::FetchPartition {
+                path, partition_id, ..
+            } => {
+                debug!("FetchPartition reading partition {partition_id} from {path}");
+                let data_path = Path::new(path);
+
+                // Check if this is a sort-based shuffle output
+                if is_sort_shuffle_output(data_path) {
+                    debug!("Detected sort-based shuffle format for {path}");
+                    let index_path = get_index_path(data_path);
+                    let stream = stream_sort_shuffle_partition(
+                        data_path,
+                        &index_path,
+                        *partition_id,
+                    )
+                    .map_err(|e| from_ballista_err(&e))?;
+
+                    let schema = stream.schema();
+                    // Map DataFusionError to FlightError
+                    let stream = stream.map_err(|e| FlightError::from(ArrowError::from(e)));
+
+                    let write_options: IpcWriteOptions = IpcWriteOptions::default()
+                        .try_with_compression(Some(CompressionType::LZ4_FRAME))
+                        .map_err(|e| from_arrow_err(&e))?;
+                    let flight_data_stream = FlightDataEncoderBuilder::new()
+                        .with_schema(schema)
+                        .with_options(write_options)
+                        .build(stream)
+                        .map_err(|err| Status::from_error(Box::new(err)));
+
+                    return Ok(Response::new(
+                        Box::pin(flight_data_stream) as Self::DoGetStream
+                    ));
+                }
+
+                // Standard hash-based shuffle - read the entire file
                 let file = File::open(path)
                     .map_err(|e| {
                         BallistaError::General(format!(
@@ -214,6 +252,19 @@ impl FlightService for BallistaFlightService {
                 match &action {
                     BallistaAction::FetchPartition { path, .. } => {
                         debug!("FetchPartition reading {path}");
+                        let data_path = Path::new(path);
+
+                        // Block transport doesn't support sort-based shuffle because it
+                        // transfers the entire file, which contains all partitions.
+                        // Use flight transport (do_get) for sort-based shuffle.
+                        if is_sort_shuffle_output(data_path) {
+                            return Err(Status::unimplemented(
+                                "IO_BLOCK_TRANSPORT does not support sort-based shuffle. \
+                                 Set ballista.shuffle.remote_read_prefer_flight=true to use \
+                                 flight transport instead.",
+                            ));
+                        }
+
                         let file = tokio::fs::File::open(&path).await.map_err(|e| {
                             Status::internal(format!("Failed to open file: {e}"))
                         })?;
