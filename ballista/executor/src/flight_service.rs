@@ -118,7 +118,8 @@ impl FlightService for BallistaFlightService {
 
                     let schema = stream.schema();
                     // Map DataFusionError to FlightError
-                    let stream = stream.map_err(|e| FlightError::from(ArrowError::from(e)));
+                    let stream =
+                        stream.map_err(|e| FlightError::from(ArrowError::from(e)));
 
                     let write_options: IpcWriteOptions = IpcWriteOptions::default()
                         .try_with_compression(Some(CompressionType::LZ4_FRAME))

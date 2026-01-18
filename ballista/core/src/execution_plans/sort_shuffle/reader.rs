@@ -26,8 +26,8 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::ipc::reader::FileReader;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::SendableRecordBatchStream;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use std::fs::File;
 use std::path::Path;
 use std::pin::Pin;
@@ -200,7 +200,10 @@ pub fn stream_sort_shuffle_partition(
     if !index.partition_has_data(partition_id) {
         // Return empty stream with the schema
         let empty_stream = futures::stream::empty();
-        return Ok(Box::pin(RecordBatchStreamAdapter::new(schema, empty_stream)));
+        return Ok(Box::pin(RecordBatchStreamAdapter::new(
+            schema,
+            empty_stream,
+        )));
     }
 
     // Get the batch range for this partition
