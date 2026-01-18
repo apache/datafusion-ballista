@@ -99,21 +99,22 @@ pub async fn start_grpc_service<
     let mut tonic_builder = RoutesBuilder::default();
     tonic_builder.add_service(scheduler_grpc_server);
 
-    let embed_flight_proxy = config
-        .advertise_flight_sql_endpoint
-        .clone()
-        .map(|s| s.is_empty())
-        .unwrap_or(false);
-
-    if embed_flight_proxy {
-        info!("Adding embeddded flight proxy service on scheduler");
-        let flight_proxy = FlightServiceServer::new(BallistaFlightProxyService::new(
-            config.grpc_server_max_encoding_message_size as usize,
-            config.grpc_server_max_decoding_message_size as usize,
-        ))
-        .max_decoding_message_size(config.grpc_server_max_decoding_message_size as usize)
-        .max_encoding_message_size(config.grpc_server_max_encoding_message_size as usize);
-        tonic_builder.add_service(flight_proxy);
+    match &config.advertise_flight_sql_endpoint {
+        Some(proxy) if proxy.is_empty() => {
+            info!("Adding embeddded flight proxy service on scheduler");
+            let flight_proxy = FlightServiceServer::new(BallistaFlightProxyService::new(
+                config.grpc_server_max_encoding_message_size as usize,
+                config.grpc_server_max_decoding_message_size as usize,
+            ))
+            .max_decoding_message_size(
+                config.grpc_server_max_decoding_message_size as usize,
+            )
+            .max_encoding_message_size(
+                config.grpc_server_max_encoding_message_size as usize,
+            );
+            tonic_builder.add_service(flight_proxy);
+        }
+        _ => {}
     }
 
     #[cfg(feature = "keda-scaler")]
