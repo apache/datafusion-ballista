@@ -32,6 +32,10 @@ use std::pin::Pin;
 use tonic::{Request, Response, Status, Streaming};
 
 /// Service implementing a proxy from scheduler to executor Apache Arrow Flight Protocol
+///
+/// The proxy only implements the FlightService::do_get api and forwards the requests
+/// to the respective executors.
+///
 #[derive(Clone)]
 pub struct BallistaFlightProxyService {
     max_decoding_message_size: usize,

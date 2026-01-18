@@ -428,11 +428,11 @@ async fn execute_query(
 
 fn get_client_host_port(
     executor_metadata: &ExecutorMetadata,
-    scheduler_url: String,
-    flight_proxy: Option<FlightProxy>,
+    scheduler_url: &str,
+    flight_proxy: &Option<FlightProxy>,
 ) -> Result<(String, u16)> {
     fn split_host_port(address: &str) -> Result<(String, u16)> {
-        let url: Url = format!("http://{address}").parse().map_err(|e| {
+        let url: Url = address.parse().map_err(|e| {
             DataFusionError::Execution(format!(
                 "Cannot parse host:port in {address:?}: {e}"
             ))
@@ -452,11 +452,11 @@ fn get_client_host_port(
     match flight_proxy {
         Some(FlightProxy::External(address)) => {
             info!("Fetching results from external flight proxy: {}", address);
-            split_host_port(address.as_str())
+            split_host_port(format!("http://{address}").as_str())
         }
         Some(FlightProxy::Local(true)) => {
             info!("Fetching results from scheduler: {}", scheduler_url);
-            split_host_port(&scheduler_url)
+            split_host_port(scheduler_url)
         }
         Some(FlightProxy::Local(false)) | None => {
             info!(
@@ -482,13 +482,14 @@ async fn fetch_partition(
         DataFusionError::Internal("Received empty executor metadata".to_owned())
     })?;
 
-    let (client_host, client_port) =
-        get_client_host_port(&metadata, scheduler_url, flight_proxy)?;
     let partition_id = location.partition_id.ok_or_else(|| {
         DataFusionError::Internal("Received empty partition id".to_owned())
     })?;
     let host = metadata.host.as_str();
     let port = metadata.port as u16;
+
+    let (client_host, client_port) =
+        get_client_host_port(&metadata, &scheduler_url, &flight_proxy)?;
 
     let mut ballista_client =
         BallistaClient::try_new(client_host.as_str(), client_port, max_message_size)
@@ -505,4 +506,65 @@ async fn fetch_partition(
         )
         .await
         .map_err(|e| DataFusionError::External(Box::new(e)))
+}
+
+#[cfg(test)]
+mod test {
+    use crate::execution_plans::distributed_query::get_client_host_port;
+    use crate::serde::protobuf::ExecutorMetadata;
+    use crate::serde::protobuf::get_job_status_result::FlightProxy;
+
+    #[test]
+    fn test_client_host_port() {
+        let scheduler_host = "scheduler";
+        let scheduler_port: u16 = 5000;
+
+        let scheduler_url = format!("http://{scheduler_host}:{scheduler_port}");
+        let executor = ExecutorMetadata {
+            id: "test".to_string(),
+            host: "executor".to_string(),
+            port: 12345,
+            grpc_port: 1,
+            specification: None,
+        };
+
+        // no flight proxy -> client should fetch results from executor
+        assert_eq!(
+            get_client_host_port(&executor, &scheduler_url, &None).unwrap(),
+            (executor.host.clone(), executor.port as u16)
+        );
+
+        // same, no flight proxy
+        assert_eq!(
+            get_client_host_port(
+                &executor,
+                &scheduler_url,
+                &Some(FlightProxy::Local(false))
+            )
+            .unwrap(),
+            (executor.host.clone(), executor.port as u16)
+        );
+
+        // embedded flight proxy on scheduler
+        assert_eq!(
+            get_client_host_port(
+                &executor,
+                &scheduler_url,
+                &Some(FlightProxy::Local(true))
+            )
+            .unwrap(),
+            (scheduler_host.to_string(), scheduler_port)
+        );
+
+        // external proxy
+        assert_eq!(
+            get_client_host_port(
+                &executor,
+                &scheduler_url,
+                &Some(FlightProxy::External("proxy:1234".to_string()))
+            )
+            .unwrap(),
+            ("proxy".to_string(), 1234 as u16)
+        );
+    }
 }

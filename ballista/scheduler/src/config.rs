@@ -41,7 +41,7 @@ pub struct Config {
     /// Route for proxying flight results via scheduler (IP:PORT format).
     #[arg(
         long,
-        help = "Route for proxying flight results via scheduler. Should be of the form 'IP:PORT'"
+        help = "Route for proxying flight results via scheduler. Use 'HOST:PORT' to let clients fetch results from the specified address. If empty a flight proxy will be started on the scheduler host and port."
     )]
     pub advertise_flight_sql_endpoint: Option<String>,
     /// Namespace for the ballista cluster.
