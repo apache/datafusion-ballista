@@ -224,6 +224,11 @@ impl TryInto<MetricValue> for protobuf::OperatorMetric {
                     ratio_metrics,
                 })
             }
+            Some(operator_metric::Metric::OutputBatches(value)) => {
+                let count = Count::new();
+                count.add(value as usize);
+                Ok(MetricValue::OutputBatches(count))
+            }
             None => Err(BallistaError::General(
                 "scheduler::from_proto(OperatorMetric) metric is None.".to_owned(),
             )),

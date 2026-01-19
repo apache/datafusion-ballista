@@ -45,7 +45,7 @@ datafusion = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
 object_store = { workspace = true, features = ["aws"] }
-testcontainers-modules = { version = "0.13", features = ["minio"] }
+testcontainers-modules = { version = "0.14", features = ["minio"] }
 tokio = { workspace = true, features = [
     "macros",
     "rt",

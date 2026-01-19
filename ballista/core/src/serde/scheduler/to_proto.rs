@@ -205,6 +205,11 @@ impl TryInto<protobuf::OperatorMetric> for &MetricValue {
                     total: ratio_metrics.total() as u64,
                 })),
             }),
+            MetricValue::OutputBatches(count) => Ok(protobuf::OperatorMetric {
+                metric: Some(
+                    operator_metric::Metric::OutputBatches(count.value() as u64),
+                ),
+            }),
             // at the moment there there is no way to serialize custom metrics
             // thus at the moment we can't support it
             MetricValue::Custom { .. } => Err(BallistaError::General(String::from(

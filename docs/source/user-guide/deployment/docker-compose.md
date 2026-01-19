@@ -42,8 +42,8 @@ Creating network "ballista-benchmarks_default" with the default driver
 Creating ballista-benchmarks_ballista-scheduler_1 ... done
 Creating ballista-benchmarks_ballista-executor_1  ... done
 Attaching to ballista-benchmarks_ballista-scheduler_1, ballista-benchmarks_ballista-executor_1
-ballista-scheduler_1  | INFO ballista_scheduler: Ballista v51.0.0 Scheduler listening on 0.0.0.0:50050
-ballista-executor_1   | INFO ballista_executor: Ballista v51.0.0 Rust Executor listening on 0.0.0.0:50051
+ballista-scheduler_1  | INFO ballista_scheduler: Ballista v52.0.0 Scheduler listening on 0.0.0.0:50050
+ballista-executor_1   | INFO ballista_executor: Ballista v52.0.0 Rust Executor listening on 0.0.0.0:50051
 ```
 
 The scheduler listens on port 50050 and this is the port that clients will need to connect to.

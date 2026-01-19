@@ -305,6 +305,7 @@ message OperatorMetric {
     uint64 output_bytes = 12;
     NamedPruningMetrics pruning_metrics = 13;
     NamedRatio ratio = 14;
+    uint64 output_batches = 15;
   }
 }
 

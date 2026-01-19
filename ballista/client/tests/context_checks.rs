@@ -28,6 +28,7 @@ mod supported {
     use datafusion::prelude::*;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
     use rstest::*;
+    use std::path::PathBuf;
 
     #[rstest::fixture]
     fn test_data() -> String {
@@ -714,17 +715,22 @@ mod supported {
         ];
 
         let write_dir = tempfile::tempdir().expect("temporary directory to be created");
-        let write_dir_path = write_dir
-            .path()
-            .to_str()
-            .expect("path to be converted to str");
+        let write_dir_path = PathBuf::from(
+            write_dir
+                .path()
+                .to_str()
+                .expect("path to be converted to str"),
+        );
+
+        let parquet_file = write_dir_path.join("p_written_table.parquet");
+        let parquet_file = parquet_file.to_str().expect("cannot create csv file");
 
         ctx.sql("select * from test")
             .await?
-            .write_parquet(write_dir_path, Default::default(), Default::default())
+            .write_parquet(parquet_file, Default::default(), Default::default())
             .await?;
 
-        ctx.register_parquet("p_written_table", write_dir_path, Default::default())
+        ctx.register_parquet("p_written_table", parquet_file, Default::default())
             .await?;
 
         let result = ctx
@@ -735,12 +741,15 @@ mod supported {
 
         assert_batches_eq!(expected, &result);
 
+        let csv_file = write_dir_path.join("c_written_table.csv");
+        let csv_file = csv_file.to_str().expect("cannot create csv file");
+
         ctx.sql("select * from test")
             .await?
-            .write_csv(write_dir_path, Default::default(), Default::default())
+            .write_csv(csv_file, Default::default(), Default::default())
             .await?;
 
-        ctx.register_csv("c_written_table", write_dir_path, Default::default())
+        ctx.register_csv("c_written_table", csv_file, Default::default())
             .await?;
 
         let result = ctx
@@ -751,12 +760,15 @@ mod supported {
 
         assert_batches_eq!(expected, &result);
 
+        let json_file = write_dir_path.join("j_written_table.json");
+        let json_file = json_file.to_str().expect("cannot create csv file");
+
         ctx.sql("select * from test")
             .await?
-            .write_json(write_dir_path, Default::default(), Default::default())
+            .write_json(json_file, Default::default(), Default::default())
             .await?;
 
-        ctx.register_json("j_written_table", write_dir_path, Default::default())
+        ctx.register_json("j_written_table", json_file, Default::default())
             .await?;
 
         let result = ctx
@@ -1048,13 +1060,12 @@ mod supported {
             "|                  |           EmptyRelation: rows=1                                                                                                                                                  |",
             "| physical_plan    | ProjectionExec: expr=[count(Int64(1))@1 as count(*), id@0 as id]                                                                                                                 |",
             "|                  |   AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[count(Int64(1))]                                                                                                 |",
-            "|                  |     CoalesceBatchesExec: target_batch_size=8192                                                                                                                                  |",
-            "|                  |       RepartitionExec: partitioning=Hash([id@0], 16), input_partitions=1                                                                                                         |",
-            "|                  |         AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[count(Int64(1))]                                                                                                    |",
-            "|                  |           ProjectionExec: expr=[__unnest_placeholder(make_array(Int64(1),Int64(2),Int64(3),Int64(4),Int64(5)),depth=1)@0 as id]                                                  |",
-            "|                  |             UnnestExec                                                                                                                                                           |",
-            "|                  |               ProjectionExec: expr=[[1, 2, 3, 4, 5] as __unnest_placeholder(make_array(Int64(1),Int64(2),Int64(3),Int64(4),Int64(5)))]                                           |",
-            "|                  |                 PlaceholderRowExec                                                                                                                                               |",
+            "|                  |     RepartitionExec: partitioning=Hash([id@0], 16), input_partitions=1                                                                                                           |",
+            "|                  |       AggregateExec: mode=Partial, gby=[id@0 as id], aggr=[count(Int64(1))]                                                                                                      |",
+            "|                  |         ProjectionExec: expr=[__unnest_placeholder(make_array(Int64(1),Int64(2),Int64(3),Int64(4),Int64(5)),depth=1)@0 as id]                                                    |",
+            "|                  |           UnnestExec                                                                                                                                                             |",
+            "|                  |             ProjectionExec: expr=[[1, 2, 3, 4, 5] as __unnest_placeholder(make_array(Int64(1),Int64(2),Int64(3),Int64(4),Int64(5)))]                                             |",
+            "|                  |               PlaceholderRowExec                                                                                                                                                 |",
             "|                  |                                                                                                                                                                                  |",
             "| distributed_plan | =========ResolvedStage[stage_id=1.0, partitions=1]=========                                                                                                                      |",
             "|                  | ShuffleWriterExec: partitioning: Hash([id@0], 16)                                                                                                                                |",
@@ -1069,8 +1080,7 @@ mod supported {
             "|                  | ShuffleWriterExec: partitioning: None                                                                                                                                            |",
             "|                  |   ProjectionExec: expr=[count(Int64(1))@1 as count(*), id@0 as id]                                                                                                               |",
             "|                  |     AggregateExec: mode=FinalPartitioned, gby=[id@0 as id], aggr=[count(Int64(1))]                                                                                               |",
-            "|                  |       CoalesceBatchesExec: target_batch_size=8192                                                                                                                                |",
-            "|                  |         UnresolvedShuffleExec: partitioning: Hash([id@0], 16)                                                                                                                    |",
+            "|                  |       UnresolvedShuffleExec: partitioning: Hash([id@0], 16)                                                                                                                      |",
             "|                  |                                                                                                                                                                                  |",
             "|                  |                                                                                                                                                                                  |",
             "+------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+",

@@ -441,19 +441,13 @@ mod tests {
 	subgraph cluster2 {
 		label = "Stage 3 [Unresolved]";
 		stage_3_0 [shape=box, label="ShuffleWriter [48 partitions]"]
-		stage_3_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_3_0_0_0 [shape=box, label="HashJoin
+		stage_3_0_0 [shape=box, label="HashJoin
 join_expr=a@0 = a@0
 filter_expr="]
-		stage_3_0_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_3_0_0_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=1]"]
-		stage_3_0_0_0_0_0 -> stage_3_0_0_0_0
-		stage_3_0_0_0_0 -> stage_3_0_0_0
-		stage_3_0_0_0_1 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_3_0_0_0_1_0 [shape=box, label="UnresolvedShuffleExec [stage_id=2]"]
-		stage_3_0_0_0_1_0 -> stage_3_0_0_0_1
-		stage_3_0_0_0_1 -> stage_3_0_0_0
+		stage_3_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=1]"]
 		stage_3_0_0_0 -> stage_3_0_0
+		stage_3_0_0_1 [shape=box, label="UnresolvedShuffleExec [stage_id=2]"]
+		stage_3_0_0_1 -> stage_3_0_0
 		stage_3_0_0 -> stage_3_0
 	}
 	subgraph cluster3 {
@@ -465,25 +459,19 @@ filter_expr="]
 	subgraph cluster4 {
 		label = "Stage 5 [Unresolved]";
 		stage_5_0 [shape=box, label="ShuffleWriter [48 partitions]"]
-		stage_5_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_5_0_0_0 [shape=box, label="HashJoin
+		stage_5_0_0 [shape=box, label="HashJoin
 join_expr=b@3 = b@1
 filter_expr="]
-		stage_5_0_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_5_0_0_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=3]"]
-		stage_5_0_0_0_0_0 -> stage_5_0_0_0_0
-		stage_5_0_0_0_0 -> stage_5_0_0_0
-		stage_5_0_0_0_1 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_5_0_0_0_1_0 [shape=box, label="UnresolvedShuffleExec [stage_id=4]"]
-		stage_5_0_0_0_1_0 -> stage_5_0_0_0_1
-		stage_5_0_0_0_1 -> stage_5_0_0_0
+		stage_5_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=3]"]
 		stage_5_0_0_0 -> stage_5_0_0
+		stage_5_0_0_1 [shape=box, label="UnresolvedShuffleExec [stage_id=4]"]
+		stage_5_0_0_1 -> stage_5_0_0
 		stage_5_0_0 -> stage_5_0
 	}
-	stage_1_0 -> stage_3_0_0_0_0_0
-	stage_2_0 -> stage_3_0_0_0_1_0
-	stage_3_0 -> stage_5_0_0_0_0_0
-	stage_4_0 -> stage_5_0_0_0_1_0
+	stage_1_0 -> stage_3_0_0_0
+	stage_2_0 -> stage_3_0_0_1
+	stage_3_0 -> stage_5_0_0_0
+	stage_4_0 -> stage_5_0_0_1
 }
 "#;
         assert_eq!(expected, &dot);
@@ -498,19 +486,13 @@ filter_expr="]
 
         let expected = r#"digraph G {
 		stage_3_0 [shape=box, label="ShuffleWriter [48 partitions]"]
-		stage_3_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_3_0_0_0 [shape=box, label="HashJoin
+		stage_3_0_0 [shape=box, label="HashJoin
 join_expr=a@0 = a@0
 filter_expr="]
-		stage_3_0_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_3_0_0_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=1]"]
-		stage_3_0_0_0_0_0 -> stage_3_0_0_0_0
-		stage_3_0_0_0_0 -> stage_3_0_0_0
-		stage_3_0_0_0_1 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_3_0_0_0_1_0 [shape=box, label="UnresolvedShuffleExec [stage_id=2]"]
-		stage_3_0_0_0_1_0 -> stage_3_0_0_0_1
-		stage_3_0_0_0_1 -> stage_3_0_0_0
+		stage_3_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=1]"]
 		stage_3_0_0_0 -> stage_3_0_0
+		stage_3_0_0_1 [shape=box, label="UnresolvedShuffleExec [stage_id=2]"]
+		stage_3_0_0_1 -> stage_3_0_0
 		stage_3_0_0 -> stage_3_0
 }
 "#;
@@ -546,34 +528,24 @@ filter_expr="]
 	subgraph cluster3 {
 		label = "Stage 4 [Unresolved]";
 		stage_4_0 [shape=box, label="ShuffleWriter [48 partitions]"]
-		stage_4_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_4_0_0_0 [shape=box, label="HashJoin
+		stage_4_0_0 [shape=box, label="HashJoin
 join_expr=a@1 = a@0
 filter_expr="]
-		stage_4_0_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_4_0_0_0_0_0 [shape=box, label="HashJoin
+		stage_4_0_0_0 [shape=box, label="HashJoin
 join_expr=a@0 = a@0
 filter_expr="]
-		stage_4_0_0_0_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_4_0_0_0_0_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=1]"]
-		stage_4_0_0_0_0_0_0_0 -> stage_4_0_0_0_0_0_0
-		stage_4_0_0_0_0_0_0 -> stage_4_0_0_0_0_0
-		stage_4_0_0_0_0_0_1 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_4_0_0_0_0_0_1_0 [shape=box, label="UnresolvedShuffleExec [stage_id=2]"]
-		stage_4_0_0_0_0_0_1_0 -> stage_4_0_0_0_0_0_1
-		stage_4_0_0_0_0_0_1 -> stage_4_0_0_0_0_0
-		stage_4_0_0_0_0_0 -> stage_4_0_0_0_0
+		stage_4_0_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=1]"]
 		stage_4_0_0_0_0 -> stage_4_0_0_0
-		stage_4_0_0_0_1 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_4_0_0_0_1_0 [shape=box, label="UnresolvedShuffleExec [stage_id=3]"]
-		stage_4_0_0_0_1_0 -> stage_4_0_0_0_1
+		stage_4_0_0_0_1 [shape=box, label="UnresolvedShuffleExec [stage_id=2]"]
 		stage_4_0_0_0_1 -> stage_4_0_0_0
 		stage_4_0_0_0 -> stage_4_0_0
+		stage_4_0_0_1 [shape=box, label="UnresolvedShuffleExec [stage_id=3]"]
+		stage_4_0_0_1 -> stage_4_0_0
 		stage_4_0_0 -> stage_4_0
 	}
-	stage_1_0 -> stage_4_0_0_0_0_0_0_0
-	stage_2_0 -> stage_4_0_0_0_0_0_1_0
-	stage_3_0 -> stage_4_0_0_0_1_0
+	stage_1_0 -> stage_4_0_0_0_0
+	stage_2_0 -> stage_4_0_0_0_1
+	stage_3_0 -> stage_4_0_0_1
 }
 "#;
         assert_eq!(expected, &dot);
@@ -588,29 +560,19 @@ filter_expr="]
 
         let expected = r#"digraph G {
 		stage_4_0 [shape=box, label="ShuffleWriter [48 partitions]"]
-		stage_4_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_4_0_0_0 [shape=box, label="HashJoin
+		stage_4_0_0 [shape=box, label="HashJoin
 join_expr=a@1 = a@0
 filter_expr="]
-		stage_4_0_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_4_0_0_0_0_0 [shape=box, label="HashJoin
+		stage_4_0_0_0 [shape=box, label="HashJoin
 join_expr=a@0 = a@0
 filter_expr="]
-		stage_4_0_0_0_0_0_0 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_4_0_0_0_0_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=1]"]
-		stage_4_0_0_0_0_0_0_0 -> stage_4_0_0_0_0_0_0
-		stage_4_0_0_0_0_0_0 -> stage_4_0_0_0_0_0
-		stage_4_0_0_0_0_0_1 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_4_0_0_0_0_0_1_0 [shape=box, label="UnresolvedShuffleExec [stage_id=2]"]
-		stage_4_0_0_0_0_0_1_0 -> stage_4_0_0_0_0_0_1
-		stage_4_0_0_0_0_0_1 -> stage_4_0_0_0_0_0
-		stage_4_0_0_0_0_0 -> stage_4_0_0_0_0
+		stage_4_0_0_0_0 [shape=box, label="UnresolvedShuffleExec [stage_id=1]"]
 		stage_4_0_0_0_0 -> stage_4_0_0_0
-		stage_4_0_0_0_1 [shape=box, label="CoalesceBatches [batchSize=4096]"]
-		stage_4_0_0_0_1_0 [shape=box, label="UnresolvedShuffleExec [stage_id=3]"]
-		stage_4_0_0_0_1_0 -> stage_4_0_0_0_1
+		stage_4_0_0_0_1 [shape=box, label="UnresolvedShuffleExec [stage_id=2]"]
 		stage_4_0_0_0_1 -> stage_4_0_0_0
 		stage_4_0_0_0 -> stage_4_0_0
+		stage_4_0_0_1 [shape=box, label="UnresolvedShuffleExec [stage_id=3]"]
+		stage_4_0_0_1 -> stage_4_0_0
 		stage_4_0_0 -> stage_4_0
 }
 "#;

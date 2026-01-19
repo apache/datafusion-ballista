@@ -227,10 +227,11 @@ impl SortShuffleWriterExec {
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
             // Create batch partitioner
-            let mut partitioner = BatchPartitioner::try_new(
-                Partitioning::Hash(exprs, num_output_partitions),
+            let mut partitioner = BatchPartitioner::new_hash_partitioner(
+                exprs,
+                num_output_partitions,
                 metrics.repart_time.clone(),
-            )?;
+            );
 
             // Process input stream
             while let Some(result) = stream.next().await {
