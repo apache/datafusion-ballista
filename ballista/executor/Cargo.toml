@@ -33,8 +33,9 @@ path = "src/bin/main.rs"
 required-features = ["build-binary"]
 
 [features]
+arrow-ipc-optimizations = []
 build-binary = ["clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary"]
-default = ["build-binary", "mimalloc"]
+default = ["arrow-ipc-optimizations", "build-binary", "mimalloc"]
 
 [dependencies]
 arrow = { workspace = true }

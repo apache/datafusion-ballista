@@ -96,14 +96,13 @@ manage the whole cluster are also needed to be taken care of.
 _Example: Specifying configuration options when starting the scheduler_
 
 ```shell
-./ballista-scheduler --scheduler-policy push-staged --event-loop-buffer-size 1000000 --executor-slots-policy
-round-robin-local
+./ballista-scheduler --scheduler-policy push-staged --event-loop-buffer-size 1000000 --task-distribution round-robin
 ```
 
-| key                                          | type   | default     | description                                                                                                                                                                     |
-| -------------------------------------------- | ------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| scheduler-policy                             | Utf8   | pull-staged | Sets the task scheduling policy for the scheduler, possible values: pull-staged, push-staged.                                                                                   |
-| event-loop-buffer-size                       | UInt32 | 10000       | Sets the event loop buffer size. for a system of high throughput, a larger value like 1000000 is recommended.                                                                   |
-| executor-slots-policy                        | Utf8   | bias        | Sets the executor slots policy for the scheduler, possible values: bias, round-robin, round-robin-local. For a cluster with single scheduler, round-robin-local is recommended. |
-| finished-job-data-clean-up-interval-seconds  | UInt64 | 300         | Sets the delayed interval for cleaning up finished job data, mainly the shuffle data, 0 means the cleaning up is disabled.                                                      |
-| finished-job-state-clean-up-interval-seconds | UInt64 | 3600        | Sets the delayed interval for cleaning up finished job state stored in the backend, 0 means the cleaning up is disabled.                                                        |
+| key                                          | type   | default     | description                                                                                                                |
+| -------------------------------------------- | ------ | ----------- | -------------------------------------------------------------------------------------------------------------------------- |
+| scheduler-policy                             | Utf8   | pull-staged | Sets the task scheduling policy for the scheduler, possible values: pull-staged, push-staged.                              |
+| event-loop-buffer-size                       | UInt32 | 10000       | Sets the event loop buffer size. for a system of high throughput, a larger value like 1000000 is recommended.              |
+| task-distribution                            | Utf8   | bias        | Sets the task distribution policy for the scheduler, possible values: bias, round-robin, consistent-hash.                  |
+| finished-job-data-clean-up-interval-seconds  | UInt64 | 300         | Sets the delayed interval for cleaning up finished job data, mainly the shuffle data, 0 means the cleaning up is disabled. |
+| finished-job-state-clean-up-interval-seconds | UInt64 | 3600        | Sets the delayed interval for cleaning up finished job state stored in the backend, 0 means the cleaning up is disabled.   |

@@ -29,11 +29,30 @@ These benchmarks are derived from the [TPC-H][1] benchmark.
 
 ## Generating Test Data
 
-TPC-H data can be generated using the `tpch-gen.sh` script, which creates a Docker image containing the TPC-DS data
-generator.
+TPC-H data can be generated using [tpchgen-rs](https://github.com/clflushopt/tpchgen-rs), a fast TPC-H data generator written in Rust.
 
+### Installation
+
+Install via pip:
 ```bash
-./tpch-gen.sh
+pip install tpchgen-cli
+```
+
+Or via cargo:
+```bash
+cargo install tpchgen-cli
+```
+
+### Generating Data
+
+Generate SF=1 data in Parquet format:
+```bash
+tpchgen-cli -s 1 --format parquet --output-dir data
+```
+
+For larger scale factors (e.g., SF=10):
+```bash
+tpchgen-cli -s 10 --format parquet --output-dir data
 ```
 
 Data will be generated into the `data` subdirectory and will not be checked in because this directory has been added

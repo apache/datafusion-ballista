@@ -230,21 +230,3 @@ let expected = [
 
 assert_batches_eq!(expected, &result);
 ```
-
-## Example: Client Side Logical/Physical Codec
-
-Default physical and logical codecs can be replaced if needed. For scheduler and executor procedure is similar to previous example. At the client side procedure is slightly different, `ballista::prelude::SessionConfigExt` provides methods to be used to override physical and logical codecs on client side.
-
-```rust
-let session_config = SessionConfig::new_with_ballista()
-    .with_information_schema(true)
-    .with_ballista_physical_extension_codec(Arc::new(BetterPhysicalCodec::default()))
-    .with_ballista_logical_extension_codec(Arc::new(BetterLogicalCodec::default()));
-
-let state = SessionStateBuilder::new()
-    .with_default_features()
-    .with_config(session_config)
-    .build();
-
-let ctx: SessionContext = SessionContext::standalone_with_state(state).await?;
-```

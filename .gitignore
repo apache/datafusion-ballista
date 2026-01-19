@@ -22,6 +22,7 @@ arrow-src.tar
 arrow-src.tar.gz
 CHANGELOG.md.bak
 Cargo.toml.bak
+data/
 
 # Compiled source
 *.a
@@ -102,3 +103,6 @@ dev/dist
 
 # logs
 logs/
+
+# Claude Code guidance file (local only)
+CLAUDE.md
