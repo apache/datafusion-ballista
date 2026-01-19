@@ -564,7 +564,7 @@ mod test {
                 &Some(FlightProxy::External("proxy:1234".to_string()))
             )
             .unwrap(),
-            ("proxy".to_string(), 1234 as u16)
+            ("proxy".to_string(), 1234_u16)
         );
     }
 }
