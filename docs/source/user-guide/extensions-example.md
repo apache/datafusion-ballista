@@ -218,9 +218,7 @@ syntax = "proto3";
 
 package extension.ballista;
 
-// we do not use this in this example
-// i'm leaving it as it might be important
-// later
+// used in building the codecs and compiled to Rust at build time.
 import "datafusion_common.proto";
 //
 // message naming convention
