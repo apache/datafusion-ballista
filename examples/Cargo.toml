@@ -42,7 +42,9 @@ ballista-executor = { path = "../ballista/executor", version = "51.0.0", default
 ballista-scheduler = { path = "../ballista/scheduler", version = "51.0.0", default-features = false }
 ctor = { workspace = true }
 datafusion = { workspace = true }
+datafusion-substrait = { workspace = true }
 env_logger = { workspace = true }
+futures = { workspace = true }
 log = { workspace = true }
 object_store = { workspace = true, features = ["aws"] }
 testcontainers-modules = { version = "0.13", features = ["minio"] }
@@ -55,7 +57,10 @@ tokio = { workspace = true, features = [
 ] }
 tonic = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true }
 
 [features]
-default = []
+default = ["substrait", "standalone"]
+standalone = ["ballista/standalone"]
+substrait = ["ballista-scheduler/substrait"]
 testcontainers = []
