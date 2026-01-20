@@ -218,15 +218,15 @@ syntax = "proto3";
 
 package extension.ballista;
 
-// we do not use this in this example 
-// i'm leaving it as it might be important 
+// we do not use this in this example
+// i'm leaving it as it might be important
 // later
 import "datafusion_common.proto";
 //
-// message naming convention 
+// message naming convention
 //
 // prefix L means logical
-// prefix P means physical 
+// prefix P means physical
 //
 
 
@@ -235,11 +235,11 @@ import "datafusion_common.proto";
 //
 
 
-// this is the root message that captures all possible 
-// logical plan messages which can be sent across 
+// this is the root message that captures all possible
+// logical plan messages which can be sent across
 message LMessage {
     oneof Extension {
-        LSample sample = 1; 
+        LSample sample = 1;
     }
 }
 
@@ -258,7 +258,7 @@ message PMessage {
     oneof Extension {
         bytes opaque = 1;
         PSample sample = 2;
-        
+
     }
 }
 
@@ -267,7 +267,9 @@ message PSample {
     optional int64 seed = 2;
 }
 ```
+
 ```
+
 ```
 
 `LogicalExtensionCodec` extends `BallistaLogicalExtensionCodec` handling newly defined operator messages:
