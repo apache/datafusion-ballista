@@ -68,7 +68,7 @@ cargo run --example standalone_sql --features=ballista/standalone
 
 ## Benchmarking
 
-For performance testing and benchmarking with TPC-H and other datasets, see the [benchmarks README](../../../benchmarks/README.md).
+For performance testing and benchmarking with TPC-H and other datasets, see the [benchmarks README](https://github.com/apache/datafusion-ballista/blob/main/benchmarks/README.md).
 
 This includes instructions for:
 

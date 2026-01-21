@@ -516,16 +516,62 @@ Please do not use implemented sampling operator for production, statisticians wo
 <p>With the extension in place, a custom logical extension codec is required to transmit the client logical plan to the
 scheduler.</p>
 <p>The logical extension codec typically consists of two components: Google Protocol Buffer definitions:</p>
-<div class="highlight-proto notranslate"><div class="highlight"><pre><span></span><span class="kd">message</span><span class="w"> </span><span class="nc">LMessage</span><span class="w"> </span><span class="p">{</span>
+<div class="highlight-proto notranslate"><div class="highlight"><pre><span></span><span class="k">syntax</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;proto3&quot;</span><span class="p">;</span>
+
+<span class="kn">package</span><span class="w"> </span><span class="nn">extension</span><span class="o">.</span><span class="n">ballista</span><span class="p">;</span>
+
+<span class="c1">// used in building the codecs and compiled to Rust at build time.</span>
+<span class="k">import</span><span class="w"> </span><span class="s">&quot;datafusion_common.proto&quot;</span><span class="p">;</span>
+<span class="c1">//</span>
+<span class="c1">// message naming convention</span>
+<span class="c1">//</span>
+<span class="c1">// prefix L means logical</span>
+<span class="c1">// prefix P means physical</span>
+<span class="c1">//</span>
+
+
+<span class="c1">//</span>
+<span class="c1">// Logical Plan Extensions</span>
+<span class="c1">//</span>
+
+
+<span class="c1">// this is the root message that captures all possible</span>
+<span class="c1">// logical plan messages which can be sent across</span>
+<span class="kd">message</span><span class="w"> </span><span class="nc">LMessage</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">oneof</span><span class="w"> </span><span class="n">Extension</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="n">LSample</span><span class="w"> </span><span class="na">sample</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="p">}</span>
 
+
 <span class="kd">message</span><span class="w"> </span><span class="nc">LSample</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="na">fraction</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
 <span class="w">    </span><span class="k">optional</span><span class="w"> </span><span class="kt">int64</span><span class="w"> </span><span class="na">seed</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span><span class="p">;</span>
 <span class="p">}</span>
+
+<span class="c1">//</span>
+<span class="c1">// Physical Plan Extensions</span>
+<span class="c1">//</span>
+
+
+<span class="kd">message</span><span class="w"> </span><span class="nc">PMessage</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">oneof</span><span class="w"> </span><span class="n">Extension</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="c1">// opaque message means that extension codec does not handle</span>
+<span class="w">        </span><span class="c1">// those values hence encoding/decoding is delegated to some other codec</span>
+<span class="w">        </span><span class="c1">// (in this case default datafusion codec).</span>
+<span class="w">        </span><span class="kt">bytes</span><span class="w"> </span><span class="na">opaque</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
+<span class="w">        </span><span class="n">PSample</span><span class="w"> </span><span class="na">sample</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span><span class="p">;</span>
+
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="kd">message</span><span class="w"> </span><span class="nc">PSample</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="na">fraction</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
+<span class="w">    </span><span class="k">optional</span><span class="w"> </span><span class="kt">int64</span><span class="w"> </span><span class="na">seed</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span><span class="p">;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">LogicalExtensionCodec</span></code> extends <code class="docutils literal notranslate"><span class="pre">BallistaLogicalExtensionCodec</span></code> handling newly defined operator messages:</p>
