@@ -255,7 +255,7 @@ message LSample {
 message PMessage {
     oneof Extension {
         // opaque message means that extension codec does not handle
-        // those values hence encoding/decoding is delegated to some other codec 
+        // those values hence encoding/decoding is delegated to some other codec
         // (in this case default datafusion codec).
         bytes opaque = 1;
         PSample sample = 2;
