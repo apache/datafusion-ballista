@@ -46,7 +46,7 @@ use datafusion::physical_plan::{
     ColumnStatistics, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
     PlanProperties, RecordBatchStream, SendableRecordBatchStream, Statistics,
 };
-use futures::{ready, Stream, StreamExt, TryStreamExt};
+use futures::{Stream, StreamExt, TryStreamExt, ready};
 
 use crate::error::BallistaError;
 use datafusion::execution::context::TaskContext;
@@ -175,7 +175,7 @@ impl ExecutionPlan for ShuffleReaderExec {
         }
 
         log::debug!(
-            "ShuffleReaderExec::execute({task_id}) max_request_num: {max_request_num}, max_message_size: {max_message_size}, batch_size: {batch_size}"
+            "ShuffleReaderExec::execute({task_id}) max_request_num: {max_request_num}, max_message_size: {max_message_size}"
         );
         let mut partition_locations = HashMap::new();
         for p in &self.partition[partition] {
@@ -206,17 +206,13 @@ impl ExecutionPlan for ShuffleReaderExec {
             response_receiver.try_flatten(),
         ));
 
-        Ok(Box::pin(CoalescedShuffleReaderStream {
-            schema: self.schema.clone(),
-            input: input_stream,
-            coalescer: LimitedBatchCoalescer::new(
-                self.schema.clone(),
-                batch_size,
-                None, // No fetch limit
-            ),
-            completed: false,
-            baseline_metrics: BaselineMetrics::new(&self.metrics, partition),
-        }))
+        Ok(Box::pin(CoalescedShuffleReaderStream::new(
+            input_stream,
+            batch_size,
+            None,
+            &self.metrics,
+            partition,
+        )))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -588,6 +584,25 @@ struct CoalescedShuffleReaderStream {
     coalescer: LimitedBatchCoalescer,
     completed: bool,
     baseline_metrics: BaselineMetrics,
+}
+
+impl CoalescedShuffleReaderStream {
+    pub fn new(
+        input: SendableRecordBatchStream,
+        batch_size: usize,
+        limit: Option<usize>,
+        metrics: &ExecutionPlanMetricsSet,
+        partition: usize,
+    ) -> Self {
+        let schema = input.schema();
+        Self {
+            schema: schema.clone(),
+            input,
+            coalescer: LimitedBatchCoalescer::new(schema, batch_size, limit),
+            completed: false,
+            baseline_metrics: BaselineMetrics::new(metrics, partition),
+        }
+    }
 }
 
 impl Stream for CoalescedShuffleReaderStream {
@@ -1151,13 +1166,13 @@ mod tests {
         let target_batch_size = 10;
 
         // 4. Manually build the CoalescedShuffleReaderStream
-        let coalesced_stream = CoalescedShuffleReaderStream {
-            schema: schema.clone(),
-            input: input_stream,
-            coalescer: LimitedBatchCoalescer::new(schema, target_batch_size, None),
-            completed: false,
-            baseline_metrics: BaselineMetrics::new(&ExecutionPlanMetricsSet::new(), 0),
-        };
+        let coalesced_stream = CoalescedShuffleReaderStream::new(
+            input_stream,
+            target_batch_size,
+            None,
+            &ExecutionPlanMetricsSet::new(),
+            0,
+        );
 
         // 5. Execute stream and collect results
         let output_batches = common::collect(Box::pin(coalesced_stream)).await?;
@@ -1192,13 +1207,13 @@ mod tests {
         // Because 30 < 100, it can never be filled. Must depend on the `finish()` mechanism to flush out these 30 rows at the end of the stream.
         let target_batch_size = 100;
 
-        let coalesced_stream = CoalescedShuffleReaderStream {
-            schema: schema.clone(),
-            input: input_stream,
-            coalescer: LimitedBatchCoalescer::new(schema, target_batch_size, None),
-            completed: false,
-            baseline_metrics: BaselineMetrics::new(&ExecutionPlanMetricsSet::new(), 0),
-        };
+        let coalesced_stream = CoalescedShuffleReaderStream::new(
+            input_stream,
+            target_batch_size,
+            None,
+            &ExecutionPlanMetricsSet::new(),
+            0,
+        );
 
         let output_batches = common::collect(Box::pin(coalesced_stream)).await?;
 
@@ -1223,13 +1238,13 @@ mod tests {
         // 2. Target set to small size, 10 rows
         let target_batch_size = 10;
 
-        let coalesced_stream = CoalescedShuffleReaderStream {
-            schema: schema.clone(),
-            input: input_stream,
-            coalescer: LimitedBatchCoalescer::new(schema, target_batch_size, None),
-            completed: false,
-            baseline_metrics: BaselineMetrics::new(&ExecutionPlanMetricsSet::new(), 0),
-        };
+        let coalesced_stream = CoalescedShuffleReaderStream::new(
+            input_stream,
+            target_batch_size,
+            None,
+            &ExecutionPlanMetricsSet::new(),
+            0,
+        );
 
         let output_batches = common::collect(Box::pin(coalesced_stream)).await?;
 
@@ -1264,23 +1279,25 @@ mod tests {
         // 3. Configure Coalescer
         let target_batch_size = 10;
 
-        let coalesced_stream = CoalescedShuffleReaderStream {
-            schema: schema.clone(),
-            input: input_stream,
-            coalescer: LimitedBatchCoalescer::new(schema, target_batch_size, None),
-            completed: false,
-            baseline_metrics: BaselineMetrics::new(&ExecutionPlanMetricsSet::new(), 0),
-        };
+        let coalesced_stream = CoalescedShuffleReaderStream::new(
+            input_stream,
+            target_batch_size,
+            None,
+            &ExecutionPlanMetricsSet::new(),
+            0,
+        );
 
         // 4. Execute stream
         let result = common::collect(Box::pin(coalesced_stream)).await;
 
         // 5. Validation
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Network connection failed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Network connection failed")
+        );
 
         Ok(())
     }
