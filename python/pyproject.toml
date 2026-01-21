@@ -24,7 +24,7 @@ name = "ballista"
 description = "Python client for Apache Arrow Ballista Distributed SQL Query Engine"
 readme = "README.md"
 license = {file = "LICENSE.txt"}
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 keywords = ["ballista", "sql", "rust", "distributed"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
@@ -35,15 +35,14 @@ classifiers = [
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python",
     "Programming Language :: Rust",
 ]
 dependencies = [
     "pyarrow>=21.0.0",
-    "cloudpickle",
-    "datafusion==49",
+    "datafusion==51",
+    "typing-extensions;python_version<'3.13'",
 ]
 dynamic = ["version"]
 
@@ -56,7 +55,8 @@ repository = "https://github.com/apache/datafusion-ballista"
 profile = "black"
 
 [tool.maturin]
-module-name = "ballista.ballista_internal"
+python-source = "python"
+module-name = "ballista._internal_ballista"
 include = [
     { path = "Cargo.lock", format = "sdist" }
 ]

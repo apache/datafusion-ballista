@@ -15,47 +15,47 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from ballista import BallistaBuilder
+from ballista import BallistaSessionContext, setup_test_cluster
+from datafusion import col, lit
+import pytest
+import pyarrow as pa
 
 
-def test_create_context():
-    BallistaBuilder().standalone()
+@pytest.fixture
+def ctx():
+    (address, port) = setup_test_cluster()
+    return BallistaSessionContext(address=f"df://{address}:{port}")
 
 
-def test_select_one():
-    ctx = BallistaBuilder().standalone()
+def test_select_one(ctx):
     df = ctx.sql("SELECT 1")
     batches = df.collect()
     assert len(batches) == 1
 
 
-def test_read_csv():
-    ctx = BallistaBuilder().standalone()
+def test_read_csv(ctx):
     df = ctx.read_csv("testdata/test.csv", has_header=True)
     batches = df.collect()
     assert len(batches) == 1
-    assert len(batches[0]) == 1
+    assert len(batches[0]) == 5
 
 
-def test_register_csv():
-    ctx = BallistaBuilder().standalone()
+def test_register_csv(ctx):
     ctx.register_csv("test", "testdata/test.csv", has_header=True)
     df = ctx.sql("SELECT * FROM test")
     batches = df.collect()
     assert len(batches) == 1
-    assert len(batches[0]) == 1
+    assert len(batches[0]) == 5
 
 
-def test_read_parquet():
-    ctx = BallistaBuilder().standalone()
+def test_read_parquet(ctx):
     df = ctx.read_parquet("testdata/test.parquet")
     batches = df.collect()
     assert len(batches) == 1
     assert len(batches[0]) == 8
 
 
-def test_register_parquet():
-    ctx = BallistaBuilder().standalone()
+def test_register_parquet(ctx):
     ctx.register_parquet("test", "testdata/test.parquet")
     df = ctx.sql("SELECT * FROM test")
     batches = df.collect()
@@ -63,27 +63,13 @@ def test_register_parquet():
     assert len(batches[0]) == 8
 
 
-def test_read_dataframe_api():
-    ctx = BallistaBuilder().standalone()
+def test_read_dataframe_api(ctx):
     df = (
         ctx.read_csv("testdata/test.csv", has_header=True)
-        .select_columns("a", "b")
-        .limit(1)
+        .select("a", "b")
+        .filter(col("a") > lit(2))
     )
-    batches = df.collect()
-    assert len(batches) == 1
-    assert len(batches[0]) == 1
+    result = df.collect()[0]
 
-
-def test_execute_plan():
-    ctx = BallistaBuilder().standalone()
-    df = (
-        ctx.read_csv("testdata/test.csv", has_header=True)
-        .select_columns("a", "b")
-        .limit(1)
-    )
-    # TODO research SessionContext Logical Plan for DataFusionPython
-    # df = ctx.execute_logical_plan(df.logical_plan())
-    batches = df.collect()
-    assert len(batches) == 1
-    assert len(batches[0]) == 1
+    assert result.column(0) == pa.array([3, 4, 5])
+    assert result.column(1) == pa.array([-4, -5, -6])

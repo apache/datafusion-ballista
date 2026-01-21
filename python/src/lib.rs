@@ -20,79 +20,52 @@ use ballista::prelude::*;
 use cluster::{PyExecutor, PyScheduler};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::*;
-use datafusion_python::context::PySessionContext;
+use datafusion_proto::bytes::logical_plan_from_bytes;
 use pyo3::prelude::*;
 
 mod cluster;
-#[allow(dead_code)]
-mod codec;
 mod utils;
 
 pub(crate) struct TokioRuntime(tokio::runtime::Runtime);
 
 #[pymodule]
-fn ballista_internal(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
+fn _internal_ballista(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     pyo3_log::init();
 
-    m.add_class::<PyBallistaBuilder>()?;
-    m.add_class::<datafusion_python::dataframe::PyDataFrame>()?;
     m.add_class::<PyScheduler>()?;
     m.add_class::<PyExecutor>()?;
+
+    m.add_class::<datafusion_python::dataframe::PyParquetWriterOptions>()?;
+    m.add_class::<datafusion_python::dataframe::PyParquetColumnOptions>()?;
+    m.add_class::<datafusion_python::dataframe::PyDataFrame>()?;
+
+    m.add_function(wrap_pyfunction!(create_ballista_data_frame, m.clone())?)?;
+    m.add_function(wrap_pyfunction!(
+        crate::cluster::setup_test_cluster,
+        m.clone()
+    )?)?;
 
     Ok(())
 }
 
-#[pyclass(name = "BallistaBuilder", module = "ballista", subclass)]
-pub struct PyBallistaBuilder {
-    session_config: SessionConfig,
-}
+/// Creates a DataFrame which runs on ballista session context.
+///
+/// Returned DataFrame will executed plan on ballista.
+#[pyfunction]
+fn create_ballista_data_frame(
+    py: Python,
+    plan_blob: &[u8],
+    url: &str,
+    session_id: &str,
+) -> PyResult<datafusion_python::dataframe::PyDataFrame> {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_session_id(session_id.to_string())
+        .build();
 
-#[pymethods]
-impl PyBallistaBuilder {
-    #[new]
-    pub fn new() -> Self {
-        Self {
-            session_config: SessionConfig::new_with_ballista(),
-        }
-    }
+    let ctx = wait_for_future(py, SessionContext::remote_with_state(url, state))?;
+    let plan = logical_plan_from_bytes(plan_blob, &ctx.task_ctx())?;
 
-    pub fn config(
-        mut slf: PyRefMut<'_, Self>,
-        key: &str,
-        value: &str,
-        py: Python,
-    ) -> PyResult<PyObject> {
-        let _ = slf.session_config.options_mut().set(key, value);
-
-        Ok(slf.into_pyobject(py)?.into())
-    }
-
-    /// Construct the standalone instance from the SessionContext
-    pub fn standalone(&self, py: Python) -> PyResult<PySessionContext> {
-        let state = SessionStateBuilder::new()
-            .with_config(self.session_config.clone())
-            .with_default_features()
-            .build();
-
-        let ctx = wait_for_future(py, SessionContext::standalone_with_state(state))?;
-
-        Ok(ctx.into())
-    }
-
-    /// Construct the remote instance from the SessionContext
-    pub fn remote(&self, url: &str, py: Python) -> PyResult<PySessionContext> {
-        let state = SessionStateBuilder::new()
-            .with_config(self.session_config.clone())
-            .with_default_features()
-            .build();
-
-        let ctx = wait_for_future(py, SessionContext::remote_with_state(url, state))?;
-
-        Ok(ctx.into())
-    }
-
-    #[classattr]
-    pub fn version() -> &'static str {
-        ballista_core::BALLISTA_VERSION
-    }
+    Ok(datafusion_python::dataframe::PyDataFrame::new(
+        DataFrame::new(ctx.state(), plan),
+    ))
 }

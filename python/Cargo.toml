@@ -17,7 +17,7 @@
 
 [package]
 name = "pyballista"
-version = "49.0.0"
+version = "51.0.0"
 homepage = "https://datafusion.apache.org/ballista/"
 repository = "https://github.com/apache/datafusion-ballista"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
@@ -31,21 +31,22 @@ publish = false
 
 [dependencies]
 async-trait = "0.1.89"
-ballista = { version = "49.0.0" }
-ballista-core = { version = "49.0.0" }
-ballista-executor = { version = "49.0.0", default-features = false }
-ballista-scheduler = { version = "49.0.0", default-features = false }
-datafusion = { version = "49", features = ["pyarrow", "avro"] }
-datafusion-proto = { version = "49" }
-datafusion-python = { version = "49" }
-
-pyo3 = { version = "0.24", features = ["extension-module", "abi3", "abi3-py39"] }
-pyo3-log = "0.12"
+ballista = { version = "51.0.0" }
+ballista-core = { version = "51.0.0" }
+ballista-executor = { version = "51.0.0", default-features = false }
+ballista-scheduler = { version = "51.0.0", default-features = false }
+datafusion = { version = "51", features = ["pyarrow", "avro"] }
+datafusion-proto = { version = "51" }
+datafusion-python = { version = "51" }
+log = { version = "0.4" }
+pyo3 = { version = "0.26", features = ["extension-module", "abi3", "abi3-py310"] }
+pyo3-log = "0.13"
 tokio = { version = "1.48", features = ["macros", "rt", "rt-multi-thread", "sync"] }
+tonic = { version = "0.14" }
 
 [lib]
 crate-type = ["cdylib"]
 name = "ballista"
 
 [build-dependencies]
-pyo3-build-config = "0.24"
+pyo3-build-config = "0.26"
