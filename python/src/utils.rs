@@ -48,7 +48,7 @@ where
     F::Output: Send,
 {
     let runtime: &Runtime = &get_tokio_runtime().0;
-    py.allow_threads(|| runtime.block_on(f))
+    py.detach(|| runtime.block_on(f))
 }
 
 pub(crate) fn spawn_feature<F>(py: Python, f: F) -> JoinHandle<F::Output>
@@ -58,5 +58,5 @@ where
 {
     let runtime: &Runtime = &get_tokio_runtime().0;
     // do we need py.allow_threads ?
-    py.allow_threads(|| runtime.spawn(f))
+    py.detach(|| runtime.spawn(f))
 }

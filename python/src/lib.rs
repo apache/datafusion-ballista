@@ -63,7 +63,7 @@ fn create_ballista_data_frame(
         .build();
 
     let ctx = wait_for_future(py, SessionContext::remote_with_state(url, state))?;
-    let plan = logical_plan_from_bytes(plan_blob, &ctx)?;
+    let plan = logical_plan_from_bytes(plan_blob, &ctx.task_ctx())?;
 
     Ok(datafusion_python::dataframe::PyDataFrame::new(
         DataFrame::new(ctx.state(), plan),
