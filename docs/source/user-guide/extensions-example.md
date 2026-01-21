@@ -214,16 +214,63 @@ scheduler.
 The logical extension codec typically consists of two components: Google Protocol Buffer definitions:
 
 ```proto
+syntax = "proto3";
+
+package extension.ballista;
+
+// used in building the codecs and compiled to Rust at build time.
+import "datafusion_common.proto";
+//
+// message naming convention
+//
+// prefix L means logical
+// prefix P means physical
+//
+
+
+//
+// Logical Plan Extensions
+//
+
+
+// this is the root message that captures all possible
+// logical plan messages which can be sent across
 message LMessage {
     oneof Extension {
         LSample sample = 1;
     }
 }
 
+
 message LSample {
     float fraction = 1;
     optional int64 seed = 2;
 }
+
+//
+// Physical Plan Extensions
+//
+
+
+message PMessage {
+    oneof Extension {
+        // opaque message means that extension codec does not handle
+        // those values hence encoding/decoding is delegated to some other codec
+        // (in this case default datafusion codec).
+        bytes opaque = 1;
+        PSample sample = 2;
+
+    }
+}
+
+message PSample {
+    float fraction = 1;
+    optional int64 seed = 2;
+}
+```
+
+```
+
 ```
 
 `LogicalExtensionCodec` extends `BallistaLogicalExtensionCodec` handling newly defined operator messages:
