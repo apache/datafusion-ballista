@@ -19,7 +19,7 @@
 
 use crate::state::execution_graph::ExecutionGraph;
 use ballista_core::execution_plans::{
-    ShuffleReaderExec, ShuffleWriterExec, UnresolvedShuffleExec,
+    ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
 };
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::memory::MemorySourceConfig;
@@ -318,6 +318,11 @@ filter_expr={}",
     } else if let Some(exec) = plan.as_any().downcast_ref::<ShuffleWriterExec>() {
         format!(
             "ShuffleWriter [{} partitions]",
+            exec.input_partition_count()
+        )
+    } else if let Some(exec) = plan.as_any().downcast_ref::<SortShuffleWriterExec>() {
+        format!(
+            "SortShuffleWriter [{} partitions]",
             exec.input_partition_count()
         )
     } else if let Some(exec) = plan.as_any().downcast_ref::<DataSourceExec>() {

@@ -20,9 +20,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use ballista_core::config::BallistaConfig;
 use ballista_core::error::{BallistaError, Result};
+use ballista_core::execution_plans::ShuffleWriter;
+use ballista_core::execution_plans::sort_shuffle::SortShuffleConfig;
 use ballista_core::{
-    execution_plans::{ShuffleReaderExec, ShuffleWriterExec, UnresolvedShuffleExec},
+    execution_plans::{
+        ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec,
+        UnresolvedShuffleExec,
+    },
     serde::scheduler::PartitionLocation,
 };
 use datafusion::config::ConfigOptions;
@@ -37,24 +43,24 @@ use datafusion::physical_plan::{
 
 use log::{debug, info};
 
-type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<ShuffleWriterExec>>);
+type PartialQueryStageResult = (Arc<dyn ExecutionPlan>, Vec<Arc<dyn ShuffleWriter>>);
 
 /// Trait for breaking an execution plan into distributed query stages.
 ///
 /// The planner creates a DAG of stages where each stage can be executed
 /// independently once its input stages are complete.
 pub trait DistributedPlanner {
-    /// Returns a vector of ExecutionPlans, where the root node is a [`ShuffleWriterExec`].
+    /// Returns a vector of ExecutionPlans, where the root node is a [`ShuffleWriter`].
     ///
     /// Plans that depend on the input of other plans will have leaf nodes of type
-    /// [`UnresolvedShuffleExec`]. A [`ShuffleWriterExec`] is created whenever the
+    /// [`UnresolvedShuffleExec`]. A shuffle writer is created whenever the
     /// partitioning changes.
     fn plan_query_stages<'a>(
         &'a mut self,
         job_id: &'a str,
         execution_plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
-    ) -> Result<Vec<Arc<ShuffleWriterExec>>>;
+    ) -> Result<Vec<Arc<dyn ShuffleWriter>>>;
 }
 
 /// Default implementation of [`DistributedPlanner`].
@@ -87,23 +93,24 @@ impl Default for DefaultDistributedPlanner {
 }
 
 impl DistributedPlanner for DefaultDistributedPlanner {
-    /// Returns a vector of ExecutionPlans, where the root node is a [ShuffleWriterExec].
+    /// Returns a vector of ExecutionPlans, where the root node is a shuffle writer.
     /// Plans that depend on the input of other plans will have leaf nodes of type [UnresolvedShuffleExec].
-    /// A [ShuffleWriterExec] is created whenever the partitioning changes.
+    /// A shuffle writer is created whenever the partitioning changes.
     fn plan_query_stages<'a>(
         &'a mut self,
         job_id: &'a str,
         execution_plan: Arc<dyn ExecutionPlan>,
         config: &ConfigOptions,
-    ) -> Result<Vec<Arc<ShuffleWriterExec>>> {
+    ) -> Result<Vec<Arc<dyn ShuffleWriter>>> {
         info!("planning query stages for job {job_id}");
         let (new_plan, mut stages) =
             self.plan_query_stages_internal(job_id, execution_plan, config)?;
-        stages.push(create_shuffle_writer(
+        stages.push(create_shuffle_writer_with_config(
             job_id,
             self.next_stage_id(),
             new_plan,
             None,
+            config,
         )?);
         Ok(stages)
     }
@@ -139,9 +146,14 @@ impl DefaultDistributedPlanner {
         {
             let input = children[0].clone();
             let input = self.optimizer_enforce_sorting.optimize(input, config)?;
-            let shuffle_writer =
-                create_shuffle_writer(job_id, self.next_stage_id(), input, None)?;
-            let unresolved_shuffle = create_unresolved_shuffle(&shuffle_writer);
+            let shuffle_writer = create_shuffle_writer_with_config(
+                job_id,
+                self.next_stage_id(),
+                input,
+                None,
+                config,
+            )?;
+            let unresolved_shuffle = create_unresolved_shuffle(shuffle_writer.as_ref());
 
             stages.push(shuffle_writer);
             Ok((
@@ -152,13 +164,14 @@ impl DefaultDistributedPlanner {
             .as_any()
             .downcast_ref::<SortPreservingMergeExec>(
         ) {
-            let shuffle_writer = create_shuffle_writer(
+            let shuffle_writer = create_shuffle_writer_with_config(
                 job_id,
                 self.next_stage_id(),
                 children[0].clone(),
                 None,
+                config,
             )?;
-            let unresolved_shuffle = create_unresolved_shuffle(&shuffle_writer);
+            let unresolved_shuffle = create_unresolved_shuffle(shuffle_writer.as_ref());
             stages.push(shuffle_writer);
             Ok((
                 with_new_children_if_necessary(execution_plan, vec![unresolved_shuffle])?,
@@ -172,13 +185,15 @@ impl DefaultDistributedPlanner {
                     let input = children[0].clone();
                     let input = self.optimizer_enforce_sorting.optimize(input, config)?;
 
-                    let shuffle_writer = create_shuffle_writer(
+                    let shuffle_writer = create_shuffle_writer_with_config(
                         job_id,
                         self.next_stage_id(),
                         input,
                         Some(repart.partitioning().to_owned()),
+                        config,
                     )?;
-                    let unresolved_shuffle = create_unresolved_shuffle(&shuffle_writer);
+                    let unresolved_shuffle =
+                        create_unresolved_shuffle(shuffle_writer.as_ref());
 
                     stages.push(shuffle_writer);
                     Ok((unresolved_shuffle, stages))
@@ -204,7 +219,7 @@ impl DefaultDistributedPlanner {
 }
 
 fn create_unresolved_shuffle(
-    shuffle_writer: &ShuffleWriterExec,
+    shuffle_writer: &dyn ShuffleWriter,
 ) -> Arc<UnresolvedShuffleExec> {
     Arc::new(UnresolvedShuffleExec::new(
         shuffle_writer.stage_id(),
@@ -321,17 +336,48 @@ pub fn rollback_resolved_shuffles(
     Ok(with_new_children_if_necessary(stage, new_children)?)
 }
 
-fn create_shuffle_writer(
+fn create_shuffle_writer_with_config(
     job_id: &str,
     stage_id: usize,
     plan: Arc<dyn ExecutionPlan>,
     partitioning: Option<Partitioning>,
-) -> Result<Arc<ShuffleWriterExec>> {
+    config: &ConfigOptions,
+) -> Result<Arc<dyn ShuffleWriter>> {
+    // Check if sort-based shuffle is enabled
+    let ballista_config = config
+        .extensions
+        .get::<BallistaConfig>()
+        .cloned()
+        .unwrap_or_default();
+
+    if ballista_config.shuffle_sort_based_enabled() {
+        // Sort shuffle requires hash partitioning
+        if let Some(Partitioning::Hash(exprs, partition_count)) = partitioning {
+            let sort_config = SortShuffleConfig::new(
+                true,
+                ballista_config.shuffle_sort_based_buffer_size(),
+                ballista_config.shuffle_sort_based_memory_limit(),
+                ballista_config.shuffle_sort_based_spill_threshold(),
+                datafusion::arrow::ipc::CompressionType::LZ4_FRAME,
+            );
+
+            return Ok(Arc::new(SortShuffleWriterExec::try_new(
+                job_id.to_owned(),
+                stage_id,
+                plan,
+                "".to_owned(),
+                Partitioning::Hash(exprs, partition_count),
+                sort_config,
+            )?));
+        }
+    }
+
+    // Fall back to standard shuffle writer
     Ok(Arc::new(ShuffleWriterExec::try_new(
         job_id.to_owned(),
         stage_id,
         plan,
-        "".to_owned(), // executor will decide on the work_dir path
+        "".to_owned(),
         partitioning,
     )?))
 }

@@ -21,9 +21,13 @@
 mod distributed_query;
 mod shuffle_reader;
 mod shuffle_writer;
+mod shuffle_writer_trait;
+pub mod sort_shuffle;
 mod unresolved_shuffle;
 
 pub use distributed_query::DistributedQueryExec;
 pub use shuffle_reader::ShuffleReaderExec;
 pub use shuffle_writer::ShuffleWriterExec;
+pub use shuffle_writer_trait::ShuffleWriter;
+pub use sort_shuffle::SortShuffleWriterExec;
 pub use unresolved_shuffle::UnresolvedShuffleExec;

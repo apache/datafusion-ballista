@@ -19,6 +19,7 @@
 
 use ballista::extension::SessionConfigExt;
 use ballista::prelude::SessionContextExt;
+use ballista_core::config::BALLISTA_SHUFFLE_SORT_BASED_ENABLED;
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::SchemaBuilder;
 use datafusion::arrow::util::display::array_value_to_string;
@@ -122,6 +123,10 @@ struct BallistaBenchmarkOpt {
     /// Path to output directory where JSON summary file should be written to
     #[structopt(parse(from_os_str), short = "o", long = "output")]
     output_path: Option<PathBuf>,
+
+    /// Enable sort-based shuffle instead of hash-based shuffle
+    #[structopt(long = "sort-shuffle")]
+    sort_shuffle: bool,
 }
 
 #[derive(Debug, StructOpt, Clone)]
@@ -406,11 +411,15 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
     for query in query_numbers {
         let mut query_run = QueryRun::new(query);
 
-        let config = SessionConfig::new_with_ballista()
+        let mut config = SessionConfig::new_with_ballista()
             .with_target_partitions(opt.partitions)
             .with_ballista_job_name(&format!("Query derived from TPC-H q{}", query))
             .with_batch_size(opt.batch_size)
             .with_collect_statistics(true);
+
+        if opt.sort_shuffle {
+            config = config.set_str(BALLISTA_SHUFFLE_SORT_BASED_ENABLED, "true");
+        }
 
         let state = SessionStateBuilder::new()
             .with_default_features()

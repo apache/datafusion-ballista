@@ -227,7 +227,7 @@ impl Executor {
 
 #[cfg(test)]
 mod test {
-    use crate::execution_engine::DefaultQueryStageExec;
+    use crate::execution_engine::{DefaultQueryStageExec, ShuffleWriterVariant};
     use crate::executor::Executor;
     use ballista_core::RuntimeProducer;
     use ballista_core::execution_plans::ShuffleWriterExec;
@@ -363,7 +363,8 @@ mod test {
         )
         .expect("creating shuffle writer");
 
-        let query_stage_exec = DefaultQueryStageExec::new(shuffle_write);
+        let query_stage_exec =
+            DefaultQueryStageExec::new(ShuffleWriterVariant::Hash(shuffle_write));
 
         let executor_registration = ExecutorRegistration {
             id: "executor".to_string(),
