@@ -303,6 +303,33 @@
   </a>
  </li>
  <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#jupyter-notebook-support">
+   Jupyter Notebook Support
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#basic-usage">
+     Basic Usage
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#converting-results">
+     Converting Results
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#example-notebook-workflow">
+     Example Notebook Workflow
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#running-a-local-cluster-in-a-notebook">
+     Running a Local Cluster in a Notebook
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
   <a class="reference internal nav-link" href="#user-defined-functions">
    User Defined Functions
   </a>
@@ -466,6 +493,102 @@ COUNT(UInt8(1)): int64]
 <span class="k">assert</span> <span class="n">result</span><span class="o">.</span><span class="n">column</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span> <span class="o">==</span> <span class="n">pyarrow</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="o">-</span><span class="mi">3</span><span class="p">,</span> <span class="o">-</span><span class="mi">3</span><span class="p">,</span> <span class="o">-</span><span class="mi">3</span><span class="p">])</span>
 </pre></div>
 </div>
+</section>
+<section id="jupyter-notebook-support">
+<h2>Jupyter Notebook Support<a class="headerlink" href="#jupyter-notebook-support" title="Link to this heading">¶</a></h2>
+<p>Ballista works well in Jupyter notebooks. DataFrames automatically render as formatted HTML tables when displayed
+in a notebook cell.</p>
+<section id="basic-usage">
+<h3>Basic Usage<a class="headerlink" href="#basic-usage" title="Link to this heading">¶</a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">ballista</span><span class="w"> </span><span class="kn">import</span> <span class="n">BallistaSessionContext</span>
+
+<span class="c1"># Connect to a Ballista cluster</span>
+<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span><span class="s2">&quot;df://localhost:50050&quot;</span><span class="p">)</span>
+
+<span class="c1"># Register a table</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">register_parquet</span><span class="p">(</span><span class="s2">&quot;trips&quot;</span><span class="p">,</span> <span class="s2">&quot;/path/to/nyctaxi.parquet&quot;</span><span class="p">)</span>
+
+<span class="c1"># Run a query - the result renders as an HTML table</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">&quot;SELECT * FROM trips LIMIT 10&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>When a DataFrame is the last expression in a cell, Jupyter automatically calls its <code class="docutils literal notranslate"><span class="pre">_repr_html_()</span></code> method,
+which renders a styled table with:</p>
+<ul class="simple">
+<li><p>Formatted column headers</p></li>
+<li><p>Expandable cells for long text content</p></li>
+<li><p>Scrollable display for wide tables</p></li>
+</ul>
+</section>
+<section id="converting-results">
+<h3>Converting Results<a class="headerlink" href="#converting-results" title="Link to this heading">¶</a></h3>
+<p>DataFrames can be converted to various formats for further analysis:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">df</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">&quot;SELECT * FROM trips WHERE fare_amount &gt; 50&quot;</span><span class="p">)</span>
+
+<span class="c1"># Convert to Pandas DataFrame</span>
+<span class="n">pandas_df</span> <span class="o">=</span> <span class="n">df</span><span class="o">.</span><span class="n">to_pandas</span><span class="p">()</span>
+
+<span class="c1"># Convert to PyArrow Table</span>
+<span class="n">arrow_table</span> <span class="o">=</span> <span class="n">df</span><span class="o">.</span><span class="n">to_arrow_table</span><span class="p">()</span>
+
+<span class="c1"># Convert to Polars DataFrame</span>
+<span class="n">polars_df</span> <span class="o">=</span> <span class="n">df</span><span class="o">.</span><span class="n">to_polars</span><span class="p">()</span>
+
+<span class="c1"># Collect as PyArrow RecordBatches</span>
+<span class="n">batches</span> <span class="o">=</span> <span class="n">df</span><span class="o">.</span><span class="n">collect</span><span class="p">()</span>
+</pre></div>
+</div>
+</section>
+<section id="example-notebook-workflow">
+<h3>Example Notebook Workflow<a class="headerlink" href="#example-notebook-workflow" title="Link to this heading">¶</a></h3>
+<p>A typical notebook workflow might look like:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Cell 1: Setup</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">ballista</span><span class="w"> </span><span class="kn">import</span> <span class="n">BallistaSessionContext</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">datafusion</span><span class="w"> </span><span class="kn">import</span> <span class="n">col</span><span class="p">,</span> <span class="n">lit</span>
+
+<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span><span class="s2">&quot;df://localhost:50050&quot;</span><span class="p">)</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">register_parquet</span><span class="p">(</span><span class="s2">&quot;orders&quot;</span><span class="p">,</span> <span class="s2">&quot;/data/orders.parquet&quot;</span><span class="p">)</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">register_parquet</span><span class="p">(</span><span class="s2">&quot;customers&quot;</span><span class="p">,</span> <span class="s2">&quot;/data/customers.parquet&quot;</span><span class="p">)</span>
+
+<span class="c1"># Cell 2: Explore the data</span>
+<span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">&quot;SELECT * FROM orders LIMIT 5&quot;</span><span class="p">)</span>
+
+<span class="c1"># Cell 3: Run analysis</span>
+<span class="n">df</span> <span class="o">=</span> <span class="n">ctx</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="s2">&quot;&quot;&quot;</span>
+<span class="s2">    SELECT</span>
+<span class="s2">        c.name,</span>
+<span class="s2">        COUNT(*) as order_count,</span>
+<span class="s2">        SUM(o.amount) as total_spent</span>
+<span class="s2">    FROM orders o</span>
+<span class="s2">    JOIN customers c ON o.customer_id = c.id</span>
+<span class="s2">    GROUP BY c.name</span>
+<span class="s2">    ORDER BY total_spent DESC</span>
+<span class="s2">    LIMIT 10</span>
+<span class="s2">&quot;&quot;&quot;</span><span class="p">)</span>
+<span class="n">df</span>
+
+<span class="c1"># Cell 4: Convert to Pandas for visualization</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">matplotlib.pyplot</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">plt</span>
+
+<span class="n">pandas_df</span> <span class="o">=</span> <span class="n">df</span><span class="o">.</span><span class="n">to_pandas</span><span class="p">()</span>
+<span class="n">pandas_df</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">kind</span><span class="o">=</span><span class="s1">&#39;bar&#39;</span><span class="p">,</span> <span class="n">x</span><span class="o">=</span><span class="s1">&#39;name&#39;</span><span class="p">,</span> <span class="n">y</span><span class="o">=</span><span class="s1">&#39;total_spent&#39;</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</section>
+<section id="running-a-local-cluster-in-a-notebook">
+<h3>Running a Local Cluster in a Notebook<a class="headerlink" href="#running-a-local-cluster-in-a-notebook" title="Link to this heading">¶</a></h3>
+<p>For development and testing, you can start a local cluster directly from a notebook:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">ballista</span><span class="w"> </span><span class="kn">import</span> <span class="n">BallistaSessionContext</span><span class="p">,</span> <span class="n">setup_test_cluster</span>
+
+<span class="c1"># Start a local scheduler and executor</span>
+<span class="n">host</span><span class="p">,</span> <span class="n">port</span> <span class="o">=</span> <span class="n">setup_test_cluster</span><span class="p">()</span>
+
+<span class="c1"># Connect to it</span>
+<span class="n">ctx</span> <span class="o">=</span> <span class="n">BallistaSessionContext</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;df://</span><span class="si">{</span><span class="n">host</span><span class="si">}</span><span class="s2">:</span><span class="si">{</span><span class="n">port</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
 </section>
 <section id="user-defined-functions">
 <h2>User Defined Functions<a class="headerlink" href="#user-defined-functions" title="Link to this heading">¶</a></h2>
