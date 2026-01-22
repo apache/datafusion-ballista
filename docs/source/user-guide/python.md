@@ -144,6 +144,105 @@ assert result.column(0) == pyarrow.array([5, 7, 9])
 assert result.column(1) == pyarrow.array([-3, -3, -3])
 ```
 
+## Jupyter Notebook Support
+
+Ballista works well in Jupyter notebooks. DataFrames automatically render as formatted HTML tables when displayed
+in a notebook cell.
+
+### Basic Usage
+
+```python
+from ballista import BallistaSessionContext
+
+# Connect to a Ballista cluster
+ctx = BallistaSessionContext("df://localhost:50050")
+
+# Register a table
+ctx.register_parquet("trips", "/path/to/nyctaxi.parquet")
+
+# Run a query - the result renders as an HTML table
+ctx.sql("SELECT * FROM trips LIMIT 10")
+```
+
+When a DataFrame is the last expression in a cell, Jupyter automatically calls its `_repr_html_()` method,
+which renders a styled table with:
+
+- Formatted column headers
+- Expandable cells for long text content
+- Scrollable display for wide tables
+
+### Converting Results
+
+DataFrames can be converted to various formats for further analysis:
+
+```python
+df = ctx.sql("SELECT * FROM trips WHERE fare_amount > 50")
+
+# Convert to Pandas DataFrame
+pandas_df = df.to_pandas()
+
+# Convert to PyArrow Table
+arrow_table = df.to_arrow_table()
+
+# Convert to Polars DataFrame
+polars_df = df.to_polars()
+
+# Collect as PyArrow RecordBatches
+batches = df.collect()
+```
+
+### Example Notebook Workflow
+
+A typical notebook workflow might look like:
+
+```python
+# Cell 1: Setup
+from ballista import BallistaSessionContext
+from datafusion import col, lit
+
+ctx = BallistaSessionContext("df://localhost:50050")
+ctx.register_parquet("orders", "/data/orders.parquet")
+ctx.register_parquet("customers", "/data/customers.parquet")
+
+# Cell 2: Explore the data
+ctx.sql("SELECT * FROM orders LIMIT 5")
+
+# Cell 3: Run analysis
+df = ctx.sql("""
+    SELECT
+        c.name,
+        COUNT(*) as order_count,
+        SUM(o.amount) as total_spent
+    FROM orders o
+    JOIN customers c ON o.customer_id = c.id
+    GROUP BY c.name
+    ORDER BY total_spent DESC
+    LIMIT 10
+""")
+df
+
+# Cell 4: Convert to Pandas for visualization
+import matplotlib.pyplot as plt
+
+pandas_df = df.to_pandas()
+pandas_df.plot(kind='bar', x='name', y='total_spent')
+plt.show()
+```
+
+### Running a Local Cluster in a Notebook
+
+For development and testing, you can start a local cluster directly from a notebook:
+
+```python
+from ballista import BallistaSessionContext, setup_test_cluster
+
+# Start a local scheduler and executor
+host, port = setup_test_cluster()
+
+# Connect to it
+ctx = BallistaSessionContext(f"df://{host}:{port}")
+```
+
 ## User Defined Functions
 
 The underlying DataFusion query engine supports Python UDFs but this functionality has not yet been implemented in
