@@ -19,12 +19,12 @@ use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
 use crate::serde::protobuf::get_job_status_result::FlightProxy;
 use crate::serde::protobuf::{
-    execute_query_params::Query, execute_query_result, job_status, scheduler_grpc_client::SchedulerGrpcClient,
     ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
-    PartitionLocation,
+    PartitionLocation, execute_query_params::Query, execute_query_result, job_status,
+    scheduler_grpc_client::SchedulerGrpcClient,
 };
 use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
-use crate::utils::{create_grpc_client_connection, GrpcClientConfig};
+use crate::utils::{GrpcClientConfig, create_grpc_client_connection};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -511,8 +511,8 @@ async fn fetch_partition(
 #[cfg(test)]
 mod test {
     use crate::execution_plans::distributed_query::get_client_host_port;
-    use crate::serde::protobuf::get_job_status_result::FlightProxy;
     use crate::serde::protobuf::ExecutorMetadata;
+    use crate::serde::protobuf::get_job_status_result::FlightProxy;
 
     #[test]
     fn test_client_host_port() {
