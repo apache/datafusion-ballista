@@ -117,7 +117,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_ENABLED.to_string(),
                          "Enable sort-based shuffle which writes consolidated files with index".to_string(),
                          DataType::Boolean,
-                         Some(false.to_string())),
+                         Some(true.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE.to_string(),
                          "Per-partition buffer size in bytes for sort shuffle".to_string(),
                          DataType::UInt64,
