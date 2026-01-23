@@ -406,16 +406,13 @@ fn finalize_output(
 
         // First, write any spill files for this partition
         if spill_manager.has_spill_files(partition_id) {
-            let spill_batches = spill_manager
-                .read_spill_files(partition_id)
+            let (num_batches, num_rows, num_bytes) = spill_manager
+                .read_spill_files(partition_id, &mut writer)
                 .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
-            for batch in spill_batches {
-                partition_rows += batch.num_rows() as u64;
-                partition_bytes += batch.get_array_memory_size() as u64;
-                partition_batches += 1;
-                writer.write(&batch)?;
-            }
+            partition_rows += num_rows as u64;
+            partition_bytes += num_bytes as u64;
+            partition_batches += num_batches as u64;
         }
 
         // Then write remaining buffered data
