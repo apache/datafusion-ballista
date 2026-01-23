@@ -19,12 +19,12 @@ use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
 use crate::serde::protobuf::get_job_status_result::FlightProxy;
 use crate::serde::protobuf::{
+    execute_query_params::Query, execute_query_result, job_status, scheduler_grpc_client::SchedulerGrpcClient,
     ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
-    PartitionLocation, execute_query_params::Query, execute_query_result, job_status,
-    scheduler_grpc_client::SchedulerGrpcClient,
+    PartitionLocation,
 };
 use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
-use crate::utils::{GrpcClientConfig, create_grpc_client_connection};
+use crate::utils::{create_grpc_client_connection, GrpcClientConfig};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -451,15 +451,15 @@ fn get_client_host_port(
 
     match flight_proxy {
         Some(FlightProxy::External(address)) => {
-            info!("Fetching results from external flight proxy: {}", address);
+            debug!("Fetching results from external flight proxy: {}", address);
             split_host_port(format!("http://{address}").as_str())
         }
         Some(FlightProxy::Local(true)) => {
-            info!("Fetching results from scheduler: {}", scheduler_url);
+            debug!("Fetching results from scheduler: {}", scheduler_url);
             split_host_port(scheduler_url)
         }
         Some(FlightProxy::Local(false)) | None => {
-            info!(
+            debug!(
                 "Fetching results from executor: {}:{}",
                 executor_metadata.host, executor_metadata.port
             );
@@ -511,8 +511,8 @@ async fn fetch_partition(
 #[cfg(test)]
 mod test {
     use crate::execution_plans::distributed_query::get_client_host_port;
-    use crate::serde::protobuf::ExecutorMetadata;
     use crate::serde::protobuf::get_job_status_result::FlightProxy;
+    use crate::serde::protobuf::ExecutorMetadata;
 
     #[test]
     fn test_client_host_port() {
