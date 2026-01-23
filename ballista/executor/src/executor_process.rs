@@ -53,10 +53,15 @@ use ballista_core::serde::{
     BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
 };
 use ballista_core::utils::{
-    GrpcServerConfig, create_grpc_client_connection, create_grpc_server,
+    GrpcClientConfig, GrpcServerConfig, create_grpc_client_endpoint, create_grpc_server,
     default_config_producer, get_time_before,
 };
 use ballista_core::{BALLISTA_VERSION, ConfigProducer, RuntimeProducer};
+use tonic::transport::{Endpoint, Error as TonicTransportError};
+
+/// Type alias for the endpoint override function used in gRPC client configuration
+pub type EndpointOverrideFn =
+    Arc<dyn Fn(Endpoint) -> Result<Endpoint, TonicTransportError> + Send + Sync>;
 
 use crate::execution_engine::ExecutionEngine;
 use crate::executor::{Executor, TasksDrainedFuture};
@@ -129,6 +134,8 @@ pub struct ExecutorProcessConfig {
     pub override_physical_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
     /// [ArrowFlightServerProvider] implementation override option
     pub override_arrow_flight_service: Option<Arc<ArrowFlightServerProvider>>,
+    /// Override function for customizing gRPC client endpoints before they are used
+    pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
 }
 
 impl ExecutorProcessConfig {
@@ -174,6 +181,7 @@ impl Default for ExecutorProcessConfig {
             override_logical_codec: None,
             override_physical_codec: None,
             override_arrow_flight_service: None,
+            override_create_grpc_client_endpoint: None,
         }
     }
 }
@@ -284,14 +292,28 @@ pub async fn start_executor_process(
     let connect_timeout = opt.scheduler_connect_timeout_seconds as u64;
     let session_config = (executor.config_producer)();
     let ballista_config = session_config.ballista_config();
+    let grpc_config = GrpcClientConfig::from(&ballista_config);
     let connection = if connect_timeout == 0 {
-        create_grpc_client_connection(scheduler_url, &(&ballista_config).into())
-            .await
+        let mut endpoint = create_grpc_client_endpoint(scheduler_url, Some(&grpc_config))
             .map_err(|_| {
                 BallistaError::GrpcConnectionError(
-                    "Could not connect to scheduler".to_string(),
+                    "Could not create endpoint to scheduler".to_string(),
                 )
-            })
+            })?;
+
+        if let Some(ref override_fn) = opt.override_create_grpc_client_endpoint {
+            endpoint = override_fn(endpoint).map_err(|_| {
+                BallistaError::GrpcConnectionError(
+                    "Failed to apply endpoint override".to_string(),
+                )
+            })?;
+        }
+
+        endpoint.connect().await.map_err(|_| {
+            BallistaError::GrpcConnectionError(
+                "Could not connect to scheduler".to_string(),
+            )
+        })
     } else {
         // this feature was added to support docker-compose so that we can have the executor
         // wait for the scheduler to start, or at least run for 10 seconds before failing so
@@ -301,23 +323,40 @@ pub async fn start_executor_process(
         while x.is_none()
             && Instant::now().elapsed().as_secs() - start_time < connect_timeout
         {
-            match create_grpc_client_connection(
-                scheduler_url.clone(),
-                &(&ballista_config).into(),
-            )
-            .await
-            .map_err(|_| {
-                BallistaError::GrpcConnectionError(
-                    "Could not connect to scheduler".to_string(),
-                )
-            }) {
-                Ok(connection) => {
-                    info!("Connected to scheduler at {scheduler_url}");
-                    x = Some(connection);
+            match create_grpc_client_endpoint(scheduler_url.clone(), Some(&grpc_config)) {
+                Ok(mut endpoint) => {
+                    if let Some(ref override_fn) =
+                        opt.override_create_grpc_client_endpoint
+                    {
+                        match override_fn(endpoint) {
+                            Ok(overridden_endpoint) => endpoint = overridden_endpoint,
+                            Err(e) => {
+                                warn!(
+                                    "Failed to apply endpoint override to scheduler at {scheduler_url} ({e}); retrying ..."
+                                );
+                                tokio::time::sleep(time::Duration::from_millis(500))
+                                    .await;
+                                continue;
+                            }
+                        }
+                    }
+
+                    match endpoint.connect().await {
+                        Ok(connection) => {
+                            info!("Connected to scheduler at {scheduler_url}");
+                            x = Some(connection);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to connect to scheduler at {scheduler_url} ({e}); retrying ..."
+                            );
+                            tokio::time::sleep(time::Duration::from_millis(500)).await;
+                        }
+                    }
                 }
                 Err(e) => {
                     warn!(
-                        "Failed to connect to scheduler at {scheduler_url} ({e}); retrying ..."
+                        "Failed to create endpoint to scheduler at {scheduler_url} ({e}); retrying ..."
                     );
                     tokio::time::sleep(time::Duration::from_millis(500)).await;
                 }

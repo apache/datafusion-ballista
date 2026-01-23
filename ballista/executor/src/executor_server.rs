@@ -30,11 +30,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
 use log::{debug, error, info, warn};
-use tonic::transport::Channel;
+use tonic::transport::{Channel, Endpoint, Error as TonicTransportError};
 use tonic::{Request, Response, Status};
 
+/// Type alias for the endpoint override function used in gRPC client configuration
+pub type EndpointOverrideFn =
+    Arc<dyn Fn(Endpoint) -> Result<Endpoint, TonicTransportError> + Send + Sync>;
+
 use ballista_core::error::BallistaError;
-use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::{
     CancelTasksParams, CancelTasksResult, ExecutorMetric, ExecutorStatus,
@@ -47,10 +50,12 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::PartitionId;
 use ballista_core::serde::scheduler::TaskDefinition;
+
 use ballista_core::serde::scheduler::from_proto::{
     get_task_definition, get_task_definition_vec,
 };
-use ballista_core::utils::{create_grpc_client_connection, create_grpc_server};
+use ballista_core::utils::{create_grpc_client_endpoint, create_grpc_server};
+
 use dashmap::DashMap;
 use datafusion::execution::TaskContext;
 use datafusion_proto::{logical_plan::AsLogicalPlan, physical_plan::AsExecutionPlan};
@@ -113,6 +118,7 @@ pub async fn startup<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
         codec,
         config.grpc_max_encoding_message_size as usize,
         config.grpc_max_decoding_message_size as usize,
+        config.override_create_grpc_client_endpoint.clone(),
     );
 
     // 1. Start executor grpc service
@@ -212,6 +218,7 @@ pub struct ExecutorServer<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPl
     grpc_max_encoding_message_size: usize,
     /// Maximum size for incoming gRPC messages.
     grpc_max_decoding_message_size: usize,
+    override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
 }
 
 #[derive(Clone)]
@@ -238,6 +245,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         codec: BallistaCodec<T, U>,
         grpc_max_encoding_message_size: usize,
         grpc_max_decoding_message_size: usize,
+        override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
     ) -> Self {
         Self {
             _start_time: SystemTime::now()
@@ -251,6 +259,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             schedulers: Default::default(),
             grpc_max_encoding_message_size,
             grpc_max_decoding_message_size,
+            override_create_grpc_client_endpoint,
         }
     }
 
@@ -264,11 +273,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             Ok(scheduler)
         } else {
             let scheduler_url = format!("http://{scheduler_id}");
-            let session_config = (self.executor.config_producer)();
-            let ballista_config = session_config.ballista_config();
-            let connection =
-                create_grpc_client_connection(scheduler_url, &(&ballista_config).into())
-                    .await?;
+            let mut endpoint = create_grpc_client_endpoint(scheduler_url, None)?;
+
+            if let Some(ref override_fn) = self.override_create_grpc_client_endpoint {
+                endpoint = override_fn(endpoint)?;
+            }
+
+            let connection = endpoint.connect().await?;
             let scheduler = SchedulerGrpcClient::new(connection)
                 .max_encoding_message_size(self.grpc_max_encoding_message_size)
                 .max_decoding_message_size(self.grpc_max_decoding_message_size);
