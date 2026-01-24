@@ -48,6 +48,7 @@ use std::ops::Deref;
 use crate::cluster::{bind_task_bias, bind_task_round_robin};
 use crate::config::TaskDistributionPolicy;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
+use ballista_core::serde::protobuf::get_job_status_result::FlightProxy;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
@@ -464,8 +465,23 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
     ) -> Result<Response<GetJobStatusResult>, Status> {
         let job_id = request.into_inner().job_id;
         trace!("Received get_job_status request for job {}", job_id);
+
+        let flight_proxy =
+            self.state
+                .config
+                .advertise_flight_sql_endpoint
+                .clone()
+                .map(|s| match s {
+                    s if s.is_empty() => FlightProxy::Local(true),
+                    s => FlightProxy::External(s),
+                });
+
         match self.state.task_manager.get_job_status(&job_id).await {
-            Ok(status) => Ok(Response::new(GetJobStatusResult { status })),
+            Ok(status) => Ok(Response::new(GetJobStatusResult {
+                status,
+                flight_proxy,
+            })),
+
             Err(e) => {
                 let msg = format!("Error getting status for job {job_id}: {e:?}");
                 error!("{msg}");

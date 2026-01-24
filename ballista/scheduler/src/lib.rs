@@ -41,6 +41,8 @@ pub mod standalone;
 /// Scheduler state management.
 pub mod state;
 
+mod flight_proxy_service;
+
 /// Test utilities for scheduler testing.
 #[cfg(test)]
 pub mod test_utils;

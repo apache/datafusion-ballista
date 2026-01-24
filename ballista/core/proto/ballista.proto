@@ -658,6 +658,10 @@ message JobStatus {
 
 message GetJobStatusResult {
   JobStatus status = 1;
+  oneof flight_proxy {
+      bool local = 2;
+      string external = 3;
+  }
 }
 
 message FilePartitionMetadata {

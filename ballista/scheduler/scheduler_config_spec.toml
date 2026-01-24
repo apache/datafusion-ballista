@@ -27,7 +27,7 @@ doc = "Print version of this executable"
 [[param]]
 name = "advertise_flight_sql_endpoint"
 type = "String"
-doc = "Route for proxying flight results via scheduler. Should be of the form 'IP:PORT'"
+doc = "Route for proxying flight results via scheduler. Use 'HOST:PORT' to let clients fetch results from the specified address. If empty a flight proxy will be started on the scheduler host and port."
 
 [[param]]
 abbr = "n"
