@@ -1704,7 +1704,7 @@ impl TaskDescription {
     }
 }
 
-fn partition_to_location(
+pub(crate) fn partition_to_location(
     job_id: &str,
     map_partition_id: usize,
     stage_id: usize,

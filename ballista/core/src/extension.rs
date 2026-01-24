@@ -143,6 +143,9 @@ pub trait SessionConfigExt {
         self,
         prefer_flight: bool,
     ) -> Self;
+
+    /// Is adaptive query planner enabled
+    fn ballista_adaptive_query_planner(&self) -> bool;
 }
 
 /// [SessionConfigHelperExt] is set of [SessionConfig] extension methods
@@ -388,6 +391,14 @@ impl SessionConfigExt for SessionConfig {
             self.with_option_extension(BallistaConfig::default())
                 .set_bool(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, prefer_flight)
         }
+    }
+
+    fn ballista_adaptive_query_planner(&self) -> bool {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.adaptive_query_planner())
+            .unwrap_or_else(|| BallistaConfig::default().adaptive_query_planner())
     }
 }
 
