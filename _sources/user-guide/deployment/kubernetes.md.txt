@@ -212,7 +212,7 @@ You can view the scheduler logs with `kubectl logs ballista-scheduler-<pod-id>`:
 
 ```
 $ kubectl logs ballista-scheduler-<pod-id>
-INFO ballista_scheduler::scheduler_process: Ballista v51.0.0 Scheduler listening on 0.0.0.0:50050
+INFO ballista_scheduler::scheduler_process: Ballista v52.0.0 Scheduler listening on 0.0.0.0:50050
 INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: "b5e81711-1c5c-46ec-8522-d8b359793188", host: "10.1.23.149", port: 50051 }
 INFO ballista_scheduler::scheduler_server::grpc: Received register_executor request for ExecutorMetadata { id: "816e4502-a876-4ed8-b33f-86d243dcf63f", host: "10.1.23.150", port: 50051 }
 ```
