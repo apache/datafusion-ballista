@@ -393,7 +393,6 @@ mod test {
     use datafusion::execution::TaskContext;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
-    use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
     use datafusion::physical_plan::filter::FilterExec;
     use datafusion::physical_plan::joins::HashJoinExec;
     use datafusion::physical_plan::projection::ProjectionExec;
@@ -450,20 +449,19 @@ mod test {
 
         /* Expected result:
 
-        ShuffleWriterExec: Some(Hash([Column { name: "l_returnflag", index: 0 }], 2))
-          AggregateExec: mode=Partial, gby=[l_returnflag@1 as l_returnflag], aggr=[SUM(lineitem.l_extendedprice * Int64(1))]
-            CsvExec: files={2 groups: [[ballista/scheduler/testdata/lineitem/partition1.tbl], [ballista/scheduler/testdata/lineitem/partition0.tbl]]}, has_header=false, limit=None, projection=[l_extendedprice, l_returnflag]
+        ShuffleWriterExec: partitioning: Hash([l_returnflag@0], 2)
+          AggregateExec: mode=Partial, gby=[l_returnflag@1 as l_returnflag], aggr=[sum(lineitem.l_extendedprice * Int64(1))]
+            DataSourceExec: file_groups={2 groups: [[ballista/scheduler/testdata/lineitem/partition0.tbl], [ballista/scheduler/testdata/lineitem/partition1.tbl]]}, projection=[l_extendedprice, l_returnflag], file_type=csv, has_header=false
 
-        ShuffleWriterExec: None
-          SortExec: [l_returnflag@0 ASC NULLS LAST]
-            ProjectionExec: expr=[l_returnflag@0 as l_returnflag, SUM(lineitem.l_extendedprice * Int64(1))@1 as sum_disc_price]
-              AggregateExec: mode=FinalPartitioned, gby=[l_returnflag@0 as l_returnflag], aggr=[SUM(lineitem.l_extendedprice * Int64(1))]
-                CoalesceBatchesExec: target_batch_size=8192
-                  UnresolvedShuffleExec
+        ShuffleWriterExec: partitioning: None
+          SortExec: expr=[l_returnflag@0 ASC NULLS LAST], preserve_partitioning=[true]
+            ProjectionExec: expr=[l_returnflag@0 as l_returnflag, sum(lineitem.l_extendedprice * Int64(1))@1 as sum_disc_price]
+              AggregateExec: mode=FinalPartitioned, gby=[l_returnflag@0 as l_returnflag], aggr=[sum(lineitem.l_extendedprice * Int64(1))]
+                UnresolvedShuffleExec: partitioning: Hash([l_returnflag@0], 2)
 
-        ShuffleWriterExec: None
+        ShuffleWriterExec: partitioning: None
           SortPreservingMergeExec: [l_returnflag@0 ASC NULLS LAST]
-            UnresolvedShuffleExec
+            UnresolvedShuffleExec: partitioning: Hash([l_returnflag@0], 2)
         */
 
         assert_eq!(3, stages.len());
@@ -481,9 +479,7 @@ mod test {
         let final_hash = projection.children()[0].clone();
         let final_hash = downcast_exec!(final_hash, AggregateExec);
         assert!(*final_hash.mode() == AggregateMode::FinalPartitioned);
-        let coalesce = final_hash.children()[0].clone();
-        let coalesce = downcast_exec!(coalesce, CoalesceBatchesExec);
-        let unresolved_shuffle = coalesce.children()[0].clone();
+        let unresolved_shuffle = final_hash.children()[0].clone();
         let unresolved_shuffle =
             downcast_exec!(unresolved_shuffle, UnresolvedShuffleExec);
         assert_eq!(unresolved_shuffle.stage_id, 1);
@@ -568,34 +564,28 @@ order by
 
         /* Expected result:
 
-        ShuffleWriterExec: Some(Hash([Column { name: "l_orderkey", index: 0 }], 2))
-          ProjectionExec: expr=[l_orderkey@0 as l_orderkey, l_shipmode@4 as l_shipmode]
-            CoalesceBatchesExec: target_batch_size=8192
-              FilterExec: (l_shipmode@4 = SHIP OR l_shipmode@4 = MAIL) AND l_commitdate@2 < l_receiptdate@3 AND l_shipdate@1 < l_commitdate@2 AND l_receiptdate@3 >= 8766 AND l_receiptdate@3 < 9131
-                CsvExec: files={2 groups: [[testdata/lineitem/partition0.tbl], [testdata/lineitem/partition1.tbl]]}, has_header=false, limit=None, projection=[l_orderkey, l_shipdate, l_commitdate, l_receiptdate, l_shipmode]
+        ShuffleWriterExec: partitioning: Hash([l_orderkey@0], 2)
+          FilterExec: (l_shipmode@4 = MAIL OR l_shipmode@4 = SHIP) AND l_receiptdate@3 > l_commitdate@2 AND l_shipdate@1 < l_commitdate@2 AND l_receiptdate@3 >= 1994-01-01 AND l_receiptdate@3 < 1995-01-01, projection=[l_orderkey@0, l_shipmode@4]
+            DataSourceExec: file_groups={2 groups: [[ballista/scheduler/testdata/lineitem/partition0.tbl], [ballista/scheduler/testdata/lineitem/partition1.tbl]]}, projection=[l_orderkey, l_shipdate, l_commitdate, l_receiptdate, l_shipmode], file_type=csv, has_header=false
 
-        ShuffleWriterExec: Some(Hash([Column { name: "o_orderkey", index: 0 }], 2))
-          CsvExec: files={1 group: [[testdata/orders/orders.tbl]]}, has_header=false, limit=None, projection=[o_orderkey, o_orderpriority]
+        ShuffleWriterExec: partitioning: Hash([o_orderkey@0], 2)
+          DataSourceExec: file_groups={1 group: [[ballista/scheduler/testdata/orders/orders.tbl]]}, projection=[o_orderkey, o_orderpriority], file_type=csv, has_header=false
 
-        ShuffleWriterExec: Some(Hash([Column { name: "l_shipmode", index: 0 }], 2))
-          AggregateExec: mode=Partial, gby=[l_shipmode@0 as l_shipmode], aggr=[SUM(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), SUM(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
-            CoalesceBatchesExec: target_batch_size=8192
-              HashJoinExec: mode=Partitioned, join_type=Inner, on=[(l_orderkey@0, o_orderkey@0)], projection=[l_shipmode@1, o_orderpriority@3]
-                CoalesceBatchesExec: target_batch_size=8192
-                  UnresolvedShuffleExec
-                CoalesceBatchesExec: target_batch_size=8192
-                  UnresolvedShuffleExec
+        ShuffleWriterExec: partitioning: Hash([l_shipmode@0], 2)
+          AggregateExec: mode=Partial, gby=[l_shipmode@0 as l_shipmode], aggr=[sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
+            HashJoinExec: mode=Partitioned, join_type=Inner, on=[(l_orderkey@0, o_orderkey@0)], projection=[l_shipmode@1, o_orderpriority@3]
+              UnresolvedShuffleExec: partitioning: Hash([l_orderkey@0], 2)
+              UnresolvedShuffleExec: partitioning: Hash([o_orderkey@0], 2)
 
-        ShuffleWriterExec: None
-          SortExec: expr=[l_shipmode@0 ASC NULLS LAST]
-            ProjectionExec: expr=[l_shipmode@0 as l_shipmode, SUM(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@1 as high_line_count, SUM(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@2 as low_line_count]
-              AggregateExec: mode=FinalPartitioned, gby=[l_shipmode@0 as l_shipmode], aggr=[SUM(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), SUM(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
-                CoalesceBatchesExec: target_batch_size=8192
-                  UnresolvedShuffleExec
+        ShuffleWriterExec: partitioning: None
+          SortExec: expr=[l_shipmode@0 ASC NULLS LAST], preserve_partitioning=[true]
+            ProjectionExec: expr=[l_shipmode@0 as l_shipmode, sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@1 as high_line_count, sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)@2 as low_line_count]
+            AggregateExec: mode=FinalPartitioned, gby=[l_shipmode@0 as l_shipmode], aggr=[sum(CASE WHEN orders.o_orderpriority = Utf8("1-URGENT") OR orders.o_orderpriority = Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END), sum(CASE WHEN orders.o_orderpriority != Utf8("1-URGENT") AND orders.o_orderpriority != Utf8("2-HIGH") THEN Int64(1) ELSE Int64(0) END)]
+              UnresolvedShuffleExec: partitioning: Hash([l_shipmode@0], 2)
 
-        ShuffleWriterExec: None
+        ShuffleWriterExec: partitioning: None
           SortPreservingMergeExec: [l_shipmode@0 ASC NULLS LAST]
-            UnresolvedShuffleExec
+            UnresolvedShuffleExec: partitioning: Hash([l_shipmode@0], 2)
         */
 
         assert_eq!(5, stages.len());
@@ -650,16 +640,11 @@ order by
 
         let hash_agg = downcast_exec!(input, AggregateExec);
 
-        let coalesce_batches = hash_agg.children()[0].clone();
-        let coalesce_batches = downcast_exec!(coalesce_batches, CoalesceBatchesExec);
-
-        let join = coalesce_batches.children()[0].clone();
+        let join = hash_agg.children()[0].clone();
         let join = downcast_exec!(join, HashJoinExec);
         assert!(join.contains_projection());
 
         let join_input_1 = join.children()[0].clone();
-        // skip CoalesceBatches
-        let join_input_1 = join_input_1.children()[0].clone();
         let unresolved_shuffle_reader_1 =
             downcast_exec!(join_input_1, UnresolvedShuffleExec);
         assert_eq!(unresolved_shuffle_reader_1.output_partition_count, 2);
@@ -669,8 +654,6 @@ order by
         );
 
         let join_input_2 = join.children()[1].clone();
-        // skip CoalesceBatches
-        let join_input_2 = join_input_2.children()[0].clone();
         let unresolved_shuffle_reader_2 =
             downcast_exec!(join_input_2, UnresolvedShuffleExec);
         assert_eq!(unresolved_shuffle_reader_2.output_partition_count, 2);
@@ -740,24 +723,22 @@ order by
         /*
             expected result:
             Stage 0:
-            ShuffleWriterExec: Some(Hash([Column { name: "l_shipmode", index: 1 }], 2))
-              CsvExec: file_groups={2 groups: [[testdata/lineitem/partition0.tbl], [testdata/lineitem/partition1.tbl]]}, projection=[l_shipdate, l_shipmode], has_header=false
+            ShuffleWriterExec: partitioning: Hash([l_shipmode@1], 2)
+              DataSourceExec: file_groups={2 groups: [[ballista/scheduler/testdata/lineitem/partition0.tbl], [ballista/scheduler/testdata/lineitem/partition1.tbl]]}, projection=[l_shipdate, l_shipmode], file_type=csv, has_header=false
 
             Stage 1:
-            ShuffleWriterExec: None
-              SortExec: expr=[l_shipdate@1 ASC NULLS LAST,rk@2 ASC NULLS LAST], preserve_partitioning=[true]
-                ProjectionExec: expr=[l_shipmode@1 as l_shipmode, l_shipdate@0 as l_shipdate, RANK() PARTITION BY [lineitem.l_shipmode] ORDER BY [lineitem.l_shipdate DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 as rk]
-                  CoalesceBatchesExec: target_batch_size=8192
-                    FilterExec: RANK() PARTITION BY [lineitem.l_shipmode] ORDER BY [lineitem.l_shipdate DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 <= 100
-                      BoundedWindowAggExec: wdw=[RANK() PARTITION BY [lineitem.l_shipmode] ORDER BY [lineitem.l_shipdate DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW: Ok(Field { name: "RANK() PARTITION BY [lineitem.l_shipmode] ORDER BY [lineitem.l_shipdate DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW", data_type: UInt64, nullable: false, dict_id: 0, dict_is_ordered: false, metadata: {} }), frame: WindowFrame { units: Range, start_bound: Preceding(IntervalMonthDayNano("NULL")), end_bound: CurrentRow, is_causal: false }], mode=[Sorted]
-                        SortExec: expr=[l_shipmode@1 ASC NULLS LAST,l_shipdate@0 DESC], preserve_partitioning=[true]
-                          CoalesceBatchesExec: target_batch_size=8192
-                            UnresolvedShuffleExec
+            ShuffleWriterExec: partitioning: None
+              SortExec: expr=[l_shipdate@1 ASC NULLS LAST, rk@2 ASC NULLS LAST], preserve_partitioning=[true]
+                ProjectionExec: expr=[l_shipmode@1 as l_shipmode, l_shipdate@0 as l_shipdate, rank() PARTITION BY [lineitem.l_shipmode] ORDER BY [lineitem.l_shipdate DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 as rk]
+                FilterExec: rank() PARTITION BY [lineitem.l_shipmode] ORDER BY [lineitem.l_shipdate DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW@2 <= 100
+                  BoundedWindowAggExec: wdw=[rank() PARTITION BY [lineitem.l_shipmode] ORDER BY [lineitem.l_shipdate DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW: Field { "rank() PARTITION BY [lineitem.l_shipmode] ORDER BY [lineitem.l_shipdate DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW": UInt64 }, frame: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW], mode=[Sorted]
+                    SortExec: expr=[l_shipmode@1 ASC NULLS LAST, l_shipdate@0 DESC], preserve_partitioning=[true]
+                      UnresolvedShuffleExec: partitioning: Hash([l_shipmode@1], 2)
 
             Stage 2:
-            ShuffleWriterExec: None
-              SortPreservingMergeExec: [l_shipdate@1 ASC NULLS LAST,rk@2 ASC NULLS LAST]
-                UnresolvedShuffleExec
+            ShuffleWriterExec: partitioning: None
+              SortPreservingMergeExec: [l_shipdate@1 ASC NULLS LAST, rk@2 ASC NULLS LAST]
+                UnresolvedShuffleExec: partitioning: Hash([l_shipmode@0], 2)
 
         */
 
@@ -780,8 +761,7 @@ order by
         // stage1
         let sort = downcast_exec!(stages[1].children()[0], SortExec);
         let projection = downcast_exec!(sort.children()[0], ProjectionExec);
-        let coalesce = downcast_exec!(projection.children()[0], CoalesceBatchesExec);
-        let filter = downcast_exec!(coalesce.children()[0], FilterExec);
+        let filter = downcast_exec!(projection.children()[0], FilterExec);
         let window = downcast_exec!(filter.children()[0], BoundedWindowAggExec);
         let partition_by = window.partition_keys();
         let partition_by = match partition_by[..] {

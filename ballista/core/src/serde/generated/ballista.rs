@@ -435,7 +435,7 @@ pub struct NamedRatio {
 pub struct OperatorMetric {
     #[prost(
         oneof = "operator_metric::Metric",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"
     )]
     pub metric: ::core::option::Option<operator_metric::Metric>,
 }
@@ -471,6 +471,8 @@ pub mod operator_metric {
         PruningMetrics(super::NamedPruningMetrics),
         #[prost(message, tag = "14")]
         Ratio(super::NamedRatio),
+        #[prost(uint64, tag = "15")]
+        OutputBatches(u64),
     }
 }
 /// Used by scheduler

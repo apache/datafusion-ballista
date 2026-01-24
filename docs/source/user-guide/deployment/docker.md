@@ -67,7 +67,7 @@ Run `docker logs CONTAINER_ID` to check the output from the process:
 
 ```
 $ docker logs a756055576f3
-INFO ballista_scheduler::scheduler_process: Ballista v51.0.0 Scheduler listening on 0.0.0.0:50050
+INFO ballista_scheduler::scheduler_process: Ballista v52.0.0 Scheduler listening on 0.0.0.0:50050
 INFO ballista_scheduler::scheduler_process: Starting Scheduler grpc server with task scheduling policy of PullStaged
 INFO ballista_scheduler::scheduler_server::query_stage_scheduler: Starting QueryStageScheduler
 INFO ballista_core::event_loop: Starting the event loop query_stage
@@ -99,7 +99,7 @@ $ docker logs fb8b530cee6d
 INFO ballista_executor::executor_process: Running with config:
 INFO ballista_executor::executor_process: work_dir: /tmp/.tmpAkP3pZ
 INFO ballista_executor::executor_process: concurrent_tasks: 48
-INFO ballista_executor::executor_process: Ballista v51.0.0 Rust Executor Flight Server listening on 0.0.0.0:50051
+INFO ballista_executor::executor_process: Ballista v52.0.0 Rust Executor Flight Server listening on 0.0.0.0:50051
 INFO ballista_executor::execution_loop: Starting poll work loop with scheduler
 ```
 

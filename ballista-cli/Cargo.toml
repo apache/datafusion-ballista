@@ -18,7 +18,7 @@
 [package]
 name = "ballista-cli"
 description = "Command Line Client for Ballista distributed query engine."
-version = "51.0.0"
+version = "52.0.0"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
 edition = { workspace = true }
 rust-version = { workspace = true }
@@ -29,7 +29,7 @@ repository = "https://github.com/apache/datafusion-ballista"
 readme = "README.md"
 
 [dependencies]
-ballista = { path = "../ballista/client", version = "51.0.0", features = ["standalone"] }
+ballista = { path = "../ballista/client", version = "52.0.0", features = ["standalone"] }
 clap = { workspace = true, features = ["derive", "cargo"] }
 datafusion = { workspace = true }
 datafusion-cli = { workspace = true }

@@ -262,10 +262,11 @@ impl ShuffleWriterExec {
                         writers.push(None);
                     }
 
-                    let mut partitioner = BatchPartitioner::try_new(
-                        Partitioning::Hash(exprs, num_output_partitions),
+                    let mut partitioner = BatchPartitioner::new_hash_partitioner(
+                        exprs,
+                        num_output_partitions,
                         write_metrics.repart_time.clone(),
-                    )?;
+                    );
 
                     while let Some(result) = stream.next().await {
                         let input_batch = result?;

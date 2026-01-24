@@ -19,7 +19,7 @@
 name = "ballista-scheduler"
 description = "Ballista Distributed Compute - Scheduler"
 license = "Apache-2.0"
-version = "51.0.0"
+version = "52.0.0"
 homepage = "https://datafusion.apache.org/ballista/"
 repository = "https://github.com/apache/datafusion-ballista"
 readme = "README.md"
@@ -48,7 +48,7 @@ substrait = ["dep:datafusion-substrait"]
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 axum = "0.8.4"
-ballista-core = { path = "../core", version = "51.0.0" }
+ballista-core = { path = "../core", version = "52.0.0" }
 clap = { workspace = true, optional = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }
