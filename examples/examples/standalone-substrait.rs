@@ -293,7 +293,7 @@ impl SubstraitSchedulerClient {
         let mut prev_status: Option<job_status::Status> = None;
 
         loop {
-            let GetJobStatusResult { status } = scheduler
+            let GetJobStatusResult { status, .. } = scheduler
                 .get_job_status(GetJobStatusParams {
                     job_id: job_id.clone(),
                 })
