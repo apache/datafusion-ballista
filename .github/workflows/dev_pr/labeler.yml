@@ -17,7 +17,7 @@
 
 python:
   - changed-files:
-      - any-glob-to-any-file: [ '- python/**/*' ]
+      - any-glob-to-any-file: [ 'python/**/*' ]
 
 
 development-process:
