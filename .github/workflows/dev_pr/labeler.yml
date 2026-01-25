@@ -15,11 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-python:
-  - changed-files:
-      - any-glob-to-any-file: [ 'python/**/*' ]
-
-
 development-process:
   - changed-files:
       - any-glob-to-any-file: [ 'dev/**/*', '.github/**/*', 'ci/**/*', '.asf.yaml' ]
@@ -28,3 +23,6 @@ documentation:
   - changed-files:
       - any-glob-to-any-file: [ 'docs/**/*', 'README.md', './**/README.md', 'DEVELOPERS.md', 'ballista/docs/**/*' ]
 
+python:
+  - changed-files:
+      - any-glob-to-any-file: [ 'python/**/*' ]
