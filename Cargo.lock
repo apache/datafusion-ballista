@@ -1014,13 +1014,16 @@ dependencies = [
  "ballista-scheduler",
  "ctor",
  "datafusion",
+ "datafusion-substrait",
  "env_logger",
+ "futures",
  "log",
  "object_store",
  "testcontainers-modules",
  "tokio",
  "tonic",
  "url",
+ "uuid",
 ]
 
 [[package]]
