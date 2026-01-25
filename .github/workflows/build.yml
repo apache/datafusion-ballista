@@ -107,7 +107,7 @@ jobs:
           enable-cache: true
       - name: Generate license file
         run: uv run --no-project python ./dev/create_license.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: python-wheel-license
           path: LICENSE.txt
@@ -165,7 +165,7 @@ jobs:
         run: find python/target/wheels/
 
       - name: Archive wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dist-${{ matrix.os  }}
           path: python/target/wheels/*
@@ -214,7 +214,7 @@ jobs:
         run: find python/target/wheels/
 
       - name: Archive wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dist-macos-aarch64
           path: python/target/wheels/*
@@ -254,7 +254,7 @@ jobs:
           uv run --no-project maturin build --release --strip
 
       - name: Archive wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dist-manylinux-x86_64
           path: python/target/wheels/*
@@ -294,7 +294,7 @@ jobs:
           uv run --no-project maturin build --release --strip
 
       - name: Archive wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dist-manylinux-aarch64
           path: python/target/wheels/*
@@ -353,7 +353,7 @@ jobs:
       - build-sdist
     steps:
       - name: Merge Build Artifacts
-        uses: actions/upload-artifact/merge@v4
+        uses: actions/upload-artifact/merge@v6
         with:
           name: dist
           pattern: dist-*
