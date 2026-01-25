@@ -986,7 +986,7 @@ dependencies = [
  "itertools",
  "log",
  "md-5",
- "object_store",
+ "object_store 0.13.1",
  "parking_lot",
  "prost",
  "prost-types",
@@ -1018,7 +1018,7 @@ dependencies = [
  "env_logger",
  "futures",
  "log",
- "object_store",
+ "object_store 0.13.1",
  "testcontainers-modules",
  "tokio",
  "tonic",
@@ -1071,7 +1071,7 @@ dependencies = [
  "graphviz-rust",
  "http 1.4.0",
  "log",
- "object_store",
+ "object_store 0.13.1",
  "once_cell",
  "parking_lot",
  "prometheus",
@@ -1735,7 +1735,7 @@ dependencies = [
  "itertools",
  "liblzma",
  "log",
- "object_store",
+ "object_store 0.12.5",
  "parking_lot",
  "parquet",
  "rand",
@@ -1768,7 +1768,7 @@ dependencies = [
  "futures",
  "itertools",
  "log",
- "object_store",
+ "object_store 0.12.5",
  "parking_lot",
  "tokio",
 ]
@@ -1793,7 +1793,7 @@ dependencies = [
  "futures",
  "itertools",
  "log",
- "object_store",
+ "object_store 0.12.5",
 ]
 
 [[package]]
@@ -1815,7 +1815,7 @@ dependencies = [
  "futures",
  "log",
  "mimalloc",
- "object_store",
+ "object_store 0.12.5",
  "parking_lot",
  "parquet",
  "regex",
@@ -1841,7 +1841,7 @@ dependencies = [
  "indexmap 2.13.0",
  "libc",
  "log",
- "object_store",
+ "object_store 0.12.5",
  "parquet",
  "paste",
  "recursive",
@@ -1888,7 +1888,7 @@ dependencies = [
  "itertools",
  "liblzma",
  "log",
- "object_store",
+ "object_store 0.12.5",
  "rand",
  "tokio",
  "tokio-util",
@@ -1916,7 +1916,7 @@ dependencies = [
  "datafusion-session",
  "futures",
  "itertools",
- "object_store",
+ "object_store 0.12.5",
  "tokio",
 ]
 
@@ -1937,7 +1937,7 @@ dependencies = [
  "datafusion-session",
  "futures",
  "num-traits",
- "object_store",
+ "object_store 0.12.5",
 ]
 
 [[package]]
@@ -1958,7 +1958,7 @@ dependencies = [
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
- "object_store",
+ "object_store 0.12.5",
  "regex",
  "tokio",
 ]
@@ -1981,7 +1981,7 @@ dependencies = [
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
- "object_store",
+ "object_store 0.12.5",
  "tokio",
 ]
 
@@ -2009,7 +2009,7 @@ dependencies = [
  "futures",
  "itertools",
  "log",
- "object_store",
+ "object_store 0.12.5",
  "parking_lot",
  "parquet",
  "tokio",
@@ -2035,7 +2035,7 @@ dependencies = [
  "datafusion-expr",
  "futures",
  "log",
- "object_store",
+ "object_store 0.12.5",
  "parking_lot",
  "parquet",
  "rand",
@@ -2371,7 +2371,7 @@ dependencies = [
  "datafusion-physical-expr-common",
  "datafusion-physical-plan",
  "datafusion-proto-common",
- "object_store",
+ "object_store 0.12.5",
  "prost",
 ]
 
@@ -2447,7 +2447,7 @@ dependencies = [
  "datafusion",
  "half",
  "itertools",
- "object_store",
+ "object_store 0.12.5",
  "pbjson-types",
  "prost",
  "substrait",
@@ -3835,6 +3835,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "object_store"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2858065e55c148d294a9f3aae3b0fa9458edadb41a108397094566f4e3c0dfb"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "form_urlencoded",
+ "futures",
+ "http 1.4.0",
+ "http-body-util",
+ "humantime",
+ "hyper",
+ "itertools",
+ "md-5",
+ "parking_lot",
+ "percent-encoding",
+ "quick-xml",
+ "rand",
+ "reqwest",
+ "ring",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "walkdir",
+ "wasm-bindgen-futures",
+ "web-time",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3922,7 +3958,7 @@ dependencies = [
  "num-bigint",
  "num-integer",
  "num-traits",
- "object_store",
+ "object_store 0.12.5",
  "paste",
  "ring",
  "seq-macro",
