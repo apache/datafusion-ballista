@@ -22,3 +22,7 @@ development-process:
 documentation:
   - changed-files:
       - any-glob-to-any-file: [ 'docs/**/*', 'README.md', './**/README.md', 'DEVELOPERS.md', 'ballista/docs/**/*' ]
+
+python:
+  - changed-files:
+      - any-glob-to-any-file: [ 'python/**/*' ]
