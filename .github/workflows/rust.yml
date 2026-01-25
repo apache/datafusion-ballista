@@ -46,7 +46,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
         with:
           submodules: true
           fetch-depth: 1
@@ -65,7 +65,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
         with:
           submodules: true
           fetch-depth: 1
@@ -89,7 +89,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
@@ -103,7 +103,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
         with:
           submodules: true
           fetch-depth: 1
@@ -125,7 +125,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
         with:
           submodules: true
           fetch-depth: 1
@@ -147,7 +147,7 @@ jobs:
     name: windows test
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
         with:
           submodules: true
           fetch-depth: 1
@@ -167,7 +167,7 @@ jobs:
     name: macos test
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
         with:
           submodules: true
           fetch-depth: 1
@@ -188,7 +188,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
         with:
           submodules: true
           fetch-depth: 1
@@ -204,7 +204,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
       - name: Setup toolchain
         run: |
           rustup toolchain install stable
@@ -230,7 +230,7 @@ jobs:
         # "1" means line tables only, which is useful for panic tracebacks.
         RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
         with:
           submodules: true
           fetch-depth: 1
@@ -261,7 +261,7 @@ jobs:
         # "1" means line tables only, which is useful for panic tracebacks.
         RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
         with:
           submodules: true
           fetch-depth: 1
@@ -299,7 +299,7 @@ jobs:
 #       arch: [amd64]
 #       rust: [stable]
 #   steps:
-#     - uses: actions/checkout@v5
+#     - uses: actions/checkout@v6.0.2
 #       with:
 #         submodules: true
 #     - name: Cache Cargo

@@ -47,7 +47,7 @@ jobs:
           - "3.12"
           - "3.13"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
 
       - uses: actions/setup-python@v6
         with:
@@ -74,7 +74,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
       - name: Install Python
         uses: actions/setup-python@v6
         with:
@@ -101,7 +101,7 @@ jobs:
   generate-license:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
@@ -122,7 +122,7 @@ jobs:
         python-version: ["3.10"]
         os: [macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
 
       - uses: actions/setup-python@v6
         with:
@@ -179,7 +179,7 @@ jobs:
       matrix:
         python-version: ["3.10"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
 
       - uses: actions/setup-python@v6
         with:
@@ -224,7 +224,7 @@ jobs:
     name: Manylinux x86_64
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -264,7 +264,7 @@ jobs:
     name: Manylinux arm64
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -304,7 +304,7 @@ jobs:
     name: Source distribution
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
 
       - uses: dtolnay/rust-toolchain@stable
 

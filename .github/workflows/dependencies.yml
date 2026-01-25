@@ -44,7 +44,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6.0.2
         with:
           submodules: true
           fetch-depth: 1
