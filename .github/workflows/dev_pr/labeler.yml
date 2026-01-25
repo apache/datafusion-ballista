@@ -16,17 +16,15 @@
 # under the License.
 
 python:
-  - python/**/*
+  - changed-files:
+      - any-glob-to-any-file: [ '- python/**/*' ]
+
 
 development-process:
-  - dev/**.*
-  - .github/**.*
-  - ci/**.*
-  - .asf.yaml
+  - changed-files:
+      - any-glob-to-any-file: [ 'dev/**/*', '.github/**/*', 'ci/**/*', '.asf.yaml' ]
 
 documentation:
-  - docs/**.*
-  - README.md
-  - ./**/README.md
-  - DEVELOPERS.md
-  - ballista/docs/**.*
+  - changed-files:
+      - any-glob-to-any-file: [ 'docs/**/*', 'README.md', './**/README.md', 'DEVELOPERS.md', 'ballista/docs/**/*' ]
+
