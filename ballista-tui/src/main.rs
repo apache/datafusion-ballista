@@ -1,0 +1,49 @@
+pub mod app;
+pub mod event;
+pub mod tui;
+pub mod ui;
+
+use app::App;
+use color_eyre::Result;
+use event::{Event, EventHandler};
+use std::time::Duration;
+use tui::TuiWrapper;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    color_eyre::install()?;
+
+    let mut tui_wrapper = TuiWrapper::new()?;
+    let mut app = App::new();
+    let mut events = EventHandler::new(Duration::from_millis(250));
+
+    let (app_tx, mut app_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.set_event_tx(app_tx);
+
+    loop {
+        tui_wrapper.terminal.draw(|f| ui::render(f, &app))?;
+
+        tokio::select! {
+            maybe_event = events.next() => {
+                match maybe_event {
+                    Some(Event::Key(key)) => app.on_key(key),
+                    Some(Event::Tick) => app.on_tick(),
+                    Some(Event::Resize(_, _)) => {},
+                    Some(Event::DataLoaded { .. }) => {},
+                    None => break,
+                }
+            }
+            Some(_app_event) = app_rx.recv() => {
+                // if let Event::DataLoaded { symbol, time_range, quotes } = app_event {
+                    // app.update_data(symbol, time_range, quotes);
+                // }
+            }
+        }
+
+        if app.should_quit {
+            break;
+        }
+    }
+
+    Ok(())
+}
