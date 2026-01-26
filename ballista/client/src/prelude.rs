@@ -17,10 +17,4 @@
 
 //! Ballista Prelude (common imports)
 
-// pub use ballista_core::{
-//     config::BallistaConfig,
-//     error::{BallistaError, Result},
-// };
-
 pub use crate::extension::{SessionConfigExt, SessionContextExt};
-//pub use futures::StreamExt;
