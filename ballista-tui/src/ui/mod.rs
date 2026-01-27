@@ -1,4 +1,8 @@
-use crate::app::App;
+mod header;
+mod main;
+
+use crate::app::{App, Views};
+use main::{render_dashboard, render_jobs, render_metrics};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -7,7 +11,6 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
-mod header;
 use header::render_header;
 
 pub(crate) fn render(f: &mut Frame, app: &App) {
@@ -28,63 +31,34 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
 fn render_content(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+        .constraints([Constraint::Percentage(100)])
         .split(area);
 
-    render_sidebar(f, app, chunks[0]);
-    render_main_view(f, app, chunks[1]);
-}
-
-fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(area);
-
-    // Search box
-    let search_text = if app.search_mode {
-        format!("/{}_", app.search_query)
-    } else if !app.search_query.is_empty() {
-        format!("Filter: {}", app.search_query)
-    } else {
-        "Press / to search...".to_string()
-    };
-
-    let search_style = if app.search_mode {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    let search_block = Block::default()
-        .title(" Search ")
-        .borders(Borders::ALL)
-        .border_style(if app.search_mode {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        });
-
-    let search_para = Paragraph::new(search_text)
-        .style(search_style)
-        .block(search_block);
-
-    f.render_widget(search_para, chunks[0]);
+    // render_sidebar(f, app, chunks[0]);
+    render_main_view(f, app, chunks[0]);
 }
 
 fn render_main_view(f: &mut Frame, app: &App, area: Rect) {
-    if app.is_loading {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
-        let p = Paragraph::new("⟳ Fetching Market Data...")
-            .block(block)
-            .alignment(Alignment::Center);
-        f.render_widget(p, area);
-        return;
+    if app.current_view == Views::Dashboard {
+        render_dashboard(f, area, app);
+    } else if app.current_view == Views::Jobs {
+        render_jobs(f, area, app);
+    } else if app.current_view == Views::Metrics {
+        render_metrics(f, area, app);
     }
 
-    render_no_data(f, area);
+    // if app.is_loading {
+    //       let block = Block::default()
+    //           .borders(Borders::ALL)
+    //           .border_style(Style::default().fg(Color::DarkGray));
+    //       let p = Paragraph::new("⟳ Fetching Market Data...")
+    //           .block(block)
+    //           .alignment(Alignment::Center);
+    //       f.render_widget(p, area);
+    //       return;
+    //   }
+
+    //   render_no_data(f, area);
 }
 
 fn render_no_data(f: &mut Frame, area: Rect) {
@@ -183,4 +157,41 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+fn _render_sidebar(f: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(area);
+
+    // Search box
+    let search_text = if app.search_mode {
+        format!("/{}_", app.search_query)
+    } else if !app.search_query.is_empty() {
+        format!("Filter: {}", app.search_query)
+    } else {
+        "Press / to search...".to_string()
+    };
+
+    let search_style = if app.search_mode {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let search_block = Block::default()
+        .title(" Search ")
+        .borders(Borders::ALL)
+        .border_style(if app.search_mode {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        });
+
+    let search_para = Paragraph::new(search_text)
+        .style(search_style)
+        .block(search_block);
+
+    f.render_widget(search_para, chunks[0]);
 }

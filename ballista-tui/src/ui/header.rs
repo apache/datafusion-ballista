@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::Style,
     widgets::{Block, Borders, Paragraph},
 };
 
@@ -20,7 +20,7 @@ const BANNER: &'static str = r#"
 pub(super) fn render_header(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(2), Constraint::Length(4)])
+        .constraints([Constraint::Length(4), Constraint::Length(3)])
         .split(area);
 
     render_block(f, chunks[0]);
@@ -44,20 +44,23 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
         .split(area);
 
     for (index, menu_item) in MENU_ITEMS.iter().enumerate() {
-        let block = Block::default()
+        let mut block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
+            .border_style(Style::default().dark_gray());
         let mut paragraph = Paragraph::new(*menu_item)
-            .style(Style::default().bold())
-            .block(block)
+            .style(Style::default().dark_gray())
+            .block(block.clone())
             .alignment(Alignment::Center);
 
         if app.current_view == Views::Dashboard && *menu_item == "Dashboard" {
-            paragraph = paragraph.style(Style::default().bg(Color::Blue));
+            block = block.border_style(Style::default().white());
+            paragraph = paragraph.style(Style::default().white()).block(block);
         } else if app.current_view == Views::Jobs && *menu_item == "Jobs" {
-            paragraph = paragraph.style(Style::default().bg(Color::Green));
+            block = block.border_style(Style::default().white());
+            paragraph = paragraph.style(Style::default().white()).block(block);
         } else if app.current_view == Views::Metrics && *menu_item == "Metrics" {
-            paragraph = paragraph.style(Style::default().bg(Color::Yellow));
+            block = block.border_style(Style::default().white());
+            paragraph = paragraph.style(Style::default().white()).block(block);
         }
 
         f.render_widget(paragraph, chunks[index]);
