@@ -1,7 +1,7 @@
 use crate::event::Event;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
-use std::time::Instantß;
+use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(PartialEq)]

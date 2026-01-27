@@ -1,5 +1,4 @@
-use crate::app::{App, TimeRange};
-use chrono::{TimeZone, Utc};
+use crate::app::App;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -184,66 +183,4 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
-}
-
-fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max_len - 1])
-    }
-}
-
-fn format_volume(vol: u64) -> String {
-    if vol >= 10_000_000 {
-        format!("{:.1}Cr", vol as f64 / 10_000_000.0)
-    } else if vol >= 100_000 {
-        format!("{:.1}L", vol as f64 / 100_000.0)
-    } else if vol >= 1_000 {
-        format!("{:.1}K", vol as f64 / 1_000.0)
-    } else {
-        format!("{}", vol)
-    }
-}
-
-fn format_time_labels(start: i64, end: i64, time_range: TimeRange) -> Vec<Span<'static>> {
-    match time_range {
-        TimeRange::Day1 => {
-            // Show hours for intraday
-            let start_dt = Utc.timestamp_opt(start, 0).single();
-            let end_dt = Utc.timestamp_opt(end, 0).single();
-
-            match (start_dt, end_dt) {
-                (Some(s), Some(e)) => vec![
-                    Span::styled(s.format("%H:%M").to_string(), Style::default()),
-                    Span::styled(e.format("%H:%M").to_string(), Style::default()),
-                ],
-                _ => vec![],
-            }
-        }
-        TimeRange::Day5 | TimeRange::Month1 => {
-            let start_dt = Utc.timestamp_opt(start, 0).single();
-            let end_dt = Utc.timestamp_opt(end, 0).single();
-
-            match (start_dt, end_dt) {
-                (Some(s), Some(e)) => vec![
-                    Span::styled(s.format("%d %b").to_string(), Style::default()),
-                    Span::styled(e.format("%d %b").to_string(), Style::default()),
-                ],
-                _ => vec![],
-            }
-        }
-        TimeRange::Month3 => {
-            let start_dt = Utc.timestamp_opt(start, 0).single();
-            let end_dt = Utc.timestamp_opt(end, 0).single();
-
-            match (start_dt, end_dt) {
-                (Some(s), Some(e)) => vec![
-                    Span::styled(s.format("%b %Y").to_string(), Style::default()),
-                    Span::styled(e.format("%b %Y").to_string(), Style::default()),
-                ],
-                _ => vec![],
-            }
-        }
-    }
 }

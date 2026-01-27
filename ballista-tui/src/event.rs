@@ -1,4 +1,3 @@
-use crate::app::{StockQuote, TimeRange};
 use crossterm::event::{EventStream, KeyEvent};
 use futures::{FutureExt, StreamExt};
 use tokio::sync::mpsc;
@@ -8,11 +7,7 @@ pub enum Event {
     Key(KeyEvent),
     Tick,
     Resize(u16, u16),
-    DataLoaded {
-        symbol: String,
-        time_range: TimeRange,
-        quotes: Vec<StockQuote>,
-    },
+    DataLoaded { symbol: String },
 }
 
 #[derive(Debug)]
