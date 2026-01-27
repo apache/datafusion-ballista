@@ -2,6 +2,7 @@ mod header;
 mod main;
 
 use crate::app::{App, Views};
+pub use main::load_data;
 use main::{render_dashboard, render_jobs, render_metrics};
 use ratatui::{
     Frame,

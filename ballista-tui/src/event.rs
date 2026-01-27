@@ -7,7 +7,7 @@ pub enum Event {
     Key(KeyEvent),
     Tick,
     Resize(u16, u16),
-    DataLoaded { symbol: String },
+    DataLoaded { data: String },
 }
 
 #[derive(Debug)]

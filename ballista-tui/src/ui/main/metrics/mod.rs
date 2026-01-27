@@ -2,12 +2,13 @@ use ratatui::{
     Frame,
     layout::{Alignment, Rect},
     style::Style,
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 
 use crate::app::App;
 
 pub fn render_metrics(f: &mut Frame, area: Rect, _app: &App) {
+    f.render_widget(Clear, area);
     let block = Block::default().borders(Borders::all());
     let paragraph = Paragraph::new("Metrics")
         .style(Style::default().bold())

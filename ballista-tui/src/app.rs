@@ -1,22 +1,25 @@
 use crate::event::Event;
+use color_eyre::eyre::{Ok, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::path::PathBuf;
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(PartialEq)]
-pub(crate) enum Views {
+pub enum Views {
     Dashboard,
     Jobs,
     Metrics,
 }
 
-pub(crate) struct App {
+pub struct App {
     pub should_quit: bool,
     pub is_loading: bool,
     pub event_tx: Option<UnboundedSender<Event>>,
     pub last_refresh: Instant,
     pub current_view: Views,
+
+    // Dashboard
+    pub dashboard_data: String,
 
     // Search
     pub search_mode: bool,
@@ -37,13 +40,8 @@ impl App {
             search_mode: false,
             search_query: String::new(),
             show_help: false,
+            dashboard_data: String::new(),
         }
-    }
-
-    fn config_dir() -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".graphite")
     }
 
     pub fn set_event_tx(&mut self, tx: UnboundedSender<Event>) {
@@ -55,11 +53,11 @@ impl App {
         // Auto-refresh every 60 seconds (only for day view)
     }
 
-    pub fn on_key(&mut self, key: KeyEvent) {
+    pub async fn on_key(&mut self, key: KeyEvent) -> Result<()> {
         // Help panel takes priority
         if self.show_help {
             self.show_help = false;
-            return;
+            return Ok(());
         }
 
         // Search mode input handling
@@ -81,7 +79,7 @@ impl App {
                 }
                 _ => {}
             }
-            return;
+            return Ok(());
         }
 
         // Normal mode
@@ -104,6 +102,7 @@ impl App {
             // }
             KeyCode::Char('d') => {
                 self.current_view = Views::Dashboard;
+                let _ = crate::ui::load_data(self).await;
             }
             KeyCode::Char('j') => {
                 self.current_view = Views::Jobs;
@@ -117,6 +116,7 @@ impl App {
             }
             _ => {}
         }
+        Ok(())
     }
 }
 

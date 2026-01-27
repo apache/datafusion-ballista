@@ -26,17 +26,17 @@ async fn main() -> Result<()> {
         tokio::select! {
             maybe_event = events.next() => {
                 match maybe_event {
-                    Some(Event::Key(key)) => app.on_key(key),
+                    Some(Event::Key(key)) => app.on_key(key).await?,
                     Some(Event::Tick) => app.on_tick(),
                     Some(Event::Resize(_, _)) => {},
                     Some(Event::DataLoaded { .. }) => {},
                     None => break,
                 }
             }
-            Some(_app_event) = app_rx.recv() => {
-                // if let Event::DataLoaded { symbol, time_range, quotes } = app_event {
-                    // app.update_data(symbol, time_range, quotes);
-                // }
+            Some(app_event) = app_rx.recv() => {
+                if let Event::DataLoaded { data } = app_event {
+                    app.dashboard_data = data;
+                }
             }
         }
 
