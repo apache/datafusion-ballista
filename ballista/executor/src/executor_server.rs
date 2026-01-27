@@ -661,6 +661,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorGrpc
                         self.executor.function_registry.scalar_functions.clone(),
                         self.executor.function_registry.aggregate_functions.clone(),
                         self.executor.function_registry.window_functions.clone(),
+                        self.executor.function_registry.table_functions.clone(),
                         self.codec.clone(),
                     )
                     .map_err(|e| Status::invalid_argument(format!("{e}")))?,

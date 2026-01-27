@@ -131,11 +131,16 @@ impl Default for GrpcServerConfig {
 pub fn default_session_builder(
     config: SessionConfig,
 ) -> datafusion::common::Result<SessionState> {
-    Ok(SessionStateBuilder::new()
+    let state = SessionStateBuilder::new()
         .with_default_features()
         .with_config(config)
         .with_runtime_env(Arc::new(RuntimeEnvBuilder::new().build()?))
-        .build())
+        .build();
+
+    #[cfg(feature = "spark-compat")]
+    let state = crate::extension::register_spark_functions(state);
+
+    Ok(state)
 }
 
 /// Creates a default session configuration with Ballista extensions.

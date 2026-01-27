@@ -155,6 +155,13 @@ pub async fn new_standalone_executor(
     codec: BallistaCodec,
 ) -> Result<()> {
     let session_state = SessionStateBuilder::new().with_default_features().build();
+
+    #[cfg(feature = "spark-compat")]
+    {
+        use ballista_core::extension::register_spark_functions;
+        let session_state = register_spark_functions(session_state);
+    }
+
     let runtime = session_state.runtime_env().clone();
     let runtime_producer: RuntimeProducer = Arc::new(move |_| Ok(runtime.clone()));
 

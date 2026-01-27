@@ -18,6 +18,15 @@
 use chrono::{TimeZone, Utc};
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
 
+use crate::error::BallistaError;
+use crate::extension::SessionConfigHelperExt;
+use crate::serde::protobuf::{NamedPruningMetrics, NamedRatio};
+use crate::serde::scheduler::{
+    Action, BallistaFunctionRegistry, ExecutorData, ExecutorMetadata,
+    ExecutorSpecification, PartitionId, PartitionLocation, PartitionStats,
+    TaskDefinition,
+};
+use datafusion::catalog::TableFunction;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use datafusion::physical_plan::metrics::{
@@ -31,15 +40,6 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Arc;
 use std::time::Duration;
-
-use crate::error::BallistaError;
-use crate::extension::SessionConfigHelperExt;
-use crate::serde::protobuf::{NamedPruningMetrics, NamedRatio};
-use crate::serde::scheduler::{
-    Action, BallistaFunctionRegistry, ExecutorData, ExecutorMetadata,
-    ExecutorSpecification, PartitionId, PartitionLocation, PartitionStats,
-    TaskDefinition,
-};
 
 use crate::RuntimeProducer;
 use crate::serde::{BallistaCodec, protobuf};
@@ -313,6 +313,7 @@ impl Into<ExecutorData> for protobuf::ExecutorData {
 ///
 /// This function deserializes the execution plan from the protobuf representation
 /// and constructs a complete task definition with the provided runtime configuration.
+#[allow(clippy::too_many_arguments)]
 pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>(
     task: protobuf::TaskDefinition,
     produce_runtime: RuntimeProducer,
@@ -320,6 +321,7 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
     scalar_functions: HashMap<String, Arc<ScalarUDF>>,
     aggregate_functions: HashMap<String, Arc<AggregateUDF>>,
     window_functions: HashMap<String, Arc<WindowUDF>>,
+    table_functions: HashMap<String, Arc<TableFunction>>,
     codec: BallistaCodec<T, U>,
 ) -> Result<TaskDefinition, BallistaError> {
     let session_config = session_config.update_from_key_value_pair(&task.props);
@@ -329,6 +331,7 @@ pub fn get_task_definition<T: 'static + AsLogicalPlan, U: 'static + AsExecutionP
         scalar_functions: scalar_functions.clone(),
         aggregate_functions: aggregate_functions.clone(),
         window_functions: window_functions.clone(),
+        table_functions: table_functions.clone(),
     });
 
     let ctx = TaskContext::new(
@@ -393,6 +396,7 @@ pub fn get_task_definition_vec<
         scalar_functions: scalar_functions.clone(),
         aggregate_functions: aggregate_functions.clone(),
         window_functions: window_functions.clone(),
+        table_functions: HashMap::new(),
     });
 
     let ctx = TaskContext::new(
