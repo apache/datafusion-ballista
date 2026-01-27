@@ -38,6 +38,10 @@ name = "mtls-cluster"
 path = "examples/mtls-cluster.rs"
 required-features = ["tls"]
 
+[[example]]
+name = "remote-spark-functions"
+required-features = ["ballista-core/spark-compat"]
+
 [dependencies]
 # Optional dependency for TLS support
 rustls = { version = "0.23", features = ["ring"], optional = true }

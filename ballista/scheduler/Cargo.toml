@@ -35,13 +35,14 @@ required-features = ["build-binary"]
 [features]
 build-binary = ["clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary"]
 default = ["build-binary", "substrait"]
-# job info can cache stage plans, in some cases where 
+# job info can cache stage plans, in some cases where
 # task plans can be re-computed, cache behavior may need to be disabled.
 disable-stage-plan-cache = []
 graphviz-support = ["dep:graphviz-rust"]
 keda-scaler = ["dep:tonic-prost-build", "dep:tonic-prost"]
 prometheus-metrics = ["prometheus", "once_cell"]
 rest-api = []
+spark-compat = ["ballista-core/spark-compat"]
 substrait = ["dep:datafusion-substrait"]
 
 [dependencies]
