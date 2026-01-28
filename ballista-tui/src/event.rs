@@ -2,9 +2,11 @@ use crossterm::event::{EventStream, KeyEvent};
 use futures::{FutureExt, StreamExt};
 use tokio::sync::mpsc;
 
+use crate::domain::SchedulerState;
+
 #[derive(Clone, Debug)]
 pub enum UiData {
-    SchedulerState(String),
+    SchedulerState(SchedulerState),
 }
 
 #[derive(Clone, Debug)]

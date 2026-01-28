@@ -1,26 +1,26 @@
 use chrono::{DateTime, Utc};
-use color_eyre::eyre::Result;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::Style,
     widgets::{Block, Borders, Clear, Paragraph},
 };
-use serde::Deserialize;
 
 use crate::{
+    TuiResult,
     app::App,
+    error::TuiError,
     event::{Event, UiData},
 };
 
-#[derive(Deserialize)]
-pub struct SchedulerState {
-    started: i64,
-    version: String,
-}
-
 pub fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
-    let (started, version) = parse_scheduler_state(&app.dashboard_data);
+    let (started, version) = match &app.dashboard_data.scheduler_state {
+        Some(state) => {
+            let datetime =
+                DateTime::from_timestamp_millis(state.started).unwrap_or_else(Utc::now);
+            (datetime, state.version.clone())
+        }
+        None => (Utc::now(), "unknown".to_string()),
+    };
 
     f.render_widget(Clear, area);
 
@@ -42,7 +42,7 @@ pub fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
     let scheduler_url_block = Block::default()
         .borders(Borders::ALL)
         .title("Scheduler URL");
-    let scheduler_url_paragraph = Paragraph::new(app.scheduler_url.as_str())
+    let scheduler_url_paragraph = Paragraph::new(app.http_client.scheduler_url())
         .block(scheduler_url_block)
         .alignment(Alignment::Left);
     f.render_widget(scheduler_url_paragraph, chunks[0]);
@@ -61,32 +61,15 @@ pub fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(version_paragraph, chunks[2]);
 }
 
-pub async fn load_data(app: &App) -> Result<()> {
-    let response = reqwest::get(&app.scheduler_url).await?;
-    let data = response.text().await?;
-
+pub async fn load_data(app: &App) -> TuiResult<()> {
+    let scheduler_state = app.http_client.get_scheduler_state().await?;
+    tracing::info!("Scheduler state: {:?}", scheduler_state);
     if let Some(event_tx) = &app.event_tx {
-        event_tx.send(Event::DataLoaded {
-            data: UiData::SchedulerState(data),
-        })?;
+        event_tx
+            .send(Event::DataLoaded {
+                data: UiData::SchedulerState(scheduler_state),
+            })
+            .map_err(TuiError::SendError)?;
     }
     Ok(())
-}
-
-fn parse_scheduler_state(data: &str) -> (DateTime<Utc>, String) {
-    if data.is_empty() {
-        (Utc::now(), "unknown".to_string())
-    } else {
-        match serde_json::from_str::<SchedulerState>(data) {
-            Ok(SchedulerState { started, version }) => {
-                let datetime =
-                    DateTime::from_timestamp_millis(started).unwrap_or_else(Utc::now);
-                (datetime, version)
-            }
-            Err(err) => {
-                eprintln!("Failed to parse scheduler state: {err}");
-                (Utc::now(), "unknown".to_string())
-            }
-        }
-    }
 }

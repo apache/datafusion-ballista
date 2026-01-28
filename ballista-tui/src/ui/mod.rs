@@ -6,7 +6,7 @@ pub use main::load_data;
 use main::{render_dashboard, render_jobs, render_metrics};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
@@ -47,29 +47,6 @@ fn render_main_view(f: &mut Frame, app: &App, area: Rect) {
     } else if app.current_view == Views::Metrics {
         render_metrics(f, area, app);
     }
-
-    // if app.is_loading {
-    //       let block = Block::default()
-    //           .borders(Borders::ALL)
-    //           .border_style(Style::default().fg(Color::DarkGray));
-    //       let p = Paragraph::new("⟳ Fetching Market Data...")
-    //           .block(block)
-    //           .alignment(Alignment::Center);
-    //       f.render_widget(p, area);
-    //       return;
-    //   }
-
-    //   render_no_data(f, area);
-}
-
-fn render_no_data(f: &mut Frame, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
-    let p = Paragraph::new("No Data Available - Press 'r' to refresh")
-        .block(block)
-        .alignment(Alignment::Center);
-    f.render_widget(p, area);
 }
 
 fn render_help_overlay(f: &mut Frame) {

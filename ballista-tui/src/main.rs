@@ -1,5 +1,9 @@
 pub mod app;
+pub mod domain;
+pub mod error;
 pub mod event;
+pub mod http_client;
+pub mod logging;
 pub mod tui;
 pub mod ui;
 
@@ -9,10 +13,15 @@ use event::{Event, EventHandler};
 use std::time::Duration;
 use tui::TuiWrapper;
 
-use crate::event::UiData;
+use crate::{error::TuiError, event::UiData};
+
+pub type TuiResult<OK> = Result<OK, TuiError>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    logging::init_file_logger("./logs", "ballista-tui", "info")?;
+    tracing::error!("Starting the Ballista TUI application");
+
     color_eyre::install()?;
 
     let mut tui_wrapper = TuiWrapper::new()?;
@@ -38,10 +47,9 @@ async fn main() -> Result<()> {
             Some(app_event) = app_rx.recv() => {
                 if let Event::DataLoaded { data } = app_event {
                   match data {
-                    UiData::SchedulerState(json) => {
-                      app.dashboard_data = json;
+                    UiData::SchedulerState(state) => {
+                      app.dashboard_data = app.dashboard_data.with_scheduler_state(Some(state));
                     }
-                    d => unimplemented!("Support for UiData '{d:?}' is not yet implemented")
                   }
                 }
             }

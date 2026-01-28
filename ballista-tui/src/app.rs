@@ -1,8 +1,10 @@
-use crate::event::Event;
+use crate::{domain::DashboardData, event::Event};
 use color_eyre::eyre::{Ok, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
+
+use crate::http_client::HttpClient;
 
 #[derive(PartialEq)]
 pub enum Views {
@@ -13,13 +15,11 @@ pub enum Views {
 
 pub struct App {
     pub should_quit: bool,
-    pub is_loading: bool,
     pub event_tx: Option<UnboundedSender<Event>>,
     pub last_refresh: Instant,
     pub current_view: Views,
 
-    // Dashboard
-    pub dashboard_data: String,
+    pub dashboard_data: DashboardData,
 
     // Search
     pub search_mode: bool,
@@ -28,8 +28,7 @@ pub struct App {
     // Help panel
     pub show_help: bool,
 
-    // Scheduler URL
-    pub scheduler_url: String,
+    pub http_client: HttpClient,
 }
 
 impl App {
@@ -37,14 +36,13 @@ impl App {
         Self {
             current_view: Views::Dashboard,
             should_quit: false,
-            is_loading: false,
             event_tx: None,
             last_refresh: Instant::now(),
             search_mode: false,
             search_query: String::new(),
             show_help: false,
-            dashboard_data: String::new(),
-            scheduler_url: String::from("http://localhost:50050/api/state"),
+            dashboard_data: DashboardData::builder().build(),
+            http_client: HttpClient::new("http://localhost:50050/api/state".into()),
         }
     }
 
