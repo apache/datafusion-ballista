@@ -27,16 +27,12 @@
 
 use crate::SessionBuilder;
 use crate::cluster::DistributionPolicy;
+use ballista_core::extension::EndpointOverrideFn;
 use ballista_core::{ConfigProducer, config::TaskSchedulingPolicy};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use std::fmt::Display;
 use std::sync::Arc;
-use tonic::transport::{Endpoint, Error as TonicTransportError};
-
-/// Type alias for the endpoint override function used in gRPC client configuration
-pub type EndpointOverrideFn =
-    Arc<dyn Fn(Endpoint) -> Result<Endpoint, TonicTransportError> + Send + Sync>;
 
 /// Command-line configuration for the scheduler binary.
 #[cfg(feature = "build-binary")]
@@ -247,6 +243,8 @@ pub struct SchedulerConfig {
     pub override_physical_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
     /// Override function for customizing gRPC client endpoints before they are used
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
+    /// Whether to use TLS when connecting to executors (for flight proxy)
+    pub use_tls: bool,
 }
 
 impl Default for SchedulerConfig {
@@ -274,6 +272,7 @@ impl Default for SchedulerConfig {
             override_logical_codec: None,
             override_physical_codec: None,
             override_create_grpc_client_endpoint: None,
+            use_tls: false,
         }
     }
 }
@@ -398,11 +397,15 @@ impl SchedulerConfig {
     /// This allows configuring TLS, timeouts, and other transport settings.
     pub fn with_override_create_grpc_client_endpoint(
         mut self,
-        override_fn: Arc<
-            dyn Fn(Endpoint) -> Result<Endpoint, TonicTransportError> + Send + Sync,
-        >,
+        override_fn: EndpointOverrideFn,
     ) -> Self {
         self.override_create_grpc_client_endpoint = Some(override_fn);
+        self
+    }
+
+    /// Sets whether TLS should be used when connecting to executors (for flight proxy).
+    pub fn with_use_tls(mut self, use_tls: bool) -> Self {
+        self.use_tls = use_tls;
         self
     }
 }
@@ -516,6 +519,7 @@ impl TryFrom<Config> for SchedulerConfig {
             override_physical_codec: None,
             override_session_builder: None,
             override_create_grpc_client_endpoint: None,
+            use_tls: false,
         };
 
         Ok(config)

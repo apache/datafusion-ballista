@@ -42,7 +42,7 @@ use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 
 use ballista_core::config::{LogRotationPolicy, TaskSchedulingPolicy};
 use ballista_core::error::BallistaError;
-use ballista_core::extension::SessionConfigExt;
+use ballista_core::extension::{EndpointOverrideFn, SessionConfigExt};
 use ballista_core::serde::protobuf::executor_resource::Resource;
 use ballista_core::serde::protobuf::executor_status::Status;
 use ballista_core::serde::protobuf::{
@@ -57,11 +57,6 @@ use ballista_core::utils::{
     default_config_producer, get_time_before,
 };
 use ballista_core::{BALLISTA_VERSION, ConfigProducer, RuntimeProducer};
-use tonic::transport::{Endpoint, Error as TonicTransportError};
-
-/// Type alias for the endpoint override function used in gRPC client configuration
-pub type EndpointOverrideFn =
-    Arc<dyn Fn(Endpoint) -> Result<Endpoint, TonicTransportError> + Send + Sync>;
 
 use crate::execution_engine::ExecutionEngine;
 use crate::executor::{Executor, TasksDrainedFuture};

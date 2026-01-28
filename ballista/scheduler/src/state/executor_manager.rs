@@ -481,7 +481,11 @@ impl ExecutorManager {
             if let Some(ref override_fn) =
                 self.config.override_create_grpc_client_endpoint
             {
-                endpoint = override_fn(endpoint)?;
+                endpoint = override_fn(endpoint).map_err(|e| {
+                    BallistaError::GrpcConnectionError(format!(
+                        "Failed to customize endpoint for executor {executor_id}: {e}"
+                    ))
+                })?;
             }
 
             let connection = endpoint.connect().await?;

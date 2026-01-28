@@ -30,14 +30,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
 use log::{debug, error, info, warn};
-use tonic::transport::{Channel, Endpoint, Error as TonicTransportError};
+use tonic::transport::Channel;
 use tonic::{Request, Response, Status};
 
-/// Type alias for the endpoint override function used in gRPC client configuration
-pub type EndpointOverrideFn =
-    Arc<dyn Fn(Endpoint) -> Result<Endpoint, TonicTransportError> + Send + Sync>;
-
 use ballista_core::error::BallistaError;
+use ballista_core::extension::EndpointOverrideFn;
 use ballista_core::serde::BallistaCodec;
 use ballista_core::serde::protobuf::{
     CancelTasksParams, CancelTasksResult, ExecutorMetric, ExecutorStatus,
@@ -276,7 +273,11 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             let mut endpoint = create_grpc_client_endpoint(scheduler_url, None)?;
 
             if let Some(ref override_fn) = self.override_create_grpc_client_endpoint {
-                endpoint = override_fn(endpoint)?;
+                endpoint = override_fn(endpoint).map_err(|e| {
+                    BallistaError::GrpcConnectionError(format!(
+                        "Failed to customize endpoint for scheduler {scheduler_id}: {e}"
+                    ))
+                })?;
             }
 
             let connection = endpoint.connect().await?;
