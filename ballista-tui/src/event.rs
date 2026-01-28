@@ -3,11 +3,16 @@ use futures::{FutureExt, StreamExt};
 use tokio::sync::mpsc;
 
 #[derive(Clone, Debug)]
+pub enum UiData {
+    SchedulerState(String),
+}
+
+#[derive(Clone, Debug)]
 pub enum Event {
     Key(KeyEvent),
     Tick,
     Resize(u16, u16),
-    DataLoaded { data: String },
+    DataLoaded { data: UiData },
 }
 
 #[derive(Debug)]

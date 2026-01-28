@@ -9,6 +9,8 @@ use event::{Event, EventHandler};
 use std::time::Duration;
 use tui::TuiWrapper;
 
+use crate::event::UiData;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
@@ -35,7 +37,12 @@ async fn main() -> Result<()> {
             }
             Some(app_event) = app_rx.recv() => {
                 if let Event::DataLoaded { data } = app_event {
-                    app.dashboard_data = data;
+                  match data {
+                    UiData::SchedulerState(json) => {
+                      app.dashboard_data = json;
+                    }
+                    d => unimplemented!("Support for UiData '{d:?}' is not yet implemented")
+                  }
                 }
             }
         }

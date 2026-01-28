@@ -27,6 +27,9 @@ pub struct App {
 
     // Help panel
     pub show_help: bool,
+
+    // Scheduler URL
+    pub scheduler_url: String,
 }
 
 impl App {
@@ -41,6 +44,7 @@ impl App {
             search_query: String::new(),
             show_help: false,
             dashboard_data: String::new(),
+            scheduler_url: String::from("http://localhost:50050/api/state"),
         }
     }
 
