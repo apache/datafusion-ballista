@@ -405,13 +405,17 @@ fn finalize_output(
         let mut partition_batches: u64 = 0;
         let mut partition_bytes: u64 = 0;
 
-        // First, write any spill files for this partition
+        // First, write any spill files for this partition using streaming
         if spill_manager.has_spill_files(partition_id) {
-            let spill_batches = spill_manager
-                .read_spill_files(partition_id)
+            let mut spill_stream = spill_manager
+                .stream_spill_files(partition_id, schema.clone())
                 .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
-            for batch in spill_batches {
+            // SpillFileStream::poll_next returns Poll::Ready immediately (synchronous file I/O)
+            while let Some(batch_result) =
+                futures::executor::block_on(spill_stream.next())
+            {
+                let batch = batch_result?;
                 partition_rows += batch.num_rows() as u64;
                 partition_bytes += batch.get_array_memory_size() as u64;
                 partition_batches += 1;
