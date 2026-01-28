@@ -86,6 +86,8 @@ cpp/Brewfile.lock.json
 # docker volumes used for caching
 .docker
 
+.pending-snap
+
 # Rust
 target
 # Cargo.lock

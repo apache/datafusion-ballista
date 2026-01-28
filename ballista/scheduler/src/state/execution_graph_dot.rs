@@ -45,19 +45,19 @@ use std::sync::Arc;
 
 /// Utility for producing dot diagrams from execution graphs
 pub struct ExecutionGraphDot<'a> {
-    graph: &'a ExecutionGraph,
+    graph: &'a dyn ExecutionGraph,
 }
 
 impl<'a> ExecutionGraphDot<'a> {
     /// Create a DOT graph from the provided ExecutionGraph
-    pub fn generate(graph: &'a ExecutionGraph) -> Result<String, fmt::Error> {
+    pub fn generate(graph: &'a dyn ExecutionGraph) -> Result<String, fmt::Error> {
         let mut dot = Self { graph };
         dot._generate()
     }
 
     /// Create a DOT graph for one query stage from the provided ExecutionGraph
     pub fn generate_for_query_stage(
-        graph: &ExecutionGraph,
+        graph: &dyn ExecutionGraph,
         stage_id: usize,
     ) -> Result<String, fmt::Error> {
         if let Some(stage) = graph.stages().get(&stage_id) {
@@ -410,7 +410,7 @@ fn get_file_scan(scan: &FileScanConfig) -> String {
 #[cfg(test)]
 mod tests {
     use crate::planner::DefaultDistributedPlanner;
-    use crate::state::execution_graph::ExecutionGraph;
+    use crate::state::execution_graph::StaticExecutionGraph;
     use crate::state::execution_graph_dot::ExecutionGraphDot;
     use ballista_core::error::{BallistaError, Result};
     use ballista_core::extension::SessionConfigExt;
@@ -580,7 +580,7 @@ filter_expr="]
         Ok(())
     }
 
-    async fn test_graph() -> Result<ExecutionGraph> {
+    async fn test_graph() -> Result<StaticExecutionGraph> {
         let mut config = SessionConfig::new()
             .with_target_partitions(48)
             .with_batch_size(4096);
@@ -603,7 +603,7 @@ filter_expr="]
         let plan = df.into_optimized_plan()?;
         let plan = ctx.state().create_physical_plan(&plan).await?;
         let mut planner = DefaultDistributedPlanner::new();
-        ExecutionGraph::new(
+        StaticExecutionGraph::new(
             "scheduler_id",
             "job_id",
             "job_name",
@@ -617,7 +617,7 @@ filter_expr="]
 
     // With the improvement of https://github.com/apache/arrow-datafusion/pull/4122,
     // Redundant RepartitionExec can be removed so that the stage number will be reduced
-    async fn test_graph_optimized() -> Result<ExecutionGraph> {
+    async fn test_graph_optimized() -> Result<StaticExecutionGraph> {
         let mut config = SessionConfig::new()
             .with_target_partitions(48)
             .with_batch_size(4096);
@@ -639,7 +639,7 @@ filter_expr="]
         let plan = df.into_optimized_plan()?;
         let plan = ctx.state().create_physical_plan(&plan).await?;
         let mut planner = DefaultDistributedPlanner::new();
-        ExecutionGraph::new(
+        StaticExecutionGraph::new(
             "scheduler_id",
             "job_id",
             "job_name",

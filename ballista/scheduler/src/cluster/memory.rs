@@ -21,7 +21,7 @@ use crate::cluster::{
     bind_task_consistent_hash, bind_task_round_robin, get_scan_files,
     is_skip_consistent_hash,
 };
-use crate::state::execution_graph::ExecutionGraph;
+use crate::state::execution_graph::ExecutionGraphBox;
 use async_trait::async_trait;
 use ballista_core::ConfigProducer;
 use ballista_core::error::{BallistaError, Result};
@@ -347,7 +347,7 @@ impl ClusterState for InMemoryClusterState {
 pub struct InMemoryJobState {
     scheduler: String,
     /// Jobs which have either completed successfully or failed
-    completed_jobs: DashMap<String, (JobStatus, Option<ExecutionGraph>)>,
+    completed_jobs: DashMap<String, (JobStatus, Option<ExecutionGraphBox>)>,
     /// In-memory store of queued jobs. Map from Job ID -> (Job Name, queued_at timestamp)
     queued_jobs: DashMap<String, (String, u64)>,
     /// In-memory store of running job statuses. Map from Job ID -> JobStatus
@@ -382,7 +382,7 @@ impl InMemoryJobState {
 
 #[async_trait]
 impl JobState for InMemoryJobState {
-    async fn submit_job(&self, job_id: String, graph: &ExecutionGraph) -> Result<()> {
+    async fn submit_job(&self, job_id: String, graph: &ExecutionGraphBox) -> Result<()> {
         if self.queued_jobs.get(&job_id).is_some() {
             self.running_jobs
                 .insert(job_id.clone(), graph.status().clone());
@@ -423,21 +423,24 @@ impl JobState for InMemoryJobState {
         Ok(None)
     }
 
-    async fn get_execution_graph(&self, job_id: &str) -> Result<Option<ExecutionGraph>> {
+    async fn get_execution_graph(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<ExecutionGraphBox>> {
         Ok(self
             .completed_jobs
             .get(job_id)
             .as_deref()
-            .and_then(|(_, graph)| graph.clone()))
+            .and_then(|(_, graph)| graph.as_ref().map(|e| e.cloned())))
     }
 
-    async fn try_acquire_job(&self, _job_id: &str) -> Result<Option<ExecutionGraph>> {
+    async fn try_acquire_job(&self, _job_id: &str) -> Result<Option<ExecutionGraphBox>> {
         // Always return None. The only state stored here are for completed jobs
         // which cannot be acquired
         Ok(None)
     }
 
-    async fn save_job(&self, job_id: &str, graph: &ExecutionGraph) -> Result<()> {
+    async fn save_job(&self, job_id: &str, graph: &ExecutionGraphBox) -> Result<()> {
         let status = graph.status().clone();
 
         debug!("saving state for job {job_id} with status {:?}", status);
@@ -448,7 +451,7 @@ impl JobState for InMemoryJobState {
             Some(Status::Successful(_)) | Some(Status::Failed(_))
         ) {
             self.completed_jobs
-                .insert(job_id.to_string(), (status.clone(), Some(graph.clone())));
+                .insert(job_id.to_string(), (status.clone(), Some(graph.cloned())));
             self.running_jobs.remove(job_id);
         } else {
             // otherwise update running job
@@ -576,7 +579,7 @@ mod test {
                 Arc::new(default_session_builder),
                 Arc::new(default_config_producer),
             ),
-            test_aggregation_plan(4).await,
+            Box::new(test_aggregation_plan(4).await),
         )
         .await?;
         test_job_lifecycle(
@@ -585,7 +588,7 @@ mod test {
                 Arc::new(default_session_builder),
                 Arc::new(default_config_producer),
             ),
-            test_two_aggregations_plan(4).await,
+            Box::new(test_two_aggregations_plan(4).await),
         )
         .await?;
         test_job_lifecycle(
@@ -594,7 +597,7 @@ mod test {
                 Arc::new(default_session_builder),
                 Arc::new(default_config_producer),
             ),
-            test_join_plan(4).await,
+            Box::new(test_join_plan(4).await),
         )
         .await?;
 
@@ -609,7 +612,7 @@ mod test {
                 Arc::new(default_session_builder),
                 Arc::new(default_config_producer),
             ),
-            test_aggregation_plan(4).await,
+            Box::new(test_aggregation_plan(4).await),
         )
         .await?;
         test_job_planning_failure(
@@ -618,7 +621,7 @@ mod test {
                 Arc::new(default_session_builder),
                 Arc::new(default_config_producer),
             ),
-            test_two_aggregations_plan(4).await,
+            Box::new(test_two_aggregations_plan(4).await),
         )
         .await?;
         test_job_planning_failure(
@@ -627,7 +630,7 @@ mod test {
                 Arc::new(default_session_builder),
                 Arc::new(default_config_producer),
             ),
-            test_join_plan(4).await,
+            Box::new(test_join_plan(4).await),
         )
         .await?;
 
@@ -654,7 +657,7 @@ mod test {
         });
 
         barrier.wait().await;
-        test_job_lifecycle(state, test_aggregation_plan(4).await).await?;
+        test_job_lifecycle(state, Box::new(test_aggregation_plan(4).await)).await?;
         let result = events.await?;
         assert_eq!(2, result.len());
         match result.last().unwrap() {
