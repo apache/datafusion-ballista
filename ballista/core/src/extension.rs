@@ -32,6 +32,16 @@ use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::protobuf::LogicalPlanNode;
 use std::sync::Arc;
 
+#[cfg(feature = "spark-compat")]
+use datafusion::execution::FunctionRegistry;
+
+#[cfg(feature = "spark-compat")]
+use datafusion_spark::{
+    all_default_aggregate_functions as spark_aggregate_functions,
+    all_default_scalar_functions as spark_scalar_functions,
+    all_default_window_functions as spark_window_functions,
+};
+
 /// Provides methods which adapt [SessionState]
 /// for Ballista usage
 pub trait SessionStateExt {
@@ -159,6 +169,22 @@ pub trait SessionConfigHelperExt {
     fn ballista_restricted_configuration(self) -> Self;
 }
 
+/// Registers spark functions into SessionState when spark-compat feature is enabled.
+#[cfg(feature = "spark-compat")]
+pub fn register_spark_functions(state: SessionState) -> SessionState {
+    let mut state = state;
+    for func in spark_scalar_functions() {
+        state.register_udf(func).ok();
+    }
+    for func in spark_aggregate_functions() {
+        state.register_udaf(func).ok();
+    }
+    for func in spark_window_functions() {
+        state.register_udwf(func).ok();
+    }
+    state
+}
+
 impl SessionStateExt for SessionState {
     fn new_ballista_state(
         scheduler_url: String,
@@ -176,6 +202,9 @@ impl SessionStateExt for SessionState {
             .with_runtime_env(Arc::new(runtime_env))
             .with_query_planner(Arc::new(planner))
             .build();
+
+        #[cfg(feature = "spark-compat")]
+        let session_state = register_spark_functions(session_state);
 
         Ok(session_state)
     }
@@ -206,7 +235,12 @@ impl SessionStateExt for SessionState {
             }
         };
 
-        Ok(builder.build())
+        let session_state = builder.build();
+
+        #[cfg(feature = "spark-compat")]
+        let session_state = register_spark_functions(session_state);
+
+        Ok(session_state)
     }
 }
 

@@ -41,6 +41,7 @@ default = ["arrow-ipc-optimizations"]
 docsrs = []
 # Used for testing ONLY: causes all values to hash to the same value (test for collisions)
 force_hash_collisions = ["datafusion/force_hash_collisions"]
+spark-compat = ["dep:datafusion-spark"]
 
 [dependencies]
 arrow-flight = { workspace = true }
@@ -52,6 +53,7 @@ clap = { workspace = true, optional = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 datafusion-proto-common = { workspace = true }
+datafusion-spark = { workspace = true, optional = true }
 futures = { workspace = true }
 itertools = "0.14"
 log = { workspace = true }

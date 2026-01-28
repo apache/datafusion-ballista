@@ -36,6 +36,7 @@ required-features = ["build-binary"]
 arrow-ipc-optimizations = []
 build-binary = ["clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary"]
 default = ["arrow-ipc-optimizations", "build-binary", "mimalloc"]
+spark-compat = ["ballista-core/spark-compat"]
 
 [dependencies]
 arrow = { workspace = true }
