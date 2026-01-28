@@ -130,6 +130,60 @@ The overall speedup is 2.9x
 The easiest way to get started is to run one of the standalone or distributed [examples](./examples/README.md). After
 that, refer to the [Getting Started Guide](ballista/client/README.md).
 
+## Cargo Features
+
+Ballista uses Cargo features to enable optional functionality. Below are the available features for each crate.
+
+### ballista (client)
+
+| Feature      | Default | Description                                                    |
+| ------------ | ------- | -------------------------------------------------------------- |
+| `standalone` | Yes     | Enables standalone mode with in-process scheduler and executor |
+
+### ballista-core
+
+| Feature                   | Default | Description                                                            |
+| ------------------------- | ------- | ---------------------------------------------------------------------- |
+| `arrow-ipc-optimizations` | Yes     | Enables Arrow IPC optimizations for better shuffle performance         |
+| `spark-compat`            | No      | Enables Spark compatibility mode via datafusion-spark                  |
+| `build-binary`            | No      | Required for building binary executables (AWS S3 support, CLI parsing) |
+| `force_hash_collisions`   | No      | Testing-only: forces all values to hash to same value                  |
+
+### ballista-scheduler
+
+| Feature                    | Default | Description                                      |
+| -------------------------- | ------- | ------------------------------------------------ |
+| `build-binary`             | Yes     | Builds the scheduler binary with CLI and logging |
+| `substrait`                | Yes     | Enables Substrait plan support                   |
+| `prometheus-metrics`       | No      | Enables Prometheus metrics collection            |
+| `graphviz-support`         | No      | Enables execution graph visualization            |
+| `spark-compat`             | No      | Enables Spark compatibility mode                 |
+| `keda-scaler`              | No      | Kubernetes Event Driven Autoscaling integration  |
+| `rest-api`                 | No      | Enables REST API endpoints                       |
+| `disable-stage-plan-cache` | No      | Disables caching of stage execution plans        |
+
+### ballista-executor
+
+| Feature                   | Default | Description                                           |
+| ------------------------- | ------- | ----------------------------------------------------- |
+| `arrow-ipc-optimizations` | Yes     | Enables Arrow IPC optimizations                       |
+| `build-binary`            | Yes     | Builds the executor binary with CLI and logging       |
+| `mimalloc`                | Yes     | Uses mimalloc memory allocator for better performance |
+| `spark-compat`            | No      | Enables Spark compatibility mode                      |
+
+### Usage Examples
+
+```bash
+# Build with standalone support (default)
+cargo build -p ballista
+
+# Build with Substrait support
+cargo build -p ballista-scheduler --features substrait
+
+# Build with Spark compatibility
+cargo build -p ballista-executor --features spark-compat
+```
+
 ## Project Status
 
 Ballista supports a wide range of SQL, including CTEs, Joins, and subqueries and can execute complex queries at scale,
