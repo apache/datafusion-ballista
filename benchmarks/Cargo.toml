@@ -29,6 +29,7 @@ publish = false
 [features]
 ci = []
 default = ["mimalloc"]
+lint = [] # custom feature flag to allow for clippy "--all-features"
 snmalloc = ["snmalloc-rs"]
 
 [dependencies]

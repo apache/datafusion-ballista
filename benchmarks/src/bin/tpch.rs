@@ -67,13 +67,16 @@ use structopt::StructOpt;
 #[cfg(test)]
 use tokio::task::JoinHandle;
 
-#[cfg(feature = "snmalloc")]
+#[cfg(all(feature = "snmalloc", not(feature = "mimalloc")))]
 #[global_allocator]
 static ALLOC: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
 
-#[cfg(feature = "mimalloc")]
+#[cfg(all(feature = "mimalloc", not(feature = "snmalloc")))]
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(all(feature = "snmalloc", feature = "mimalloc", not(feature = "lint")))]
+compile_error!("Either feature 'snmalloc' or 'mimalloc' must be enabled.");
 
 #[derive(Debug, StructOpt, Clone)]
 struct BallistaBenchmarkOpt {
