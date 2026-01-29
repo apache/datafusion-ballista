@@ -1,8 +1,13 @@
-use chrono::{DateTime, Utc};
+mod executors;
+mod scheduler_state;
+
+pub use executors::render_executors;
+pub use scheduler_state::render_scheduler_state;
+
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
-    widgets::{Block, Borders, Clear, Paragraph},
+    layout::{Constraint, Direction, Layout, Rect},
+    widgets::Clear,
 };
 
 use crate::{
@@ -13,62 +18,28 @@ use crate::{
 };
 
 pub fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
-    let (started, version) = match &app.dashboard_data.scheduler_state {
-        Some(state) => {
-            let datetime =
-                DateTime::from_timestamp_millis(state.started).unwrap_or_else(Utc::now);
-            (datetime, state.version.clone())
-        }
-        None => (Utc::now(), "unknown".to_string()),
-    };
-
     f.render_widget(Clear, area);
 
-    let vertical_chunks = Layout::default()
+    let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(area);
 
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(13),
-            Constraint::Percentage(13),
-            Constraint::Percentage(5),
-            Constraint::Min(0),
-        ])
-        .split(vertical_chunks[0]);
+    render_scheduler_state(f, chunks[0], app);
 
-    let scheduler_url_block = Block::default()
-        .borders(Borders::ALL)
-        .title("Scheduler URL");
-    let scheduler_url_paragraph = Paragraph::new(app.http_client.scheduler_url())
-        .block(scheduler_url_block)
-        .alignment(Alignment::Left);
-    f.render_widget(scheduler_url_paragraph, chunks[0]);
-
-    let started_block = Block::default().borders(Borders::ALL).title("Started at");
-    let started_text = started.format("%Y-%m-%d %H:%M:%S UTC").to_string();
-    let started_paragraph = Paragraph::new(started_text)
-        .block(started_block)
-        .alignment(Alignment::Left);
-    f.render_widget(started_paragraph, chunks[1]);
-
-    let version_block = Block::default().borders(Borders::ALL).title("Version");
-    let version_paragraph = Paragraph::new(version)
-        .block(version_block)
-        .alignment(Alignment::Left);
-    f.render_widget(version_paragraph, chunks[2]);
+    render_executors(f, chunks[1], app);
 }
 
-pub async fn load_data(app: &App) -> TuiResult<()> {
+pub async fn load_dashboard_data(app: &App) -> TuiResult<()> {
     let scheduler_state = app.http_client.get_scheduler_state().await?;
+    let executors_data = app.http_client.get_executors().await?;
     if let Some(event_tx) = &app.event_tx {
         event_tx
             .send(Event::DataLoaded {
-                data: UiData::SchedulerState(scheduler_state),
+                data: UiData::Dashboard(scheduler_state, executors_data),
             })
             .map_err(TuiError::SendError)?;
     }
+
     Ok(())
 }

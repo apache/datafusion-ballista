@@ -1,7 +1,7 @@
 use crate::{domain::DashboardData, event::Event};
 use color_eyre::eyre::{Ok, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::http_client::HttpClient;
@@ -28,7 +28,7 @@ pub struct App {
     // Help panel
     pub show_help: bool,
 
-    pub http_client: HttpClient,
+    pub http_client: Arc<HttpClient>,
 }
 
 impl App {
@@ -42,7 +42,7 @@ impl App {
             search_query: String::new(),
             show_help: false,
             dashboard_data: DashboardData::builder().build(),
-            http_client: HttpClient::new("http://localhost:50050".into()),
+            http_client: Arc::new(HttpClient::new("http://localhost:50050".into())),
         }
     }
 
@@ -51,8 +51,8 @@ impl App {
         // self.load_data();
     }
 
-    pub fn on_tick(&mut self) {
-        // Auto-refresh every 60 seconds (only for day view)
+    pub async fn on_tick(&mut self) {
+        let _ = crate::ui::load_dashboard_data(&self).await;
     }
 
     pub async fn on_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -104,7 +104,7 @@ impl App {
             // }
             KeyCode::Char('d') => {
                 self.current_view = Views::Dashboard;
-                let _ = crate::ui::load_data(self).await;
+                let _ = crate::ui::load_dashboard_data(self).await;
             }
             KeyCode::Char('j') => {
                 self.current_view = Views::Jobs;

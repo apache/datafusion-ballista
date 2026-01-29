@@ -26,11 +26,11 @@ async fn main() -> Result<()> {
 
     let mut tui_wrapper = TuiWrapper::new()?;
     let mut app = App::new();
-    let mut events = EventHandler::new(Duration::from_millis(250));
+    let mut events = EventHandler::new(Duration::from_millis(2000));
 
     let (app_tx, mut app_rx) = tokio::sync::mpsc::unbounded_channel();
     app.set_event_tx(app_tx);
-    let _ = crate::ui::load_data(&app).await;
+    let _ = crate::ui::load_dashboard_data(&app).await;
 
     loop {
         tui_wrapper.terminal.draw(|f| ui::render(f, &app))?;
@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
             maybe_event = events.next() => {
                 match maybe_event {
                     Some(Event::Key(key)) => app.on_key(key).await?,
-                    Some(Event::Tick) => app.on_tick(),
+                    Some(Event::Tick) => app.on_tick().await,
                     Some(Event::Resize(_, _)) => {},
                     Some(Event::DataLoaded { .. }) => {},
                     None => break,
@@ -48,8 +48,8 @@ async fn main() -> Result<()> {
             Some(app_event) = app_rx.recv() => {
                 if let Event::DataLoaded { data } = app_event {
                   match data {
-                    UiData::SchedulerState(state) => {
-                      app.dashboard_data = app.dashboard_data.with_scheduler_state(Some(state));
+                    UiData::Dashboard(state, executors_data) => {
+                      app.dashboard_data = app.dashboard_data.with_scheduler_state(Some(state)).with_executors_data(Some(executors_data));
                     }
                   }
                 }

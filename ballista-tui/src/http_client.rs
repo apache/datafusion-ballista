@@ -1,7 +1,11 @@
 use reqwest::Response;
 use serde::de::DeserializeOwned;
 
-use crate::{TuiResult, domain::SchedulerState, error::TuiError};
+use crate::{
+    TuiResult,
+    domain::{ExecutorsData, SchedulerState},
+    error::TuiError,
+};
 
 pub struct HttpClient {
     scheduler_url: String,
@@ -18,15 +22,19 @@ impl HttpClient {
 
     pub async fn get_scheduler_state(&self) -> TuiResult<SchedulerState> {
         let url = self.url("state");
-        tracing::trace!("Going to make a request to {}", &url);
-        let response = self.get(&url).await?;
-        self.json::<SchedulerState>(response).await
+        self.json::<SchedulerState>(&url).await
     }
 
-    async fn json<R>(&self, response: Response) -> TuiResult<R>
+    pub async fn get_executors(&self) -> TuiResult<Vec<ExecutorsData>> {
+        let url = self.url("executors");
+        self.json::<Vec<ExecutorsData>>(&url).await
+    }
+
+    async fn json<R>(&self, url: &str) -> TuiResult<R>
     where
         R: std::fmt::Debug + DeserializeOwned,
     {
+        let response = self.get(&url).await?;
         response
             .json::<R>()
             .await
@@ -36,6 +44,7 @@ impl HttpClient {
     }
 
     async fn get(&self, url: &str) -> TuiResult<Response> {
+        tracing::trace!("Going to make a request to {}", &url);
         reqwest::get(url).await.map_err(TuiError::Reqwest)
     }
 

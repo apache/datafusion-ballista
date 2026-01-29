@@ -2,11 +2,11 @@ use crossterm::event::{EventStream, KeyEvent};
 use futures::{FutureExt, StreamExt};
 use tokio::sync::mpsc;
 
-use crate::domain::SchedulerState;
+use crate::domain::{ExecutorsData, SchedulerState};
 
 #[derive(Clone, Debug)]
 pub enum UiData {
-    SchedulerState(SchedulerState),
+    Dashboard(SchedulerState, Vec<ExecutorsData>),
 }
 
 #[derive(Clone, Debug)]
