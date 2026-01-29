@@ -44,8 +44,11 @@ use datafusion::arrow::{
 use datafusion::error::DataFusionError;
 use datafusion::error::Result;
 
+use crate::extension::BallistaConfigGrpcEndpoint;
 use crate::serde::protobuf;
-use crate::utils::{GrpcClientConfig, create_grpc_client_connection};
+
+use crate::utils::create_grpc_client_endpoint;
+
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 use futures::{Stream, StreamExt};
 use log::{debug, warn};
@@ -69,17 +72,37 @@ impl BallistaClient {
         host: &str,
         port: u16,
         max_message_size: usize,
+        use_tls: bool,
+        customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
     ) -> BResult<Self> {
-        let addr = format!("http://{host}:{port}");
-        let grpc_config = GrpcClientConfig::default();
+        let scheme = if use_tls { "https" } else { "http" };
+
+        let addr = format!("{scheme}://{host}:{port}");
         debug!("BallistaClient connecting to {addr}");
-        let connection = create_grpc_client_connection(addr.clone(), &grpc_config)
-            .await
+
+        let mut endpoint = create_grpc_client_endpoint(addr.clone(), None)
             .map_err(|e| {
                 BallistaError::GrpcConnectionError(format!(
-                    "Error connecting to Ballista scheduler or executor at {addr}: {e:?}"
+                    "Error creating endpoint to Ballista scheduler or executor at {addr}: {e:?}"
                 ))
             })?;
+
+        if let Some(customize) = customize_endpoint {
+            endpoint = customize
+                .configure_endpoint(endpoint)
+                .map_err(|e| {
+                    BallistaError::GrpcConnectionError(format!(
+                        "Error creating endpoint to Ballista scheduler or executor at {addr}: {e:?}"
+                    ))
+                })?;
+        }
+
+        let connection = endpoint.connect().await.map_err(|e| {
+            BallistaError::GrpcConnectionError(format!(
+                "Error connecting to Ballista scheduler or executor at {addr}: {e:?}"
+            ))
+        })?;
+
         let flight_client = FlightServiceClient::new(connection)
             .max_decoding_message_size(max_message_size)
             .max_encoding_message_size(max_message_size);
