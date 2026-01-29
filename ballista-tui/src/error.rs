@@ -2,6 +2,7 @@ use tokio::sync::mpsc::error::SendError;
 
 use crate::event::Event;
 
+#[derive(Debug)]
 pub enum TuiError {
     Reqwest(reqwest::Error),
     Json(serde_json::Error),

@@ -19,8 +19,8 @@ pub type TuiResult<OK> = Result<OK, TuiError>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    logging::init_file_logger("./logs", "ballista-tui", "info")?;
-    tracing::error!("Starting the Ballista TUI application");
+    logging::init_file_logger("ballista-tui", "info")?;
+    tracing::info!("Starting the Ballista TUI application");
 
     color_eyre::install()?;
 
@@ -30,6 +30,7 @@ async fn main() -> Result<()> {
 
     let (app_tx, mut app_rx) = tokio::sync::mpsc::unbounded_channel();
     app.set_event_tx(app_tx);
+    let _ = crate::ui::load_data(&app).await;
 
     loop {
         tui_wrapper.terminal.draw(|f| ui::render(f, &app))?;
@@ -55,7 +56,10 @@ async fn main() -> Result<()> {
             }
         }
 
+        tokio::task::yield_now().await;
+
         if app.should_quit {
+            tracing::info!("Stopping the Ballista TUI application!");
             break;
         }
     }

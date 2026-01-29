@@ -42,7 +42,7 @@ impl App {
             search_query: String::new(),
             show_help: false,
             dashboard_data: DashboardData::builder().build(),
-            http_client: HttpClient::new("http://localhost:50050/api/state".into()),
+            http_client: HttpClient::new("http://localhost:50050".into()),
         }
     }
 

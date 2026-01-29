@@ -63,7 +63,6 @@ pub fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
 
 pub async fn load_data(app: &App) -> TuiResult<()> {
     let scheduler_state = app.http_client.get_scheduler_state().await?;
-    tracing::info!("Scheduler state: {:?}", scheduler_state);
     if let Some(event_tx) = &app.event_tx {
         event_tx
             .send(Event::DataLoaded {

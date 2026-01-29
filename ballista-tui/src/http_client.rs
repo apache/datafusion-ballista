@@ -18,13 +18,21 @@ impl HttpClient {
 
     pub async fn get_scheduler_state(&self) -> TuiResult<SchedulerState> {
         let url = self.url("state");
+        tracing::trace!("Going to make a request to {}", &url);
         let response = self.get(&url).await?;
-        dbg!(&response);
         self.json::<SchedulerState>(response).await
     }
 
-    async fn json<R: DeserializeOwned>(&self, response: Response) -> TuiResult<R> {
-        response.json::<R>().await.map_err(TuiError::Reqwest)
+    async fn json<R>(&self, response: Response) -> TuiResult<R>
+    where
+        R: std::fmt::Debug + DeserializeOwned,
+    {
+        response
+            .json::<R>()
+            .await
+            .map_err(TuiError::Reqwest)
+            .inspect(|data| tracing::trace!("Loaded: {data:?}"))
+            .inspect_err(|err| tracing::error!("The http request failed: {err:?}"))
     }
 
     async fn get(&self, url: &str) -> TuiResult<Response> {
