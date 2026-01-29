@@ -32,9 +32,9 @@ pub fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(40),
-            Constraint::Percentage(40),
-            Constraint::Percentage(20),
+            Constraint::Percentage(13),
+            Constraint::Percentage(13),
+            Constraint::Percentage(5),
             Constraint::Min(0),
         ])
         .split(vertical_chunks[0]);
@@ -47,7 +47,7 @@ pub fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
         .alignment(Alignment::Left);
     f.render_widget(scheduler_url_paragraph, chunks[0]);
 
-    let started_block = Block::default().borders(Borders::ALL).title("Started");
+    let started_block = Block::default().borders(Borders::ALL).title("Started at");
     let started_text = started.format("%Y-%m-%d %H:%M:%S UTC").to_string();
     let started_paragraph = Paragraph::new(started_text)
         .block(started_block)
