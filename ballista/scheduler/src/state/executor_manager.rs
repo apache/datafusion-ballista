@@ -34,9 +34,11 @@ use ballista_core::serde::protobuf::{
     StopExecutorParams, executor_status,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
+
 use ballista_core::utils::{
-    GrpcClientConfig, create_grpc_client_connection, get_time_before,
+    GrpcClientConfig, create_grpc_client_endpoint, get_time_before,
 };
+
 use dashmap::DashMap;
 use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
@@ -473,8 +475,20 @@ impl ExecutorManager {
                 "http://{}:{}",
                 executor_metadata.host, executor_metadata.grpc_port
             );
-            let connection =
-                create_grpc_client_connection(executor_url, grpc_client_config).await?;
+            let mut endpoint =
+                create_grpc_client_endpoint(executor_url, Some(grpc_client_config))?;
+
+            if let Some(ref override_fn) =
+                self.config.override_create_grpc_client_endpoint
+            {
+                endpoint = override_fn(endpoint).map_err(|e| {
+                    BallistaError::GrpcConnectionError(format!(
+                        "Failed to customize endpoint for executor {executor_id}: {e}"
+                    ))
+                })?;
+            }
+
+            let connection = endpoint.connect().await?;
             let client = ExecutorGrpcClient::new(connection);
 
             {

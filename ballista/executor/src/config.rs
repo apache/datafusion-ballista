@@ -176,6 +176,7 @@ impl TryFrom<Config> for ExecutorProcessConfig {
             override_logical_codec: None,
             override_physical_codec: None,
             override_arrow_flight_service: None,
+            override_create_grpc_client_endpoint: None,
         })
     }
 }
