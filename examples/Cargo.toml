@@ -33,20 +33,30 @@ name = "standalone_sql"
 path = "examples/standalone-sql.rs"
 required-features = ["ballista/standalone"]
 
+[[example]]
+name = "mtls-cluster"
+path = "examples/mtls-cluster.rs"
+required-features = ["tls"]
+
 [dependencies]
+# Optional dependency for TLS support
+rustls = { version = "0.23", features = ["ring"], optional = true }
 
 [dev-dependencies]
+arrow-flight = { workspace = true }
 ballista = { path = "../ballista/client", version = "52.0.0" }
 ballista-core = { path = "../ballista/core", version = "52.0.0", default-features = false }
 ballista-executor = { path = "../ballista/executor", version = "52.0.0", default-features = false }
 ballista-scheduler = { path = "../ballista/scheduler", version = "52.0.0", default-features = false }
 ctor = { workspace = true }
 datafusion = { workspace = true }
+datafusion-proto = { workspace = true }
 datafusion-substrait = { workspace = true }
 env_logger = { workspace = true }
 futures = { workspace = true }
 log = { workspace = true }
 object_store = { workspace = true, features = ["aws"] }
+tempfile = { workspace = true }
 testcontainers-modules = { version = "0.14", features = ["minio"] }
 tokio = { workspace = true, features = [
     "macros",
@@ -64,3 +74,5 @@ default = ["substrait", "standalone"]
 standalone = ["ballista/standalone"]
 substrait = ["ballista-scheduler/substrait"]
 testcontainers = []
+# Enable TLS support for the mtls-cluster example
+tls = ["tonic/tls-ring", "dep:rustls"]

@@ -22,13 +22,15 @@ use arrow_flight::{
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
 use ballista_core::error::BallistaError;
+use ballista_core::extension::BallistaConfigGrpcEndpoint;
 use ballista_core::serde::decode_protobuf;
 use ballista_core::serde::scheduler::Action as BallistaAction;
-use ballista_core::utils::{GrpcClientConfig, create_grpc_client_connection};
+use ballista_core::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 
 use futures::{Stream, TryFutureExt};
 use log::debug;
 use std::pin::Pin;
+use std::sync::Arc;
 use tonic::{Request, Response, Status, Streaming};
 
 /// Service implementing a proxy from scheduler to executor Apache Arrow Flight Protocol
@@ -40,16 +42,24 @@ use tonic::{Request, Response, Status, Streaming};
 pub struct BallistaFlightProxyService {
     max_decoding_message_size: usize,
     max_encoding_message_size: usize,
+    /// Whether to use TLS when connecting to executors
+    use_tls: bool,
+    /// Optional function to customize gRPC endpoint configuration (e.g., for TLS)
+    customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
 }
 
 impl BallistaFlightProxyService {
     pub fn new(
         max_decoding_message_size: usize,
         max_encoding_message_size: usize,
+        use_tls: bool,
+        customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
     ) -> Self {
         Self {
             max_decoding_message_size,
             max_encoding_message_size,
+            use_tls,
+            customize_endpoint,
         }
     }
 }
@@ -120,6 +130,8 @@ impl FlightService for BallistaFlightProxyService {
                     *port,
                     self.max_decoding_message_size,
                     self.max_encoding_message_size,
+                    self.use_tls,
+                    self.customize_endpoint.clone(),
                 )
                 .map_err(|e| from_ballista_err(&e))
                 .await?;
@@ -169,16 +181,34 @@ async fn get_flight_client(
     port: u16,
     max_decoding_message_size: usize,
     max_encoding_message_size: usize,
+    use_tls: bool,
+    customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
 ) -> Result<FlightServiceClient<tonic::transport::channel::Channel>, BallistaError> {
-    let addr = format!("http://{host}:{port}");
+    let scheme = if use_tls { "https" } else { "http" };
+    let addr = format!("{scheme}://{host}:{port}");
     let grpc_config = GrpcClientConfig::default();
-    let connection = create_grpc_client_connection(addr.clone(), &grpc_config)
-        .await
+
+    let mut endpoint = create_grpc_client_endpoint(addr.clone(), Some(&grpc_config))
         .map_err(|e| {
             BallistaError::GrpcConnectionError(format!(
-                "Error connecting to Ballista scheduler or executor at {addr}: {e:?}"
+                "Error creating endpoint for Ballista executor at {addr}: {e:?}"
             ))
         })?;
+
+    if let Some(ref customize) = customize_endpoint {
+        endpoint = customize.configure_endpoint(endpoint).map_err(|e| {
+            BallistaError::GrpcConnectionError(format!(
+                "Error customizing endpoint for Ballista executor at {addr}: {e}"
+            ))
+        })?;
+    }
+
+    let connection = endpoint.connect().await.map_err(|e| {
+        BallistaError::GrpcConnectionError(format!(
+            "Error connecting to Ballista executor at {addr}: {e:?}"
+        ))
+    })?;
+
     let flight_client = FlightServiceClient::new(connection)
         .max_decoding_message_size(max_decoding_message_size)
         .max_encoding_message_size(max_encoding_message_size);

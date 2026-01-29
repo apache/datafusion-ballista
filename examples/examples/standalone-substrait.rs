@@ -406,9 +406,10 @@ impl SubstraitSchedulerClient {
         let host = metadata.host.as_str();
         let port = metadata.port as u16;
 
-        let mut ballista_client = BallistaClient::try_new(host, port, max_message_size)
-            .await
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+        let mut ballista_client =
+            BallistaClient::try_new(host, port, max_message_size, false, None)
+                .await
+                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
         ballista_client
             .fetch_partition(

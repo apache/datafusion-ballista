@@ -27,6 +27,7 @@
 
 use crate::SessionBuilder;
 use crate::cluster::DistributionPolicy;
+use ballista_core::extension::EndpointOverrideFn;
 use ballista_core::{ConfigProducer, config::TaskSchedulingPolicy};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
@@ -240,6 +241,10 @@ pub struct SchedulerConfig {
     pub override_logical_codec: Option<Arc<dyn LogicalExtensionCodec>>,
     /// [PhysicalExtensionCodec] override option
     pub override_physical_codec: Option<Arc<dyn PhysicalExtensionCodec>>,
+    /// Override function for customizing gRPC client endpoints before they are used
+    pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
+    /// Whether to use TLS when connecting to executors (for flight proxy)
+    pub use_tls: bool,
 }
 
 impl Default for SchedulerConfig {
@@ -266,6 +271,8 @@ impl Default for SchedulerConfig {
             override_session_builder: None,
             override_logical_codec: None,
             override_physical_codec: None,
+            override_create_grpc_client_endpoint: None,
+            use_tls: false,
         }
     }
 }
@@ -385,6 +392,22 @@ impl SchedulerConfig {
         self.override_session_builder = Some(override_session_builder);
         self
     }
+
+    /// Set a custom override function for creating gRPC client endpoints.
+    /// This allows configuring TLS, timeouts, and other transport settings.
+    pub fn with_override_create_grpc_client_endpoint(
+        mut self,
+        override_fn: EndpointOverrideFn,
+    ) -> Self {
+        self.override_create_grpc_client_endpoint = Some(override_fn);
+        self
+    }
+
+    /// Sets whether TLS should be used when connecting to executors (for flight proxy).
+    pub fn with_use_tls(mut self, use_tls: bool) -> Self {
+        self.use_tls = use_tls;
+        self
+    }
 }
 
 /// Policy of distributing tasks to available executor slots
@@ -495,6 +518,8 @@ impl TryFrom<Config> for SchedulerConfig {
             override_logical_codec: None,
             override_physical_codec: None,
             override_session_builder: None,
+            override_create_grpc_client_endpoint: None,
+            use_tls: false,
         };
 
         Ok(config)

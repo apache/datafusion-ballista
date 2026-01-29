@@ -17,6 +17,7 @@
 
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
+use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
 use crate::serde::protobuf::get_job_status_result::FlightProxy;
 use crate::serde::protobuf::{
     ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
@@ -24,7 +25,7 @@ use crate::serde::protobuf::{
     scheduler_grpc_client::SchedulerGrpcClient,
 };
 use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
-use crate::utils::{GrpcClientConfig, create_grpc_client_connection};
+use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
@@ -40,6 +41,7 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     SendableRecordBatchStream, Statistics,
 };
+use datafusion::prelude::SessionConfig;
 use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
@@ -243,6 +245,8 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         let metric_total_bytes =
             MetricBuilder::new(&self.metrics).counter("transferred_bytes", partition);
 
+        let session_config = context.session_config().clone();
+
         let stream = futures::stream::once(
             execute_query(
                 self.scheduler_url.clone(),
@@ -252,6 +256,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                 GrpcClientConfig::from(&self.config),
                 Arc::new(self.metrics.clone()),
                 partition,
+                session_config,
             )
             .map_err(|e| ArrowError::ExternalError(Box::new(e))),
         )
@@ -283,6 +288,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_query(
     scheduler_url: String,
     session_id: String,
@@ -291,19 +297,39 @@ async fn execute_query(
     grpc_config: GrpcClientConfig,
     metrics: Arc<ExecutionPlanMetricsSet>,
     partition: usize,
+    session_config: SessionConfig,
 ) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
+    let grpc_interceptor = session_config.ballista_grpc_interceptor();
+    let customize_endpoint =
+        session_config.ballista_override_create_grpc_client_endpoint();
+    let use_tls = session_config.ballista_use_tls();
+
     // Capture query submission time for total_query_time_ms
     let query_start_time = std::time::Instant::now();
 
     info!("Connecting to Ballista scheduler at {scheduler_url}");
     // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
-    let connection = create_grpc_client_connection(scheduler_url.clone(), &grpc_config)
+    let mut endpoint =
+        create_grpc_client_endpoint(scheduler_url.clone(), Some(&grpc_config))
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+
+    if let Some(ref customize) = customize_endpoint {
+        endpoint = customize
+            .configure_endpoint(endpoint)
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+    }
+
+    let connection = endpoint
+        .connect()
         .await
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
-    let mut scheduler = SchedulerGrpcClient::new(connection)
-        .max_encoding_message_size(max_message_size)
-        .max_decoding_message_size(max_message_size);
+    let mut scheduler = SchedulerGrpcClient::with_interceptor(
+        connection,
+        grpc_interceptor.as_ref().clone(),
+    )
+    .max_encoding_message_size(max_message_size)
+    .max_decoding_message_size(max_message_size);
 
     let query_result = scheduler
         .execute_query(query)
@@ -414,6 +440,8 @@ async fn execute_query(
                         true,
                         scheduler_url.clone(),
                         flight_proxy.clone(),
+                        customize_endpoint.clone(),
+                        use_tls,
                     )
                     .map_err(|e| ArrowError::ExternalError(Box::new(e)));
 
@@ -477,6 +505,8 @@ async fn fetch_partition(
     flight_transport: bool,
     scheduler_url: String,
     flight_proxy: Option<FlightProxy>,
+    customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+    use_tls: bool,
 ) -> Result<SendableRecordBatchStream> {
     let metadata = location.executor_meta.ok_or_else(|| {
         DataFusionError::Internal("Received empty executor metadata".to_owned())
@@ -491,10 +521,15 @@ async fn fetch_partition(
     let (client_host, client_port) =
         get_client_host_port(&metadata, &scheduler_url, &flight_proxy)?;
 
-    let mut ballista_client =
-        BallistaClient::try_new(client_host.as_str(), client_port, max_message_size)
-            .await
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+    let mut ballista_client = BallistaClient::try_new(
+        client_host.as_str(),
+        client_port,
+        max_message_size,
+        use_tls,
+        customize_endpoint,
+    )
+    .await
+    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
     ballista_client
         .fetch_partition(
             &metadata.id,

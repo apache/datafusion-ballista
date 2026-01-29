@@ -36,7 +36,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{fs::File, pin::Pin};
 use tonic::codegen::StdError;
-use tonic::transport::{Channel, Error, Server};
+use tonic::transport::{Channel, Endpoint, Error, Server};
 
 /// Configuration for gRPC client connections.
 ///
@@ -222,6 +222,34 @@ where
     endpoint.connect().await
 }
 
+/// Creates a gRPC client endpoint (without connecting) for customization.
+/// This is typically used when TLS or other custom configuration is needed.
+/// If `config` is provided, standard timeout and keepalive settings are applied.
+pub fn create_grpc_client_endpoint<D>(
+    dst: D,
+    config: Option<&GrpcClientConfig>,
+) -> std::result::Result<Endpoint, Error>
+where
+    D: std::convert::TryInto<tonic::transport::Endpoint>,
+    D::Error: Into<StdError>,
+{
+    let endpoint = tonic::transport::Endpoint::new(dst)?;
+    if let Some(config) = config {
+        Ok(endpoint
+            .connect_timeout(Duration::from_secs(config.connect_timeout_seconds))
+            .timeout(Duration::from_secs(config.timeout_seconds))
+            .tcp_nodelay(true)
+            .tcp_keepalive(Some(Duration::from_secs(config.tcp_keepalive_seconds)))
+            .http2_keep_alive_interval(Duration::from_secs(
+                config.http2_keepalive_interval_seconds,
+            ))
+            .keep_alive_timeout(Duration::from_secs(20))
+            .keep_alive_while_idle(true))
+    } else {
+        Ok(endpoint)
+    }
+}
+
 /// Creates a gRPC server builder with the specified configuration.
 pub fn create_grpc_server(config: &GrpcServerConfig) -> Server {
     Server::builder()
@@ -260,4 +288,51 @@ pub fn get_time_before(interval_seconds: u64) -> u64 {
         .checked_sub(Duration::from_secs(interval_seconds))
         .unwrap_or_else(|| Duration::from_secs(0))
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_grpc_client_config_from_ballista_config() {
+        let ballista_config = BallistaConfig::default();
+        let grpc_config = GrpcClientConfig::from(&ballista_config);
+
+        // Verify the conversion picks up the right values
+        assert_eq!(
+            grpc_config.connect_timeout_seconds,
+            ballista_config.default_grpc_client_connect_timeout_seconds() as u64
+        );
+        assert_eq!(
+            grpc_config.timeout_seconds,
+            ballista_config.default_grpc_client_timeout_seconds() as u64
+        );
+        assert_eq!(
+            grpc_config.tcp_keepalive_seconds,
+            ballista_config.default_grpc_client_tcp_keepalive_seconds() as u64
+        );
+        assert_eq!(
+            grpc_config.http2_keepalive_interval_seconds,
+            ballista_config.default_grpc_client_http2_keepalive_interval_seconds() as u64
+        );
+    }
+
+    #[test]
+    fn test_create_grpc_client_endpoint_with_config() {
+        let config = GrpcClientConfig {
+            connect_timeout_seconds: 10,
+            timeout_seconds: 30,
+            tcp_keepalive_seconds: 1800,
+            http2_keepalive_interval_seconds: 150,
+        };
+        let result = create_grpc_client_endpoint("http://localhost:50051", Some(&config));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_create_grpc_client_endpoint_invalid_url() {
+        let result = create_grpc_client_endpoint("not a valid url", None);
+        assert!(result.is_err());
+    }
 }

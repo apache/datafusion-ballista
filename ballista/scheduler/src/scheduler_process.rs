@@ -20,6 +20,7 @@ use crate::flight_proxy_service::BallistaFlightProxyService;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::BALLISTA_VERSION;
 use ballista_core::error::BallistaError;
+use ballista_core::extension::BallistaConfigGrpcEndpoint;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpcServer;
 use ballista_core::serde::{
     BallistaCodec, BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec,
@@ -102,9 +103,17 @@ pub async fn start_grpc_service<
     match &config.advertise_flight_sql_endpoint {
         Some(proxy) if proxy.is_empty() => {
             info!("Adding embedded flight proxy service on scheduler");
+            // Wrap the endpoint override function in BallistaConfigGrpcEndpoint
+            let customize_endpoint = config
+                .override_create_grpc_client_endpoint
+                .clone()
+                .map(|f| Arc::new(BallistaConfigGrpcEndpoint::new(f)));
+
             let flight_proxy = FlightServiceServer::new(BallistaFlightProxyService::new(
                 config.grpc_server_max_encoding_message_size as usize,
                 config.grpc_server_max_decoding_message_size as usize,
+                config.use_tls,
+                customize_endpoint,
             ))
             .max_decoding_message_size(
                 config.grpc_server_max_decoding_message_size as usize,
