@@ -24,6 +24,7 @@ use crate::config::{
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
 use crate::serde::{BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec};
+use datafusion::common::DFSchemaRef;
 use datafusion::execution::context::{QueryPlanner, SessionConfig, SessionState};
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::session_state::{CacheFactory, SessionStateBuilder};
@@ -31,8 +32,9 @@ use datafusion::functions::all_default_functions;
 use datafusion::functions_aggregate::all_default_aggregate_functions;
 use datafusion::functions_nested::all_default_nested_functions;
 use datafusion::functions_window::all_default_window_functions;
-use datafusion::logical_expr::LogicalPlan;
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
+use datafusion::logical_expr::{Extension, LogicalPlan, UserDefinedLogicalNodeCore};
+use datafusion::prelude::Expr;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::protobuf::LogicalPlanNode;
@@ -44,6 +46,7 @@ use tonic::metadata::MetadataMap;
 use tonic::service::Interceptor;
 use tonic::transport::Endpoint;
 use tonic::{Request, Status};
+use uuid::Uuid;
 
 /// Type alias for the endpoint override function used in gRPC client configuration
 pub type EndpointOverrideFn =
@@ -735,15 +738,72 @@ impl BallistaCacheFactory {
 impl CacheFactory for BallistaCacheFactory {
     fn create(
         &self,
-        _plan: LogicalPlan,
-        _session_state: &SessionState,
+        plan: LogicalPlan,
+        session_state: &SessionState,
     ) -> datafusion::error::Result<LogicalPlan> {
-        Err(datafusion::error::DataFusionError::Configuration(
-            "Dataframe cache is not supported with Ballista".to_string(),
-        ))
+        Ok(LogicalPlan::Extension(Extension {
+            node: Arc::new(BallistaUserDefinedLogicalNodeCore::new(
+                session_state.session_id().to_string(),
+                plan,
+            )),
+        }))
     }
 }
 
+#[derive(PartialEq, Eq, PartialOrd, Hash, Debug)]
+struct BallistaUserDefinedLogicalNodeCore {
+    cache_id: String,
+    session_id: String,
+    input: LogicalPlan,
+    exprs: Vec<Expr>,
+}
+
+impl BallistaUserDefinedLogicalNodeCore {
+    fn new(session_id: String, input: LogicalPlan) -> Self {
+        let cache_id = Uuid::new_v4().to_string();
+        Self {
+            cache_id,
+            session_id,
+            input,
+            exprs: vec![],
+        }
+    }
+}
+
+impl UserDefinedLogicalNodeCore for BallistaUserDefinedLogicalNodeCore {
+    fn name(&self) -> &str {
+        "BallistaUserDefinedLogicalNodeCore"
+    }
+
+    fn inputs(&self) -> Vec<&LogicalPlan> {
+        vec![&self.input]
+    }
+
+    fn schema(&self) -> &DFSchemaRef {
+        self.input.schema()
+    }
+
+    fn expressions(&self) -> Vec<Expr> {
+        self.exprs.clone()
+    }
+
+    fn fmt_for_explain(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", UserDefinedLogicalNodeCore::name(self))
+    }
+
+    fn with_exprs_and_inputs(
+        &self,
+        exprs: Vec<datafusion::prelude::Expr>,
+        _inputs: Vec<LogicalPlan>,
+    ) -> datafusion::error::Result<Self> {
+        Ok(Self {
+            cache_id: self.cache_id.clone(),
+            session_id: self.session_id.clone(),
+            input: self.input.clone(),
+            exprs,
+        })
+    }
+}
 #[cfg(test)]
 mod test {
     use datafusion::{

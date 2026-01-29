@@ -148,19 +148,21 @@ mod unsupported {
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
     #[tokio::test]
-    async fn should_support_caching_data_frame_without_error(
+    async fn should_support_on_cache_collect(
         #[future(awt)]
         #[case]
         ctx: SessionContext,
     ) -> datafusion::error::Result<()> {
-        let result = ctx.sql("SELECT 1").await?.cache().await;
+        let cached_df = ctx.sql("SELECT 1").await?.cache().await?;
+
+        // Collect fails because extension node can't be serialized
+        let result = cached_df.collect().await;
 
         assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
         assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Dataframe cache is not supported with Ballista")
+            err_msg.contains("LogicalExtensionCodec is not provided"),
+            "Expected codec error, got: {err_msg}"
         );
 
         Ok(())
