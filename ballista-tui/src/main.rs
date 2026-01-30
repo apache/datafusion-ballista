@@ -3,6 +3,7 @@ pub mod domain;
 pub mod error;
 pub mod event;
 pub mod http_client;
+pub mod infrastructure;
 pub mod logging;
 pub mod tui;
 pub mod ui;
@@ -13,7 +14,7 @@ use event::{Event, EventHandler};
 use std::time::Duration;
 use tui::TuiWrapper;
 
-use crate::{error::TuiError, event::UiData};
+use crate::{error::TuiError, event::UiData, infrastructure::Settings};
 
 pub type TuiResult<OK> = Result<OK, TuiError>;
 
@@ -23,9 +24,10 @@ async fn main() -> Result<()> {
     tracing::info!("Starting the Ballista TUI application");
 
     color_eyre::install()?;
+    let config = Settings::new()?;
 
     let mut tui_wrapper = TuiWrapper::new()?;
-    let mut app = App::new();
+    let mut app = App::new(config)?;
     let mut events = EventHandler::new(Duration::from_millis(2000));
 
     let (app_tx, mut app_rx) = tokio::sync::mpsc::unbounded_channel();

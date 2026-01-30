@@ -1,4 +1,4 @@
-use crate::{domain::DashboardData, event::Event};
+use crate::{domain::DashboardData, event::Event, infrastructure::Settings};
 use color_eyre::eyre::{Ok, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::{sync::Arc, time::Instant};
@@ -32,8 +32,8 @@ pub struct App {
 }
 
 impl App {
-    pub fn new() -> Self {
-        Self {
+    pub fn new(config: Settings) -> Result<Self> {
+        Ok(Self {
             current_view: Views::Dashboard,
             should_quit: false,
             event_tx: None,
@@ -42,8 +42,8 @@ impl App {
             search_query: String::new(),
             show_help: false,
             dashboard_data: DashboardData::builder().build(),
-            http_client: Arc::new(HttpClient::new("http://localhost:50050".into())),
-        }
+            http_client: Arc::new(HttpClient::new(config)?),
+        })
     }
 
     pub fn set_event_tx(&mut self, tx: UnboundedSender<Event>) {
@@ -119,11 +119,5 @@ impl App {
             _ => {}
         }
         Ok(())
-    }
-}
-
-impl Default for App {
-    fn default() -> Self {
-        Self::new()
     }
 }

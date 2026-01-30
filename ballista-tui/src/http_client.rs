@@ -1,19 +1,29 @@
-use reqwest::Response;
+use std::time::Duration;
+
+use color_eyre::eyre::Result;
+use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 
 use crate::{
     TuiResult,
     domain::{ExecutorsData, SchedulerState},
     error::TuiError,
+    infrastructure::Settings,
 };
 
 pub struct HttpClient {
     scheduler_url: String,
+    client: reqwest::Client,
 }
 
 impl HttpClient {
-    pub fn new(scheduler_url: String) -> Self {
-        Self { scheduler_url }
+    pub fn new(config: Settings) -> Result<Self> {
+        Ok(Self {
+            scheduler_url: config.scheduler.url,
+            client: Client::builder()
+                .timeout(Duration::from_millis(config.http.timeout))
+                .build()?,
+        })
     }
 
     pub fn scheduler_url(&self) -> &str {
@@ -45,7 +55,13 @@ impl HttpClient {
 
     async fn get(&self, url: &str) -> TuiResult<Response> {
         tracing::trace!("Going to make a request to {}", &url);
-        reqwest::get(url).await.map_err(TuiError::Reqwest)
+        self.client
+            .get(url)
+            .send()
+            .await
+            .inspect(|data| tracing::trace!("Got: {data:?}"))
+            .inspect_err(|err| tracing::error!("The http GET request failed: {err:?}"))
+            .map_err(TuiError::Reqwest)
     }
 
     fn url(&self, path: &str) -> String {
