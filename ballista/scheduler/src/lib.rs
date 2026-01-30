@@ -26,6 +26,8 @@ pub mod cluster;
 pub mod config;
 /// Display utilities for execution plans and state.
 pub mod display;
+/// Job splitting rules for dependent jobs.
+pub mod job_split_rules;
 /// Metrics collection and reporting.
 pub mod metrics;
 /// Physical query plan optimizers.

@@ -39,6 +39,8 @@ use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata, PartitionI
 use ballista_core::utils::{default_config_producer, default_session_builder};
 use ballista_core::{ConfigProducer, consistent_hash};
 
+use datafusion::logical_expr::LogicalPlan;
+
 use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
 
 use crate::config::{SchedulerConfig, TaskDistributionPolicy};
@@ -283,6 +285,39 @@ pub type ClusterStateEventStream = Pin<Box<dyn Stream<Item = ClusterStateEvent> 
 /// This stream contains all events received by schedulers sharing a `ClusterState`.
 pub type JobStateEventStream = Pin<Box<dyn Stream<Item = JobStateEvent> + Send>>;
 
+/// Information about a pending job waiting for dependencies to complete.
+#[derive(Clone)]
+pub struct PendingJobInfo {
+    /// Job ID
+    pub job_id: String,
+    /// Job name
+    pub job_name: String,
+    /// Set of parent job IDs this job depends on
+    pub parent_jobs: HashSet<String>,
+    /// Number of parent jobs that haven't completed yet
+    pub pending_parent_count: usize,
+    /// Logical plan for the job (will be converted to physical plan when activated)
+    pub plan: Arc<LogicalPlan>,
+    /// Session configuration
+    pub session_config: Arc<SessionConfig>,
+    /// Session context for the job
+    pub session_ctx: Arc<SessionContext>,
+    /// Timestamp when the job was registered
+    pub queued_at: u64,
+}
+
+impl std::fmt::Debug for PendingJobInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingJobInfo")
+            .field("job_id", &self.job_id)
+            .field("job_name", &self.job_name)
+            .field("parent_jobs", &self.parent_jobs)
+            .field("pending_parent_count", &self.pending_parent_count)
+            .field("queued_at", &self.queued_at)
+            .finish()
+    }
+}
+
 /// Trait for persisting state related to executing jobs.
 ///
 /// Implementations handle job lifecycle, execution graphs, and session management.
@@ -347,6 +382,28 @@ pub trait JobState: Send + Sync {
 
     /// Produces a session configuration for new sessions.
     fn produce_config(&self) -> SessionConfig;
+
+    /// Accepts a pending job that is waiting for dependencies.
+    ///
+    /// The job will be activated when all parent jobs complete.
+    fn accept_pending_job(&self, info: PendingJobInfo) -> Result<()>;
+
+    /// Resolves dependencies for all pending jobs when a job completes.
+    ///
+    /// Returns a list of (job_id, PendingJobInfo) for jobs that are ready to activate.
+    fn resolve_pending_jobs(
+        &self,
+        completed_job_id: &str,
+    ) -> Result<Vec<(String, PendingJobInfo)>>;
+
+    /// Marks all pending jobs depending on a failed job as failed.
+    ///
+    /// Returns the list of cascaded failed job IDs.
+    async fn cascade_fail_pending_jobs(
+        &self,
+        failed_job_id: &str,
+        reason: String,
+    ) -> Result<Vec<String>>;
 }
 
 pub(crate) async fn bind_task_bias(

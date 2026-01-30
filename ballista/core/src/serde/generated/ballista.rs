@@ -963,6 +963,13 @@ pub struct QueuedJob {
     #[prost(uint64, tag = "1")]
     pub queued_at: u64,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PendingJob {
+    #[prost(uint64, tag = "1")]
+    pub queued_at: u64,
+    #[prost(string, repeated, tag = "2")]
+    pub pending_on: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
 /// TODO: add progress report
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RunningJob {
@@ -990,7 +997,7 @@ pub struct JobStatus {
     pub job_id: ::prost::alloc::string::String,
     #[prost(string, tag = "6")]
     pub job_name: ::prost::alloc::string::String,
-    #[prost(oneof = "job_status::Status", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "job_status::Status", tags = "1, 2, 3, 4, 7")]
     pub status: ::core::option::Option<job_status::Status>,
 }
 /// Nested message and enum types in `JobStatus`.
@@ -1005,6 +1012,8 @@ pub mod job_status {
         Failed(super::FailedJob),
         #[prost(message, tag = "4")]
         Successful(super::SuccessfulJob),
+        #[prost(message, tag = "7")]
+        Pending(super::PendingJob),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
