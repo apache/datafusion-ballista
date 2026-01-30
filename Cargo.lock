@@ -940,6 +940,7 @@ version = "52.0.0"
 dependencies = [
  "ballista",
  "ballista-core",
+ "cfg-if",
  "datafusion",
  "datafusion-proto",
  "env_logger",

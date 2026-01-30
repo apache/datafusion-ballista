@@ -29,12 +29,12 @@ publish = false
 [features]
 ci = []
 default = ["mimalloc"]
-lint = [] # custom feature flag to allow for clippy "--all-features"
 snmalloc = ["snmalloc-rs"]
 
 [dependencies]
 ballista = { path = "../ballista/client", version = "52.0.0" }
 ballista-core = { path = "../ballista/core", version = "52.0.0" }
+cfg-if = "1.0.4"
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 env_logger = { workspace = true }
