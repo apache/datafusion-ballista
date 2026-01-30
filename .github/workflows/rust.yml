@@ -237,6 +237,7 @@ jobs:
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
+          cmake: true
           rust-version: ${{ matrix.rust }}
       - name: Install Clippy
         run: |
