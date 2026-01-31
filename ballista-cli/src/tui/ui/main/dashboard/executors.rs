@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
@@ -36,9 +36,6 @@ pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
     match &app.dashboard_data.executors_data {
         Some(executors) => {
             if executors.is_empty() {
-                // let paragraph = Paragraph::new("No live executors")
-                //     .block(block)
-                //     .alignment(Alignment::Center);
                 f.render_widget(no_live_executors(block), area);
                 return;
             }
@@ -46,9 +43,10 @@ pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
             let items: Vec<ListItem> = executors
                 .iter()
                 .map(|ex| {
-                    let datetime = DateTime::from_timestamp_millis(ex.last_seen)
-                        .unwrap_or_else(Utc::now);
-                    let last_seen = datetime.format("%Y-%m-%d %H:%M:%S UTC").to_string();
+                    let datetime = DateTime::from_timestamp_millis(ex.last_seen);
+                    let last_seen = datetime
+                        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                        .unwrap_or_else(|| "Invalid Date".to_string());
 
                     let line = format!(
                         "{}:{} ({}) — Last seen: {}",
@@ -62,10 +60,6 @@ pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
             f.render_widget(list, area);
         }
         None => {
-            // let paragraph = Paragraph::new("No live executors")
-            //     .block(block)
-            //     .alignment(Alignment::Center);
-            // f.render_widget(paragraph, area);
             f.render_widget(no_live_executors(block), area);
         }
     };
