@@ -57,7 +57,6 @@ pub async fn tui_main() -> Result<()> {
                 match maybe_event {
                     Some(Event::Key(key)) => app.on_key(key).await?,
                     Some(Event::Tick) => app.on_tick().await,
-                    Some(Event::Resize(_, _)) => {},
                     Some(Event::DataLoaded { .. }) => {},
                     None => break,
                 }

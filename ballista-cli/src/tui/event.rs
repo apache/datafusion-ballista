@@ -30,7 +30,6 @@ pub enum UiData {
 pub enum Event {
     Key(KeyEvent),
     Tick,
-    Resize(u16, u16),
     DataLoaded { data: UiData },
 }
 
@@ -42,7 +41,6 @@ pub struct EventHandler {
 impl EventHandler {
     pub fn new(tick_rate: std::time::Duration) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        let _tx = tx.clone();
 
         tokio::spawn(async move {
             let mut reader = EventStream::new();
@@ -64,11 +62,6 @@ impl EventHandler {
                                 if key.kind == crossterm::event::KeyEventKind::Press
                                     && tx.send(Event::Key(key)).is_err()
                                 {
-                                    break;
-                                }
-                            }
-                            crossterm::event::Event::Resize(x, y) => {
-                                if tx.send(Event::Resize(x, y)).is_err() {
                                     break;
                                 }
                             }
