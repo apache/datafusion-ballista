@@ -45,7 +45,9 @@ http:
 
 impl Settings {
     pub(crate) fn new() -> Result<Self, ConfigError> {
-        let config_dir = dirs::config_dir().unwrap().join("ballista-tui");
+        let config_dir = dirs::config_dir()
+            .unwrap_or_else(|| dirs::home_dir().unwrap().join(".config"))
+            .join("ballista-tui");
 
         let s = Config::builder()
             // Start off by merging in the "default" configuration file
