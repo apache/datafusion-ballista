@@ -20,7 +20,8 @@ fn main() -> Result<(), String> {
     println!("cargo:rerun-if-changed=proto/keda.proto");
 
     #[cfg(feature = "keda-scaler")]
-    tonic_build::configure()
+    tonic_prost_build::configure()
+        .server_attribute(".", "#[allow(missing_docs)]")
         .compile_protos(&["proto/keda.proto"], &["proto"])
         .map_err(|e| format!("protobuf compilation failed: {e}"))?;
 
