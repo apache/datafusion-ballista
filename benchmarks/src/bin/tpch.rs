@@ -67,15 +67,9 @@ use structopt::StructOpt;
 #[cfg(test)]
 use tokio::task::JoinHandle;
 
-cfg_if::cfg_if! {
-    if #[cfg(feature = "mimalloc")] {
-        #[global_allocator]
-        static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
-    } else if #[cfg(feature = "snmalloc")] {
-        #[global_allocator]
-        static ALLOC: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
-    }
-}
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[derive(Debug, StructOpt, Clone)]
 struct BallistaBenchmarkOpt {
