@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -27,11 +27,12 @@ use crate::tui::app::App;
 pub fn render_scheduler_state(f: &mut Frame, area: Rect, app: &App) {
     let (started, version) = match &app.dashboard_data.scheduler_state {
         Some(state) => {
-            let datetime =
-                DateTime::from_timestamp_millis(state.started).unwrap_or_else(Utc::now);
-            (datetime, state.version.clone())
+            let started = DateTime::from_timestamp_millis(state.started)
+                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                .unwrap_or_else(|| "Invalid Date".to_string());
+            (started, state.version.clone())
         }
-        None => (Utc::now(), "unknown".to_string()),
+        None => ("-".to_string(), "unknown".to_string()),
     };
 
     let vertical_chunks = Layout::default()
@@ -58,8 +59,7 @@ pub fn render_scheduler_state(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(scheduler_url_paragraph, chunks[0]);
 
     let started_block = Block::default().borders(Borders::ALL).title("Started at");
-    let started_text = started.format("%Y-%m-%d %H:%M:%S UTC").to_string();
-    let started_paragraph = Paragraph::new(started_text)
+    let started_paragraph = Paragraph::new(started)
         .block(started_block)
         .alignment(Alignment::Left);
     f.render_widget(started_paragraph, chunks[1]);
