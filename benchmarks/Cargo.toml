@@ -34,6 +34,7 @@ snmalloc = ["snmalloc-rs"]
 [dependencies]
 ballista = { path = "../ballista/client", version = "52.0.0" }
 ballista-core = { path = "../ballista/core", version = "52.0.0" }
+criterion = { version = "0.5", features = ["html_reports"] }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 env_logger = { workspace = true }
@@ -53,3 +54,7 @@ tokio = { version = "^1.44", features = [
 ] }
 
 [dev-dependencies]
+
+[[bench]]
+name = "sort_shuffle"
+harness = false
