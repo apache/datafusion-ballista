@@ -61,7 +61,7 @@ impl App {
     }
 
     pub async fn on_tick(&mut self) {
-        self.load_dashboard_data();
+        self.load_dashboard_data().await;
     }
 
     pub async fn on_key(&mut self, key: KeyEvent) -> Result<()> {

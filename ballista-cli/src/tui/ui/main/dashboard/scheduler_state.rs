@@ -45,7 +45,7 @@ pub fn render_scheduler_state(f: &mut Frame, area: Rect, app: &App) {
         .constraints([
             Constraint::Percentage(13),
             Constraint::Percentage(13),
-            Constraint::Percentage(5),
+            Constraint::Percentage(10),
             Constraint::Min(0),
         ])
         .split(vertical_chunks[0]);
