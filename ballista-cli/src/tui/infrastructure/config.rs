@@ -60,7 +60,7 @@ impl Settings {
             // Add in settings from the environment (with a prefix of BALLISTA_TUI_)
             // E.g. `BALLISTA_TUI_SCHEDULER_URL=http://localhost:50051 ./target/app`
             // would set the scheduler url key
-            .add_source(Environment::with_prefix("ballista-tui"))
+            .add_source(Environment::with_prefix("BALLISTA_TUI"))
             .build()?;
 
         s.try_deserialize()
