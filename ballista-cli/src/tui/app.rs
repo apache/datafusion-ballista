@@ -61,7 +61,7 @@ impl App {
     }
 
     pub async fn on_tick(&mut self) {
-        let _ = crate::tui::ui::load_dashboard_data(&self).await;
+        self.load_dashboard_data();
     }
 
     pub async fn on_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -86,7 +86,7 @@ impl App {
             // }
             KeyCode::Char('d') => {
                 self.current_view = Views::Dashboard;
-                let _ = crate::tui::ui::load_dashboard_data(self).await;
+                self.load_dashboard_data().await;
             }
             KeyCode::Char('j') => {
                 self.current_view = Views::Jobs;
@@ -97,5 +97,11 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    async fn load_dashboard_data(&mut self) {
+        if let Err(e) = crate::tui::ui::load_dashboard_data(&self).await {
+            tracing::error!("Failed to load dashboard data on tick: {:?}", e);
+        }
     }
 }
