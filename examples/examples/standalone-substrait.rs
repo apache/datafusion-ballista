@@ -320,6 +320,16 @@ impl SubstraitSchedulerClient {
                     wait_future.await;
                     prev_status = status;
                 }
+                Some(job_status::Status::Pending(ref pending)) => {
+                    if has_status_change {
+                        info!(
+                            "Job {job_id} is pending (waiting for {} parent job(s))...",
+                            pending.pending_on.len()
+                        );
+                    }
+                    wait_future.await;
+                    prev_status = status;
+                }
                 Some(job_status::Status::Running(_)) => {
                     if has_status_change {
                         info!("Job {job_id} is running...");

@@ -298,10 +298,10 @@ pub struct PendingJobInfo {
     pub pending_parent_count: usize,
     /// Logical plan for the job (will be converted to physical plan when activated)
     pub plan: Arc<LogicalPlan>,
+    /// Session ID for the job
+    pub session_id: String,
     /// Session configuration
     pub session_config: Arc<SessionConfig>,
-    /// Session context for the job
-    pub session_ctx: Arc<SessionContext>,
     /// Timestamp when the job was registered
     pub queued_at: u64,
 }
@@ -313,6 +313,7 @@ impl std::fmt::Debug for PendingJobInfo {
             .field("job_name", &self.job_name)
             .field("parent_jobs", &self.parent_jobs)
             .field("pending_parent_count", &self.pending_parent_count)
+            .field("session_id", &self.session_id)
             .field("queued_at", &self.queued_at)
             .finish()
     }

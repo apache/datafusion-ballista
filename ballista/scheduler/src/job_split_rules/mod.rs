@@ -62,12 +62,9 @@ impl JobSplitRuleRegistry {
 
     /// Creates a registry with default rules
     pub fn with_defaults() -> Self {
-        let registry = Self::new();
-
         // Default rules can be registered here
         // registry.register(Arc::new(SomeRule::new()));
-
-        registry
+        Self::new()
     }
 
     /// Registers a new rule
@@ -146,6 +143,6 @@ mod tests {
     #[test]
     fn test_default_registry() {
         let registry = JobSplitRuleRegistry::with_defaults();
-        assert!(registry.rule_count() > 0);
+        assert!(registry.rule_count() == 0);
     }
 }

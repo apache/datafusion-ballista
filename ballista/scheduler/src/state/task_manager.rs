@@ -300,11 +300,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     ///
     /// The job will be in "pending" state until all parent jobs complete.
     /// Once all dependencies are satisfied, the job will be automatically submitted.
+    #[allow(clippy::too_many_arguments)]
     pub async fn register_pending_job(
         &self,
         job_id: String,
         job_name: String,
-        _session_id: String,
+        session_id: String,
         plan: Arc<LogicalPlan>,
         session_config: Arc<SessionConfig>,
         parent_jobs: Vec<String>,
@@ -324,10 +325,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             parent_jobs: parent_jobs.into_iter().collect(),
             pending_parent_count: pending_count,
             plan,
-            session_config: session_config.clone(),
-            session_ctx: Arc::new(datafusion::prelude::SessionContext::new_with_config(
-                (*session_config).clone(),
-            )),
+            session_id,
+            session_config,
             queued_at,
         };
 
