@@ -256,6 +256,7 @@ impl SortShuffleWriterExec {
                         &mut spill_manager,
                         &schema,
                         config.spill_memory_threshold() / 2,
+                        config.batch_size,
                     )?;
                     timer.done();
                 }
@@ -330,6 +331,7 @@ fn spill_largest_buffers(
     spill_manager: &mut SpillManager,
     schema: &SchemaRef,
     target_memory: usize,
+    batch_size: usize,
 ) -> Result<()> {
     loop {
         let total_memory: usize = buffers.iter().map(|b| b.memory_used()).sum();
@@ -347,7 +349,7 @@ fn spill_largest_buffers(
         match largest_idx {
             Some(idx) if buffers[idx].memory_used() > 0 => {
                 let partition_id = buffers[idx].partition_id();
-                let batches = buffers[idx].drain();
+                let batches = buffers[idx].drain_coalesced(batch_size);
                 spill_manager
                     .spill(partition_id, batches, schema)
                     .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
@@ -424,8 +426,8 @@ fn finalize_output(
             }
         }
 
-        // Then write remaining buffered data
-        let buffered_batches = buffer.take_batches();
+        // Then write remaining buffered data (coalesced)
+        let buffered_batches = buffer.take_batches_coalesced(config.batch_size);
         for batch in buffered_batches {
             partition_rows += batch.num_rows() as u64;
             partition_bytes += batch.get_array_memory_size() as u64;

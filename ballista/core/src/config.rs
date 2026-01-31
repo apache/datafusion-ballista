@@ -69,6 +69,9 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT: &str =
 /// Configuration key for sort shuffle spill threshold (0.0-1.0).
 pub const BALLISTA_SHUFFLE_SORT_BASED_SPILL_THRESHOLD: &str =
     "ballista.shuffle.sort_based.spill_threshold";
+/// Configuration key for sort shuffle target batch size in rows.
+pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
+    "ballista.shuffle.sort_based.batch_size";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -129,7 +132,11 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_SPILL_THRESHOLD.to_string(),
                          "Spill threshold as decimal fraction (0.0-1.0) of memory limit".to_string(),
                          DataType::Utf8,
-                         Some("0.8".to_string()))
+                         Some("0.8".to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE.to_string(),
+                         "Target batch size in rows for coalescing small batches in sort shuffle".to_string(),
+                         DataType::UInt64,
+                         Some((8192).to_string()))
     ];
     entries
         .into_iter()
@@ -314,6 +321,11 @@ impl BallistaConfig {
     /// Returns the spill threshold for sort-based shuffle (0.0-1.0).
     pub fn shuffle_sort_based_spill_threshold(&self) -> f64 {
         self.get_f64_setting(BALLISTA_SHUFFLE_SORT_BASED_SPILL_THRESHOLD)
+    }
+
+    /// Returns the target batch size for sort-based shuffle.
+    pub fn shuffle_sort_based_batch_size(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE)
     }
 
     fn get_usize_setting(&self, key: &str) -> usize {
