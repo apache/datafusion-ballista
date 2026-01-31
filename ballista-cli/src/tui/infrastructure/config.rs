@@ -47,7 +47,7 @@ impl Settings {
     pub(crate) fn new() -> Result<Self, ConfigError> {
         let config_dir = dirs::config_dir()
             .unwrap_or_else(|| dirs::home_dir().unwrap().join(".config"))
-            .join("ballista-tui");
+            .join("ballista");
 
         let s = Config::builder()
             // Start off by merging in the "default" configuration file
@@ -57,10 +57,10 @@ impl Settings {
                 File::with_name(&format!("{}/config", config_dir.display()))
                     .required(false),
             )
-            // Add in settings from the environment (with a prefix of BALLISTA_TUI_)
-            // E.g. `BALLISTA_TUI_SCHEDULER_URL=http://localhost:50051 ./target/app`
+            // Add in settings from the environment (with a prefix of BALLISTA_)
+            // E.g. `BALLISTA_SCHEDULER_URL=http://localhost:50051 ballista_cli`
             // would set the scheduler url key
-            .add_source(Environment::with_prefix("BALLISTA_TUI"))
+            .add_source(Environment::with_prefix("BALLISTA"))
             .build()?;
 
         s.try_deserialize()

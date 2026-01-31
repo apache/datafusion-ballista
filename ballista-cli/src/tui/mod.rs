@@ -35,7 +35,7 @@ use crate::tui::{error::TuiError, event::UiData, infrastructure::Settings};
 pub type TuiResult<OK> = Result<OK, TuiError>;
 
 pub async fn tui_main() -> Result<()> {
-    infrastructure::init_file_logger("ballista-tui", "info")?;
+    infrastructure::init_file_logger("ballista", "info")?;
     tracing::info!("Starting the Ballista TUI application");
 
     color_eyre::install()?;
