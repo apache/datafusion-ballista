@@ -1,10 +1,10 @@
-use crate::{domain::DashboardData, event::Event, infrastructure::Settings};
+use crate::tui::{domain::DashboardData, event::Event, infrastructure::Settings};
 use color_eyre::eyre::{Ok, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::{sync::Arc, time::Instant};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::http_client::HttpClient;
+use crate::tui::http_client::HttpClient;
 
 #[derive(PartialEq)]
 pub enum Views {
@@ -52,7 +52,7 @@ impl App {
     }
 
     pub async fn on_tick(&mut self) {
-        let _ = crate::ui::load_dashboard_data(&self).await;
+        let _ = crate::tui::ui::load_dashboard_data(&self).await;
     }
 
     pub async fn on_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -104,7 +104,7 @@ impl App {
             // }
             KeyCode::Char('d') => {
                 self.current_view = Views::Dashboard;
-                let _ = crate::ui::load_dashboard_data(self).await;
+                let _ = crate::tui::ui::load_dashboard_data(self).await;
             }
             KeyCode::Char('j') => {
                 self.current_view = Views::Jobs;

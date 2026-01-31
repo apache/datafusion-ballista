@@ -4,7 +4,7 @@ use color_eyre::eyre::Result;
 use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 
-use crate::{
+use crate::tui::{
     TuiResult,
     domain::{ExecutorsData, SchedulerState},
     error::TuiError,

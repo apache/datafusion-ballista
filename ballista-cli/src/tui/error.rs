@@ -1,6 +1,6 @@
 use tokio::sync::mpsc::error::SendError;
 
-use crate::event::Event;
+use crate::tui::event::Event;
 
 #[derive(Debug)]
 pub enum TuiError {

@@ -1,5 +1,3 @@
-debug: true
-
 scheduler:
   url: http://localhost:50050
 

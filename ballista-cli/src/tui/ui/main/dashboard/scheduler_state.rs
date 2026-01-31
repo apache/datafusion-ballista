@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::app::App;
+use crate::tui::app::App;
 
 pub fn render_scheduler_state(f: &mut Frame, area: Rect, app: &App) {
     let (started, version) = match &app.dashboard_data.scheduler_state {

@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 
-use crate::app::App;
+use crate::tui::app::App;
 
 pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
     fn no_live_executors(block: Block<'_>) -> Paragraph<'_> {

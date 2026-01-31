@@ -4,7 +4,6 @@ pub mod error;
 pub mod event;
 pub mod http_client;
 pub mod infrastructure;
-pub mod logging;
 pub mod tui;
 pub mod ui;
 
@@ -14,13 +13,12 @@ use event::{Event, EventHandler};
 use std::time::Duration;
 use tui::TuiWrapper;
 
-use crate::{error::TuiError, event::UiData, infrastructure::Settings};
+use crate::tui::{error::TuiError, event::UiData, infrastructure::Settings};
 
 pub type TuiResult<OK> = Result<OK, TuiError>;
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    logging::init_file_logger("ballista-tui", "info")?;
+pub async fn tui_main() -> Result<()> {
+    infrastructure::init_file_logger("ballista-tui", "info")?;
     tracing::info!("Starting the Ballista TUI application");
 
     color_eyre::install()?;
@@ -32,7 +30,7 @@ async fn main() -> Result<()> {
 
     let (app_tx, mut app_rx) = tokio::sync::mpsc::unbounded_channel();
     app.set_event_tx(app_tx);
-    let _ = crate::ui::load_dashboard_data(&app).await;
+    let _ = crate::tui::ui::load_dashboard_data(&app).await;
 
     loop {
         tui_wrapper.terminal.draw(|f| ui::render(f, &app))?;

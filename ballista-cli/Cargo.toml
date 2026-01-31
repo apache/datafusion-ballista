@@ -31,13 +31,31 @@ readme = "README.md"
 [dependencies]
 ballista = { path = "../ballista/client", version = "52.0.0", features = ["standalone"] }
 clap = { workspace = true, features = ["derive", "cargo"] }
+color-eyre = { version = "0.6.5" }
 datafusion = { workspace = true }
 datafusion-cli = { workspace = true }
 dirs = "6.0"
 env_logger = { workspace = true }
 mimalloc = { workspace = true }
 rustyline = "17.0.1"
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "parking_lot"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "parking_lot"] }
+
+# dependencies used by the TUI app
+bon = {version = "3", optional = true}
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"], optional = true }
+config = { version = "0.15.19", default-features = false, features = ["yaml"], optional = true }
+crossterm = { version = "0.29.0", features = ["event-stream"], optional = true }
+futures = { version = "0.3.31", optional = true }
+ratatui = { version = "0.30.0", optional = true }
+reqwest = { version = "0.13.1", features = ["json"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
+tracing-appender = { version = "0.2", optional = true }
 
 [features]
-
+tui = ["dep:bon", "dep:chrono", "dep:config", "dep:crossterm", "dep:futures",
+"dep:ratatui", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:tracing",
+"dep:tracing-subscriber", "dep:tracing-appender"]
+# default = ["tui"]

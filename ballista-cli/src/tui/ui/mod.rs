@@ -1,7 +1,7 @@
 mod header;
 mod main;
 
-use crate::app::{App, Views};
+use crate::tui::app::{App, Views};
 pub use main::load_dashboard_data;
 use main::{render_dashboard, render_jobs, render_metrics};
 use ratatui::{

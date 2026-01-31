@@ -1,6 +1,4 @@
-use std::env;
-
-use config::{Config, ConfigError, Environment, File};
+use config::{Config, ConfigError, Environment, File, FileFormat};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -20,13 +18,21 @@ pub struct Settings {
     pub http: HttpSettings,
 }
 
+const DEFAULT_CONFIG: &str = r#"
+scheduler:
+  url: http://localhost:50050
+
+http:
+  timeout: 2000
+"#;
+
 impl Settings {
     pub(crate) fn new() -> Result<Self, ConfigError> {
         let config_dir = dirs::config_dir().unwrap().join("ballista-tui");
 
         let s = Config::builder()
             // Start off by merging in the "default" configuration file
-            .add_source(File::with_name("etc/config/default"))
+            .add_source(File::from_str(DEFAULT_CONFIG, FileFormat::Yaml))
             // Add in user's config file
             .add_source(
                 File::with_name(&format!("{}/config", config_dir.display()))

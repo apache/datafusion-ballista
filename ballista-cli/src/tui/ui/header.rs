@@ -1,11 +1,12 @@
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::Style,
+    style::{Style, Stylize},
+    text::{Line, Text},
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::app::{App, Views};
+use crate::tui::app::{App, Views};
 
 const MENU_ITEMS: [&str; 3] = ["Dashboard", "Jobs", "Metrics"];
 const PERCENTAGE: u16 = 100 / MENU_ITEMS.len() as u16;
@@ -47,7 +48,13 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
         let mut block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().dark_gray());
-        let mut paragraph = Paragraph::new(*menu_item)
+
+        let first_char = menu_item.chars().next().unwrap().underlined();
+        let rest_chars = menu_item.chars().skip(1).collect::<String>();
+        let line = Line::from(vec![first_char, rest_chars.into()]);
+        let text = Text::from(line);
+
+        let mut paragraph = Paragraph::new(text)
             .style(Style::default().dark_gray())
             .block(block.clone())
             .alignment(Alignment::Center);

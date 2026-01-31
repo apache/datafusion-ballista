@@ -10,7 +10,7 @@ use ratatui::{
     widgets::Clear,
 };
 
-use crate::{
+use crate::tui::{
     TuiResult,
     app::App,
     error::TuiError,
