@@ -1093,6 +1093,7 @@ dependencies = [
  "futures",
  "graphviz-rust",
  "http 1.4.0",
+ "insta",
  "log",
  "object_store",
  "once_cell",
@@ -1538,6 +1539,18 @@ name = "compression-core"
 version = "0.4.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75984efb6ed102a0d42db99afb6c1948f0380d1d91808d5529916e6c08b49d8d"
+
+[[package]]
+name = "console"
+version = "0.15.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "054ccb5b10f9f2cbf51eb355ca1d05c2d279ce1804688d0db74b4733a5aeafd8"
+dependencies = [
+ "encode_unicode",
+ "libc",
+ "once_cell",
+ "windows-sys 0.59.0",
+]
 
 [[package]]
 name = "const-random"
@@ -2681,6 +2694,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
+name = "encode_unicode"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
+
+[[package]]
 name = "endian-type"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3435,6 +3454,18 @@ dependencies = [
  "hashbrown 0.16.1",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "insta"
+version = "1.46.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "248b42847813a1550dafd15296fd9748c651d0c32194559dbc05d804d54b21e8"
+dependencies = [
+ "console",
+ "once_cell",
+ "similar",
+ "tempfile",
 ]
 
 [[package]]
@@ -5313,6 +5344,12 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "siphasher"

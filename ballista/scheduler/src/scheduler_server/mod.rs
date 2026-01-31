@@ -445,6 +445,8 @@ mod test {
     #[tokio::test]
     async fn test_pull_scheduling() -> Result<()> {
         let plan = test_plan();
+        // this test will fail when AQE scheduling is used.
+        // as AQE will fold plan due to empty scan
         let task_slots = 4;
 
         let scheduler = test_scheduler(TaskSchedulingPolicy::PullStaged).await?;
@@ -554,7 +556,8 @@ mod test {
     #[tokio::test]
     async fn test_push_scheduling() -> Result<()> {
         let plan = test_plan();
-
+        // this test will fail when AQE scheduling is used.
+        // as AQE will fold plan due to empty scan
         let metrics_collector = Arc::new(TestMetricsCollector::default());
 
         let mut test = SchedulerTest::new(

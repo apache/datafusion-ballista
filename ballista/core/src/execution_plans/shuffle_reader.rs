@@ -260,8 +260,8 @@ impl ExecutionPlan for ShuffleReaderExec {
         }
     }
 }
-
-fn stats_for_partition(
+/// Calculates stats for partition
+pub fn stats_for_partition(
     partition: usize,
     num_fields: usize,
     partition_locations: &[Vec<PartitionLocation>],
@@ -296,7 +296,8 @@ fn stats_for_partition(
     })
 }
 
-fn stats_for_partitions(
+/// Calculates stats for partitions
+pub fn stats_for_partitions(
     num_fields: usize,
     partition_stats: impl Iterator<Item = PartitionStats>,
 ) -> Statistics {

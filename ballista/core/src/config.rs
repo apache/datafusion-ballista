@@ -56,7 +56,11 @@ pub const BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS: &str =
 /// Configuration key for HTTP/2 keep-alive interval for gRPC clients in seconds.
 pub const BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS: &str =
     "ballista.grpc.client.http2_keepalive_interval_seconds";
-
+/// Enables adaptive query planning
+pub const BALLISTA_ADAPTIVE_PLANNER_ENABLED: &str = "ballista.planner.adaptive.enabled";
+/// Number of times that the optimizer will attempt to optimize the plan
+pub const BALLISTA_ADAPTIVE_PLANNER_MAX_PASSES: &str =
+    "ballista.planner.adaptive.planner_pass";
 /// Configuration key for enabling sort-based shuffle.
 pub const BALLISTA_SHUFFLE_SORT_BASED_ENABLED: &str =
     "ballista.shuffle.sort_based.enabled";
@@ -117,10 +121,18 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "HTTP/2 keep-alive interval for gRPC client in seconds".to_string(),
                          DataType::UInt64,
                          Some((300).to_string())),
+        ConfigEntry::new(BALLISTA_ADAPTIVE_PLANNER_ENABLED.to_string(),
+                         "Enables Adaptive Query Planning (EXPERIMENTAL)".to_string(),
+                         DataType::Boolean,
+                         Some(false.to_string())),
+        ConfigEntry::new(BALLISTA_ADAPTIVE_PLANNER_MAX_PASSES.to_string(),
+                         "Number of times that the adaptive optimizer will attempt to optimize the plan".to_string(),
+                         DataType::UInt64,
+                         Some(3.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_ENABLED.to_string(),
                          "Enable sort-based shuffle which writes consolidated files with index".to_string(),
                          DataType::Boolean,
-                         Some((false).to_string())),
+                         Some(false.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE.to_string(),
                          "Per-partition buffer size in bytes for sort shuffle".to_string(),
                          DataType::UInt64,
@@ -298,6 +310,15 @@ impl BallistaConfig {
     /// Block protocol is usually more performant than flight protocol
     pub fn shuffle_reader_remote_prefer_flight(&self) -> bool {
         self.get_bool_setting(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT)
+    }
+
+    /// Is Adaptive Query Planner enabled
+    pub fn adaptive_query_planner_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_ADAPTIVE_PLANNER_ENABLED)
+    }
+    /// Number of times that the adaptive optimizer will attempt to optimize the plan
+    pub fn adaptive_query_planner_max_passes(&self) -> usize {
+        self.get_usize_setting(BALLISTA_ADAPTIVE_PLANNER_MAX_PASSES)
     }
 
     /// Returns whether sort-based shuffle is enabled.

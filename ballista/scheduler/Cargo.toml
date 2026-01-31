@@ -57,6 +57,7 @@ datafusion-substrait = { workspace = true, optional = true }
 futures = { workspace = true }
 graphviz-rust = { version = "0.9", optional = true }
 http = "1.1"
+insta = { workspace = true }
 log = { workspace = true }
 object_store = { workspace = true }
 once_cell = { version = "1.16.0", optional = true }
