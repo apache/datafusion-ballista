@@ -261,6 +261,11 @@ impl SortShuffleWriterExec {
                 }
             }
 
+            // Finish spill writers before reading them back
+            spill_manager
+                .finish_writers()
+                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+
             // Finalize: write consolidated output file
             let timer = metrics.write_time.timer();
             let (data_path, index_path, partition_stats) = finalize_output(
@@ -405,13 +410,13 @@ fn finalize_output(
         let mut partition_batches: u64 = 0;
         let mut partition_bytes: u64 = 0;
 
-        // First, write any spill files for this partition
-        if spill_manager.has_spill_files(partition_id) {
-            let spill_batches = spill_manager
-                .read_spill_files(partition_id)
-                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-
-            for batch in spill_batches {
+        // First, stream any spill file for this partition
+        if let Some(reader) = spill_manager
+            .open_spill_reader(partition_id)
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
+        {
+            for batch_result in reader {
+                let batch = batch_result?;
                 partition_rows += batch.num_rows() as u64;
                 partition_bytes += batch.get_array_memory_size() as u64;
                 partition_batches += 1;
