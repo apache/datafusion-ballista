@@ -76,13 +76,13 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
             .block(block.clone())
             .alignment(Alignment::Center);
 
-        if app.current_view == Views::Dashboard && *menu_item == "Dashboard" {
-            block = block.border_style(Style::default().white());
-            paragraph = paragraph.style(Style::default().white()).block(block);
-        } else if app.current_view == Views::Jobs && *menu_item == "Jobs" {
-            block = block.border_style(Style::default().white());
-            paragraph = paragraph.style(Style::default().white()).block(block);
-        } else if app.current_view == Views::Metrics && *menu_item == "Metrics" {
+        let is_active = match app.current_view {
+            Views::Dashboard => *menu_item == "Dashboard",
+            Views::Jobs => *menu_item == "Jobs",
+            Views::Metrics => *menu_item == "Metrics",
+        };
+
+        if is_active {
             block = block.border_style(Style::default().white());
             paragraph = paragraph.style(Style::default().white()).block(block);
         }
