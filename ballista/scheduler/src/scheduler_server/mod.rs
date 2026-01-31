@@ -46,6 +46,7 @@ use crate::state::task_manager::TaskLauncher;
 // include the generated protobuf source as a submodule
 #[cfg(feature = "keda-scaler")]
 #[allow(clippy::all)]
+#[allow(missing_docs)]
 pub mod externalscaler {
     include!(concat!(env!("OUT_DIR"), "/externalscaler.rs"));
 }

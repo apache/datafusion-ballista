@@ -16,6 +16,7 @@
 // under the License.
 
 #[cfg(feature = "prometheus")]
+/// Module implementing prometheus metrics.
 pub mod prometheus;
 
 #[cfg(feature = "prometheus")]

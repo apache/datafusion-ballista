@@ -39,7 +39,7 @@ default = ["build-binary", "substrait"]
 # task plans can be re-computed, cache behavior may need to be disabled.
 disable-stage-plan-cache = []
 graphviz-support = ["dep:graphviz-rust"]
-keda-scaler = []
+keda-scaler = ["dep:tonic-prost-build", "dep:tonic-prost"]
 prometheus-metrics = ["prometheus", "once_cell"]
 rest-api = []
 substrait = ["dep:datafusion-substrait"]
@@ -69,6 +69,7 @@ serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tonic = { workspace = true, features = ["router"] }
+tonic-prost = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 tracing-appender = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
@@ -77,3 +78,5 @@ uuid = { workspace = true }
 [dev-dependencies]
 rstest = { workspace = true }
 
+[build-dependencies]
+tonic-prost-build = { workspace = true, optional = true }

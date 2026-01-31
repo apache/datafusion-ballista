@@ -29,7 +29,6 @@ publish = false
 [features]
 ci = []
 default = ["mimalloc"]
-snmalloc = ["snmalloc-rs"]
 
 [dependencies]
 ballista = { path = "../ballista/client", version = "52.0.0" }
@@ -42,7 +41,6 @@ mimalloc = { workspace = true, optional = true }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = "1.0.78"
-snmalloc-rs = { version = "0.3", optional = true }
 structopt = { version = "0.3", default-features = false }
 tempfile = { workspace = true }
 tokio = { version = "^1.44", features = [

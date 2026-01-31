@@ -18,4 +18,4 @@
 # under the License.
 
 set -ex
-cargo clippy --all-targets --workspace -- -D warnings
+cargo clippy --all-targets --workspace --all-features -- -D warnings
