@@ -202,12 +202,15 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                                     "Activating dependent job {} ({})",
                                     child_job_id, meta.job_name
                                 );
-                                
+
                                 // Get or create SessionContext from session manager
                                 let session_ctx = match self
                                     .state
                                     .session_manager
-                                    .create_or_update_session(&meta.session_id, &meta.session_config)
+                                    .create_or_update_session(
+                                        &meta.session_id,
+                                        &meta.session_config,
+                                    )
                                     .await
                                 {
                                     Ok(ctx) => ctx,
@@ -219,7 +222,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                                         continue;
                                     }
                                 };
-                                
+
                                 if let Err(e) = tx_event
                                     .send(QueryStageSchedulerEvent::JobQueued {
                                         job_id: child_job_id.clone(),
