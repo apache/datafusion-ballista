@@ -1,5 +1,0 @@
-scheduler:
-  url: http://localhost:50050
-
-http:
-  timeout: 2000

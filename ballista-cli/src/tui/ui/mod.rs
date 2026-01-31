@@ -1,3 +1,20 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 mod header;
 mod main;
 
@@ -67,28 +84,9 @@ fn render_help_overlay(f: &mut Frame) {
             "  Navigation",
             Style::default().fg(Color::Yellow),
         )]),
-        Line::from("  ↑/k       Move up"),
-        Line::from("  ↓/j       Move down"),
-        Line::from("  /         Search stocks"),
-        Line::from("  Esc       Exit search / Close help"),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "  Time Ranges",
-            Style::default().fg(Color::Yellow),
-        )]),
-        Line::from("  1         1 Day (intraday)"),
-        Line::from("  2         5 Days"),
-        Line::from("  3         1 Month"),
-        Line::from("  4         3 Months"),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "  Features",
-            Style::default().fg(Color::Yellow),
-        )]),
-        Line::from("  w         Toggle watchlist"),
-        Line::from("  W         Show watchlist only"),
-        Line::from("  p         Toggle portfolio view"),
-        Line::from("  r         Refresh data"),
+        Line::from("  d       Show Dashboard"),
+        Line::from("  j       Show Jobs"),
+        Line::from("  m       Show Metrics"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "  General",
@@ -135,41 +133,4 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
-}
-
-fn _render_sidebar(f: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(area);
-
-    // Search box
-    let search_text = if app.search_mode {
-        format!("/{}_", app.search_query)
-    } else if !app.search_query.is_empty() {
-        format!("Filter: {}", app.search_query)
-    } else {
-        "Press / to search...".to_string()
-    };
-
-    let search_style = if app.search_mode {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    let search_block = Block::default()
-        .title(" Search ")
-        .borders(Borders::ALL)
-        .border_style(if app.search_mode {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        });
-
-    let search_para = Paragraph::new(search_text)
-        .style(search_style)
-        .block(search_block);
-
-    f.render_widget(search_para, chunks[0]);
 }

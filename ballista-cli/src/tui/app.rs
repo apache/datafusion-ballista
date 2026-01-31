@@ -1,7 +1,24 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
 use crate::tui::{domain::DashboardData, event::Event, infrastructure::Settings};
 use color_eyre::eyre::{Ok, Result};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::{sync::Arc, time::Instant};
+use crossterm::event::{KeyCode, KeyEvent};
+use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::tui::http_client::HttpClient;
@@ -16,14 +33,9 @@ pub enum Views {
 pub struct App {
     pub should_quit: bool,
     pub event_tx: Option<UnboundedSender<Event>>,
-    pub last_refresh: Instant,
     pub current_view: Views,
 
     pub dashboard_data: DashboardData,
-
-    // Search
-    pub search_mode: bool,
-    pub search_query: String,
 
     // Help panel
     pub show_help: bool,
@@ -37,9 +49,6 @@ impl App {
             current_view: Views::Dashboard,
             should_quit: false,
             event_tx: None,
-            last_refresh: Instant::now(),
-            search_mode: false,
-            search_query: String::new(),
             show_help: false,
             dashboard_data: DashboardData::builder().build(),
             http_client: Arc::new(HttpClient::new(config)?),
@@ -62,39 +71,12 @@ impl App {
             return Ok(());
         }
 
-        // Search mode input handling
-        if self.search_mode {
-            match key.code {
-                KeyCode::Esc => {
-                    self.search_mode = false;
-                    self.search_query.clear();
-                }
-                KeyCode::Enter => {
-                    self.search_mode = false;
-                    // Keep the filter active
-                }
-                KeyCode::Backspace => {
-                    self.search_query.pop();
-                }
-                KeyCode::Char(_c) => {
-                    //
-                }
-                _ => {}
-            }
-            return Ok(());
-        }
-
-        // Normal mode
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.should_quit = true;
             }
             KeyCode::Char('?') | KeyCode::Char('h') => {
                 self.show_help = true;
-            }
-            KeyCode::Char('/') => {
-                self.search_mode = true;
-                self.search_query.clear();
             }
             // KeyCode::Up | KeyCode::Char('k') => {
             //     self.previous();
@@ -111,10 +93,6 @@ impl App {
             }
             KeyCode::Char('m') => {
                 self.current_view = Views::Metrics;
-            }
-            // Clear search filter
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.search_query.clear();
             }
             _ => {}
         }
