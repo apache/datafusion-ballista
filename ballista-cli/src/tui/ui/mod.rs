@@ -34,7 +34,7 @@ use header::render_header;
 pub(crate) fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(8), Constraint::Min(0)])
+        .constraints([Constraint::Length(6), Constraint::Min(0)])
         .split(f.area());
 
     render_header(f, chunks[0], &app);

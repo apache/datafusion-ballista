@@ -29,16 +29,22 @@ const MENU_ITEMS: [&str; 3] = ["Dashboard", "Jobs", "Metrics"];
 const PERCENTAGE: u16 = 100 / MENU_ITEMS.len() as u16;
 const MENU_CONSTRAINTS: [Constraint; MENU_ITEMS.len()] =
     [Constraint::Percentage(PERCENTAGE); MENU_ITEMS.len()];
+
+// Generated at https://manytools.org/hacker-tools/ascii-banner/
+// Font: Shimrod
+#[rustfmt::skip]
 const BANNER: &'static str = r#"
- _               _                    _
-| \  _. _|_  _. |_     _ o  _  ._    |_)  _. | | o  _ _|_  _.
-|_/ (_|  |_ (_| | |_| _> | (_) | |   |_) (_| | | | _>  |_ (_|
+,-.      .       ,--.                   ,-.      . .       .
+|  \     |       |          o           |  )     | | o     |
+|  | ,-: |-  ,-: |- . . ,-. . ,-. ;-.   |-<  ,-: | | . ,-. |-  ,-:
+|  / | | |   | | |  | | `-. | | | | |   |  ) | | | | | `-. |   | |
+`-'  `-` `-' `-` '  `-` `-' ' `-' ' '   `-'  `-` ' ' ' `-' `-' `-`
 "#;
 
 pub(super) fn render_header(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(4), Constraint::Length(3)])
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Min(0)])
         .split(area);
 
     render_block(f, chunks[0]);
