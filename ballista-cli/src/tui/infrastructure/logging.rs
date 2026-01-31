@@ -41,11 +41,11 @@ pub fn init_file_logger(log_file_prefix: &str, default_level: &str) -> Result<()
         .truncate(true)
         .open(format!("{dir_name}/{log_file_prefix}.log"))?;
 
-    tracing_subscriber::fmt()
+    let _ = tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_writer(file)
         .with_ansi(true)
-        .init();
+        .try_init();
 
     Ok(())
 }

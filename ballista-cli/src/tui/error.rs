@@ -20,6 +20,7 @@ use tokio::sync::mpsc::error::SendError;
 use crate::tui::event::Event;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum TuiError {
     Reqwest(reqwest::Error),
     Json(serde_json::Error),

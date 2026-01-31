@@ -28,7 +28,6 @@ use ballista_cli::{
 use clap::Parser;
 use color_eyre::eyre::Result;
 use datafusion::{
-    // common::Result,
     execution::SessionStateBuilder,
     prelude::{SessionConfig, SessionContext},
 };

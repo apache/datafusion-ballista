@@ -20,5 +20,7 @@ pub const BALLISTA_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod command;
 pub mod exec;
+#[cfg(feature = "tui")]
+mod tui;
 
 pub use datafusion_cli::{functions, helper, print_format, print_options};
