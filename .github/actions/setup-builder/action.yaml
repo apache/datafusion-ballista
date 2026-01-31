@@ -18,14 +18,6 @@
 name: Prepare Rust Builder
 description: 'Prepare Rust Build Environment'
 inputs:
-  cmake:
-    description: 'install cmake'
-    required: false
-    default: 'false'
-  protobuf:
-    description: 'install protobuf compiler'
-    required: false
-    default: 'true'
   rust-version:
     description: 'version of rust to install (e.g. stable)'
     required: true
@@ -34,17 +26,10 @@ runs:
   using: "composite"
   steps:
     - name: Install protobuf compiler
-      if: inputs.protobuf == 'true' || inputs.cmake == 'true'
       shell: bash
-      run: apt-get update
-    - name: Install protobuf compiler
-      if: inputs.protobuf == 'true'
-      shell: bash
-      run: apt-get install -y protobuf-compiler
-    - name: Install cmake
-      if: inputs.cmake == 'true'
-      shell: bash
-      run: apt-get install -y cmake
+      run: |
+        apt-get update
+        apt-get install -y protobuf-compiler
     - name: Setup Rust toolchain
       shell: bash
       run: |
