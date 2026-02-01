@@ -19,7 +19,6 @@
 
 use ballista::extension::SessionConfigExt;
 use ballista::prelude::SessionContextExt;
-use ballista_core::config::BALLISTA_SHUFFLE_SORT_BASED_ENABLED;
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::SchemaBuilder;
 use datafusion::arrow::util::display::array_value_to_string;
@@ -119,10 +118,6 @@ struct BallistaBenchmarkOpt {
     /// Path to output directory where JSON summary file should be written to
     #[structopt(parse(from_os_str), short = "o", long = "output")]
     output_path: Option<PathBuf>,
-
-    /// Enable sort-based shuffle instead of hash-based shuffle
-    #[structopt(long = "sort-shuffle")]
-    sort_shuffle: bool,
 
     /// Configuration overrides in key=value format.
     /// Can be specified multiple times, e.g.
@@ -420,18 +415,15 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
             .with_batch_size(opt.batch_size)
             .with_collect_statistics(true);
 
-        if opt.sort_shuffle {
-            config = config.set_str(BALLISTA_SHUFFLE_SORT_BASED_ENABLED, "true");
-        }
-
         for kv in &opt.config_overrides {
             if let Some((key, value)) = kv.split_once('=') {
                 config = config.set_str(key.trim(), value.trim());
             } else {
-                return Err(DataFusionError::Configuration(format!(
-                    "Invalid config override '{}'. Expected format: key=value",
+                println!(
+                    "Warning: ignoring invalid config override '{}'. \
+                     Expected format: key=value",
                     kv
-                )));
+                );
             }
         }
 
