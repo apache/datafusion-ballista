@@ -27,6 +27,18 @@ pub enum TuiError {
     SendError(SendError<Event>),
 }
 
+impl std::fmt::Display for TuiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TuiError::Reqwest(err) => write!(f, "Reqwest error: {}", err),
+            TuiError::Json(err) => write!(f, "JSON error: {}", err),
+            TuiError::SendError(err) => write!(f, "Send error: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for TuiError {}
+
 impl From<reqwest::Error> for TuiError {
     fn from(err: reqwest::Error) -> Self {
         TuiError::Reqwest(err)
@@ -36,5 +48,11 @@ impl From<reqwest::Error> for TuiError {
 impl From<serde_json::Error> for TuiError {
     fn from(err: serde_json::Error) -> Self {
         TuiError::Json(err)
+    }
+}
+
+impl From<SendError<Event>> for TuiError {
+    fn from(err: SendError<Event>) -> Self {
+        TuiError::SendError(err)
     }
 }
