@@ -38,22 +38,12 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
         .split(f.area());
 
     render_header(f, chunks[0], app);
-    render_content(f, app, chunks[1]);
+    render_main_view(f, app, chunks[1]);
 
     // Overlay help if active
     if app.show_help {
         render_help_overlay(f);
     }
-}
-
-fn render_content(f: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(100)])
-        .split(area);
-
-    // render_sidebar(f, app, chunks[0]);
-    render_main_view(f, app, chunks[0]);
 }
 
 fn render_main_view(f: &mut Frame, app: &App, area: Rect) {
