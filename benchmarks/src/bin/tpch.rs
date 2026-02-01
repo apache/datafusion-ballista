@@ -123,6 +123,13 @@ struct BallistaBenchmarkOpt {
     /// Enable sort-based shuffle instead of hash-based shuffle
     #[structopt(long = "sort-shuffle")]
     sort_shuffle: bool,
+
+    /// Configuration overrides in key=value format.
+    /// Can be specified multiple times, e.g.
+    /// -c ballista.shuffle.sort_based.enabled=true
+    /// -c datafusion.execution.target_partitions=16
+    #[structopt(short = "c", long = "config", number_of_values = 1)]
+    config_overrides: Vec<String>,
 }
 
 #[derive(Debug, StructOpt, Clone)]
@@ -415,6 +422,17 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
 
         if opt.sort_shuffle {
             config = config.set_str(BALLISTA_SHUFFLE_SORT_BASED_ENABLED, "true");
+        }
+
+        for kv in &opt.config_overrides {
+            if let Some((key, value)) = kv.split_once('=') {
+                config = config.set_str(key.trim(), value.trim());
+            } else {
+                return Err(DataFusionError::Configuration(format!(
+                    "Invalid config override '{}'. Expected format: key=value",
+                    kv
+                )));
+            }
         }
 
         let state = SessionStateBuilder::new()
