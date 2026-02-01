@@ -50,12 +50,17 @@ pub fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
 pub async fn load_dashboard_data(app: &App) -> TuiResult<()> {
     let scheduler_state = app.http_client.get_scheduler_state().await?;
     let executors_data = app.http_client.get_executors().await?;
-    if let Some(event_tx) = &app.event_tx {
-        event_tx
-            .send(Event::DataLoaded {
-                data: UiData::Dashboard(scheduler_state, executors_data),
-            })
-            .map_err(TuiError::SendError)?;
+    match &app.event_tx {
+        Some(event_tx) => {
+            event_tx
+                .send(Event::DataLoaded {
+                    data: UiData::Dashboard(scheduler_state, executors_data),
+                })
+                .map_err(TuiError::SendError)?;
+        }
+        None => {
+            tracing::warn!("Dashboard data loaded but event_tx is not set");
+        }
     }
 
     Ok(())
