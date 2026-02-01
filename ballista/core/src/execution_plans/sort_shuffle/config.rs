@@ -37,6 +37,8 @@ pub struct SortShuffleConfig {
     pub spill_threshold: f64,
     /// Compression codec for shuffle data (default: LZ4_FRAME)
     pub compression: CompressionType,
+    /// Target batch size in rows when coalescing small batches (default: 8192)
+    pub batch_size: usize,
 }
 
 impl Default for SortShuffleConfig {
@@ -47,6 +49,7 @@ impl Default for SortShuffleConfig {
             memory_limit: 256 * 1024 * 1024, // 256 MB
             spill_threshold: 0.8,
             compression: CompressionType::LZ4_FRAME,
+            batch_size: 8192,
         }
     }
 }
@@ -59,6 +62,7 @@ impl SortShuffleConfig {
         memory_limit: usize,
         spill_threshold: f64,
         compression: CompressionType,
+        batch_size: usize,
     ) -> Self {
         Self {
             enabled,
@@ -66,6 +70,7 @@ impl SortShuffleConfig {
             memory_limit,
             spill_threshold,
             compression,
+            batch_size,
         }
     }
 

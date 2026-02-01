@@ -22,6 +22,7 @@
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::physical_plan::coalesce::LimitedBatchCoalescer;
 
 /// Buffer for accumulating record batches for a single output partition.
 ///
@@ -110,6 +111,61 @@ impl PartitionBuffer {
     pub fn take_batches(&mut self) -> Vec<RecordBatch> {
         std::mem::take(&mut self.batches)
     }
+
+    /// Drains batches from the buffer, coalescing small batches into
+    /// larger ones up to `target_batch_size` rows each.
+    pub fn drain_coalesced(&mut self, target_batch_size: usize) -> Vec<RecordBatch> {
+        self.memory_used = 0;
+        self.num_rows = 0;
+        let batches = std::mem::take(&mut self.batches);
+        coalesce_batches(batches, &self.schema, target_batch_size)
+    }
+
+    /// Takes all batches, coalescing small batches into larger ones
+    /// up to `target_batch_size` rows each.
+    pub fn take_batches_coalesced(
+        &mut self,
+        target_batch_size: usize,
+    ) -> Vec<RecordBatch> {
+        let batches = std::mem::take(&mut self.batches);
+        coalesce_batches(batches, &self.schema, target_batch_size)
+    }
+}
+
+/// Coalesces small batches into larger ones up to `target_batch_size`
+/// rows each using DataFusion's `LimitedBatchCoalescer`.
+fn coalesce_batches(
+    batches: Vec<RecordBatch>,
+    schema: &SchemaRef,
+    target_batch_size: usize,
+) -> Vec<RecordBatch> {
+    if batches.len() <= 1 {
+        return batches;
+    }
+
+    let mut coalescer =
+        LimitedBatchCoalescer::new(schema.clone(), target_batch_size, None);
+    let mut result = Vec::new();
+
+    for batch in batches {
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        // push_batch can only fail on schema mismatch, which won't
+        // happen here since all batches share the same schema
+        let _ = coalescer.push_batch(batch);
+        while let Some(completed) = coalescer.next_completed_batch() {
+            result.push(completed);
+        }
+    }
+
+    // Flush remaining buffered rows
+    let _ = coalescer.finish();
+    while let Some(completed) = coalescer.next_completed_batch() {
+        result.push(completed);
+    }
+
+    result
 }
 
 #[cfg(test)]

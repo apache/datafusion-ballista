@@ -51,3 +51,8 @@ tokio = { version = "^1.44", features = [
 ] }
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+harness = false
+name = "sort_shuffle"

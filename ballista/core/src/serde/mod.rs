@@ -327,12 +327,18 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     )
                 })?;
 
+                let batch_size = if sort_shuffle_writer.batch_size > 0 {
+                    sort_shuffle_writer.batch_size as usize
+                } else {
+                    8192 // default for backwards compatibility
+                };
                 let config = SortShuffleConfig::new(
                     true,
                     sort_shuffle_writer.buffer_size as usize,
                     sort_shuffle_writer.memory_limit as usize,
                     sort_shuffle_writer.spill_threshold,
                     datafusion::arrow::ipc::CompressionType::LZ4_FRAME,
+                    batch_size,
                 );
 
                 Ok(Arc::new(SortShuffleWriterExec::try_new(
@@ -478,6 +484,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         buffer_size: config.buffer_size as u64,
                         memory_limit: config.memory_limit as u64,
                         spill_threshold: config.spill_threshold,
+                        batch_size: config.batch_size as u64,
                     },
                 )),
             };
