@@ -62,6 +62,11 @@ impl HttpClient {
         R: std::fmt::Debug + DeserializeOwned,
     {
         let response = self.get(url).await?;
+        let response = response
+            .error_for_status()
+            .map_err(TuiError::Reqwest)
+            .inspect_err(|err| tracing::error!("HTTP error status: {err:?}"))?;
+
         response
             .json::<R>()
             .await
