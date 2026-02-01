@@ -23,7 +23,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::tui::http_client::HttpClient;
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum Views {
     Dashboard,
     Jobs,
