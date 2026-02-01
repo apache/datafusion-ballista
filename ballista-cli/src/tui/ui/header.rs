@@ -55,7 +55,6 @@ fn render_block(f: &mut Frame, area: Rect) {
     let block = Block::default().borders(Borders::empty());
     let paragraph = Paragraph::new(BANNER)
         .style(Style::default().bold())
-        .centered()
         .block(block)
         .alignment(Alignment::Left);
     f.render_widget(paragraph, area);
