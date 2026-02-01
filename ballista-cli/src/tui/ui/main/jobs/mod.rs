@@ -17,7 +17,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Rect},
+    layout::Rect,
     style::Style,
     widgets::{Block, Borders, Clear, Paragraph},
 };
@@ -30,7 +30,6 @@ pub fn render_jobs(f: &mut Frame, area: Rect, _app: &App) {
     let paragraph = Paragraph::new("Jobs")
         .style(Style::default().bold())
         .centered()
-        .block(block)
-        .alignment(Alignment::Left);
+        .block(block);
     f.render_widget(paragraph, area);
 }
