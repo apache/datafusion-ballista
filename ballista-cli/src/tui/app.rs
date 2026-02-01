@@ -100,7 +100,7 @@ impl App {
     }
 
     async fn load_dashboard_data(&mut self) {
-        if let Err(e) = crate::tui::ui::load_dashboard_data(&self).await {
+        if let Err(e) = crate::tui::ui::load_dashboard_data(self).await {
             tracing::error!("Failed to load dashboard data on tick: {:?}", e);
         }
     }

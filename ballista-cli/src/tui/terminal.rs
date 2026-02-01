@@ -27,7 +27,7 @@ use std::io::{self, Stdout};
 
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 
-pub fn init() -> Result<Tui> {
+fn init() -> Result<Tui> {
     execute!(io::stdout(), EnterAlternateScreen)?;
     enable_raw_mode()?;
     let backend = CrosstermBackend::new(io::stdout());
@@ -44,7 +44,7 @@ pub fn init() -> Result<Tui> {
     Ok(terminal)
 }
 
-pub fn restore() -> Result<()> {
+fn restore() -> Result<()> {
     execute!(io::stdout(), LeaveAlternateScreen)?;
     disable_raw_mode()?;
     Ok(())

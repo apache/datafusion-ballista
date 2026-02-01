@@ -61,7 +61,7 @@ impl HttpClient {
     where
         R: std::fmt::Debug + DeserializeOwned,
     {
-        let response = self.get(&url).await?;
+        let response = self.get(url).await?;
         response
             .json::<R>()
             .await

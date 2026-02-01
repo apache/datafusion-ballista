@@ -159,7 +159,7 @@ impl Command {
     }
 }
 
-const ALL_COMMANDS: &'static [Command] = &[
+const ALL_COMMANDS: &[Command] = &[
     Command::ListTables,
     Command::DescribeTable(String::new()),
     Command::Quit,
@@ -178,7 +178,7 @@ fn all_commands_info() -> RecordBatch {
         Field::new("Description", DataType::Utf8, false),
     ]));
     let (names, description): (Vec<&str>, Vec<&str>) = ALL_COMMANDS
-        .into_iter()
+        .iter()
         .map(|c| c.get_name_and_description())
         .unzip();
     RecordBatch::try_new(

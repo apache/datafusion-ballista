@@ -37,7 +37,7 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
         .constraints([Constraint::Length(6), Constraint::Min(0)])
         .split(f.area());
 
-    render_header(f, chunks[0], &app);
+    render_header(f, chunks[0], app);
     render_content(f, app, chunks[1]);
 
     // Overlay help if active

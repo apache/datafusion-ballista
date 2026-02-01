@@ -33,7 +33,7 @@ const MENU_CONSTRAINTS: [Constraint; MENU_ITEMS.len()] =
 // Generated at https://manytools.org/hacker-tools/ascii-banner/
 // Font: Shimrod
 #[rustfmt::skip]
-const BANNER: &'static str = r#"
+const BANNER: &str = r#"
 ,-.      .       ,--.                   ,-.      . .       .
 |  \     |       |          o           |  )     | | o     |
 |  | ,-: |-  ,-: |- . . ,-. . ,-. ;-.   |-<  ,-: | | . ,-. |-  ,-:
@@ -48,7 +48,7 @@ pub(super) fn render_header(f: &mut Frame, area: Rect, app: &App) {
         .split(area);
 
     render_block(f, chunks[0]);
-    render_menu(f, chunks[1], &app);
+    render_menu(f, chunks[1], app);
 }
 
 fn render_block(f: &mut Frame, area: Rect) {

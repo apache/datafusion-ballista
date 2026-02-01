@@ -21,14 +21,14 @@ pub mod error;
 pub mod event;
 pub mod http_client;
 pub mod infrastructure;
-pub mod tui;
+mod terminal;
 pub mod ui;
 
 use app::App;
 use color_eyre::Result;
 use event::{Event, EventHandler};
 use std::time::Duration;
-use tui::TuiWrapper;
+use terminal::TuiWrapper;
 
 use crate::tui::{error::TuiError, event::UiData, infrastructure::Settings};
 
