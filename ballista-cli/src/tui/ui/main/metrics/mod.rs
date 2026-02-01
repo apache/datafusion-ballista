@@ -15,12 +15,22 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#![doc = include_str!("../README.md")]
-pub const BALLISTA_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
+use ratatui::{
+    Frame,
+    layout::{Alignment, Rect},
+    style::Style,
+    widgets::{Block, Borders, Clear, Paragraph},
+};
 
-pub mod command;
-pub mod exec;
-#[cfg(feature = "tui")]
-mod tui;
+use crate::tui::app::App;
 
-pub use datafusion_cli::{functions, helper, print_format, print_options};
+pub fn render_metrics(f: &mut Frame, area: Rect, _app: &App) {
+    f.render_widget(Clear, area);
+    let block = Block::default().borders(Borders::all());
+    let paragraph = Paragraph::new("Metrics")
+        .style(Style::default().bold())
+        .centered()
+        .block(block)
+        .alignment(Alignment::Left);
+    f.render_widget(paragraph, area);
+}

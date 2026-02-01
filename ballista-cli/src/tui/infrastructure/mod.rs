@@ -15,12 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#![doc = include_str!("../README.md")]
-pub const BALLISTA_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
+mod config;
+mod logging;
 
-pub mod command;
-pub mod exec;
-#[cfg(feature = "tui")]
-mod tui;
-
-pub use datafusion_cli::{functions, helper, print_format, print_options};
+pub use config::Settings;
+pub use logging::init_file_logger;

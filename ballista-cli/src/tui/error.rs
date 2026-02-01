@@ -15,12 +15,26 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#![doc = include_str!("../README.md")]
-pub const BALLISTA_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
+use tokio::sync::mpsc::error::SendError;
 
-pub mod command;
-pub mod exec;
-#[cfg(feature = "tui")]
-mod tui;
+use crate::tui::event::Event;
 
-pub use datafusion_cli::{functions, helper, print_format, print_options};
+#[derive(Debug)]
+#[allow(dead_code)]
+pub enum TuiError {
+    Reqwest(reqwest::Error),
+    Json(serde_json::Error),
+    SendError(SendError<Event>),
+}
+
+impl From<reqwest::Error> for TuiError {
+    fn from(err: reqwest::Error) -> Self {
+        TuiError::Reqwest(err)
+    }
+}
+
+impl From<serde_json::Error> for TuiError {
+    fn from(err: serde_json::Error) -> Self {
+        TuiError::Json(err)
+    }
+}
