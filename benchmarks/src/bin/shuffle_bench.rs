@@ -226,6 +226,7 @@ async fn benchmark_sort_shuffle(
         memory_limit,
         0.8,
         CompressionType::LZ4_FRAME,
+        8192,
     );
 
     // Create sort shuffle writer
