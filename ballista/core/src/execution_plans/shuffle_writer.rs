@@ -540,6 +540,7 @@ fn result_schema() -> SchemaRef {
 }
 
 #[cfg(test)]
+#[allow(dead_code, unused_imports)] // clippy false positive with local imports
 mod tests {
     use super::*;
     use datafusion::arrow::array::{StringArray, StructArray, UInt32Array, UInt64Array};

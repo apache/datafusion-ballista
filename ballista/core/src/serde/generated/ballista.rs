@@ -61,6 +61,8 @@ pub struct SortShuffleWriterExecNode {
     pub memory_limit: u64,
     #[prost(double, tag = "7")]
     pub spill_threshold: f64,
+    #[prost(uint64, tag = "8")]
+    pub batch_size: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UnresolvedShuffleExecNode {

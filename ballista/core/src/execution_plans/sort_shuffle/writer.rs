@@ -256,10 +256,16 @@ impl SortShuffleWriterExec {
                         &mut spill_manager,
                         &schema,
                         config.spill_memory_threshold() / 2,
+                        config.batch_size,
                     )?;
                     timer.done();
                 }
             }
+
+            // Finish spill writers before reading them back
+            spill_manager
+                .finish_writers()
+                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
             // Finalize: write consolidated output file
             let timer = metrics.write_time.timer();
@@ -325,6 +331,7 @@ fn spill_largest_buffers(
     spill_manager: &mut SpillManager,
     schema: &SchemaRef,
     target_memory: usize,
+    batch_size: usize,
 ) -> Result<()> {
     loop {
         let total_memory: usize = buffers.iter().map(|b| b.memory_used()).sum();
@@ -342,7 +349,7 @@ fn spill_largest_buffers(
         match largest_idx {
             Some(idx) if buffers[idx].memory_used() > 0 => {
                 let partition_id = buffers[idx].partition_id();
-                let batches = buffers[idx].drain();
+                let batches = buffers[idx].drain_coalesced(batch_size);
                 spill_manager
                     .spill(partition_id, batches, schema)
                     .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
@@ -405,13 +412,13 @@ fn finalize_output(
         let mut partition_batches: u64 = 0;
         let mut partition_bytes: u64 = 0;
 
-        // First, write any spill files for this partition
-        if spill_manager.has_spill_files(partition_id) {
-            let spill_batches = spill_manager
-                .read_spill_files(partition_id)
-                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-
-            for batch in spill_batches {
+        // First, stream any spill file for this partition
+        if let Some(reader) = spill_manager
+            .open_spill_reader(partition_id)
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
+        {
+            for batch_result in reader {
+                let batch = batch_result?;
                 partition_rows += batch.num_rows() as u64;
                 partition_bytes += batch.get_array_memory_size() as u64;
                 partition_batches += 1;
@@ -419,8 +426,8 @@ fn finalize_output(
             }
         }
 
-        // Then write remaining buffered data
-        let buffered_batches = buffer.take_batches();
+        // Then write remaining buffered data (coalesced)
+        let buffered_batches = buffer.take_batches_coalesced(config.batch_size);
         for batch in buffered_batches {
             partition_rows += batch.num_rows() as u64;
             partition_bytes += batch.get_array_memory_size() as u64;
