@@ -417,7 +417,9 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
 
         for kv in &opt.config_overrides {
             if let Some((key, value)) = kv.split_once('=') {
-                config = config.set_str(key.trim(), value.trim());
+                if let Err(e) = config.options_mut().set(key.trim(), value.trim()) {
+                    println!("Warning: could not set config '{}': {}", kv, e);
+                }
             } else {
                 println!(
                     "Warning: ignoring invalid config override '{}'. \
