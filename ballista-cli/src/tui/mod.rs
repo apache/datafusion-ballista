@@ -15,14 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub mod app;
-pub mod domain;
-pub mod error;
-pub mod event;
-pub mod http_client;
-pub mod infrastructure;
+mod app;
+mod domain;
+mod error;
+mod event;
+mod http_client;
+mod infrastructure;
 mod terminal;
-pub mod ui;
+mod ui;
 
 use app::App;
 use color_eyre::Result;
