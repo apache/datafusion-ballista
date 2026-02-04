@@ -45,7 +45,7 @@ force_hash_collisions = ["datafusion/force_hash_collisions"]
 [dependencies]
 arrow-flight = { workspace = true }
 async-trait = { workspace = true }
-aws-config = { version = "1.6.0", optional = true }
+aws-config = { version = "1.8.13", optional = true }
 aws-credential-types = { version = "1.2.0", optional = true }
 chrono = { version = "0.4", default-features = false }
 clap = { workspace = true, optional = true }
