@@ -36,7 +36,7 @@ mod reader;
 mod spill;
 mod writer;
 
-pub use buffer::PartitionBuffer;
+pub use buffer::{InputBatchStore, ScratchSpace};
 pub use config::SortShuffleConfig;
 pub use index::ShuffleIndex;
 pub use reader::{
