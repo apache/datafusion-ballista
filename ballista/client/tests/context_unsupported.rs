@@ -102,7 +102,7 @@ mod unsupported {
     #[case::remote(remote_context())]
     #[tokio::test]
 
-    async fn should_execute_sql_collect_from_arrow(
+    async fn should_execute_sql_collect_from_arrow_file(
         #[future(awt)]
         #[case]
         ctx: SessionContext,
