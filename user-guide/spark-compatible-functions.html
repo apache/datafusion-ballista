@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Spark-Compatible Functions &#8212; Apache DataFusion Ballista  documentation</title>
+    
+    <link href="../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+  
+    
+    <link rel="stylesheet"
+      href="../_static/vendor/fontawesome/5.13.0/css/all.min.css">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-solid-900.woff2">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-brands-400.woff2">
+  
+    
+      
+  
+    
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/pydata-sphinx-theme.css?v=1140d252" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=ef9fea58" />
+    
+    <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf">
+  
+    <script src="../_static/documentation_options.js?v=8a448e45"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Extensions Example" href="extensions-example.html" />
+    <link rel="prev" title="Extending Ballista Scheduler And Executors" href="extending-components.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="docsearch:language" content="en">
+    
+
+    <!-- Google Analytics -->
+    
+  </head>
+  <body data-spy="scroll" data-target="#bd-toc-nav" data-offset="80">
+    
+    <div class="container-fluid" id="banner"></div>
+
+    
+
+
+    <div class="container-xl">
+      <div class="row">
+          
+            
+            <!-- Only show if we have sidebars configured, else just a small margin  -->
+            <div class="col-12 col-md-3 bd-sidebar">
+              <div class="sidebar-start-items">
+<a class="navbar-brand" href="../index.html">
+  <img src="../_static/images/ballista-logo.png" class="logo" alt="logo">
+</a>
+
+<form class="bd-search d-flex align-items-center" action="../search.html" method="get">
+  <i class="icon fas fa-search"></i>
+  <input type="search" class="form-control" name="q" id="search-input" placeholder="Search the docs ..." aria-label="Search the docs ..." autocomplete="off" >
+</form>
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    
+    <p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  User Guide
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="introduction.html">
+   Introduction
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Cluster Deployment
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1 has-children">
+  <a class="reference internal" href="deployment/index.html">
+   Deployment
+  </a>
+  <input class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" type="checkbox"/>
+  <label for="toctree-checkbox-1">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul>
+   <li class="toctree-l2">
+    <a class="reference internal" href="deployment/quick-start.html">
+     Quick Start
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="deployment/cargo-install.html">
+     Cargo Install
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="deployment/docker.html">
+     Docker
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="deployment/docker-compose.html">
+     Docker Compose
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="deployment/kubernetes.html">
+     Kubernetes
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="scheduler.html">
+   Scheduler
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Clients
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="python.html">
+   Python
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="rust.html">
+   Rust
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="cli.html">
+   SQL CLI
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Reference
+ </span>
+</p>
+<ul class="current nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="configs.html">
+   Configuration
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="tuning-guide.html">
+   Tuning Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="metrics.html">
+   Ballista Scheduler Metrics
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="faq.html">
+   Frequently Asked Questions
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="extending-components.html">
+   Extending Ballista Scheduler And Executors
+  </a>
+ </li>
+ <li class="toctree-l1 current active">
+  <a class="current reference internal" href="#">
+   Spark-Compatible Functions
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="extensions-example.html">
+   Extensions Example
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Contributors Guide
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributors-guide/architecture.html">
+   Ballista Architecture
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributors-guide/code-organization.html">
+   Ballista Code Organization
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributors-guide/development.html">
+   Ballista Development
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/datafusion-ballista/">
+   Source code
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Community
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../community/communication.html">
+   Communication
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/datafusion-ballista/issues">
+   Issue tracker
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/datafusion-ballista/blob/main/CODE_OF_CONDUCT.md">
+   Code of conduct
+  </a>
+ </li>
+</ul>
+
+    
+  </div>
+</nav>
+              </div>
+              <div class="sidebar-end-items">
+              </div>
+            </div>
+            
+          
+
+          
+          <div class="d-none d-xl-block col-xl-2 bd-toc">
+            
+              
+              <div class="toc-item">
+                
+<div class="tocsection onthispage pt-5 pb-3">
+    <i class="fas fa-list"></i> On this page
+</div>
+
+<nav id="bd-toc-nav">
+    <ul class="visible nav section-nav flex-column">
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#enabling-the-feature">
+   Enabling the Feature
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#building-from-source">
+     Building from Source
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#what-s-included">
+   What’s Included
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#scalar-functions">
+     Scalar Functions
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#aggregate-functions">
+     Aggregate Functions
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#window-functions">
+     Window Functions
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#usage-examples">
+   Usage Examples
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#example-1-using-sha-1-hash-function">
+     Example 1: Using SHA-1 Hash Function
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#example-2-using-expm1-for-precision">
+     Example 2: Using expm1 for Precision
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#example-3-combining-with-datafusion-functions">
+     Example 3: Combining with DataFusion Functions
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#use-cases">
+   Use Cases
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#see-also">
+   See Also
+  </a>
+ </li>
+</ul>
+
+</nav>
+              </div>
+              
+              <div class="toc-item">
+                
+
+<div class="tocsection editthispage">
+    <a href="https://github.com/apache/datafusion-ballista/edit/main/docs/source/user-guide/spark-compatible-functions.md">
+        <i class="fas fa-pencil-alt"></i> Edit this page
+    </a>
+</div>
+
+              </div>
+              
+            
+          </div>
+          
+
+          
+          
+            
+          
+          <main class="col-12 col-md-9 col-xl-7 py-md-5 pl-md-5 pr-md-4 bd-content" role="main">
+              
+              <div>
+                
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="spark-compatible-functions">
+<h1>Spark-Compatible Functions<a class="headerlink" href="#spark-compatible-functions" title="Link to this heading">¶</a></h1>
+<p>Ballista provides an optional <code class="docutils literal notranslate"><span class="pre">spark-compat</span></code> Cargo feature that enables Spark-compatible scalar, aggregate, and window functions from the <a class="reference external" href="https://crates.io/crates/datafusion-spark">datafusion-spark</a> crate.</p>
+<section id="enabling-the-feature">
+<h2>Enabling the Feature<a class="headerlink" href="#enabling-the-feature" title="Link to this heading">¶</a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">spark-compat</span></code> feature must be explicitly enabled at build time. It is <em>not</em> enabled by default.</p>
+<section id="building-from-source">
+<h3>Building from Source<a class="headerlink" href="#building-from-source" title="Link to this heading">¶</a></h3>
+<p>To build Ballista components with Spark-compatible functions:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Build all components with spark-compat feature</span>
+cargo<span class="w"> </span>build<span class="w"> </span>--features<span class="w"> </span>spark-compat<span class="w"> </span>--release
+
+<span class="c1"># Build scheduler only</span>
+cargo<span class="w"> </span>build<span class="w"> </span>-p<span class="w"> </span>ballista-scheduler<span class="w"> </span>--features<span class="w"> </span>spark-compat<span class="w"> </span>--release
+
+<span class="c1"># Build executor only</span>
+cargo<span class="w"> </span>build<span class="w"> </span>-p<span class="w"> </span>ballista-executor<span class="w"> </span>--features<span class="w"> </span>spark-compat<span class="w"> </span>--release
+
+<span class="c1"># Build CLI with spark-compat</span>
+cargo<span class="w"> </span>build<span class="w"> </span>-p<span class="w"> </span>ballista-cli<span class="w"> </span>--features<span class="w"> </span>spark-compat<span class="w"> </span>--release
+</pre></div>
+</div>
+<p>For more installation options, see <a class="reference internal" href="deployment/cargo-install.html"><span class="std std-doc">Installing with Cargo</span></a>.</p>
+</section>
+</section>
+<section id="what-s-included">
+<h2>What’s Included<a class="headerlink" href="#what-s-included" title="Link to this heading">¶</a></h2>
+<p>When the <code class="docutils literal notranslate"><span class="pre">spark-compat</span></code> feature is enabled, Ballista’s function registry automatically includes additional functions from the <code class="docutils literal notranslate"><span class="pre">datafusion-spark</span></code> crate:</p>
+<blockquote>
+<div><p><strong>Note:</strong> For a comprehensive list of available functions, refer to the <a class="reference external" href="https://docs.rs/datafusion-spark/latest/datafusion_spark/">datafusion-spark crate documentation</a>. These functions are provided in addition to DataFusion’s default functions.</p>
+</div></blockquote>
+<section id="scalar-functions">
+<h3>Scalar Functions<a class="headerlink" href="#scalar-functions" title="Link to this heading">¶</a></h3>
+<p>Spark-compatible scalar functions provide additional string, mathematical, and cryptographic operations.</p>
+</section>
+<section id="aggregate-functions">
+<h3>Aggregate Functions<a class="headerlink" href="#aggregate-functions" title="Link to this heading">¶</a></h3>
+<p>Spark-compatible aggregate functions extend DataFusion’s built-in aggregations with additional statistical and analytical functions.</p>
+</section>
+<section id="window-functions">
+<h3>Window Functions<a class="headerlink" href="#window-functions" title="Link to this heading">¶</a></h3>
+<p>Spark-compatible window functions provide additional analytical capabilities for windowed operations.</p>
+</section>
+</section>
+<section id="usage-examples">
+<h2>Usage Examples<a class="headerlink" href="#usage-examples" title="Link to this heading">¶</a></h2>
+<p>Once the <code class="docutils literal notranslate"><span class="pre">spark-compat</span></code> feature is enabled at build time, the functions are automatically available in SQL queries:</p>
+<section id="example-1-using-sha-1-hash-function">
+<h3>Example 1: Using SHA-1 Hash Function<a class="headerlink" href="#example-1-using-sha-1-hash-function" title="Link to this heading">¶</a></h3>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">sha1</span><span class="p">(</span><span class="s1">&#39;Ballista&#39;</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">hash_value</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>Output:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">+------------------------------------------+</span>
+<span class="o">|</span> <span class="n">hash_value</span>                               <span class="o">|</span>
+<span class="o">+------------------------------------------+</span>
+<span class="o">|</span> <span class="mi">8</span><span class="n">b8e1f0e55f8f0e3c7a8</span><span class="o">...</span> <span class="p">(</span><span class="nb">hex</span> <span class="n">string</span><span class="p">)</span>    <span class="o">|</span>
+<span class="o">+------------------------------------------+</span>
+</pre></div>
+</div>
+</section>
+<section id="example-2-using-expm1-for-precision">
+<h3>Example 2: Using expm1 for Precision<a class="headerlink" href="#example-2-using-expm1-for-precision" title="Link to this heading">¶</a></h3>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span>
+<span class="w">    </span><span class="n">expm1</span><span class="p">(</span><span class="mi">0</span><span class="p">.</span><span class="mi">001</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">precise_value</span><span class="p">,</span>
+<span class="w">    </span><span class="n">exp</span><span class="p">(</span><span class="mi">0</span><span class="p">.</span><span class="mi">001</span><span class="p">)</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">standard_value</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">expm1</span></code> function provides better numerical precision for small values compared to computing <code class="docutils literal notranslate"><span class="pre">exp(x)</span> <span class="pre">-</span> <span class="pre">1</span></code> directly.</p>
+</section>
+<section id="example-3-combining-with-datafusion-functions">
+<h3>Example 3: Combining with DataFusion Functions<a class="headerlink" href="#example-3-combining-with-datafusion-functions" title="Link to this heading">¶</a></h3>
+<p>Spark-compatible functions work alongside DataFusion’s built-in functions:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span>
+<span class="w">    </span><span class="n">name</span><span class="p">,</span>
+<span class="w">    </span><span class="k">upper</span><span class="p">(</span><span class="n">name</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">name_upper</span><span class="p">,</span><span class="w">           </span><span class="c1">-- DataFusion function</span>
+<span class="w">    </span><span class="n">sha1</span><span class="p">(</span><span class="n">name</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">name_hash</span><span class="p">,</span><span class="w">             </span><span class="c1">-- Spark-compat function</span>
+<span class="w">    </span><span class="k">length</span><span class="p">(</span><span class="n">name</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="n">name_length</span><span class="w">          </span><span class="c1">-- DataFusion function</span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">users</span><span class="p">;</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="use-cases">
+<h2>Use Cases<a class="headerlink" href="#use-cases" title="Link to this heading">¶</a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">spark-compat</span></code> feature is useful when:</p>
+<ul class="simple">
+<li><p><strong>Migrating from Spark</strong>: Easing the transition by providing familiar function names and behaviors</p></li>
+<li><p><strong>Cross-Platform Queries</strong>: Writing queries that use similar functions across Spark and Ballista environments</p></li>
+<li><p><strong>Specific Function Needs</strong>: Requiring particular Spark-style functions (like <code class="docutils literal notranslate"><span class="pre">sha1</span></code>, <code class="docutils literal notranslate"><span class="pre">conv</span></code>, etc.) that aren’t in DataFusion’s default set</p></li>
+<li><p><strong>Team Familiarity</strong>: Your team is more familiar with Spark’s function library</p></li>
+</ul>
+</section>
+<section id="see-also">
+<h2>See Also<a class="headerlink" href="#see-also" title="Link to this heading">¶</a></h2>
+<ul class="simple">
+<li><p><a class="reference external" href="https://crates.io/crates/datafusion-spark">datafusion-spark crate</a> - Source of the Spark-compatible functions</p></li>
+<li><p><a class="reference internal" href="deployment/cargo-install.html"><span class="std std-doc">Installing with Cargo</span></a> - Detailed installation instructions</p></li>
+</ul>
+</section>
+</section>
+
+
+              </div>
+              
+              
+              <!-- Previous / next buttons -->
+<div class='prev-next-area'>
+    <a class='left-prev' id="prev-link" href="extending-components.html" title="previous page">
+        <i class="fas fa-angle-left"></i>
+        <div class="prev-next-info">
+            <p class="prev-next-subtitle">previous</p>
+            <p class="prev-next-title">Extending Ballista Scheduler And Executors</p>
+        </div>
+    </a>
+    <a class='right-next' id="next-link" href="extensions-example.html" title="next page">
+    <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Extensions Example</p>
+    </div>
+    <i class="fas fa-angle-right"></i>
+    </a>
+</div>
+              
+          </main>
+          
+
+      </div>
+    </div>
+  
+    <script src="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf"></script>
+  
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p class="copyright">
+    &copy; Copyright 2019-2024, Apache Software Foundation.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p class="sphinx-version">
+Created using <a href="http://sphinx-doc.org/">Sphinx</a> 8.1.3.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p>Apache DataFusion Ballista, Arrow Ballista, Apache, the Apache feather logo, and the Apache DataFusion Ballista project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>

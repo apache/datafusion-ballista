@@ -183,6 +183,11 @@
   </a>
  </li>
  <li class="toctree-l1">
+  <a class="reference internal" href="../spark-compatible-functions.html">
+   Spark-Compatible Functions
+  </a>
+ </li>
+ <li class="toctree-l1">
   <a class="reference internal" href="../extensions-example.html">
    Extensions Example
   </a>
@@ -254,9 +259,26 @@
               
               <div class="toc-item">
                 
+<div class="tocsection onthispage pt-5 pb-3">
+    <i class="fas fa-list"></i> On this page
+</div>
 
 <nav id="bd-toc-nav">
-    
+    <ul class="visible nav section-nav flex-column">
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#installing-with-optional-features">
+   Installing with Optional Features
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#spark-compatible-functions">
+     Spark-Compatible Functions
+    </a>
+   </li>
+  </ul>
+ </li>
+</ul>
+
 </nav>
               </div>
               
@@ -323,6 +345,29 @@ manually specifying a bind port. For example:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">RUST_LOG</span><span class="o">=</span>info<span class="w"> </span>ballista-executor<span class="w"> </span>--bind-port<span class="w"> </span><span class="m">50052</span>
 </pre></div>
 </div>
+<section id="installing-with-optional-features">
+<h2>Installing with Optional Features<a class="headerlink" href="#installing-with-optional-features" title="Link to this heading">¶</a></h2>
+<p>Ballista supports optional features that can be enabled during installation using the <code class="docutils literal notranslate"><span class="pre">--features</span></code> flag.</p>
+<section id="spark-compatible-functions">
+<h3>Spark-Compatible Functions<a class="headerlink" href="#spark-compatible-functions" title="Link to this heading">¶</a></h3>
+<p>To enable Spark-compatible scalar, aggregate, and window functions from the <code class="docutils literal notranslate"><span class="pre">datafusion-spark</span></code> crate:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Install scheduler with spark-compat feature</span>
+cargo<span class="w"> </span>install<span class="w"> </span>--locked<span class="w"> </span>--features<span class="w"> </span>spark-compat<span class="w"> </span>ballista-scheduler
+
+<span class="c1"># Install executor with spark-compat feature</span>
+cargo<span class="w"> </span>install<span class="w"> </span>--locked<span class="w"> </span>--features<span class="w"> </span>spark-compat<span class="w"> </span>ballista-executor
+
+<span class="c1"># Install CLI with spark-compat feature</span>
+cargo<span class="w"> </span>install<span class="w"> </span>--locked<span class="w"> </span>--features<span class="w"> </span>spark-compat<span class="w"> </span>ballista-cli
+</pre></div>
+</div>
+<p>When the <code class="docutils literal notranslate"><span class="pre">spark-compat</span></code> feature is enabled, additional functions like <code class="docutils literal notranslate"><span class="pre">sha1</span></code>, <code class="docutils literal notranslate"><span class="pre">expm1</span></code>, <code class="docutils literal notranslate"><span class="pre">sha2</span></code>, and others become available in SQL queries.</p>
+<blockquote>
+<div><p><strong>Note:</strong> The <code class="docutils literal notranslate"><span class="pre">spark-compat</span></code> feature provides Spark-compatible expressions and functions only, not full Apache Spark API compatibility.</p>
+</div></blockquote>
+<p>For more details about Spark-compatible functions, see <a class="reference internal" href="../spark-compatible-functions.html"><span class="std std-doc">Spark-Compatible Functions</span></a>.</p>
+</section>
+</section>
 </section>
 
 
