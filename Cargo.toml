@@ -53,7 +53,7 @@ mimalloc = { version = "0.1" }
 
 tokio = { version = "1" }
 uuid = { version = "1.20", features = ["v4", "v7"] }
-rand = { version = "0.9" }
+rand = { version = "0.10" }
 env_logger = { version = "0.11" }
 futures = { version = "0.3" }
 log = { version = "0.4" }
