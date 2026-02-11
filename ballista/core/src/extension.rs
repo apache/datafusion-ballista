@@ -27,6 +27,11 @@ use crate::serde::{BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec
 use datafusion::execution::context::{QueryPlanner, SessionConfig, SessionState};
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::session_state::SessionStateBuilder;
+use datafusion::functions::all_default_functions;
+use datafusion::functions_aggregate::all_default_aggregate_functions;
+use datafusion::functions_nested::all_default_nested_functions;
+use datafusion::functions_window::all_default_window_functions;
+use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::protobuf::LogicalPlanNode;
@@ -42,6 +47,47 @@ use tonic::{Request, Status};
 /// Type alias for the endpoint override function used in gRPC client configuration
 pub type EndpointOverrideFn =
     Arc<dyn Fn(Endpoint) -> Result<Endpoint, Box<dyn Error + Send + Sync>> + Send + Sync>;
+
+#[cfg(feature = "spark-compat")]
+use datafusion_spark::{
+    all_default_aggregate_functions as spark_aggregate_functions,
+    all_default_scalar_functions as spark_scalar_functions,
+    all_default_window_functions as spark_window_functions,
+};
+
+/// Returns scalar functions for Ballista (DataFusion defaults + Spark when enabled)
+pub fn ballista_scalar_functions() -> Vec<Arc<ScalarUDF>> {
+    #[allow(unused_mut)]
+    let mut functions = all_default_functions();
+    functions.append(&mut all_default_nested_functions());
+
+    #[cfg(feature = "spark-compat")]
+    functions.extend(spark_scalar_functions());
+
+    functions
+}
+
+/// Returns aggregate functions for Ballista (DataFusion defaults + Spark when enabled)
+pub fn ballista_aggregate_functions() -> Vec<Arc<AggregateUDF>> {
+    #[allow(unused_mut)]
+    let mut functions = all_default_aggregate_functions();
+
+    #[cfg(feature = "spark-compat")]
+    functions.extend(spark_aggregate_functions());
+
+    functions
+}
+
+/// Returns window functions for Ballista (DataFusion defaults + Spark when enabled)
+pub fn ballista_window_functions() -> Vec<Arc<WindowUDF>> {
+    #[allow(unused_mut)]
+    let mut functions = all_default_window_functions();
+
+    #[cfg(feature = "spark-compat")]
+    functions.extend(spark_window_functions());
+
+    functions
+}
 
 /// Provides methods which adapt [SessionState]
 /// for Ballista usage
@@ -209,6 +255,9 @@ impl SessionStateExt for SessionState {
             .with_config(session_config)
             .with_runtime_env(Arc::new(runtime_env))
             .with_query_planner(Arc::new(planner))
+            .with_scalar_functions(ballista_scalar_functions())
+            .with_aggregate_functions(ballista_aggregate_functions())
+            .with_window_functions(ballista_window_functions())
             .build();
 
         Ok(session_state)
@@ -240,7 +289,13 @@ impl SessionStateExt for SessionState {
             }
         };
 
-        Ok(builder.build())
+        let session_state = builder
+            .with_scalar_functions(ballista_scalar_functions())
+            .with_aggregate_functions(ballista_aggregate_functions())
+            .with_window_functions(ballista_window_functions())
+            .build();
+
+        Ok(session_state)
     }
 }
 
@@ -805,5 +860,109 @@ mod test {
                 .to_string()
                 .contains("TLS configuration failed")
         );
+    }
+
+    // Tests for helper functions that register DataFusion + Spark functions
+
+    #[test]
+    fn test_ballista_functions_include_datafusion() {
+        use super::{
+            ballista_aggregate_functions, ballista_scalar_functions,
+            ballista_window_functions,
+        };
+
+        // Test scalar functions
+        let scalar_funcs = ballista_scalar_functions();
+        assert!(scalar_funcs.iter().any(|f| f.name() == "abs"));
+        assert!(scalar_funcs.iter().any(|f| f.name() == "ceil"));
+        assert!(scalar_funcs.iter().any(|f| f.name() == "array_length")); // nested function
+
+        // Test aggregate functions
+        let agg_funcs = ballista_aggregate_functions();
+        assert!(agg_funcs.iter().any(|f| f.name() == "count"));
+        assert!(agg_funcs.iter().any(|f| f.name() == "sum"));
+        assert!(agg_funcs.iter().any(|f| f.name() == "avg"));
+
+        // Test window functions
+        let window_funcs = ballista_window_functions();
+        assert!(window_funcs.iter().any(|f| f.name() == "row_number"));
+        assert!(window_funcs.iter().any(|f| f.name() == "rank"));
+        assert!(window_funcs.iter().any(|f| f.name() == "dense_rank"));
+    }
+
+    #[test]
+    #[cfg(not(feature = "spark-compat"))]
+    fn test_ballista_functions_without_spark() {
+        use super::{
+            ballista_aggregate_functions, ballista_scalar_functions,
+            ballista_window_functions,
+        };
+
+        // Scalar functions should NOT include Spark functions
+        let scalar_funcs = ballista_scalar_functions();
+        assert!(!scalar_funcs.iter().any(|f| f.name() == "sha1"));
+        assert!(!scalar_funcs.iter().any(|f| f.name() == "expm1"));
+
+        // All function types should have baseline DataFusion functions
+        assert!(!ballista_aggregate_functions().is_empty());
+        assert!(!ballista_window_functions().is_empty());
+    }
+
+    #[test]
+    #[cfg(feature = "spark-compat")]
+    fn test_ballista_functions_with_spark() {
+        use super::{
+            ballista_aggregate_functions, ballista_scalar_functions,
+            ballista_window_functions,
+        };
+
+        // Scalar functions should include Spark functions
+        let scalar_funcs = ballista_scalar_functions();
+        assert!(scalar_funcs.iter().any(|f| f.name() == "sha1"));
+        assert!(scalar_funcs.iter().any(|f| f.name() == "expm1"));
+
+        // All function types should have functions available
+        assert!(!ballista_aggregate_functions().is_empty());
+        assert!(!ballista_window_functions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_ballista_functions_with_session_state() {
+        use super::{
+            ballista_aggregate_functions, ballista_scalar_functions,
+            ballista_window_functions,
+        };
+
+        let state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_scalar_functions(ballista_scalar_functions())
+            .with_aggregate_functions(ballista_aggregate_functions())
+            .with_window_functions(ballista_window_functions())
+            .build();
+
+        // Verify all function types are registered in SessionState
+        assert!(state.scalar_functions().contains_key("abs"));
+        assert!(state.aggregate_functions().contains_key("count"));
+        assert!(state.window_functions().contains_key("row_number"));
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "spark-compat")]
+    async fn test_ballista_spark_functions_with_session_state() {
+        use super::{
+            ballista_aggregate_functions, ballista_scalar_functions,
+            ballista_window_functions,
+        };
+
+        let state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_scalar_functions(ballista_scalar_functions())
+            .with_aggregate_functions(ballista_aggregate_functions())
+            .with_window_functions(ballista_window_functions())
+            .build();
+
+        // Verify Spark functions are registered in SessionState
+        assert!(state.scalar_functions().contains_key("sha1"));
+        assert!(state.scalar_functions().contains_key("expm1"));
     }
 }
