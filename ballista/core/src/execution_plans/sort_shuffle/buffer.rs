@@ -22,12 +22,12 @@
 //!   assignments using a prefix-sum algorithm (modeled on Apache DataFusion Comet).
 //! - `InputBatchStore`: Centralized storage for input record batches.
 //! - `materialize_partition`: Materializes partition data from indices using
-//!   `BatchCoalescer::push_batch_with_indices`.
+//!   `interleave_record_batch` for efficient row selection.
 
 use std::sync::Arc;
 
 use datafusion::arrow::array::UInt64Builder;
-use datafusion::arrow::compute::BatchCoalescer;
+use datafusion::arrow::compute::interleave_record_batch;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::Result;
@@ -134,52 +134,60 @@ impl ScratchSpace {
 }
 
 /// Materializes a partition's data from `(batch_idx, row_idx)` pairs into
-/// coalesced `RecordBatch`es using `BatchCoalescer::push_batch_with_indices`.
+/// coalesced `RecordBatch`es using `interleave_record_batch`.
 ///
-/// Uses `scratch_builder` as a reusable builder to avoid allocations.
+/// Uses `scratch_builder` as a reusable builder (kept for API compatibility).
 pub fn materialize_partition(
     partition_indices: &[(u32, u32)],
     input_batches: &InputBatchStore,
     target_batch_size: usize,
-    scratch_builder: &mut UInt64Builder,
+    _scratch_builder: &mut UInt64Builder,
 ) -> Result<Vec<RecordBatch>> {
     if partition_indices.is_empty() {
         return Ok(Vec::new());
     }
 
-    let mut coalescer =
-        BatchCoalescer::new(input_batches.schema().clone(), target_batch_size);
-    let mut result = Vec::new();
+    // Convert (u32, u32) to (usize, usize) for interleave API
+    let interleave_indices: Vec<(usize, usize)> = partition_indices
+        .iter()
+        .map(|&(batch_idx, row_idx)| (batch_idx as usize, row_idx as usize))
+        .collect();
 
-    let mut start = 0;
-    while start < partition_indices.len() {
-        let current_batch_idx = partition_indices[start].0;
-        let mut end = start + 1;
-        while end < partition_indices.len()
-            && partition_indices[end].0 == current_batch_idx
-        {
-            end += 1;
-        }
+    // Get references to all batches
+    let batches = input_batches.batches();
+    let batch_refs: Vec<&RecordBatch> = batches.iter().collect();
 
-        let batch = input_batches.get_batch(current_batch_idx);
+    // Single interleave operation
+    let interleaved = interleave_record_batch(&batch_refs, &interleave_indices)?;
 
-        for (_, r) in &partition_indices[start..end] {
-            scratch_builder.append_value(*r as u64);
-        }
-        let idx_array = scratch_builder.finish();
+    // Split into target-sized batches using zero-copy slicing
+    split_into_batches(interleaved, target_batch_size)
+}
 
-        coalescer.push_batch_with_indices(batch.clone(), &idx_array)?;
-        while let Some(completed) = coalescer.next_completed_batch() {
-            result.push(completed);
-        }
+/// Splits a large RecordBatch into smaller batches of target size using zero-copy slicing.
+///
+/// Returns a vector of RecordBatch, where all batches except possibly the last
+/// have approximately `target_batch_size` rows.
+fn split_into_batches(
+    batch: RecordBatch,
+    target_batch_size: usize,
+) -> Result<Vec<RecordBatch>> {
+    let total_rows = batch.num_rows();
 
-        start = end;
+    if total_rows <= target_batch_size {
+        return Ok(vec![batch]);
     }
 
-    coalescer.finish_buffered_batch()?;
-    while let Some(completed) = coalescer.next_completed_batch() {
-        result.push(completed);
+    let num_batches = total_rows.div_ceil(target_batch_size);
+    let mut result = Vec::with_capacity(num_batches);
+
+    let mut offset = 0;
+    while offset < total_rows {
+        let length = (total_rows - offset).min(target_batch_size);
+        result.push(batch.slice(offset, length));
+        offset += length;
     }
+
     Ok(result)
 }
 
