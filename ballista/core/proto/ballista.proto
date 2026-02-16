@@ -30,8 +30,13 @@ import "datafusion_common.proto";
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Ballista Logical Plan
 ///////////////////////////////////////////////////////////////////////////////////////////////////
+message BallistaLogicalPlanNode {
+  oneof LogicalPlanType {
+    LogicalPlanCacheNode cache_node = 1;
+  }
+}
 
-message BallistaLogicalPlanCacheNode {
+message LogicalPlanCacheNode {
   string cache_id = 1;
   string session_id = 2;
 }

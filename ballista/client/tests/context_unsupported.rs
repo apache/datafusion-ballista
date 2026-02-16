@@ -70,6 +70,12 @@ mod unsupported {
         ctx: SessionContext,
         test_data: String,
     ) {
+        ctx.sql("SET ballista.cache_noop = false")
+            .await
+            .unwrap()
+            .show()
+            .await
+            .unwrap();
         let df = ctx
             .read_parquet(
                 &format!("{test_data}/alltypes_plain.parquet"),
@@ -153,6 +159,11 @@ mod unsupported {
         #[case]
         ctx: SessionContext,
     ) -> datafusion::error::Result<()> {
+        // opt out case, should fail
+        ctx.sql("SET ballista.cache_noop = false")
+            .await?
+            .show()
+            .await?;
         let cached_df = ctx.sql("SELECT 1").await?.cache().await?;
 
         // Collect fails because extension node is not handled for now by default query planner
@@ -164,6 +175,25 @@ mod unsupported {
             err_msg.contains("No installed planner was able to convert the custom node to an execution plan: BallistaCacheNode"),
             "Expected planner error, got: {err_msg}"
         );
+
+        // opt in case, should succeed transparently without effective cache
+        ctx.sql("SET ballista.cache_noop = true")
+            .await?
+            .show()
+            .await?;
+        let cached_df = ctx.sql("SELECT 1").await?.cache().await?;
+        // Collect does not fail because cache is ignored silently with cache_noop
+        let result = cached_df.collect().await;
+
+        assert!(result.is_ok());
+        let expected = [
+            "+----------+",
+            "| Int64(1) |",
+            "+----------+",
+            "| 1        |",
+            "+----------+",
+        ];
+        assert_batches_eq!(expected, &result?);
 
         Ok(())
     }

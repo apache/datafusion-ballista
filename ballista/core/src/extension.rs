@@ -741,13 +741,17 @@ impl CacheFactory for BallistaCacheFactory {
         plan: LogicalPlan,
         session_state: &SessionState,
     ) -> datafusion::error::Result<LogicalPlan> {
-        Ok(LogicalPlan::Extension(Extension {
-            node: Arc::new(BallistaCacheNode::new(
-                Uuid::new_v4().to_string(),
-                session_state.session_id().to_string(),
-                plan,
-            )),
-        }))
+        if session_state.config().ballista_config().cache_noop() {
+            Ok(plan)
+        } else {
+            Ok(LogicalPlan::Extension(Extension {
+                node: Arc::new(BallistaCacheNode::new(
+                    Uuid::new_v4().to_string(),
+                    session_state.session_id().to_string(),
+                    plan,
+                )),
+            }))
+        }
     }
 }
 
