@@ -131,11 +131,21 @@ impl Default for GrpcServerConfig {
 pub fn default_session_builder(
     config: SessionConfig,
 ) -> datafusion::common::Result<SessionState> {
-    Ok(SessionStateBuilder::new()
+    use crate::extension::{
+        ballista_aggregate_functions, ballista_scalar_functions,
+        ballista_window_functions,
+    };
+
+    let state = SessionStateBuilder::new()
         .with_default_features()
         .with_config(config)
         .with_runtime_env(Arc::new(RuntimeEnvBuilder::new().build()?))
-        .build())
+        .with_scalar_functions(ballista_scalar_functions())
+        .with_aggregate_functions(ballista_aggregate_functions())
+        .with_window_functions(ballista_window_functions())
+        .build();
+
+    Ok(state)
 }
 
 /// Creates a default session configuration with Ballista extensions.

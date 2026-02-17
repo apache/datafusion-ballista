@@ -19,7 +19,6 @@
 
 use ballista::extension::SessionConfigExt;
 use ballista::prelude::SessionContextExt;
-use ballista_core::config::BALLISTA_SHUFFLE_SORT_BASED_ENABLED;
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::SchemaBuilder;
 use datafusion::arrow::util::display::array_value_to_string;
@@ -120,9 +119,12 @@ struct BallistaBenchmarkOpt {
     #[structopt(parse(from_os_str), short = "o", long = "output")]
     output_path: Option<PathBuf>,
 
-    /// Enable sort-based shuffle instead of hash-based shuffle
-    #[structopt(long = "sort-shuffle")]
-    sort_shuffle: bool,
+    /// Configuration overrides in key=value format.
+    /// Can be specified multiple times, e.g.
+    /// -c ballista.shuffle.sort_based.enabled=true
+    /// -c datafusion.execution.target_partitions=16
+    #[structopt(short = "c", long = "config", number_of_values = 1)]
+    config_overrides: Vec<String>,
 }
 
 #[derive(Debug, StructOpt, Clone)]
@@ -413,8 +415,18 @@ async fn benchmark_ballista(opt: BallistaBenchmarkOpt) -> Result<()> {
             .with_batch_size(opt.batch_size)
             .with_collect_statistics(true);
 
-        if opt.sort_shuffle {
-            config = config.set_str(BALLISTA_SHUFFLE_SORT_BASED_ENABLED, "true");
+        for kv in &opt.config_overrides {
+            if let Some((key, value)) = kv.split_once('=') {
+                if let Err(e) = config.options_mut().set(key.trim(), value.trim()) {
+                    println!("Warning: could not set config '{}': {}", kv, e);
+                }
+            } else {
+                println!(
+                    "Warning: ignoring invalid config override '{}'. \
+                     Expected format: key=value",
+                    kv
+                );
+            }
         }
 
         let state = SessionStateBuilder::new()

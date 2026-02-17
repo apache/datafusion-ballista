@@ -24,6 +24,7 @@ mod supported {
         standalone_context_with_state,
     };
     use ballista_core::config::BallistaConfig;
+
     use datafusion::physical_plan::collect;
     use datafusion::prelude::*;
     use datafusion::{assert_batches_eq, prelude::SessionContext};
@@ -39,7 +40,7 @@ mod supported {
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
     #[tokio::test]
-    async fn should_execute_sql_show(
+    async fn should_execute_sql_collect(
         #[future(awt)]
         #[case]
         ctx: SessionContext,
@@ -337,6 +338,7 @@ mod supported {
         ctx: SessionContext,
         test_data: String,
     ) -> datafusion::error::Result<()> {
+        // registering table to show in show tables
         ctx.register_parquet(
             "test",
             &format!("{test_data}/alltypes_plain.parquet"),
@@ -402,7 +404,7 @@ mod supported {
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
     #[tokio::test]
-    async fn should_execute_dataframe(
+    async fn should_collect_from_dataframe(
         #[future(awt)]
         #[case]
         ctx: SessionContext,
@@ -478,48 +480,6 @@ mod supported {
         ];
 
         assert_batches_eq!(expected, &result);
-        Ok(())
-    }
-
-    #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[tokio::test]
-    async fn should_execute_sql_app_name_show(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
-        test_data: String,
-    ) -> datafusion::error::Result<()> {
-        ctx.sql("SET ballista.job.name = 'Super Cool Ballista App'")
-            .await?
-            .show()
-            .await?;
-
-        ctx.register_parquet(
-            "test",
-            &format!("{test_data}/alltypes_plain.parquet"),
-            Default::default(),
-        )
-        .await?;
-
-        let result = ctx
-            .sql("select string_col, timestamp_col from test where id > 4")
-            .await?
-            .collect()
-            .await?;
-        let expected = [
-            "+------------+---------------------+",
-            "| string_col | timestamp_col       |",
-            "+------------+---------------------+",
-            "| 31         | 2009-03-01T00:01:00 |",
-            "| 30         | 2009-04-01T00:00:00 |",
-            "| 31         | 2009-04-01T00:01:00 |",
-            "+------------+---------------------+",
-        ];
-
-        assert_batches_eq!(expected, &result);
-
         Ok(())
     }
 

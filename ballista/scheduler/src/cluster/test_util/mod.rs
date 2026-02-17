@@ -17,7 +17,7 @@
 
 use crate::cluster::{JobState, JobStateEvent};
 use crate::scheduler_server::timestamp_millis;
-use crate::state::execution_graph::ExecutionGraph;
+use crate::state::execution_graph::ExecutionGraphBox;
 use crate::test_utils::{await_condition, mock_completed_task, mock_executor};
 use ballista_core::error::Result;
 use ballista_core::serde::protobuf::JobStatus;
@@ -87,7 +87,7 @@ impl<S: JobState> JobStateTest<S> {
     }
 
     /// Submits a job with the given execution graph.
-    pub async fn submit_job(self, graph: &ExecutionGraph) -> Result<Self> {
+    pub async fn submit_job(self, graph: &ExecutionGraphBox) -> Result<Self> {
         self.state
             .submit_job(graph.job_id().to_string(), graph)
             .await?;
@@ -113,7 +113,7 @@ impl<S: JobState> JobStateTest<S> {
     }
 
     /// Updates the job with the given execution graph.
-    pub async fn update_job(self, graph: &ExecutionGraph) -> Result<Self> {
+    pub async fn update_job(self, graph: &ExecutionGraphBox) -> Result<Self> {
         self.state.save_job(graph.job_id(), graph).await?;
         Ok(self)
     }
@@ -172,7 +172,7 @@ impl<S: JobState> JobStateTest<S> {
 /// Tests the complete job lifecycle from queued to successful.
 pub async fn test_job_lifecycle<S: JobState>(
     state: S,
-    mut graph: ExecutionGraph,
+    mut graph: ExecutionGraphBox,
 ) -> Result<()> {
     let test = JobStateTest::new(state).await?;
 
@@ -201,7 +201,7 @@ pub async fn test_job_lifecycle<S: JobState>(
 /// Tests job failure during the planning phase.
 pub async fn test_job_planning_failure<S: JobState>(
     state: S,
-    graph: ExecutionGraph,
+    graph: ExecutionGraphBox,
 ) -> Result<()> {
     let test = JobStateTest::new(state).await?;
 
@@ -216,7 +216,7 @@ pub async fn test_job_planning_failure<S: JobState>(
     Ok(())
 }
 
-fn drain_tasks(graph: &mut ExecutionGraph) -> Result<()> {
+fn drain_tasks(graph: &mut ExecutionGraphBox) -> Result<()> {
     let executor = mock_executor("executor-id1".to_string());
     while let Some(task) = graph.pop_next_task(&executor.id)? {
         let task_status = mock_completed_task(task, &executor.id);

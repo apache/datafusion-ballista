@@ -154,7 +154,18 @@ pub async fn new_standalone_executor(
     concurrent_tasks: usize,
     codec: BallistaCodec,
 ) -> Result<()> {
-    let session_state = SessionStateBuilder::new().with_default_features().build();
+    use ballista_core::extension::{
+        ballista_aggregate_functions, ballista_scalar_functions,
+        ballista_window_functions,
+    };
+
+    let session_state = SessionStateBuilder::new()
+        .with_default_features()
+        .with_scalar_functions(ballista_scalar_functions())
+        .with_aggregate_functions(ballista_aggregate_functions())
+        .with_window_functions(ballista_window_functions())
+        .build();
+
     let runtime = session_state.runtime_env().clone();
     let runtime_producer: RuntimeProducer = Arc::new(move |_| Ok(runtime.clone()));
 

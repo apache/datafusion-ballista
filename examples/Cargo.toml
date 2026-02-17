@@ -38,6 +38,14 @@ name = "mtls-cluster"
 path = "examples/mtls-cluster.rs"
 required-features = ["tls"]
 
+[[example]]
+name = "remote-spark-functions"
+required-features = ["ballista-core/spark-compat"]
+
+[[example]]
+name = "standalone-substrait"
+required-features = ["ballista-scheduler/substrait"]
+
 [dependencies]
 # Optional dependency for TLS support
 rustls = { version = "0.23", features = ["ring"], optional = true }
@@ -70,9 +78,8 @@ url = { workspace = true }
 uuid = { workspace = true }
 
 [features]
-default = ["substrait", "standalone"]
+default = ["standalone"]
 standalone = ["ballista/standalone"]
-substrait = ["ballista-scheduler/substrait"]
 testcontainers = []
 # Enable TLS support for the mtls-cluster example
 tls = ["tonic/tls-ring", "dep:rustls"]
