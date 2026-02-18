@@ -37,6 +37,7 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use dashmap::DashMap;
 
+use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
@@ -292,6 +293,66 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         self.active_job_cache
             .insert(job_id.to_owned(), JobInfoCache::new(graph));
 
+        Ok(())
+    }
+
+    /// Registers a job that depends on other jobs to complete first
+    ///
+    /// The job will be in "pending" state until all parent jobs complete.
+    /// Once all dependencies are satisfied, the job will be automatically submitted.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn register_pending_job(
+        &self,
+        job_id: String,
+        job_name: String,
+        session_id: String,
+        plan: Arc<LogicalPlan>,
+        session_config: Arc<SessionConfig>,
+        parent_jobs: Vec<String>,
+        queued_at: u64,
+    ) -> Result<()> {
+        let pending_count = parent_jobs.len();
+
+        info!(
+            "Registering pending job {} with {} parent dependencies: {:?}",
+            job_id, pending_count, parent_jobs
+        );
+
+        // Create pending job info and register in JobState
+        let pending_info = crate::cluster::PendingJobInfo {
+            job_id: job_id.clone(),
+            job_name: job_name.clone(),
+            parent_jobs: parent_jobs.into_iter().collect(),
+            pending_parent_count: pending_count,
+            plan,
+            session_id,
+            session_config,
+            queued_at,
+        };
+
+        self.state.accept_pending_job(pending_info)?;
+
+        Ok(())
+    }
+
+    /// Resolves job dependencies when a job completes
+    ///
+    /// Returns a list of (job_id, PendingJobInfo) tuples for jobs that are ready to be activated
+    pub async fn resolve_job_dependencies(
+        &self,
+        completed_job_id: &str,
+    ) -> Result<Vec<(String, crate::cluster::PendingJobInfo)>> {
+        self.state.resolve_pending_jobs(completed_job_id)
+    }
+
+    /// Cascades job cancellation to all dependent child jobs
+    ///
+    /// When a job fails, all jobs that depend on it should also be marked as failed
+    pub async fn cascade_cancel_jobs(&self, failed_job_id: &str) -> Result<()> {
+        let reason = format!("Parent job {} failed", failed_job_id);
+        self.state
+            .cascade_fail_pending_jobs(failed_job_id, reason)
+            .await?;
         Ok(())
     }
 

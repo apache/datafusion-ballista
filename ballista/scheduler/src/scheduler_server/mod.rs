@@ -240,6 +240,68 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         Ok(job_id)
     }
 
+    /// Submits split jobs with dependency relationship
+    ///
+    /// Creates an upstream job and a downstream job, and register the dependency relationship between them
+    pub async fn submit_split_jobs(
+        &self,
+        job_name: &str,
+        ctx: Arc<SessionContext>,
+        split: crate::job_split_rules::SplitJobPlan,
+    ) -> Result<String> {
+        let queued_at = timestamp_millis();
+
+        // 1. Generate two job IDs
+        let upstream_job_id = self.state.task_manager.generate_job_id();
+        let downstream_job_id = self.state.task_manager.generate_job_id();
+
+        log::info!(
+            "Splitting job '{}' into upstream={} and downstream={}",
+            job_name,
+            upstream_job_id,
+            downstream_job_id
+        );
+
+        // 2. Register downstream job as pending
+        let downstream_job_name = format!("{}_downstream", job_name);
+        let session_config = Arc::new(ctx.copied_config());
+        let session_id = ctx.session_id().to_string();
+
+        self.state
+            .task_manager
+            .register_pending_job(
+                downstream_job_id.clone(),
+                downstream_job_name,
+                session_id,
+                split.downstream_plan,
+                session_config,
+                vec![upstream_job_id.clone()],
+                queued_at,
+            )
+            .await?;
+
+        // 3. Submit upstream job
+        let upstream_job_name = format!("{}_upstream", job_name);
+        self.query_stage_event_loop
+            .get_sender()?
+            .post_event(QueryStageSchedulerEvent::JobQueued {
+                job_id: upstream_job_id.clone(),
+                job_name: upstream_job_name,
+                session_ctx: ctx.clone(),
+                plan: Box::new((*split.upstream_plan).clone()),
+                queued_at,
+            })
+            .await?;
+
+        // 4. Return downstream job ID
+        log::info!(
+            "Job split complete: downstream job {} is pending, upstream job {} is queued",
+            downstream_job_id,
+            upstream_job_id
+        );
+        Ok(downstream_job_id)
+    }
+
     /// It just send task status update event to the channel,
     /// and will not guarantee the event processing completed after return
     pub(crate) async fn update_task_status(

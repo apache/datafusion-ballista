@@ -37,6 +37,7 @@ use crate::state::task_manager::{TaskLauncher, TaskManager};
 
 use crate::cluster::{BallistaCluster, BoundTask, ExecutorSlot};
 use crate::config::SchedulerConfig;
+use crate::job_split_rules::JobSplitRuleRegistry;
 use crate::state::execution_graph::TaskDescription;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::EventSender;
@@ -117,6 +118,8 @@ pub struct SchedulerState<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPl
     pub codec: BallistaCodec<T, U>,
     /// Scheduler configuration.
     pub config: Arc<SchedulerConfig>,
+    /// Registry for job split rules.
+    pub job_split_registry: JobSplitRuleRegistry,
 }
 
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T, U> {
@@ -140,6 +143,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             session_manager: SessionManager::new(cluster.job_state()),
             codec,
             config,
+            job_split_registry: JobSplitRuleRegistry::with_defaults(),
         }
     }
 
@@ -175,6 +179,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             session_manager: SessionManager::new(cluster.job_state()),
             codec,
             config,
+            job_split_registry: JobSplitRuleRegistry::with_defaults(),
         }
     }
 

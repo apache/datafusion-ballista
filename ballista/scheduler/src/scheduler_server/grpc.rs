@@ -437,16 +437,41 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             );
 
             log::trace!("setting job name: {job_name}");
-            let job_id = self
-                .submit_job(&job_name, session_ctx, &plan)
-                .await
+
+            // Try to split the job using registered rules
+            let job_id = if let Some(split_plan) = self
+                .state
+                .job_split_registry
+                .try_split(&plan)
                 .map_err(|e| {
                     let msg =
-                        format!("Failed to send JobQueued event for {job_name}: {e:?}");
+                        format!("Failed to check job split rules for {job_name}: {e:?}");
                     error!("{msg}");
-
                     Status::internal(msg)
-                })?;
+                })? {
+                info!("Job '{}' will be split into 2 jobs", job_name);
+
+                // Submit split jobs (upstream + downstream with dependency)
+                self.submit_split_jobs(&job_name, session_ctx, split_plan)
+                    .await
+                    .map_err(|e| {
+                        let msg =
+                            format!("Failed to submit split jobs for {job_name}: {e:?}");
+                        error!("{msg}");
+                        Status::internal(msg)
+                    })?
+            } else {
+                // Normal job submission (no split needed)
+                self.submit_job(&job_name, session_ctx, &plan)
+                    .await
+                    .map_err(|e| {
+                        let msg = format!(
+                            "Failed to send JobQueued event for {job_name}: {e:?}"
+                        );
+                        error!("{msg}");
+                        Status::internal(msg)
+                    })?
+            };
 
             Ok(Response::new(ExecuteQueryResult {
                 operation_id,

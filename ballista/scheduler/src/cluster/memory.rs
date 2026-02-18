@@ -17,7 +17,7 @@
 
 use crate::cluster::{
     BoundTask, ClusterState, ExecutorSlot, JobState, JobStateEvent, JobStateEventStream,
-    JobStatus, TaskDistributionPolicy, TopologyNode, bind_task_bias,
+    JobStatus, PendingJobInfo, TaskDistributionPolicy, TopologyNode, bind_task_bias,
     bind_task_consistent_hash, bind_task_round_robin, get_scan_files,
     is_skip_consistent_hash,
 };
@@ -26,8 +26,8 @@ use async_trait::async_trait;
 use ballista_core::ConfigProducer;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::{
-    AvailableTaskSlots, ExecutorHeartbeat, ExecutorStatus, FailedJob, QueuedJob,
-    executor_status,
+    AvailableTaskSlots, ExecutorHeartbeat, ExecutorStatus, FailedJob, PendingJob,
+    QueuedJob, executor_status,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use dashmap::DashMap;
@@ -350,6 +350,8 @@ pub struct InMemoryJobState {
     completed_jobs: DashMap<String, (JobStatus, Option<ExecutionGraphBox>)>,
     /// In-memory store of queued jobs. Map from Job ID -> (Job Name, queued_at timestamp)
     queued_jobs: DashMap<String, (String, u64)>,
+    /// In-memory store of pending jobs waiting for dependencies
+    pending_jobs: DashMap<String, PendingJobInfo>,
     /// In-memory store of running job statuses. Map from Job ID -> JobStatus
     running_jobs: DashMap<String, JobStatus>,
     /// `SessionBuilder` for building DataFusion `SessionContext` from `BallistaConfig`
@@ -371,6 +373,7 @@ impl InMemoryJobState {
             scheduler: scheduler.into(),
             completed_jobs: Default::default(),
             queued_jobs: Default::default(),
+            pending_jobs: Default::default(),
             running_jobs: Default::default(),
             //sessions: Default::default(),
             session_builder,
@@ -408,6 +411,18 @@ impl JobState for InMemoryJobState {
                 job_name: job_name.clone(),
                 status: Some(Status::Queued(QueuedJob {
                     queued_at: *queued_at,
+                })),
+            }));
+        }
+
+        // Check pending jobs
+        if let Some(pending_info) = self.pending_jobs.get(job_id).as_deref() {
+            return Ok(Some(JobStatus {
+                job_id: job_id.to_string(),
+                job_name: pending_info.job_name.clone(),
+                status: Some(Status::Pending(PendingJob {
+                    queued_at: pending_info.queued_at,
+                    pending_on: pending_info.parent_jobs.iter().cloned().collect(),
                 })),
             }));
         }
@@ -550,6 +565,125 @@ impl JobState for InMemoryJobState {
 
     fn produce_config(&self) -> SessionConfig {
         (self.config_producer)()
+    }
+
+    fn accept_pending_job(&self, info: PendingJobInfo) -> Result<()> {
+        let job_id = info.job_id.clone();
+
+        // Store pending job
+        self.pending_jobs.insert(job_id.clone(), info.clone());
+
+        info!(
+            "Accepted pending job {} with {} parent dependencies",
+            job_id,
+            info.parent_jobs.len()
+        );
+        Ok(())
+    }
+
+    fn resolve_pending_jobs(
+        &self,
+        completed_job_id: &str,
+    ) -> Result<Vec<(String, PendingJobInfo)>> {
+        let mut activated_jobs = vec![];
+
+        // Iterate through all pending jobs and check if they depend on the completed job
+        for mut entry in self.pending_jobs.iter_mut() {
+            let (child_id, pending_info) = entry.pair_mut();
+
+            // Check if this pending job depends on the completed job
+            if pending_info.parent_jobs.contains(completed_job_id) {
+                // Decrease pending parent count
+                pending_info.pending_parent_count =
+                    pending_info.pending_parent_count.saturating_sub(1);
+
+                info!(
+                    "Job {} dependency on {} satisfied, {} parents remaining",
+                    child_id, completed_job_id, pending_info.pending_parent_count
+                );
+
+                // If all dependencies satisfied, mark for activation
+                if pending_info.pending_parent_count == 0 {
+                    info!(
+                        "All dependencies satisfied for job {}, ready to activate",
+                        child_id
+                    );
+                }
+            }
+        }
+
+        // Remove and collect all jobs with pending_parent_count == 0
+        self.pending_jobs.retain(|job_id, pending_info| {
+            if pending_info.pending_parent_count == 0 {
+                activated_jobs.push((job_id.clone(), pending_info.clone()));
+                false // Remove from map
+            } else {
+                true // Keep in map
+            }
+        });
+
+        if !activated_jobs.is_empty() {
+            info!(
+                "Resolved {} jobs ready for activation: {:?}",
+                activated_jobs.len(),
+                activated_jobs.iter().map(|(id, _)| id).collect::<Vec<_>>()
+            );
+        }
+
+        Ok(activated_jobs)
+    }
+
+    async fn cascade_fail_pending_jobs(
+        &self,
+        failed_job_id: &str,
+        reason: String,
+    ) -> Result<Vec<String>> {
+        let mut failed_jobs = vec![];
+        let mut to_process = vec![failed_job_id.to_string()];
+        let mut visited = HashSet::new();
+
+        while let Some(current_job_id) = to_process.pop() {
+            if !visited.insert(current_job_id.clone()) {
+                continue; // Already processed
+            }
+
+            // Find all pending jobs that depend on the current job
+            let mut child_jobs_to_fail = vec![];
+            for entry in self.pending_jobs.iter() {
+                let (child_id, pending_info) = entry.pair();
+                if pending_info.parent_jobs.contains(&current_job_id) {
+                    child_jobs_to_fail
+                        .push((child_id.clone(), pending_info.job_name.clone()));
+                }
+            }
+
+            // Fail each child job
+            for (child_id, job_name) in child_jobs_to_fail {
+                if let Some((_, _)) = self.pending_jobs.remove(&child_id) {
+                    // Mark as failed
+                    self.fail_unscheduled_job(&child_id, reason.clone()).await?;
+                    failed_jobs.push(child_id.clone());
+
+                    // Add to processing queue for cascading
+                    to_process.push(child_id.clone());
+
+                    info!(
+                        "Cascaded failure to pending job {} (was waiting for {})",
+                        child_id, job_name
+                    );
+                }
+            }
+        }
+
+        if !failed_jobs.is_empty() {
+            info!(
+                "Cascaded failure from {} to {} dependent jobs",
+                failed_job_id,
+                failed_jobs.len()
+            );
+        }
+
+        Ok(failed_jobs)
     }
 }
 

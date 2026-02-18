@@ -180,6 +180,75 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 if let Err(e) = self.state.task_manager.succeed_job(&job_id).await {
                     error!("Fail to invoke succeed_job for job {job_id} due to {e:?}");
                 }
+
+                // Resolve job dependencies and activate waiting child jobs
+                match self
+                    .state
+                    .task_manager
+                    .resolve_job_dependencies(&job_id)
+                    .await
+                {
+                    Ok(activated_jobs) => {
+                        if !activated_jobs.is_empty() {
+                            info!(
+                                "Job {} completion triggered {} dependent jobs",
+                                job_id,
+                                activated_jobs.len()
+                            );
+
+                            // Send JobQueued events for all activated jobs
+                            for (child_job_id, meta) in activated_jobs {
+                                info!(
+                                    "Activating dependent job {} ({})",
+                                    child_job_id, meta.job_name
+                                );
+
+                                // Get or create SessionContext from session manager
+                                let session_ctx = match self
+                                    .state
+                                    .session_manager
+                                    .create_or_update_session(
+                                        &meta.session_id,
+                                        &meta.session_config,
+                                    )
+                                    .await
+                                {
+                                    Ok(ctx) => ctx,
+                                    Err(e) => {
+                                        error!(
+                                            "Failed to create SessionContext for dependent job {}: {:?}",
+                                            child_job_id, e
+                                        );
+                                        continue;
+                                    }
+                                };
+
+                                if let Err(e) = tx_event
+                                    .send(QueryStageSchedulerEvent::JobQueued {
+                                        job_id: child_job_id.clone(),
+                                        job_name: meta.job_name,
+                                        session_ctx,
+                                        plan: Box::new((*meta.plan).clone()),
+                                        queued_at: meta.queued_at,
+                                    })
+                                    .await
+                                {
+                                    error!(
+                                        "Failed to send JobQueued event for dependent job {}: {:?}",
+                                        child_job_id, e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to resolve job dependencies for {}: {:?}",
+                            job_id, e
+                        );
+                    }
+                }
+
                 self.state.clean_up_successful_job(job_id);
             }
             QueryStageSchedulerEvent::JobRunningFailed {
@@ -211,6 +280,13 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         error!("Fail to invoke abort_job for job {job_id} due to {e:?}");
                     }
                 }
+
+                // Cascade cancel all dependent child jobs
+                if let Err(e) = self.state.task_manager.cascade_cancel_jobs(&job_id).await
+                {
+                    error!("Failed to cascade cancel jobs for {}: {:?}", job_id, e);
+                }
+
                 self.state.clean_up_failed_job(job_id);
             }
             QueryStageSchedulerEvent::JobUpdated(job_id) => {

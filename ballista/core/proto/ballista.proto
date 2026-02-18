@@ -646,6 +646,11 @@ message QueuedJob {
   uint64 queued_at = 1;
 }
 
+message PendingJob {
+  uint64 queued_at = 1;
+  repeated string pending_on = 2; 
+}
+
 // TODO: add progress report
 message RunningJob {
   uint64 queued_at = 1;
@@ -669,6 +674,7 @@ message JobStatus {
     RunningJob running = 2;
     FailedJob failed = 3;
     SuccessfulJob successful = 4;
+    PendingJob pending = 7; 
   }
 }
 
