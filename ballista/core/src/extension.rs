@@ -24,14 +24,17 @@ use crate::config::{
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
 use crate::serde::{BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec};
+use datafusion::common::DFSchemaRef;
 use datafusion::execution::context::{QueryPlanner, SessionConfig, SessionState};
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use datafusion::execution::session_state::SessionStateBuilder;
+use datafusion::execution::session_state::{CacheFactory, SessionStateBuilder};
 use datafusion::functions::all_default_functions;
 use datafusion::functions_aggregate::all_default_aggregate_functions;
 use datafusion::functions_nested::all_default_nested_functions;
 use datafusion::functions_window::all_default_window_functions;
 use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
+use datafusion::logical_expr::{Extension, LogicalPlan, UserDefinedLogicalNodeCore};
+use datafusion::prelude::Expr;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::protobuf::LogicalPlanNode;
@@ -43,6 +46,7 @@ use tonic::metadata::MetadataMap;
 use tonic::service::Interceptor;
 use tonic::transport::Endpoint;
 use tonic::{Request, Status};
+use uuid::Uuid;
 
 /// Type alias for the endpoint override function used in gRPC client configuration
 pub type EndpointOverrideFn =
@@ -253,6 +257,7 @@ impl SessionStateExt for SessionState {
         let session_state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(session_config)
+            .with_cache_factory(Some(Arc::new(BallistaCacheFactory::new())))
             .with_runtime_env(Arc::new(runtime_env))
             .with_query_planner(Arc::new(planner))
             .with_scalar_functions(ballista_scalar_functions())
@@ -274,8 +279,9 @@ impl SessionStateExt for SessionState {
 
         let ballista_config = session_config.ballista_config();
 
-        let builder =
-            SessionStateBuilder::new_from_existing(self).with_config(session_config);
+        let builder = SessionStateBuilder::new_from_existing(self)
+            .with_config(session_config)
+            .with_cache_factory(Some(Arc::new(BallistaCacheFactory::new())));
 
         let builder = match planner_override {
             Some(planner) => builder.with_query_planner(planner),
@@ -720,6 +726,104 @@ impl BallistaConfigGrpcEndpoint {
 #[derive(Clone, Copy)]
 pub struct BallistaUseTls(pub bool);
 
+#[derive(Debug)]
+struct BallistaCacheFactory;
+
+impl BallistaCacheFactory {
+    fn new() -> Self {
+        Self {}
+    }
+}
+
+impl CacheFactory for BallistaCacheFactory {
+    fn create(
+        &self,
+        plan: LogicalPlan,
+        session_state: &SessionState,
+    ) -> datafusion::error::Result<LogicalPlan> {
+        if session_state.config().ballista_config().cache_noop() {
+            Ok(plan)
+        } else {
+            Ok(LogicalPlan::Extension(Extension {
+                node: Arc::new(BallistaCacheNode::new(
+                    Uuid::new_v4().to_string(),
+                    session_state.session_id().to_string(),
+                    plan,
+                )),
+            }))
+        }
+    }
+}
+
+/// Ballista logical Extension for caching.
+#[derive(PartialEq, Eq, PartialOrd, Hash, Debug)]
+pub struct BallistaCacheNode {
+    cache_id: String,
+    session_id: String,
+    input: LogicalPlan,
+    exprs: Vec<Expr>,
+}
+
+impl BallistaCacheNode {
+    /// Create a new cache node from provided logical input plan and cache infos.
+    pub fn new(cache_id: String, session_id: String, input: LogicalPlan) -> Self {
+        Self {
+            cache_id,
+            session_id,
+            input,
+            exprs: vec![],
+        }
+    }
+
+    /// Returns cache id.
+    pub fn cache_id(&self) -> &str {
+        self.cache_id.as_str()
+    }
+
+    /// Returns session id.
+    pub fn session_id(&self) -> &str {
+        self.session_id.as_str()
+    }
+}
+
+impl UserDefinedLogicalNodeCore for BallistaCacheNode {
+    fn name(&self) -> &str {
+        "BallistaCacheNode"
+    }
+
+    fn inputs(&self) -> Vec<&LogicalPlan> {
+        vec![&self.input]
+    }
+
+    fn schema(&self) -> &DFSchemaRef {
+        self.input.schema()
+    }
+
+    fn expressions(&self) -> Vec<Expr> {
+        self.exprs.clone()
+    }
+
+    fn fmt_for_explain(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+
+    fn with_exprs_and_inputs(
+        &self,
+        exprs: Vec<datafusion::prelude::Expr>,
+        inputs: Vec<LogicalPlan>,
+    ) -> datafusion::error::Result<Self> {
+        let [input] = <[LogicalPlan; 1]>::try_from(inputs).map_err(|_| {
+            datafusion::error::DataFusionError::Plan("input size must be one".to_string())
+        })?;
+
+        Ok(Self {
+            cache_id: self.cache_id.clone(),
+            session_id: self.session_id.clone(),
+            input,
+            exprs,
+        })
+    }
+}
 #[cfg(test)]
 mod test {
     use datafusion::{
