@@ -191,21 +191,15 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         &self,
         buf: &[u8],
         inputs: &[datafusion::logical_expr::LogicalPlan],
-        _ctx: &TaskContext,
+        ctx: &TaskContext,
     ) -> Result<datafusion::logical_expr::Extension> {
-        let plan: protobuf::BallistaLogicalPlanNode =
-            protobuf::BallistaLogicalPlanNode::decode(buf).map_err(|e| {
-                DataFusionError::Internal(format!(
-                    "Could not deserialize BallistaLogicalPlanNode: {e}"
-                ))
-            })?;
+        let plan = protobuf::BallistaLogicalPlanNode::decode(buf)
+            .ok()
+            .and_then(|node| node.logical_plan_type);
 
-        let plan: protobuf::ballista_logical_plan_node::LogicalPlanType =
-            plan.logical_plan_type.ok_or_else(|| {
-                DataFusionError::Internal(
-                    "Could not deserialize BallistaLogicalPlanNode because it's logical_plan_type is none".to_string()
-                )
-            })?;
+        let Some(plan) = plan else {
+            return self.default_codec.try_decode(buf, inputs, ctx);
+        };
 
         match plan {
             LogicalPlanType::CacheNode(plan_cache) => Ok(Extension {
@@ -246,7 +240,7 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
 
             Ok(())
         } else {
-            Ok(())
+            self.default_codec.try_encode(node, buf)
         }
     }
 
