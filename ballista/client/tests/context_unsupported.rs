@@ -59,6 +59,7 @@ mod unsupported {
             .await
             .unwrap();
     }
+
     #[rstest]
     #[case::standalone(standalone_context())]
     #[case::remote(remote_context())]
@@ -70,7 +71,7 @@ mod unsupported {
         ctx: SessionContext,
         test_data: String,
     ) {
-        ctx.sql("SET ballista.cache_noop = false")
+        ctx.sql("SET ballista.cache.noop = false")
             .await
             .unwrap()
             .show()
@@ -101,6 +102,35 @@ mod unsupported {
         ];
 
         assert_batches_eq!(expected, &result);
+    }
+
+    #[rstest]
+    #[case::standalone(standalone_context())]
+    #[case::remote(remote_context())]
+    #[tokio::test]
+    async fn should_support_on_cache_collect(
+        #[future(awt)]
+        #[case]
+        ctx: SessionContext,
+    ) -> datafusion::error::Result<()> {
+        // opt out case, should fail
+        ctx.sql("SET ballista.cache.noop = false")
+            .await?
+            .show()
+            .await?;
+        let cached_df = ctx.sql("SELECT 1").await?.cache().await?;
+
+        // Collect fails because extension node is not handled for now by default query planner
+        let result = cached_df.collect().await;
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("No installed planner was able to convert the custom node to an execution plan: BallistaCacheNode"),
+            "Expected planner error, got: {err_msg}"
+        );
+
+        Ok(())
     }
 
     #[rstest]
@@ -146,54 +176,6 @@ mod unsupported {
         // ];
 
         // assert_batches_eq!(expected, &result);
-
-        Ok(())
-    }
-
-    #[rstest]
-    #[case::standalone(standalone_context())]
-    #[case::remote(remote_context())]
-    #[tokio::test]
-    async fn should_support_on_cache_collect(
-        #[future(awt)]
-        #[case]
-        ctx: SessionContext,
-    ) -> datafusion::error::Result<()> {
-        // opt out case, should fail
-        ctx.sql("SET ballista.cache_noop = false")
-            .await?
-            .show()
-            .await?;
-        let cached_df = ctx.sql("SELECT 1").await?.cache().await?;
-
-        // Collect fails because extension node is not handled for now by default query planner
-        let result = cached_df.collect().await;
-
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("No installed planner was able to convert the custom node to an execution plan: BallistaCacheNode"),
-            "Expected planner error, got: {err_msg}"
-        );
-
-        // opt in case, should succeed transparently without effective cache
-        ctx.sql("SET ballista.cache_noop = true")
-            .await?
-            .show()
-            .await?;
-        let cached_df = ctx.sql("SELECT 1").await?.cache().await?;
-        // Collect does not fail because cache is ignored silently with cache_noop
-        let result = cached_df.collect().await;
-
-        assert!(result.is_ok());
-        let expected = [
-            "+----------+",
-            "| Int64(1) |",
-            "+----------+",
-            "| 1        |",
-            "+----------+",
-        ];
-        assert_batches_eq!(expected, &result?);
 
         Ok(())
     }

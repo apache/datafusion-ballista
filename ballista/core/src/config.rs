@@ -33,7 +33,7 @@ pub const BALLISTA_JOB_NAME: &str = "ballista.job.name";
 pub const BALLISTA_STANDALONE_PARALLELISM: &str = "ballista.standalone.parallelism";
 
 /// Configuration key for disabling default cache extension node.
-pub const BALLISTA_CACHE_NOOP: &str = "ballista.cache_noop";
+pub const BALLISTA_CACHE_NOOP: &str = "ballista.cache.noop";
 
 /// Configuration key for maximum concurrent shuffle read requests.
 pub const BALLISTA_SHUFFLE_READER_MAX_REQUESTS: &str =
