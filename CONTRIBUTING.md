@@ -65,30 +65,6 @@ or run them all at once:
 
 - [dev/rust_lint.sh](dev/rust_lint.sh)
 
-### Rust Process Configuration
-
-The scheduler and executor processes can be configured using toml files, environment variables and command-line
-arguments. The specification for config options can be found here:
-
-- [ballista/scheduler/scheduler_config_spec.toml](ballista/scheduler/scheduler_config_spec.toml)
-- [ballista/executor/executor_config_spec.toml](ballista/executor/executor_config_spec.toml)
-
-Those files fully define Ballista's configuration. If there is a discrepancy between this documentation and the
-files, assume those files are correct.
-
-To get a list of command-line arguments, run the binary with `--help`
-
-There is an example config file at [ballista/executor/examples/example_executor_config.toml](ballista/executor/examples/example_executor_config.toml)
-
-The order of precedence for arguments is: default config file < environment variables < specified config file < command line arguments.
-
-The executor and scheduler will look for the default config file at `/etc/ballista/[executor|scheduler].toml` To
-specify a config file use the `--config-file` argument.
-
-Environment variables are prefixed by `BALLISTA_EXECUTOR` or `BALLISTA_SCHEDULER` for the executor and scheduler
-respectively. Hyphens in command line arguments become underscores. For example, the `--scheduler-host` argument
-for the executor becomes `BALLISTA_EXECUTOR_SCHEDULER_HOST`
-
 ### Python Environment
 
 Refer to the instructions in the Python Bindings [README](./python/README.md)
