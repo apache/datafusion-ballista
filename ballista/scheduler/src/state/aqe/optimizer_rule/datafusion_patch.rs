@@ -29,6 +29,8 @@ use datafusion::physical_plan::{ExecutionPlan, displayable, execution_plan};
 use log::warn;
 use std::sync::Arc;
 
+// not required anymore
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct EliminateRoundRobbinRule {}
 impl EliminateRoundRobbinRule {
@@ -60,7 +62,7 @@ impl PhysicalOptimizerRule for EliminateRoundRobbinRule {
     }
 
     fn name(&self) -> &str {
-        "DistributedEliminateRoundRobbinRule"
+        "EliminateRoundRobbinRule"
     }
 
     fn schema_check(&self) -> bool {

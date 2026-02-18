@@ -108,7 +108,9 @@ pub(crate) fn mock_memory_table() -> Arc<dyn TableProvider> {
 }
 
 pub(crate) fn mock_context() -> SessionContext {
-    let config = SessionConfig::new().with_target_partitions(2);
+    let config = SessionConfig::new()
+        .with_target_partitions(2)
+        .with_round_robin_repartition(false);
 
     let state = SessionStateBuilder::new()
         .with_config(config)

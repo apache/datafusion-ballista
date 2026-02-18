@@ -18,7 +18,7 @@ use crate::state::aqe::adapter::BallistaAdapter;
 use crate::state::aqe::execution_plan::{AdaptiveDatafusionExec, ExchangeExec};
 use crate::state::aqe::optimizer_rule::{
     DistributedExchangeRule, EliminateCooperativeExecRule, EliminateEmptyExchangeRule,
-    EliminateRoundRobbinRule, PropagateEmptyExecRule, WarnOnDuplicateExecRule,
+    PropagateEmptyExecRule, WarnOnDuplicateExecRule,
 };
 
 use crate::state::execution_stage::StageOutput;
@@ -445,7 +445,8 @@ impl AdaptivePlanner {
         let default_optimizers = PhysicalOptimizer::new();
         physical_optimizers.extend(default_optimizers.rules.iter().cloned());
         physical_optimizers.push(Arc::new(PropagateEmptyExecRule::default()));
-        physical_optimizers.push(Arc::new(EliminateRoundRobbinRule::default()));
+        // this rule is not required anymore
+        // physical_optimizers.push(Arc::new(EliminateRoundRobbinRule::default()));
         physical_optimizers.push(Arc::new(EliminateCooperativeExecRule::default()));
         // we should remove it at the later stage
         // this is just temporary to detect possible duplicate
