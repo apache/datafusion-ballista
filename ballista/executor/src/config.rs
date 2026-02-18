@@ -78,7 +78,7 @@ pub struct Config {
     )]
     pub concurrent_tasks: usize,
     /// Task scheduling policy: pull-staged (executor polls) or push-staged (scheduler pushes).
-    #[arg(short = 's', long, default_value_t = ballista_core::config::TaskSchedulingPolicy::PullStaged, help = "The task scheduling policy for the scheduler, possible values: pull-staged, push-staged. Default: pull-staged")]
+    #[arg(short = 's', long, default_value_t = ballista_core::config::TaskSchedulingPolicy::PushStaged, help = "The task scheduling policy for the scheduler, possible values: pull-staged, push-staged. Default: pull-staged")]
     pub task_scheduling_policy: ballista_core::config::TaskSchedulingPolicy,
     /// Interval in seconds between job data cleanup runs (0 = disabled).
     #[arg(

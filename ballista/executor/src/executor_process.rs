@@ -220,13 +220,14 @@ pub async fn start_executor_process(
     } else {
         opt.concurrent_tasks
     };
-
+    let task_scheduling_policy = opt.task_scheduling_policy;
     // assign this executor an unique ID
     let executor_id = Uuid::new_v4().to_string();
     info!("Executor starting ... (Datafusion Ballista {BALLISTA_VERSION})");
     info!("Executor id: {executor_id}");
     info!("Executor working directory: {work_dir}");
     info!("Executor number of concurrent tasks: {concurrent_tasks}");
+    info!("Executor scheduling policy: {task_scheduling_policy:?}");
 
     let executor_meta = ExecutorRegistration {
         id: executor_id.clone(),

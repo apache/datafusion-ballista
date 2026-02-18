@@ -429,9 +429,9 @@ impl datafusion::config::ConfigExtension for BallistaConfig {
 #[cfg_attr(feature = "build-binary", derive(clap::ValueEnum))]
 pub enum TaskSchedulingPolicy {
     /// Pull-based scheduling works in a similar way to Apache Spark
-    #[default]
     PullStaged,
     /// push-based scheduling can result in lower latency.
+    #[default]
     PushStaged,
 }
 impl Display for TaskSchedulingPolicy {
