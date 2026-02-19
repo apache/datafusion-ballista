@@ -51,6 +51,7 @@ use datafusion_proto::physical_plan::AsExecutionPlan;
 use log::{debug, error, info, warn};
 use prost::Message;
 
+mod aqe;
 mod distributed_explain;
 /// Execution graph representation and management.
 pub mod execution_graph;
