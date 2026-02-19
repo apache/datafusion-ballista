@@ -90,7 +90,9 @@ pub async fn new_standalone_scheduler_with_builder(
             "localhost:50050".to_owned(),
             cluster,
             codec,
-            Arc::new(SchedulerConfig::default()),
+            Arc::new(SchedulerConfig::default().with_scheduler_policy(
+                ballista_core::config::TaskSchedulingPolicy::PullStaged,
+            )),
             metrics_collector,
         );
 
