@@ -5951,9 +5951,9 @@ dependencies = [
 
 [[package]]
 name = "tonic-build"
-version = "0.14.4"
+version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce6d8958ed3be404120ca43ffa0fb1e1fc7be214e96c8d33bd43a131b6eebc9e"
+checksum = "1882ac3bf5ef12877d7ed57aad87e75154c11931c2ba7e6cde5e22d63522c734"
 dependencies = [
  "prettyplease",
  "proc-macro2",
