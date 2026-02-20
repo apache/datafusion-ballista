@@ -4511,7 +4511,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
  "heck 0.5.0",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "petgraph",
@@ -4532,7 +4532,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.114",
@@ -5974,9 +5974,9 @@ dependencies = [
 
 [[package]]
 name = "tonic-prost-build"
-version = "0.14.4"
+version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65873ace111e90344b8973e94a1fc817c924473affff24629281f90daed1cd2e"
+checksum = "f3144df636917574672e93d0f56d7edec49f90305749c668df5101751bb8f95a"
 dependencies = [
  "prettyplease",
  "proc-macro2",
