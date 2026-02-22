@@ -216,7 +216,7 @@ pub async fn start_executor_process(
 
     let concurrent_tasks = if opt.concurrent_tasks == 0 {
         // use all available cores if no concurrency level is specified
-        std::thread::available_parallelism().unwrap().get()
+        std::thread::available_parallelism().unwrap().get() * 2
     } else {
         opt.concurrent_tasks
     };
