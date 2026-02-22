@@ -68,7 +68,7 @@ pub struct Config {
     #[arg(
         short = 's',
         long,
-        default_value_t = ballista_core::config::TaskSchedulingPolicy::PushStaged,
+        default_value_t = ballista_core::config::TaskSchedulingPolicy::PullStaged,
         help = "The scheduling policy for the scheduler, possible values: pull-staged, push-staged. Default: pull-staged"
     )]
     pub scheduler_policy: ballista_core::config::TaskSchedulingPolicy,
