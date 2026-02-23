@@ -38,7 +38,12 @@ pub async fn tui_main() -> Result<()> {
     infrastructure::init_file_logger("ballista", "info")?;
     tracing::info!("Starting the Ballista TUI application");
 
-    color_eyre::install()?;
+    match color_eyre::install() {
+        Ok(_) => {}
+        Err(e) => {
+            tracing::debug!("Failed to install color-eyre: {:?}", e);
+        }
+    }
     let config = Settings::new()?;
 
     let mut tui_wrapper = TuiWrapper::new()?;
