@@ -65,7 +65,7 @@ pub async fn tui_main() -> Result<()> {
                 if let Event::DataLoaded { data } = app_event {
                   match data {
                     UiData::Dashboard(state, executors_data) => {
-                      app.dashboard_data = app.dashboard_data.with_scheduler_state(Some(state)).with_executors_data(Some(executors_data));
+                      app.dashboard_data = app.dashboard_data.with_scheduler_state(state).with_executors_data(Some(executors_data));
                     }
                   }
                 }

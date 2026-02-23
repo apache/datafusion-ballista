@@ -72,7 +72,7 @@ impl HttpClient {
             .await
             .map_err(TuiError::Reqwest)
             .inspect(|data| tracing::trace!("Loaded: {data:?}"))
-            .inspect_err(|err| tracing::error!("The http request failed: {err:?}"))
+            .inspect_err(|err| tracing::error!("The HTTP request failed: {err:?}"))
     }
 
     async fn get(&self, url: &str) -> TuiResult<Response> {
@@ -82,7 +82,7 @@ impl HttpClient {
             .send()
             .await
             .inspect(|data| tracing::trace!("Got: {data:?}"))
-            .inspect_err(|err| tracing::error!("The http GET request failed: {err:?}"))
+            .inspect_err(|err| tracing::error!("The HTTP GET request failed: {err:?}"))
             .map_err(TuiError::Reqwest)
     }
 

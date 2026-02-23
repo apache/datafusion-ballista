@@ -21,13 +21,13 @@ use ratatui::{
     layout::{Alignment, Rect},
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
-
+use ratatui::style::Style;
 use crate::tui::app::App;
 
 pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
     fn no_live_executors(block: Block<'_>) -> Paragraph<'_> {
         Paragraph::new("No live executors")
-            .block(block)
+            .block(block.border_style(Style::new().red()))
             .alignment(Alignment::Center)
     }
 

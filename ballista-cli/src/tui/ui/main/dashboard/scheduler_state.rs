@@ -21,18 +21,18 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     widgets::{Block, Borders, Paragraph},
 };
-
+use ratatui::style::Style;
 use crate::tui::app::App;
 
-pub fn render_scheduler_state(f: &mut Frame, area: Rect, app: &App) {
-    let (started, version) = match &app.dashboard_data.scheduler_state {
+pub fn render_scheduler_state(f: &mut Frame, area: Rect, app: &App) -> bool {
+    let (started, version, is_up) = match &app.dashboard_data.scheduler_state {
         Some(state) => {
             let started = DateTime::from_timestamp_millis(state.started)
                 .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
                 .unwrap_or_else(|| "Invalid Date".to_string());
-            (started, state.version.clone())
+            (started, state.version.clone(), true)
         }
-        None => ("-".to_string(), "unknown".to_string()),
+        None => ("-".to_string(), "unknown".to_string(), false),
     };
 
     let vertical_chunks = Layout::default()
@@ -40,20 +40,42 @@ pub fn render_scheduler_state(f: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(area);
 
+    let scheduler_url = app.http_client.scheduler_url();
+
+    if is_up {
+        render_scheduler_state_up(f, vertical_chunks[0], scheduler_url, started, version);
+    } else {
+        render_scheduler_state_down(f, vertical_chunks[0], scheduler_url);
+    }
+
+    is_up
+}
+
+fn render_scheduler_state_down(f: &mut Frame, area: Rect, scheduler_url: &str) {
+    let scheduler_url_block = Block::default()
+        .borders(Borders::ALL).style(Style::new().red())
+        .title("Scheduler down");
+    let scheduler_url_paragraph = Paragraph::new(scheduler_url)
+        .block(scheduler_url_block)
+        .alignment(Alignment::Left);
+    f.render_widget(scheduler_url_paragraph, area);
+}
+
+fn render_scheduler_state_up(f: &mut Frame, area: Rect, scheduler_url: &str, started: String, version: String) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(13),
-            Constraint::Percentage(13),
-            Constraint::Percentage(10),
+            Constraint::Length(40),
+            Constraint::Length(40),
+            Constraint::Length(30),
             Constraint::Min(0),
         ])
-        .split(vertical_chunks[0]);
+        .split(area);
 
     let scheduler_url_block = Block::default()
         .borders(Borders::ALL)
         .title("Scheduler URL");
-    let scheduler_url_paragraph = Paragraph::new(app.http_client.scheduler_url())
+    let scheduler_url_paragraph = Paragraph::new(scheduler_url)
         .block(scheduler_url_block)
         .alignment(Alignment::Left);
     f.render_widget(scheduler_url_paragraph, chunks[0]);

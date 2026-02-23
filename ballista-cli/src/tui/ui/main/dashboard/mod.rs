@@ -42,14 +42,29 @@ pub fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(area);
 
-    render_scheduler_state(f, chunks[0], app);
+    let is_scheduler_up = render_scheduler_state(f, chunks[0], app);
 
-    render_executors(f, chunks[1], app);
+    if is_scheduler_up {
+        render_executors(f, chunks[1], app);
+    }
 }
 
 pub async fn load_dashboard_data(app: &App) -> TuiResult<()> {
-    let scheduler_state = app.http_client.get_scheduler_state().await?;
-    let executors_data = app.http_client.get_executors().await?;
+    let scheduler_state = match app.http_client.get_scheduler_state().await {
+        Ok(state) => Some(state),
+        Err(e) => {
+            tracing::error!("Failed to load the scheduler state: {:?}", e);
+            None
+        }
+    };
+    let executors_data = match app.http_client.get_executors().await {
+        Ok(data) => data,
+        Err(e) => {
+            tracing::error!("Failed to load the executors data: {:?}", e);
+            vec![]
+        }
+    };
+
     match &app.event_tx {
         Some(event_tx) => {
             event_tx
@@ -62,6 +77,6 @@ pub async fn load_dashboard_data(app: &App) -> TuiResult<()> {
             tracing::warn!("Dashboard data loaded but event_tx is not set");
         }
     }
-
+    
     Ok(())
 }

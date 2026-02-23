@@ -23,7 +23,7 @@ use crate::tui::domain::{ExecutorsData, SchedulerState};
 
 #[derive(Clone, Debug)]
 pub enum UiData {
-    Dashboard(SchedulerState, Vec<ExecutorsData>),
+    Dashboard(Option<SchedulerState>, Vec<ExecutorsData>),
 }
 
 #[derive(Clone, Debug)]
