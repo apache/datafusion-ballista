@@ -65,7 +65,7 @@ futures = { workspace = true }
 log = { workspace = true }
 object_store = { workspace = true, features = ["aws"] }
 tempfile = { workspace = true }
-testcontainers-modules = { version = "0.14", features = ["minio"] }
+testcontainers-modules = { version = "0.15", features = ["minio"] }
 tokio = { workspace = true, features = [
     "macros",
     "rt",
