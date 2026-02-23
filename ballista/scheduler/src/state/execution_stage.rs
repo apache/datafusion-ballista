@@ -1034,4 +1034,18 @@ impl StageOutput {
     pub fn is_complete(&self) -> bool {
         self.complete
     }
+    /// returns vector of partition locations
+    /// which is compatible with ShuffleReader vector format
+    pub fn partition_locations(
+        mut self,
+        output_partitions: usize,
+    ) -> Vec<Vec<PartitionLocation>> {
+        let mut partition_locations = Vec::new();
+        for i in 0..output_partitions {
+            let p = self.partition_locations.remove(&i).unwrap_or_default();
+            partition_locations.push(p);
+        }
+
+        partition_locations
+    }
 }

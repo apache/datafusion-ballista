@@ -18,12 +18,14 @@
 //! This crate contains code generated from the Ballista Protocol Buffer Definition as well
 //! as convenience code for interacting with the generated code.
 
+use crate::extension::BallistaCacheNode;
 use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 
 use arrow_flight::sql::ProstMessageExt;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
+use datafusion::logical_expr::Extension;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion_proto::logical_plan::file_formats::{
     ArrowLogicalExtensionCodec, AvroLogicalExtensionCodec, CsvLogicalExtensionCodec,
@@ -51,7 +53,10 @@ use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
     ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
 };
-use crate::serde::protobuf::ballista_physical_plan_node::PhysicalPlanType;
+use crate::serde::protobuf::{
+    ballista_logical_plan_node::LogicalPlanType,
+    ballista_physical_plan_node::PhysicalPlanType,
+};
 use crate::serde::scheduler::PartitionLocation;
 pub use generated::ballista as protobuf;
 
@@ -188,7 +193,28 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         inputs: &[datafusion::logical_expr::LogicalPlan],
         ctx: &TaskContext,
     ) -> Result<datafusion::logical_expr::Extension> {
-        self.default_codec.try_decode(buf, inputs, ctx)
+        let plan = protobuf::BallistaLogicalPlanNode::decode(buf)
+            .ok()
+            .and_then(|node| node.logical_plan_type);
+
+        let Some(plan) = plan else {
+            return self.default_codec.try_decode(buf, inputs, ctx);
+        };
+
+        match plan {
+            LogicalPlanType::CacheNode(plan_cache) => Ok(Extension {
+                node: Arc::new(BallistaCacheNode::new(
+                    plan_cache.cache_id,
+                    plan_cache.session_id,
+                    inputs
+                        .first()
+                        .ok_or(DataFusionError::Plan(
+                            "expected input size of 1".to_string(),
+                        ))?
+                        .clone(),
+                )),
+            }),
+        }
     }
 
     fn try_encode(
@@ -196,7 +222,26 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         node: &datafusion::logical_expr::Extension,
         buf: &mut Vec<u8>,
     ) -> Result<()> {
-        self.default_codec.try_encode(node, buf)
+        if let Some(node) = node.node.as_any().downcast_ref::<BallistaCacheNode>() {
+            let proto = protobuf::BallistaLogicalPlanNode {
+                logical_plan_type: Some(LogicalPlanType::CacheNode(
+                    protobuf::LogicalPlanCacheNode {
+                        cache_id: node.cache_id().to_owned(),
+                        session_id: node.session_id().to_owned(),
+                    },
+                )),
+            };
+
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode cache node logical plan: {e:?}"
+                ))
+            })?;
+
+            Ok(())
+        } else {
+            self.default_codec.try_encode(node, buf)
+        }
     }
 
     fn try_decode_table_provider(

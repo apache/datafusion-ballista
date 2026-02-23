@@ -366,7 +366,7 @@ async fn execute_query(
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
             .into_inner();
         let status = status.and_then(|s| s.status);
-        let wait_future = tokio::time::sleep(Duration::from_millis(100));
+        let wait_future = tokio::time::sleep(Duration::from_millis(50));
         let has_status_change = prev_status != status;
         match status {
             None => {

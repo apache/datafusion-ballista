@@ -25,7 +25,7 @@ use crate::state::executor_manager::ExecutorManager;
 
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
-use ballista_core::extension::SessionConfigHelperExt;
+use ballista_core::extension::{SessionConfigExt, SessionConfigHelperExt};
 use datafusion::prelude::SessionConfig;
 use rand::distr::Alphanumeric;
 
@@ -37,6 +37,7 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use dashmap::DashMap;
 
+use crate::state::aqe::AdaptiveExecutionGraph;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::{AsExecutionPlan, PhysicalExtensionCodec};
@@ -275,16 +276,35 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         session_config: Arc<SessionConfig>,
     ) -> Result<()> {
         let mut planner = DefaultDistributedPlanner::new();
-        let mut graph = Box::new(StaticExecutionGraph::new(
-            &self.scheduler_id,
-            job_id,
-            job_name,
-            session_id,
-            plan,
-            queued_at,
-            session_config,
-            &mut planner,
-        )?) as ExecutionGraphBox;
+
+        let mut graph = if session_config.ballista_adaptive_query_planner_enabled() {
+            debug!("Using adaptive query planner (AQE) for job planning");
+            warn!(
+                "Adaptive Query Planning is EXPERIMENTAL, should be used for testing purposes only!"
+            );
+            Box::new(AdaptiveExecutionGraph::try_new(
+                &self.scheduler_id,
+                job_id,
+                job_name,
+                session_id,
+                plan,
+                queued_at,
+                session_config,
+            )?) as ExecutionGraphBox
+        } else {
+            debug!("Using static query planner for job planning");
+            Box::new(StaticExecutionGraph::new(
+                &self.scheduler_id,
+                job_id,
+                job_name,
+                session_id,
+                plan,
+                queued_at,
+                session_config,
+                &mut planner,
+            )?) as ExecutionGraphBox
+        };
+
         info!("Submitting execution graph: {graph:?}");
 
         self.state.submit_job(job_id.to_string(), &graph).await?;

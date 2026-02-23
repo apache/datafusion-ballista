@@ -603,10 +603,12 @@ mod test {
     use super::{SchedulerGrpc, SchedulerServer};
 
     #[tokio::test]
-    async fn test_poll_work() -> Result<(), BallistaError> {
+    async fn test_pull_work() -> Result<(), BallistaError> {
         let cluster = test_cluster_context();
 
-        let config = SchedulerConfig::default();
+        let config = SchedulerConfig::default().with_scheduler_policy(
+            ballista_core::config::TaskSchedulingPolicy::PullStaged,
+        );
         let mut scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode> =
             SchedulerServer::new(
                 "localhost:50050".to_owned(),
