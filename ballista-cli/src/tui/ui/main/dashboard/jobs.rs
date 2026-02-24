@@ -18,9 +18,9 @@
 use crate::tui::app::App;
 use ratatui::style::Style;
 use ratatui::{
+    Frame,
     layout::Rect,
     widgets::{Block, Borders, Paragraph},
-    Frame,
 };
 
 pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {

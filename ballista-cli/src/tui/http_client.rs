@@ -22,10 +22,10 @@ use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 
 use crate::tui::{
+    TuiResult,
     domain::{ExecutorsData, JobsData, SchedulerState},
     error::TuiError,
     infrastructure::Settings,
-    TuiResult,
 };
 
 pub struct HttpClient {
