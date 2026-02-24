@@ -16,10 +16,8 @@
 // under the License.
 
 mod executors;
-mod scheduler_state;
 
 pub use executors::render_executors;
-pub use scheduler_state::render_scheduler_state;
 
 use ratatui::{
     Frame,
@@ -39,13 +37,13 @@ pub fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .constraints([
+            Constraint::Min(0), // Executors
+        ])
         .split(area);
 
-    let is_scheduler_up = render_scheduler_state(f, chunks[0], app);
-
-    if is_scheduler_up {
-        render_executors(f, chunks[1], app);
+    if app.is_scheduler_up() {
+        render_executors(f, chunks[0], app);
     }
 }
 

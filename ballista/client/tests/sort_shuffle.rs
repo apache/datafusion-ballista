@@ -117,7 +117,7 @@ mod sort_shuffle_tests {
             .to_string()
             .trim()
             .lines()
-            .skip(3) // Skip header lines
+            .skip(3) // Skip mod lines
             .filter(|line| !line.starts_with('+'))
             .map(|s| s.to_string())
             .collect()

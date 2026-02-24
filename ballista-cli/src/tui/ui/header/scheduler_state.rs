@@ -35,17 +35,12 @@ pub fn render_scheduler_state(f: &mut Frame, area: Rect, app: &App) -> bool {
         None => ("-".to_string(), "unknown".to_string(), false),
     };
 
-    let vertical_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(area);
-
     let scheduler_url = app.http_client.scheduler_url();
 
     if is_up {
-        render_scheduler_state_up(f, vertical_chunks[0], scheduler_url, started, version);
+        render_scheduler_state_up(f, area, scheduler_url, started, version);
     } else {
-        render_scheduler_state_down(f, vertical_chunks[0], scheduler_url);
+        render_scheduler_state_down(f, area, scheduler_url);
     }
 
     is_up
@@ -72,10 +67,9 @@ fn render_scheduler_state_up(
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(40),
-            Constraint::Length(40),
-            Constraint::Length(30),
-            Constraint::Min(0),
+            Constraint::Percentage(33), // url
+            Constraint::Percentage(33), // started at
+            Constraint::Percentage(33), // version
         ])
         .split(area);
 

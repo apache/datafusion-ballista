@@ -19,6 +19,7 @@ mod header;
 mod main;
 
 use crate::tui::app::{App, Views};
+use crate::tui::ui::header::render_header;
 pub use main::load_dashboard_data;
 use main::{render_dashboard, render_jobs, render_metrics};
 use ratatui::{
@@ -28,8 +29,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
-
-use header::render_header;
 
 pub(crate) fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::default()

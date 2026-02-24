@@ -24,6 +24,9 @@ use ratatui::{
 };
 
 use crate::tui::app::{App, Views};
+use crate::tui::ui::header::scheduler_state::render_scheduler_state;
+
+pub mod scheduler_state;
 
 const MENU_ITEMS: [&str; 3] = ["Dashboard", "Jobs", "Metrics"];
 const PERCENTAGE: u16 = 100 / MENU_ITEMS.len() as u16;
@@ -44,20 +47,36 @@ const BANNER: &str = r#"
 pub(super) fn render_header(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Min(0)])
+        .constraints([
+            Constraint::Percentage(40), // banner
+            Constraint::Percentage(60), // scheduler info and menu
+        ])
         .split(area);
 
-    render_block(f, chunks[0]);
-    render_menu(f, chunks[1], app);
+    render_banner(f, chunks[0]);
+    render_navbar(f, chunks[1], app);
 }
 
-fn render_block(f: &mut Frame, area: Rect) {
+fn render_banner(f: &mut Frame, area: Rect) {
     let block = Block::default().borders(Borders::empty());
     let paragraph = Paragraph::new(BANNER)
         .style(Style::default().bold())
         .block(block)
         .alignment(Alignment::Left);
     f.render_widget(paragraph, area);
+}
+
+fn render_navbar(f: &mut Frame, area: Rect, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0), // Scheduler info
+            Constraint::Min(0), // navigation
+        ])
+        .split(area);
+
+    render_scheduler_state(f, chunks[0], app);
+    render_menu(f, chunks[1], app);
 }
 
 fn render_menu(f: &mut Frame, area: Rect, app: &App) {

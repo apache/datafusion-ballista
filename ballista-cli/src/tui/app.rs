@@ -55,6 +55,10 @@ impl App {
         })
     }
 
+    pub fn is_scheduler_up(&self) -> bool {
+        self.dashboard_data.scheduler_state.is_some()
+    }
+
     pub fn set_event_tx(&mut self, tx: UnboundedSender<Event>) {
         self.event_tx = Some(tx);
         // self.load_data();
