@@ -59,7 +59,7 @@ env_logger = { version = "0.11" }
 futures = { version = "0.3" }
 log = { version = "0.4" }
 parking_lot = { version = "0.12" }
-tempfile = { version = "3.25" }
+tempfile = { version = "3.26" }
 dashmap = { version = "6.1" }
 async-trait = { version = "0.1" }
 serde = { version = "1.0" }
