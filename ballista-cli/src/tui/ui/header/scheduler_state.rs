@@ -19,9 +19,9 @@ use crate::tui::app::App;
 use chrono::DateTime;
 use ratatui::style::Style;
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     widgets::{Block, Borders, Paragraph},
-    Frame,
 };
 
 pub fn render_scheduler_state(f: &mut Frame, area: Rect, app: &App) -> bool {

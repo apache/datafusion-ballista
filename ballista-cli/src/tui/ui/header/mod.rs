@@ -16,11 +16,11 @@
 // under the License.
 
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Style, Stylize},
     text::{Line, Text},
     widgets::{Block, Borders, Paragraph},
-    Frame,
 };
 
 use crate::tui::app::{App, Views};

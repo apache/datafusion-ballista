@@ -33,12 +33,12 @@ pub struct ExecutorsData {
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct JobsData {
-    pub job_id: String,
-    pub job_name: String,
-    pub job_status: String,
-    pub num_stages: usize,
-    pub completed_stages: usize,
-    pub percent_complete: u8,
+    // pub job_id: String,
+    // pub job_name: String,
+    // pub job_status: String,
+    // pub num_stages: usize,
+    // pub completed_stages: usize,
+    // pub percent_complete: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -55,26 +55,5 @@ impl DashboardData {
             executors_data: None,
             jobs_data: None,
         }
-    }
-
-    pub fn with_scheduler_state(
-        mut self,
-        scheduler_state: Option<SchedulerState>,
-    ) -> Self {
-        self.scheduler_state = scheduler_state;
-        self
-    }
-
-    pub fn with_executors_data(
-        mut self,
-        executors_data: Option<Vec<ExecutorsData>>,
-    ) -> Self {
-        self.executors_data = executors_data;
-        self
-    }
-
-    pub fn with_jobs_data(mut self, jobs_data: Option<Vec<JobsData>>) -> Self {
-        self.jobs_data = jobs_data;
-        self
     }
 }
