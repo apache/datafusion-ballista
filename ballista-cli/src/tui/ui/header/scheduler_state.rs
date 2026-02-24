@@ -78,18 +78,14 @@ fn render_scheduler_state_up(
         .title("Scheduler URL");
     let scheduler_url_paragraph = Paragraph::new(scheduler_url)
         .block(scheduler_url_block)
-        .alignment(Alignment::Left);
+        .left_aligned();
     f.render_widget(scheduler_url_paragraph, chunks[0]);
 
     let started_block = Block::default().borders(Borders::ALL).title("Started at");
-    let started_paragraph = Paragraph::new(started)
-        .block(started_block)
-        .alignment(Alignment::Left);
+    let started_paragraph = Paragraph::new(started).block(started_block).left_aligned();
     f.render_widget(started_paragraph, chunks[1]);
 
     let version_block = Block::default().borders(Borders::ALL).title("Version");
-    let version_paragraph = Paragraph::new(version)
-        .block(version_block)
-        .alignment(Alignment::Left);
+    let version_paragraph = Paragraph::new(version).block(version_block).left_aligned();
     f.render_widget(version_paragraph, chunks[2]);
 }

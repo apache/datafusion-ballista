@@ -31,13 +31,32 @@ pub struct ExecutorsData {
     pub last_seen: i64,
 }
 
-#[derive(bon::Builder, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug)]
+pub struct JobsData {
+    pub job_id: String,
+    pub job_name: String,
+    pub job_status: String,
+    pub num_stages: usize,
+    pub completed_stages: usize,
+    pub percent_complete: u8,
+}
+
+#[derive(Clone, Debug)]
 pub struct DashboardData {
     pub scheduler_state: Option<SchedulerState>,
     pub executors_data: Option<Vec<ExecutorsData>>,
+    pub jobs_data: Option<Vec<JobsData>>,
 }
 
 impl DashboardData {
+    pub fn new() -> Self {
+        Self {
+            scheduler_state: None,
+            executors_data: None,
+            jobs_data: None,
+        }
+    }
+
     pub fn with_scheduler_state(
         mut self,
         scheduler_state: Option<SchedulerState>,
@@ -51,6 +70,11 @@ impl DashboardData {
         executors_data: Option<Vec<ExecutorsData>>,
     ) -> Self {
         self.executors_data = executors_data;
+        self
+    }
+
+    pub fn with_jobs_data(mut self, jobs_data: Option<Vec<JobsData>>) -> Self {
+        self.jobs_data = jobs_data;
         self
     }
 }

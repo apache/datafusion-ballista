@@ -22,10 +22,10 @@ use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 
 use crate::tui::{
-    TuiResult,
-    domain::{ExecutorsData, SchedulerState},
+    domain::{ExecutorsData, JobsData, SchedulerState},
     error::TuiError,
     infrastructure::Settings,
+    TuiResult,
 };
 
 pub struct HttpClient {
@@ -55,6 +55,11 @@ impl HttpClient {
     pub async fn get_executors(&self) -> TuiResult<Vec<ExecutorsData>> {
         let url = self.url("executors");
         self.json::<Vec<ExecutorsData>>(&url).await
+    }
+
+    pub async fn get_jobs(&self) -> TuiResult<Vec<JobsData>> {
+        let url = self.url("jobs");
+        self.json::<Vec<JobsData>>(&url).await
     }
 
     async fn json<R>(&self, url: &str) -> TuiResult<R>

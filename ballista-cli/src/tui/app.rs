@@ -50,7 +50,7 @@ impl App {
             should_quit: false,
             event_tx: None,
             show_help: false,
-            dashboard_data: DashboardData::builder().build(),
+            dashboard_data: DashboardData::new(),
             http_client: Arc::new(HttpClient::new(config)?),
         })
     }

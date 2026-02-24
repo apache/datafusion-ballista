@@ -31,7 +31,6 @@ readme = "README.md"
 [dependencies]
 ballista = { path = "../ballista/client", version = "52.0.0", features = ["standalone"] }
 
-bon = { version = "3", optional = true }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"], optional = true }
 clap = { workspace = true, features = ["derive", "cargo"] }
 color-eyre = { version = "0.6.5" }
@@ -54,4 +53,4 @@ tracing-appender = { version = "0.2", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
 
 [features]
-tui = ["dep:bon", "dep:chrono", "dep:config", "dep:crossterm", "dep:futures", "dep:ratatui", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:tracing", "dep:tracing-subscriber", "dep:tracing-appender"]
+tui = ["dep:chrono", "dep:config", "dep:crossterm", "dep:futures", "dep:ratatui", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:tracing", "dep:tracing-subscriber", "dep:tracing-appender"]

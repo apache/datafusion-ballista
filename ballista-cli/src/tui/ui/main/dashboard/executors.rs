@@ -20,7 +20,7 @@ use chrono::DateTime;
 use ratatui::style::Style;
 use ratatui::{
     Frame,
-    layout::{Alignment, Rect},
+    layout::Rect,
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 
@@ -28,7 +28,7 @@ pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
     fn no_live_executors(block: Block<'_>) -> Paragraph<'_> {
         Paragraph::new("No live executors")
             .block(block.border_style(Style::new().red()))
-            .alignment(Alignment::Center)
+            .centered()
     }
 
     let block = Block::default().borders(Borders::ALL).title("Executors");

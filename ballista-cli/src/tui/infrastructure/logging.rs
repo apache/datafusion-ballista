@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use color_eyre::eyre::Result;
 use tracing_subscriber::EnvFilter;
 
 /// Initializes a tracing subscriber that logs to a file.
@@ -28,7 +27,10 @@ use tracing_subscriber::EnvFilter;
 /// # Returns
 ///
 /// Returns `Ok(())` if initialization succeeds, or an error if it fails.
-pub fn init_file_logger(log_file_prefix: &str, default_level: &str) -> Result<()> {
+pub fn init_file_logger(
+    log_file_prefix: &str,
+    default_level: &str,
+) -> color_eyre::Result<()> {
     let dir_name = "logs";
     std::fs::create_dir_all(dir_name)?;
 
@@ -41,11 +43,15 @@ pub fn init_file_logger(log_file_prefix: &str, default_level: &str) -> Result<()
         .truncate(true)
         .open(format!("{dir_name}/{log_file_prefix}.log"))?;
 
-    let _ = tracing_subscriber::fmt()
+    match tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_writer(file)
         .with_ansi(true)
-        .try_init();
+        .try_init()
+    {
+        Ok(_) => {}
+        Err(e) => panic!("Failed to initialize the file logger: {:?}", e),
+    }
 
     Ok(())
 }

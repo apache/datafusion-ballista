@@ -16,8 +16,10 @@
 // under the License.
 
 mod executors;
+mod jobs;
 
-pub use executors::render_executors;
+use executors::render_executors;
+use jobs::render_jobs;
 
 use ratatui::{
     Frame,
@@ -39,11 +41,13 @@ pub fn render_dashboard(f: &mut Frame, area: Rect, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(0), // Executors
+            Constraint::Min(0), // Jobs
         ])
         .split(area);
 
     if app.is_scheduler_up() {
         render_executors(f, chunks[0], app);
+        render_jobs(f, chunks[1], app);
     }
 }
 
@@ -62,12 +66,19 @@ pub async fn load_dashboard_data(app: &App) -> TuiResult<()> {
             vec![]
         }
     };
+    let jobs_data = match app.http_client.get_jobs().await {
+        Ok(data) => data,
+        Err(e) => {
+            tracing::error!("Failed to load the jobs data: {:?}", e);
+            vec![]
+        }
+    };
 
     match &app.event_tx {
         Some(event_tx) => {
             event_tx
                 .send(Event::DataLoaded {
-                    data: UiData::Dashboard(scheduler_state, executors_data),
+                    data: UiData::Dashboard(scheduler_state, executors_data, jobs_data),
                 })
                 .map_err(TuiError::SendError)?;
         }

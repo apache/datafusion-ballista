@@ -1017,7 +1017,6 @@ name = "ballista-cli"
 version = "52.0.0"
 dependencies = [
  "ballista",
- "bon",
  "chrono",
  "clap 4.5.60",
  "color-eyre",
