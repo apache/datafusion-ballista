@@ -15,14 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::tui::app::App;
 use chrono::DateTime;
+use ratatui::style::Style;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     widgets::{Block, Borders, Paragraph},
 };
-use ratatui::style::Style;
-use crate::tui::app::App;
 
 pub fn render_scheduler_state(f: &mut Frame, area: Rect, app: &App) -> bool {
     let (started, version, is_up) = match &app.dashboard_data.scheduler_state {
@@ -53,7 +53,8 @@ pub fn render_scheduler_state(f: &mut Frame, area: Rect, app: &App) -> bool {
 
 fn render_scheduler_state_down(f: &mut Frame, area: Rect, scheduler_url: &str) {
     let scheduler_url_block = Block::default()
-        .borders(Borders::ALL).style(Style::new().red())
+        .borders(Borders::ALL)
+        .style(Style::new().red())
         .title("Scheduler down");
     let scheduler_url_paragraph = Paragraph::new(scheduler_url)
         .block(scheduler_url_block)
@@ -61,7 +62,13 @@ fn render_scheduler_state_down(f: &mut Frame, area: Rect, scheduler_url: &str) {
     f.render_widget(scheduler_url_paragraph, area);
 }
 
-fn render_scheduler_state_up(f: &mut Frame, area: Rect, scheduler_url: &str, started: String, version: String) {
+fn render_scheduler_state_up(
+    f: &mut Frame,
+    area: Rect,
+    scheduler_url: &str,
+    started: String,
+    version: String,
+) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([

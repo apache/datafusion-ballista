@@ -77,6 +77,6 @@ pub async fn load_dashboard_data(app: &App) -> TuiResult<()> {
             tracing::warn!("Dashboard data loaded but event_tx is not set");
         }
     }
-    
+
     Ok(())
 }

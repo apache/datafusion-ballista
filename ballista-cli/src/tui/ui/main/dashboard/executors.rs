@@ -15,14 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::tui::app::App;
 use chrono::DateTime;
+use ratatui::style::Style;
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
-use ratatui::style::Style;
-use crate::tui::app::App;
 
 pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
     fn no_live_executors(block: Block<'_>) -> Paragraph<'_> {
