@@ -16,11 +16,11 @@
 // under the License.
 
 use ratatui::{
-    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Style, Stylize},
     text::{Line, Text},
     widgets::{Block, Borders, Paragraph},
+    Frame,
 };
 
 use crate::tui::app::{App, Views};
@@ -106,7 +106,7 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
             Views::Metrics => *menu_item == "Metrics",
         };
 
-        if is_active {
+        if is_active && app.is_scheduler_up() {
             block = block.border_style(Style::default().white());
             paragraph = paragraph.style(Style::default().white()).block(block);
         }

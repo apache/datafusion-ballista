@@ -19,9 +19,9 @@ use crate::tui::app::App;
 use chrono::DateTime;
 use ratatui::style::Style;
 use ratatui::{
-    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     widgets::{Block, Borders, Paragraph},
+    Frame,
 };
 
 pub fn render_scheduler_state(f: &mut Frame, area: Rect, app: &App) -> bool {
@@ -50,7 +50,7 @@ fn render_scheduler_state_down(f: &mut Frame, area: Rect, scheduler_url: &str) {
     let scheduler_url_block = Block::default()
         .borders(Borders::ALL)
         .style(Style::new().red())
-        .title("Scheduler down");
+        .title(" Scheduler down ");
     let scheduler_url_paragraph = Paragraph::new(scheduler_url)
         .block(scheduler_url_block)
         .alignment(Alignment::Left);
@@ -75,17 +75,17 @@ fn render_scheduler_state_up(
 
     let scheduler_url_block = Block::default()
         .borders(Borders::ALL)
-        .title("Scheduler URL");
+        .title(" Scheduler URL ");
     let scheduler_url_paragraph = Paragraph::new(scheduler_url)
         .block(scheduler_url_block)
         .left_aligned();
     f.render_widget(scheduler_url_paragraph, chunks[0]);
 
-    let started_block = Block::default().borders(Borders::ALL).title("Started at");
+    let started_block = Block::default().borders(Borders::ALL).title(" Started at ");
     let started_paragraph = Paragraph::new(started).block(started_block).left_aligned();
     f.render_widget(started_paragraph, chunks[1]);
 
-    let version_block = Block::default().borders(Borders::ALL).title("Version");
+    let version_block = Block::default().borders(Borders::ALL).title(" Version ");
     let version_paragraph = Paragraph::new(version).block(version_block).left_aligned();
     f.render_widget(version_paragraph, chunks[2]);
 }

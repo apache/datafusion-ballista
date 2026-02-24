@@ -88,14 +88,14 @@ impl App {
             // KeyCode::Down | KeyCode::Char('j') => {
             //     self.next();
             // }
-            KeyCode::Char('d') => {
+            KeyCode::Char('d') if self.is_scheduler_up() => {
                 self.current_view = Views::Dashboard;
                 self.load_dashboard_data().await;
             }
-            KeyCode::Char('j') => {
+            KeyCode::Char('j') if self.is_scheduler_up() => {
                 self.current_view = Views::Jobs;
             }
-            KeyCode::Char('m') => {
+            KeyCode::Char('m') if self.is_scheduler_up() => {
                 self.current_view = Views::Metrics;
             }
             _ => {}
