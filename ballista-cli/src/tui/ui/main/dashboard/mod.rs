@@ -67,7 +67,10 @@ pub async fn load_dashboard_data(app: &App) -> TuiResult<()> {
         }
     };
     let jobs_data = match app.http_client.get_jobs().await {
-        Ok(data) => data,
+        Ok(data) => {
+            tracing::info!("Loaded jobs:\n{data:?}");
+            data
+        }
         Err(e) => {
             tracing::error!("Failed to load the jobs data: {:?}", e);
             vec![]

@@ -16,11 +16,12 @@
 // under the License.
 
 use crate::tui::app::App;
+use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
 use ratatui::{
-    Frame,
     layout::Rect,
     widgets::{Block, Borders, Paragraph},
+    Frame,
 };
 
 pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
@@ -39,10 +40,80 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
                 return;
             }
 
-            f.render_widget(Paragraph::new("Some jobs"), area);
+            let mut running_jobs = 0;
+            let mut completed_jobs = 0;
+            let mut failed_jobs = 0;
+            let mut queued_jobs = 0;
+
+            for job in jobs {
+                if job.job_status.eq_ignore_ascii_case("Running") {
+                    running_jobs += 1;
+                } else if job.job_status.eq_ignore_ascii_case("Completed") {
+                    completed_jobs += 1;
+                } else if job.job_status.eq_ignore_ascii_case("Failed") {
+                    failed_jobs += 1;
+                } else if job.job_status.eq_ignore_ascii_case("Queued") {
+                    queued_jobs += 1;
+                }
+            }
+
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(25), // Running jobs
+                    Constraint::Percentage(25), // Queued jobs
+                    Constraint::Percentage(25), // Completed jobs
+                    Constraint::Percentage(25), // Failed jobs
+                ])
+                .split(area);
+
+            render_running_jobs(f, chunks[0], running_jobs);
+            render_queued_jobs(f, chunks[1], queued_jobs);
+            render_completed_jobs(f, chunks[2], completed_jobs);
+            render_failed_jobs(f, chunks[3], failed_jobs);
         }
         None => {
             f.render_widget(no_jobs(block), area);
         }
-    };
+    }
+}
+
+fn render_running_jobs(f: &mut Frame, area: Rect, running_jobs: usize) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Running Jobs ");
+    f.render_widget(
+        Paragraph::new(format!("Running jobs: {running_jobs}")).block(block),
+        area,
+    );
+}
+
+fn render_queued_jobs(f: &mut Frame, area: Rect, queued_jobs: usize) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Queued Jobs ");
+    f.render_widget(
+        Paragraph::new(format!("Queued jobs: {queued_jobs}")).block(block),
+        area,
+    );
+}
+
+fn render_completed_jobs(f: &mut Frame, area: Rect, completed_jobs: usize) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Completed Jobs ");
+    f.render_widget(
+        Paragraph::new(format!("Completed jobs: {completed_jobs}")).block(block),
+        area,
+    );
+}
+
+fn render_failed_jobs(f: &mut Frame, area: Rect, failed_jobs: usize) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Failed Jobs ");
+    f.render_widget(
+        Paragraph::new(format!("Failed jobs: {failed_jobs}")).block(block),
+        area,
+    );
 }

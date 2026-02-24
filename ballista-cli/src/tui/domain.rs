@@ -35,7 +35,7 @@ pub struct ExecutorsData {
 pub struct JobsData {
     // pub job_id: String,
     // pub job_name: String,
-    // pub job_status: String,
+    pub job_status: String,
     // pub num_stages: usize,
     // pub completed_stages: usize,
     // pub percent_complete: u8,
