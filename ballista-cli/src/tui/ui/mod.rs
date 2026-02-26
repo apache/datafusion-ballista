@@ -63,7 +63,7 @@ fn render_main_view(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_help_overlay(f: &mut Frame) {
-    let area = centered_rect(60, 70, f.area());
+    let area = centered_rect(25, 35, f.area());
 
     f.render_widget(Clear, area);
 
