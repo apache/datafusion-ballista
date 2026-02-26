@@ -15,11 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod footer;
 mod header;
 mod main;
 
 use crate::tui::app::{App, Views};
 use crate::tui::ui::header::render_header;
+use footer::render_footer;
 pub use main::load_dashboard_data;
 use main::{render_dashboard, render_jobs, render_metrics};
 use ratatui::{
@@ -33,11 +35,16 @@ use ratatui::{
 pub(crate) fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(6), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(6), // Header
+            Constraint::Min(0),    // Main view
+            Constraint::Length(1), // Footer
+        ])
         .split(f.area());
 
     render_header(f, chunks[0], app);
     render_main_view(f, app, chunks[1]);
+    render_footer(f, chunks[2]);
 
     // Overlay help if active
     if app.show_help {
