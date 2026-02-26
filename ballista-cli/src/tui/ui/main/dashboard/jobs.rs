@@ -19,9 +19,9 @@ use crate::tui::app::App;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
 use ratatui::{
+    Frame,
     layout::Rect,
     widgets::{Block, Borders, Paragraph},
-    Frame,
 };
 
 pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
@@ -48,9 +48,9 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
             for job in jobs {
                 if job.job_status.eq_ignore_ascii_case("Running") {
                     running_jobs += 1;
-                } else if job.job_status.eq_ignore_ascii_case("Completed") {
+                } else if job.job_status.starts_with("Completed") {
                     completed_jobs += 1;
-                } else if job.job_status.eq_ignore_ascii_case("Failed") {
+                } else if job.job_status.starts_with("Failed") {
                     failed_jobs += 1;
                 } else if job.job_status.eq_ignore_ascii_case("Queued") {
                     queued_jobs += 1;
@@ -81,7 +81,8 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
 fn render_running_jobs(f: &mut Frame, area: Rect, running_jobs: usize) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Running Jobs ");
+        .title(" Running Jobs ")
+        .style(Style::new().light_blue());
     f.render_widget(
         Paragraph::new(format!("Running jobs: {running_jobs}")).block(block),
         area,
@@ -91,7 +92,8 @@ fn render_running_jobs(f: &mut Frame, area: Rect, running_jobs: usize) {
 fn render_queued_jobs(f: &mut Frame, area: Rect, queued_jobs: usize) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Queued Jobs ");
+        .title(" Queued Jobs ")
+        .style(Style::new().magenta());
     f.render_widget(
         Paragraph::new(format!("Queued jobs: {queued_jobs}")).block(block),
         area,
@@ -101,7 +103,8 @@ fn render_queued_jobs(f: &mut Frame, area: Rect, queued_jobs: usize) {
 fn render_completed_jobs(f: &mut Frame, area: Rect, completed_jobs: usize) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Completed Jobs ");
+        .title(" Completed Jobs ")
+        .style(Style::new().green());
     f.render_widget(
         Paragraph::new(format!("Completed jobs: {completed_jobs}")).block(block),
         area,
@@ -111,7 +114,8 @@ fn render_completed_jobs(f: &mut Frame, area: Rect, completed_jobs: usize) {
 fn render_failed_jobs(f: &mut Frame, area: Rect, failed_jobs: usize) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Failed Jobs ");
+        .title(" Failed Jobs ")
+        .style(Style::new().red());
     f.render_widget(
         Paragraph::new(format!("Failed jobs: {failed_jobs}")).block(block),
         area,

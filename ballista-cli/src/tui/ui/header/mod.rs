@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::tui::app::{App, Views};
+use crate::tui::ui::header::scheduler_state::render_scheduler_state;
+use ratatui::widgets::BorderType;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -22,9 +25,6 @@ use ratatui::{
     text::{Line, Text},
     widgets::{Block, Borders, Paragraph},
 };
-
-use crate::tui::app::{App, Views};
-use crate::tui::ui::header::scheduler_state::render_scheduler_state;
 
 pub mod scheduler_state;
 
@@ -107,7 +107,9 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
         };
 
         if is_active && app.is_scheduler_up() {
-            block = block.border_style(Style::default().white());
+            block = block
+                .border_style(Style::default().white())
+                .border_type(BorderType::Thick);
             paragraph = paragraph.style(Style::default().white()).block(block);
         }
 
