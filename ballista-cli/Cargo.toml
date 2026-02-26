@@ -51,6 +51,7 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync
 tracing = { version = "0.1", optional = true }
 tracing-appender = { version = "0.2", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
+prometheus-parse = { version = "0.2", optional = true }
 
 [features]
-tui = ["dep:chrono", "dep:config", "dep:crossterm", "dep:futures", "dep:ratatui", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:tracing", "dep:tracing-subscriber", "dep:tracing-appender"]
+tui = ["dep:chrono", "dep:config", "dep:crossterm", "dep:futures", "dep:prometheus-parse", "dep:ratatui", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:tracing", "dep:tracing-subscriber", "dep:tracing-appender"]

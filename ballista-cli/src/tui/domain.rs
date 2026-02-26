@@ -16,6 +16,7 @@
 // under the License.
 
 use serde::Deserialize;
+use std::str::FromStr;
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct SchedulerState {
@@ -46,6 +47,38 @@ pub struct DashboardData {
     pub scheduler_state: Option<SchedulerState>,
     pub executors_data: Option<Vec<ExecutorsData>>,
     pub jobs_data: Option<Vec<JobsData>>,
+}
+
+/// A Prometheus metric
+///
+/// Returned by the /api/metrics REST endpoint
+pub type Metric = prometheus_parse::Sample;
+
+#[derive(Clone, Debug)]
+pub struct MetricsData {
+    pub metrics: Option<Vec<Metric>>,
+}
+
+impl FromStr for MetricsData {
+    type Err = std::io::Error;
+
+    fn from_str(http_response: &str) -> Result<Self, Self::Err> {
+        let mut metrics: Vec<Metric> = Vec::new();
+
+        let lines: Vec<std::io::Result<String>> = http_response
+            .lines()
+            .map(|line| Ok(line.to_string()))
+            .collect();
+        let scrape = prometheus_parse::Scrape::parse(lines.into_iter())?;
+        for sample in scrape.samples {
+            tracing::info!("Scraped data {sample:?}");
+            metrics.push(sample);
+        }
+
+        Ok(MetricsData {
+            metrics: Some(metrics),
+        })
+    }
 }
 
 impl DashboardData {

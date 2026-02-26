@@ -15,7 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::tui::{domain::DashboardData, event::Event, infrastructure::Settings};
+use crate::tui::{
+    domain::{DashboardData, MetricsData},
+    event::Event,
+    infrastructure::Settings,
+};
 use color_eyre::eyre::{Ok, Result};
 use crossterm::event::{KeyCode, KeyEvent};
 use std::sync::Arc;
@@ -36,6 +40,7 @@ pub struct App {
     pub current_view: Views,
 
     pub dashboard_data: DashboardData,
+    pub metrics_data: MetricsData,
 
     // Help panel
     pub show_help: bool,
@@ -51,6 +56,7 @@ impl App {
             event_tx: None,
             show_help: false,
             dashboard_data: DashboardData::new(),
+            metrics_data: MetricsData { metrics: None },
             http_client: Arc::new(HttpClient::new(config)?),
         })
     }
@@ -97,6 +103,7 @@ impl App {
             }
             KeyCode::Char('m') if self.is_scheduler_up() => {
                 self.current_view = Views::Metrics;
+                self.load_metrics_data().await;
             }
             _ => {}
         }
@@ -106,6 +113,12 @@ impl App {
     async fn load_dashboard_data(&mut self) {
         if let Err(e) = crate::tui::ui::load_dashboard_data(self).await {
             tracing::error!("Failed to load dashboard data on tick: {:?}", e);
+        }
+    }
+
+    async fn load_metrics_data(&mut self) {
+        if let Err(e) = crate::tui::ui::load_metrics_data(self).await {
+            tracing::error!("Failed to load metrics data on tick: {:?}", e);
         }
     }
 }

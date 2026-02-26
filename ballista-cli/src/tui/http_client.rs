@@ -23,7 +23,7 @@ use serde::de::DeserializeOwned;
 
 use crate::tui::{
     TuiResult,
-    domain::{ExecutorsData, JobsData, SchedulerState},
+    domain::{ExecutorsData, JobsData, Metric, MetricsData, SchedulerState},
     error::TuiError,
     infrastructure::Settings,
 };
@@ -60,6 +60,28 @@ impl HttpClient {
     pub async fn get_jobs(&self) -> TuiResult<Vec<JobsData>> {
         let url = self.url("jobs");
         self.json::<Vec<JobsData>>(&url).await
+    }
+
+    pub async fn get_metrics(&self) -> TuiResult<Option<Vec<Metric>>> {
+        let url = self.url("metrics");
+        let body: String = self.text(&url).await?;
+        let metrics = body.parse::<MetricsData>().map_err(TuiError::Metrics)?;
+        Ok(metrics.metrics)
+    }
+
+    async fn text(&self, url: &str) -> TuiResult<String> {
+        let response = self.get(url).await?;
+        let response = response
+            .error_for_status()
+            .map_err(TuiError::Reqwest)
+            .inspect_err(|err| tracing::error!("HTTP error status: {err:?}"))?;
+
+        response
+            .text()
+            .await
+            .map_err(TuiError::Reqwest)
+            .inspect(|data| tracing::trace!("Loaded: {data:?}"))
+            .inspect_err(|err| tracing::error!("The HTTP request failed: {err:?}"))
     }
 
     async fn json<R>(&self, url: &str) -> TuiResult<R>

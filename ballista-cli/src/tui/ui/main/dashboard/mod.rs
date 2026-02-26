@@ -55,14 +55,14 @@ pub async fn load_dashboard_data(app: &App) -> TuiResult<()> {
     let scheduler_state = match app.http_client.get_scheduler_state().await {
         Ok(state) => Some(state),
         Err(e) => {
-            tracing::error!("Failed to load the scheduler state: {:?}", e);
+            tracing::error!("Failed to load the scheduler state: {e:?}");
             None
         }
     };
     let executors_data = match app.http_client.get_executors().await {
         Ok(data) => data,
         Err(e) => {
-            tracing::error!("Failed to load the executors data: {:?}", e);
+            tracing::error!("Failed to load the executors data: {e:?}");
             vec![]
         }
     };
@@ -72,7 +72,7 @@ pub async fn load_dashboard_data(app: &App) -> TuiResult<()> {
             data
         }
         Err(e) => {
-            tracing::error!("Failed to load the jobs data: {:?}", e);
+            tracing::error!("Failed to load the jobs data: {e:?}");
             vec![]
         }
     };

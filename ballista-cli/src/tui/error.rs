@@ -24,15 +24,17 @@ use crate::tui::event::Event;
 pub enum TuiError {
     Reqwest(reqwest::Error),
     Json(serde_json::Error),
+    Metrics(std::io::Error),
     SendError(SendError<Event>),
 }
 
 impl std::fmt::Display for TuiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TuiError::Reqwest(err) => write!(f, "Reqwest error: {}", err),
-            TuiError::Json(err) => write!(f, "JSON error: {}", err),
-            TuiError::SendError(err) => write!(f, "Send error: {}", err),
+            TuiError::Reqwest(err) => write!(f, "Reqwest error: {err}"),
+            TuiError::Json(err) => write!(f, "JSON error: {err}"),
+            TuiError::Metrics(err) => write!(f, "Metrics parsing error: {err}"),
+            TuiError::SendError(err) => write!(f, "Send error: {err}"),
         }
     }
 }

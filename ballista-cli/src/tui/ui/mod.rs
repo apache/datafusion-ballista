@@ -22,7 +22,7 @@ mod main;
 use crate::tui::app::{App, Views};
 use crate::tui::ui::header::render_header;
 use footer::render_footer;
-pub use main::load_dashboard_data;
+pub use main::{load_dashboard_data, load_metrics_data};
 use main::{render_dashboard, render_jobs, render_metrics};
 use ratatui::{
     Frame,

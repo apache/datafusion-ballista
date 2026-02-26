@@ -21,4 +21,4 @@ mod metrics;
 
 pub use dashboard::{load_dashboard_data, render_dashboard};
 pub use jobs::render_jobs;
-pub use metrics::render_metrics;
+pub use metrics::{load_metrics_data, render_metrics};
