@@ -50,7 +50,7 @@ pub fn init_file_logger(
         .try_init()
     {
         Ok(_) => {}
-        Err(e) => panic!("Failed to initialize the file logger: {:?}", e),
+        Err(e) => eprintln!("Failed to initialize the file logger: {:?}", e),
     }
 
     Ok(())
