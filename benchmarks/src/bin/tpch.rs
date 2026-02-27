@@ -638,7 +638,7 @@ async fn register_tables(
 ) -> Result<()> {
     for &table in TABLES {
         match file_format {
-            // dbgen creates .tbl ('|' delimited) files without header
+            // dbgen creates .tbl ('|' delimited) files without mod
             "tbl" => {
                 let path = find_path(path, table, "tbl")?;
                 let schema = get_tbl_tpch_table_schema(table);
@@ -880,7 +880,7 @@ async fn get_table(
         &'static str,
         Schema,
     ) = match table_format {
-        // dbgen creates .tbl ('|' delimited) files without header
+        // dbgen creates .tbl ('|' delimited) files without mod
         "tbl" => {
             let path = format!("{path}/{table}.tbl");
 

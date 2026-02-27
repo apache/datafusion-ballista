@@ -712,9 +712,7 @@ impl Interceptor for BallistaGrpcMetadataInterceptor {
                     HeaderName::from_bytes(k.as_bytes())
                         .map_err(|e| Status::invalid_argument(e.to_string()))?,
                     v.parse().map_err(|_e| {
-                        Status::invalid_argument(format!(
-                            "{v} is not a valid header value"
-                        ))
+                        Status::invalid_argument(format!("{v} is not a valid mod value"))
                     })?,
                 );
             }
@@ -910,7 +908,7 @@ mod test {
         // Test interceptor adds metadata
         let mut metadata = HashMap::new();
         metadata.insert("x-api-key".to_string(), "test-key".to_string());
-        metadata.insert("x-custom-header".to_string(), "custom-value".to_string());
+        metadata.insert("x-custom-mod".to_string(), "custom-value".to_string());
 
         let mut interceptor = BallistaGrpcMetadataInterceptor::new(metadata);
         let request = Request::new(());
@@ -928,7 +926,7 @@ mod test {
         assert_eq!(
             result
                 .metadata()
-                .get("x-custom-header")
+                .get("x-custom-mod")
                 .unwrap()
                 .to_str()
                 .unwrap(),
