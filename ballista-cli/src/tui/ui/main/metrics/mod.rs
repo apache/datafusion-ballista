@@ -112,15 +112,15 @@ fn render_metrics_table(
             _ => Color::Black,
         };
 
-        let name_cell = Cell::from(Text::from(metric.metric.clone()));
-        let value_cell = match &metric.value {
+        let name_cell = Cell::from(Text::from(metric.sample.metric.clone()));
+        let value_cell = match &metric.sample.value {
             Value::Counter(v) => Cell::from(Text::from(format!("Counter: {v}"))),
             Value::Gauge(v) => Cell::from(Text::from(format!("Gauge: {v}"))),
             Value::Histogram(histograms) => histogram_cell(histograms),
             Value::Summary(v) => Cell::from(Text::from(format!("Summary: {v:?}"))),
             Value::Untyped(v) => Cell::from(Text::from(format!("Untyped: {v}"))),
         };
-        let description_cell = Cell::from(Text::from(format!("{}", metric.labels)));
+        let description_cell = Cell::from(Text::from(metric.help.clone()));
 
         Row::new(vec![name_cell, value_cell, description_cell])
             .style(Style::default().bg(color))
@@ -130,9 +130,9 @@ fn render_metrics_table(
     let t = Table::new(
         rows,
         [
-            Constraint::Min(50),  // Name
-            Constraint::Min(100), // Value
-            Constraint::Min(60),  // Description
+            Constraint::Percentage(25), // Name
+            Constraint::Percentage(35), // Value
+            Constraint::Percentage(40), // Description
         ],
     )
     .block(Block::default().borders(Borders::all()))

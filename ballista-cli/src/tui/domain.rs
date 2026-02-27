@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use prometheus_parse::Sample;
 use serde::Deserialize;
 use std::str::FromStr;
 
@@ -52,7 +53,11 @@ pub struct DashboardData {
 /// A Prometheus metric
 ///
 /// Returned by the /api/metrics REST endpoint
-pub type Metric = prometheus_parse::Sample;
+#[derive(Clone, Debug)]
+pub struct Metric {
+    pub sample: Sample,
+    pub help: String,
+}
 
 #[derive(Clone, Debug)]
 pub struct MetricsData {
@@ -71,8 +76,15 @@ impl FromStr for MetricsData {
             .collect();
         let scrape = prometheus_parse::Scrape::parse(lines.into_iter())?;
         for sample in scrape.samples {
-            tracing::info!("Scraped data {sample:?}");
-            metrics.push(sample);
+            let metric = Metric {
+                sample: sample.clone(),
+                help: scrape
+                    .docs
+                    .get(&sample.metric)
+                    .unwrap_or(&String::new())
+                    .to_string(),
+            };
+            metrics.push(metric);
         }
 
         Ok(MetricsData {
