@@ -79,6 +79,94 @@ pyarrow_batches = df.collect()
 
 Check [DataFusion python](https://datafusion.apache.org/python/) provides more examples and manuals.
 
+## Jupyter Notebook Support
+
+PyBallista provides first-class Jupyter notebook support with SQL magic commands and rich HTML rendering.
+
+### HTML Table Rendering
+
+DataFrames automatically render as styled HTML tables in Jupyter notebooks:
+
+```python
+from ballista import BallistaSessionContext
+
+ctx = BallistaSessionContext("df://localhost:50050")
+df = ctx.sql("SELECT * FROM my_table LIMIT 10")
+df  # Renders as HTML table via _repr_html_()
+```
+
+### SQL Magic Commands
+
+For a more interactive SQL experience, load the Ballista Jupyter extension:
+
+```python
+# Load the extension
+%load_ext ballista.jupyter
+
+# Connect to a Ballista cluster
+%ballista connect df://localhost:50050
+
+# Check connection status
+%ballista status
+
+# List registered tables
+%ballista tables
+
+# Show table schema
+%ballista schema my_table
+
+# Execute a simple query (line magic)
+%sql SELECT COUNT(*) FROM orders
+
+# Execute a complex query (cell magic)
+%%sql
+SELECT
+    customer_id,
+    SUM(amount) as total
+FROM orders
+GROUP BY customer_id
+ORDER BY total DESC
+LIMIT 10
+```
+
+You can also store results in a variable:
+
+```python
+%%sql my_result
+SELECT * FROM orders WHERE status = 'pending'
+```
+
+### Execution Plan Visualization
+
+Visualize query execution plans directly in notebooks:
+
+```python
+df = ctx.sql("SELECT * FROM orders WHERE amount > 100")
+df.explain_visual()  # Displays SVG visualization
+
+# With runtime statistics
+df.explain_visual(analyze=True)
+```
+
+> **Note:** Full SVG visualization requires graphviz to be installed (`brew install graphviz` on macOS).
+
+### Progress Indicators
+
+For long-running queries, use `collect_with_progress()` to see execution status:
+
+```python
+df = ctx.sql("SELECT * FROM large_table")
+batches = df.collect_with_progress()
+```
+
+### Example Notebooks
+
+See the `examples/` directory for Jupyter notebooks demonstrating various features:
+
+- `getting_started.ipynb` - Basic connection and queries
+- `dataframe_api.ipynb` - DataFrame transformations
+- `distributed_queries.ipynb` - Multi-stage distributed query examples
+
 ## Scheduler and Executor
 
 Scheduler and executors can be configured and started from python code.
