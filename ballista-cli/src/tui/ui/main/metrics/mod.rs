@@ -21,6 +21,7 @@ use crate::tui::domain::Metric;
 use crate::tui::error::TuiError;
 use crate::tui::event::Event;
 use crate::tui::event::UiData;
+use prometheus_parse::HistogramCount;
 
 use ratatui::style::Color;
 use ratatui::{
@@ -115,7 +116,7 @@ fn render_metrics_table(
         let value_cell = match &metric.value {
             Value::Counter(v) => Cell::from(Text::from(format!("Counter: {v}"))),
             Value::Gauge(v) => Cell::from(Text::from(format!("Gauge: {v}"))),
-            Value::Histogram(v) => Cell::from(Text::from(format!("Histogram: {v:?}"))),
+            Value::Histogram(histograms) => histogram_cell(histograms),
             Value::Summary(v) => Cell::from(Text::from(format!("Summary: {v:?}"))),
             Value::Untyped(v) => Cell::from(Text::from(format!("Untyped: {v}"))),
         };
@@ -134,6 +135,7 @@ fn render_metrics_table(
             Constraint::Min(60),  // Description
         ],
     )
+    .block(Block::default().borders(Borders::all()))
     .header(header)
     // .row_highlight_style(selected_row_style)
     // .column_highlight_style(selected_col_style)
@@ -147,6 +149,15 @@ fn render_metrics_table(
     // .bg(self.colors.buffer_bg)
     .highlight_spacing(HighlightSpacing::Always);
     frame.render_stateful_widget(t, area, state);
+}
+
+fn histogram_cell(histograms: &[HistogramCount]) -> Cell<'_> {
+    let mut data = Vec::new();
+    for histogram in histograms {
+        let item = format!("<{} ={}", histogram.less_than, histogram.count);
+        data.push(item);
+    }
+    Cell::from(Text::from(format!("Histogram: {}", data.join(", "))))
 }
 
 fn render_scrollbar(frame: &mut Frame, area: Rect, scroll_state: &mut ScrollbarState) {
