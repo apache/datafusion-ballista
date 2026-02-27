@@ -42,6 +42,7 @@ dirs = "6.0"
 env_logger = { workspace = true }
 futures = { version = "0.3.31", optional = true }
 mimalloc = { workspace = true }
+prometheus-parse = { version = "0.2", optional = true }
 ratatui = { version = "0.30.0", optional = true }
 reqwest = { version = "0.13.1", features = ["json"], optional = true }
 rustyline = "17.0.1"
@@ -51,7 +52,7 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync
 tracing = { version = "0.1", optional = true }
 tracing-appender = { version = "0.2", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
-prometheus-parse = { version = "0.2", optional = true }
+tui-big-text = { version = "0.8.2", optional = true }
 
 [features]
-tui = ["dep:chrono", "dep:config", "dep:crossterm", "dep:futures", "dep:prometheus-parse", "dep:ratatui", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:tracing", "dep:tracing-subscriber", "dep:tracing-appender"]
+tui = ["dep:chrono", "dep:config", "dep:crossterm", "dep:futures", "dep:prometheus-parse", "dep:ratatui", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:tracing", "dep:tracing-subscriber", "dep:tracing-appender", "dep:tui-big-text"]

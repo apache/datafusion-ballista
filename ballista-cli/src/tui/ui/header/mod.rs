@@ -33,17 +33,6 @@ const PERCENTAGE: u16 = 100 / MENU_ITEMS.len() as u16;
 const MENU_CONSTRAINTS: [Constraint; MENU_ITEMS.len()] =
     [Constraint::Percentage(PERCENTAGE); MENU_ITEMS.len()];
 
-// Generated at https://manytools.org/hacker-tools/ascii-banner/
-// Font: Shimrod
-#[rustfmt::skip]
-const BANNER: &str = r#"
-,-.      .       ,--.                   ,-.      . .       .
-|  \     |       |          o           |  )     | | o     |
-|  | ,-: |-  ,-: |- . . ,-. . ,-. ;-.   |-<  ,-: | | . ,-. |-  ,-:
-|  / | | |   | | |  | | `-. | | | | |   |  ) | | | | | `-. |   | |
-`-'  `-` `-' `-` '  `-` `-' ' `-' ' '   `-'  `-` ' ' ' `-' `-' `-`
-"#;
-
 pub(super) fn render_header(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -58,12 +47,16 @@ pub(super) fn render_header(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_banner(f: &mut Frame, area: Rect) {
-    let block = Block::default().borders(Borders::empty());
-    let paragraph = Paragraph::new(BANNER)
-        .style(Style::default().bold())
-        .block(block)
-        .alignment(Alignment::Left);
-    f.render_widget(paragraph, area);
+    use tui_big_text::{BigText, PixelSize};
+    let big_text = BigText::builder()
+        .pixel_size(PixelSize::ThirdHeight)
+        .style(Style::new().yellow())
+        .lines(vec![
+            "Apache".into(),
+            "DataFusion".into(),
+        ])
+        .build();
+    f.render_widget(big_text, area);
 }
 
 fn render_navbar(f: &mut Frame, area: Rect, app: &App) {
