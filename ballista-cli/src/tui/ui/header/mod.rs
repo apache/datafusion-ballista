@@ -51,10 +51,7 @@ fn render_banner(f: &mut Frame, area: Rect) {
     let big_text = BigText::builder()
         .pixel_size(PixelSize::ThirdHeight)
         .style(Style::new().yellow())
-        .lines(vec![
-            "Apache".into(),
-            "DataFusion".into(),
-        ])
+        .lines(vec!["Apache".into(), "DataFusion".into()])
         .build();
     f.render_widget(big_text, area);
 }
