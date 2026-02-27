@@ -1386,6 +1386,35 @@ pub mod scheduler_grpc_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        pub async fn execute_query_push(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ExecuteQueryParams>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::GetJobStatusResult>>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/ballista.protobuf.SchedulerGrpc/ExecuteQueryPush",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "ballista.protobuf.SchedulerGrpc",
+                        "ExecuteQueryPush",
+                    ),
+                );
+            self.inner.server_streaming(req, path, codec).await
+        }
         pub async fn execute_query(
             &mut self,
             request: impl tonic::IntoRequest<super::ExecuteQueryParams>,
@@ -1567,6 +1596,19 @@ pub mod scheduler_grpc_server {
             request: tonic::Request<super::RemoveSessionParams>,
         ) -> std::result::Result<
             tonic::Response<super::RemoveSessionResult>,
+            tonic::Status,
+        >;
+        /// Server streaming response type for the ExecuteQueryPush method.
+        type ExecuteQueryPushStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::GetJobStatusResult, tonic::Status>,
+            >
+            + std::marker::Send
+            + 'static;
+        async fn execute_query_push(
+            &self,
+            request: tonic::Request<super::ExecuteQueryParams>,
+        ) -> std::result::Result<
+            tonic::Response<Self::ExecuteQueryPushStream>,
             tonic::Status,
         >;
         async fn execute_query(
@@ -1952,6 +1994,53 @@ pub mod scheduler_grpc_server {
                                 max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/ballista.protobuf.SchedulerGrpc/ExecuteQueryPush" => {
+                    #[allow(non_camel_case_types)]
+                    struct ExecuteQueryPushSvc<T: SchedulerGrpc>(pub Arc<T>);
+                    impl<
+                        T: SchedulerGrpc,
+                    > tonic::server::ServerStreamingService<super::ExecuteQueryParams>
+                    for ExecuteQueryPushSvc<T> {
+                        type Response = super::GetJobStatusResult;
+                        type ResponseStream = T::ExecuteQueryPushStream;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ExecuteQueryParams>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SchedulerGrpc>::execute_query_push(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ExecuteQueryPushSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.server_streaming(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)

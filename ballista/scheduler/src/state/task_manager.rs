@@ -23,6 +23,7 @@ use crate::state::execution_graph::{
 };
 use crate::state::executor_manager::ExecutorManager;
 
+use ballista_core::JobStatusSubscriber;
 use ballista_core::error::BallistaError;
 use ballista_core::error::Result;
 use ballista_core::extension::{SessionConfigExt, SessionConfigHelperExt};
@@ -156,6 +157,7 @@ impl JobInfoCache {
     /// Creates a new `JobInfoCache` from an execution graph.
     pub fn new(graph: ExecutionGraphBox) -> Self {
         let status = graph.status().status.clone();
+
         Self {
             execution_graph: Arc::new(RwLock::new(graph)),
             status,
@@ -266,6 +268,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
     /// Generate an ExecutionGraph for the job and save it to the persistent state.
     /// By default, this job will be curated by the scheduler which receives it.
     /// Then we will also save it to the active execution graph
+    #[allow(clippy::too_many_arguments)]
     pub async fn submit_job(
         &self,
         job_id: &str,
@@ -274,6 +277,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
         plan: Arc<dyn ExecutionPlan>,
         queued_at: u64,
         session_config: Arc<SessionConfig>,
+        subscriber: Option<JobStatusSubscriber>,
     ) -> Result<()> {
         let mut planner = DefaultDistributedPlanner::new();
 
@@ -307,7 +311,9 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
 
         info!("Submitting execution graph: {graph:?}");
 
-        self.state.submit_job(job_id.to_string(), &graph).await?;
+        self.state
+            .submit_job(job_id.to_string(), &graph, subscriber)
+            .await?;
         graph.revive();
         self.active_job_cache
             .insert(job_id.to_owned(), JobInfoCache::new(graph));

@@ -26,7 +26,7 @@ use ballista_core::serde::protobuf::{
     ExecuteQueryFailureResult, ExecuteQueryParams, ExecuteQueryResult,
     ExecuteQuerySuccessResult, ExecutorHeartbeat, ExecutorStoppedParams,
     ExecutorStoppedResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
-    HeartBeatResult, PollWorkParams, PollWorkResult, RegisterExecutorParams,
+    HeartBeatResult, JobStatus, PollWorkParams, PollWorkResult, RegisterExecutorParams,
     RegisterExecutorResult, RemoveSessionParams, RemoveSessionResult,
     UpdateTaskStatusParams, UpdateTaskStatusResult, execute_query_failure_result,
     execute_query_result,
@@ -34,8 +34,12 @@ use ballista_core::serde::protobuf::{
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
+use futures::{Stream, StreamExt};
 use log::{debug, error, info, trace, warn};
 use std::net::SocketAddr;
+use std::pin::Pin;
+
+use tokio_stream::wrappers::ReceiverStream;
 
 #[cfg(feature = "substrait")]
 use {
@@ -58,6 +62,9 @@ use crate::scheduler_server::SchedulerServer;
 impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
     for SchedulerServer<T, U>
 {
+    type ExecuteQueryPushStream =
+        Pin<Box<dyn Stream<Item = Result<GetJobStatusResult, Status>> + Send>>;
+
     async fn poll_work(
         &self,
         request: Request<PollWorkParams>,
@@ -333,6 +340,135 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         Ok(Response::new(RemoveSessionResult { success: true }))
     }
 
+    async fn execute_query_push(
+        &self,
+        request: tonic::Request<ExecuteQueryParams>,
+    ) -> std::result::Result<tonic::Response<Self::ExecuteQueryPushStream>, tonic::Status>
+    {
+        let query_params = request.into_inner();
+        if let ExecuteQueryParams {
+            query: Some(query),
+            session_id,
+            operation_id,
+            settings,
+        } = query_params
+        {
+            let job_name = settings
+                .iter()
+                .find(|s| s.key == BALLISTA_JOB_NAME)
+                .and_then(|s| s.value.clone())
+                .unwrap_or_default();
+
+            let job_id = self.state.task_manager.generate_job_id();
+
+            info!(
+                "execution query - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}, job_id: {job_id}"
+            );
+
+            let (_session_id, session_ctx) = {
+                let session_config = self.state.session_manager.produce_config();
+                let session_config = session_config.update_from_key_value_pair(&settings);
+
+                let ctx = self
+                    .state
+                    .session_manager
+                    .create_or_update_session(&session_id, &session_config)
+                    .await
+                    .map_err(|e| {
+                        Status::internal(format!(
+                            "Failed to create SessionContext: {e:?}"
+                        ))
+                    })?;
+
+                (session_id, ctx)
+            };
+
+            let plan = match query {
+                Query::LogicalPlan(message) => {
+                    match T::try_decode(message.as_slice()).and_then(|m| {
+                        m.try_into_logical_plan(
+                            session_ctx.task_ctx().deref(),
+                            self.state.codec.logical_extension_codec(),
+                        )
+                    }) {
+                        Ok(plan) => plan,
+                        Err(e) => {
+                            let msg =
+                                format!("Could not parse logical plan protobuf: {e}");
+                            error!("{msg}");
+
+                            Err(Status::invalid_argument(msg))?
+                        }
+                    }
+                }
+                #[cfg(not(feature = "substrait"))]
+                Query::SubstraitPlan(_) => {
+                    let msg = "Received query type \"Substrait\", enable \"substrait\" feature to support Substrait plans.".to_string();
+                    error!("{msg}");
+                    return Err(Status::invalid_argument(msg));
+                }
+                #[cfg(feature = "substrait")]
+                Query::SubstraitPlan(bytes) => {
+                    let plan = deserialize_bytes(bytes).await.map_err(|e| {
+                        let msg = format!("Could not parse substrait plan: {e}");
+                        error!("{}", msg);
+                        Status::internal(msg)
+                    })?;
+
+                    let ctx = session_ctx.as_ref().clone();
+                    from_substrait_plan(&ctx.state(), &plan)
+                        .await
+                        .map_err(|e| {
+                            let msg = format!("Could not parse substrait plan: {e}");
+                            error!("{}", msg);
+                            Status::internal(msg)
+                        })?
+                }
+            };
+
+            debug!(
+                "Decoded logical plan for execution:\n{}",
+                plan.display_indent()
+            );
+            log::trace!("setting job name: {job_name}");
+
+            let flight_proxy =
+                self.state.config.advertise_flight_sql_endpoint.clone().map(
+                    |s| match s {
+                        s if s.is_empty() => FlightProxy::Local(true),
+                        s => FlightProxy::External(s),
+                    },
+                );
+
+            let (subscriber, rx) = tokio::sync::mpsc::channel::<JobStatus>(16);
+            let stream = ReceiverStream::new(rx).map(move |status| {
+                Ok::<_, tonic::Status>(GetJobStatusResult {
+                    status: Some(status),
+                    flight_proxy: flight_proxy.clone(),
+                })
+            });
+
+            log::trace!("setting job name: {job_name}");
+            let _ = self
+                .submit_job(&job_name, session_ctx, &plan, Some(subscriber))
+                .await
+                .map_err(|e| {
+                    let msg =
+                        format!("Failed to send JobQueued event for {job_name}: {e:?}");
+
+                    error!("{msg}");
+
+                    Status::internal(msg)
+                })?;
+
+            Ok(Response::new(Box::pin(stream)))
+        } else {
+            Err(Status::internal(
+                "Error processing request, invalid message",
+            ))
+        }
+    }
+
     async fn execute_query(
         &self,
         request: Request<ExecuteQueryParams>,
@@ -438,7 +574,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
             log::trace!("setting job name: {job_name}");
             let job_id = self
-                .submit_job(&job_name, session_ctx, &plan)
+                .submit_job(&job_name, session_ctx, &plan, None)
                 .await
                 .map_err(|e| {
                     let msg =

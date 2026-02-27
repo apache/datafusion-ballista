@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use ballista_core::JobStatusSubscriber;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::datasource::listing::{ListingTable, ListingTableUrl};
 use datafusion::datasource::source_as_provider;
@@ -379,6 +380,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
         session_ctx: Arc<SessionContext>,
         plan: &LogicalPlan,
         queued_at: u64,
+        subscriber: Option<JobStatusSubscriber>,
     ) -> Result<()> {
         let start = Instant::now();
         let session_config = Arc::new(session_ctx.copied_config());
@@ -487,6 +489,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 plan.data,
                 queued_at,
                 session_config,
+                subscriber,
             )
             .await?;
 
