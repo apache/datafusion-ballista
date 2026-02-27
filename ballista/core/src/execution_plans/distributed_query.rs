@@ -246,9 +246,8 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             MetricBuilder::new(&self.metrics).counter("transferred_bytes", partition);
 
         let session_config = context.session_config().clone();
-        let config_client_push = session_config.ballista_config().client_pull();
 
-        if config_client_push {
+        if session_config.ballista_config().client_pull() {
             let stream = futures::stream::once(
                 execute_query_pull(
                     self.scheduler_url.clone(),
@@ -318,6 +317,9 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     }
 }
 
+/// Client will periodically invoke scheduler to check
+/// job status. There is preconfigured wait period between
+/// pulls, which increases query latency.
 #[allow(clippy::too_many_arguments)]
 async fn execute_query_pull(
     scheduler_url: String,
@@ -483,7 +485,9 @@ async fn execute_query_pull(
         };
     }
 }
-
+/// After job is scheduled client waits
+/// for job updates, which are streamed back
+/// from server to client
 #[allow(clippy::too_many_arguments)]
 async fn execute_query_push(
     scheduler_url: String,
