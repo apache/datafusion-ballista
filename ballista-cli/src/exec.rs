@@ -41,10 +41,6 @@ pub async fn exec_from_lines(
     print_options: &PrintOptions,
 ) {
     let mut query = "".to_owned();
-    let max_rows = match print_options.maxrows {
-        datafusion_cli::print_options::MaxRows::Unlimited => usize::MAX,
-        datafusion_cli::print_options::MaxRows::Limited(max_rows) => max_rows,
-    };
 
     for line in reader.lines() {
         match line {
@@ -55,7 +51,7 @@ pub async fn exec_from_lines(
                 let line = line.trim_end();
                 query.push_str(line);
                 if line.ends_with(';') {
-                    match exec_and_print(ctx, print_options, query, max_rows).await {
+                    match exec_and_print(ctx, print_options, query).await {
                         Ok(_) => {}
                         Err(err) => println!("{err:?}"),
                     }
@@ -76,7 +72,7 @@ pub async fn exec_from_lines(
 
     // run the left over query if the last statement doesn't contain ‘;’
     if !query.is_empty() {
-        match exec_and_print(ctx, print_options, query, max_rows).await {
+        match exec_and_print(ctx, print_options, query).await {
             Ok(_) => {}
             Err(err) => println!("{err:?}"),
         }
@@ -152,7 +148,7 @@ pub async fn exec_from_repl(ctx: &SessionContext, print_options: &mut PrintOptio
             }
             Ok(line) => {
                 rl.add_history_entry(line.trim_end()).unwrap();
-                match exec_and_print(ctx, &print_options, line, max_rows).await {
+                match exec_and_print(ctx, &print_options, line).await {
                     Ok(_) => {}
                     Err(err) => eprintln!("{err:?}"),
                 }
@@ -179,13 +175,13 @@ async fn exec_and_print(
     ctx: &SessionContext,
     print_options: &PrintOptions,
     sql: String,
-    row_count: usize,
 ) -> Result<()> {
     let now = Instant::now();
     let df = ctx.sql(&sql).await?;
     let schema = Arc::new(df.schema().as_arrow().clone());
     let results = df.collect().await?;
-    print_options.print_batches(schema, &results, now, row_count, &Default::default())?;
+    let rows = &results.iter().map(|b| b.num_rows()).sum::<usize>();
+    print_options.print_batches(schema, &results, now, *rows, &Default::default())?;
 
     Ok(())
 }
