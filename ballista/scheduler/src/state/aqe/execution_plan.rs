@@ -66,7 +66,7 @@ use std::sync::{Arc, atomic::AtomicI64};
 #[derive(Debug)]
 pub(crate) struct ExchangeExec {
     input: Arc<dyn ExecutionPlan>,
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
     pub(crate) partitioning: Option<Partitioning>,
     pub(crate) plan_id: usize,
     stage_id: Arc<AtomicI64>,
@@ -116,12 +116,12 @@ impl ExchangeExec {
             None => input.output_partitioning().clone(),
         };
         let eq_properties = input.properties().eq_properties.clone();
-        let properties = PlanProperties::new(
+        let properties = Arc::new(PlanProperties::new(
             eq_properties,
             plan_partitioning,
             datafusion::physical_plan::execution_plan::EmissionType::Incremental,
             datafusion::physical_plan::execution_plan::Boundedness::Bounded,
-        );
+        ));
 
         Self {
             input,
@@ -249,7 +249,7 @@ impl ExecutionPlan for ExchangeExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 
@@ -443,7 +443,7 @@ impl ExecutionPlan for AdaptiveDatafusionExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         self.input.properties()
     }
 
