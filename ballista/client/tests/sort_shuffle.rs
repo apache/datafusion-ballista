@@ -49,6 +49,8 @@ mod sort_shuffle_tests {
         Local,
         /// Read shuffle data via flight service (remote read)
         RemoteFlight,
+
+        RemoteBlock,
     }
 
     /// Creates a standalone session context with sort-based shuffle enabled.
@@ -66,6 +68,11 @@ mod sort_shuffle_tests {
                 config = config
                     .set_str(BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, "true")
                     .set_str(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, "true");
+            }
+            ReadMode::RemoteBlock => {
+                config = config
+                    .set_str(BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, "true")
+                    .set_str(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, "false");
             }
         }
 
@@ -128,6 +135,7 @@ mod sort_shuffle_tests {
     #[rstest]
     #[case::local(ReadMode::Local)]
     #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_flight(ReadMode::RemoteBlock)]
     #[tokio::test]
     async fn test_sort_shuffle_group_by_single_column(
         #[case] read_mode: ReadMode,
@@ -155,6 +163,7 @@ mod sort_shuffle_tests {
     #[rstest]
     #[case::local(ReadMode::Local)]
     #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_flight(ReadMode::RemoteBlock)]
     #[tokio::test]
     async fn test_sort_shuffle_group_by_multiple_columns(
         #[case] read_mode: ReadMode,
@@ -182,6 +191,7 @@ mod sort_shuffle_tests {
     #[rstest]
     #[case::local(ReadMode::Local)]
     #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_flight(ReadMode::RemoteBlock)]
     #[tokio::test]
     async fn test_sort_shuffle_aggregate_sum(#[case] read_mode: ReadMode) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
@@ -204,6 +214,7 @@ mod sort_shuffle_tests {
     #[rstest]
     #[case::local(ReadMode::Local)]
     #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_flight(ReadMode::RemoteBlock)]
     #[tokio::test]
     async fn test_sort_shuffle_aggregate_avg(#[case] read_mode: ReadMode) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
@@ -226,6 +237,7 @@ mod sort_shuffle_tests {
     #[rstest]
     #[case::local(ReadMode::Local)]
     #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_flight(ReadMode::RemoteBlock)]
     #[tokio::test]
     async fn test_sort_shuffle_aggregate_count(
         #[case] read_mode: ReadMode,
@@ -250,6 +262,7 @@ mod sort_shuffle_tests {
     #[rstest]
     #[case::local(ReadMode::Local)]
     #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_flight(ReadMode::RemoteBlock)]
     #[tokio::test]
     async fn test_sort_shuffle_aggregate_min_max(
         #[case] read_mode: ReadMode,
@@ -332,6 +345,7 @@ mod sort_shuffle_tests {
     #[rstest]
     #[case::local(ReadMode::Local)]
     #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_flight(ReadMode::RemoteBlock)]
     #[tokio::test]
     async fn test_sort_shuffle_empty_result(#[case] read_mode: ReadMode) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
@@ -349,6 +363,7 @@ mod sort_shuffle_tests {
     #[rstest]
     #[case::local(ReadMode::Local)]
     #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_flight(ReadMode::RemoteBlock)]
     #[tokio::test]
     async fn test_sort_shuffle_single_partition(
         #[case] read_mode: ReadMode,
@@ -367,6 +382,7 @@ mod sort_shuffle_tests {
     #[rstest]
     #[case::local(ReadMode::Local)]
     #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_flight(ReadMode::RemoteBlock)]
     #[tokio::test]
     async fn test_sort_shuffle_multiple_aggregates(
         #[case] read_mode: ReadMode,
@@ -400,6 +416,7 @@ mod sort_shuffle_tests {
     #[rstest]
     #[case::local(ReadMode::Local)]
     #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_flight(ReadMode::RemoteBlock)]
     #[tokio::test]
     async fn test_sort_shuffle_having_clause(#[case] read_mode: ReadMode) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
@@ -427,6 +444,7 @@ mod sort_shuffle_tests {
     #[rstest]
     #[case::local(ReadMode::Local)]
     #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_flight(ReadMode::RemoteBlock)]
     #[tokio::test]
     async fn test_sort_shuffle_subquery(#[case] read_mode: ReadMode) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
@@ -451,6 +469,7 @@ mod sort_shuffle_tests {
     #[rstest]
     #[case::local(ReadMode::Local)]
     #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_flight(ReadMode::RemoteBlock)]
     #[tokio::test]
     async fn test_sort_shuffle_union(#[case] read_mode: ReadMode) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
@@ -476,6 +495,7 @@ mod sort_shuffle_tests {
     #[rstest]
     #[case::local(ReadMode::Local)]
     #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_flight(ReadMode::RemoteBlock)]
     #[tokio::test]
     async fn test_sort_shuffle_order_by(#[case] read_mode: ReadMode) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
@@ -496,6 +516,7 @@ mod sort_shuffle_tests {
     #[rstest]
     #[case::local(ReadMode::Local)]
     #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_flight(ReadMode::RemoteBlock)]
     #[tokio::test]
     async fn test_sort_shuffle_order_by_desc(#[case] read_mode: ReadMode) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
@@ -516,6 +537,7 @@ mod sort_shuffle_tests {
     #[rstest]
     #[case::local(ReadMode::Local)]
     #[case::remote_flight(ReadMode::RemoteFlight)]
+    #[case::remote_flight(ReadMode::RemoteBlock)]
     #[tokio::test]
     async fn test_sort_shuffle_limit(#[case] read_mode: ReadMode) -> Result<()> {
         let ctx = create_sort_shuffle_context(read_mode).await;
