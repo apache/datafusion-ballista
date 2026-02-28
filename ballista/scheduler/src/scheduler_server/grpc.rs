@@ -17,6 +17,7 @@
 
 use axum::extract::ConnectInfo;
 use ballista_core::config::BALLISTA_JOB_NAME;
+use ballista_core::error::{BallistaError, Result as BResult};
 use ballista_core::extension::SessionConfigHelperExt;
 use ballista_core::serde::protobuf::execute_query_params::Query;
 use ballista_core::serde::protobuf::scheduler_grpc_server::SchedulerGrpc;
@@ -26,10 +27,10 @@ use ballista_core::serde::protobuf::{
     ExecuteQueryFailureResult, ExecuteQueryParams, ExecuteQueryResult,
     ExecuteQuerySuccessResult, ExecutorHeartbeat, ExecutorStoppedParams,
     ExecutorStoppedResult, GetJobStatusParams, GetJobStatusResult, HeartBeatParams,
-    HeartBeatResult, JobStatus, PollWorkParams, PollWorkResult, RegisterExecutorParams,
-    RegisterExecutorResult, RemoveSessionParams, RemoveSessionResult,
-    UpdateTaskStatusParams, UpdateTaskStatusResult, execute_query_failure_result,
-    execute_query_result,
+    HeartBeatResult, JobStatus, KeyValuePair, PollWorkParams, PollWorkResult,
+    RegisterExecutorParams, RegisterExecutorResult, RemoveSessionParams,
+    RemoveSessionResult, UpdateTaskStatusParams, UpdateTaskStatusResult,
+    execute_query_failure_result, execute_query_result,
 };
 use ballista_core::serde::scheduler::ExecutorMetadata;
 use datafusion_proto::logical_plan::AsLogicalPlan;
@@ -47,12 +48,14 @@ use {
     datafusion_substrait::serializer::deserialize_bytes,
 };
 
-use std::ops::Deref;
-
 use crate::cluster::{bind_task_bias, bind_task_round_robin};
 use crate::config::TaskDistributionPolicy;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use ballista_core::serde::protobuf::get_job_status_result::FlightProxy;
+use datafusion::logical_expr::LogicalPlan;
+use datafusion::prelude::SessionContext;
+use std::ops::Deref;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{Request, Response, Status};
 
@@ -365,66 +368,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 "execution query - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}, job_id: {job_id}"
             );
 
-            let (_session_id, session_ctx) = {
-                let session_config = self.state.session_manager.produce_config();
-                let session_config = session_config.update_from_key_value_pair(&settings);
+            let (_session_id, session_ctx) = self
+                .create_context(&settings, session_id)
+                .await
+                .map_err(|e| {
+                    Status::internal(format!("Failed to create SessionContext: {e:?}"))
+                })?;
 
-                let ctx = self
-                    .state
-                    .session_manager
-                    .create_or_update_session(&session_id, &session_config)
-                    .await
-                    .map_err(|e| {
-                        Status::internal(format!(
-                            "Failed to create SessionContext: {e:?}"
-                        ))
-                    })?;
+            let plan = self.parse_plan(query, &session_ctx).await.map_err(|e| {
+                let msg = format!("Could not parse plan: {e}");
+                error!("{}", msg);
 
-                (session_id, ctx)
-            };
-
-            let plan = match query {
-                Query::LogicalPlan(message) => {
-                    match T::try_decode(message.as_slice()).and_then(|m| {
-                        m.try_into_logical_plan(
-                            session_ctx.task_ctx().deref(),
-                            self.state.codec.logical_extension_codec(),
-                        )
-                    }) {
-                        Ok(plan) => plan,
-                        Err(e) => {
-                            let msg =
-                                format!("Could not parse logical plan protobuf: {e}");
-                            error!("{msg}");
-
-                            Err(Status::invalid_argument(msg))?
-                        }
-                    }
-                }
-                #[cfg(not(feature = "substrait"))]
-                Query::SubstraitPlan(_) => {
-                    let msg = "Received query type \"Substrait\", enable \"substrait\" feature to support Substrait plans.".to_string();
-                    error!("{msg}");
-                    return Err(Status::invalid_argument(msg));
-                }
-                #[cfg(feature = "substrait")]
-                Query::SubstraitPlan(bytes) => {
-                    let plan = deserialize_bytes(bytes).await.map_err(|e| {
-                        let msg = format!("Could not parse substrait plan: {e}");
-                        error!("{}", msg);
-                        Status::internal(msg)
-                    })?;
-
-                    let ctx = session_ctx.as_ref().clone();
-                    from_substrait_plan(&ctx.state(), &plan)
-                        .await
-                        .map_err(|e| {
-                            let msg = format!("Could not parse substrait plan: {e}");
-                            error!("{}", msg);
-                            Status::internal(msg)
-                        })?
-                }
-            };
+                Status::invalid_argument(msg)
+            })?;
 
             debug!(
                 "Decoded logical plan for execution:\n{}",
@@ -432,13 +388,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             );
             log::trace!("setting job name: {job_name}");
 
-            let flight_proxy =
-                self.state.config.advertise_flight_sql_endpoint.clone().map(
-                    |s| match s {
-                        s if s.is_empty() => FlightProxy::Local(true),
-                        s => FlightProxy::External(s),
-                    },
-                );
+            let flight_proxy = self.flight_proxy_config();
 
             let (subscriber, rx) = tokio::sync::mpsc::channel::<JobStatus>(16);
             let stream = ReceiverStream::new(rx).map(move |status| {
@@ -493,38 +443,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 "execution query - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}, job_id: {job_id}"
             );
 
-            let (session_id, session_ctx) = {
-                let session_config = self.state.session_manager.produce_config();
-                let session_config = session_config.update_from_key_value_pair(&settings);
+            let (session_id, session_ctx) = self
+                .create_context(&settings, session_id)
+                .await
+                .map_err(|e| {
+                    Status::internal(format!("Failed to create SessionContext: {e:?}"))
+                })?;
 
-                let ctx = self
-                    .state
-                    .session_manager
-                    .create_or_update_session(&session_id, &session_config)
-                    .await
-                    .map_err(|e| {
-                        Status::internal(format!(
-                            "Failed to create SessionContext: {e:?}"
-                        ))
-                    })?;
-
-                (session_id, ctx)
-            };
-
-            let plan = match query {
-                Query::LogicalPlan(message) => {
-                    match T::try_decode(message.as_slice()).and_then(|m| {
-                        m.try_into_logical_plan(
-                            session_ctx.task_ctx().deref(),
-                            self.state.codec.logical_extension_codec(),
-                        )
-                    }) {
-                        Ok(plan) => plan,
-                        Err(e) => {
-                            let msg =
-                                format!("Could not parse logical plan protobuf: {e}");
-                            error!("{msg}");
-                            return Ok(Response::new(ExecuteQueryResult {
+            let plan = match self.parse_plan(query, &session_ctx).await {
+                Ok(plan) => plan,
+                Err(e) => {
+                    let msg = format!("Could not parse plan: {e}");
+                    error!("{msg}");
+                    return Ok(Response::new(ExecuteQueryResult {
                                 operation_id,
                                 result: Some(execute_query_result::Result::Failure(
                                     ExecuteQueryFailureResult {
@@ -532,38 +463,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                                     },
                                 )),
                             }));
-                        }
-                    }
-                }
-                #[cfg(not(feature = "substrait"))]
-                Query::SubstraitPlan(_) => {
-                    let msg = "Received query type \"Substrait\", enable \"substrait\" feature to support Substrait plans.".to_string();
-                    error!("{msg}");
-                    return Ok(Response::new(ExecuteQueryResult {
-                        operation_id,
-                        result: Some(execute_query_result::Result::Failure(
-                            ExecuteQueryFailureResult {
-                                failure: Some(execute_query_failure_result::Failure::PlanParsingFailure(msg)),
-                            }
-                        ))
-                    }));
-                }
-                #[cfg(feature = "substrait")]
-                Query::SubstraitPlan(bytes) => {
-                    let plan = deserialize_bytes(bytes).await.map_err(|e| {
-                        let msg = format!("Could not parse substrait plan: {e}");
-                        error!("{}", msg);
-                        Status::internal(msg)
-                    })?;
-
-                    let ctx = session_ctx.as_ref().clone();
-                    from_substrait_plan(&ctx.state(), &plan)
-                        .await
-                        .map_err(|e| {
-                            let msg = format!("Could not parse substrait plan: {e}");
-                            error!("{}", msg);
-                            Status::internal(msg)
-                        })?
                 }
             };
 
@@ -602,15 +501,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
         let job_id = request.into_inner().job_id;
         trace!("Received get_job_status request for job {}", job_id);
 
-        let flight_proxy =
-            self.state
-                .config
-                .advertise_flight_sql_endpoint
-                .clone()
-                .map(|s| match s {
-                    s if s.is_empty() => FlightProxy::Local(true),
-                    s => FlightProxy::External(s),
-                });
+        let flight_proxy = self.flight_proxy_config();
 
         match self.state.task_manager.get_job_status(&job_id).await {
             Ok(status) => Ok(Response::new(GetJobStatusResult {
@@ -703,6 +594,67 @@ fn extract_connect_info<T>(request: &Request<T>) -> Option<ConnectInfo<SocketAdd
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .cloned()
+}
+
+impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T, U> {
+    async fn create_context(
+        &self,
+        settings: &[KeyValuePair],
+        session_id: String,
+    ) -> BResult<(String, Arc<SessionContext>)> {
+        let session_config = self.state.session_manager.produce_config();
+        let session_config = session_config.update_from_key_value_pair(settings);
+
+        let ctx = self
+            .state
+            .session_manager
+            .create_or_update_session(&session_id, &session_config)
+            .await?;
+
+        Ok((session_id, ctx))
+    }
+
+    async fn parse_plan(
+        &self,
+        query: Query,
+        session_ctx: &SessionContext,
+    ) -> BResult<LogicalPlan> {
+        match query {
+            Query::LogicalPlan(message) => T::try_decode(message.as_slice())
+                .and_then(|m| {
+                    m.try_into_logical_plan(
+                        session_ctx.task_ctx().deref(),
+                        self.state.codec.logical_extension_codec(),
+                    )
+                })
+                .map_err(|e| e.into()),
+
+            #[cfg(not(feature = "substrait"))]
+            Query::SubstraitPlan(_) => {
+                Err(BallistaError::NotImplemented("Received query type \"Substrait\", enable \"substrait\" feature to support Substrait plans.".to_string()))
+            }
+            #[cfg(feature = "substrait")]
+            Query::SubstraitPlan(bytes) => {
+                let plan = deserialize_bytes(bytes).await.map_err(|e| BallistaError::DataFusionError(e.into()))?;
+
+                let ctx = session_ctx.clone();
+                from_substrait_plan(&ctx.state(), &plan)
+                    .await
+                    .map_err(|e| e.into())
+            }
+        }
+    }
+
+    fn flight_proxy_config(&self) -> Option<FlightProxy> {
+        self.state
+            .config
+            .advertise_flight_sql_endpoint
+            .clone()
+            .map(|s| match s {
+                s if s.is_empty() => FlightProxy::Local(true),
+                s => FlightProxy::External(s),
+            })
+    }
 }
 
 #[cfg(test)]
