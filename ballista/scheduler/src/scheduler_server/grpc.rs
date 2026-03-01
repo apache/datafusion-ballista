@@ -362,14 +362,12 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .and_then(|s| s.value.clone())
                 .unwrap_or_default();
 
-            let job_id = self.state.task_manager.generate_job_id();
-
             info!(
-                "execution query - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}, job_id: {job_id}"
+                "execution query (PUSH) job received - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}"
             );
 
             let (_session_id, session_ctx) = self
-                .create_context(&settings, session_id)
+                .create_context(&settings, session_id.clone())
                 .await
                 .map_err(|e| {
                     Status::internal(format!("Failed to create SessionContext: {e:?}"))
@@ -399,7 +397,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
             });
 
             log::trace!("setting job name: {job_name}");
-            let _ = self
+            let job_id = self
                 .submit_job(&job_name, session_ctx, &plan, Some(subscriber))
                 .await
                 .map_err(|e| {
@@ -410,6 +408,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
                     Status::internal(msg)
                 })?;
+
+            info!(
+                "execution query (PUSH) job submitted - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}, job_id: {job_id}"
+            );
 
             Ok(Response::new(Box::pin(stream)))
         } else {
@@ -437,10 +439,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 .and_then(|s| s.value.clone())
                 .unwrap_or_default();
 
-            let job_id = self.state.task_manager.generate_job_id();
-
             info!(
-                "execution query - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}, job_id: {job_id}"
+                "execution query job received - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}"
             );
 
             let (session_id, session_ctx) = self
@@ -482,6 +482,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
 
                     Status::internal(msg)
                 })?;
+
+            info!(
+                "execution query, job submitted - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}"
+            );
 
             Ok(Response::new(ExecuteQueryResult {
                 operation_id,
