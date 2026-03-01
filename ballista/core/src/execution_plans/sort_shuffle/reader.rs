@@ -23,15 +23,17 @@
 
 use crate::error::{BallistaError, Result};
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::ipc::reader::FileReader;
+use datafusion::arrow::ipc::reader::StreamReader;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use std::fs::File;
+use std::io::{Read, Seek, Take};
 use std::path::Path;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use super::index::ShuffleIndex;
 
@@ -88,15 +90,23 @@ pub fn read_sort_shuffle_partition(
     let start_batch = start_batch as usize;
     let end_batch = end_batch as usize;
 
-    // Open the data file with FileReader for random access
-    let file = File::open(data_path).map_err(BallistaError::IoError)?;
-    let mut reader = FileReader::try_new(file, None)?;
+    let num_batches = end_batch - start_batch;
 
-    let mut batches = Vec::with_capacity(end_batch - start_batch);
+    // Open the data file with FileReader for random access
+
+    let mut file = File::open(data_path).map_err(BallistaError::IoError)?;
+    let _ = file
+        .seek(std::io::SeekFrom::Start(start_batch as u64))
+        .unwrap();
+    let handle = file.take(num_batches as u64);
+
+    let mut reader = StreamReader::try_new(handle, None)?;
+
+    let mut batches = Vec::new();
 
     // Use FileReader's set_index() for random access to specific batches
     // This positions the reader directly at the starting batch index
-    reader.set_index(start_batch)?;
+    //reader.set_index(start_batch)?;
 
     // Read only the batches we need for this partition
     for _ in start_batch..end_batch {
@@ -115,13 +125,17 @@ pub fn read_sort_shuffle_partition(
 /// Wraps an Arrow FileReader and yields batches one at a time without
 /// loading them all into memory upfront.
 struct SortShufflePartitionStream {
-    reader: FileReader<File>,
+    reader: StreamReader<Take<File>>,
     schema: SchemaRef,
     remaining: usize,
 }
 
 impl SortShufflePartitionStream {
-    fn new(reader: FileReader<File>, schema: SchemaRef, num_batches: usize) -> Self {
+    fn new(
+        reader: StreamReader<Take<File>>,
+        schema: SchemaRef,
+        num_batches: usize,
+    ) -> Self {
         Self {
             reader,
             schema,
@@ -193,7 +207,7 @@ pub fn stream_sort_shuffle_partition(
 
     // Open the data file to get the schema
     let file = File::open(data_path).map_err(BallistaError::IoError)?;
-    let reader = FileReader::try_new(file, None)?;
+    let reader = StreamReader::try_new(file, None)?;
     let schema = reader.schema();
 
     // Check if partition has data
@@ -210,18 +224,59 @@ pub fn stream_sort_shuffle_partition(
     let (start_batch, end_batch) = index.get_partition_range(partition_id);
     let start_batch = start_batch as usize;
     let end_batch = end_batch as usize;
+
     let num_batches = end_batch - start_batch;
 
     // Re-open and position the reader at the start batch
-    let file = File::open(data_path).map_err(BallistaError::IoError)?;
-    let mut reader = FileReader::try_new(file, None)?;
-    reader.set_index(start_batch)?;
+    let mut file = File::open(data_path).map_err(BallistaError::IoError)?;
+    let _ = file
+        .seek(std::io::SeekFrom::Start(start_batch as u64))
+        .unwrap();
+    let handle = file.take(num_batches as u64);
+
+    let reader = StreamReader::try_new(handle, None)?;
+    //reader.set_index(start_batch)?;
 
     Ok(Box::pin(SortShufflePartitionStream::new(
         reader,
         schema,
         num_batches,
     )))
+}
+
+/// TO BE ADDED
+pub async fn read_sort_shuffle_file_chunk(
+    data_path: &Path,
+    index_path: &Path,
+    partition_id: usize,
+) -> Result<tokio::io::Take<tokio::fs::File>> {
+    let index = ShuffleIndex::read_from_file(index_path)?;
+
+    if partition_id >= index.partition_count() {
+        return Err(BallistaError::General(format!(
+            "Partition {partition_id} not found in index (max: {})",
+            index.partition_count()
+        )));
+    }
+
+    // Get the batch range for this partition
+    let (start_batch, end_batch) = index.get_partition_range(partition_id);
+    let start_batch = start_batch as usize;
+    let end_batch = end_batch as usize;
+
+    let num_batches = end_batch - start_batch;
+
+    // Re-open and position the reader at the start batch
+    let mut file = tokio::fs::File::open(data_path)
+        .await
+        .map_err(BallistaError::IoError)?;
+    let _ = file
+        .seek(std::io::SeekFrom::Start(start_batch as u64))
+        .await
+        .unwrap();
+    let take: tokio::io::Take<tokio::fs::File> = file.take(num_batches as u64);
+
+    Ok(take)
 }
 
 /// Reads all batches from a sort shuffle data file.
@@ -233,9 +288,9 @@ pub fn stream_sort_shuffle_partition(
 /// Vector of all record batches in the file.
 pub fn read_all_batches(data_path: &Path) -> Result<Vec<RecordBatch>> {
     let file = File::open(data_path).map_err(BallistaError::IoError)?;
-    let reader = FileReader::try_new(file, None)?;
+    let reader = StreamReader::try_new(file, None)?;
 
-    let mut batches = Vec::with_capacity(reader.num_batches());
+    let mut batches = Vec::new();
     for batch_result in reader {
         batches.push(batch_result?);
     }
@@ -249,7 +304,7 @@ mod tests {
     use datafusion::arrow::array::Int32Array;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::ipc::CompressionType;
-    use datafusion::arrow::ipc::writer::{FileWriter, IpcWriteOptions};
+    use datafusion::arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
     use std::io::BufWriter;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -294,7 +349,7 @@ mod tests {
             .try_with_compression(Some(CompressionType::LZ4_FRAME))
             .unwrap();
         let mut writer =
-            FileWriter::try_new_with_options(&mut buffered, &schema, options).unwrap();
+            StreamWriter::try_new_with_options(&mut buffered, &schema, options).unwrap();
 
         writer
             .write(&create_test_batch(&schema, vec![1, 2, 3]))

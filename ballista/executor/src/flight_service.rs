@@ -28,7 +28,8 @@ use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use ballista_core::error::BallistaError;
 use ballista_core::execution_plans::sort_shuffle::{
-    get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition,
+    get_index_path, is_sort_shuffle_output, read_sort_shuffle_file_chunk,
+    stream_sort_shuffle_partition,
 };
 use ballista_core::serde::decode_protobuf;
 use ballista_core::serde::scheduler::Action as BallistaAction;
@@ -251,7 +252,9 @@ impl FlightService for BallistaFlightService {
                     decode_protobuf(&action.body).map_err(|e| from_ballista_err(&e))?;
 
                 match &action {
-                    BallistaAction::FetchPartition { path, .. } => {
+                    BallistaAction::FetchPartition {
+                        path, partition_id, ..
+                    } => {
                         debug!("FetchPartition reading {path}");
                         let data_path = Path::new(path);
 
@@ -259,38 +262,71 @@ impl FlightService for BallistaFlightService {
                         // transfers the entire file, which contains all partitions.
                         // Use flight transport (do_get) for sort-based shuffle.
                         if is_sort_shuffle_output(data_path) {
-                            return Err(Status::unimplemented(
-                                "IO_BLOCK_TRANSPORT does not support sort-based shuffle. \
-                                 Set ballista.shuffle.remote_read_prefer_flight=true to use \
-                                 flight transport instead.",
-                            ));
+                            let index_path = get_index_path(data_path);
+                            let file = read_sort_shuffle_file_chunk(
+                                &data_path,
+                                &index_path,
+                                *partition_id,
+                            )
+                            .await
+                            .unwrap();
+                            // debug!(
+                            //     "streaming file: {} with size: {}",
+                            //     path,
+                            //     file.
+                            // );
+                            let reader = tokio::io::BufReader::with_capacity(
+                                BLOCK_BUFFER_CAPACITY,
+                                file,
+                            );
+                            let file_stream = ReaderStream::with_capacity(
+                                reader,
+                                BLOCK_BUFFER_CAPACITY,
+                            );
+
+                            let flight_data_stream = file_stream.map(|result| {
+                                result
+                                    .map(|bytes| arrow_flight::Result { body: bytes })
+                                    .map_err(|e| {
+                                        Status::internal(format!("I/O error: {e}"))
+                                    })
+                            });
+
+                            Ok(Response::new(
+                                Box::pin(flight_data_stream) as Self::DoActionStream
+                            ))
+                        } else {
+                            let file =
+                                tokio::fs::File::open(&path).await.map_err(|e| {
+                                    Status::internal(format!("Failed to open file: {e}"))
+                                })?;
+
+                            debug!(
+                                "streaming file: {} with size: {}",
+                                path,
+                                file.metadata().await?.len()
+                            );
+                            let reader = tokio::io::BufReader::with_capacity(
+                                BLOCK_BUFFER_CAPACITY,
+                                file,
+                            );
+                            let file_stream = ReaderStream::with_capacity(
+                                reader,
+                                BLOCK_BUFFER_CAPACITY,
+                            );
+
+                            let flight_data_stream = file_stream.map(|result| {
+                                result
+                                    .map(|bytes| arrow_flight::Result { body: bytes })
+                                    .map_err(|e| {
+                                        Status::internal(format!("I/O error: {e}"))
+                                    })
+                            });
+
+                            Ok(Response::new(
+                                Box::pin(flight_data_stream) as Self::DoActionStream
+                            ))
                         }
-
-                        let file = tokio::fs::File::open(&path).await.map_err(|e| {
-                            Status::internal(format!("Failed to open file: {e}"))
-                        })?;
-
-                        debug!(
-                            "streaming file: {} with size: {}",
-                            path,
-                            file.metadata().await?.len()
-                        );
-                        let reader = tokio::io::BufReader::with_capacity(
-                            BLOCK_BUFFER_CAPACITY,
-                            file,
-                        );
-                        let file_stream =
-                            ReaderStream::with_capacity(reader, BLOCK_BUFFER_CAPACITY);
-
-                        let flight_data_stream = file_stream.map(|result| {
-                            result
-                                .map(|bytes| arrow_flight::Result { body: bytes })
-                                .map_err(|e| Status::internal(format!("I/O error: {e}")))
-                        });
-
-                        Ok(Response::new(
-                            Box::pin(flight_data_stream) as Self::DoActionStream
-                        ))
                     }
                 }
             }

@@ -24,7 +24,7 @@
 use std::any::Any;
 use std::fs::File;
 use std::future::Future;
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -41,7 +41,7 @@ use datafusion::arrow::array::{
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::error::ArrowError;
-use datafusion::arrow::ipc::writer::{FileWriter, IpcWriteOptions};
+use datafusion::arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
@@ -393,11 +393,11 @@ fn finalize_output(
 
     // Use FileWriter for random access support via FileReader
     let file = File::create(&data_path)?;
+
     let mut buffered = BufWriter::new(file);
 
     let options =
         IpcWriteOptions::default().try_with_compression(Some(config.compression))?;
-    let mut writer = FileWriter::try_new_with_options(&mut buffered, schema, options)?;
 
     // Track cumulative batch counts - index stores the starting batch index for each partition
     // FileReader supports random access to batches by index
@@ -405,7 +405,10 @@ fn finalize_output(
 
     // Write partitions in order
     for (partition_id, buffer) in buffers.iter_mut().enumerate() {
+        let mut writer =
+            StreamWriter::try_new_with_options(&mut buffered, schema, options.clone())?;
         // Set the starting batch index for this partition
+
         index.set_offset(partition_id, cumulative_batch_count);
 
         let mut partition_rows: u64 = 0;
@@ -441,12 +444,14 @@ fn finalize_output(
             partition_rows,
             partition_bytes,
         ));
+        writer.finish()?;
+        let _ = buffered.flush();
+        let len = buffered.get_ref().metadata().unwrap().len();
 
-        cumulative_batch_count += partition_batches as i64;
+        cumulative_batch_count = len as i64;
     }
 
     // Finish writing (this writes the IPC footer for random access)
-    writer.finish()?;
 
     // Store total batch count
     index.set_total_length(cumulative_batch_count);
@@ -653,6 +658,8 @@ impl std::fmt::Display for SortShuffleWriterExec {
 
 #[cfg(test)]
 mod tests {
+    use crate::execution_plans::sort_shuffle::read_sort_shuffle_partition;
+
     use super::*;
     use datafusion::arrow::array::{StringArray, UInt32Array};
     use datafusion::datasource::memory::MemorySourceConfig;
@@ -718,6 +725,24 @@ mod tests {
         let output_dir = work_dir.path().join("job1").join("1").join("0");
         assert!(output_dir.join("data.arrow").exists());
         assert!(output_dir.join("data.arrow.index").exists());
+
+        let res = read_sort_shuffle_partition(
+            &output_dir.join("data.arrow"),
+            &output_dir.join("data.arrow.index"),
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(1, res.len());
+
+        let res = read_sort_shuffle_partition(
+            &output_dir.join("data.arrow"),
+            &output_dir.join("data.arrow.index"),
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(1, res.len());
 
         Ok(())
     }
