@@ -480,14 +480,20 @@ impl JobState for InMemoryJobState {
                 .insert(job_id.to_string(), (status.clone(), Some(graph.cloned())));
         } else {
             // otherwise update running job
-            if let Some(mut job_info) = self.running_jobs.get_mut(job_id) {
-                job_info.update_subscribers(status.clone()).await;
+            let subscriber = if let Some(mut job_info) = self.running_jobs.get_mut(job_id)
+            {
                 job_info.status = status.clone();
+                // we're cloning subscriber not to await in lock
+                job_info.subscriber.clone()
             } else {
                 Err(BallistaError::Internal(format!(
                     "scheduler state can't find job: {}",
                     job_id
                 )))?
+            };
+
+            if let Some(subscriber) = subscriber {
+                let _ = subscriber.send(status.clone()).await;
             }
         }
 
