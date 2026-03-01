@@ -37,7 +37,7 @@ use ballista_core::serde::protobuf::{
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata, PartitionId};
 use ballista_core::utils::{default_config_producer, default_session_builder};
-use ballista_core::{ConfigProducer, consistent_hash};
+use ballista_core::{ConfigProducer, JobStatusSubscriber, consistent_hash};
 
 use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
 
@@ -301,7 +301,12 @@ pub trait JobState: Send + Sync {
     /// Submits a new job to the job state.
     ///
     /// The submitter is assumed to own the job.
-    async fn submit_job(&self, job_id: String, graph: &ExecutionGraphBox) -> Result<()>;
+    async fn submit_job(
+        &self,
+        job_id: String,
+        graph: &ExecutionGraphBox,
+        subscriber: Option<JobStatusSubscriber>,
+    ) -> Result<()>;
 
     /// Returns the set of all active job IDs.
     async fn get_jobs(&self) -> Result<HashSet<String>>;

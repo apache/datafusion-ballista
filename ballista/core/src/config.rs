@@ -80,6 +80,8 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_SPILL_THRESHOLD: &str =
 /// Configuration key for sort shuffle target batch size in rows.
 pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
     "ballista.shuffle.sort_based.batch_size";
+/// Should client employ pull or push job tracking strategy
+pub const BALLISTA_CLIENT_PULL: &str = "ballista.client.pull";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -156,7 +158,11 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE.to_string(),
                          "Target batch size in rows for coalescing small batches in sort shuffle".to_string(),
                          DataType::UInt64,
-                         Some((8192).to_string()))
+                         Some((8192).to_string())),
+        ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
+                         "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is keep for legacy clients.".to_string(),
+                         DataType::Boolean,
+                         Some(false.to_string()))
     ];
     entries
         .into_iter()
@@ -360,6 +366,11 @@ impl BallistaConfig {
     /// Returns the target batch size for sort-based shuffle.
     pub fn shuffle_sort_based_batch_size(&self) -> usize {
         self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE)
+    }
+
+    /// Should client employ pull or push job tracking strategy
+    pub fn client_pull(&self) -> bool {
+        self.get_bool_setting(BALLISTA_CLIENT_PULL)
     }
 
     fn get_usize_setting(&self, key: &str) -> usize {

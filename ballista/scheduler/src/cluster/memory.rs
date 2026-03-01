@@ -23,13 +23,13 @@ use crate::cluster::{
 };
 use crate::state::execution_graph::ExecutionGraphBox;
 use async_trait::async_trait;
-use ballista_core::ConfigProducer;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::{
     AvailableTaskSlots, ExecutorHeartbeat, ExecutorStatus, FailedJob, QueuedJob,
     executor_status,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
+use ballista_core::{ConfigProducer, JobStatusSubscriber};
 use dashmap::DashMap;
 use datafusion::prelude::{SessionConfig, SessionContext};
 
@@ -351,7 +351,7 @@ pub struct InMemoryJobState {
     /// In-memory store of queued jobs. Map from Job ID -> (Job Name, queued_at timestamp)
     queued_jobs: DashMap<String, (String, u64)>,
     /// In-memory store of running job statuses. Map from Job ID -> JobStatus
-    running_jobs: DashMap<String, JobStatus>,
+    running_jobs: DashMap<String, ExtendedJobStatus>,
     /// `SessionBuilder` for building DataFusion `SessionContext` from `BallistaConfig`
     session_builder: SessionBuilder,
     /// Sender of job events
@@ -380,12 +380,34 @@ impl InMemoryJobState {
     }
 }
 
+#[derive(Clone)]
+struct ExtendedJobStatus {
+    status: JobStatus,
+    subscriber: Option<JobStatusSubscriber>,
+}
+
+impl ExtendedJobStatus {
+    async fn update_subscribers(&self, status: JobStatus) {
+        if let Some(subscriber) = &self.subscriber {
+            let _ = subscriber.send(status).await;
+        }
+    }
+}
+
 #[async_trait]
 impl JobState for InMemoryJobState {
-    async fn submit_job(&self, job_id: String, graph: &ExecutionGraphBox) -> Result<()> {
+    async fn submit_job(
+        &self,
+        job_id: String,
+        graph: &ExecutionGraphBox,
+        subscriber: Option<JobStatusSubscriber>,
+    ) -> Result<()> {
         if self.queued_jobs.get(&job_id).is_some() {
-            self.running_jobs
-                .insert(job_id.clone(), graph.status().clone());
+            let status = ExtendedJobStatus {
+                status: graph.status().clone(),
+                subscriber,
+            };
+            self.running_jobs.insert(job_id.clone(), status);
             self.queued_jobs.remove(&job_id);
 
             self.job_event_sender.send(&JobStateEvent::JobAcquired {
@@ -413,7 +435,7 @@ impl JobState for InMemoryJobState {
         }
 
         if let Some(status) = self.running_jobs.get(job_id).as_deref().cloned() {
-            return Ok(Some(status));
+            return Ok(Some(status.status));
         }
 
         if let Some((status, _)) = self.completed_jobs.get(job_id).as_deref() {
@@ -450,12 +472,29 @@ impl JobState for InMemoryJobState {
             status.status,
             Some(Status::Successful(_)) | Some(Status::Failed(_))
         ) {
+            if let Some((_, job_info)) = self.running_jobs.remove(job_id) {
+                job_info.update_subscribers(status.clone()).await;
+            }
+
             self.completed_jobs
                 .insert(job_id.to_string(), (status.clone(), Some(graph.cloned())));
-            self.running_jobs.remove(job_id);
         } else {
             // otherwise update running job
-            self.running_jobs.insert(job_id.to_string(), status.clone());
+            let subscriber = if let Some(mut job_info) = self.running_jobs.get_mut(job_id)
+            {
+                job_info.status = status.clone();
+                // we're cloning subscriber not to await in lock
+                job_info.subscriber.clone()
+            } else {
+                Err(BallistaError::Internal(format!(
+                    "scheduler state can't find job: {}",
+                    job_id
+                )))?
+            };
+
+            if let Some(subscriber) = subscriber {
+                let _ = subscriber.send(status.clone()).await;
+            }
         }
 
         // job change event emitted
