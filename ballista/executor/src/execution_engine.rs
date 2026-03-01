@@ -179,7 +179,7 @@ impl Display for DefaultQueryStageExec {
                     .collect();
                 write!(
                     f,
-                    "DefaultQueryStageExec(Sort): ({})\n{:?}",
+                    "DefaultQueryStageExec(Sort): ({})\n{}",
                     stage_metrics.join(", "),
                     writer
                 )
