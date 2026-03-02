@@ -24,6 +24,7 @@ use log::{error, info, trace, warn};
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::{EventAction, EventSender};
+use tokio::sync::mpsc::error::TrySendError;
 
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
@@ -126,15 +127,24 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                         // this is a corner case, as most of job status changes are handled in
                         // job state, after job is submitted to job state
                         if let Some(subscriber) = subscriber {
+                            let timestamp = timestamp_millis();
                             let job_status = JobStatus {
                                 job_id: job_id.clone(),
                                 job_name,
                                 status: Some(ballista_core::serde::protobuf::job_status::Status::Failed(
-                                    FailedJob { error, queued_at, started_at: timestamp_millis(), ended_at: timestamp_millis() }
+                                    FailedJob { error, queued_at, started_at: timestamp, ended_at: timestamp }
                                 ))
                             };
 
-                            let _ = subscriber.send(job_status).await;
+                            if matches!(
+                                subscriber.try_send(job_status),
+                                Err(TrySendError::Full(_))
+                            ) {
+                                error!(
+                                    "jobs notification subscriber for job {} is blocked, can't deliver status update, job notification will be missed",
+                                    job_id
+                                )
+                            }
                         }
 
                         error!("{}", &fail_message);

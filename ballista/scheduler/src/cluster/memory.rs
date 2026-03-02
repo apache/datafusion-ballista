@@ -32,6 +32,7 @@ use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
 use ballista_core::{ConfigProducer, JobStatusSubscriber};
 use dashmap::DashMap;
 use datafusion::prelude::{SessionConfig, SessionContext};
+use tokio::sync::mpsc::error::TrySendError;
 
 use crate::cluster::event::ClusterEventSender;
 use crate::scheduler_server::{SessionBuilder, timestamp_millis, timestamp_secs};
@@ -387,9 +388,17 @@ struct ExtendedJobStatus {
 }
 
 impl ExtendedJobStatus {
-    async fn update_subscribers(&self, status: JobStatus) {
+    fn update_subscribers(&self, status: JobStatus) {
+        let job_id = status.job_id.clone();
         if let Some(subscriber) = &self.subscriber {
-            let _ = subscriber.send(status).await;
+            if matches!(subscriber.try_send(status), Err(TrySendError::Full(_))) {
+                // to be considered if we need another task to try to push this notification
+                // at the moment, it does not look as necessary as, buffer should be big enough
+                error!(
+                    "jobs notification subscriber for job {} is blocked, can't deliver status update, job notification will be missed",
+                    job_id
+                )
+            }
         }
     }
 }
@@ -470,28 +479,23 @@ impl JobState for InMemoryJobState {
             Some(Status::Successful(_)) | Some(Status::Failed(_))
         ) {
             if let Some((_, job_info)) = self.running_jobs.remove(job_id) {
-                job_info.update_subscribers(status.clone()).await;
+                job_info.update_subscribers(status.clone());
             }
 
             self.completed_jobs
                 .insert(job_id.to_string(), (status.clone(), Some(graph.cloned())));
         } else {
             // otherwise update running job
-            let subscriber = if let Some(mut job_info) = self.running_jobs.get_mut(job_id)
-            {
+            if let Some(mut job_info) = self.running_jobs.get_mut(job_id) {
                 job_info.status = status.clone();
                 // we're cloning subscriber not to await in lock
-                job_info.subscriber.clone()
+                job_info.update_subscribers(status.clone());
             } else {
                 Err(BallistaError::Internal(format!(
                     "scheduler state can't find job: {}",
                     job_id
                 )))?
             };
-
-            if let Some(subscriber) = subscriber {
-                let _ = subscriber.send(status.clone()).await;
-            }
         }
 
         // job change event emitted
