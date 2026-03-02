@@ -247,33 +247,62 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
 
         let session_config = context.session_config().clone();
 
-        let stream = futures::stream::once(
-            execute_query(
-                self.scheduler_url.clone(),
-                self.session_id.clone(),
-                query,
-                self.config.default_grpc_client_max_message_size(),
-                GrpcClientConfig::from(&self.config),
-                Arc::new(self.metrics.clone()),
-                partition,
-                session_config,
+        if session_config.ballista_config().client_pull() {
+            let stream = futures::stream::once(
+                execute_query_pull(
+                    self.scheduler_url.clone(),
+                    self.session_id.clone(),
+                    query,
+                    self.config.default_grpc_client_max_message_size(),
+                    GrpcClientConfig::from(&self.config),
+                    Arc::new(self.metrics.clone()),
+                    partition,
+                    session_config,
+                )
+                .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
-            .map_err(|e| ArrowError::ExternalError(Box::new(e))),
-        )
-        .try_flatten()
-        .inspect(move |batch| {
-            metric_total_bytes.add(
-                batch
-                    .as_ref()
-                    .map(|b| b.get_array_memory_size())
-                    .unwrap_or(0),
-            );
+            .try_flatten()
+            .inspect(move |batch| {
+                metric_total_bytes.add(
+                    batch
+                        .as_ref()
+                        .map(|b| b.get_array_memory_size())
+                        .unwrap_or(0),
+                );
 
-            metric_row_count.add(batch.as_ref().map(|b| b.num_rows()).unwrap_or(0));
-        });
+                metric_row_count.add(batch.as_ref().map(|b| b.num_rows()).unwrap_or(0));
+            });
 
-        let schema = self.schema();
-        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+            let schema = self.schema();
+            Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+        } else {
+            let stream = futures::stream::once(
+                execute_query_push(
+                    self.scheduler_url.clone(),
+                    query,
+                    self.config.default_grpc_client_max_message_size(),
+                    GrpcClientConfig::from(&self.config),
+                    Arc::new(self.metrics.clone()),
+                    partition,
+                    session_config,
+                )
+                .map_err(|e| ArrowError::ExternalError(Box::new(e))),
+            )
+            .try_flatten()
+            .inspect(move |batch| {
+                metric_total_bytes.add(
+                    batch
+                        .as_ref()
+                        .map(|b| b.get_array_memory_size())
+                        .unwrap_or(0),
+                );
+
+                metric_row_count.add(batch.as_ref().map(|b| b.num_rows()).unwrap_or(0));
+            });
+
+            let schema = self.schema();
+            Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+        }
     }
 
     fn statistics(&self) -> Result<Statistics> {
@@ -288,8 +317,11 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     }
 }
 
+/// Client will periodically invoke scheduler to check
+/// job status. There is preconfigured wait period between
+/// pulls, which increases query latency.
 #[allow(clippy::too_many_arguments)]
-async fn execute_query(
+async fn execute_query_pull(
     scheduler_url: String,
     session_id: String,
     query: ExecuteQueryParams,
@@ -388,6 +420,160 @@ async fn execute_query(
                     info!("Job {job_id} is running...");
                 }
                 wait_future.await;
+                prev_status = status;
+            }
+            Some(job_status::Status::Failed(err)) => {
+                let msg = format!("Job {} failed: {}", job_id, err.error);
+                error!("{msg}");
+                break Err(DataFusionError::Execution(msg));
+            }
+            Some(job_status::Status::Successful(SuccessfulJob {
+                queued_at,
+                started_at,
+                ended_at,
+                partition_location,
+                ..
+            })) => {
+                // Calculate job execution time (server-side execution)
+                let job_execution_ms = ended_at.saturating_sub(started_at);
+                let duration = Duration::from_millis(job_execution_ms);
+
+                info!("Job {job_id} finished executing in {duration:?} ");
+
+                // Calculate scheduling time (server-side queue time)
+                // This includes network latency and actual queue time
+                let scheduling_ms = started_at.saturating_sub(queued_at);
+
+                // Calculate total query time (end-to-end from client perspective)
+                let total_elapsed = query_start_time.elapsed();
+                let total_ms = total_elapsed.as_millis();
+
+                // Set timing metrics
+                let metric_job_execution = MetricBuilder::new(&metrics)
+                    .gauge("job_execution_time_ms", partition);
+                metric_job_execution.set(job_execution_ms as usize);
+
+                let metric_scheduling =
+                    MetricBuilder::new(&metrics).gauge("job_scheduling_in_ms", partition);
+                metric_scheduling.set(scheduling_ms as usize);
+
+                let metric_total_time =
+                    MetricBuilder::new(&metrics).gauge("total_query_time_ms", partition);
+                metric_total_time.set(total_ms as usize);
+
+                // Note: data_transfer_time_ms is not set here because partition fetching
+                // happens lazily when the stream is consumed, not during execute_query.
+                // This could be added in a future enhancement by wrapping the stream.
+
+                let streams = partition_location.into_iter().map(move |partition| {
+                    let f = fetch_partition(
+                        partition,
+                        max_message_size,
+                        true,
+                        scheduler_url.clone(),
+                        flight_proxy.clone(),
+                        customize_endpoint.clone(),
+                        use_tls,
+                    )
+                    .map_err(|e| ArrowError::ExternalError(Box::new(e)));
+
+                    futures::stream::once(f).try_flatten()
+                });
+
+                break Ok(futures::stream::iter(streams).flatten());
+            }
+        };
+    }
+}
+/// After job is scheduled client waits
+/// for job updates, which are streamed back
+/// from server to client
+#[allow(clippy::too_many_arguments)]
+async fn execute_query_push(
+    scheduler_url: String,
+    query: ExecuteQueryParams,
+    max_message_size: usize,
+    grpc_config: GrpcClientConfig,
+    metrics: Arc<ExecutionPlanMetricsSet>,
+    partition: usize,
+    session_config: SessionConfig,
+) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
+    let grpc_interceptor = session_config.ballista_grpc_interceptor();
+    let customize_endpoint =
+        session_config.ballista_override_create_grpc_client_endpoint();
+    let use_tls = session_config.ballista_use_tls();
+
+    // Capture query submission time for total_query_time_ms
+    let query_start_time = std::time::Instant::now();
+
+    info!("Connecting to Ballista scheduler at {scheduler_url}");
+    // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
+    let mut endpoint =
+        create_grpc_client_endpoint(scheduler_url.clone(), Some(&grpc_config))
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+
+    if let Some(ref customize) = customize_endpoint {
+        endpoint = customize
+            .configure_endpoint(endpoint)
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+    }
+
+    let connection = endpoint
+        .connect()
+        .await
+        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+
+    let mut scheduler = SchedulerGrpcClient::with_interceptor(
+        connection,
+        grpc_interceptor.as_ref().clone(),
+    )
+    .max_encoding_message_size(max_message_size)
+    .max_decoding_message_size(max_message_size);
+
+    let mut query_status_stream = scheduler
+        .execute_query_push(query)
+        .await
+        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
+        .into_inner();
+
+    let mut prev_status: Option<job_status::Status> = None;
+
+    loop {
+        let item = query_status_stream
+            .next()
+            .await
+            .ok_or(DataFusionError::Execution(
+                "Stream closed without job completing".to_string(),
+            ))?
+            .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+
+        let GetJobStatusResult {
+            status,
+            flight_proxy,
+        } = item;
+        let job_id = status
+            .as_ref()
+            .map(|s| s.job_id.to_owned())
+            .unwrap_or("unknown_job_id".to_string()); // should not happen
+        let status = status.and_then(|s| s.status);
+        let has_status_change = prev_status != status;
+        match status {
+            None => {
+                if has_status_change {
+                    info!("Job {job_id} is in initialization ...");
+                }
+                prev_status = status;
+            }
+            Some(job_status::Status::Queued(_)) => {
+                if has_status_change {
+                    info!("Job {job_id} is queued...");
+                }
+                prev_status = status;
+            }
+            Some(job_status::Status::Running(_)) => {
+                if has_status_change {
+                    info!("Job {job_id} is running...");
+                }
                 prev_status = status;
             }
             Some(job_status::Status::Failed(err)) => {

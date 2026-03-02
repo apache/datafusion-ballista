@@ -20,7 +20,7 @@ use std::fmt::{Debug, Formatter};
 use datafusion::logical_expr::LogicalPlan;
 
 use crate::state::execution_graph::RunningTaskInfo;
-use ballista_core::serde::protobuf::TaskStatus;
+use ballista_core::{JobStatusSubscriber, serde::protobuf::TaskStatus};
 use datafusion::prelude::SessionContext;
 use std::sync::Arc;
 
@@ -39,6 +39,8 @@ pub enum QueryStageSchedulerEvent {
         plan: Box<LogicalPlan>,
         /// Timestamp when the job was queued.
         queued_at: u64,
+        /// job status subscriber
+        subscriber: Option<JobStatusSubscriber>,
     },
     /// A job has been submitted for execution.
     JobSubmitted {

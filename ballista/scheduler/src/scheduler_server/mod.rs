@@ -18,6 +18,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use ballista_core::JobStatusSubscriber;
 use ballista_core::error::Result;
 use ballista_core::event_loop::{EventLoop, EventSender};
 use ballista_core::serde::BallistaCodec;
@@ -222,10 +223,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
         job_name: &str,
         ctx: Arc<SessionContext>,
         plan: &LogicalPlan,
+        subscriber: Option<JobStatusSubscriber>,
     ) -> Result<String> {
         log::debug!("Received submit request for job {job_name}");
         let job_id = self.state.task_manager.generate_job_id();
-
         self.query_stage_event_loop
             .get_sender()?
             .post_event(QueryStageSchedulerEvent::JobQueued {
@@ -234,6 +235,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerServer<T
                 session_ctx: ctx,
                 plan: Box::new(plan.clone()),
                 queued_at: timestamp_millis(),
+                subscriber,
             })
             .await?;
 
@@ -410,6 +412,7 @@ mod test {
     use std::sync::Arc;
 
     use ballista_core::extension::SessionConfigExt;
+    use ballista_core::serde::protobuf::job_status::Status;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::functions_aggregate::sum::sum;
     use datafusion::logical_expr::{LogicalPlan, col};
@@ -480,7 +483,7 @@ mod test {
         // Submit job
         scheduler
             .state
-            .submit_job(job_id, "", ctx, &plan, 0)
+            .submit_job(job_id, "", ctx, &plan, 0, None)
             .await
             .expect("submitting plan");
 
@@ -590,6 +593,64 @@ mod test {
         Ok(())
     }
 
+    // checks if job subscriber is getting same events
+    #[tokio::test]
+    async fn test_push_scheduling_with_subscriber() -> Result<()> {
+        let plan = test_plan();
+        // this test will fail when AQE scheduling is used.
+        // as AQE will fold plan due to empty scan
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector.clone(),
+            4,
+            1,
+            None,
+        )
+        .await?;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+        let (status, job_id) = test
+            .run_with_subscriber("", &plan, Some(tx))
+            .await
+            .expect("running plan");
+
+        match status.status {
+            Some(job_status::Status::Successful(SuccessfulJob {
+                partition_location,
+                ..
+            })) => {
+                assert_eq!(partition_location.len(), 4);
+            }
+            other => {
+                panic!("Expected success status but found {other:?}");
+            }
+        }
+
+        assert_submitted_event(&job_id, &metrics_collector);
+        assert_completed_event(&job_id, &metrics_collector);
+
+        let mut buffer = vec![];
+        rx.recv_many(&mut buffer, 16).await;
+        assert!(!buffer.is_empty());
+
+        let successful_job = buffer
+            .iter()
+            .find(|s| matches!(s.status, Some(Status::Successful(_))));
+
+        assert!(successful_job.is_some());
+
+        let failed_job = buffer
+            .iter()
+            .find(|s| matches!(s.status, Some(Status::Failed(_))));
+
+        assert!(failed_job.is_none());
+
+        Ok(())
+    }
+
     // Simulate a task failure and ensure the job status is updated correctly
     #[tokio::test]
     async fn test_job_failure() -> Result<()> {
@@ -665,6 +726,102 @@ mod test {
         Ok(())
     }
 
+    // Simulate a task failure and ensure the job status is updated correctly
+    // it also checks if job subscriber is getting same events
+    #[tokio::test]
+    async fn test_job_failure_subscriber() -> Result<()> {
+        let plan = test_plan();
+
+        let runner = Arc::new(TaskRunnerFn::new(
+            |_executor_id: String, task: MultiTaskDefinition| {
+                let mut statuses = vec![];
+
+                for TaskId {
+                    task_id,
+                    partition_id,
+                    ..
+                } in task.task_ids
+                {
+                    let timestamp = timestamp_millis();
+                    statuses.push(TaskStatus {
+                        task_id,
+                        job_id: task.job_id.clone(),
+                        stage_id: task.stage_id,
+                        stage_attempt_num: task.stage_attempt_num,
+                        partition_id,
+                        launch_time: timestamp,
+                        start_exec_time: timestamp,
+                        end_exec_time: timestamp,
+                        metrics: vec![],
+                        status: Some(task_status::Status::Failed(FailedTask {
+                            error: "ERROR".to_string(),
+                            retryable: false,
+                            count_to_failures: false,
+                            failed_reason: Some(
+                                failed_task::FailedReason::ExecutionError(
+                                    ExecutionError {},
+                                ),
+                            ),
+                        })),
+                    });
+                }
+
+                statuses
+            },
+        ));
+
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector.clone(),
+            4,
+            1,
+            Some(runner),
+        )
+        .await?;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let (status, job_id) = test
+            .run_with_subscriber("", &plan, Some(tx))
+            .await
+            .expect("running plan");
+
+        assert!(
+            matches!(
+                status,
+                JobStatus {
+                    status: Some(job_status::Status::Failed(_)),
+                    ..
+                }
+            ),
+            "{}",
+            "Expected job status to be failed but it was {status:?}"
+        );
+
+        assert_submitted_event(&job_id, &metrics_collector);
+        assert_failed_event(&job_id, &metrics_collector);
+
+        let mut buffer = vec![];
+        rx.recv_many(&mut buffer, 16).await;
+
+        assert!(!buffer.is_empty());
+
+        let failed_job = buffer
+            .iter()
+            .find(|s| matches!(s.status, Some(Status::Failed(_))));
+
+        assert!(failed_job.is_some());
+
+        let successful_job = buffer
+            .iter()
+            .find(|s| matches!(s.status, Some(Status::Successful(_))));
+
+        assert!(successful_job.is_none());
+
+        Ok(())
+    }
+
     // If the physical planning fails, the job should be marked as failed.
     // Here we simulate a planning failure using ExplodingTableProvider to test this.
     #[tokio::test]
@@ -706,6 +863,68 @@ mod test {
 
         assert_no_submitted_event(&job_id, &metrics_collector);
         assert_failed_event(&job_id, &metrics_collector);
+
+        Ok(())
+    }
+
+    // If the physical planning fails, the job should be marked as failed.
+    // Here we simulate a planning failure using ExplodingTableProvider to test this.
+    // it also checks if job subscriber is getting same events
+    #[tokio::test]
+    async fn test_planning_failure_with_subscriber() -> Result<()> {
+        let metrics_collector = Arc::new(TestMetricsCollector::default());
+        let mut test = SchedulerTest::new(
+            SchedulerConfig::default()
+                .with_scheduler_policy(TaskSchedulingPolicy::PushStaged),
+            metrics_collector.clone(),
+            4,
+            1,
+            None,
+        )
+        .await?;
+
+        let ctx = test.ctx().await?;
+
+        ctx.register_table("explode", Arc::new(ExplodingTableProvider))?;
+
+        let plan = ctx
+            .sql("SELECT * FROM explode")
+            .await?
+            .into_optimized_plan()?;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        // This should fail when we try and create the physical plan
+        let (status, job_id) = test.run_with_subscriber("", &plan, Some(tx)).await?;
+
+        assert!(
+            matches!(
+                status,
+                JobStatus {
+                    status: Some(job_status::Status::Failed(_)),
+                    ..
+                }
+            ),
+            "{}",
+            "Expected job status to be failed but it was {status:?}"
+        );
+
+        assert_no_submitted_event(&job_id, &metrics_collector);
+        assert_failed_event(&job_id, &metrics_collector);
+
+        let mut buffer = vec![];
+        rx.recv_many(&mut buffer, 16).await;
+        assert!(!buffer.is_empty());
+
+        let failed_job = buffer
+            .iter()
+            .find(|s| matches!(s.status, Some(Status::Failed(_))));
+
+        assert!(failed_job.is_some());
+
+        let successful_job = buffer
+            .iter()
+            .find(|s| matches!(s.status, Some(Status::Successful(_))));
+
+        assert!(successful_job.is_none());
 
         Ok(())
     }

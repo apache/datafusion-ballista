@@ -759,6 +759,8 @@ service SchedulerGrpc {
 
   rpc RemoveSession (RemoveSessionParams) returns (RemoveSessionResult) {}
 
+  rpc ExecuteQueryPush (ExecuteQueryParams) returns (stream GetJobStatusResult) {}
+
   rpc ExecuteQuery (ExecuteQueryParams) returns (ExecuteQueryResult) {}
 
   rpc GetJobStatus (GetJobStatusParams) returns (GetJobStatusResult) {}

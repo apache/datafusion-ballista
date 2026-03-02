@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use ballista_core::JobStatusSubscriber;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::extension::SessionConfigExt;
 use datafusion::catalog::Session;
@@ -507,7 +508,7 @@ impl SchedulerTest {
             .create_or_update_session("session_id", &self.session_config)
             .await?;
 
-        let job_id = self.scheduler.submit_job(job_name, ctx, plan).await?;
+        let job_id = self.scheduler.submit_job(job_name, ctx, plan, None).await?;
 
         Ok(job_id)
     }
@@ -628,6 +629,15 @@ impl SchedulerTest {
         job_name: &str,
         plan: &LogicalPlan,
     ) -> Result<(JobStatus, String)> {
+        self.run_with_subscriber(job_name, plan, None).await
+    }
+    /// Returns job status and job_id, with provided subscriber
+    pub async fn run_with_subscriber(
+        &mut self,
+        job_name: &str,
+        plan: &LogicalPlan,
+        subscriber: Option<JobStatusSubscriber>,
+    ) -> Result<(JobStatus, String)> {
         let ctx = self
             .scheduler
             .state
@@ -635,7 +645,10 @@ impl SchedulerTest {
             .create_or_update_session("session_id", &self.session_config)
             .await?;
 
-        let job_id = self.scheduler.submit_job(job_name, ctx, plan).await?;
+        let job_id = self
+            .scheduler
+            .submit_job(job_name, ctx, plan, subscriber)
+            .await?;
 
         let mut receiver = self.status_receiver.take().unwrap();
 

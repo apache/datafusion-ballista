@@ -19,10 +19,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use ballista_core::serde::protobuf::{FailedJob, JobStatus};
 use log::{error, info, trace, warn};
 
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::event_loop::{EventAction, EventSender};
+use tokio::sync::mpsc::error::TrySendError;
 
 use crate::config::SchedulerConfig;
 use crate::metrics::SchedulerMetricsCollector;
@@ -93,6 +95,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 session_ctx,
                 plan,
                 queued_at,
+                subscriber,
             } => {
                 info!("Job {job_id} queued with name {job_name:?}");
 
@@ -108,10 +111,42 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan>
                 let state = self.state.clone();
                 tokio::spawn(async move {
                     let event = if let Err(e) = state
-                        .submit_job(&job_id, &job_name, session_ctx, &plan, queued_at)
+                        .submit_job(
+                            &job_id,
+                            &job_name,
+                            session_ctx,
+                            &plan,
+                            queued_at,
+                            subscriber.clone(),
+                        )
                         .await
                     {
+                        let error = e.to_string();
                         let fail_message = format!("Error planning job {job_id}: {e:?}");
+
+                        // this is a corner case, as most of job status changes are handled in
+                        // job state, after job is submitted to job state
+                        if let Some(subscriber) = subscriber {
+                            let timestamp = timestamp_millis();
+                            let job_status = JobStatus {
+                                job_id: job_id.clone(),
+                                job_name,
+                                status: Some(ballista_core::serde::protobuf::job_status::Status::Failed(
+                                    FailedJob { error, queued_at, started_at: timestamp, ended_at: timestamp }
+                                ))
+                            };
+
+                            if matches!(
+                                subscriber.try_send(job_status),
+                                Err(TrySendError::Full(_))
+                            ) {
+                                error!(
+                                    "jobs notification subscriber for job {} is blocked, can't deliver status update, job notification will be missed",
+                                    job_id
+                                )
+                            }
+                        }
+
                         error!("{}", &fail_message);
                         QueryStageSchedulerEvent::JobPlanningFailed {
                             job_id,
