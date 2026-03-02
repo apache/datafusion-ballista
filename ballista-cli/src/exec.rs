@@ -105,11 +105,6 @@ pub async fn exec_from_repl(ctx: &SessionContext, print_options: &mut PrintOptio
 
     let mut print_options = print_options.clone();
 
-    let max_rows = match print_options.maxrows {
-        datafusion_cli::print_options::MaxRows::Unlimited => usize::MAX,
-        datafusion_cli::print_options::MaxRows::Limited(max_rows) => max_rows,
-    };
-
     loop {
         match rl.readline("❯ ") {
             Ok(line) if line.starts_with('\\') => {
@@ -178,6 +173,12 @@ async fn exec_and_print(
 ) -> Result<()> {
     let now = Instant::now();
     let df = ctx.sql(&sql).await?;
+    let df = match print_options.maxrows {
+        datafusion_cli::print_options::MaxRows::Unlimited => df,
+        datafusion_cli::print_options::MaxRows::Limited(max_rows) => {
+            df.limit(0, Some(max_rows))?
+        }
+    };
     let schema = Arc::new(df.schema().as_arrow().clone());
     let results = df.collect().await?;
     let rows = &results.iter().map(|b| b.num_rows()).sum::<usize>();
