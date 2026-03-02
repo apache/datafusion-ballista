@@ -307,13 +307,6 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         }
     }
 
-    // fn statistics(&self) -> Result<Statistics> {
-    //     // This execution plan sends the logical plan to the scheduler without
-    //     // performing the node by node conversion to a full physical plan.
-    //     // This implies that we cannot infer the statistics at this stage.
-    //     Ok(Statistics::new_unknown(&self.schema()))
-    // }
-
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.metrics.clone_inner())
     }
