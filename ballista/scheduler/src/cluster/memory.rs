@@ -390,15 +390,15 @@ struct ExtendedJobStatus {
 impl ExtendedJobStatus {
     fn update_subscribers(&self, status: JobStatus) {
         let job_id = status.job_id.clone();
-        if let Some(subscriber) = &self.subscriber {
-            if matches!(subscriber.try_send(status), Err(TrySendError::Full(_))) {
-                // to be considered if we need another task to try to push this notification
-                // at the moment, it does not look as necessary as, buffer should be big enough
-                error!(
-                    "jobs notification subscriber for job {} is blocked, can't deliver status update, job notification will be missed",
-                    job_id
-                )
-            }
+        if let Some(subscriber) = &self.subscriber
+            && matches!(subscriber.try_send(status), Err(TrySendError::Full(_)))
+        {
+            // to be considered if we need another task to try to push this notification
+            // at the moment, it does not look as necessary as, buffer should be big enough for all cases
+            error!(
+                "jobs notification subscriber for job {} is blocked, can't deliver status update, job notification will be missed",
+                job_id
+            )
         }
     }
 }
