@@ -19,6 +19,80 @@
 
 # Changelog
 
+## [52.0.0](https://github.com/apache/datafusion-ballista/tree/52.0.0) (2026-03-02)
+
+**Performance related:**
+
+- perf: optimize shuffle writer with buffered I/O and fix file size bug [#1386](https://github.com/apache/datafusion-ballista/pull/1386) (andygrove)
+
+**Implemented enhancements:**
+
+- feat: add config option for skipping arrow ipc read validation [#1374](https://github.com/apache/datafusion-ballista/pull/1374) (killzoner)
+- feat: improve tpch benchmark CLI [#1391](https://github.com/apache/datafusion-ballista/pull/1391) (andygrove)
+- feat: Add sort-based shuffle implementation [#1389](https://github.com/apache/datafusion-ballista/pull/1389) (andygrove)
+- feat: New ballista python interface [#1338](https://github.com/apache/datafusion-ballista/pull/1338) (milenkovicm)
+- feat: Add batch coalescing ability to shuffle reader exec [#1380](https://github.com/apache/datafusion-ballista/pull/1380) (danielhumanmod)
+- feat: Add arrow flight proxy to scheduler [#1351](https://github.com/apache/datafusion-ballista/pull/1351) (sebbegg)
+- feat: Creating SubstraitSchedulerClient and standalone Substrait examples [#1376](https://github.com/apache/datafusion-ballista/pull/1376) (mattcuento)
+- feat: Cluster RPC customisations to support TLS and custom headers [#1400](https://github.com/apache/datafusion-ballista/pull/1400) (phillipleblanc)
+- feat: add -c config override flag to tpch benchmark [#1435](https://github.com/apache/datafusion-ballista/pull/1435) (andygrove)
+- feat: Extract `execution_graph` to a trait [#1361](https://github.com/apache/datafusion-ballista/pull/1361) (milenkovicm)
+- feat: Add spark-compat mode to integrate datafusion-spark features au… [#1416](https://github.com/apache/datafusion-ballista/pull/1416) (mattcuento)
+- feat: add `Dataframe.cache()` factory (no planner handling) [#1420](https://github.com/apache/datafusion-ballista/pull/1420) (killzoner)
+- feat: Adaptive query execution (AQE) planner fundamentals [#1372](https://github.com/apache/datafusion-ballista/pull/1372) (milenkovicm)
+- feat: Make push scheduling policy default as it has lower latency [#1461](https://github.com/apache/datafusion-ballista/pull/1461) (milenkovicm)
+- feat: job scheduling with push based job status updates [#1478](https://github.com/apache/datafusion-ballista/pull/1478) (milenkovicm)
+
+**Fixed bugs:**
+
+- fix: compile issue after unsuccessful merge [#1402](https://github.com/apache/datafusion-ballista/pull/1402) (milenkovicm)
+- fix: prost build keda and TLS RPC example [#1429](https://github.com/apache/datafusion-ballista/pull/1429) (killzoner)
+- fix: remove `scheduler_config_spec.toml` as it is unused [#1462](https://github.com/apache/datafusion-ballista/pull/1462) (milenkovicm)
+- fix: Don't use `maxrows` as a "fetched rows" but calculate it from the batches [#1480](https://github.com/apache/datafusion-ballista/pull/1480) (martin-g)
+
+**Documentation updates:**
+
+- docs: fix outdated content in documentation [#1385](https://github.com/apache/datafusion-ballista/pull/1385) (andygrove)
+- docs: use tpchgen-rs for TPC-H data generation [#1390](https://github.com/apache/datafusion-ballista/pull/1390) (andygrove)
+- docs: add Jupyter notebook support documentation [#1399](https://github.com/apache/datafusion-ballista/pull/1399) (andygrove)
+- chore: Document ballista features in README.md [#1418](https://github.com/apache/datafusion-ballista/pull/1418) (mattcuento)
+
+**Merged pull requests:**
+
+- feat: add config option for skipping arrow ipc read validation [#1374](https://github.com/apache/datafusion-ballista/pull/1374) (killzoner)
+- docs: fix outdated content in documentation [#1385](https://github.com/apache/datafusion-ballista/pull/1385) (andygrove)
+- restrict python CI to python directory [#1383](https://github.com/apache/datafusion-ballista/pull/1383) (Huy1Ng)
+- perf: optimize shuffle writer with buffered I/O and fix file size bug [#1386](https://github.com/apache/datafusion-ballista/pull/1386) (andygrove)
+- docs: use tpchgen-rs for TPC-H data generation [#1390](https://github.com/apache/datafusion-ballista/pull/1390) (andygrove)
+- feat: improve tpch benchmark CLI [#1391](https://github.com/apache/datafusion-ballista/pull/1391) (andygrove)
+- doc: Add Ballista extensions example to the docs. [#1382](https://github.com/apache/datafusion-ballista/pull/1382) (LouisBurke)
+- feat: Add sort-based shuffle implementation [#1389](https://github.com/apache/datafusion-ballista/pull/1389) (andygrove)
+- feat: New ballista python interface [#1338](https://github.com/apache/datafusion-ballista/pull/1338) (milenkovicm)
+- doc: add more details for protobuf extension [#1393](https://github.com/apache/datafusion-ballista/pull/1393) (LouisBurke)
+- feat: Add batch coalescing ability to shuffle reader exec [#1380](https://github.com/apache/datafusion-ballista/pull/1380) (danielhumanmod)
+- docs: add Jupyter notebook support documentation [#1399](https://github.com/apache/datafusion-ballista/pull/1399) (andygrove)
+- feat: Add arrow flight proxy to scheduler [#1351](https://github.com/apache/datafusion-ballista/pull/1351) (sebbegg)
+- chore: update datafusion to 52 [#1394](https://github.com/apache/datafusion-ballista/pull/1394) (killzoner)
+- feat: Creating SubstraitSchedulerClient and standalone Substrait examples [#1376](https://github.com/apache/datafusion-ballista/pull/1376) (mattcuento)
+- fix: compile issue after unsuccessful merge [#1402](https://github.com/apache/datafusion-ballista/pull/1402) (milenkovicm)
+- feat: Cluster RPC customisations to support TLS and custom headers [#1400](https://github.com/apache/datafusion-ballista/pull/1400) (phillipleblanc)
+- chore: Document ballista features in README.md [#1418](https://github.com/apache/datafusion-ballista/pull/1418) (mattcuento)
+- fix: prost build keda and TLS RPC example [#1429](https://github.com/apache/datafusion-ballista/pull/1429) (killzoner)
+- Improve sort-based shuffle: single spill file per partition and batch coalescing [#1431](https://github.com/apache/datafusion-ballista/pull/1431) (andygrove)
+- feat: add -c config override flag to tpch benchmark [#1435](https://github.com/apache/datafusion-ballista/pull/1435) (andygrove)
+- feat: Extract `execution_graph` to a trait [#1361](https://github.com/apache/datafusion-ballista/pull/1361) (milenkovicm)
+- chore: add confirmation before tarball is released [#1445](https://github.com/apache/datafusion-ballista/pull/1445) (milenkovicm)
+- minor: add test to cover IPC arrow file read [#1450](https://github.com/apache/datafusion-ballista/pull/1450) (milenkovicm)
+- feat: Add spark-compat mode to integrate datafusion-spark features au… [#1416](https://github.com/apache/datafusion-ballista/pull/1416) (mattcuento)
+- feat: add `Dataframe.cache()` factory (no planner handling) [#1420](https://github.com/apache/datafusion-ballista/pull/1420) (killzoner)
+- fix: remove `scheduler_config_spec.toml` as it is unused [#1462](https://github.com/apache/datafusion-ballista/pull/1462) (milenkovicm)
+- feat: Adaptive query execution (AQE) planner fundamentals [#1372](https://github.com/apache/datafusion-ballista/pull/1372) (milenkovicm)
+- feat: Make push scheduling policy default as it has lower latency [#1461](https://github.com/apache/datafusion-ballista/pull/1461) (milenkovicm)
+- minor: improve log statements [#1482](https://github.com/apache/datafusion-ballista/pull/1482) (milenkovicm)
+- chore: update datafusion to 52.2 and other deps to latest [#1483](https://github.com/apache/datafusion-ballista/pull/1483) (milenkovicm)
+- fix: Don't use `maxrows` as a "fetched rows" but calculate it from the batches [#1480](https://github.com/apache/datafusion-ballista/pull/1480) (martin-g)
+- feat: job scheduling with push based job status updates [#1478](https://github.com/apache/datafusion-ballista/pull/1478) (milenkovicm)
+
 ## [51.0.0](https://github.com/apache/datafusion-ballista/tree/51.0.0) (2026-01-11)
 
 **Implemented enhancements:**
