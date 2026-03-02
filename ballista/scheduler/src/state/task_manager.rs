@@ -305,7 +305,7 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> TaskManager<T, U>
             )?) as ExecutionGraphBox
         };
 
-        info!("Submitting execution graph: {graph:?}");
+        info!("Submitting execution graph:\n\n{graph:?}");
 
         self.state.submit_job(job_id.to_string(), &graph).await?;
         graph.revive();

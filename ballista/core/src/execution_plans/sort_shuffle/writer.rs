@@ -53,7 +53,7 @@ use datafusion::physical_plan::repartition::BatchPartitioner;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    SendableRecordBatchStream, Statistics,
+    SendableRecordBatchStream, Statistics, displayable,
 };
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use log::{debug, info};
@@ -632,6 +632,23 @@ fn result_schema() -> SchemaRef {
         Field::new("path", DataType::Utf8, false),
         stats.arrow_struct_repr(),
     ]))
+}
+
+impl std::fmt::Display for SortShuffleWriterExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let printable_plan = displayable(self.plan.as_ref())
+            .set_show_statistics(true)
+            .indent(false);
+        write!(
+            f,
+            "SortShuffleWriterExec: job={} stage={} work_dir={} partitioning={:?} plan: \n {}",
+            self.job_id,
+            self.stage_id,
+            self.work_dir,
+            self.shuffle_output_partitioning,
+            printable_plan
+        )
+    }
 }
 
 #[cfg(test)]
