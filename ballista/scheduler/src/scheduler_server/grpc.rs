@@ -366,8 +366,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 "execution query (PUSH) job received - session_id: {session_id}, operation_id: {operation_id}, job_name: {job_name}"
             );
 
-            let (_session_id, session_ctx) = self
-                .create_context(&settings, session_id.clone())
+            let (session_id, session_ctx) = self
+                .create_context(&settings, session_id)
                 .await
                 .map_err(|e| {
                     Status::internal(format!("Failed to create SessionContext: {e:?}"))
@@ -396,7 +396,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerGrpc
                 })
             });
 
-            log::trace!("setting job name: {job_name}");
             let job_id = self
                 .submit_job(&job_name, session_ctx, &plan, Some(subscriber))
                 .await

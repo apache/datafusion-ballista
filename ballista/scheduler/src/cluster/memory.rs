@@ -464,7 +464,7 @@ impl JobState for InMemoryJobState {
 
     async fn save_job(&self, job_id: &str, graph: &ExecutionGraphBox) -> Result<()> {
         let status = graph.status().clone();
-
+        println!("--------> {job_id} -> {:?}", status);
         debug!("saving state for job {job_id} with status {:?}", status);
 
         // If job is either successful or failed, save to completed jobs

@@ -160,7 +160,7 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          DataType::UInt64,
                          Some((8192).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
-                         "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is keep for legacy clients.".to_string(),
+                         "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
                          DataType::Boolean,
                          Some(false.to_string()))
     ];
