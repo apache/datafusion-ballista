@@ -1107,6 +1107,7 @@ mod test {
                 extensions: None,
                 statistics: None,
                 metadata_size_hint: None,
+                ordering: None,
             }]);
         }
         vec![scan_files]

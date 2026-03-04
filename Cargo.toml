@@ -26,17 +26,25 @@ edition = "2024"
 rust-version = "1.88.0"
 
 [workspace.dependencies]
-arrow = { version = "57", features = ["ipc_compression"] }
-arrow-flight = { version = "57", features = ["flight-sql-experimental"] }
+arrow = { version = "58", features = ["ipc_compression"] }
+arrow-flight = { version = "58", features = ["flight-sql-experimental"] }
 clap = { version = "4.5", features = ["derive", "cargo"] }
-datafusion = "52"
-datafusion-cli = "52"
-datafusion-proto = "52"
-datafusion-proto-common = "52"
-datafusion-spark = "52"
-datafusion-substrait = "52"
+#datafusion = "52"
+#datafusion-cli = "52"
+#datafusion-proto = "52"
+#datafusion-proto-common = "52"
+#datafusion-spark = "52"
+#datafusion-substrait = "52"
+
+datafusion = { path = "../datafusion/datafusion/core" }
+datafusion-cli = { path = "../datafusion/datafusion-cli" }
+datafusion-proto = { path = "../datafusion/datafusion/proto" }
+datafusion-proto-common = { path = "../datafusion/datafusion/proto-common" }
+datafusion-spark = { path = "../datafusion/datafusion/spark" }
+datafusion-substrait = { path = "../datafusion/datafusion/substrait" }
+
 insta = "1.46"
-object_store = "0.12"
+object_store = "0.13"
 prost = "0.14"
 prost-types = "0.14"
 rstest = { version = "0.26" }
