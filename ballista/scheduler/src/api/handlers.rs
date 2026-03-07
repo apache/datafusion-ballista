@@ -60,6 +60,8 @@ pub struct JobResponse {
 #[derive(Debug, serde::Serialize)]
 struct CancelJobResponse {
     pub cancelled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -180,24 +182,47 @@ pub async fn cancel_job<
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path(job_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    // 404 if job doesn't exist
-    data_server
+    // 404 if the job doesn't exist
+    let job_status = data_server
         .state
         .task_manager
         .get_job_status(&job_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|err| {
+            tracing::error!("Error getting job status: {err:?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    data_server
-        .query_stage_event_loop
-        .get_sender()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .post_event(QueryStageSchedulerEvent::JobCancel(job_id))
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    match &job_status.status {
+        None | Some(Status::Queued(_)) | Some(Status::Running(_)) => {
+            data_server
+                .query_stage_event_loop
+                .get_sender()
+                .map_err(|err| {
+                    tracing::error!(
+                        "Error getting query stage event loop sender: {err:?}"
+                    );
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?
+                .post_event(QueryStageSchedulerEvent::JobCancel(job_id))
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Ok(Json(CancelJobResponse { cancelled: true }))
+            Ok(Json(CancelJobResponse {
+                cancelled: true,
+                reason: None,
+            }))
+        }
+        Some(Status::Failed(_)) => Ok(Json(CancelJobResponse {
+            cancelled: false,
+            reason: Some("The job has failed".into()),
+        })),
+        Some(Status::Successful(_)) => Ok(Json(CancelJobResponse {
+            cancelled: false,
+            reason: Some("The job is already completed".into()),
+        })),
+    }
 }
 
 #[derive(Debug, serde::Serialize)]
