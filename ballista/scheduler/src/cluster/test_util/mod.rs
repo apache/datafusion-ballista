@@ -89,7 +89,7 @@ impl<S: JobState> JobStateTest<S> {
     /// Submits a job with the given execution graph.
     pub async fn submit_job(self, graph: &ExecutionGraphBox) -> Result<Self> {
         self.state
-            .submit_job(graph.job_id().to_string(), graph)
+            .submit_job(graph.job_id().to_string(), graph, None)
             .await?;
         Ok(self)
     }
