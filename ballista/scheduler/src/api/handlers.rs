@@ -214,18 +214,14 @@ pub async fn cancel_job<
                 reason: None,
             }))
         }
-        Some(Status::Failed(_)) => {
-            return Ok(Json(CancelJobResponse {
-                cancelled: false,
-                reason: Some("The job has failed".into()),
-            }));
-        }
-        Some(Status::Successful(_)) => {
-            return Ok(Json(CancelJobResponse {
-                cancelled: false,
-                reason: Some("The job is already completed".into()),
-            }));
-        }
+        Some(Status::Failed(_)) => Ok(Json(CancelJobResponse {
+            cancelled: false,
+            reason: Some("The job has failed".into()),
+        })),
+        Some(Status::Successful(_)) => Ok(Json(CancelJobResponse {
+            cancelled: false,
+            reason: Some("The job is already completed".into()),
+        })),
     }
 }
 
