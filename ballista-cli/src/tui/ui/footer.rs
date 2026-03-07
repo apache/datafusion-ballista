@@ -15,12 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#![doc = include_str!("../README.md")]
-pub const BALLISTA_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::prelude::Style;
+use ratatui::widgets::{Block, Paragraph};
 
-pub mod command;
-pub mod exec;
-#[cfg(feature = "tui")]
-mod tui;
-
-pub use datafusion_cli::{functions, helper, print_format, print_options};
+pub(super) fn render_footer(f: &mut Frame, area: Rect) {
+    let block = Block::default();
+    let paragraph = Paragraph::new(
+        "Key bindings: [d] Dashboard, [j] Jobs, [m] Metrics, [?/h] help, [q/Esc] quit",
+    )
+    .style(Style::default().bold())
+    .block(block)
+    .centered();
+    f.render_widget(paragraph, area);
+}
