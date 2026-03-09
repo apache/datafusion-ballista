@@ -209,19 +209,31 @@ pub async fn cancel_job<
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-            Ok(Json(CancelJobResponse {
-                cancelled: true,
-                reason: None,
-            }))
+            Ok((
+                StatusCode::OK,
+                Json(CancelJobResponse {
+                    cancelled: true,
+                    reason: None,
+                }),
+            )
+                .into_response())
         }
-        Some(Status::Failed(_)) => Ok(Json(CancelJobResponse {
-            cancelled: false,
-            reason: Some("The job has failed".into()),
-        })),
-        Some(Status::Successful(_)) => Ok(Json(CancelJobResponse {
-            cancelled: false,
-            reason: Some("The job is already completed".into()),
-        })),
+        Some(Status::Failed(_)) => Ok((
+            StatusCode::CONFLICT,
+            Json(CancelJobResponse {
+                cancelled: false,
+                reason: Some("The job has failed".into()),
+            }),
+        )
+            .into_response()),
+        Some(Status::Successful(_)) => Ok((
+            StatusCode::CONFLICT,
+            Json(CancelJobResponse {
+                cancelled: false,
+                reason: Some("The job is already completed".into()),
+            }),
+        )
+            .into_response()),
     }
 }
 
