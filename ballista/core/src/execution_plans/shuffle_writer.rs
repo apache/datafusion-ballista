@@ -85,7 +85,7 @@ pub struct ShuffleWriterExec {
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
     /// Plan properties
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
 }
 
 impl std::fmt::Display for ShuffleWriterExec {
@@ -154,12 +154,12 @@ impl ShuffleWriterExec {
         let partitioning = shuffle_output_partitioning
             .clone()
             .unwrap_or_else(|| plan.properties().output_partitioning().clone());
-        let properties = PlanProperties::new(
+        let properties = Arc::new(PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(plan.schema()),
             partitioning,
             datafusion::physical_plan::execution_plan::EmissionType::Incremental,
             datafusion::physical_plan::execution_plan::Boundedness::Bounded,
-        );
+        ));
         Ok(Self {
             job_id,
             stage_id,
@@ -399,7 +399,7 @@ impl ExecutionPlan for ShuffleWriterExec {
         self.plan.schema()
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 
