@@ -52,6 +52,7 @@ pub struct JobResponse {
     pub job_id: String,
     pub job_name: String,
     pub job_status: String,
+    pub status: String,
     pub num_stages: usize,
     pub completed_stages: usize,
     pub percent_complete: u8,
@@ -129,10 +130,10 @@ pub async fn get_jobs<
         .iter()
         .map(|job| {
             let status = &job.status;
-            let job_status = match &status.status {
-                Some(Status::Queued(_)) => "Queued".to_string(),
-                Some(Status::Running(_)) => "Running".to_string(),
-                Some(Status::Failed(error)) => format!("Failed: {}", error.error),
+            let (plain_status, job_status) = match &status.status {
+                Some(Status::Queued(_)) => ("Queued".to_string(), "Queued".to_string()),
+                Some(Status::Running(_)) => ("Running".to_string(), "Running".to_string()),
+                Some(Status::Failed(error)) => ("Failed".to_string(), format!("Failed: {}", error.error)),
                 Some(Status::Successful(completed)) => {
                     let num_rows = completed
                         .partition_location
@@ -148,13 +149,15 @@ pub async fn get_jobs<
                     } else {
                         "partitions"
                     };
+                    ("Completed".to_string(),
                     format!(
                         "Completed. Produced {} {} containing {} {}. Elapsed time: {} ms.",
                         num_partitions, num_partitions_term, num_rows, num_rows_term,
                         job.end_time - job.start_time
                     )
+                    )
                 }
-                _ => "Invalid State".to_string(),
+                _ => ("Invalid".to_string(), "Invalid State".to_string()),
             };
 
             // calculate progress based on completed stages for now, but we could use completed
@@ -165,6 +168,7 @@ pub async fn get_jobs<
                 job_id: job.job_id.to_string(),
                 job_name: job.job_name.to_string(),
                 job_status,
+                status: plain_status,
                 num_stages: job.num_stages,
                 completed_stages: job.completed_stages,
                 percent_complete,
