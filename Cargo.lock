@@ -3422,9 +3422,9 @@ checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "graphviz-rust"
-version = "0.9.6"
+version = "0.9.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db134cb611668917cabf340af9a39518426f9a10827b4cedcb4cdcf84443f6d0"
+checksum = "7e3f0630e2e2d6bef34313acf63330e2ce87144f5dfef276abeeef9345dd5bf3"
 dependencies = [
  "dot-generator",
  "dot-structures",
@@ -4172,9 +4172,9 @@ checksum = "2c4a545a15244c7d945065b5d392b2d2d7f21526fba56ce51467b06ed445e8f7"
 
 [[package]]
 name = "libc"
-version = "0.2.182"
+version = "0.2.183"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6800badb6cb2082ffd7b6a67e6125bb39f18782f793520caee8cb8846be06112"
+checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
 
 [[package]]
 name = "liblzma"
