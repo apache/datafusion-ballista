@@ -34,7 +34,7 @@ required-features = ["build-binary"]
 
 [features]
 build-binary = ["clap", "tracing-subscriber", "tracing-appender", "tracing", "ballista-core/build-binary"]
-default = ["build-binary", "substrait"]
+default = ["build-binary", "rest-api"]
 # job info can cache stage plans, in some cases where
 # task plans can be re-computed, cache behavior may need to be disabled.
 disable-stage-plan-cache = []
