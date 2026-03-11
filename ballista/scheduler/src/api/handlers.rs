@@ -56,8 +56,11 @@ pub struct JobResponse {
     pub num_stages: usize,
     pub completed_stages: usize,
     pub percent_complete: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub logical_plan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub physical_plan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stage_plan: Option<String>,
 }
 
