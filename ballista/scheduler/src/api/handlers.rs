@@ -197,7 +197,10 @@ pub async fn get_job<
         .task_manager
         .get_job_execution_graph(&job_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|err| {
+            tracing::error!("Error occurred while getting the execution graph for job '{job_is}': {err:?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
         .ok_or(StatusCode::NOT_FOUND)?;
     let stage_plan = format!("{:?}", graph);
     let job = graph.as_ref();
