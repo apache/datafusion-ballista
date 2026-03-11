@@ -30,8 +30,7 @@ pub fn get_routes<
         .route("/api/state", get(handlers::get_scheduler_state::<T, U>))
         .route("/api/executors", get(handlers::get_executors::<T, U>))
         .route("/api/jobs", get(handlers::get_jobs::<T, U>))
-        .route("/api/job/{job_id}", patch(handlers::cancel_job::<T, U>))
-        .route("/api/job/{job_id}", get(handlers::get_job::<T, U>))
+        .route("/api/job/{job_id}", get(handlers::get_job::<T, U>).patch(handlers::cancel_job::<T, U>))
         .route(
             "/api/job/{job_id}/stages",
             get(handlers::get_query_stages::<T, U>),
