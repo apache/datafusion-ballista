@@ -56,6 +56,12 @@ pub struct JobResponse {
     pub num_stages: usize,
     pub completed_stages: usize,
     pub percent_complete: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logical_plan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub physical_plan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage_plan: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -129,36 +135,8 @@ pub async fn get_jobs<
     let jobs: Vec<JobResponse> = jobs
         .iter()
         .map(|job| {
-            let status = &job.status;
-            let (plain_status, job_status) = match &status.status {
-                Some(Status::Queued(_)) => ("Queued".to_string(), "Queued".to_string()),
-                Some(Status::Running(_)) => ("Running".to_string(), "Running".to_string()),
-                Some(Status::Failed(error)) => ("Failed".to_string(), format!("Failed: {}", error.error)),
-                Some(Status::Successful(completed)) => {
-                    let num_rows = completed
-                        .partition_location
-                        .iter()
-                        .map(|p| {
-                            p.partition_stats.as_ref().map(|s| s.num_rows).unwrap_or(0)
-                        })
-                        .sum::<i64>();
-                    let num_rows_term = if num_rows == 1 { "row" } else { "rows" };
-                    let num_partitions = completed.partition_location.len();
-                    let num_partitions_term = if num_partitions == 1 {
-                        "partition"
-                    } else {
-                        "partitions"
-                    };
-                    ("Completed".to_string(),
-                    format!(
-                        "Completed. Produced {} {} containing {} {}. Elapsed time: {} ms.",
-                        num_partitions, num_partitions_term, num_rows, num_rows_term,
-                        job.end_time - job.start_time
-                    )
-                    )
-                }
-                _ => ("Invalid".to_string(), "Invalid State".to_string()),
-            };
+            let (plain_status, job_status) =
+                format_job_status(&job.status.status, job.end_time - job.start_time);
 
             // calculate progress based on completed stages for now, but we could use completed
             // tasks in the future to make this more accurate
@@ -172,11 +150,55 @@ pub async fn get_jobs<
                 num_stages: job.num_stages,
                 completed_stages: job.completed_stages,
                 percent_complete,
+                logical_plan: None,
+                physical_plan: None,
+                stage_plan: None,
             }
         })
         .collect();
 
     Ok(Json(jobs))
+}
+
+pub async fn get_job<
+    T: AsLogicalPlan + Clone + Send + Sync + 'static,
+    U: AsExecutionPlan + Send + Sync + 'static,
+>(
+    State(data_server): State<Arc<SchedulerServer<T, U>>>,
+    Path(job_id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let graph = data_server
+        .state
+        .task_manager
+        .get_job_execution_graph(&job_id)
+        .await
+        .map_err(|err| {
+            tracing::error!("Error occurred while getting the execution graph for job '{job_id}': {err:?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let stage_plan = format!("{:?}", graph);
+    let job = graph.as_ref();
+    let (plain_status, job_status) =
+        format_job_status(&job.status().status, job.end_time() - job.start_time());
+
+    let num_stages = job.stage_count();
+    let completed_stages = job.completed_stages();
+    let percent_complete =
+        ((completed_stages as f32 / num_stages as f32) * 100_f32) as u8;
+
+    Ok(Json(JobResponse {
+        job_id: job.job_id().to_string(),
+        job_name: job.job_name().to_string(),
+        job_status,
+        status: plain_status,
+        num_stages,
+        completed_stages,
+        percent_complete,
+        logical_plan: job.logical_plan().map(str::to_owned),
+        physical_plan: job.physical_plan().map(str::to_owned),
+        stage_plan: Some(stage_plan),
+    }))
 }
 
 pub async fn cancel_job<
@@ -311,6 +333,42 @@ pub async fn get_query_stages<
         Ok(Json(QueryStagesResponse { stages }))
     } else {
         Ok(Json(QueryStagesResponse { stages: vec![] }))
+    }
+}
+
+fn format_job_status(status: &Option<Status>, elapsed_ms: u64) -> (String, String) {
+    match status {
+        Some(Status::Queued(_)) => ("Queued".to_string(), "Queued".to_string()),
+        Some(Status::Running(_)) => ("Running".to_string(), "Running".to_string()),
+        Some(Status::Failed(error)) => {
+            ("Failed".to_string(), format!("Failed: {}", error.error))
+        }
+        Some(Status::Successful(completed)) => {
+            let num_rows = completed
+                .partition_location
+                .iter()
+                .map(|p| p.partition_stats.as_ref().map(|s| s.num_rows).unwrap_or(0))
+                .sum::<i64>();
+            let num_rows_term = if num_rows == 1 { "row" } else { "rows" };
+            let num_partitions = completed.partition_location.len();
+            let num_partitions_term = if num_partitions == 1 {
+                "partition"
+            } else {
+                "partitions"
+            };
+            (
+                "Completed".to_string(),
+                format!(
+                    "Completed. Produced {} {} containing {} {}. Elapsed time: {} ms.",
+                    num_partitions,
+                    num_partitions_term,
+                    num_rows,
+                    num_rows_term,
+                    elapsed_ms
+                ),
+            )
+        }
+        _ => ("Invalid".to_string(), "Invalid State".to_string()),
     }
 }
 
