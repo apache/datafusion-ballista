@@ -17,17 +17,11 @@
 
 //! Client API for sending requests to executors.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use std::{
-    convert::{TryFrom, TryInto},
-    task::{Context, Poll},
-};
-
 use crate::error::{BallistaError, Result as BResult};
+use crate::extension::BallistaConfigGrpcEndpoint;
+use crate::serde::protobuf;
 use crate::serde::scheduler::{Action, PartitionId};
-
+use crate::utils::create_grpc_client_endpoint;
 use arrow_flight;
 use arrow_flight::Ticket;
 use arrow_flight::utils::flight_data_to_arrow_batch;
@@ -43,21 +37,23 @@ use datafusion::arrow::{
 };
 use datafusion::error::DataFusionError;
 use datafusion::error::Result;
-
-use crate::extension::BallistaConfigGrpcEndpoint;
-use crate::serde::protobuf;
-
-use crate::utils::create_grpc_client_endpoint;
-
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 use futures::{Stream, StreamExt};
 use log::{debug, warn};
 use prost::Message;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::{
+    convert::{TryFrom, TryInto},
+    task::{Context, Poll},
+};
 use tonic::{Code, Streaming};
 
 /// Client for interacting with Ballista executors.
 #[derive(Clone)]
 pub struct BallistaClient {
+    host: String,
+    port: u16,
     flight_client: FlightServiceClient<tonic::transport::channel::Channel>,
 }
 
@@ -109,7 +105,11 @@ impl BallistaClient {
 
         debug!("BallistaClient connected OK: {flight_client:?}");
 
-        Ok(Self { flight_client })
+        Ok(Self {
+            flight_client,
+            host: host.to_string(),
+            port,
+        })
     }
 
     /// Retrieves a partition from an executor.
@@ -122,8 +122,6 @@ impl BallistaClient {
         executor_id: &str,
         partition_id: &PartitionId,
         path: &str,
-        host: &str,
-        port: u16,
         flight_transport: bool,
     ) -> BResult<SendableRecordBatchStream> {
         let action = Action::FetchPartition {
@@ -131,8 +129,8 @@ impl BallistaClient {
             stage_id: partition_id.stage_id,
             partition_id: partition_id.partition_id,
             path: path.to_owned(),
-            host: host.to_owned(),
-            port,
+            host: self.host.to_owned(),
+            port: self.port,
         };
 
         let result = if flight_transport {

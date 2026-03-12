@@ -253,7 +253,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                     self.scheduler_url.clone(),
                     self.session_id.clone(),
                     query,
-                    self.config.default_grpc_client_max_message_size(),
+                    self.config.grpc_client_max_message_size(),
                     GrpcClientConfig::from(&self.config),
                     Arc::new(self.metrics.clone()),
                     partition,
@@ -280,7 +280,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                 execute_query_push(
                     self.scheduler_url.clone(),
                     query,
-                    self.config.default_grpc_client_max_message_size(),
+                    self.config.grpc_client_max_message_size(),
                     GrpcClientConfig::from(&self.config),
                     Arc::new(self.metrics.clone()),
                     partition,
@@ -701,8 +701,6 @@ async fn fetch_partition(
     let partition_id = location.partition_id.ok_or_else(|| {
         DataFusionError::Internal("Received empty partition id".to_owned())
     })?;
-    let host = metadata.host.as_str();
-    let port = metadata.port as u16;
 
     let (client_host, client_port) =
         get_client_host_port(&metadata, &scheduler_url, &flight_proxy)?;
@@ -721,8 +719,6 @@ async fn fetch_partition(
             &metadata.id,
             &partition_id.into(),
             &location.path,
-            host,
-            port,
             flight_transport,
         )
         .await

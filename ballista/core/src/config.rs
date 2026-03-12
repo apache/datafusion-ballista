@@ -31,10 +31,8 @@ use datafusion::{
 pub const BALLISTA_JOB_NAME: &str = "ballista.job.name";
 /// Configuration key for standalone processing parallelism.
 pub const BALLISTA_STANDALONE_PARALLELISM: &str = "ballista.standalone.parallelism";
-
 /// Configuration key for disabling default cache extension node.
 pub const BALLISTA_CACHE_NOOP: &str = "ballista.cache.noop";
-
 /// Configuration key for maximum concurrent shuffle read requests.
 pub const BALLISTA_SHUFFLE_READER_MAX_REQUESTS: &str =
     "ballista.shuffle.max_concurrent_read_requests";
@@ -44,7 +42,6 @@ pub const BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ: &str =
 /// Configuration key to prefer Flight protocol for remote shuffle reads.
 pub const BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT: &str =
     "ballista.shuffle.remote_read_prefer_flight";
-
 /// max message size for gRPC clients
 pub const BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE: &str =
     "ballista.grpc_client_max_message_size";
@@ -82,6 +79,8 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
     "ballista.shuffle.sort_based.batch_size";
 /// Should client employ pull or push job tracking strategy
 pub const BALLISTA_CLIENT_PULL: &str = "ballista.client.pull";
+/// Should client use tls connection
+pub const BALLISTA_CLIENT_USE_TLS: &str = "ballista.client.use_tls";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -161,6 +160,10 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          Some((8192).to_string())),
         ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
                          "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
+                         DataType::Boolean,
+                         Some(false.to_string())),
+        ConfigEntry::new(BALLISTA_CLIENT_USE_TLS.to_string(),
+                         "Should connection between client, scheduler, and executors use TLS.".to_string(),
                          DataType::Boolean,
                          Some(false.to_string()))
     ];
@@ -274,11 +277,6 @@ impl BallistaConfig {
         &self.settings
     }
 
-    /// Returns the maximum message size for gRPC clients in bytes.
-    pub fn default_grpc_client_max_message_size(&self) -> usize {
-        self.get_usize_setting(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE)
-    }
-
     /// Returns the standalone processing parallelism level.
     pub fn default_standalone_parallelism(&self) -> usize {
         self.get_usize_setting(BALLISTA_STANDALONE_PARALLELISM)
@@ -290,23 +288,28 @@ impl BallistaConfig {
     }
 
     /// Returns the gRPC client connection timeout in seconds.
-    pub fn default_grpc_client_connect_timeout_seconds(&self) -> usize {
+    pub fn grpc_client_connect_timeout_seconds(&self) -> usize {
         self.get_usize_setting(BALLISTA_GRPC_CLIENT_CONNECT_TIMEOUT_SECONDS)
     }
 
     /// Returns the gRPC client request timeout in seconds.
-    pub fn default_grpc_client_timeout_seconds(&self) -> usize {
+    pub fn grpc_client_timeout_seconds(&self) -> usize {
         self.get_usize_setting(BALLISTA_GRPC_CLIENT_TIMEOUT_SECONDS)
     }
 
     /// Returns the TCP keep-alive interval for gRPC clients in seconds.
-    pub fn default_grpc_client_tcp_keepalive_seconds(&self) -> usize {
+    pub fn grpc_client_tcp_keepalive_seconds(&self) -> usize {
         self.get_usize_setting(BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS)
     }
 
     /// Returns the HTTP/2 keep-alive interval for gRPC clients in seconds.
-    pub fn default_grpc_client_http2_keepalive_interval_seconds(&self) -> usize {
+    pub fn grpc_client_http2_keepalive_interval_seconds(&self) -> usize {
         self.get_usize_setting(BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS)
+    }
+
+    /// Returns the maximum message size for gRPC clients in bytes.
+    pub fn grpc_client_max_message_size(&self) -> usize {
+        self.get_usize_setting(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE)
     }
 
     /// Returns whether the default cache node extension is disabled.
@@ -373,6 +376,11 @@ impl BallistaConfig {
         self.get_bool_setting(BALLISTA_CLIENT_PULL)
     }
 
+    /// should client use TLS to communicate with ballista cluster
+    pub fn client_use_tls(&self) -> bool {
+        self.get_bool_setting(BALLISTA_CLIENT_USE_TLS)
+    }
+
     fn get_usize_setting(&self, key: &str) -> usize {
         if let Some(v) = self.settings.get(key) {
             // infallible because we validate all configs in the constructor
@@ -417,6 +425,23 @@ impl BallistaConfig {
             let entries = Self::valid_entries();
             let v = entries.get(key).unwrap().default_value.as_ref().unwrap();
             v.parse::<f64>().unwrap()
+        }
+    }
+    /// sets the configuration value where key starts with ballista
+    /// prefix.
+    pub fn set_with_prefix(
+        &mut self,
+        key: &str,
+        value: &str,
+    ) -> datafusion::error::Result<()> {
+        let entries = Self::valid_entries();
+        //let k = format!("{}.{key}", BallistaConfig::PREFIX);
+
+        if entries.contains_key(key) {
+            self.settings.insert(key.to_string(), value.to_string());
+            Ok(())
+        } else {
+            config_err!("configuration key `{}` does not exist", key)
         }
     }
 }
@@ -539,7 +564,7 @@ mod tests {
     #[test]
     fn default_config() -> Result<()> {
         let config = BallistaConfig::default();
-        assert_eq!(16777216, config.default_grpc_client_max_message_size());
+        assert_eq!(16777216, config.grpc_client_max_message_size());
         Ok(())
     }
 }

@@ -68,13 +68,11 @@ pub struct GrpcClientConfig {
 impl From<&BallistaConfig> for GrpcClientConfig {
     fn from(config: &BallistaConfig) -> Self {
         Self {
-            connect_timeout_seconds: config.default_grpc_client_connect_timeout_seconds()
-                as u64,
-            timeout_seconds: config.default_grpc_client_timeout_seconds() as u64,
-            tcp_keepalive_seconds: config.default_grpc_client_tcp_keepalive_seconds()
-                as u64,
+            connect_timeout_seconds: config.grpc_client_connect_timeout_seconds() as u64,
+            timeout_seconds: config.grpc_client_timeout_seconds() as u64,
+            tcp_keepalive_seconds: config.grpc_client_tcp_keepalive_seconds() as u64,
             http2_keepalive_interval_seconds: config
-                .default_grpc_client_http2_keepalive_interval_seconds()
+                .grpc_client_http2_keepalive_interval_seconds()
                 as u64,
         }
     }
@@ -312,19 +310,19 @@ mod tests {
         // Verify the conversion picks up the right values
         assert_eq!(
             grpc_config.connect_timeout_seconds,
-            ballista_config.default_grpc_client_connect_timeout_seconds() as u64
+            ballista_config.grpc_client_connect_timeout_seconds() as u64
         );
         assert_eq!(
             grpc_config.timeout_seconds,
-            ballista_config.default_grpc_client_timeout_seconds() as u64
+            ballista_config.grpc_client_timeout_seconds() as u64
         );
         assert_eq!(
             grpc_config.tcp_keepalive_seconds,
-            ballista_config.default_grpc_client_tcp_keepalive_seconds() as u64
+            ballista_config.grpc_client_tcp_keepalive_seconds() as u64
         );
         assert_eq!(
             grpc_config.http2_keepalive_interval_seconds,
-            ballista_config.default_grpc_client_http2_keepalive_interval_seconds() as u64
+            ballista_config.grpc_client_http2_keepalive_interval_seconds() as u64
         );
     }
 
