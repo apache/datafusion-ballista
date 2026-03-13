@@ -23,7 +23,7 @@ use serde::de::DeserializeOwned;
 
 use crate::tui::{
     TuiResult,
-    domain::{ExecutorsData, JobsData, Metric, MetricsData, SchedulerState},
+    domain::{ExecutorsData, Job, Metric, MetricsData, SchedulerState},
     error::TuiError,
     infrastructure::Settings,
 };
@@ -57,12 +57,12 @@ impl HttpClient {
         self.json::<Vec<ExecutorsData>>(&url).await
     }
 
-    pub async fn get_jobs(&self) -> TuiResult<Vec<JobsData>> {
+    pub async fn get_jobs(&self) -> TuiResult<Vec<Job>> {
         let url = self.url("jobs");
-        self.json::<Vec<JobsData>>(&url).await
+        self.json::<Vec<Job>>(&url).await
     }
 
-    pub async fn get_metrics(&self) -> TuiResult<Option<Vec<Metric>>> {
+    pub async fn get_metrics(&self) -> TuiResult<Vec<Metric>> {
         let url = self.url("metrics");
         let body: String = self.text(&url).await?;
         let metrics = body.parse::<MetricsData>().map_err(TuiError::Metrics)?;

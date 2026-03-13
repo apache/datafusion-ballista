@@ -30,7 +30,7 @@ use event::{Event, EventHandler};
 use std::time::Duration;
 use terminal::TuiWrapper;
 
-use crate::tui::domain::{DashboardData, MetricsData};
+use crate::tui::domain::{DashboardData, JobsData, MetricsData};
 use crate::tui::{error::TuiError, event::UiData, infrastructure::Settings};
 
 pub type TuiResult<OK> = Result<OK, TuiError>;
@@ -73,12 +73,15 @@ pub async fn tui_main() -> Result<()> {
                     UiData::Dashboard(state, executors_data, jobs_data) => {
                       app.dashboard_data = DashboardData {
                                 scheduler_state: state,
-                                executors_data: Some(executors_data),
-                                jobs_data: Some(jobs_data),
+                                executors_data,
+                                jobs_data,
                             };
                     },
                     UiData::Metrics(metrics) => {
                       app.metrics_data = MetricsData { metrics };
+                    }
+                    UiData::Jobs(jobs) => {
+                      app.jobs_data = JobsData { jobs };
                     }
                   }
                 }

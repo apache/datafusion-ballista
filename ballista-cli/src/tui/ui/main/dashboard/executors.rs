@@ -34,7 +34,7 @@ pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default().borders(Borders::ALL).title("Executors");
 
     match &app.dashboard_data.executors_data {
-        Some(executors) => {
+        executors if !executors.is_empty() => {
             if executors.is_empty() {
                 f.render_widget(no_live_executors(block), area);
                 return;
@@ -59,7 +59,7 @@ pub fn render_executors(f: &mut Frame, area: Rect, app: &App) {
             let list = List::new(items).block(block);
             f.render_widget(list, area);
         }
-        None => {
+        _no_executors => {
             f.render_widget(no_live_executors(block), area);
         }
     };

@@ -40,7 +40,7 @@ pub async fn load_metrics_data(app: &App) -> TuiResult<()> {
         Ok(metrics) => metrics,
         Err(e) => {
             tracing::error!("Failed to load the metrics: {e:?}");
-            None
+            Vec::new()
         }
     };
 
@@ -53,7 +53,7 @@ pub async fn load_metrics_data(app: &App) -> TuiResult<()> {
                 .map_err(TuiError::SendError)?;
         }
         None => {
-            tracing::warn!("Dashboard data loaded but event_tx is not set");
+            tracing::warn!("Metrics data loaded but event_tx is not set");
         }
     }
 
@@ -64,7 +64,7 @@ pub fn render_metrics(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Clear, area);
 
     match &app.metrics_data.metrics {
-        Some(metrics) => {
+        metrics if !metrics.is_empty() => {
             let vertical = &Layout::vertical([
                 Constraint::Min(5),    // Table
                 Constraint::Length(4), // Scrollbar
@@ -76,7 +76,7 @@ pub fn render_metrics(f: &mut Frame, area: Rect, app: &App) {
             render_metrics_table(f, rects[0], metrics, &mut table_state);
             render_scrollbar(f, rects[0], &mut scroll_state);
         }
-        None => render_no_metrics(f, area),
+        _no_metrics => render_no_metrics(f, area),
     }
 }
 

@@ -34,20 +34,21 @@ pub struct ExecutorsData {
 }
 
 #[derive(Deserialize, Clone, Debug)]
-pub struct JobsData {
-    // pub job_id: String,
-    // pub job_name: String,
-    pub job_status: String,
-    // pub num_stages: usize,
-    // pub completed_stages: usize,
-    // pub percent_complete: u8,
+pub struct Job {
+    pub job_id: String,
+    pub job_name: String,
+    pub status: String,     // Running, Completed, Failed, Cancelled
+    pub job_status: String, // Longer description of the status
+    pub num_stages: usize,
+    pub completed_stages: usize,
+    pub percent_complete: u8,
 }
 
 #[derive(Clone, Debug)]
 pub struct DashboardData {
     pub scheduler_state: Option<SchedulerState>,
-    pub executors_data: Option<Vec<ExecutorsData>>,
-    pub jobs_data: Option<Vec<JobsData>>,
+    pub executors_data: Vec<ExecutorsData>,
+    pub jobs_data: Vec<Job>,
 }
 
 /// A Prometheus metric
@@ -61,7 +62,12 @@ pub struct Metric {
 
 #[derive(Clone, Debug)]
 pub struct MetricsData {
-    pub metrics: Option<Vec<Metric>>,
+    pub metrics: Vec<Metric>,
+}
+
+#[derive(Clone, Debug)]
+pub struct JobsData {
+    pub jobs: Vec<Job>,
 }
 
 impl FromStr for MetricsData {
@@ -87,9 +93,7 @@ impl FromStr for MetricsData {
             metrics.push(metric);
         }
 
-        Ok(MetricsData {
-            metrics: Some(metrics),
-        })
+        Ok(MetricsData { metrics })
     }
 }
 
@@ -97,8 +101,8 @@ impl DashboardData {
     pub fn new() -> Self {
         Self {
             scheduler_state: None,
-            executors_data: None,
-            jobs_data: None,
+            executors_data: Vec::new(),
+            jobs_data: Vec::new(),
         }
     }
 }

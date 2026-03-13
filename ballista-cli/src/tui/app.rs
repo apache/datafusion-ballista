@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::tui::{
-    domain::{DashboardData, MetricsData},
+    domain::{DashboardData, JobsData, MetricsData},
     event::Event,
     infrastructure::Settings,
 };
@@ -41,6 +41,7 @@ pub struct App {
 
     pub dashboard_data: DashboardData,
     pub metrics_data: MetricsData,
+    pub jobs_data: JobsData,
 
     // Help panel
     pub show_help: bool,
@@ -56,7 +57,10 @@ impl App {
             event_tx: None,
             show_help: false,
             dashboard_data: DashboardData::new(),
-            metrics_data: MetricsData { metrics: None },
+            jobs_data: JobsData { jobs: Vec::new() },
+            metrics_data: MetricsData {
+                metrics: Vec::new(),
+            },
             http_client: Arc::new(HttpClient::new(config)?),
         })
     }
@@ -100,6 +104,7 @@ impl App {
             }
             KeyCode::Char('j') if self.is_scheduler_up() => {
                 self.current_view = Views::Jobs;
+                self.load_jobs_data().await;
             }
             KeyCode::Char('m') if self.is_scheduler_up() => {
                 self.current_view = Views::Metrics;
@@ -112,13 +117,19 @@ impl App {
 
     async fn load_dashboard_data(&mut self) {
         if let Err(e) = crate::tui::ui::load_dashboard_data(self).await {
-            tracing::error!("Failed to load dashboard data on tick: {:?}", e);
+            tracing::error!("Failed to load dashboard data on tick: {e:?}");
+        }
+    }
+
+    async fn load_jobs_data(&mut self) {
+        if let Err(e) = crate::tui::ui::load_jobs_data(self).await {
+            tracing::error!("Failed to load jobs data on tick: {e:?}");
         }
     }
 
     async fn load_metrics_data(&mut self) {
         if let Err(e) = crate::tui::ui::load_metrics_data(self).await {
-            tracing::error!("Failed to load metrics data on tick: {:?}", e);
+            tracing::error!("Failed to load metrics data on tick: {e:?}");
         }
     }
 }

@@ -34,7 +34,7 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default().borders(Borders::ALL).title("Jobs");
 
     match &app.dashboard_data.jobs_data {
-        Some(jobs) => {
+        jobs if !jobs.is_empty() => {
             if jobs.is_empty() {
                 f.render_widget(no_jobs(block), area);
                 return;
@@ -72,7 +72,7 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
             render_completed_jobs(f, chunks[2], completed_jobs);
             render_failed_jobs(f, chunks[3], failed_jobs);
         }
-        None => {
+        _no_jobs => {
             f.render_widget(no_jobs(block), area);
         }
     }
