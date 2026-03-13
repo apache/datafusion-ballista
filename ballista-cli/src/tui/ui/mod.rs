@@ -18,6 +18,7 @@
 mod footer;
 mod header;
 mod main;
+mod search_box;
 
 use crate::tui::app::{App, Views};
 use crate::tui::ui::header::render_header;
@@ -44,7 +45,7 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
 
     render_header(f, chunks[0], app);
     render_main_view(f, app, chunks[1]);
-    render_footer(f, chunks[2]);
+    render_footer(f, chunks[2], app);
 
     // Overlay help if active
     if app.show_help {

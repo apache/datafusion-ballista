@@ -15,18 +15,38 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::tui::app::{App, InputMode, Views};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::prelude::Style;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-pub(super) fn render_footer(f: &mut Frame, area: Rect) {
+pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
+    let mut key_bindings = Vec::with_capacity(10);
+
+    if app.input_mode == InputMode::Edit {
+        key_bindings.push(Span::from("[Esc] Quit edit mode, "));
+    } else {
+        key_bindings.push(Span::from("Key bindings: "));
+        key_bindings.push(Span::from("[d] Dashboard, "));
+        key_bindings.push(Span::from("[j] Jobs, "));
+        key_bindings.push(Span::from("[m] Metrics, "));
+        if app.current_view == Views::Jobs {
+            key_bindings.push(Span::from("[/] Search jobs, "));
+        } else if app.current_view == Views::Metrics {
+            // key_bindings.push(Span::from("[/] Search metrics, "));
+        }
+        key_bindings.push(Span::from("[?/h] Help, "));
+        key_bindings.push(Span::from("[q/Esc] Quit"));
+    }
+
+    let line = Line::from(key_bindings);
+
     let block = Block::default();
-    let paragraph = Paragraph::new(
-        "Key bindings: [d] Dashboard, [j] Jobs, [m] Metrics, [?/h] help, [q/Esc] quit",
-    )
-    .style(Style::default().bold())
-    .block(block)
-    .centered();
+    let paragraph = Paragraph::new(line)
+        .style(Style::default().bold())
+        .block(block)
+        .centered();
     f.render_widget(paragraph, area);
 }

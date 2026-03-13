@@ -28,13 +28,19 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::tui::http_client::HttpClient;
 
 #[derive(Debug, PartialEq)]
-pub enum Views {
+pub(crate) enum Views {
     Dashboard,
     Jobs,
     Metrics,
 }
 
-pub struct App {
+#[derive(Debug, PartialEq)]
+pub(crate) enum InputMode {
+    View,
+    Edit,
+}
+
+pub(crate) struct App {
     pub should_quit: bool,
     pub event_tx: Option<UnboundedSender<Event>>,
     pub current_view: Views,
@@ -46,6 +52,9 @@ pub struct App {
     // Help panel
     pub show_help: bool,
 
+    pub input_mode: InputMode,
+    pub search_term: String,
+
     pub http_client: Arc<HttpClient>,
 }
 
@@ -56,6 +65,8 @@ impl App {
             should_quit: false,
             event_tx: None,
             show_help: false,
+            input_mode: InputMode::View,
+            search_term: String::new(),
             dashboard_data: DashboardData::new(),
             jobs_data: JobsData { jobs: Vec::new() },
             metrics_data: MetricsData {
@@ -79,7 +90,24 @@ impl App {
     }
 
     pub async fn on_key(&mut self, key: KeyEvent) -> Result<()> {
-        // Help panel takes priority
+        // Edit mode takes priority over everything
+        if self.input_mode == InputMode::Edit {
+            match key.code {
+                KeyCode::Esc => {
+                    self.search_term.clear();
+                    self.input_mode = InputMode::View;
+                }
+                KeyCode::Backspace => {
+                    self.search_term.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.search_term.push(c);
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
         if self.show_help {
             self.show_help = false;
             return Ok(());
@@ -92,12 +120,6 @@ impl App {
             KeyCode::Char('?') | KeyCode::Char('h') => {
                 self.show_help = true;
             }
-            // KeyCode::Up | KeyCode::Char('k') => {
-            //     self.previous();
-            // }
-            // KeyCode::Down | KeyCode::Char('j') => {
-            //     self.next();
-            // }
             KeyCode::Char('d') if self.is_scheduler_up() => {
                 self.current_view = Views::Dashboard;
                 self.load_dashboard_data().await;
@@ -109,6 +131,12 @@ impl App {
             KeyCode::Char('m') if self.is_scheduler_up() => {
                 self.current_view = Views::Metrics;
                 self.load_metrics_data().await;
+            }
+            KeyCode::Char('/')
+                if self.current_view == Views::Jobs
+                    || self.current_view == Views::Metrics =>
+            {
+                self.input_mode = InputMode::Edit;
             }
             _ => {}
         }

@@ -21,6 +21,7 @@ use crate::tui::domain::Job;
 use crate::tui::error::TuiError;
 use crate::tui::event::Event;
 use crate::tui::event::UiData;
+use crate::tui::ui::search_box::render_search_box;
 
 use ratatui::style::Color;
 use ratatui::{
@@ -62,20 +63,36 @@ pub async fn load_jobs_data(app: &App) -> TuiResult<()> {
 pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Clear, area);
 
-    match &app.jobs_data.jobs {
-        jobs if !jobs.is_empty() => {
-            let vertical = &Layout::vertical([
-                Constraint::Min(5),    // Table
-                Constraint::Length(4), // Scrollbar
-            ]);
-            let rects = vertical.split(area);
+    let search_term = app.search_term.to_lowercase();
+    let filtered_jobs: Vec<&Job> = if search_term.is_empty() {
+        app.jobs_data.jobs.iter().collect()
+    } else {
+        app.jobs_data
+            .jobs
+            .iter()
+            .filter(|j| {
+                j.job_id.to_lowercase().contains(&search_term)
+                    || j.job_name.to_lowercase().contains(&search_term)
+            })
+            .collect()
+    };
 
-            let mut scroll_state = ScrollbarState::new((jobs.len() - 1) * 2);
-            let mut table_state = TableState::default().with_selected(0);
-            render_jobs_table(f, rects[0], jobs, &mut table_state);
-            render_scrollbar(f, rects[0], &mut scroll_state);
-        }
-        _no_jobs => render_no_jobs(f, area),
+    let vertical = Layout::vertical([
+        Constraint::Length(3), // Search box
+        Constraint::Min(5),    // Table
+        Constraint::Length(4), // Scrollbar
+    ]);
+    let rects = vertical.split(area);
+
+    render_search_box(f, rects[0], app);
+
+    if !filtered_jobs.is_empty() {
+        let mut scroll_state = ScrollbarState::new((filtered_jobs.len() - 1) * 2);
+        let mut table_state = TableState::default().with_selected(0);
+        render_jobs_table(f, rects[1], &filtered_jobs, &mut table_state);
+        render_scrollbar(f, rects[1], &mut scroll_state);
+    } else {
+        render_no_jobs(f, rects[1]);
     }
 }
 
@@ -91,7 +108,7 @@ fn render_no_jobs(f: &mut Frame, area: Rect) {
 fn render_jobs_table(
     frame: &mut Frame,
     area: Rect,
-    jobs: &[Job],
+    jobs: &[&Job],
     state: &mut TableState,
 ) {
     let header_style = Style::default().fg(Color::Yellow).bg(Color::Black);

@@ -21,6 +21,7 @@ use crate::tui::domain::Metric;
 use crate::tui::error::TuiError;
 use crate::tui::event::Event;
 use crate::tui::event::UiData;
+use crate::tui::ui::search_box::render_search_box;
 use prometheus_parse::HistogramCount;
 
 use ratatui::style::Color;
@@ -63,20 +64,33 @@ pub async fn load_metrics_data(app: &App) -> TuiResult<()> {
 pub fn render_metrics(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Clear, area);
 
-    match &app.metrics_data.metrics {
-        metrics if !metrics.is_empty() => {
-            let vertical = &Layout::vertical([
-                Constraint::Min(5),    // Table
-                Constraint::Length(4), // Scrollbar
-            ]);
-            let rects = vertical.split(area);
+    let search_term = app.search_term.to_lowercase();
+    let filtered_metrics: Vec<&crate::tui::domain::Metric> = if search_term.is_empty() {
+        app.metrics_data.metrics.iter().collect()
+    } else {
+        app.metrics_data
+            .metrics
+            .iter()
+            .filter(|m| m.sample.metric.to_lowercase().contains(&search_term))
+            .collect()
+    };
 
-            let mut scroll_state = ScrollbarState::new((metrics.len() - 1) * 2);
-            let mut table_state = TableState::default().with_selected(0);
-            render_metrics_table(f, rects[0], metrics, &mut table_state);
-            render_scrollbar(f, rects[0], &mut scroll_state);
-        }
-        _no_metrics => render_no_metrics(f, area),
+    let vertical = Layout::vertical([
+        Constraint::Length(3), // Search box
+        Constraint::Min(5),    // Table
+        Constraint::Length(4), // Scrollbar
+    ]);
+    let rects = vertical.split(area);
+
+    render_search_box(f, rects[0], app);
+
+    if !filtered_metrics.is_empty() {
+        let mut scroll_state = ScrollbarState::new((filtered_metrics.len() - 1) * 2);
+        let mut table_state = TableState::default().with_selected(0);
+        render_metrics_table(f, rects[1], &filtered_metrics, &mut table_state);
+        render_scrollbar(f, rects[1], &mut scroll_state);
+    } else {
+        render_no_metrics(f, rects[1]);
     }
 }
 
@@ -92,7 +106,7 @@ fn render_no_metrics(f: &mut Frame, area: Rect) {
 fn render_metrics_table(
     frame: &mut Frame,
     area: Rect,
-    metrics: &[Metric],
+    metrics: &[&Metric],
     state: &mut TableState,
 ) {
     let header_style = Style::default().fg(Color::Yellow).bg(Color::Black);
