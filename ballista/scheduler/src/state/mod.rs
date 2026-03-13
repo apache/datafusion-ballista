@@ -443,11 +443,16 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
             None
         };
 
+        let logical_plan_str = plan.display_indent().to_string();
+
         let plan = session_ctx.state().create_physical_plan(plan).await?;
         debug!(
             "Physical plan: {}",
             DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
         );
+        let physical_plan_str = DisplayableExecutionPlan::new(plan.as_ref())
+            .indent(false)
+            .to_string();
 
         let plan = plan.transform_down(&|node: Arc<dyn ExecutionPlan>| {
             if node.output_partitioning().partition_count() == 0 {
@@ -490,6 +495,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> SchedulerState<T,
                 queued_at,
                 session_config,
                 subscriber,
+                Some(logical_plan_str),
+                Some(physical_plan_str),
             )
             .await?;
 

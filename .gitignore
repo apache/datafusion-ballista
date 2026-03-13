@@ -108,3 +108,4 @@ logs/
 
 # Claude Code guidance file (local only)
 CLAUDE.md
+.claude/

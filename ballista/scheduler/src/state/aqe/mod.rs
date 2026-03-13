@@ -109,6 +109,10 @@ pub(crate) struct AdaptiveExecutionGraph {
     failed_stage_attempts: HashMap<usize, HashSet<usize>>,
     /// Session config for this job
     session_config: Arc<SessionConfig>,
+    /// Logical plan as a human-readable string, captured at submission time.
+    logical_plan: Option<String>,
+    /// Physical plan as a human-readable string, captured at submission time.
+    physical_plan: Option<String>,
 }
 
 impl AdaptiveExecutionGraph {
@@ -125,6 +129,8 @@ impl AdaptiveExecutionGraph {
         plan: Arc<dyn ExecutionPlan>,
         queued_at: u64,
         session_config: Arc<SessionConfig>,
+        logical_plan: Option<String>,
+        physical_plan: Option<String>,
     ) -> ballista_core::error::Result<Self> {
         let mut planner =
             AdaptivePlanner::try_new(&session_config, plan, job_name.to_owned())?;
@@ -178,6 +184,8 @@ impl AdaptiveExecutionGraph {
             task_id_gen: 0,
             failed_stage_attempts: HashMap::new(),
             session_config,
+            logical_plan,
+            physical_plan,
         })
     }
 }
@@ -501,6 +509,14 @@ impl ExecutionGraph for AdaptiveExecutionGraph {
 
     fn status(&self) -> &JobStatus {
         &self.status
+    }
+
+    fn logical_plan(&self) -> Option<&str> {
+        self.logical_plan.as_deref()
+    }
+
+    fn physical_plan(&self) -> Option<&str> {
+        self.physical_plan.as_deref()
     }
 
     fn start_time(&self) -> u64 {

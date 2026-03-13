@@ -112,6 +112,12 @@ pub trait ExecutionGraph: Debug {
     /// Returns the current job status.
     fn status(&self) -> &JobStatus;
 
+    /// Returns the logical plan as a string, if captured at submission time.
+    fn logical_plan(&self) -> Option<&str>;
+
+    /// Returns the physical plan as a string, if captured at submission time.
+    fn physical_plan(&self) -> Option<&str>;
+
     /// Returns the timestamp when this job started execution.
     fn start_time(&self) -> u64;
 
@@ -263,6 +269,10 @@ pub struct StaticExecutionGraph {
     failed_stage_attempts: HashMap<usize, HashSet<usize>>,
     /// Session config for this job
     session_config: Arc<SessionConfig>,
+    /// Logical plan as a human-readable string, captured at submission time.
+    logical_plan: Option<String>,
+    /// Physical plan as a human-readable string, captured at submission time.
+    physical_plan: Option<String>,
 }
 
 /// Information about a currently running task.
@@ -298,6 +308,8 @@ impl StaticExecutionGraph {
         queued_at: u64,
         session_config: Arc<SessionConfig>,
         planner: &mut dyn DistributedPlanner,
+        logical_plan: Option<String>,
+        physical_plan: Option<String>,
     ) -> Result<Self> {
         let shuffle_stages =
             planner.plan_query_stages(job_id, plan, session_config.options())?;
@@ -330,6 +342,8 @@ impl StaticExecutionGraph {
             task_id_gen: 0,
             failed_stage_attempts: HashMap::new(),
             session_config,
+            logical_plan,
+            physical_plan,
         })
     }
 
@@ -633,6 +647,14 @@ impl ExecutionGraph for StaticExecutionGraph {
 
     fn status(&self) -> &JobStatus {
         &self.status
+    }
+
+    fn logical_plan(&self) -> Option<&str> {
+        self.logical_plan.as_deref()
+    }
+
+    fn physical_plan(&self) -> Option<&str> {
+        self.physical_plan.as_deref()
     }
 
     fn start_time(&self) -> u64 {
