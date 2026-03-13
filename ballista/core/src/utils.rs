@@ -63,6 +63,10 @@ pub struct GrpcClientConfig {
     pub tcp_keepalive_seconds: u64,
     /// HTTP/2 keep-alive ping interval in seconds
     pub http2_keepalive_interval_seconds: u64,
+    /// Should client use tls
+    pub use_tls: bool,
+    /// Returns the maximum message size for gRPC clients in bytes.
+    pub max_message_size: usize,
 }
 
 impl From<&BallistaConfig> for GrpcClientConfig {
@@ -74,6 +78,8 @@ impl From<&BallistaConfig> for GrpcClientConfig {
             http2_keepalive_interval_seconds: config
                 .grpc_client_http2_keepalive_interval_seconds()
                 as u64,
+            use_tls: config.client_use_tls(),
+            max_message_size: config.grpc_client_max_message_size(),
         }
     }
 }
@@ -85,6 +91,8 @@ impl Default for GrpcClientConfig {
             timeout_seconds: 20,
             tcp_keepalive_seconds: 3600,
             http2_keepalive_interval_seconds: 300,
+            use_tls: false,
+            max_message_size: 16 * 1024 * 1024,
         }
     }
 }
@@ -333,6 +341,8 @@ mod tests {
             timeout_seconds: 30,
             tcp_keepalive_seconds: 1800,
             http2_keepalive_interval_seconds: 150,
+            use_tls: false,
+            max_message_size: 16 * 1024 * 1024,
         };
         let result = create_grpc_client_endpoint("http://localhost:50051", Some(&config));
         assert!(result.is_ok());

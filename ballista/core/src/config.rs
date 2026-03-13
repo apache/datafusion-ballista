@@ -18,14 +18,12 @@
 
 //! Ballista configuration
 
-use std::result;
-use std::{collections::HashMap, fmt::Display};
-
 use crate::error::{BallistaError, Result};
-
 use datafusion::{
     arrow::datatypes::DataType, common::config_err, config::ConfigExtension,
 };
+use std::result;
+use std::{collections::HashMap, fmt::Display};
 
 /// Configuration key for setting the job name displayed in the web UI.
 pub const BALLISTA_JOB_NAME: &str = "ballista.job.name";
@@ -425,23 +423,6 @@ impl BallistaConfig {
             let entries = Self::valid_entries();
             let v = entries.get(key).unwrap().default_value.as_ref().unwrap();
             v.parse::<f64>().unwrap()
-        }
-    }
-    /// sets the configuration value where key starts with ballista
-    /// prefix.
-    pub fn set_with_prefix(
-        &mut self,
-        key: &str,
-        value: &str,
-    ) -> datafusion::error::Result<()> {
-        let entries = Self::valid_entries();
-        //let k = format!("{}.{key}", BallistaConfig::PREFIX);
-
-        if entries.contains_key(key) {
-            self.settings.insert(key.to_string(), value.to_string());
-            Ok(())
-        } else {
-            config_err!("configuration key `{}` does not exist", key)
         }
     }
 }

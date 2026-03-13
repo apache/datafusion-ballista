@@ -117,10 +117,41 @@ impl BallistaClient {
     /// Depending on the value of the `flight_transport` parameter, this method will utilize either
     /// the Arrow Flight protocol for compatibility, or a more efficient block-based transfer mechanism.
     /// The block-based transfer is optimized for performance and reduces computational overhead on the server.
+    ///
+    /// This method to be used for direct connection to executor holding required shuffle partition
     pub async fn fetch_partition(
         &mut self,
         executor_id: &str,
         partition_id: &PartitionId,
+        path: &str,
+        flight_transport: bool,
+    ) -> BResult<SendableRecordBatchStream> {
+        let host = self.host.clone();
+        let port = self.port;
+        self.fetch_partition_proxied(
+            executor_id,
+            partition_id,
+            &host,
+            port,
+            path,
+            flight_transport,
+        )
+        .await
+    }
+
+    /// Retrieves a partition from an executor.
+    ///
+    /// Depending on the value of the `flight_transport` parameter, this method will utilize either
+    /// the Arrow Flight protocol for compatibility, or a more efficient block-based transfer mechanism.
+    /// The block-based transfer is optimized for performance and reduces computational overhead on the server.
+    ///
+    /// This method to be used if the request may be proxied.
+    pub async fn fetch_partition_proxied(
+        &mut self,
+        executor_id: &str,
+        partition_id: &PartitionId,
+        host: &str,
+        port: u16,
         path: &str,
         flight_transport: bool,
     ) -> BResult<SendableRecordBatchStream> {
@@ -129,8 +160,8 @@ impl BallistaClient {
             stage_id: partition_id.stage_id,
             partition_id: partition_id.partition_id,
             path: path.to_owned(),
-            host: self.host.to_owned(),
-            port: self.port,
+            host: host.to_owned(),
+            port,
         };
 
         let result = if flight_transport {

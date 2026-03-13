@@ -701,6 +701,8 @@ async fn fetch_partition(
     let partition_id = location.partition_id.ok_or_else(|| {
         DataFusionError::Internal("Received empty partition id".to_owned())
     })?;
+    let host = metadata.host.as_str();
+    let port = metadata.port as u16;
 
     let (client_host, client_port) =
         get_client_host_port(&metadata, &scheduler_url, &flight_proxy)?;
@@ -715,9 +717,11 @@ async fn fetch_partition(
     .await
     .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
     ballista_client
-        .fetch_partition(
+        .fetch_partition_proxied(
             &metadata.id,
             &partition_id.into(),
+            host,
+            port,
             &location.path,
             flight_transport,
         )
