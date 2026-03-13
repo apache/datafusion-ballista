@@ -28,7 +28,7 @@ rust-version = "1.88.0"
 [workspace.dependencies]
 arrow = { version = "57", features = ["ipc_compression"] }
 arrow-flight = { version = "57", features = ["flight-sql-experimental"] }
-clap = { version = "4.5", features = ["derive", "cargo"] }
+clap = { version = "4.6", features = ["derive", "cargo"] }
 datafusion = "52"
 datafusion-cli = "52"
 datafusion-proto = "52"
