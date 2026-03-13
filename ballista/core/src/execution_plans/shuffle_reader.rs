@@ -15,10 +15,37 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use async_trait::async_trait;
+use crate::client::BallistaClient;
+use crate::error::BallistaError;
+use crate::execution_plans::sort_shuffle::{
+    get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition,
+};
+use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
+use crate::serde::scheduler::{PartitionLocation, PartitionStats};
+use crate::utils::GrpcClientConfig;
+use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::reader::StreamReader;
+use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::runtime::SpawnedTask;
 use datafusion::common::stats::Precision;
+use datafusion::error::{DataFusionError, Result};
+use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::coalesce::{LimitedBatchCoalescer, PushBatchStatus};
+use datafusion::physical_plan::metrics::{
+    BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet,
+};
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion::physical_plan::{
+    ColumnStatistics, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
+    PlanProperties, RecordBatchStream, SendableRecordBatchStream, Statistics,
+};
+use datafusion::prelude::SessionConfig;
+use futures::{Stream, StreamExt, TryStreamExt, ready};
+use itertools::Itertools;
+use log::{debug, error, trace};
+use rand::prelude::SliceRandom;
+use rand::rng;
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -28,36 +55,6 @@ use std::pin::Pin;
 use std::result;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-
-use crate::client::BallistaClient;
-use crate::execution_plans::sort_shuffle::{
-    get_index_path, is_sort_shuffle_output, stream_sort_shuffle_partition,
-};
-use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
-use crate::serde::scheduler::{PartitionLocation, PartitionStats};
-
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::error::ArrowError;
-use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::common::runtime::SpawnedTask;
-
-use datafusion::error::{DataFusionError, Result};
-use datafusion::physical_plan::metrics::{
-    BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet,
-};
-use datafusion::physical_plan::{
-    ColumnStatistics, DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning,
-    PlanProperties, RecordBatchStream, SendableRecordBatchStream, Statistics,
-};
-use futures::{Stream, StreamExt, TryStreamExt, ready};
-
-use crate::error::BallistaError;
-use datafusion::execution::context::TaskContext;
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use itertools::Itertools;
-use log::{debug, error, trace};
-use rand::prelude::SliceRandom;
-use rand::rng;
 use tokio::sync::{Semaphore, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -162,17 +159,9 @@ impl ExecutionPlan for ShuffleReaderExec {
         debug!("ShuffleReaderExec::execute({task_id})");
 
         let config = context.session_config();
-
-        let max_request_num =
-            config.ballista_shuffle_reader_maximum_concurrent_requests();
-        let max_message_size = config.ballista_grpc_client_max_message_size();
-        let force_remote_read = config.ballista_shuffle_reader_force_remote_read();
-        let prefer_flight = config.ballista_shuffle_reader_remote_prefer_flight();
         let batch_size = config.batch_size();
-        let customize_endpoint = config.ballista_override_create_grpc_client_endpoint();
-        let use_tls = config.ballista_use_tls();
 
-        if force_remote_read {
+        if config.ballista_shuffle_reader_force_remote_read() {
             debug!(
                 "All shuffle partitions will be read as remote partitions! To disable this behavior set: `{}=false`",
                 crate::config::BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ
@@ -180,7 +169,9 @@ impl ExecutionPlan for ShuffleReaderExec {
         }
 
         log::debug!(
-            "ShuffleReaderExec::execute({task_id}) max_request_num: {max_request_num}, max_message_size: {max_message_size}"
+            "ShuffleReaderExec::execute({task_id}) max_request_num: {}, max_message_size: {}",
+            config.ballista_shuffle_reader_maximum_concurrent_requests(),
+            config.ballista_grpc_client_max_message_size()
         );
         let mut partition_locations = HashMap::new();
         for p in &self.partition[partition] {
@@ -198,15 +189,7 @@ impl ExecutionPlan for ShuffleReaderExec {
             .collect();
         // Shuffle partitions for evenly send fetching partition requests to avoid hot executors within multiple tasks
         partition_locations.shuffle(&mut rng());
-        let response_receiver = send_fetch_partitions(
-            partition_locations,
-            max_request_num,
-            max_message_size,
-            force_remote_read,
-            prefer_flight,
-            customize_endpoint,
-            use_tls,
-        );
+        let response_receiver = send_fetch_partitions(partition_locations, config);
 
         let input_stream = Box::pin(RecordBatchStreamAdapter::new(
             self.schema.clone(),
@@ -405,19 +388,19 @@ fn local_remote_read_split(
 
 fn send_fetch_partitions(
     partition_locations: Vec<PartitionLocation>,
-    max_request_num: usize,
-    max_message_size: usize,
-    force_remote_read: bool,
-    flight_transport: bool,
-    customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
-    use_tls: bool,
+    config: &SessionConfig,
 ) -> AbortableReceiverStream {
+    let max_request_num = config.ballista_shuffle_reader_maximum_concurrent_requests();
+    let sort_shuffle_enabled = config.ballista_sort_shuffle_enabled();
+
     let (response_sender, response_receiver) = mpsc::channel(max_request_num);
     let semaphore = Arc::new(Semaphore::new(max_request_num));
     let mut spawned_tasks: Vec<SpawnedTask<()>> = vec![];
 
-    let (local_locations, remote_locations): (Vec<_>, Vec<_>) =
-        local_remote_read_split(partition_locations, force_remote_read);
+    let (local_locations, remote_locations): (Vec<_>, Vec<_>) = local_remote_read_split(
+        partition_locations,
+        config.ballista_shuffle_reader_force_remote_read(),
+    );
 
     debug!(
         "local shuffle file counts:{}, remote shuffle file count:{}.",
@@ -427,46 +410,53 @@ fn send_fetch_partitions(
 
     // keep local shuffle files reading in serial order for memory control.
     let response_sender_c = response_sender.clone();
-    let customize_endpoint_c = customize_endpoint.clone();
-    spawned_tasks.push(SpawnedTask::spawn(async move {
-        for p in local_locations {
-            let r = PartitionReaderEnum::Local
-                .fetch_partition(
-                    &p,
-                    max_message_size,
-                    flight_transport,
-                    customize_endpoint_c.clone(),
-                    use_tls,
-                )
-                .await;
-            if let Err(e) = response_sender_c.send(r).await {
-                error!("Fail to send response event to the channel due to {e}");
+
+    //
+    // fetching local partitions (read from file)
+    //
+
+    spawned_tasks.push(SpawnedTask::spawn_blocking({
+        move || {
+            for p in local_locations {
+                let r = fetch_partition_local(&p, sort_shuffle_enabled);
+                if let Err(e) = response_sender_c.blocking_send(r) {
+                    error!("Fail to send response event to the channel due to {e}");
+                }
             }
         }
     }));
 
+    //
+    // fetching remote partitions (uses grpc flight protocol)
+    //
+    let grpc_config: Arc<GrpcClientConfig> = Arc::new((&config.ballista_config()).into());
+    let customize_endpoint = config.ballista_override_create_grpc_client_endpoint();
+    let prefer_flight = config.ballista_shuffle_reader_remote_prefer_flight();
+
     for p in remote_locations.into_iter() {
         let semaphore = semaphore.clone();
         let response_sender = response_sender.clone();
-        let customize_endpoint_c = customize_endpoint.clone();
-        spawned_tasks.push(SpawnedTask::spawn(async move {
-            // Block if exceeds max request number.
-            let permit = semaphore.acquire_owned().await.unwrap();
-            let r = PartitionReaderEnum::FlightRemote
-                .fetch_partition(
+
+        spawned_tasks.push(SpawnedTask::spawn({
+            let customize_endpoint = customize_endpoint.clone();
+            let grpc_config = grpc_config.clone();
+            async move {
+                // Block if exceeds max request number.
+                let permit = semaphore.acquire_owned().await.unwrap();
+                let r = fetch_partition_remote(
                     &p,
-                    max_message_size,
-                    flight_transport,
-                    customize_endpoint_c,
-                    use_tls,
+                    grpc_config,
+                    prefer_flight,
+                    customize_endpoint,
                 )
                 .await;
-            // Block if the channel buffer is full.
-            if let Err(e) = response_sender.send(r).await {
-                error!("Fail to send response event to the channel due to {e}");
+                // Block if the channel buffer is full.
+                if let Err(e) = response_sender.send(r).await {
+                    error!("Fail to send response event to the channel due to {e}");
+                }
+                // Increase semaphore by dropping existing permits.
+                drop(permit);
             }
-            // Increase semaphore by dropping existing permits.
-            drop(permit);
         }));
     }
 
@@ -477,112 +467,68 @@ fn check_is_local_location(location: &PartitionLocation) -> bool {
     std::path::Path::new(location.path.as_str()).exists()
 }
 
-/// Partition reader Trait, different partition reader can have
-#[async_trait]
-trait PartitionReader: Send + Sync + Clone {
-    // Read partition data from PartitionLocation
-    async fn fetch_partition(
-        &self,
-        location: &PartitionLocation,
-        max_message_size: usize,
-        flight_transport: bool,
-        customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
-        use_tls: bool,
-    ) -> result::Result<SendableRecordBatchStream, BallistaError>;
-}
+async fn new_ballista_client(
+    host: &str,
+    port: u16,
+    config: &GrpcClientConfig,
+    customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
+) -> result::Result<BallistaClient, BallistaError> {
+    let max_message_size = config.max_message_size;
+    let use_tls = config.use_tls;
 
-#[derive(Clone)]
-enum PartitionReaderEnum {
-    Local,
-    FlightRemote,
-    #[allow(dead_code)]
-    ObjectStoreRemote,
-}
-
-#[async_trait]
-impl PartitionReader for PartitionReaderEnum {
-    // Notice return `BallistaError::FetchFailed` will let scheduler re-schedule the task.
-    async fn fetch_partition(
-        &self,
-        location: &PartitionLocation,
-        max_message_size: usize,
-        flight_transport: bool,
-        customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
-        use_tls: bool,
-    ) -> result::Result<SendableRecordBatchStream, BallistaError> {
-        match self {
-            PartitionReaderEnum::FlightRemote => {
-                fetch_partition_remote(
-                    location,
-                    max_message_size,
-                    flight_transport,
-                    customize_endpoint,
-                    use_tls,
-                )
-                .await
-            }
-            PartitionReaderEnum::Local => fetch_partition_local(location).await,
-            PartitionReaderEnum::ObjectStoreRemote => {
-                fetch_partition_object_store(location).await
-            }
-        }
-    }
+    BallistaClient::try_new(host, port, max_message_size, use_tls, customize_endpoint)
+        .await
 }
 
 async fn fetch_partition_remote(
     location: &PartitionLocation,
-    max_message_size: usize,
-    flight_transport: bool,
+    config: Arc<GrpcClientConfig>,
+    prefer_flight: bool,
     customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
-    use_tls: bool,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
-    // TODO for shuffle client connections, we should avoid creating new connections again and again.
-    // And we should also avoid to keep alive too many connections for long time.
     let host = metadata.host.as_str();
     let port = metadata.port;
-    let mut ballista_client = BallistaClient::try_new(
-        host,
-        port,
-        max_message_size,
-        use_tls,
-        customize_endpoint,
-    )
-    .await
-    .map_err(|error| match error {
-        // map grpc connection error to partition fetch error.
-        BallistaError::GrpcConnectionError(msg) => BallistaError::FetchFailed(
-            metadata.id.clone(),
-            partition_id.stage_id,
-            partition_id.partition_id,
-            msg,
-        ),
-        other => other,
-    })?;
+
+    // TODO for shuffle client connections, we should avoid creating new connections again and again.
+    // And we should also avoid to keep alive too many connections for long time.
+    let mut ballista_client =
+        new_ballista_client(host, port, &config, customize_endpoint)
+            .await
+            .map_err(|error| match error {
+                // map grpc connection error to partition fetch error.
+                BallistaError::GrpcConnectionError(msg) => BallistaError::FetchFailed(
+                    metadata.id.clone(),
+                    partition_id.stage_id,
+                    partition_id.partition_id,
+                    msg,
+                ),
+                other => other,
+            })?;
 
     ballista_client
-        .fetch_partition(
-            &metadata.id,
-            partition_id,
-            &location.path,
-            host,
-            port,
-            flight_transport,
-        )
+        .fetch_partition(&metadata.id, partition_id, &location.path, prefer_flight)
         .await
 }
 
-async fn fetch_partition_local(
+fn fetch_partition_local(
     location: &PartitionLocation,
+    sort_shuffle_enabled: bool,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
     let path = &location.path;
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
     let data_path = std::path::Path::new(path);
 
+    // TODO: we check if file is there then we open it alter
+    //       replace this check with open, and check for error
+    //
     // Check if this is a sort-based shuffle output (has index file)
-    if is_sort_shuffle_output(data_path) {
+    if sort_shuffle_enabled && is_sort_shuffle_output(data_path) {
+        // note: in some cases sort shuffle is not going to be used
+        //       even its enabled. thus we need to check if there is
+        //       sort shuffle file index
         debug!(
             "Reading sort-based shuffle for partition {} from {:?}",
             partition_id.partition_id, data_path
@@ -622,7 +568,8 @@ fn fetch_partition_local_inner(
     let file = File::open(path).map_err(|e| {
         BallistaError::General(format!("Failed to open partition file at {path}: {e:?}"))
     })?;
-    let file = BufReader::new(file);
+    // TODO: make this configurable
+    let file = BufReader::with_capacity(256 * 1024, file);
     // Safety: setting `skip_validation` requires `unsafe`, user assures data is valid
     let reader = unsafe {
         StreamReader::try_new(file, None)
@@ -635,14 +582,6 @@ fn fetch_partition_local_inner(
     };
 
     Ok(reader)
-}
-
-async fn fetch_partition_object_store(
-    _location: &PartitionLocation,
-) -> result::Result<SendableRecordBatchStream, BallistaError> {
-    Err(BallistaError::NotImplemented(
-        "Should not use ObjectStorePartitionReader".to_string(),
-    ))
 }
 
 struct CoalescedShuffleReaderStream {
@@ -1120,16 +1059,10 @@ mod tests {
             partition_num,
             file_path.to_str().unwrap().to_string(),
         );
+        let config = SessionConfig::new_with_ballista()
+            .with_ballista_shuffle_reader_maximum_concurrent_requests(max_request_num);
 
-        let response_receiver = send_fetch_partitions(
-            partition_locations,
-            max_request_num,
-            4 * 1024 * 1024,
-            false,
-            true,
-            None,
-            false,
-        );
+        let response_receiver = send_fetch_partitions(partition_locations, &config);
 
         let stream = RecordBatchStreamAdapter::new(
             Arc::new(schema),

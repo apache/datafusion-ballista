@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::config::{
-    BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, BALLISTA_JOB_NAME,
+    BALLISTA_CLIENT_USE_TLS, BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, BALLISTA_JOB_NAME,
     BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
     BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
     BallistaConfig,
@@ -233,6 +233,9 @@ pub trait SessionConfigExt {
 
     /// Get whether to use TLS for executor connections
     fn ballista_use_tls(&self) -> bool;
+
+    /// Is short shuffle used
+    fn ballista_sort_shuffle_enabled(&self) -> bool;
 }
 
 /// [SessionConfigHelperExt] is set of [SessionConfig] extension methods
@@ -392,10 +395,8 @@ impl SessionConfigExt for SessionConfig {
         self.options()
             .extensions
             .get::<BallistaConfig>()
-            .map(|c| c.default_grpc_client_max_message_size())
-            .unwrap_or_else(|| {
-                BallistaConfig::default().default_grpc_client_max_message_size()
-            })
+            .map(|c| c.grpc_client_max_message_size())
+            .unwrap_or_else(|| BallistaConfig::default().grpc_client_max_message_size())
     }
 
     fn with_ballista_job_name(self, job_name: &str) -> Self {
@@ -433,6 +434,14 @@ impl SessionConfigExt for SessionConfig {
             .unwrap_or_else(|| {
                 BallistaConfig::default().shuffle_reader_maximum_concurrent_requests()
             })
+    }
+
+    fn ballista_sort_shuffle_enabled(&self) -> bool {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.shuffle_sort_based_enabled())
+            .unwrap_or_else(|| BallistaConfig::default().shuffle_sort_based_enabled())
     }
 
     fn with_ballista_shuffle_reader_maximum_concurrent_requests(
@@ -538,13 +547,20 @@ impl SessionConfigExt for SessionConfig {
     }
 
     fn with_ballista_use_tls(self, use_tls: bool) -> Self {
-        self.with_extension(Arc::new(BallistaUseTls(use_tls)))
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_bool(BALLISTA_CLIENT_USE_TLS, use_tls)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_bool(BALLISTA_CLIENT_USE_TLS, use_tls)
+        }
     }
 
     fn ballista_use_tls(&self) -> bool {
-        self.get_extension::<BallistaUseTls>()
-            .map(|ext| ext.0)
-            .unwrap_or(false)
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.client_use_tls())
+            .unwrap_or_else(|| BallistaConfig::default().client_use_tls())
     }
 }
 
@@ -745,10 +761,6 @@ impl BallistaConfigGrpcEndpoint {
         (self.override_f)(endpoint)
     }
 }
-
-/// Wrapper for cluster-wide TLS configuration
-#[derive(Clone, Copy)]
-pub struct BallistaUseTls(pub bool);
 
 #[derive(Debug)]
 struct BallistaCacheFactory;

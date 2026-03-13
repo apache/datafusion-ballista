@@ -416,8 +416,6 @@ impl SubstraitSchedulerClient {
                 &metadata.id,
                 &partition_id.into(),
                 &location.path,
-                host,
-                port,
                 flight_transport,
             )
             .await

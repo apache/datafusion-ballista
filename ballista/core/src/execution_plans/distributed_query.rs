@@ -253,7 +253,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                     self.scheduler_url.clone(),
                     self.session_id.clone(),
                     query,
-                    self.config.default_grpc_client_max_message_size(),
+                    self.config.grpc_client_max_message_size(),
                     GrpcClientConfig::from(&self.config),
                     Arc::new(self.metrics.clone()),
                     partition,
@@ -280,7 +280,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                 execute_query_push(
                     self.scheduler_url.clone(),
                     query,
-                    self.config.default_grpc_client_max_message_size(),
+                    self.config.grpc_client_max_message_size(),
                     GrpcClientConfig::from(&self.config),
                     Arc::new(self.metrics.clone()),
                     partition,
@@ -717,12 +717,12 @@ async fn fetch_partition(
     .await
     .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
     ballista_client
-        .fetch_partition(
+        .fetch_partition_proxied(
             &metadata.id,
             &partition_id.into(),
-            &location.path,
             host,
             port,
+            &location.path,
             flight_transport,
         )
         .await
