@@ -391,6 +391,7 @@ fn send_fetch_partitions(
     config: &SessionConfig,
 ) -> AbortableReceiverStream {
     let max_request_num = config.ballista_shuffle_reader_maximum_concurrent_requests();
+    let sort_shuffle_enabled = config.ballista_sort_shuffle_enabled();
 
     let (response_sender, response_receiver) = mpsc::channel(max_request_num);
     let semaphore = Arc::new(Semaphore::new(max_request_num));
@@ -417,7 +418,7 @@ fn send_fetch_partitions(
     spawned_tasks.push(SpawnedTask::spawn_blocking({
         move || {
             for p in local_locations {
-                let r = fetch_partition_local(&p);
+                let r = fetch_partition_local(&p, sort_shuffle_enabled);
                 if let Err(e) = response_sender_c.blocking_send(r) {
                     error!("Fail to send response event to the channel due to {e}");
                 }
@@ -513,14 +514,21 @@ async fn fetch_partition_remote(
 
 fn fetch_partition_local(
     location: &PartitionLocation,
+    sort_shuffle_enabled: bool,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
     let path = &location.path;
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
     let data_path = std::path::Path::new(path);
 
+    // TODO: we check if file is there then we open it alter
+    //       replace this check with open, and check for error
+    //
     // Check if this is a sort-based shuffle output (has index file)
-    if is_sort_shuffle_output(data_path) {
+    if sort_shuffle_enabled && is_sort_shuffle_output(data_path) {
+        // note: in some cases sort shuffle is not going to be used
+        //       even its enabled. thus we need to check if there is
+        //       sort shuffle file index
         debug!(
             "Reading sort-based shuffle for partition {} from {:?}",
             partition_id.partition_id, data_path
@@ -560,7 +568,8 @@ fn fetch_partition_local_inner(
     let file = File::open(path).map_err(|e| {
         BallistaError::General(format!("Failed to open partition file at {path}: {e:?}"))
     })?;
-    let file = BufReader::new(file);
+    // TODO: make this configurable
+    let file = BufReader::with_capacity(256 * 1024, file);
     // Safety: setting `skip_validation` requires `unsafe`, user assures data is valid
     let reader = unsafe {
         StreamReader::try_new(file, None)
