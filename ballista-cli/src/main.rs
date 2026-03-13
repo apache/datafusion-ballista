@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#[cfg(feature = "tui")]
+mod tui;
+
 use std::path::Path;
 use std::{env, sync::Arc};
 
@@ -23,8 +26,8 @@ use ballista_cli::{
     BALLISTA_CLI_VERSION, exec, print_format::PrintFormat, print_options::PrintOptions,
 };
 use clap::Parser;
+use color_eyre::eyre::Result;
 use datafusion::{
-    common::Result,
     execution::SessionStateBuilder,
     prelude::{SessionConfig, SessionContext},
 };
@@ -99,12 +102,21 @@ struct Args {
 
     #[clap(long, help = "Enables console syntax highlighting")]
     color: bool,
+
+    #[cfg(feature = "tui")]
+    #[clap(long, help = "Enables terminal user interface")]
+    tui: bool,
 }
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
-    env_logger::init();
     let args = Args::parse();
+
+    #[cfg(feature = "tui")]
+    if args.tui {
+        return tui::tui_main().await;
+    }
+    env_logger::init();
 
     if !args.quiet {
         println!("Ballista CLI v{BALLISTA_CLI_VERSION}");
@@ -112,7 +124,7 @@ pub async fn main() -> Result<()> {
 
     if let Some(ref path) = args.data_path {
         let p = Path::new(path);
-        env::set_current_dir(p).unwrap();
+        env::set_current_dir(p)?;
     };
 
     let mut ballista_config =
