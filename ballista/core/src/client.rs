@@ -118,7 +118,7 @@ impl BallistaClient {
     /// the Arrow Flight protocol for compatibility, or a more efficient block-based transfer mechanism.
     /// The block-based transfer is optimized for performance and reduces computational overhead on the server.
     ///
-    /// This method to be used for direct connection to executor holding required shuffle partition
+    /// This method is to be used for direct connection to the executor holding the required shuffle partition.
     pub async fn fetch_partition(
         &mut self,
         executor_id: &str,
@@ -126,7 +126,7 @@ impl BallistaClient {
         path: &str,
         flight_transport: bool,
     ) -> BResult<SendableRecordBatchStream> {
-        let host = self.host.clone();
+        let host = self.host.to_owned();
         let port = self.port;
         self.fetch_partition_proxied(
             executor_id,
@@ -145,7 +145,7 @@ impl BallistaClient {
     /// the Arrow Flight protocol for compatibility, or a more efficient block-based transfer mechanism.
     /// The block-based transfer is optimized for performance and reduces computational overhead on the server.
     ///
-    /// This method to be used if the request may be proxied.
+    /// This method should be used if the request may be proxied.
     pub async fn fetch_partition_proxied(
         &mut self,
         executor_id: &str,
