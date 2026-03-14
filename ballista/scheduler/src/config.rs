@@ -190,6 +190,11 @@ pub struct Config {
         help = "The interval to check expired or dead executors"
     )]
     pub expire_dead_executor_interval_seconds: u64,
+
+    #[cfg(feature = "rest-api")]
+    /// Should the rest api be disabled
+    #[arg(long, default_value_t = false, help = "Should the rest api be disable")]
+    pub disable_rest: bool,
 }
 
 /// Configurations for the ballista scheduler of scheduling jobs and tasks
@@ -245,6 +250,9 @@ pub struct SchedulerConfig {
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
     /// Whether to use TLS when connecting to executors (for flight proxy)
     pub use_tls: bool,
+    #[cfg(feature = "rest-api")]
+    /// Should the rest api be disabled
+    pub disable_rest: bool,
 }
 
 impl Default for SchedulerConfig {
@@ -273,6 +281,8 @@ impl Default for SchedulerConfig {
             override_physical_codec: None,
             override_create_grpc_client_endpoint: None,
             use_tls: false,
+            #[cfg(feature = "rest-api")]
+            disable_rest: false,
         }
     }
 }
@@ -520,6 +530,8 @@ impl TryFrom<Config> for SchedulerConfig {
             override_session_builder: None,
             override_create_grpc_client_endpoint: None,
             use_tls: false,
+            #[cfg(feature = "rest-api")]
+            disable_rest: opt.disable_rest,
         };
 
         Ok(config)

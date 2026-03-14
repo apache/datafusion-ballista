@@ -123,7 +123,6 @@ pub async fn get_jobs<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    // TODO: Display last seen information in UI
     let state = &data_server.state;
 
     let jobs = state
