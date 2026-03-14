@@ -27,6 +27,7 @@ pub fn get_routes<
 ) -> Router {
     let router = Router::new()
         .route("/api/state", get(handlers::get_scheduler_state::<T, U>))
+        .route("/api/version", get(handlers::get_scheduler_state::<T, U>))
         .route("/api/executors", get(handlers::get_executors::<T, U>))
         .route("/api/jobs", get(handlers::get_jobs::<T, U>))
         .route(

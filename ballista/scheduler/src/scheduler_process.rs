@@ -18,6 +18,7 @@
 use crate::flight_proxy_service::BallistaFlightProxyService;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
+use axum::Json;
 use ballista_core::BALLISTA_VERSION;
 use ballista_core::error::BallistaError;
 use ballista_core::extension::BallistaConfigGrpcEndpoint;
@@ -130,14 +131,25 @@ pub async fn start_grpc_service<
     tonic_builder.add_service(ExternalScalerServer::new(scheduler.clone()));
 
     let tonic = tonic_builder.routes().into_axum_router();
-    let tonic = tonic.fallback(|| async { (StatusCode::NOT_FOUND, "404 - Not Found") });
+    // registering default handler for unpatched requests
+    let tonic = tonic.fallback(|| async {
+        (
+            StatusCode::NOT_FOUND,
+            Json(SchedulerErrorResponse {
+                reason: StatusCode::NOT_FOUND.canonical_reason(),
+                status_code: StatusCode::NOT_FOUND.as_u16(),
+            }),
+        )
+    });
 
     #[cfg(feature = "rest-api")]
-    let axum = get_routes(Arc::new(scheduler));
-    #[cfg(feature = "rest-api")]
-    let final_route = axum
-        .merge(tonic)
-        .into_make_service_with_connect_info::<SocketAddr>();
+    let final_route = if config.disable_rest {
+        tonic.into_make_service_with_connect_info::<SocketAddr>()
+    } else {
+        let axum = get_routes(Arc::new(scheduler));
+        axum.merge(tonic)
+            .into_make_service_with_connect_info::<SocketAddr>()
+    };
 
     #[cfg(not(feature = "rest-api"))]
     let final_route = tonic.into_make_service_with_connect_info::<SocketAddr>();
@@ -164,4 +176,10 @@ pub async fn start_server(
         create_scheduler::<LogicalPlanNode, PhysicalPlanNode>(cluster, config).await?;
 
     start_grpc_service(address, scheduler).await
+}
+
+#[derive(Debug, serde::Serialize)]
+struct SchedulerErrorResponse {
+    status_code: u16,
+    reason: Option<&'static str>,
 }
