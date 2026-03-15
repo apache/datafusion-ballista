@@ -69,7 +69,7 @@ pub struct Config {
         short = 's',
         long,
         default_value_t = ballista_core::config::TaskSchedulingPolicy::default(),
-        help = "The scheduling policy for the scheduler, possible values: pull-staged, push-staged. Default: push-staged"
+        help = "The scheduling policy used by the scheduler. Executor configuration must match with scheduler configured policy."
     )]
     pub scheduler_policy: ballista_core::config::TaskSchedulingPolicy,
     /// Event loop buffer size for high throughput systems.
