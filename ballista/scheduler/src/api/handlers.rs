@@ -43,6 +43,7 @@ struct SchedulerStateResponse {
     prometheus_support: bool,
     graphviz_support: bool,
     spark_support: bool,
+    scheduling_policy: String,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -104,6 +105,7 @@ pub async fn get_scheduler_state<
         prometheus_support: cfg!(feature = "prometheus-metrics"),
         graphviz_support: cfg!(feature = "graphviz-support"),
         spark_support: cfg!(feature = "spark-compat"),
+        scheduling_policy: data_server.state.config.scheduling_policy.to_string(),
     };
     Json(response)
 }
