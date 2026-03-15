@@ -363,7 +363,7 @@ pub async fn get_query_stages<
 
         Ok(Json(QueryStagesResponse { stages }))
     } else {
-        Ok(Json(QueryStagesResponse { stages: vec![] }))
+        Err(SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
     }
 }
 
