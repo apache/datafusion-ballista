@@ -10,6 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::scheduler_process::SchedulerErrorResponse;
 use crate::scheduler_server::SchedulerServer;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::execution_graph::ExecutionStage;
@@ -122,14 +123,13 @@ pub async fn get_jobs<
     U: AsExecutionPlan + Send + Sync + 'static,
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, SchedulerErrorResponse> {
     let state = &data_server.state;
 
-    let jobs = state
-        .task_manager
-        .get_jobs()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let jobs =
+        state.task_manager.get_jobs().await.map_err(|_| {
+            SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+        })?;
 
     let jobs: Vec<JobResponse> = jobs
         .iter()
@@ -165,17 +165,17 @@ pub async fn get_job<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path(job_id): Path<String>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, SchedulerErrorResponse> {
     let graph = data_server
         .state
         .task_manager
         .get_job_execution_graph(&job_id)
         .await
         .map_err(|err| {
-            tracing::error!("Error occurred while getting the execution graph for job '{job_id}': {err:?}");
-            StatusCode::INTERNAL_SERVER_ERROR
+            tracing::error!("Error occurred while getting the execution graph for job '{job_id}' reason: {err:?}");
+            SchedulerErrorResponse::with_error(StatusCode::INTERNAL_SERVER_ERROR, format!("Error occurred while getting the execution graph for job '{job_id}' reason: {}", err))
         })?
-        .ok_or(StatusCode::NOT_FOUND)?;
+        .ok_or_else(|| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))?;
     let stage_plan = format!("{:?}", graph);
     let job = graph.as_ref();
     let (plain_status, job_status) =
@@ -206,7 +206,7 @@ pub async fn cancel_job<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path(job_id): Path<String>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, SchedulerErrorResponse> {
     // 404 if the job doesn't exist
     let job_status = data_server
         .state
@@ -215,9 +215,12 @@ pub async fn cancel_job<
         .await
         .map_err(|err| {
             tracing::error!("Error getting job status: {err:?}");
-            StatusCode::INTERNAL_SERVER_ERROR
+            SchedulerErrorResponse::with_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Error getting job status: {}", err),
+            )
         })?
-        .ok_or(StatusCode::NOT_FOUND)?;
+        .ok_or_else(|| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))?;
 
     match &job_status.status {
         None | Some(Status::Queued(_)) | Some(Status::Running(_)) => {
@@ -228,11 +231,13 @@ pub async fn cancel_job<
                     tracing::error!(
                         "Error getting query stage event loop sender: {err:?}"
                     );
-                    StatusCode::INTERNAL_SERVER_ERROR
+                    SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
                 })?
                 .post_event(QueryStageSchedulerEvent::JobCancel(job_id))
                 .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                .map_err(|_| {
+                    SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+                })?;
 
             Ok((
                 StatusCode::OK,
@@ -273,13 +278,18 @@ pub async fn get_query_stages<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path(job_id): Path<String>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, SchedulerErrorResponse> {
     if let Some(graph) = data_server
         .state
         .task_manager
         .get_job_execution_graph(&job_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|e| {
+            SchedulerErrorResponse::with_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                e.to_string(),
+            )
+        })?
     {
         let stages = graph
             .as_ref()
@@ -408,16 +418,16 @@ pub async fn get_job_dot_graph<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path(job_id): Path<String>,
-) -> Result<String, StatusCode> {
+) -> Result<String, SchedulerErrorResponse> {
     if let Some(graph) = data_server
         .state
         .task_manager
         .get_job_execution_graph(&job_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR))?
     {
         ExecutionGraphDot::generate(graph.as_ref())
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            .map_err(|_| SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR))
     } else {
         Ok("Not Found".to_string())
     }
@@ -429,16 +439,16 @@ pub async fn get_query_stage_dot_graph<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path((job_id, stage_id)): Path<(String, usize)>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, SchedulerErrorResponse> {
     if let Some(graph) = data_server
         .state
         .task_manager
         .get_job_execution_graph(&job_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR))?
     {
         ExecutionGraphDot::generate_for_query_stage(graph.as_ref(), stage_id)
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            .map_err(|_| SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR))
     } else {
         Ok("Not Found".to_string())
     }
@@ -450,7 +460,7 @@ pub async fn get_job_svg_graph<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path(job_id): Path<String>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, SchedulerErrorResponse> {
     let dot = get_job_dot_graph(State(data_server.clone()), Path(job_id)).await?;
     match graphviz_rust::parse(&dot) {
         Ok(graph) => {
@@ -459,7 +469,9 @@ pub async fn get_job_svg_graph<
                 &mut PrinterContext::default(),
                 vec![CommandArg::Format(Format::Svg)],
             )
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(|_| {
+                SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+            })?;
 
             let svg = String::from_utf8_lossy(&result).to_string();
             Ok(Response::builder()
