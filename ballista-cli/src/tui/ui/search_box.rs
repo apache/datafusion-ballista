@@ -28,7 +28,7 @@ pub(crate) fn render_search_box(f: &mut Frame, area: Rect, app: &crate::tui::app
     };
 
     let display_text = if app.input_mode == crate::tui::app::InputMode::Edit {
-        let search_term = Span::from(format!("{}", app.search_term));
+        let search_term = Span::from(app.search_term.to_string());
         let cursor = Span::from("_").style(Style::default().bold().yellow());
         Line::from(vec![search_term, cursor])
     } else {
