@@ -39,6 +39,16 @@ use std::time::Duration;
 struct SchedulerStateResponse {
     started: u128,
     version: &'static str,
+    substrait_support: bool,
+    keda_support: bool,
+    prometheus_support: bool,
+    graphviz_support: bool,
+    spark_support: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct SchedulerVersionResponse {
+    version: &'static str,
 }
 #[derive(Debug, serde::Serialize)]
 pub struct ExecutorMetaResponse {
@@ -89,6 +99,18 @@ pub async fn get_scheduler_state<
 ) -> impl IntoResponse {
     let response = SchedulerStateResponse {
         started: data_server.start_time,
+        version: BALLISTA_VERSION,
+        substrait_support: cfg!(feature = "substrait"),
+        keda_support: cfg!(feature = "keda-scaler"),
+        prometheus_support: cfg!(feature = "prometheus-metrics"),
+        graphviz_support: cfg!(feature = "graphviz-support"),
+        spark_support: cfg!(feature = "spark-compat"),
+    };
+    Json(response)
+}
+
+pub async fn get_scheduler_version() -> impl IntoResponse {
+    let response = SchedulerVersionResponse {
         version: BALLISTA_VERSION,
     };
     Json(response)
