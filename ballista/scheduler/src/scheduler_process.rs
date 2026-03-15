@@ -163,7 +163,7 @@ pub async fn start_grpc_service<
             axum::routing::any(|| async {
                 SchedulerErrorResponse::with_error(
                     StatusCode::NOT_FOUND,
-                    "Rest api has been disabled at compile time".to_string(),
+                    "REST API has been disabled at compile time".to_string(),
                 )
             }),
         )
