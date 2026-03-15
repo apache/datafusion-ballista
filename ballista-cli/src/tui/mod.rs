@@ -78,10 +78,10 @@ pub async fn tui_main() -> Result<()> {
                             };
                     },
                     UiData::Metrics(metrics) => {
-                      app.metrics_data = MetricsData { metrics };
+                      app.metrics_data = MetricsData { metrics, table_state: app.metrics_data.table_state };
                     }
                     UiData::Jobs(jobs) => {
-                      app.jobs_data = JobsData { jobs };
+                      app.jobs_data = JobsData { jobs, table_state: app.jobs_data.table_state };
                     }
                   }
                 }

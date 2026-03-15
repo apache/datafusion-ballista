@@ -89,7 +89,7 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
 
     if !filtered_jobs.is_empty() {
         let mut scroll_state = ScrollbarState::new((filtered_jobs.len() - 1) * 2);
-        let mut table_state = TableState::default();
+        let mut table_state = app.jobs_data.table_state;
         render_jobs_table(f, rects[1], &filtered_jobs, &mut table_state);
         render_scrollbar(f, rects[1], &mut scroll_state);
     } else {
@@ -163,7 +163,6 @@ fn render_jobs_table(
     .block(Block::default().borders(Borders::all()))
     .header(header)
     .row_highlight_style(Style::default().bg(Color::Indexed(29)))
-    // .bg(self.colors.buffer_bg)
     .highlight_spacing(HighlightSpacing::Always);
     frame.render_stateful_widget(t, area, state);
 }

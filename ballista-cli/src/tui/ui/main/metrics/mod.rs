@@ -87,7 +87,7 @@ pub fn render_metrics(f: &mut Frame, area: Rect, app: &App) {
 
     if !filtered_metrics.is_empty() {
         let mut scroll_state = ScrollbarState::new((filtered_metrics.len() - 1) * 2);
-        let mut table_state = TableState::default().with_selected(0);
+        let mut table_state = app.metrics_data.table_state;
         render_metrics_table(f, rects[1], &filtered_metrics, &mut table_state);
         render_scrollbar(f, rects[1], &mut scroll_state);
     } else {
@@ -141,7 +141,6 @@ fn render_metrics_table(
             .style(Style::default().bg(color))
     });
 
-    let bar = " █ ";
     let t = Table::new(
         rows,
         [
@@ -152,16 +151,7 @@ fn render_metrics_table(
     )
     .block(Block::default().borders(Borders::all()))
     .header(header)
-    // .row_highlight_style(selected_row_style)
-    // .column_highlight_style(selected_col_style)
-    // .cell_highlight_style(selected_cell_style)
-    .highlight_symbol(Text::from(vec![
-        "".into(),
-        bar.into(),
-        bar.into(),
-        "".into(),
-    ]))
-    // .bg(self.colors.buffer_bg)
+    .row_highlight_style(Style::default().bg(Color::Indexed(29)))
     .highlight_spacing(HighlightSpacing::Always);
     frame.render_stateful_widget(t, area, state);
 }

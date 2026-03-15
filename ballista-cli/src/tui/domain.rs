@@ -16,6 +16,7 @@
 // under the License.
 
 use prometheus_parse::Sample;
+use ratatui::widgets::TableState;
 use serde::Deserialize;
 use std::str::FromStr;
 
@@ -63,11 +64,13 @@ pub struct Metric {
 #[derive(Clone, Debug)]
 pub struct MetricsData {
     pub metrics: Vec<Metric>,
+    pub table_state: TableState,
 }
 
 #[derive(Clone, Debug)]
 pub struct JobsData {
     pub jobs: Vec<Job>,
+    pub table_state: TableState,
 }
 
 impl FromStr for MetricsData {
@@ -93,7 +96,10 @@ impl FromStr for MetricsData {
             metrics.push(metric);
         }
 
-        Ok(MetricsData { metrics })
+        Ok(MetricsData {
+            metrics,
+            table_state: ratatui::widgets::TableState::default(), // dummy state that is ignored
+        })
     }
 }
 

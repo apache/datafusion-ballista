@@ -22,6 +22,7 @@ use crate::tui::{
 };
 use color_eyre::eyre::{Ok, Result};
 use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::widgets::TableState;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
@@ -68,9 +69,13 @@ impl App {
             input_mode: InputMode::View,
             search_term: String::new(),
             dashboard_data: DashboardData::new(),
-            jobs_data: JobsData { jobs: Vec::new() },
+            jobs_data: JobsData {
+                jobs: Vec::new(),
+                table_state: TableState::default(),
+            },
             metrics_data: MetricsData {
                 metrics: Vec::new(),
+                table_state: TableState::default(),
             },
             http_client: Arc::new(HttpClient::new(config)?),
         })
@@ -142,6 +147,20 @@ impl App {
                     || self.current_view == Views::Metrics =>
             {
                 self.input_mode = InputMode::Edit;
+            }
+            KeyCode::Down => {
+                if self.current_view == Views::Jobs {
+                    self.jobs_data.table_state.scroll_down_by(1);
+                } else if self.current_view == Views::Metrics {
+                    self.metrics_data.table_state.scroll_down_by(1);
+                }
+            }
+            KeyCode::Up => {
+                if self.current_view == Views::Jobs {
+                    self.jobs_data.table_state.scroll_up_by(1);
+                } else if self.current_view == Views::Metrics {
+                    self.metrics_data.table_state.scroll_up_by(1);
+                }
             }
             _ => {}
         }
