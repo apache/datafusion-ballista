@@ -193,7 +193,7 @@ pub struct Config {
 
     #[cfg(feature = "rest-api")]
     /// Should the rest api be disabled
-    #[arg(long, default_value_t = false, help = "Should the rest api be disable")]
+    #[arg(long, default_value_t = false, help = "Should the REST API be disabled")]
     pub disable_rest: bool,
 }
 
