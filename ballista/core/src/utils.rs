@@ -63,19 +63,23 @@ pub struct GrpcClientConfig {
     pub tcp_keepalive_seconds: u64,
     /// HTTP/2 keep-alive ping interval in seconds
     pub http2_keepalive_interval_seconds: u64,
+    /// Should client use tls
+    pub use_tls: bool,
+    /// Returns the maximum message size for gRPC clients in bytes.
+    pub max_message_size: usize,
 }
 
 impl From<&BallistaConfig> for GrpcClientConfig {
     fn from(config: &BallistaConfig) -> Self {
         Self {
-            connect_timeout_seconds: config.default_grpc_client_connect_timeout_seconds()
-                as u64,
-            timeout_seconds: config.default_grpc_client_timeout_seconds() as u64,
-            tcp_keepalive_seconds: config.default_grpc_client_tcp_keepalive_seconds()
-                as u64,
+            connect_timeout_seconds: config.grpc_client_connect_timeout_seconds() as u64,
+            timeout_seconds: config.grpc_client_timeout_seconds() as u64,
+            tcp_keepalive_seconds: config.grpc_client_tcp_keepalive_seconds() as u64,
             http2_keepalive_interval_seconds: config
-                .default_grpc_client_http2_keepalive_interval_seconds()
+                .grpc_client_http2_keepalive_interval_seconds()
                 as u64,
+            use_tls: config.client_use_tls(),
+            max_message_size: config.grpc_client_max_message_size(),
         }
     }
 }
@@ -87,6 +91,8 @@ impl Default for GrpcClientConfig {
             timeout_seconds: 20,
             tcp_keepalive_seconds: 3600,
             http2_keepalive_interval_seconds: 300,
+            use_tls: false,
+            max_message_size: 16 * 1024 * 1024,
         }
     }
 }
@@ -312,19 +318,19 @@ mod tests {
         // Verify the conversion picks up the right values
         assert_eq!(
             grpc_config.connect_timeout_seconds,
-            ballista_config.default_grpc_client_connect_timeout_seconds() as u64
+            ballista_config.grpc_client_connect_timeout_seconds() as u64
         );
         assert_eq!(
             grpc_config.timeout_seconds,
-            ballista_config.default_grpc_client_timeout_seconds() as u64
+            ballista_config.grpc_client_timeout_seconds() as u64
         );
         assert_eq!(
             grpc_config.tcp_keepalive_seconds,
-            ballista_config.default_grpc_client_tcp_keepalive_seconds() as u64
+            ballista_config.grpc_client_tcp_keepalive_seconds() as u64
         );
         assert_eq!(
             grpc_config.http2_keepalive_interval_seconds,
-            ballista_config.default_grpc_client_http2_keepalive_interval_seconds() as u64
+            ballista_config.grpc_client_http2_keepalive_interval_seconds() as u64
         );
     }
 
@@ -335,6 +341,8 @@ mod tests {
             timeout_seconds: 30,
             tcp_keepalive_seconds: 1800,
             http2_keepalive_interval_seconds: 150,
+            use_tls: false,
+            max_message_size: 16 * 1024 * 1024,
         };
         let result = create_grpc_client_endpoint("http://localhost:50051", Some(&config));
         assert!(result.is_ok());

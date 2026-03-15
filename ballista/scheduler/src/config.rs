@@ -68,8 +68,8 @@ pub struct Config {
     #[arg(
         short = 's',
         long,
-        default_value_t = ballista_core::config::TaskSchedulingPolicy::PushStaged,
-        help = "The scheduling policy for the scheduler, possible values: pull-staged, push-staged. Default: pull-staged"
+        default_value_t = ballista_core::config::TaskSchedulingPolicy::default(),
+        help = "The scheduling policy used by the scheduler. Executor configuration must match with scheduler configured policy."
     )]
     pub scheduler_policy: ballista_core::config::TaskSchedulingPolicy,
     /// Event loop buffer size for high throughput systems.
@@ -190,6 +190,15 @@ pub struct Config {
         help = "The interval to check expired or dead executors"
     )]
     pub expire_dead_executor_interval_seconds: u64,
+
+    #[cfg(feature = "rest-api")]
+    /// Should the rest api be disabled
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Should the REST API be disabled"
+    )]
+    pub disable_rest_api: bool,
 }
 
 /// Configurations for the ballista scheduler of scheduling jobs and tasks
@@ -245,6 +254,9 @@ pub struct SchedulerConfig {
     pub override_create_grpc_client_endpoint: Option<EndpointOverrideFn>,
     /// Whether to use TLS when connecting to executors (for flight proxy)
     pub use_tls: bool,
+    #[cfg(feature = "rest-api")]
+    /// Should the rest api be disabled
+    pub disable_rest_api: bool,
 }
 
 impl Default for SchedulerConfig {
@@ -273,6 +285,8 @@ impl Default for SchedulerConfig {
             override_physical_codec: None,
             override_create_grpc_client_endpoint: None,
             use_tls: false,
+            #[cfg(feature = "rest-api")]
+            disable_rest_api: false,
         }
     }
 }
@@ -520,6 +534,8 @@ impl TryFrom<Config> for SchedulerConfig {
             override_session_builder: None,
             override_create_grpc_client_endpoint: None,
             use_tls: false,
+            #[cfg(feature = "rest-api")]
+            disable_rest_api: opt.disable_rest_api,
         };
 
         Ok(config)

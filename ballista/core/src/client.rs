@@ -17,17 +17,11 @@
 
 //! Client API for sending requests to executors.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use std::{
-    convert::{TryFrom, TryInto},
-    task::{Context, Poll},
-};
-
 use crate::error::{BallistaError, Result as BResult};
+use crate::extension::BallistaConfigGrpcEndpoint;
+use crate::serde::protobuf;
 use crate::serde::scheduler::{Action, PartitionId};
-
+use crate::utils::create_grpc_client_endpoint;
 use arrow_flight;
 use arrow_flight::Ticket;
 use arrow_flight::utils::flight_data_to_arrow_batch;
@@ -43,21 +37,23 @@ use datafusion::arrow::{
 };
 use datafusion::error::DataFusionError;
 use datafusion::error::Result;
-
-use crate::extension::BallistaConfigGrpcEndpoint;
-use crate::serde::protobuf;
-
-use crate::utils::create_grpc_client_endpoint;
-
 use datafusion::physical_plan::{RecordBatchStream, SendableRecordBatchStream};
 use futures::{Stream, StreamExt};
 use log::{debug, warn};
 use prost::Message;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::{
+    convert::{TryFrom, TryInto},
+    task::{Context, Poll},
+};
 use tonic::{Code, Streaming};
 
 /// Client for interacting with Ballista executors.
 #[derive(Clone)]
 pub struct BallistaClient {
+    host: String,
+    port: u16,
     flight_client: FlightServiceClient<tonic::transport::channel::Channel>,
 }
 
@@ -109,7 +105,11 @@ impl BallistaClient {
 
         debug!("BallistaClient connected OK: {flight_client:?}");
 
-        Ok(Self { flight_client })
+        Ok(Self {
+            flight_client,
+            host: host.to_string(),
+            port,
+        })
     }
 
     /// Retrieves a partition from an executor.
@@ -117,13 +117,42 @@ impl BallistaClient {
     /// Depending on the value of the `flight_transport` parameter, this method will utilize either
     /// the Arrow Flight protocol for compatibility, or a more efficient block-based transfer mechanism.
     /// The block-based transfer is optimized for performance and reduces computational overhead on the server.
+    ///
+    /// This method is to be used for direct connection to the executor holding the required shuffle partition.
     pub async fn fetch_partition(
         &mut self,
         executor_id: &str,
         partition_id: &PartitionId,
         path: &str,
+        flight_transport: bool,
+    ) -> BResult<SendableRecordBatchStream> {
+        let host = self.host.to_owned();
+        let port = self.port;
+        self.fetch_partition_proxied(
+            executor_id,
+            partition_id,
+            &host,
+            port,
+            path,
+            flight_transport,
+        )
+        .await
+    }
+
+    /// Retrieves a partition from an executor.
+    ///
+    /// Depending on the value of the `flight_transport` parameter, this method will utilize either
+    /// the Arrow Flight protocol for compatibility, or a more efficient block-based transfer mechanism.
+    /// The block-based transfer is optimized for performance and reduces computational overhead on the server.
+    ///
+    /// This method should be used if the request may be proxied.
+    pub async fn fetch_partition_proxied(
+        &mut self,
+        executor_id: &str,
+        partition_id: &PartitionId,
         host: &str,
         port: u16,
+        path: &str,
         flight_transport: bool,
     ) -> BResult<SendableRecordBatchStream> {
         let action = Action::FetchPartition {
