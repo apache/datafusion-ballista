@@ -138,7 +138,7 @@ pub async fn start_grpc_service<
         tonic.fallback(|| async { SchedulerErrorResponse::new(StatusCode::NOT_FOUND) });
 
     #[cfg(feature = "rest-api")]
-    let final_route = if config.disable_rest {
+    let final_route = if config.disable_rest_api {
         tonic
             .route(
                 "/api/{*path}",

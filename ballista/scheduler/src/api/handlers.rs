@@ -126,10 +126,10 @@ pub async fn get_jobs<
 ) -> Result<impl IntoResponse, SchedulerErrorResponse> {
     let state = &data_server.state;
 
-    let jobs =
-        state.task_manager.get_jobs().await.map_err(|_| {
-            SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
-        })?;
+    let jobs = state.task_manager.get_jobs().await.map_err(|e| {
+        tracing::error!("Error occurred while getting jobs, reason: {e:?}");
+        SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+    })?;
 
     let jobs: Vec<JobResponse> = jobs
         .iter()
@@ -173,7 +173,7 @@ pub async fn get_job<
         .await
         .map_err(|err| {
             tracing::error!("Error occurred while getting the execution graph for job '{job_id}' reason: {err:?}");
-            SchedulerErrorResponse::with_error(StatusCode::INTERNAL_SERVER_ERROR, format!("Error occurred while getting the execution graph for job '{job_id}' reason: {}", err))
+            SchedulerErrorResponse::with_error(StatusCode::INTERNAL_SERVER_ERROR, format!("Error occurred while getting the execution graph for job '{job_id}'"))
         })?
         .ok_or_else(|| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))?;
     let stage_plan = format!("{:?}", graph);
@@ -285,9 +285,10 @@ pub async fn get_query_stages<
         .get_job_execution_graph(&job_id)
         .await
         .map_err(|e| {
+            tracing::error!("Error occurred while getting the query stages for job '{job_id}' reason: {e:?}");
             SchedulerErrorResponse::with_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                e.to_string(),
+                format!("Error occurred while getting the query stages for job '{job_id}'"),
             )
         })?
     {
@@ -424,12 +425,18 @@ pub async fn get_job_dot_graph<
         .task_manager
         .get_job_execution_graph(&job_id)
         .await
-        .map_err(|_| SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR))?
+        .map_err(|e| {
+            tracing::error!("Error occurred while getting the dot graph for job '{job_id}' reason: {e:?}");
+            SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+        })?
     {
         ExecutionGraphDot::generate(graph.as_ref())
-            .map_err(|_| SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR))
+            .map_err(|e|  {
+                tracing::error!("Error occurred while getting the dot graph for job '{job_id}' reason: {e:?}");
+                SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+            })
     } else {
-        Ok("Not Found".to_string())
+        Err(SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
     }
 }
 
@@ -450,7 +457,7 @@ pub async fn get_query_stage_dot_graph<
         ExecutionGraphDot::generate_for_query_stage(graph.as_ref(), stage_id)
             .map_err(|_| SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR))
     } else {
-        Ok("Not Found".to_string())
+        Err(SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
     }
 }
 #[cfg(feature = "graphviz-support")]
@@ -461,7 +468,7 @@ pub async fn get_job_svg_graph<
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path(job_id): Path<String>,
 ) -> Result<impl IntoResponse, SchedulerErrorResponse> {
-    let dot = get_job_dot_graph(State(data_server.clone()), Path(job_id)).await?;
+    let dot = get_job_dot_graph(State(data_server.clone()), Path(job_id.clone())).await?;
     match graphviz_rust::parse(&dot) {
         Ok(graph) => {
             let result = exec(
@@ -469,7 +476,8 @@ pub async fn get_job_svg_graph<
                 &mut PrinterContext::default(),
                 vec![CommandArg::Format(Format::Svg)],
             )
-            .map_err(|_| {
+            .map_err(|e| {
+                tracing::error!("Error occurred while getting job svg graph for job '{job_id}' reason: {e:?}");
                 SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
             })?;
 
@@ -479,10 +487,10 @@ pub async fn get_job_svg_graph<
                 .body(svg)
                 .unwrap())
         }
-        Err(_) => Ok(Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .body("Cannot parse graph".to_string())
-            .unwrap()),
+        Err(e) => Err(SchedulerErrorResponse::with_error(
+            StatusCode::BAD_REQUEST,
+            e.to_string(),
+        )),
     }
 }
 

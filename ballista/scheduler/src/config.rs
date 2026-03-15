@@ -193,8 +193,12 @@ pub struct Config {
 
     #[cfg(feature = "rest-api")]
     /// Should the rest api be disabled
-    #[arg(long, default_value_t = false, help = "Should the REST API be disabled")]
-    pub disable_rest: bool,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Should the REST API be disabled"
+    )]
+    pub disable_rest_api: bool,
 }
 
 /// Configurations for the ballista scheduler of scheduling jobs and tasks
@@ -252,7 +256,7 @@ pub struct SchedulerConfig {
     pub use_tls: bool,
     #[cfg(feature = "rest-api")]
     /// Should the rest api be disabled
-    pub disable_rest: bool,
+    pub disable_rest_api: bool,
 }
 
 impl Default for SchedulerConfig {
@@ -282,7 +286,7 @@ impl Default for SchedulerConfig {
             override_create_grpc_client_endpoint: None,
             use_tls: false,
             #[cfg(feature = "rest-api")]
-            disable_rest: false,
+            disable_rest_api: false,
         }
     }
 }
@@ -531,7 +535,7 @@ impl TryFrom<Config> for SchedulerConfig {
             override_create_grpc_client_endpoint: None,
             use_tls: false,
             #[cfg(feature = "rest-api")]
-            disable_rest: opt.disable_rest,
+            disable_rest_api: opt.disable_rest_api,
         };
 
         Ok(config)
