@@ -17,7 +17,6 @@
 
 #![doc = include_str ! ("../README.md")]
 #![warn(missing_docs)]
-#[cfg(feature = "rest-api")]
 /// REST API endpoints for scheduler operations.
 pub mod api;
 /// Cluster management and executor coordination.

@@ -10,11 +10,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::scheduler_process::SchedulerErrorResponse;
-use crate::scheduler_server::SchedulerServer;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::execution_graph::ExecutionStage;
 use crate::state::execution_graph_dot::ExecutionGraphDot;
+use crate::{api::SchedulerErrorResponse, scheduler_server::SchedulerServer};
 use axum::{
     Json,
     extract::{Path, State},

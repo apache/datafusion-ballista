@@ -15,11 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::api::SchedulerErrorResponse;
 use crate::flight_proxy_service::BallistaFlightProxyService;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
-use axum::Json;
-use axum::response::{IntoResponse, Response};
 use ballista_core::BALLISTA_VERSION;
 use ballista_core::error::BallistaError;
 use ballista_core::extension::BallistaConfigGrpcEndpoint;
@@ -191,40 +190,4 @@ pub async fn start_server(
         create_scheduler::<LogicalPlanNode, PhysicalPlanNode>(cluster, config).await?;
 
     start_grpc_service(address, scheduler).await
-}
-
-#[derive(Debug, serde::Serialize)]
-pub(crate) struct SchedulerErrorResponse {
-    #[serde(skip)]
-    status_code: StatusCode,
-    http_code: u16,
-    reason: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-}
-
-impl SchedulerErrorResponse {
-    pub(crate) fn new(status_code: StatusCode) -> Self {
-        Self {
-            status_code,
-            reason: status_code.canonical_reason(),
-            http_code: status_code.as_u16(),
-            error: None,
-        }
-    }
-    pub(crate) fn with_error(status_code: StatusCode, error: String) -> Self {
-        Self {
-            status_code,
-            reason: status_code.canonical_reason(),
-            http_code: status_code.as_u16(),
-            error: Some(error),
-        }
-    }
-}
-
-impl IntoResponse for SchedulerErrorResponse {
-    fn into_response(self) -> Response {
-        let status = self.status_code;
-        (status, Json(self)).into_response()
-    }
 }
