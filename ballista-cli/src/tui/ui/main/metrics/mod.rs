@@ -51,6 +51,7 @@ pub async fn load_metrics_data(app: &App) -> TuiResult<()> {
                 .send(Event::DataLoaded {
                     data: UiData::Metrics(metrics),
                 })
+                .await
                 .map_err(TuiError::SendError)?;
         }
         None => {

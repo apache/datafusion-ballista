@@ -51,7 +51,7 @@ pub async fn tui_main() -> Result<()> {
     let mut app = App::new(config)?;
     let mut events = EventHandler::new(Duration::from_millis(2000));
 
-    let (app_tx, mut app_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (app_tx, mut app_rx) = tokio::sync::mpsc::channel(16);
     app.set_event_tx(app_tx);
     let _ = crate::tui::ui::load_dashboard_data(&app).await;
 

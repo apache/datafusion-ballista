@@ -50,6 +50,7 @@ pub async fn load_jobs_data(app: &App) -> TuiResult<()> {
                 .send(Event::DataLoaded {
                     data: UiData::Jobs(jobs),
                 })
+                .await
                 .map_err(TuiError::SendError)?;
         }
         None => {

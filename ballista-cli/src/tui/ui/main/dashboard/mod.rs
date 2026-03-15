@@ -83,6 +83,7 @@ pub async fn load_dashboard_data(app: &App) -> TuiResult<()> {
                 .send(Event::DataLoaded {
                     data: UiData::Dashboard(scheduler_state, executors_data, jobs_data),
                 })
+                .await
                 .map_err(TuiError::SendError)?;
         }
         None => {

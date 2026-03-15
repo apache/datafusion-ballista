@@ -23,7 +23,7 @@ use crate::tui::{
 use color_eyre::eyre::{Ok, Result};
 use crossterm::event::{KeyCode, KeyEvent};
 use std::sync::Arc;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 
 use crate::tui::http_client::HttpClient;
 
@@ -42,7 +42,7 @@ pub(crate) enum InputMode {
 
 pub(crate) struct App {
     pub should_quit: bool,
-    pub event_tx: Option<UnboundedSender<Event>>,
+    pub event_tx: Option<Sender<Event>>,
     pub current_view: Views,
 
     pub dashboard_data: DashboardData,
@@ -80,13 +80,18 @@ impl App {
         self.dashboard_data.scheduler_state.is_some()
     }
 
-    pub fn set_event_tx(&mut self, tx: UnboundedSender<Event>) {
+    pub fn set_event_tx(&mut self, tx: Sender<Event>) {
         self.event_tx = Some(tx);
-        // self.load_data();
     }
 
     pub async fn on_tick(&mut self) {
-        self.load_dashboard_data().await;
+        if self.current_view == Views::Dashboard {
+            self.load_dashboard_data().await;
+        } else if self.current_view == Views::Jobs {
+            self.load_jobs_data().await;
+        } else if self.current_view == Views::Metrics {
+            self.load_metrics_data().await;
+        }
     }
 
     pub async fn on_key(&mut self, key: KeyEvent) -> Result<()> {
