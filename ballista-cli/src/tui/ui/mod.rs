@@ -17,6 +17,7 @@
 
 mod footer;
 mod header;
+mod help_overlay;
 mod main;
 mod search_box;
 
@@ -28,9 +29,6 @@ use main::{render_dashboard, render_jobs, render_metrics};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 pub(crate) fn render(f: &mut Frame, app: &App) {
@@ -49,7 +47,7 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
 
     // Overlay help if active
     if app.show_help {
-        render_help_overlay(f);
+        help_overlay::render_help_overlay(f);
     }
 }
 
@@ -63,56 +61,9 @@ fn render_main_view(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn render_help_overlay(f: &mut Frame) {
-    let area = centered_rect(25, 35, f.area());
-
-    f.render_widget(Clear, area);
-
-    let help_text = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            "KEYBOARD SHORTCUTS",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "  Navigation",
-            Style::default().fg(Color::Yellow),
-        )]),
-        Line::from("  d       Show Dashboard"),
-        Line::from("  j       Show Jobs"),
-        Line::from("  m       Show Metrics"),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "  General",
-            Style::default().fg(Color::Yellow),
-        )]),
-        Line::from("  ?/h       Show this help"),
-        Line::from("  q/Esc     Quit"),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Press any key to close",
-            Style::default().fg(Color::DarkGray),
-        )),
-    ];
-
-    let block = Block::default()
-        .title(" Help ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
-
-    let para = Paragraph::new(help_text)
-        .block(block)
-        .wrap(Wrap { trim: false });
-
-    f.render_widget(para, area);
-}
-
 // Helper functions
 
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+pub(crate) fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
