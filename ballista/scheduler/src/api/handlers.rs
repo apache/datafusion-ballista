@@ -10,10 +10,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::scheduler_server::SchedulerServer;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 use crate::state::execution_graph::ExecutionStage;
 use crate::state::execution_graph_dot::ExecutionGraphDot;
+use crate::{api::SchedulerErrorResponse, scheduler_server::SchedulerServer};
 use axum::{
     Json,
     extract::{Path, State},
@@ -37,6 +37,19 @@ use std::time::Duration;
 #[derive(Debug, serde::Serialize)]
 struct SchedulerStateResponse {
     started: u128,
+    version: &'static str,
+    substrait_support: bool,
+    keda_support: bool,
+    prometheus_support: bool,
+    graphviz_support: bool,
+    spark_support: bool,
+    scheduling_policy: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    advertise_flight_sql_endpoint: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct SchedulerVersionResponse {
     version: &'static str,
 }
 #[derive(Debug, serde::Serialize)]
@@ -89,6 +102,24 @@ pub async fn get_scheduler_state<
     let response = SchedulerStateResponse {
         started: data_server.start_time,
         version: BALLISTA_VERSION,
+        substrait_support: cfg!(feature = "substrait"),
+        keda_support: cfg!(feature = "keda-scaler"),
+        prometheus_support: cfg!(feature = "prometheus-metrics"),
+        graphviz_support: cfg!(feature = "graphviz-support"),
+        spark_support: cfg!(feature = "spark-compat"),
+        scheduling_policy: data_server.state.config.scheduling_policy.to_string(),
+        advertise_flight_sql_endpoint: data_server
+            .state
+            .config
+            .advertise_flight_sql_endpoint
+            .clone(),
+    };
+    Json(response)
+}
+
+pub async fn get_scheduler_version() -> impl IntoResponse {
+    let response = SchedulerVersionResponse {
+        version: BALLISTA_VERSION,
     };
     Json(response)
 }
@@ -122,15 +153,13 @@ pub async fn get_jobs<
     U: AsExecutionPlan + Send + Sync + 'static,
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
-) -> Result<impl IntoResponse, StatusCode> {
-    // TODO: Display last seen information in UI
+) -> Result<impl IntoResponse, SchedulerErrorResponse> {
     let state = &data_server.state;
 
-    let jobs = state
-        .task_manager
-        .get_jobs()
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let jobs = state.task_manager.get_jobs().await.map_err(|e| {
+        tracing::error!("Error occurred while getting jobs, reason: {e:?}");
+        SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+    })?;
 
     let jobs: Vec<JobResponse> = jobs
         .iter()
@@ -166,17 +195,17 @@ pub async fn get_job<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path(job_id): Path<String>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, SchedulerErrorResponse> {
     let graph = data_server
         .state
         .task_manager
         .get_job_execution_graph(&job_id)
         .await
         .map_err(|err| {
-            tracing::error!("Error occurred while getting the execution graph for job '{job_id}': {err:?}");
-            StatusCode::INTERNAL_SERVER_ERROR
+            tracing::error!("Error occurred while getting the execution graph for job '{job_id}' reason: {err:?}");
+            SchedulerErrorResponse::with_error(StatusCode::INTERNAL_SERVER_ERROR, format!("Error occurred while getting the execution graph for job '{job_id}'"))
         })?
-        .ok_or(StatusCode::NOT_FOUND)?;
+        .ok_or_else(|| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))?;
     let stage_plan = format!("{:?}", graph);
     let job = graph.as_ref();
     let (plain_status, job_status) =
@@ -207,7 +236,7 @@ pub async fn cancel_job<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path(job_id): Path<String>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, SchedulerErrorResponse> {
     // 404 if the job doesn't exist
     let job_status = data_server
         .state
@@ -216,9 +245,12 @@ pub async fn cancel_job<
         .await
         .map_err(|err| {
             tracing::error!("Error getting job status: {err:?}");
-            StatusCode::INTERNAL_SERVER_ERROR
+            SchedulerErrorResponse::with_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Error getting job status: {err}"),
+            )
         })?
-        .ok_or(StatusCode::NOT_FOUND)?;
+        .ok_or_else(|| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))?;
 
     match &job_status.status {
         None | Some(Status::Queued(_)) | Some(Status::Running(_)) => {
@@ -229,11 +261,13 @@ pub async fn cancel_job<
                     tracing::error!(
                         "Error getting query stage event loop sender: {err:?}"
                     );
-                    StatusCode::INTERNAL_SERVER_ERROR
+                    SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
                 })?
                 .post_event(QueryStageSchedulerEvent::JobCancel(job_id))
                 .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                .map_err(|_| {
+                    SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+                })?;
 
             Ok((
                 StatusCode::OK,
@@ -274,13 +308,19 @@ pub async fn get_query_stages<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path(job_id): Path<String>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, SchedulerErrorResponse> {
     if let Some(graph) = data_server
         .state
         .task_manager
         .get_job_execution_graph(&job_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|e| {
+            tracing::error!("Error occurred while getting the query stages for job '{job_id}' reason: {e:?}");
+            SchedulerErrorResponse::with_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Error occurred while getting the query stages for job '{job_id}'"),
+            )
+        })?
     {
         let stages = graph
             .as_ref()
@@ -332,7 +372,7 @@ pub async fn get_query_stages<
 
         Ok(Json(QueryStagesResponse { stages }))
     } else {
-        Ok(Json(QueryStagesResponse { stages: vec![] }))
+        Err(SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
     }
 }
 
@@ -409,18 +449,24 @@ pub async fn get_job_dot_graph<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path(job_id): Path<String>,
-) -> Result<String, StatusCode> {
+) -> Result<String, SchedulerErrorResponse> {
     if let Some(graph) = data_server
         .state
         .task_manager
         .get_job_execution_graph(&job_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|e| {
+            tracing::error!("Error occurred while getting the dot graph for job '{job_id}' reason: {e:?}");
+            SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+        })?
     {
         ExecutionGraphDot::generate(graph.as_ref())
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            .map_err(|e|  {
+                tracing::error!("Error occurred while getting the dot graph for job '{job_id}' reason: {e:?}");
+                SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+            })
     } else {
-        Ok("Not Found".to_string())
+        Err(SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
     }
 }
 
@@ -430,18 +476,18 @@ pub async fn get_query_stage_dot_graph<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path((job_id, stage_id)): Path<(String, usize)>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, SchedulerErrorResponse> {
     if let Some(graph) = data_server
         .state
         .task_manager
         .get_job_execution_graph(&job_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR))?
     {
         ExecutionGraphDot::generate_for_query_stage(graph.as_ref(), stage_id)
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            .map_err(|_| SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR))
     } else {
-        Ok("Not Found".to_string())
+        Err(SchedulerErrorResponse::new(StatusCode::NOT_FOUND))
     }
 }
 #[cfg(feature = "graphviz-support")]
@@ -451,8 +497,8 @@ pub async fn get_job_svg_graph<
 >(
     State(data_server): State<Arc<SchedulerServer<T, U>>>,
     Path(job_id): Path<String>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let dot = get_job_dot_graph(State(data_server.clone()), Path(job_id)).await?;
+) -> Result<impl IntoResponse, SchedulerErrorResponse> {
+    let dot = get_job_dot_graph(State(data_server.clone()), Path(job_id.clone())).await?;
     match graphviz_rust::parse(&dot) {
         Ok(graph) => {
             let result = exec(
@@ -460,7 +506,10 @@ pub async fn get_job_svg_graph<
                 &mut PrinterContext::default(),
                 vec![CommandArg::Format(Format::Svg)],
             )
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(|e| {
+                tracing::error!("Error occurred while getting job svg graph for job '{job_id}' reason: {e:?}");
+                SchedulerErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR)
+            })?;
 
             let svg = String::from_utf8_lossy(&result).to_string();
             Ok(Response::builder()
@@ -468,10 +517,10 @@ pub async fn get_job_svg_graph<
                 .body(svg)
                 .unwrap())
         }
-        Err(_) => Ok(Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .body("Cannot parse graph".to_string())
-            .unwrap()),
+        Err(e) => Err(SchedulerErrorResponse::with_error(
+            StatusCode::BAD_REQUEST,
+            e.to_string(),
+        )),
     }
 }
 

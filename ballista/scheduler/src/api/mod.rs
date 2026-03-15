@@ -10,48 +10,58 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(feature = "rest-api")]
 mod handlers;
+#[cfg(feature = "rest-api")]
+mod routes;
+#[cfg(feature = "rest-api")]
+pub use routes::get_routes;
 
-use crate::scheduler_server::SchedulerServer;
-use axum::{Router, routing::get};
-use datafusion_proto::logical_plan::AsLogicalPlan;
-use datafusion_proto::physical_plan::AsExecutionPlan;
-use std::sync::Arc;
+use axum::response::{IntoResponse, Response};
+use axum::{Json, Router};
+use http::StatusCode;
 
-/// All routes configured for rest-api.
-pub fn get_routes<
-    T: AsLogicalPlan + Clone + Send + Sync + 'static,
-    U: AsExecutionPlan + Send + Sync + 'static,
->(
-    scheduler_server: Arc<SchedulerServer<T, U>>,
-) -> Router {
-    let router = Router::new()
-        .route("/api/state", get(handlers::get_scheduler_state::<T, U>))
-        .route("/api/executors", get(handlers::get_executors::<T, U>))
-        .route("/api/jobs", get(handlers::get_jobs::<T, U>))
-        .route(
-            "/api/job/{job_id}",
-            get(handlers::get_job::<T, U>).patch(handlers::cancel_job::<T, U>),
-        )
-        .route(
-            "/api/job/{job_id}/stages",
-            get(handlers::get_query_stages::<T, U>),
-        )
-        .route(
-            "/api/job/{job_id}/dot",
-            get(handlers::get_job_dot_graph::<T, U>),
-        )
-        .route(
-            "/api/job/{job_id}/stage/{stage_id}/dot",
-            get(handlers::get_query_stage_dot_graph::<T, U>),
-        )
-        .route("/api/metrics", get(handlers::get_scheduler_metrics::<T, U>));
+pub(super) fn route_disabled(reason: String) -> Router {
+    Router::new().route(
+        "/api/{*path}",
+        axum::routing::any(|| async {
+            SchedulerErrorResponse::with_error(StatusCode::NOT_FOUND, reason)
+        }),
+    )
+}
 
-    #[cfg(feature = "graphviz-support")]
-    let router = router.route(
-        "/api/job/{job_id}/dot_svg",
-        get(handlers::get_job_svg_graph::<T, U>),
-    );
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct SchedulerErrorResponse {
+    #[serde(skip)]
+    status_code: StatusCode,
+    http_code: u16,
+    reason: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
 
-    router.with_state(scheduler_server)
+impl SchedulerErrorResponse {
+    pub(crate) fn new(status_code: StatusCode) -> Self {
+        Self {
+            status_code,
+            reason: status_code.canonical_reason(),
+            http_code: status_code.as_u16(),
+            error: None,
+        }
+    }
+    pub(crate) fn with_error(status_code: StatusCode, error: String) -> Self {
+        Self {
+            status_code,
+            reason: status_code.canonical_reason(),
+            http_code: status_code.as_u16(),
+            error: Some(error),
+        }
+    }
+}
+
+impl IntoResponse for SchedulerErrorResponse {
+    fn into_response(self) -> Response {
+        let status = self.status_code;
+        (status, Json(self)).into_response()
+    }
 }
