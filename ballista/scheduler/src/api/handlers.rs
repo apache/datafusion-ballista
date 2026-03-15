@@ -217,7 +217,7 @@ pub async fn cancel_job<
             tracing::error!("Error getting job status: {err:?}");
             SchedulerErrorResponse::with_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Error getting job status: {}", err),
+                format!("Error getting job status: {err}"),
             )
         })?
         .ok_or_else(|| SchedulerErrorResponse::new(StatusCode::NOT_FOUND))?;
