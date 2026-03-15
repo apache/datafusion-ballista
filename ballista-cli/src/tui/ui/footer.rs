@@ -35,7 +35,7 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         if app.current_view == Views::Jobs {
             key_bindings.push(Span::from("[/] Search jobs, "));
         } else if app.current_view == Views::Metrics {
-            // key_bindings.push(Span::from("[/] Search metrics, "));
+            key_bindings.push(Span::from("[/] Search metrics, "));
         }
         key_bindings.push(Span::from("[?/h] Help, "));
         key_bindings.push(Span::from("[q/Esc] Quit"));
