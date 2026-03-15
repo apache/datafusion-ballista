@@ -482,6 +482,9 @@ pub enum TaskSchedulingPolicy {
     /// Pull-based scheduling works in a similar way to Apache Spark
     PullStaged,
     /// push-based scheduling can result in lower latency.
+    // scheduler & executor cli configuration to be updated
+    // if we change default value, as they state which policy
+    // is default.
     #[default]
     PushStaged,
 }
