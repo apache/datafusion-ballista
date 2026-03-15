@@ -17,9 +17,18 @@ mod routes;
 #[cfg(feature = "rest-api")]
 pub use routes::get_routes;
 
-use axum::Json;
 use axum::response::{IntoResponse, Response};
+use axum::{Json, Router};
 use http::StatusCode;
+
+pub(super) fn route_disabled(reason: String) -> Router {
+    Router::new().route(
+        "/api/{*path}",
+        axum::routing::any(|| async {
+            SchedulerErrorResponse::with_error(StatusCode::NOT_FOUND, reason)
+        }),
+    )
+}
 
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct SchedulerErrorResponse {

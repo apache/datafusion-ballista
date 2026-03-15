@@ -18,6 +18,15 @@
 use crate::api::SchedulerErrorResponse;
 use crate::flight_proxy_service::BallistaFlightProxyService;
 
+#[cfg(feature = "rest-api")]
+use crate::api::get_routes;
+use crate::api::route_disabled;
+use crate::cluster::BallistaCluster;
+use crate::config::SchedulerConfig;
+use crate::metrics::default_metrics_collector;
+use crate::scheduler_server::SchedulerServer;
+#[cfg(feature = "keda-scaler")]
+use crate::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::BALLISTA_VERSION;
 use ballista_core::error::BallistaError;
@@ -33,17 +42,6 @@ use http::StatusCode;
 use log::info;
 use std::{net::SocketAddr, sync::Arc};
 use tonic::service::RoutesBuilder;
-
-#[cfg(feature = "rest-api")]
-use crate::api::get_routes;
-use crate::cluster::BallistaCluster;
-use crate::config::SchedulerConfig;
-
-use crate::metrics::default_metrics_collector;
-use crate::scheduler_server::SchedulerServer;
-#[cfg(feature = "keda-scaler")]
-use crate::scheduler_server::externalscaler::external_scaler_server::ExternalScalerServer;
-
 /// Creates as initialized scheduler service
 /// without exposing it as a grpc service
 pub async fn create_scheduler<
@@ -139,15 +137,9 @@ pub async fn start_grpc_service<
     #[cfg(feature = "rest-api")]
     let final_route = if config.disable_rest_api {
         tonic
-            .route(
-                "/api/{*path}",
-                axum::routing::any(|| async {
-                    SchedulerErrorResponse::with_error(
-                        StatusCode::NOT_FOUND,
-                        "REST API has been disabled at startup".to_string(),
-                    )
-                }),
-            )
+            .merge(route_disabled(
+                "REST API has been disabled at startup".to_string(),
+            ))
             .into_make_service_with_connect_info::<SocketAddr>()
     } else {
         let axum = get_routes(Arc::new(scheduler));
@@ -157,15 +149,9 @@ pub async fn start_grpc_service<
 
     #[cfg(not(feature = "rest-api"))]
     let final_route = tonic
-        .route(
-            "/api/{*path}",
-            axum::routing::any(|| async {
-                SchedulerErrorResponse::with_error(
-                    StatusCode::NOT_FOUND,
-                    "REST API has been disabled at compile time".to_string(),
-                )
-            }),
-        )
+        .merge(route_disabled(
+            "REST API has been disabled at compile time".to_string(),
+        ))
         .into_make_service_with_connect_info::<SocketAddr>();
 
     let listener = tokio::net::TcpListener::bind(&address)
