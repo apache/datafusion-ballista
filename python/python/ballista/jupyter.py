@@ -55,7 +55,7 @@ import time
 import threading
 
 try:
-    from IPython.core.magic import Magics, magics_class, line_magic, cell_magic
+    from IPython.core.magic import Magics, magics_class, line_magic, cell_magic, line_cell_magic
     from IPython.display import display, HTML
 
     IPYTHON_AVAILABLE = True
@@ -174,80 +174,90 @@ class BallistaMagics(Magics):
             return self._show_help()
         else:
             return f"Unknown command: {cmd}. Use '%ballista help' for available commands."
-
+        
     @line_magic
-    def sql(self, line: str) -> Optional[DistributedDataFrame]:
-        """
-        Execute a SQL query (line magic).
+    def register(self, line: str) -> Optional[str]:
+        """Register a new table"""
+        if not line:
+            return "You should provide file extension and table name to register"
+        elif self._ctx is None:
+            raise BallistaConnectionError(
+                "Not connected to a Ballista cluster. "
+                "Use: %ballista connect df://host:port"
+            )
+        else:
+            args = line.strip().split()
+            file_type = args[0]
+            if len(args) < 2:
+                return f"You should provide table name for this .{file_type} file"
+            table_name = args[1]
+            if len(args) < 3:
+                return f"You should provide path to your file"
+            file_name = args[2]
 
-        Usage:
-            %sql SELECT COUNT(*) FROM my_table
+            if file_type == "parquet":
+                self._ctx.register_parquet(table_name, file_name)
+            elif file_type == "csv":
+                self._ctx.register_csv(table_name, file_name)
+            else:
+                raise NotImplemented("Currently not supporting the inserted file format")
 
-        The result is returned as a DataFrame and also stored in the
-        variable '_' for further use.
-        """
-        if not line.strip():
-            return None
+    @line_cell_magic 
+    def sql(self, line: str, cell=None) -> Optional[DistributedDataFrame]:
+        """ 
+        Execute a SQL query (both line and cell magic).
 
-        return self._execute_sql(line.strip())
-
-    @cell_magic
-    def sql(self, line: str, cell: str) -> Optional[DistributedDataFrame]:
-        """
-        Execute a SQL query (cell magic).
-
-        Usage:
-            %%sql
-            SELECT
-                customer_id,
-                SUM(amount) as total
-            FROM orders
-            GROUP BY customer_id
-            ORDER BY total DESC
-            LIMIT 10
-
-        Optional line arguments:
-            %%sql --no-display      - Execute without displaying results
-            %%sql --limit 100       - Limit displayed rows (default: 50)
-            %%sql result_var        - Store result in specified variable
+        Two cases possible: with cell or without cell
 
         Examples:
-            %%sql my_result
-            SELECT * FROM orders WHERE status = 'pending'
+        1. Without a cell (line_magic)
+            %sql SELECT * FROM test_table
+        2. With a cell (cell_magic)
+            %%sql --no-display
+            SELECT
+                id,
+                bool_col,
+                tinyint_col
+            FROM test_data_v1
+            WHERE id > 2
+            ORDER BY id
+            LIMIT 5      
         """
-        # Parse line arguments
-        args = line.strip().split()
-        display_results = True
-        limit = 50
-        var_name = None
+        if not cell:
+            return self._execute_sql(line.strip()) if line.strip() else None
+        else:
+            args = line.strip().split()
+            display_results = True
+            limit = 50
+            var_name = None
 
-        i = 0
-        while i < len(args):
-            if args[i] == "--no-display":
-                display_results = False
-            elif args[i] == "--limit" and i + 1 < len(args):
-                try:
-                    limit = int(args[i + 1])
-                    i += 1
-                except ValueError:
-                    pass
-            elif not args[i].startswith("--"):
-                var_name = args[i]
-            i += 1
+            i = 0
+            while i < len(args):
+                if args[i] == "--no-display":
+                    display_results = False
+                elif args[i] == "--limit" and i + 1 < len(args):
+                    try:
+                        limit = int(args[i + 1])
+                        i += 1
+                    except ValueError:
+                        pass
+                elif not args[i].startswith("--"):
+                    var_name = args[i]
+                i += 1
 
-        query = cell.strip()
-        if not query:
-            return None
+            query = cell.strip()
+            if not query:
+                return None
 
-        result = self._execute_sql(query, display_results=display_results, limit=limit)
+            result = self._execute_sql(query, display_results=display_results, limit=limit)
 
-        # Store in user namespace if variable name provided
-        if var_name and self.shell is not None:
-            self.shell.user_ns[var_name] = result
+            # Store in user namespace if variable name provided
+            if var_name and self.shell is not None:
+                self.shell.user_ns[var_name] = result
 
-        return result
+            return result
 
-    def _connect(self, address: str) -> str:
+    def _connect(self, address: str) -> Optional[str]:
         """Connect to a Ballista cluster."""
         if not address:
             return "Usage: %ballista connect df://host:port"
@@ -259,13 +269,19 @@ class BallistaMagics(Magics):
         try:
             self._ctx = BallistaSessionContext(address)
             self._address = address
-            return f"✓ Connected to Ballista cluster at {address}"
+            if IPYTHON_AVAILABLE:
+                display(HTML(f"✓ Connected to Ballista cluster at {address}"))
+            else:
+                return f"✓ Connected to Ballista cluster at {address}"
         except Exception as e:
             self._ctx = None
             self._address = None
-            return f"✗ Failed to connect to {address}: {e}"
+            if IPYTHON_AVAILABLE:
+                display(HTML(f"✗ Failed to connect to {address}: {e}"))
+            else:
+                return f"✗ Failed to connect to {address}: {e}"
 
-    def _disconnect(self) -> str:
+    def _disconnect(self) -> Optional[str]:
         """Disconnect from the Ballista cluster."""
         if not self.is_connected:
             return "Not connected to any cluster."
@@ -274,9 +290,12 @@ class BallistaMagics(Magics):
         self._ctx = None
         self._address = None
         self._last_result = None
-        return f"✓ Disconnected from {address}"
+        if IPYTHON_AVAILABLE:
+            display(HTML(f"✓ Disconnected from {address}"))
+        else:
+            return f"✓ Disconnected from {address}"
 
-    def _status(self) -> str:
+    def _status(self) -> Optional[str]:
         """Show connection status."""
         if not self.is_connected:
             return "Status: Not connected\n\nUse '%ballista connect df://host:port' to connect."
@@ -291,25 +310,45 @@ class BallistaMagics(Magics):
         if self._last_result is not None:
             status_lines.append("Last result: Available (access via '_' or '_last_result')")
 
-        return "\n".join(status_lines)
+        def _format_html_status_output(line: str) -> str:
+            name, value = line.split(":", 1)
+            return f"<p><strong>{name}:</strong> {value.strip()}</p>"
 
+        html = "".join(_format_html_status_output(line) for line in status_lines)
+        if IPYTHON_AVAILABLE:
+            display(HTML(html))
+        else:
+            print("\n".join(status_lines))
+            
     def _tables(self) -> Optional[str]:
         """List all registered tables."""
         try:
-            # Get table names from the catalog
-            tables = self.ctx.tables()
-
+            # Get table names from the catalog and their respective schemas
+            tables = self.ctx.get_tables()
             if not tables:
                 return "No tables registered.\n\nUse ctx.register_parquet() or ctx.register_csv() to register tables."
+            schema_count = len(tables.keys())
+            table_count = len(tables.values())
+            # Build a nice table display (HTML-formatted if applicable)
+            lines = [
+                {"content": f"Total: {table_count} table(s) in {schema_count} schema(s)", "is_info": True},
+                {"content": "Registered tables:", "is_info": True},
+                *[{"content": f"Schema: {schema_name}. Tables: {", ".join(list(table_names))}", "is_info": False}
+                  for schema_name, table_names in tables.items()]
+            ]
 
-            # Build a nice table display
-            lines = ["Registered Tables:", "-" * 40]
-            for table in sorted(tables):
-                lines.append(f"  • {table}")
-            lines.append("-" * 40)
-            lines.append(f"Total: {len(tables)} table(s)")
-
-            return "\n".join(lines)
+            def _format_html_tables_output(line: str, is_info: bool = False) -> str:
+                if is_info:
+                    return f"<p><strong>{line}<strong></p>"
+                else:
+                    return f"<p><pre><i>{line}</i></pre></p>"
+            
+            if IPYTHON_AVAILABLE:
+                display(
+                    HTML("".join(_format_html_tables_output(val["content"], val["is_info"]) for val in lines))
+                )
+            else:
+                return "".join(val["content"] for val in lines)
         except Exception as e:
             return f"Error listing tables: {e}"
 
@@ -362,14 +401,6 @@ class BallistaMagics(Magics):
             )
 
             # Display if requested and in notebook environment
-            if display_results and IPYTHON_AVAILABLE:
-                try:
-                    # The result has _repr_html_ so it will render nicely
-                    display(result)
-                except Exception:
-                    # Fallback to show()
-                    result.show(limit)
-
             return result
 
         except Exception as e:
@@ -383,7 +414,7 @@ class BallistaMagics(Magics):
                 print(error_msg)
             return None
 
-    def _show_history(self) -> str:
+    def _show_history(self) -> Optional[str]:
         """Show query history."""
         if not self._query_history:
             return "No queries executed yet."
@@ -396,11 +427,12 @@ class BallistaMagics(Magics):
             lines.append(f"   {query_preview}")
         lines.append("-" * 60)
 
-        return "\n".join(lines)
+        for row in lines:
+            print(row)
 
-    def _show_help(self) -> str:
+    def _show_help(self) -> Optional[str]:
         """Show help for Ballista magic commands."""
-        return """
+        help_info = """
 Ballista Jupyter Magic Commands
 ================================
 
@@ -412,6 +444,9 @@ Connection:
 Exploration:
     %ballista tables          - List registered tables
     %ballista schema <table>  - Show table schema
+
+Table-register:
+    %register [format] [schema.table_name] [file_path] - Register a new table in the current Ballista Context
 
 Query:
     %sql <query>              - Execute single-line SQL query
@@ -438,7 +473,9 @@ Examples:
     GROUP BY customer_id
     ORDER BY total DESC
     LIMIT 10
-"""
+        """
+        for row in help_info.split("\n"):
+            print(row)
 
 
 def load_ipython_extension(ipython):

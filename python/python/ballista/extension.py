@@ -533,34 +533,17 @@ class BallistaSessionContext(SessionContext, metaclass=RedefiningSessionContextM
         self.address = address
         self.session_id = self.session_id()
 
-    def tables(self) -> List[str]:
-        """
-        List all registered tables in this session.
-
-        Returns:
-            List[str]: Names of all registered tables.
-
-        Example:
-            >>> ctx.register_parquet("orders", "data/orders.parquet")
-            >>> ctx.tables()
-            ['orders']
-        """
-        # Get catalog information
+    def get_tables(self) -> Optional[dict[str, str]]:
+        """"""
         try:
-            # Try to use the catalog API if available
             catalog = self.catalog()
-            if catalog is not None:
-                return list(catalog.names())
+            schema_names = list(catalog.schema_names())
+            if schema_names is not None:
+                tables_info = {}
+                for schema_name in schema_names:
+                    tables_info[schema_name] = list(catalog.schema(name=schema_name).table_names())
+                return tables_info
         except (AttributeError, NotImplementedError):
             pass
-
-        # Fallback: query information schema
-        try:
-            df = super().sql("SELECT table_name FROM information_schema.tables")
-            result = df.collect()
-            if result:
-                return [row["table_name"] for batch in result for row in batch.to_pydict()["table_name"]]
-        except Exception:
-            pass
-
-        return []
+        return {}
+    
