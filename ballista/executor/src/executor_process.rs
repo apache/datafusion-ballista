@@ -25,6 +25,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_core::registry::BallistaFunctionRegistry;
+use datafusion::DATAFUSION_VERSION;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use futures::StreamExt;
@@ -223,7 +224,9 @@ pub async fn start_executor_process(
     let task_scheduling_policy = opt.task_scheduling_policy;
     // assign this executor an unique ID
     let executor_id = Uuid::new_v4().to_string();
-    info!("Executor starting ... (Datafusion Ballista {BALLISTA_VERSION})");
+    info!(
+        "Ballista Executor v{BALLISTA_VERSION} (DataFusion v{DATAFUSION_VERSION}) starting ..."
+    );
     info!("Executor id: {executor_id}");
     info!("Executor working directory: {work_dir}");
     info!("Executor number of concurrent tasks: {concurrent_tasks}");

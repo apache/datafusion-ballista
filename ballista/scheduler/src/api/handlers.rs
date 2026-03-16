@@ -21,6 +21,7 @@ use axum::{
 };
 use ballista_core::BALLISTA_VERSION;
 use ballista_core::serde::protobuf::job_status::Status;
+use datafusion::DATAFUSION_VERSION;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet, Time};
 use datafusion_proto::logical_plan::AsLogicalPlan;
 use datafusion_proto::physical_plan::AsExecutionPlan;
@@ -38,6 +39,7 @@ use std::time::Duration;
 struct SchedulerStateResponse {
     started: u128,
     version: &'static str,
+    datafusion_version: &'static str,
     substrait_support: bool,
     keda_support: bool,
     prometheus_support: bool,
@@ -51,6 +53,7 @@ struct SchedulerStateResponse {
 #[derive(Debug, serde::Serialize)]
 struct SchedulerVersionResponse {
     version: &'static str,
+    datafusion_version: &'static str,
 }
 #[derive(Debug, serde::Serialize)]
 pub struct ExecutorMetaResponse {
@@ -106,6 +109,7 @@ pub async fn get_scheduler_state<
     let response = SchedulerStateResponse {
         started: data_server.start_time,
         version: BALLISTA_VERSION,
+        datafusion_version: DATAFUSION_VERSION,
         substrait_support: cfg!(feature = "substrait"),
         keda_support: cfg!(feature = "keda-scaler"),
         prometheus_support: cfg!(feature = "prometheus-metrics"),
@@ -124,6 +128,7 @@ pub async fn get_scheduler_state<
 pub async fn get_scheduler_version() -> impl IntoResponse {
     let response = SchedulerVersionResponse {
         version: BALLISTA_VERSION,
+        datafusion_version: DATAFUSION_VERSION,
     };
     Json(response)
 }
