@@ -29,14 +29,19 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         key_bindings.push(Span::from("[Esc] Quit edit mode, "));
     } else {
         key_bindings.push(Span::from("Key bindings: "));
-        key_bindings.push(Span::from("[d] Dashboard, "));
-        key_bindings.push(Span::from("[j] Jobs, "));
-        key_bindings.push(Span::from("[m] Metrics, "));
-        if app.current_view == Views::Jobs {
-            key_bindings.push(Span::from("[/] Search jobs, "));
-        } else if app.current_view == Views::Metrics {
-            key_bindings.push(Span::from("[/] Search metrics, "));
+
+        if app.is_scheduler_up() {
+            key_bindings.push(Span::from("[d] Dashboard, "));
+            key_bindings.push(Span::from("[j] Jobs, "));
+            key_bindings.push(Span::from("[m] Metrics, "));
+            if app.current_view == Views::Jobs {
+                key_bindings.push(Span::from("[/] Search jobs, "));
+            } else if app.current_view == Views::Metrics {
+                key_bindings.push(Span::from("[/] Search metrics, "));
+            }
+            key_bindings.push(Span::from("[i] Scheduler info, "));
         }
+
         key_bindings.push(Span::from("[?/h] Help, "));
         key_bindings.push(Span::from("[q/Esc] Quit"));
     }

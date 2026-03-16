@@ -50,8 +50,9 @@ pub(crate) struct App {
     pub metrics_data: MetricsData,
     pub jobs_data: JobsData,
 
-    // Help panel
+    // Popups
     pub show_help: bool,
+    pub show_scheduler_info: bool,
 
     pub input_mode: InputMode,
     pub search_term: String,
@@ -66,6 +67,7 @@ impl App {
             should_quit: false,
             event_tx: None,
             show_help: false,
+            show_scheduler_info: false,
             input_mode: InputMode::View,
             search_term: String::new(),
             dashboard_data: DashboardData::new(),
@@ -118,8 +120,9 @@ impl App {
             return Ok(());
         }
 
-        if self.show_help {
+        if self.show_help || self.show_scheduler_info {
             self.show_help = false;
+            self.show_scheduler_info = false;
             return Ok(());
         }
 
@@ -129,6 +132,9 @@ impl App {
             }
             KeyCode::Char('?') | KeyCode::Char('h') => {
                 self.show_help = true;
+            }
+            KeyCode::Char('i') => {
+                self.show_scheduler_info = true;
             }
             KeyCode::Char('d') if self.is_scheduler_up() => {
                 self.current_view = Views::Dashboard;

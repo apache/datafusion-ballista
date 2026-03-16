@@ -19,6 +19,7 @@ mod footer;
 mod header;
 mod help_overlay;
 mod main;
+mod scheduler_info_popup;
 mod search_box;
 
 use crate::tui::app::{App, Views};
@@ -47,7 +48,9 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
 
     // Overlay help if active
     if app.show_help {
-        help_overlay::render_help_overlay(f);
+        help_overlay::render_help_overlay(f, app);
+    } else if app.show_scheduler_info {
+        scheduler_info_popup::render_scheduler_info(f, app);
     }
 }
 

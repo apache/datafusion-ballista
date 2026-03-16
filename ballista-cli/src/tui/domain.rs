@@ -25,12 +25,12 @@ pub struct SchedulerState {
     pub started: i64,
     pub version: String,
     pub datafusion_version: String,
-    pub _substrait_support: bool,
-    pub _keda_support: bool,
+    pub substrait_support: bool,
+    pub keda_support: bool,
     pub prometheus_support: bool,
-    pub _graphviz_support: bool,
-    pub _spark_support: bool,
-    pub _scheduling_policy: String,
+    pub graphviz_support: bool,
+    pub spark_support: bool,
+    pub scheduling_policy: String,
 }
 
 #[derive(Deserialize, Clone, Debug)]

@@ -15,14 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::tui::app::App;
 use ratatui::Frame;
 use ratatui::prelude::{Color, Line, Modifier, Span, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-pub(crate) fn render_help_overlay(f: &mut Frame) {
-    let area = crate::tui::ui::centered_rect(25, 35, f.area());
+pub(crate) fn render_help_overlay(f: &mut Frame, app: &App) {
+    let area = crate::tui::ui::centered_rect(25, 40, f.area());
 
     f.render_widget(Clear, area);
+
+    let style = if app.is_scheduler_up() {
+        Style::default()
+    } else {
+        Style::default().fg(Color::Gray)
+    };
 
     let help_text = vec![
         Line::from(""),
@@ -34,29 +41,26 @@ pub(crate) fn render_help_overlay(f: &mut Frame) {
         )),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "  Navigation",
+            " Navigation",
             Style::default().fg(Color::Yellow),
         )]),
-        Line::from("  d       Show Dashboard"),
-        Line::from("  j       Show Jobs"),
-        Line::from("  m       Show Metrics"),
-        Line::from("  /       Search in Jobs or Metrics"),
+        Line::from(Span::styled("  d       Show Dashboard", style)),
+        Line::from(Span::styled("  j       Show Jobs", style)),
+        Line::from(Span::styled("  m       Show Metrics", style)),
+        Line::from(Span::styled("  /       Search in Jobs or Metrics", style)),
+        Line::from(Span::styled("  i       Show Scheduler Info", style)),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "  General",
+            " General",
             Style::default().fg(Color::Yellow),
         )]),
         Line::from("  ?/h       Show this help"),
         Line::from("  q/Esc     Quit"),
         Line::from(""),
-        Line::from(Span::styled(
-            "Press any key to close",
-            Style::default().fg(Color::DarkGray),
-        )),
     ];
 
     let block = Block::default()
-        .title(" Help ")
+        .title(" Help (Press any key to close) ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 
