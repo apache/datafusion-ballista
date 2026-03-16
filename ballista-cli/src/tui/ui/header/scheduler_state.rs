@@ -25,20 +25,38 @@ use ratatui::{
 };
 
 pub fn render_scheduler_state(f: &mut Frame, area: Rect, app: &App) -> bool {
-    let (started, version, is_up) = match &app.dashboard_data.scheduler_state {
-        Some(state) => {
-            let started = DateTime::from_timestamp_millis(state.started)
-                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-                .unwrap_or_else(|| "Invalid Date".to_string());
-            (started, state.version.clone(), true)
-        }
-        None => ("-".to_string(), "unknown".to_string(), false),
-    };
+    let (started, ballista_version, df_version, is_up) =
+        match &app.dashboard_data.scheduler_state {
+            Some(state) => {
+                let started = DateTime::from_timestamp_millis(state.started)
+                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                    .unwrap_or_else(|| "Invalid Date".to_string());
+                (
+                    started,
+                    state.version.clone(),
+                    state.datafusion_version.clone(),
+                    true,
+                )
+            }
+            None => (
+                "-".to_string(),
+                "unknown".to_string(),
+                "unknown".to_string(),
+                false,
+            ),
+        };
 
     let scheduler_url = app.http_client.scheduler_url();
 
     if is_up {
-        render_scheduler_state_up(f, area, scheduler_url, started, version);
+        render_scheduler_state_up(
+            f,
+            area,
+            scheduler_url,
+            started,
+            ballista_version,
+            df_version,
+        );
     } else {
         render_scheduler_state_down(f, area, scheduler_url);
     }
@@ -62,14 +80,16 @@ fn render_scheduler_state_up(
     area: Rect,
     scheduler_url: &str,
     started: String,
-    version: String,
+    ballista_version: String,
+    df_version: String,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(33), // url
-            Constraint::Percentage(33), // started at
-            Constraint::Percentage(33), // version
+            Constraint::Percentage(45), // url
+            Constraint::Percentage(25), // started at
+            Constraint::Percentage(15), // Ballista version
+            Constraint::Percentage(15), // DataFusion version
         ])
         .split(area);
 
@@ -85,7 +105,16 @@ fn render_scheduler_state_up(
     let started_paragraph = Paragraph::new(started).block(started_block).left_aligned();
     f.render_widget(started_paragraph, chunks[1]);
 
-    let version_block = Block::default().borders(Borders::ALL).title(" Version ");
-    let version_paragraph = Paragraph::new(version).block(version_block).left_aligned();
-    f.render_widget(version_paragraph, chunks[2]);
+    let ballista_version_block =
+        Block::default().borders(Borders::ALL).title(" Ballista ");
+    let ballista_version_paragraph = Paragraph::new(format!("v{ballista_version}"))
+        .block(ballista_version_block)
+        .left_aligned();
+    f.render_widget(ballista_version_paragraph, chunks[2]);
+
+    let df_version_block = Block::default().borders(Borders::ALL).title(" DataFusion ");
+    let df_version_paragraph = Paragraph::new(format!("v{df_version}"))
+        .block(df_version_block)
+        .left_aligned();
+    f.render_widget(df_version_paragraph, chunks[3]);
 }

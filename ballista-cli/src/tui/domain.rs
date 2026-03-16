@@ -24,6 +24,7 @@ use std::str::FromStr;
 pub struct SchedulerState {
     pub started: i64,
     pub version: String,
+    pub datafusion_version: String,
 }
 
 #[derive(Deserialize, Clone, Debug)]
