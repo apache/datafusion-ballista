@@ -91,13 +91,31 @@ pub fn render_metrics(f: &mut Frame, area: Rect, app: &App) {
         render_metrics_table(f, rects[1], &filtered_metrics, &mut table_state);
         render_scrollbar(f, rects[1], &mut scroll_state);
     } else {
-        render_no_metrics(f, rects[1]);
+        if !are_metrics_enabled(app) {
+            render_no_metrics(
+                f,
+                rects[1],
+                "The scheduler is built with 'prometheus_metric' feature disabled.",
+            );
+        } else {
+            render_no_metrics(f, rects[1], "No metrics.");
+        }
     }
 }
 
-fn render_no_metrics(f: &mut Frame, area: Rect) {
-    let block = Block::default().borders(Borders::all());
-    let paragraph = Paragraph::new("No metrics")
+fn are_metrics_enabled(app: &App) -> bool {
+    if let Some(scheduler_state) = app.dashboard_data.scheduler_state.as_ref() {
+        scheduler_state.prometheus_support
+    } else {
+        false
+    }
+}
+
+fn render_no_metrics(f: &mut Frame, area: Rect, reason: &str) {
+    let block = Block::default()
+        .borders(Borders::all())
+        .style(Style::default().fg(Color::Red));
+    let paragraph = Paragraph::new(reason)
         .style(Style::default().bold())
         .centered()
         .block(block);
