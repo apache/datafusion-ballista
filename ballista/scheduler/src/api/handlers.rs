@@ -69,6 +69,10 @@ pub struct JobResponse {
     pub num_stages: usize,
     pub completed_stages: usize,
     pub percent_complete: u8,
+    /// Timestamp when the job started.
+    pub start_time: u64,
+    /// Timestamp when the job ended (0 if still running).
+    pub end_time: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logical_plan: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -176,6 +180,8 @@ pub async fn get_jobs<
                 job_name: job.job_name.to_string(),
                 job_status,
                 status: plain_status,
+                start_time: job.start_time,
+                end_time: job.end_time,
                 num_stages: job.num_stages,
                 completed_stages: job.completed_stages,
                 percent_complete,
@@ -221,6 +227,8 @@ pub async fn get_job<
         job_name: job.job_name().to_string(),
         job_status,
         status: plain_status,
+        start_time: job.start_time(),
+        end_time: job.end_time(),
         num_stages,
         completed_stages,
         percent_complete,
