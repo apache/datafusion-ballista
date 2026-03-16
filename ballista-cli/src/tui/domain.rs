@@ -75,10 +75,26 @@ pub struct MetricsData {
     pub table_state: TableState,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum SortColumn {
+    None,
+    StartTime,
+    Status,
+    PercentComplete,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SortOrder {
+    Ascending,
+    Descending,
+}
+
 #[derive(Clone, Debug)]
 pub struct JobsData {
     pub jobs: Vec<Job>,
     pub table_state: TableState,
+    pub sort_column: SortColumn,
+    pub sort_order: SortOrder,
 }
 
 impl FromStr for MetricsData {

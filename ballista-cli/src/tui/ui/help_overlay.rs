@@ -48,6 +48,18 @@ pub(crate) fn render_help_overlay(f: &mut Frame, app: &App) {
         Line::from(Span::styled("  j       Show Jobs", style)),
         Line::from(Span::styled("  m       Show Metrics", style)),
         Line::from(Span::styled("  /       Search in Jobs or Metrics", style)),
+        Line::from(Span::styled(
+            "  s       Sort by Status (in Jobs view)",
+            style,
+        )),
+        Line::from(Span::styled(
+            "  p       Sort by % Completed (in Jobs view)",
+            style,
+        )),
+        Line::from(Span::styled(
+            "  t       Sort by Start time (in Jobs view)",
+            style,
+        )),
         Line::from(Span::styled("  i       Show Scheduler Info", style)),
         Line::from(""),
         Line::from(vec![Span::styled(

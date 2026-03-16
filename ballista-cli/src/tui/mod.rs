@@ -71,17 +71,25 @@ pub async fn tui_main() -> Result<()> {
                 if let Event::DataLoaded { data } = app_event {
                   match data {
                     UiData::Dashboard(state, executors_data, jobs_data) => {
-                      app.dashboard_data = DashboardData {
+                            app.dashboard_data = DashboardData {
                                 scheduler_state: state,
                                 executors_data,
                                 jobs_data,
                             };
                     },
                     UiData::Metrics(metrics) => {
-                      app.metrics_data = MetricsData { metrics, table_state: app.metrics_data.table_state };
+                            app.metrics_data = MetricsData {
+                                metrics,
+                                table_state: app.metrics_data.table_state
+                            };
                     }
                     UiData::Jobs(jobs) => {
-                      app.jobs_data = JobsData { jobs, table_state: app.jobs_data.table_state };
+                            app.jobs_data = JobsData {
+                                jobs,
+                                table_state: app.jobs_data.table_state,
+                                sort_column: app.jobs_data.sort_column,
+                                sort_order: app.jobs_data.sort_order
+                            };
                     }
                   }
                 }

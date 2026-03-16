@@ -36,6 +36,9 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
             key_bindings.push(Span::from("[m] Metrics, "));
             if app.current_view == Views::Jobs {
                 key_bindings.push(Span::from("[/] Search jobs, "));
+                key_bindings.push(Span::from("[s] Sort by Status, "));
+                key_bindings.push(Span::from("[p] Sort by % Completed, "));
+                key_bindings.push(Span::from("[t] Sort by Start time, "));
             } else if app.current_view == Views::Metrics {
                 key_bindings.push(Span::from("[/] Search metrics, "));
             }

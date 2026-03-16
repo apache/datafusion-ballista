@@ -17,7 +17,7 @@
 
 use crate::tui::TuiResult;
 use crate::tui::app::App;
-use crate::tui::domain::Job;
+use crate::tui::domain::{Job, SortColumn, SortOrder};
 use crate::tui::error::TuiError;
 use crate::tui::event::Event;
 use crate::tui::event::UiData;
@@ -87,13 +87,53 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
 
     render_search_box(f, rects[0], app);
 
-    if !filtered_jobs.is_empty() {
-        let mut scroll_state = ScrollbarState::new((filtered_jobs.len() - 1) * 2);
+    let mut sorted_jobs = filtered_jobs;
+    sort(&mut sorted_jobs, app);
+
+    if !sorted_jobs.is_empty() {
+        let mut scroll_state = ScrollbarState::new((sorted_jobs.len() - 1) * 2);
         let mut table_state = app.jobs_data.table_state;
-        render_jobs_table(f, rects[1], &filtered_jobs, &mut table_state);
+        render_jobs_table(
+            f,
+            rects[1],
+            &sorted_jobs,
+            &mut table_state,
+            &app.jobs_data.sort_column,
+            &app.jobs_data.sort_order,
+        );
         render_scrollbar(f, rects[1], &mut scroll_state);
     } else {
         render_no_jobs(f, rects[1]);
+    }
+}
+
+fn sort(jobs: &mut Vec<&Job>, app: &App) {
+    match app.jobs_data.sort_column {
+        SortColumn::Status => jobs.sort_by(|a, b| {
+            let cmp = a.status.cmp(&b.status);
+            if app.jobs_data.sort_order == SortOrder::Descending {
+                cmp.reverse()
+            } else {
+                cmp
+            }
+        }),
+        SortColumn::PercentComplete => jobs.sort_by(|a, b| {
+            let cmp = a.percent_complete.cmp(&b.percent_complete);
+            if app.jobs_data.sort_order == SortOrder::Descending {
+                cmp.reverse()
+            } else {
+                cmp
+            }
+        }),
+        SortColumn::StartTime => jobs.sort_by(|a, b| {
+            let cmp = a.start_time.cmp(&b.start_time);
+            if app.jobs_data.sort_order == SortOrder::Descending {
+                cmp.reverse()
+            } else {
+                cmp
+            }
+        }),
+        SortColumn::None => {}
     }
 }
 
@@ -111,15 +151,34 @@ fn render_jobs_table(
     area: Rect,
     jobs: &[&Job],
     state: &mut TableState,
+    sort_column: &SortColumn,
+    sort_order: &SortOrder,
 ) {
     let header_style = Style::default().fg(Color::Yellow).bg(Color::Black);
 
+    let status_suffix = match (sort_column, sort_order) {
+        (SortColumn::Status, SortOrder::Ascending) => " ▲",
+        (SortColumn::Status, SortOrder::Descending) => " ▼",
+        _ => "",
+    };
+    let percent_suffix = match (sort_column, sort_order) {
+        (SortColumn::PercentComplete, SortOrder::Ascending) => " ▲",
+        (SortColumn::PercentComplete, SortOrder::Descending) => " ▼",
+        _ => "",
+    };
+    let start_time_suffix = match (sort_column, sort_order) {
+        (SortColumn::StartTime, SortOrder::Ascending) => " ▲",
+        (SortColumn::StartTime, SortOrder::Descending) => " ▼",
+        _ => "",
+    };
+
     let header = [
-        "Id",
-        "Name",
-        "Status",
-        "Stages Completed",
-        "Percent Completed",
+        "Id".to_string(),
+        "Name".to_string(),
+        format!("Status{status_suffix}"),
+        "Stages Completed".to_string(),
+        format!("Percent Completed{percent_suffix}"),
+        format!("Start time{start_time_suffix}"),
     ]
     .into_iter()
     .map(|item| Text::from(item).centered())
@@ -139,25 +198,28 @@ fn render_jobs_table(
         let status_cell = render_job_status_cell(job);
         let stage_completion_cell = render_job_stage_completion_cell(job);
         let percent_completion_cell = render_job_percent_completion_cell(job);
+        let start_time_cell = render_job_start_time_cell(job);
 
-        Row::new(vec![
+        let cells = vec![
             id_cell,
             name_cell,
             status_cell,
             stage_completion_cell,
             percent_completion_cell,
-        ])
-        .style(Style::default().bg(color))
+            start_time_cell,
+        ];
+        Row::new(cells).style(Style::default().bg(color))
     });
 
     let t = Table::new(
         rows,
         [
-            Constraint::Percentage(20), // Id
+            Constraint::Percentage(10), // Id
             Constraint::Percentage(20), // Name
-            Constraint::Percentage(20), // Status
+            Constraint::Percentage(10), // Status
             Constraint::Percentage(20), // Stages Completed
             Constraint::Percentage(20), // Percent Completed
+            Constraint::Percentage(20), // Start time
         ],
     )
     .block(Block::default().borders(Borders::all()))
@@ -165,6 +227,13 @@ fn render_jobs_table(
     .row_highlight_style(Style::default().bg(Color::Indexed(29)))
     .highlight_spacing(HighlightSpacing::Always);
     frame.render_stateful_widget(t, area, state);
+}
+
+fn render_job_start_time_cell(job: &Job) -> Cell<'_> {
+    let start_time = chrono::DateTime::from_timestamp_millis(job.start_time)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| "Invalid Date".to_string());
+    Cell::from(Text::from(start_time).centered())
 }
 
 fn render_job_percent_completion_cell(job: &Job) -> Cell<'_> {

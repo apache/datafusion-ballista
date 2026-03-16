@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::tui::{
-    domain::{DashboardData, JobsData, MetricsData},
+    domain::{DashboardData, JobsData, MetricsData, SortColumn, SortOrder},
     event::Event,
     infrastructure::Settings,
 };
@@ -74,6 +74,8 @@ impl App {
             jobs_data: JobsData {
                 jobs: Vec::new(),
                 table_state: TableState::default(),
+                sort_column: SortColumn::None,
+                sort_order: SortOrder::Ascending,
             },
             metrics_data: MetricsData {
                 metrics: Vec::new(),
@@ -154,6 +156,15 @@ impl App {
             {
                 self.input_mode = InputMode::Edit;
             }
+            KeyCode::Char('s') if self.current_view == Views::Jobs => {
+                self.sort_jobs_by(SortColumn::Status);
+            }
+            KeyCode::Char('p') if self.current_view == Views::Jobs => {
+                self.sort_jobs_by(SortColumn::PercentComplete);
+            }
+            KeyCode::Char('t') if self.current_view == Views::Jobs => {
+                self.sort_jobs_by(SortColumn::StartTime);
+            }
             KeyCode::Down => {
                 if self.current_view == Views::Jobs {
                     self.jobs_data.table_state.scroll_down_by(1);
@@ -188,6 +199,22 @@ impl App {
     async fn load_metrics_data(&mut self) {
         if let Err(e) = crate::tui::ui::load_metrics_data(self).await {
             tracing::error!("Failed to load metrics data on tick: {e:?}");
+        }
+    }
+
+    fn sort_jobs_by(&mut self, sort_column: SortColumn) {
+        if self.jobs_data.sort_column == sort_column {
+            match self.jobs_data.sort_order {
+                SortOrder::Ascending => {
+                    self.jobs_data.sort_order = SortOrder::Descending;
+                }
+                SortOrder::Descending => {
+                    self.jobs_data.sort_column = SortColumn::None;
+                }
+            }
+        } else {
+            self.jobs_data.sort_column = sort_column;
+            self.jobs_data.sort_order = SortOrder::Ascending;
         }
     }
 }
