@@ -534,7 +534,7 @@ class BallistaSessionContext(SessionContext, metaclass=RedefiningSessionContextM
         self.session_id = self.session_id()
 
     def get_tables(self) -> Optional[dict[str, str]]:
-        """"""
+        """Get tables and their respective schemas (in terms of database schema)."""
         try:
             catalog = self.catalog()
             schema_names = list(catalog.schema_names())
