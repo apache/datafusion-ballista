@@ -125,18 +125,18 @@ impl App {
     }
 
     pub async fn on_tick(&mut self) {
-        if self.current_view == Views::Dashboard {
+        if self.is_dashboard_view() {
             self.load_dashboard_data().await;
-        } else if self.current_view == Views::Jobs {
+        } else if self.is_jobs_view() {
             self.load_jobs_data().await;
-        } else if self.current_view == Views::Metrics {
+        } else if self.is_metrics_view() {
             self.load_metrics_data().await;
         }
     }
 
     pub async fn on_key(&mut self, key: KeyEvent) -> TuiResult<()> {
         // Edit mode takes priority over everything
-        if self.input_mode == InputMode::Edit {
+        if self.is_edit_mode() {
             match key.code {
                 KeyCode::Esc => {
                     self.search_term.clear();
@@ -186,38 +186,34 @@ impl App {
                 self.current_view = Views::Metrics;
                 self.load_metrics_data().await;
             }
-            KeyCode::Char('/')
-                if self.current_view == Views::Jobs
-                    || self.current_view == Views::Metrics =>
-            {
+            KeyCode::Char('/') if self.is_jobs_view() || self.is_metrics_view() => {
                 self.input_mode = InputMode::Edit;
             }
-            KeyCode::Char('s') if self.current_view == Views::Jobs => {
+            KeyCode::Char('s') if self.is_jobs_view() => {
                 self.sort_jobs_by(SortColumn::Status);
             }
-            KeyCode::Char('p') if self.current_view == Views::Jobs => {
+            KeyCode::Char('p') if self.is_jobs_view() => {
                 self.sort_jobs_by(SortColumn::PercentComplete);
             }
-            KeyCode::Char('t') if self.current_view == Views::Jobs => {
+            KeyCode::Char('t') if self.is_jobs_view() => {
                 self.sort_jobs_by(SortColumn::StartTime);
             }
             KeyCode::Char('c')
-                if self.current_view == Views::Jobs
-                    && self.input_mode == InputMode::View =>
+                if self.is_jobs_view() && self.input_mode == InputMode::View =>
             {
                 self.cancel_selected_job().await;
             }
             KeyCode::Down => {
-                if self.current_view == Views::Jobs {
+                if self.is_jobs_view() {
                     self.jobs_data.table_state.scroll_down_by(1);
-                } else if self.current_view == Views::Metrics {
+                } else if self.is_metrics_view() {
                     self.metrics_data.table_state.scroll_down_by(1);
                 }
             }
             KeyCode::Up => {
-                if self.current_view == Views::Jobs {
+                if self.is_jobs_view() {
                     self.jobs_data.table_state.scroll_up_by(1);
-                } else if self.current_view == Views::Metrics {
+                } else if self.is_metrics_view() {
                     self.metrics_data.table_state.scroll_up_by(1);
                 }
             }
@@ -275,5 +271,9 @@ impl App {
                     },
                 });
         }
+    }
+
+    pub fn has_selected_job(&self) -> bool {
+        self.jobs_data.selected_job(&self.search_term).is_some()
     }
 }
