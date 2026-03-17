@@ -19,36 +19,18 @@ from datafusion import SessionContext, DataFrame, ParquetWriterOptions
 from datafusion.dataframe import Compression
 
 from typing import (
+    List,
     Union,
     Optional,
-    List,
+    Callable
 )
+import warnings
 
 
 from ._internal_ballista import create_ballista_data_frame
 from ._internal_ballista import ParquetColumnOptions as ParquetColumnOptionsInternal
 from ._internal_ballista import ParquetWriterOptions as ParquetWriterOptionsInternal
 import pathlib
-
-# DataFrame execution methods which should be automatically
-# overridden.
-
-OVERRIDDEN_EXECUTION_METHODS = [
-    "show",
-    "count",
-    "collect",
-    "collect_partitioned",
-    "write_json",
-    "to_arrow_table",
-    "to_pandas",
-    "to_pydict",
-    "to_polars",
-    "to_pylist",
-    "_repr_html_",
-    "execute_stream",
-    "execute_stream_partitioned",
-]
-
 
 # class used to redefine DataFrame object
 # intercepting execution methods and methods
@@ -92,10 +74,6 @@ class RedefiningDataFrameMeta(type):
                 #
                 attrs[base_name] = __wrap_dataframe_result(base_value)
 
-        # TODO: we could do better here
-        for function in OVERRIDDEN_EXECUTION_METHODS:
-            attrs[function] = __wrap_dataframe_execution(function)
-
         return super().__new__(cls, name, bases, attrs)
 
 
@@ -133,21 +111,18 @@ class RedefiningSessionContextMeta(type):
 # serialize it and invoke ballista client to execute it
 #
 # this class keeps reference to remote ballista
-
-
-class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
+class DistributedDataFrame(DataFrame, metaclass=type):
     def __init__(self, df: DataFrame, session_id: str, address: str):
         super().__init__(df.df)
         self.address = address
-        self.session_id = session_id
-
+        self._session_id = session_id
     #
     # this will create a ballista dataframe, which has ballista
     # session context, and ballista planner.
     #
     def _to_internal_df(self):
         blob_plan = self.logical_plan().to_proto()
-        df = create_ballista_data_frame(blob_plan, self.address, self.session_id)
+        df = create_ballista_data_frame(blob_plan, self.address, self._session_id)
         return df
 
     def write_csv(self, path, with_header=False):
@@ -262,7 +237,7 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
 
     def collect_with_progress(
         self,
-        callback: Optional[callable] = None,
+        callback: Optional[Callable] = None,
         poll_interval: float = 0.5,
     ):
         """
@@ -304,8 +279,8 @@ class DistributedDataFrame(DataFrame, metaclass=RedefiningDataFrameMeta):
 
         # Check if we're in a Jupyter environment
         try:
-            from IPython.display import display, clear_output
-            from IPython import get_ipython
+            from IPython.display import clear_output
+            from IPython.core.getipython import get_ipython
 
             in_jupyter = get_ipython() is not None
         except (ImportError, AttributeError):
@@ -460,7 +435,8 @@ class ExecutionPlanVisualization:
             if process.returncode == 0:
                 self._svg_cache = process.stdout.decode()
                 return self._svg_cache
-        except (subprocess.SubprocessError, FileNotFoundError, subprocess.TimeoutExpired):
+        except (subprocess.SubprocessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+            warnings.warn(f"Could not convert the execution plan to SVG format: {e}")
             pass
 
         # Fallback: return a pre-formatted HTML representation
@@ -531,19 +507,24 @@ class BallistaSessionContext(SessionContext, metaclass=RedefiningSessionContextM
     def __init__(self, address: str, config=None, runtime=None):
         super().__init__(config, runtime)
         self.address = address
-        self.session_id = self.session_id()
+        self.session_id_internal = super().session_id() 
 
-    def get_tables(self) -> Optional[dict[str, str]]:
+    @property
+    def session_id(self):
+        return self.session_id_internal
+
+    def get_tables(self) -> Optional[dict[str, List[str]]]:
         """Get tables and their respective schemas (in terms of database schema)."""
         try:
             catalog = self.catalog()
             schema_names = list(catalog.schema_names())
-            if schema_names is not None:
+            if schema_names:
                 tables_info = {}
                 for schema_name in schema_names:
                     tables_info[schema_name] = list(catalog.schema(name=schema_name).table_names())
                 return tables_info
-        except (AttributeError, NotImplementedError):
+        except (AttributeError, NotImplementedError) as e:
+            warnings.warn(f"Could not retrieve tables from catalog: {e}")
             pass
         return {}
     

@@ -83,6 +83,11 @@ Check [DataFusion python](https://datafusion.apache.org/python/) provides more e
 
 PyBallista provides first-class Jupyter notebook support with SQL magic commands and rich HTML rendering.
 
+### Install Jupyter extras first:
+```bash
+pip install "ballista[jupyter]"
+```
+
 ### HTML Table Rendering
 
 DataFrames automatically render as styled HTML tables in Jupyter notebooks:
@@ -105,6 +110,9 @@ For a more interactive SQL experience, load the Ballista Jupyter extension:
 
 # Connect to a Ballista cluster
 %ballista connect df://localhost:50050
+
+# Register .parquet table
+%register parquet public.test_data_v1 ../testdata/test.parquet
 
 # Check connection status
 %ballista status

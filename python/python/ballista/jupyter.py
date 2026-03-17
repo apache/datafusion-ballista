@@ -51,11 +51,11 @@ Usage:
 """
 
 from typing import Optional, List, Dict, Any
+import warnings
 import time
-import threading
 
 try:
-    from IPython.core.magic import Magics, magics_class, line_magic, cell_magic, line_cell_magic
+    from IPython.core.magic import Magics, magics_class, line_magic, line_cell_magic
     from IPython.display import display, HTML
 
     IPYTHON_AVAILABLE = True
@@ -85,6 +85,16 @@ except ImportError:
     def cell_magic(name_or_func):
         """Stub cell_magic decorator for when IPython is not available."""
         # Handle both @cell_magic and @cell_magic("name") usage
+        if callable(name_or_func):
+            return name_or_func
+        else:
+            def decorator(func):
+                return func
+            return decorator
+        
+    def line_cell_magic(name_or_func):
+        """Stub line_cell_magic decorator for when IPython is not available"""
+        # Handle both @line_cell_magic and @line_cell_magic("name") usage
         if callable(name_or_func):
             return name_or_func
         else:
@@ -200,7 +210,7 @@ class BallistaMagics(Magics):
             elif file_type == "csv":
                 self._ctx.register_csv(table_name, file_name)
             else:
-                raise NotImplemented("Currently not supporting the inserted file format")
+                raise NotImplementedError("Currently not supporting the inserted file format")
 
     @line_cell_magic 
     def sql(self, line: str, cell=None) -> Optional[DistributedDataFrame]:
@@ -210,10 +220,10 @@ class BallistaMagics(Magics):
         Two cases possible: with cell or without cell
 
         Examples:
-        1. Without a cell (line_magic)
+        1. Without a cell (line_magic):
             %sql SELECT * FROM test_table
-        2. With a cell (cell_magic)
-            %%sql --no-display
+        2. With a cell (cell_magic) -- we can also use a variable to store the result of the query like this:
+            %%sql my_result
             SELECT
                 id,
                 bool_col,
@@ -221,40 +231,30 @@ class BallistaMagics(Magics):
             FROM test_data_v1
             WHERE id > 2
             ORDER BY id
-            LIMIT 5      
+            LIMIT 5 
+
+        `my_result` will store the result of the SQL-query
         """
         if not cell:
             return self._execute_sql(line.strip()) if line.strip() else None
         else:
-            args = line.strip().split()
-            display_results = True
-            limit = 50
             var_name = None
-
-            i = 0
-            while i < len(args):
-                if args[i] == "--no-display":
-                    display_results = False
-                elif args[i] == "--limit" and i + 1 < len(args):
-                    try:
-                        limit = int(args[i + 1])
-                        i += 1
-                    except ValueError:
-                        pass
-                elif not args[i].startswith("--"):
-                    var_name = args[i]
-                i += 1
-
             query = cell.strip()
             if not query:
                 return None
+            
+            args = line.strip().split()
+            i = 0
+            while i < len(args):
+                if not args[i].startswith("--"):
+                    var_name = args[i]
+                i += 1
 
-            result = self._execute_sql(query, display_results=display_results, limit=limit)
+            result = self._execute_sql(query)
 
             # Store in user namespace if variable name provided
             if var_name and self.shell is not None:
                 self.shell.user_ns[var_name] = result
-
             return result
 
     def _connect(self, address: str) -> Optional[str]:
@@ -272,14 +272,14 @@ class BallistaMagics(Magics):
             if IPYTHON_AVAILABLE:
                 display(HTML(f"✓ Connected to Ballista cluster at {address}"))
             else:
-                return f"✓ Connected to Ballista cluster at {address}"
+                print(f"✓ Connected to Ballista cluster at {address}")
         except Exception as e:
             self._ctx = None
             self._address = None
             if IPYTHON_AVAILABLE:
                 display(HTML(f"✗ Failed to connect to {address}: {e}"))
             else:
-                return f"✗ Failed to connect to {address}: {e}"
+                print(f"✗ Failed to connect to {address}: {e}")
 
     def _disconnect(self) -> Optional[str]:
         """Disconnect from the Ballista cluster."""
@@ -293,7 +293,7 @@ class BallistaMagics(Magics):
         if IPYTHON_AVAILABLE:
             display(HTML(f"✓ Disconnected from {address}"))
         else:
-            return f"✓ Disconnected from {address}"
+             print(f"✓ Disconnected from {address}")
 
     def _status(self) -> Optional[str]:
         """Show connection status."""
@@ -301,7 +301,7 @@ class BallistaMagics(Magics):
             return "Status: Not connected\n\nUse '%ballista connect df://host:port' to connect."
 
         status_lines = [
-            f"Status: Connected",
+            "Status: Connected",
             f"Address: {self._address}",
             f"Session ID: {self._ctx.session_id}",
             f"Queries executed: {len(self._query_history)}",
@@ -312,7 +312,7 @@ class BallistaMagics(Magics):
 
         def _format_html_status_output(line: str) -> str:
             name, value = line.split(":", 1)
-            return f"<p><strong>{name}:</strong> {value.strip()}</p>"
+            return f"<pre><strong>{name}:</strong> {value.strip()}</pre>"
 
         html = "".join(_format_html_status_output(line) for line in status_lines)
         if IPYTHON_AVAILABLE:
@@ -328,18 +328,18 @@ class BallistaMagics(Magics):
             if not tables:
                 return "No tables registered.\n\nUse ctx.register_parquet() or ctx.register_csv() to register tables."
             schema_count = len(tables.keys())
-            table_count = len(tables.values())
+            table_count = sum(len(v) for v in tables.values())
             # Build a nice table display (HTML-formatted if applicable)
             lines = [
                 {"content": f"Total: {table_count} table(s) in {schema_count} schema(s)", "is_info": True},
                 {"content": "Registered tables:", "is_info": True},
-                *[{"content": f"Schema: {schema_name}. Tables: {", ".join(list(table_names))}", "is_info": False}
+                *[{"content": f"Schema: {schema_name}. Tables: {', '.join(table_names)}", "is_info": False}
                   for schema_name, table_names in tables.items()]
             ]
 
             def _format_html_tables_output(line: str, is_info: bool = False) -> str:
                 if is_info:
-                    return f"<p><strong>{line}<strong></p>"
+                    return f"<pre><strong>{line}</strong></pre>"
                 else:
                     return f"<p><pre><i>{line}</i></pre></p>"
             
@@ -348,9 +348,9 @@ class BallistaMagics(Magics):
                     HTML("".join(_format_html_tables_output(val["content"], val["is_info"]) for val in lines))
                 )
             else:
-                return "".join(val["content"] for val in lines)
+                print("".join(val["content"] for val in lines))
         except Exception as e:
-            return f"Error listing tables: {e}"
+            warnings.warn(f"Error listing tables: {e}")
 
     def _schema(self, table_name: str) -> Optional[str]:
         """Show schema for a table."""
@@ -369,15 +369,13 @@ class BallistaMagics(Magics):
             lines.append("-" * 50)
             lines.append(f"Total: {len(schema)} column(s)")
 
-            return "\n".join(lines)
+            print("\n".join(lines))
         except Exception as e:
-            return f"Error getting schema for '{table_name}': {e}"
+            warnings.warn(f"Error getting schema for '{table_name}': {e}")
 
     def _execute_sql(
         self,
         query: str,
-        display_results: bool = True,
-        limit: int = 50,
     ) -> Optional[DistributedDataFrame]:
         """Execute a SQL query and return the result."""
         start_time = time.time()
@@ -426,9 +424,11 @@ class BallistaMagics(Magics):
             lines.append(f"{i}. [{entry['timestamp']}] ({entry['elapsed_seconds']:.2f}s)")
             lines.append(f"   {query_preview}")
         lines.append("-" * 60)
-
-        for row in lines:
-            print(row)
+        output = "\n".join(lines)
+        if IPYTHON_AVAILABLE:
+            display(HTML(f"<pre>{output}</pre>"))
+        else:
+            print(output)
 
     def _show_help(self) -> Optional[str]:
         """Show help for Ballista magic commands."""
@@ -474,9 +474,10 @@ Examples:
     ORDER BY total DESC
     LIMIT 10
         """
-        for row in help_info.split("\n"):
-            print(row)
-
+        if IPYTHON_AVAILABLE:
+            display(HTML(f"<pre>{help_info}</pre>"))
+        else:
+            print(help_info)
 
 def load_ipython_extension(ipython):
     """
