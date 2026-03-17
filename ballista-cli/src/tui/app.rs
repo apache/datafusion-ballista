@@ -31,14 +31,14 @@ use tokio::sync::mpsc::Sender;
 use crate::tui::http_client::HttpClient;
 
 #[derive(Debug, PartialEq)]
-pub(crate) enum Views {
+enum Views {
     Dashboard,
     Jobs,
     Metrics,
 }
 
 #[derive(Debug, PartialEq)]
-pub(crate) enum InputMode {
+enum InputMode {
     View,
     Edit,
 }
@@ -46,7 +46,7 @@ pub(crate) enum InputMode {
 pub(crate) struct App {
     pub should_quit: bool,
     pub event_tx: Option<Sender<Event>>,
-    pub current_view: Views,
+    current_view: Views,
 
     pub dashboard_data: DashboardData,
     pub metrics_data: MetricsData,
@@ -57,7 +57,7 @@ pub(crate) struct App {
     pub show_scheduler_info: bool,
     pub cancel_job_result: Option<CancelJobResult>,
 
-    pub input_mode: InputMode,
+    input_mode: InputMode,
     pub search_term: String,
 
     pub http_client: Arc<HttpClient>,
@@ -91,6 +91,22 @@ impl App {
 
     pub fn is_scheduler_up(&self) -> bool {
         self.dashboard_data.scheduler_state.is_some()
+    }
+
+    pub fn is_dashboard_view(&self) -> bool {
+        self.current_view == Views::Dashboard
+    }
+
+    pub fn is_jobs_view(&self) -> bool {
+        self.current_view == Views::Jobs
+    }
+
+    pub fn is_metrics_view(&self) -> bool {
+        self.current_view == Views::Metrics
+    }
+
+    pub fn is_edit_mode(&self) -> bool {
+        self.input_mode == InputMode::Edit
     }
 
     pub fn set_event_tx(&mut self, tx: Sender<Event>) {

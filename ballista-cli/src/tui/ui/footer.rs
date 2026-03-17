@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::tui::app::{App, InputMode, Views};
+use crate::tui::app::App;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::prelude::Style;
@@ -25,7 +25,7 @@ use ratatui::widgets::{Block, Paragraph};
 pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let mut key_bindings = Vec::with_capacity(10);
 
-    if app.input_mode == InputMode::Edit {
+    if app.is_edit_mode() {
         key_bindings.push(Span::from("[Esc] Quit edit mode, "));
     } else {
         key_bindings.push(Span::from("Key bindings: "));
@@ -34,13 +34,13 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
             key_bindings.push(Span::from("[d] Dashboard, "));
             key_bindings.push(Span::from("[j] Jobs, "));
             key_bindings.push(Span::from("[m] Metrics, "));
-            if app.current_view == Views::Jobs {
+            if app.is_jobs_view() {
                 key_bindings.push(Span::from("[/] Search jobs, "));
                 key_bindings.push(Span::from("[s] Sort by Status, "));
                 key_bindings.push(Span::from("[p] Sort by % Completed, "));
                 key_bindings.push(Span::from("[t] Sort by Start time, "));
                 key_bindings.push(Span::from("[c] Cancel job, "));
-            } else if app.current_view == Views::Metrics {
+            } else if app.is_metrics_view() {
                 key_bindings.push(Span::from("[/] Search metrics, "));
             }
             key_bindings.push(Span::from("[i] Scheduler info, "));

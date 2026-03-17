@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::tui::app::{App, Views};
+use crate::tui::app::App;
 use crate::tui::ui::header::scheduler_state::render_scheduler_state;
 use ratatui::widgets::BorderType;
 use ratatui::{
@@ -90,11 +90,9 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
             .block(block.clone())
             .alignment(Alignment::Center);
 
-        let is_active = match app.current_view {
-            Views::Dashboard => *menu_item == "Dashboard",
-            Views::Jobs => *menu_item == "Jobs",
-            Views::Metrics => *menu_item == "Metrics",
-        };
+        let is_active = (app.is_dashboard_view() && *menu_item == "Dashboard")
+            || (app.is_jobs_view() && *menu_item == "Jobs")
+            || (app.is_metrics_view() && *menu_item == "Metrics");
 
         if is_active && app.is_scheduler_up() {
             block = block

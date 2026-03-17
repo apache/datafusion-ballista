@@ -23,7 +23,7 @@ mod main;
 mod scheduler_info_popup;
 mod search_box;
 
-use crate::tui::app::{App, Views};
+use crate::tui::app::App;
 use crate::tui::ui::header::render_header;
 use footer::render_footer;
 pub use main::{load_dashboard_data, load_jobs_data, load_metrics_data};
@@ -58,11 +58,11 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
 }
 
 fn render_main_view(f: &mut Frame, app: &App, area: Rect) {
-    if app.current_view == Views::Dashboard {
+    if app.is_dashboard_view() {
         render_dashboard(f, area, app);
-    } else if app.current_view == Views::Jobs {
+    } else if app.is_jobs_view() {
         render_jobs(f, area, app);
-    } else if app.current_view == Views::Metrics {
+    } else if app.is_metrics_view() {
         render_metrics(f, area, app);
     }
 }

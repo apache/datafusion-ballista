@@ -21,13 +21,13 @@ use ratatui::prelude::{Color, Line, Span, Style};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 pub(crate) fn render_search_box(f: &mut Frame, area: Rect, app: &crate::tui::app::App) {
-    let (title, border_style) = if app.input_mode == crate::tui::app::InputMode::Edit {
+    let (title, border_style) = if app.is_edit_mode() {
         (" Search ", Style::default().fg(Color::Yellow))
     } else {
         (" Search [/ to activate] ", Style::default().dim())
     };
 
-    let display_text = if app.input_mode == crate::tui::app::InputMode::Edit {
+    let display_text = if app.is_edit_mode() {
         let search_term = Span::from(app.search_term.to_string());
         let cursor = Span::from("_").style(Style::default().bold().yellow());
         Line::from(vec![search_term, cursor])
