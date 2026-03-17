@@ -18,15 +18,16 @@
 mod details;
 
 use crate::tui::{
+    TuiResult,
     app::App,
     domain::{Job, SortColumn, SortOrder},
     event::{Event, UiData},
     ui::search_box::render_search_box,
-    TuiResult,
 };
 
 use ratatui::style::Color;
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Margin, Rect},
     style::Style,
     text::Text,
@@ -34,7 +35,6 @@ use ratatui::{
         Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Scrollbar,
         ScrollbarOrientation, ScrollbarState, Table, TableState,
     },
-    Frame,
 };
 
 pub async fn load_jobs_data(app: &App) -> TuiResult<()> {
