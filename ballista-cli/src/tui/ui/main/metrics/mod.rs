@@ -66,7 +66,7 @@ pub fn render_metrics(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Clear, area);
 
     let search_term = app.search_term.to_lowercase();
-    let filtered_metrics: Vec<&crate::tui::domain::Metric> = if search_term.is_empty() {
+    let filtered_metrics: Vec<&Metric> = if search_term.is_empty() {
         app.metrics_data.metrics.iter().collect()
     } else {
         app.metrics_data

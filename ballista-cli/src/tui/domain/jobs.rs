@@ -15,31 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use prometheus_parse::Sample;
 use ratatui::widgets::TableState;
 use serde::Deserialize;
-use std::str::FromStr;
-
-#[derive(Deserialize, Clone, Debug)]
-pub struct SchedulerState {
-    pub started: i64,
-    pub version: String,
-    pub datafusion_version: String,
-    pub substrait_support: bool,
-    pub keda_support: bool,
-    pub prometheus_support: bool,
-    pub graphviz_support: bool,
-    pub spark_support: bool,
-    pub scheduling_policy: String,
-}
-
-#[derive(Deserialize, Clone, Debug)]
-pub struct ExecutorsData {
-    pub host: String,
-    pub port: u16,
-    pub id: String,
-    pub last_seen: i64,
-}
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct Job {
@@ -53,28 +30,6 @@ pub struct Job {
     pub percent_complete: u8,
 }
 
-#[derive(Clone, Debug)]
-pub struct DashboardData {
-    pub scheduler_state: Option<SchedulerState>,
-    pub executors_data: Vec<ExecutorsData>,
-    pub jobs_data: Vec<Job>,
-}
-
-/// A Prometheus metric
-///
-/// Returned by the /api/metrics REST endpoint
-#[derive(Clone, Debug)]
-pub struct Metric {
-    pub sample: Sample,
-    pub help: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct MetricsData {
-    pub metrics: Vec<Metric>,
-    pub table_state: TableState,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum SortColumn {
     None,
@@ -83,18 +38,12 @@ pub enum SortColumn {
     PercentComplete,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum SortOrder {
-    Ascending,
-    Descending,
-}
-
 #[derive(Clone, Debug)]
 pub struct JobsData {
     pub jobs: Vec<Job>,
     pub table_state: TableState,
     pub sort_column: SortColumn,
-    pub sort_order: SortOrder,
+    pub sort_order: crate::tui::domain::SortOrder,
 }
 
 #[derive(Deserialize, Debug)]
@@ -113,7 +62,7 @@ impl JobsData {
         match self.sort_column {
             SortColumn::Status => jobs.sort_by(|a, b| {
                 let cmp = a.status.cmp(&b.status);
-                if self.sort_order == SortOrder::Descending {
+                if self.sort_order == crate::tui::domain::SortOrder::Descending {
                     cmp.reverse()
                 } else {
                     cmp
@@ -121,7 +70,7 @@ impl JobsData {
             }),
             SortColumn::PercentComplete => jobs.sort_by(|a, b| {
                 let cmp = a.percent_complete.cmp(&b.percent_complete);
-                if self.sort_order == SortOrder::Descending {
+                if self.sort_order == crate::tui::domain::SortOrder::Descending {
                     cmp.reverse()
                 } else {
                     cmp
@@ -129,7 +78,7 @@ impl JobsData {
             }),
             SortColumn::StartTime => jobs.sort_by(|a, b| {
                 let cmp = a.start_time.cmp(&b.start_time);
-                if self.sort_order == SortOrder::Descending {
+                if self.sort_order == crate::tui::domain::SortOrder::Descending {
                     cmp.reverse()
                 } else {
                     cmp
@@ -155,45 +104,5 @@ impl JobsData {
         self.sort_jobs(&mut filtered);
         let idx = self.table_state.selected()?;
         filtered.get(idx).copied()
-    }
-}
-
-impl FromStr for MetricsData {
-    type Err = std::io::Error;
-
-    fn from_str(http_response: &str) -> Result<Self, Self::Err> {
-        let mut metrics: Vec<Metric> = Vec::new();
-
-        let lines: Vec<std::io::Result<String>> = http_response
-            .lines()
-            .map(|line| Ok(line.to_string()))
-            .collect();
-        let scrape = prometheus_parse::Scrape::parse(lines.into_iter())?;
-        for sample in scrape.samples {
-            let metric = Metric {
-                sample: sample.clone(),
-                help: scrape
-                    .docs
-                    .get(&sample.metric)
-                    .unwrap_or(&String::new())
-                    .to_string(),
-            };
-            metrics.push(metric);
-        }
-
-        Ok(MetricsData {
-            metrics,
-            table_state: ratatui::widgets::TableState::default(), // dummy state that is ignored
-        })
-    }
-}
-
-impl DashboardData {
-    pub fn new() -> Self {
-        Self {
-            scheduler_state: None,
-            executors_data: Vec::new(),
-            jobs_data: Vec::new(),
-        }
     }
 }
