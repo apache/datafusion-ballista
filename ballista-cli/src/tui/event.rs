@@ -19,13 +19,14 @@ use crossterm::event::{EventStream, KeyEvent};
 use futures::{FutureExt, StreamExt};
 use tokio::sync::mpsc;
 
-use crate::tui::domain::{ExecutorsData, Job, Metric, SchedulerState};
+use crate::tui::domain::{ExecutorsData, Job, JobDetails, Metric, SchedulerState};
 
 #[derive(Clone, Debug)]
 pub enum UiData {
     Dashboard(Option<SchedulerState>, Vec<ExecutorsData>, Vec<Job>),
     Metrics(Vec<Metric>),
     Jobs(Vec<Job>),
+    JobDetails(JobDetails),
 }
 
 #[derive(Clone, Debug)]

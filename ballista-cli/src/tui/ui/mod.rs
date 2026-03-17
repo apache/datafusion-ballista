@@ -26,7 +26,9 @@ mod search_box;
 use crate::tui::app::App;
 use crate::tui::ui::header::render_header;
 use footer::render_footer;
-pub use main::{load_dashboard_data, load_jobs_data, load_metrics_data};
+pub use main::{
+    load_dashboard_data, load_job_details, load_jobs_data, load_metrics_data,
+};
 use main::{render_dashboard, render_jobs, render_metrics};
 use ratatui::{
     Frame,

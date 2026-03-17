@@ -19,7 +19,8 @@ use crate::tui::TuiResult;
 use crate::tui::{
     TuiError,
     domain::{
-        CancelJobResult, DashboardData, JobsData, MetricsData, SortColumn, SortOrder,
+        CancelJobResult, DashboardData, JobDetails, JobsData, MetricsData, SortColumn,
+        SortOrder,
     },
     event::Event,
     infrastructure::Settings,
@@ -63,6 +64,8 @@ pub(crate) struct App {
 
     pub search_term: String,
 
+    pub job_details: Option<JobDetails>,
+
     pub http_client: Arc<HttpClient>,
 }
 
@@ -77,6 +80,7 @@ impl App {
             show_help: false,
             show_scheduler_info: false,
             cancel_job_result: None,
+            job_details: None,
             dashboard_data: DashboardData::new(),
             jobs_data: JobsData::new(),
             metrics_data: MetricsData::new(),
@@ -129,6 +133,17 @@ impl App {
             self.load_dashboard_data().await;
         } else if self.is_jobs_view() {
             self.load_jobs_data().await;
+            let selected_job_id = self
+                .jobs_data
+                .selected_job(&self.search_term)
+                .map(|j| j.job_id.clone());
+            let current_details_id = self.job_details.as_ref().map(|d| d.job_id.clone());
+            if selected_job_id != current_details_id {
+                self.job_details = None;
+                if let Some(job_id) = selected_job_id {
+                    self.load_selected_job_details(&job_id).await;
+                }
+            }
         } else if self.is_metrics_view() {
             self.load_metrics_data().await;
         }
@@ -206,6 +221,7 @@ impl App {
             KeyCode::Down => {
                 if self.is_jobs_view() {
                     self.jobs_data.table_state.scroll_down_by(1);
+                    self.update_selected_job_details().await;
                 } else if self.is_metrics_view() {
                     self.metrics_data.table_state.scroll_down_by(1);
                 }
@@ -213,6 +229,7 @@ impl App {
             KeyCode::Up => {
                 if self.is_jobs_view() {
                     self.jobs_data.table_state.scroll_up_by(1);
+                    self.update_selected_job_details().await;
                 } else if self.is_metrics_view() {
                     self.metrics_data.table_state.scroll_up_by(1);
                 }
@@ -220,6 +237,23 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    async fn update_selected_job_details(&mut self) {
+        self.job_details = None;
+        if let Some(job_id) = self
+            .jobs_data
+            .selected_job(&self.search_term)
+            .map(|j| j.job_id.clone())
+        {
+            self.load_selected_job_details(&job_id).await;
+        }
+    }
+
+    async fn load_selected_job_details(&self, job_id: &str) {
+        if let Err(e) = crate::tui::ui::load_job_details(self, job_id).await {
+            tracing::error!("Failed to load job details: {e:?}");
+        }
     }
 
     async fn load_dashboard_data(&mut self) {

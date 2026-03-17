@@ -74,6 +74,14 @@ pub enum CancelJobResult {
     Failure { job_id: String, error: String },
 }
 
+#[derive(Clone, Debug)]
+pub struct JobDetails {
+    pub job_id: String,
+    pub logical_plan: Option<String>,
+    pub physical_plan: Option<String>,
+    pub stage_plan: Option<String>,
+}
+
 impl JobsData {
     pub fn sort_jobs(&self, jobs: &mut Vec<&Job>) {
         match self.sort_column {

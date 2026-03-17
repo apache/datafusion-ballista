@@ -15,17 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod details;
+
 use crate::tui::{
-    TuiResult,
     app::App,
     domain::{Job, SortColumn, SortOrder},
     event::{Event, UiData},
     ui::search_box::render_search_box,
+    TuiResult,
 };
 
 use ratatui::style::Color;
 use ratatui::{
-    Frame,
     layout::{Constraint, Layout, Margin, Rect},
     style::Style,
     text::Text,
@@ -33,6 +34,7 @@ use ratatui::{
         Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Scrollbar,
         ScrollbarOrientation, ScrollbarState, Table, TableState,
     },
+    Frame,
 };
 
 pub async fn load_jobs_data(app: &App) -> TuiResult<()> {
@@ -46,6 +48,20 @@ pub async fn load_jobs_data(app: &App) -> TuiResult<()> {
 
     app.send_event(Event::DataLoaded {
         data: UiData::Jobs(jobs),
+    })
+    .await
+}
+
+pub async fn load_job_details(app: &App, job_id: &str) -> TuiResult<()> {
+    let details = match app.http_client.get_job_details(job_id).await {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!("Failed to load job details for {job_id}: {e:?}");
+            return Ok(());
+        }
+    };
+    app.send_event(Event::DataLoaded {
+        data: UiData::JobDetails(details),
     })
     .await
 }
@@ -67,12 +83,25 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
             .collect()
     };
 
-    let vertical = Layout::vertical([
-        Constraint::Length(3), // Search box
-        Constraint::Min(5),    // Table
-        Constraint::Length(4), // Scrollbar
-    ]);
-    let rects = vertical.split(area);
+    let rects = if let Some(job_details) = &app.job_details {
+        let vertical = Layout::vertical([
+            Constraint::Length(3),      // Search box
+            Constraint::Min(5),         // Table
+            Constraint::Percentage(40), // Job Details
+            Constraint::Length(4),      // Scrollbar padding
+        ]);
+        let r = vertical.split(area);
+        let details_area = r[2];
+        details::render_job_details(f, details_area, job_details);
+        r
+    } else {
+        let vertical = Layout::vertical([
+            Constraint::Length(3), // Search box
+            Constraint::Min(5),    // Table
+            Constraint::Length(4), // Scrollbar padding
+        ]);
+        vertical.split(area)
+    };
 
     render_search_box(f, rects[0], app);
 

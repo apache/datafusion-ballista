@@ -84,6 +84,9 @@ pub async fn tui_main() -> TuiResult<()> {
                                 sort_order: app.jobs_data.sort_order
                             };
                     }
+                    UiData::JobDetails(details) => {
+                        app.job_details = Some(details);
+                    }
                   }
                 }
             }

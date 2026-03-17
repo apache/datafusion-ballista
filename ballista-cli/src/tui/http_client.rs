@@ -22,7 +22,8 @@ use std::time::Duration;
 use crate::tui::{
     TuiResult,
     domain::{
-        CancelJobResponse, ExecutorsData, Job, Metric, MetricsData, SchedulerState,
+        CancelJobResponse, ExecutorsData, Job, JobDetails, Metric, MetricsData,
+        SchedulerState,
     },
     error::TuiError,
     infrastructure::Settings,
@@ -75,10 +76,12 @@ impl HttpClient {
             .await
             .inspect_err(|err| tracing::error!("The HTTP PATCH request failed: {err:?}"))
             .map_err(TuiError::from)?;
+
         let response = response
             .error_for_status()
             .map_err(TuiError::from)
             .inspect_err(|err| tracing::error!("HTTP error status: {err:?}"))?;
+
         response
             .json::<CancelJobResponse>()
             .await
@@ -87,6 +90,24 @@ impl HttpClient {
             .inspect_err(|err| {
                 tracing::error!("Failed to parse cancel response: {err:?}")
             })
+    }
+
+    pub async fn get_job_details(&self, job_id: &str) -> TuiResult<JobDetails> {
+        #[derive(serde::Deserialize, Debug)]
+        struct JobDetailResponse {
+            logical_plan: Option<String>,
+            physical_plan: Option<String>,
+            stage_plan: Option<String>,
+        }
+
+        let url = format!("{}/api/job/{}", self.scheduler_url, job_id);
+        let resp = self.json::<JobDetailResponse>(&url).await?;
+        Ok(JobDetails {
+            job_id: job_id.to_string(),
+            logical_plan: resp.logical_plan,
+            physical_plan: resp.physical_plan,
+            stage_plan: resp.stage_plan,
+        })
     }
 
     pub async fn get_metrics(&self) -> TuiResult<Vec<Metric>> {
