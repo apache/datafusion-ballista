@@ -15,12 +15,30 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#![doc = include_str!("../README.md")]
-pub const BALLISTA_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
+use crate::tui::domain::Job;
+use serde::Deserialize;
 
-pub mod command;
-pub mod exec;
-#[cfg(feature = "tui")]
-mod tui;
+#[derive(Deserialize, Clone, Debug)]
+pub struct ExecutorsData {
+    pub host: String,
+    pub port: u16,
+    pub id: String,
+    pub last_seen: i64,
+}
 
-pub use datafusion_cli::{functions, helper, print_format, print_options};
+#[derive(Clone, Debug)]
+pub struct DashboardData {
+    pub scheduler_state: Option<super::SchedulerState>,
+    pub executors_data: Vec<ExecutorsData>,
+    pub jobs_data: Vec<Job>,
+}
+
+impl DashboardData {
+    pub fn new() -> Self {
+        Self {
+            scheduler_state: None,
+            executors_data: Vec::new(),
+            jobs_data: Vec::new(),
+        }
+    }
+}

@@ -15,12 +15,31 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#![doc = include_str!("../README.md")]
-pub const BALLISTA_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
+mod dashboard;
+mod jobs;
+mod metrics;
 
-pub mod command;
-pub mod exec;
-#[cfg(feature = "tui")]
-mod tui;
+pub(crate) use dashboard::*;
+pub(crate) use jobs::*;
+pub(crate) use metrics::*;
 
-pub use datafusion_cli::{functions, helper, print_format, print_options};
+use serde::Deserialize;
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct SchedulerState {
+    pub started: i64,
+    pub version: String,
+    pub datafusion_version: String,
+    pub substrait_support: bool,
+    pub keda_support: bool,
+    pub prometheus_support: bool,
+    pub graphviz_support: bool,
+    pub spark_support: bool,
+    pub scheduling_policy: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum SortOrder {
+    Ascending,
+    Descending,
+}
