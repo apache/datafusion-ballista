@@ -15,12 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::tui::TuiResult;
 use crate::tui::{
-    domain::{DashboardData, JobsData, MetricsData, SortColumn, SortOrder},
+    domain::{
+        CancelJobResult, DashboardData, JobsData, MetricsData, SortColumn, SortOrder,
+    },
     event::Event,
     infrastructure::Settings,
 };
-use color_eyre::eyre::{Ok, Result};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::TableState;
 use std::sync::Arc;
@@ -53,6 +55,7 @@ pub(crate) struct App {
     // Popups
     pub show_help: bool,
     pub show_scheduler_info: bool,
+    pub cancel_job_result: Option<CancelJobResult>,
 
     pub input_mode: InputMode,
     pub search_term: String,
@@ -61,13 +64,14 @@ pub(crate) struct App {
 }
 
 impl App {
-    pub fn new(config: Settings) -> Result<Self> {
+    pub fn new(config: Settings) -> TuiResult<Self> {
         Ok(Self {
             current_view: Views::Dashboard,
             should_quit: false,
             event_tx: None,
             show_help: false,
             show_scheduler_info: false,
+            cancel_job_result: None,
             input_mode: InputMode::View,
             search_term: String::new(),
             dashboard_data: DashboardData::new(),
@@ -103,7 +107,7 @@ impl App {
         }
     }
 
-    pub async fn on_key(&mut self, key: KeyEvent) -> Result<()> {
+    pub async fn on_key(&mut self, key: KeyEvent) -> TuiResult<()> {
         // Edit mode takes priority over everything
         if self.input_mode == InputMode::Edit {
             match key.code {
@@ -119,6 +123,11 @@ impl App {
                 }
                 _ => {}
             }
+            return Ok(());
+        }
+
+        if self.cancel_job_result.is_some() {
+            self.cancel_job_result = None;
             return Ok(());
         }
 
@@ -164,6 +173,12 @@ impl App {
             }
             KeyCode::Char('t') if self.current_view == Views::Jobs => {
                 self.sort_jobs_by(SortColumn::StartTime);
+            }
+            KeyCode::Char('c')
+                if self.current_view == Views::Jobs
+                    && self.input_mode == InputMode::View =>
+            {
+                self.cancel_selected_job().await;
             }
             KeyCode::Down => {
                 if self.current_view == Views::Jobs {
@@ -215,6 +230,23 @@ impl App {
         } else {
             self.jobs_data.sort_column = sort_column;
             self.jobs_data.sort_order = SortOrder::Ascending;
+        }
+    }
+
+    async fn cancel_selected_job(&mut self) {
+        if let Some(job) = self.jobs_data.selected_job(&self.search_term)
+            && (job.status == "Running" || job.status == "Queued")
+        {
+            let job_id = job.job_id.clone();
+            self.cancel_job_result =
+                Some(match self.http_client.cancel_job(&job_id).await {
+                    Ok(resp) if resp.canceled => CancelJobResult::Success { job_id },
+                    Ok(_) => CancelJobResult::NotCanceled { job_id },
+                    Err(e) => CancelJobResult::Failure {
+                        job_id,
+                        error: e.to_string(),
+                    },
+                });
         }
     }
 }

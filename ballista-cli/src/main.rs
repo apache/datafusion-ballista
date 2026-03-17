@@ -26,7 +26,6 @@ use ballista_cli::{
     BALLISTA_CLI_VERSION, exec, print_format::PrintFormat, print_options::PrintOptions,
 };
 use clap::Parser;
-use color_eyre::eyre::Result;
 use datafusion::{
     execution::SessionStateBuilder,
     prelude::{SessionConfig, SessionContext},
@@ -109,12 +108,14 @@ struct Args {
 }
 
 #[tokio::main]
-pub async fn main() -> Result<()> {
+pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     #[cfg(feature = "tui")]
     if args.tui {
-        return tui::tui_main().await;
+        return tui::tui_main()
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>);
     }
     env_logger::init();
 

@@ -97,6 +97,67 @@ pub struct JobsData {
     pub sort_order: SortOrder,
 }
 
+#[derive(Deserialize, Debug)]
+pub struct CancelJobResponse {
+    pub canceled: bool,
+}
+
+pub enum CancelJobResult {
+    Success { job_id: String },
+    NotCanceled { job_id: String },
+    Failure { job_id: String, error: String },
+}
+
+impl JobsData {
+    pub fn sort_jobs(&self, jobs: &mut Vec<&Job>) {
+        match self.sort_column {
+            SortColumn::Status => jobs.sort_by(|a, b| {
+                let cmp = a.status.cmp(&b.status);
+                if self.sort_order == SortOrder::Descending {
+                    cmp.reverse()
+                } else {
+                    cmp
+                }
+            }),
+            SortColumn::PercentComplete => jobs.sort_by(|a, b| {
+                let cmp = a.percent_complete.cmp(&b.percent_complete);
+                if self.sort_order == SortOrder::Descending {
+                    cmp.reverse()
+                } else {
+                    cmp
+                }
+            }),
+            SortColumn::StartTime => jobs.sort_by(|a, b| {
+                let cmp = a.start_time.cmp(&b.start_time);
+                if self.sort_order == SortOrder::Descending {
+                    cmp.reverse()
+                } else {
+                    cmp
+                }
+            }),
+            SortColumn::None => {}
+        }
+    }
+
+    pub fn selected_job<'a>(&'a self, search_term: &str) -> Option<&'a Job> {
+        let search_term = search_term.to_lowercase();
+        let mut filtered: Vec<&Job> = if search_term.is_empty() {
+            self.jobs.iter().collect()
+        } else {
+            self.jobs
+                .iter()
+                .filter(|j| {
+                    j.job_id.to_lowercase().contains(&search_term)
+                        || j.job_name.to_lowercase().contains(&search_term)
+                })
+                .collect()
+        };
+        self.sort_jobs(&mut filtered);
+        let idx = self.table_state.selected()?;
+        filtered.get(idx).copied()
+    }
+}
+
 impl FromStr for MetricsData {
     type Err = std::io::Error;
 

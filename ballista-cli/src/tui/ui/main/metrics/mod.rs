@@ -52,7 +52,7 @@ pub async fn load_metrics_data(app: &App) -> TuiResult<()> {
                     data: UiData::Metrics(metrics),
                 })
                 .await
-                .map_err(TuiError::SendError)?;
+                .map_err(TuiError::from)?;
         }
         None => {
             tracing::warn!("Metrics data loaded but event_tx is not set");

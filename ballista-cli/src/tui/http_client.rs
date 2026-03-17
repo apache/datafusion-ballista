@@ -15,15 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::time::Duration;
-
-use color_eyre::eyre::Result;
 use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
+use std::time::Duration;
 
 use crate::tui::{
     TuiResult,
-    domain::{ExecutorsData, Job, Metric, MetricsData, SchedulerState},
+    domain::{
+        CancelJobResponse, ExecutorsData, Job, Metric, MetricsData, SchedulerState,
+    },
     error::TuiError,
     infrastructure::Settings,
 };
@@ -34,7 +34,7 @@ pub struct HttpClient {
 }
 
 impl HttpClient {
-    pub fn new(config: Settings) -> Result<Self> {
+    pub fn new(config: Settings) -> TuiResult<Self> {
         Ok(Self {
             scheduler_url: config.scheduler.url,
             client: Client::builder()
@@ -65,10 +65,34 @@ impl HttpClient {
         })
     }
 
+    pub async fn cancel_job(&self, job_id: &str) -> TuiResult<CancelJobResponse> {
+        let url = format!("{}/api/job/{}", self.scheduler_url, job_id);
+        tracing::trace!("Going to PATCH {}", &url);
+        let response = self
+            .client
+            .patch(&url)
+            .send()
+            .await
+            .inspect_err(|err| tracing::error!("The HTTP PATCH request failed: {err:?}"))
+            .map_err(TuiError::from)?;
+        let response = response
+            .error_for_status()
+            .map_err(TuiError::from)
+            .inspect_err(|err| tracing::error!("HTTP error status: {err:?}"))?;
+        response
+            .json::<CancelJobResponse>()
+            .await
+            .map_err(TuiError::from)
+            .inspect(|data| tracing::trace!("Cancel response: {data:?}"))
+            .inspect_err(|err| {
+                tracing::error!("Failed to parse cancel response: {err:?}")
+            })
+    }
+
     pub async fn get_metrics(&self) -> TuiResult<Vec<Metric>> {
         let url = self.url("metrics");
         let body: String = self.text(&url).await?;
-        let metrics = body.parse::<MetricsData>().map_err(TuiError::Metrics)?;
+        let metrics = body.parse::<MetricsData>().map_err(TuiError::from)?;
         Ok(metrics.metrics)
     }
 
@@ -76,13 +100,13 @@ impl HttpClient {
         let response = self.get(url).await?;
         let response = response
             .error_for_status()
-            .map_err(TuiError::Reqwest)
+            .map_err(TuiError::from)
             .inspect_err(|err| tracing::error!("HTTP error status: {err:?}"))?;
 
         response
             .text()
             .await
-            .map_err(TuiError::Reqwest)
+            .map_err(TuiError::from)
             .inspect(|data| tracing::trace!("Loaded: {data:?}"))
             .inspect_err(|err| tracing::error!("The HTTP request failed: {err:?}"))
     }
@@ -94,13 +118,13 @@ impl HttpClient {
         let response = self.get(url).await?;
         let response = response
             .error_for_status()
-            .map_err(TuiError::Reqwest)
+            .map_err(TuiError::from)
             .inspect_err(|err| tracing::error!("HTTP error status: {err:?}"))?;
 
         response
             .json::<R>()
             .await
-            .map_err(TuiError::Reqwest)
+            .map_err(TuiError::from)
             .inspect(|data| tracing::trace!("Loaded: {data:?}"))
             .inspect_err(|err| tracing::error!("The HTTP request failed: {err:?}"))
     }
@@ -113,7 +137,7 @@ impl HttpClient {
             .await
             .inspect(|data| tracing::trace!("Got: {data:?}"))
             .inspect_err(|err| tracing::error!("The HTTP GET request failed: {err:?}"))
-            .map_err(TuiError::Reqwest)
+            .map_err(TuiError::from)
     }
 
     fn url(&self, path: &str) -> String {

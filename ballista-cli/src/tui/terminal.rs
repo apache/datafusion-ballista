@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use color_eyre::Result;
+use crate::tui::TuiResult;
 use crossterm::{
     execute,
     terminal::{
@@ -27,7 +27,7 @@ use std::io::{self, Stdout};
 
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 
-fn init() -> Result<Tui> {
+fn init() -> TuiResult<Tui> {
     execute!(io::stdout(), EnterAlternateScreen)?;
     enable_raw_mode()?;
     let backend = CrosstermBackend::new(io::stdout());
@@ -44,7 +44,7 @@ fn init() -> Result<Tui> {
     Ok(terminal)
 }
 
-fn restore() -> Result<()> {
+fn restore() -> TuiResult<()> {
     execute!(io::stdout(), LeaveAlternateScreen)?;
     disable_raw_mode()?;
     Ok(())
@@ -55,7 +55,7 @@ pub struct TuiWrapper {
 }
 
 impl TuiWrapper {
-    pub fn new() -> Result<Self> {
+    pub fn new() -> TuiResult<Self> {
         Ok(Self { terminal: init()? })
     }
 }

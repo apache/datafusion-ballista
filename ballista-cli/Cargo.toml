@@ -33,7 +33,6 @@ ballista = { path = "../ballista/client", version = "52.0.0", features = ["stand
 
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"], optional = true }
 clap = { workspace = true, features = ["derive", "cargo"] }
-color-eyre = { version = "0.6.5" }
 config = { version = "0.15.19", default-features = false, features = ["yaml"], optional = true }
 crossterm = { version = "0.29.0", features = ["event-stream"], optional = true }
 datafusion = { workspace = true }

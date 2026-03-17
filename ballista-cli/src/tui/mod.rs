@@ -25,7 +25,6 @@ mod terminal;
 mod ui;
 
 use app::App;
-use color_eyre::Result;
 use event::{Event, EventHandler};
 use std::time::Duration;
 use terminal::TuiWrapper;
@@ -35,16 +34,10 @@ use crate::tui::{error::TuiError, event::UiData, infrastructure::Settings};
 
 pub type TuiResult<OK> = Result<OK, TuiError>;
 
-pub async fn tui_main() -> Result<()> {
+pub async fn tui_main() -> TuiResult<()> {
     infrastructure::init_file_logger("ballista", "info")?;
     tracing::info!("Starting the Ballista TUI application");
 
-    match color_eyre::install() {
-        Ok(_) => {}
-        Err(e) => {
-            tracing::debug!("Failed to install color-eyre: {:?}", e);
-        }
-    }
     let config = Settings::new()?;
 
     let mut tui_wrapper = TuiWrapper::new()?;

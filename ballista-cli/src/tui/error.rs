@@ -15,17 +15,21 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use tokio::sync::mpsc::error::SendError;
-
 use crate::tui::event::Event;
+use config::ConfigError;
+use datafusion::common::DataFusionError;
+use tokio::sync::mpsc::error::SendError;
+use tracing_subscriber::filter::ParseError;
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum TuiError {
     Reqwest(reqwest::Error),
     Json(serde_json::Error),
-    Metrics(std::io::Error),
-    SendError(SendError<Event>),
+    IO(std::io::Error),
+    SendError(Box<SendError<Event>>),
+    Config(Box<ConfigError>),
+    Tracing(Box<ParseError>),
+    DataFusion(Box<DataFusionError>),
 }
 
 impl std::fmt::Display for TuiError {
@@ -33,8 +37,11 @@ impl std::fmt::Display for TuiError {
         match self {
             TuiError::Reqwest(err) => write!(f, "Reqwest error: {err}"),
             TuiError::Json(err) => write!(f, "JSON error: {err}"),
-            TuiError::Metrics(err) => write!(f, "Metrics parsing error: {err}"),
+            TuiError::IO(err) => write!(f, "An IO error occurred: {err}"),
             TuiError::SendError(err) => write!(f, "Send error: {err}"),
+            TuiError::Config(err) => write!(f, "Config error: {err}"),
+            TuiError::Tracing(err) => write!(f, "Tracing error: {err}"),
+            TuiError::DataFusion(err) => write!(f, "DataFusion error: {err}"),
         }
     }
 }
@@ -55,6 +62,30 @@ impl From<serde_json::Error> for TuiError {
 
 impl From<SendError<Event>> for TuiError {
     fn from(err: SendError<Event>) -> Self {
-        TuiError::SendError(err)
+        TuiError::SendError(Box::new(err))
+    }
+}
+
+impl From<std::io::Error> for TuiError {
+    fn from(err: std::io::Error) -> Self {
+        TuiError::IO(err)
+    }
+}
+
+impl From<ConfigError> for TuiError {
+    fn from(err: ConfigError) -> Self {
+        TuiError::Config(Box::new(err))
+    }
+}
+
+impl From<ParseError> for TuiError {
+    fn from(err: ParseError) -> Self {
+        TuiError::Tracing(Box::new(err))
+    }
+}
+
+impl From<DataFusionError> for TuiError {
+    fn from(err: DataFusionError) -> Self {
+        TuiError::DataFusion(Box::new(err))
     }
 }

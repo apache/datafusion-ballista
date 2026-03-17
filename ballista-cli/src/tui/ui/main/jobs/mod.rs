@@ -51,7 +51,7 @@ pub async fn load_jobs_data(app: &App) -> TuiResult<()> {
                     data: UiData::Jobs(jobs),
                 })
                 .await
-                .map_err(TuiError::SendError)?;
+                .map_err(TuiError::from)?;
         }
         None => {
             tracing::warn!("Jobs data loaded but event_tx is not set");
@@ -88,7 +88,7 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
     render_search_box(f, rects[0], app);
 
     let mut sorted_jobs = filtered_jobs;
-    sort(&mut sorted_jobs, app);
+    app.jobs_data.sort_jobs(&mut sorted_jobs);
 
     if !sorted_jobs.is_empty() {
         let mut scroll_state = ScrollbarState::new((sorted_jobs.len() - 1) * 2);
@@ -104,36 +104,6 @@ pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
         render_scrollbar(f, rects[1], &mut scroll_state);
     } else {
         render_no_jobs(f, rects[1]);
-    }
-}
-
-fn sort(jobs: &mut Vec<&Job>, app: &App) {
-    match app.jobs_data.sort_column {
-        SortColumn::Status => jobs.sort_by(|a, b| {
-            let cmp = a.status.cmp(&b.status);
-            if app.jobs_data.sort_order == SortOrder::Descending {
-                cmp.reverse()
-            } else {
-                cmp
-            }
-        }),
-        SortColumn::PercentComplete => jobs.sort_by(|a, b| {
-            let cmp = a.percent_complete.cmp(&b.percent_complete);
-            if app.jobs_data.sort_order == SortOrder::Descending {
-                cmp.reverse()
-            } else {
-                cmp
-            }
-        }),
-        SortColumn::StartTime => jobs.sort_by(|a, b| {
-            let cmp = a.start_time.cmp(&b.start_time);
-            if app.jobs_data.sort_order == SortOrder::Descending {
-                cmp.reverse()
-            } else {
-                cmp
-            }
-        }),
-        SortColumn::None => {}
     }
 }
 

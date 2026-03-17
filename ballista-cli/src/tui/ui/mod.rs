@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod cancel_result_popup;
 mod footer;
 mod header;
 mod help_overlay;
@@ -51,6 +52,8 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
         help_overlay::render_help_overlay(f, app);
     } else if app.show_scheduler_info {
         scheduler_info_popup::render_scheduler_info(f, app);
+    } else if app.cancel_job_result.is_some() {
+        cancel_result_popup::render_cancel_result_popup(f, app);
     }
 }
 

@@ -61,6 +61,10 @@ pub(crate) fn render_help_overlay(f: &mut Frame, app: &App) {
             style,
         )),
         Line::from(Span::styled("  i       Show Scheduler Info", style)),
+        Line::from(Span::styled(
+            "  c       Cancel selected Running/Queued job",
+            style,
+        )),
         Line::from(""),
         Line::from(vec![Span::styled(
             " General",

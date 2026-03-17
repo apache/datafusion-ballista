@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::tui::TuiResult;
+use crate::tui::error::TuiError;
 use tracing_subscriber::EnvFilter;
 
 /// Initializes a tracing subscriber that logs to a file.
@@ -27,10 +29,7 @@ use tracing_subscriber::EnvFilter;
 /// # Returns
 ///
 /// Returns `Ok(())` if initialization succeeds, or an error if it fails.
-pub fn init_file_logger(
-    log_file_prefix: &str,
-    default_level: &str,
-) -> color_eyre::Result<()> {
+pub fn init_file_logger(log_file_prefix: &str, default_level: &str) -> TuiResult<()> {
     let dir_name = "logs";
     std::fs::create_dir_all(dir_name)?;
 
@@ -41,7 +40,8 @@ pub fn init_file_logger(
         .write(true)
         .create(true)
         .truncate(true)
-        .open(format!("{dir_name}/{log_file_prefix}.log"))?;
+        .open(format!("{dir_name}/{log_file_prefix}.log"))
+        .map_err(TuiError::from)?;
 
     match tracing_subscriber::fmt()
         .with_env_filter(env_filter)
