@@ -58,6 +58,7 @@ docs/example1.dat
 docs/example3.dat
 python/.eggs/
 python/doc/
+python/examples/.ipynb_checkpoints
 # Egg metadata
 *.egg-info
 
