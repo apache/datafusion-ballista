@@ -17,6 +17,7 @@
 
 use crate::tui::TuiResult;
 use crate::tui::{
+    TuiError,
     domain::{
         CancelJobResult, DashboardData, JobsData, MetricsData, SortColumn, SortOrder,
     },
@@ -24,7 +25,6 @@ use crate::tui::{
     infrastructure::Settings,
 };
 use crossterm::event::{KeyCode, KeyEvent};
-use ratatui::widgets::TableState;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
@@ -44,9 +44,12 @@ enum InputMode {
 }
 
 pub(crate) struct App {
-    pub should_quit: bool,
-    pub event_tx: Option<Sender<Event>>,
+    should_quit: bool,
+
+    event_tx: Option<Sender<Event>>,
+
     current_view: Views,
+    input_mode: InputMode,
 
     pub dashboard_data: DashboardData,
     pub metrics_data: MetricsData,
@@ -55,9 +58,9 @@ pub(crate) struct App {
     // Popups
     pub show_help: bool,
     pub show_scheduler_info: bool,
+
     pub cancel_job_result: Option<CancelJobResult>,
 
-    input_mode: InputMode,
     pub search_term: String,
 
     pub http_client: Arc<HttpClient>,
@@ -66,25 +69,17 @@ pub(crate) struct App {
 impl App {
     pub fn new(config: Settings) -> TuiResult<Self> {
         Ok(Self {
-            current_view: Views::Dashboard,
             should_quit: false,
             event_tx: None,
+            current_view: Views::Dashboard,
+            input_mode: InputMode::View,
+            search_term: String::new(),
             show_help: false,
             show_scheduler_info: false,
             cancel_job_result: None,
-            input_mode: InputMode::View,
-            search_term: String::new(),
             dashboard_data: DashboardData::new(),
-            jobs_data: JobsData {
-                jobs: Vec::new(),
-                table_state: TableState::default(),
-                sort_column: SortColumn::None,
-                sort_order: SortOrder::Ascending,
-            },
-            metrics_data: MetricsData {
-                metrics: Vec::new(),
-                table_state: TableState::default(),
-            },
+            jobs_data: JobsData::new(),
+            metrics_data: MetricsData::new(),
             http_client: Arc::new(HttpClient::new(config)?),
         })
     }
@@ -109,8 +104,24 @@ impl App {
         self.input_mode == InputMode::Edit
     }
 
+    pub fn should_quit(&self) -> bool {
+        self.should_quit
+    }
+
     pub fn set_event_tx(&mut self, tx: Sender<Event>) {
         self.event_tx = Some(tx);
+    }
+
+    pub async fn send_event(&self, event: Event) -> TuiResult<()> {
+        if let Some(tx) = &self.event_tx {
+            tx.send(event)
+                .await
+                .inspect_err(|e| tracing::warn!("Failed to send event: {e:?}"))
+                .map_err(TuiError::from)
+        } else {
+            tracing::warn!("Event_tx is not set");
+            Ok(())
+        }
     }
 
     pub async fn on_tick(&mut self) {

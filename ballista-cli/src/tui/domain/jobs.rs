@@ -46,6 +46,23 @@ pub struct JobsData {
     pub sort_order: crate::tui::domain::SortOrder,
 }
 
+impl Default for JobsData {
+    fn default() -> Self {
+        Self {
+            jobs: Vec::new(),
+            table_state: TableState::default(),
+            sort_column: SortColumn::None,
+            sort_order: crate::tui::domain::SortOrder::Ascending,
+        }
+    }
+}
+
+impl JobsData {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 #[derive(Deserialize, Debug)]
 pub struct CancelJobResponse {
     pub canceled: bool,

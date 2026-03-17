@@ -91,7 +91,7 @@ pub async fn tui_main() -> TuiResult<()> {
 
         tokio::task::yield_now().await;
 
-        if app.should_quit {
+        if app.should_quit() {
             tracing::info!("Stopping the Ballista TUI application!");
             break;
         }

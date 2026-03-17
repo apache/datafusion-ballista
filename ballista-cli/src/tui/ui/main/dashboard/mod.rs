@@ -30,7 +30,6 @@ use ratatui::{
 use crate::tui::{
     TuiResult,
     app::App,
-    error::TuiError,
     event::{Event, UiData},
 };
 
@@ -77,19 +76,8 @@ pub async fn load_dashboard_data(app: &App) -> TuiResult<()> {
         }
     };
 
-    match &app.event_tx {
-        Some(event_tx) => {
-            event_tx
-                .send(Event::DataLoaded {
-                    data: UiData::Dashboard(scheduler_state, executors_data, jobs_data),
-                })
-                .await
-                .map_err(TuiError::from)?;
-        }
-        None => {
-            tracing::warn!("Dashboard data loaded but event_tx is not set");
-        }
-    }
-
-    Ok(())
+    app.send_event(Event::DataLoaded {
+        data: UiData::Dashboard(scheduler_state, executors_data, jobs_data),
+    })
+    .await
 }

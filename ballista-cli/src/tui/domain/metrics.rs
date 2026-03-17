@@ -28,10 +28,16 @@ pub struct Metric {
     pub help: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct MetricsData {
     pub metrics: Vec<Metric>,
     pub table_state: TableState,
+}
+
+impl MetricsData {
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 impl FromStr for MetricsData {

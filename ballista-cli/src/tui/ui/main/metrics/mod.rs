@@ -15,13 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::tui::TuiResult;
-use crate::tui::app::App;
-use crate::tui::domain::Metric;
-use crate::tui::error::TuiError;
-use crate::tui::event::Event;
-use crate::tui::event::UiData;
-use crate::tui::ui::search_box::render_search_box;
+use crate::tui::{
+    TuiResult,
+    app::App,
+    domain::Metric,
+    event::{Event, UiData},
+    ui::search_box::render_search_box,
+};
 use prometheus_parse::HistogramCount;
 
 use ratatui::style::Color;
@@ -45,21 +45,10 @@ pub async fn load_metrics_data(app: &App) -> TuiResult<()> {
         }
     };
 
-    match &app.event_tx {
-        Some(event_tx) => {
-            event_tx
-                .send(Event::DataLoaded {
-                    data: UiData::Metrics(metrics),
-                })
-                .await
-                .map_err(TuiError::from)?;
-        }
-        None => {
-            tracing::warn!("Metrics data loaded but event_tx is not set");
-        }
-    }
-
-    Ok(())
+    app.send_event(Event::DataLoaded {
+        data: UiData::Metrics(metrics),
+    })
+    .await
 }
 
 pub fn render_metrics(f: &mut Frame, area: Rect, app: &App) {

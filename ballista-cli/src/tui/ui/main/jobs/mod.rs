@@ -15,13 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::tui::TuiResult;
-use crate::tui::app::App;
-use crate::tui::domain::{Job, SortColumn, SortOrder};
-use crate::tui::error::TuiError;
-use crate::tui::event::Event;
-use crate::tui::event::UiData;
-use crate::tui::ui::search_box::render_search_box;
+use crate::tui::{
+    TuiResult,
+    app::App,
+    domain::{Job, SortColumn, SortOrder},
+    event::{Event, UiData},
+    ui::search_box::render_search_box,
+};
 
 use ratatui::style::Color;
 use ratatui::{
@@ -44,21 +44,10 @@ pub async fn load_jobs_data(app: &App) -> TuiResult<()> {
         }
     };
 
-    match &app.event_tx {
-        Some(event_tx) => {
-            event_tx
-                .send(Event::DataLoaded {
-                    data: UiData::Jobs(jobs),
-                })
-                .await
-                .map_err(TuiError::from)?;
-        }
-        None => {
-            tracing::warn!("Jobs data loaded but event_tx is not set");
-        }
-    }
-
-    Ok(())
+    app.send_event(Event::DataLoaded {
+        data: UiData::Jobs(jobs),
+    })
+    .await
 }
 
 pub fn render_jobs(f: &mut Frame, area: Rect, app: &App) {
