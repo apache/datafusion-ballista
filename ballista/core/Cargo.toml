@@ -53,7 +53,7 @@ clap = { workspace = true, optional = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 datafusion-proto-common = { workspace = true }
-datafusion-spark = { workspace = true, optional = true }
+datafusion-spark = { workspace = true, optional = true, features = ["datafusion"] }
 futures = { workspace = true }
 itertools = "0.14"
 log = { workspace = true }
