@@ -29,7 +29,6 @@ pub fn parse_dot(job_id: &str, content: &str) -> StagesGraph {
     for event in events {
         match event {
             GraphEvent::AddNode { id, label, .. } => {
-                tracing::debug!("Adding node: {id} -> {label:?}");
                 let stage_num = if id.starts_with("stage_") {
                     id.split('_')
                         .nth(1)

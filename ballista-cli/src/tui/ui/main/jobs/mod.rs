@@ -57,7 +57,6 @@ pub async fn load_jobs_data(app: &App) -> TuiResult<()> {
 pub async fn load_job_dot(app: &App, job_id: &str) -> TuiResult<()> {
     match app.http_client.get_job_dot(job_id).await {
         Ok(dot_content) => {
-            tracing::debug!("Loaded job dot for {job_id}: {dot_content:?}");
             let graph = dot_parser::parse_dot(job_id, &dot_content);
             app.send_event(Event::DataLoaded {
                 data: UiData::JobDot(graph),

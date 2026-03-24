@@ -30,6 +30,10 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
 use crate::tui::http_client::HttpClient;
+use crate::tui::ui::{
+    load_dashboard_data, load_job_details, load_job_dot, load_jobs_data,
+    load_metrics_data,
+};
 
 #[derive(Debug, PartialEq)]
 enum Views {
@@ -275,42 +279,37 @@ impl App {
     }
 
     async fn load_selected_job_details(&self, job_id: &str) {
-        if let Err(e) = crate::tui::ui::load_job_details(self, job_id).await {
+        if let Err(e) = load_job_details(self, job_id).await {
             tracing::error!("Failed to load job details: {e:?}");
         }
     }
 
     async fn load_job_dot_data(&self) {
-        tracing::debug!("Loading job dot data: {:?}", self.jobs_data);
         if let Some(selected_job) = self.jobs_data.selected_job(&self.search_term) {
-            if selected_job.status == "Completed" {
-                if let Err(e) =
-                    crate::tui::ui::load_job_dot(self, &selected_job.job_id).await
-                {
-                    tracing::error!("Failed to load job dot: {e:?}");
-                }
-            } else {
-                tracing::debug!("Job not completed: {selected_job:?}");
+            if selected_job.status == "Completed"
+                && let Err(e) = load_job_dot(self, &selected_job.job_id).await
+            {
+                tracing::error!("Failed to load job dot: {e:?}");
             }
         } else {
-            tracing::debug!("No job selected");
+            tracing::trace!("No job selected");
         }
     }
 
     async fn load_dashboard_data(&mut self) {
-        if let Err(e) = crate::tui::ui::load_dashboard_data(self).await {
+        if let Err(e) = load_dashboard_data(self).await {
             tracing::error!("Failed to load dashboard data on tick: {e:?}");
         }
     }
 
     async fn load_jobs_data(&mut self) {
-        if let Err(e) = crate::tui::ui::load_jobs_data(self).await {
+        if let Err(e) = load_jobs_data(self).await {
             tracing::error!("Failed to load jobs data on tick: {e:?}");
         }
     }
 
     async fn load_metrics_data(&mut self) {
-        if let Err(e) = crate::tui::ui::load_metrics_data(self).await {
+        if let Err(e) = load_metrics_data(self).await {
             tracing::error!("Failed to load metrics data on tick: {e:?}");
         }
     }
