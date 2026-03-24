@@ -43,18 +43,18 @@ pub struct CollectExec {
     /// The underlying execution plan whose partitions will be merged.
     plan: Arc<dyn ExecutionPlan>,
     /// Properties describing this plan's partitioning and ordering.
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
 }
 
 impl CollectExec {
     /// Creates a new CollectExec that merges all partitions of the given plan.
     pub fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
-        let properties = PlanProperties::new(
+        let properties = Arc::new(PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(plan.schema()),
             Partitioning::UnknownPartitioning(1),
             datafusion::physical_plan::execution_plan::EmissionType::Incremental,
             datafusion::physical_plan::execution_plan::Boundedness::Bounded,
-        );
+        ));
         Self { plan, properties }
     }
 }
@@ -87,7 +87,7 @@ impl ExecutionPlan for CollectExec {
         self.plan.schema()
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 

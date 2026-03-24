@@ -23,6 +23,7 @@ use crate::execution_plans::{
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::aggregates::AggregateExec;
+#[allow(deprecated)]
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::filter::FilterExec;
@@ -75,6 +76,7 @@ pub fn produce_diagram(filename: &str, stages: &[Arc<dyn ShuffleWriter>]) -> Res
     Ok(())
 }
 
+#[allow(deprecated)]
 fn build_exec_plan_diagram(
     w: &mut BufWriter<&File>,
     plan: &dyn ExecutionPlan,

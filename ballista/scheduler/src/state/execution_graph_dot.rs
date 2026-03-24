@@ -26,6 +26,7 @@ use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_plan::aggregates::AggregateExec;
+#[allow(deprecated)]
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::filter::FilterExec;
@@ -227,7 +228,7 @@ fn sanitize(str: &str, max_len: Option<usize>) -> String {
     }
     sanitized
 }
-
+#[allow(deprecated)]
 fn get_operator_name(plan: &dyn ExecutionPlan) -> String {
     if let Some(exec) = plan.as_any().downcast_ref::<FilterExec>() {
         format!("Filter: {}", exec.predicate())

@@ -31,10 +31,12 @@ use datafusion_proto::logical_plan::file_formats::{
     ArrowLogicalExtensionCodec, AvroLogicalExtensionCodec, CsvLogicalExtensionCodec,
     JsonLogicalExtensionCodec, ParquetLogicalExtensionCodec,
 };
-use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_hash_partitioning;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
+use datafusion_proto::physical_plan::{
+    DefaultPhysicalExtensionCodec, DefaultPhysicalProtoConverter,
+};
 use datafusion_proto::protobuf::proto_error;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use datafusion_proto::{
@@ -336,7 +338,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     "Could not deserialize BallistaPhysicalPlanNode because it's physical_plan_type is none".to_string()
                 )
             })?;
-
+        let converter = DefaultPhysicalProtoConverter {};
         match ballista_plan {
             PhysicalPlanType::ShuffleWriter(shuffle_writer) => {
                 let input = inputs[0].clone();
@@ -346,6 +348,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     ctx,
                     input.schema().as_ref(),
                     self.default_codec.as_ref(),
+                    &converter,
                 )?;
 
                 Ok(Arc::new(ShuffleWriterExec::try_new(
@@ -364,6 +367,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     ctx,
                     input.schema().as_ref(),
                     self.default_codec.as_ref(),
+                    &converter,
                 )?;
 
                 let partitioning = shuffle_output_partitioning.ok_or_else(|| {
@@ -420,6 +424,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     ctx,
                     schema.as_ref(),
                     self.default_codec.as_ref(),
+                    &converter,
                 )?;
                 let partitioning = partitioning
                     .ok_or_else(|| proto_error("missing required partitioning field"))?;
@@ -439,6 +444,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     ctx,
                     schema.as_ref(),
                     self.default_codec.as_ref(),
+                    &converter,
                 )?;
                 let partitioning = partitioning
                     .ok_or_else(|| proto_error("missing required partitioning field"))?;
@@ -558,9 +564,11 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         .collect::<Result<Vec<_>, _>>()?,
                 });
             }
+            let converter = DefaultPhysicalProtoConverter {};
             let partitioning = serialize_partitioning(
                 &exec.properties().partitioning,
                 self.default_codec.as_ref(),
+                &converter,
             )?;
             let proto = protobuf::BallistaPhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::ShuffleReader(
@@ -580,9 +588,11 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
 
             Ok(())
         } else if let Some(exec) = node.as_any().downcast_ref::<UnresolvedShuffleExec>() {
+            let converter = DefaultPhysicalProtoConverter {};
             let partitioning = serialize_partitioning(
                 &exec.properties().partitioning,
                 self.default_codec.as_ref(),
+                &converter,
             )?;
             let proto = protobuf::BallistaPhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::UnresolvedShuffle(
