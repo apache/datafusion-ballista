@@ -248,7 +248,7 @@ impl App {
             }
             KeyCode::Down => {
                 if self.is_jobs_view() {
-                    self.jobs_data.table_state.scroll_down_by(1);
+                    self.jobs_data.scroll_down();
                     self.update_selected_job_details().await;
                 } else if self.is_metrics_view() {
                     self.metrics_data.table_state.scroll_down_by(1);
@@ -256,7 +256,7 @@ impl App {
             }
             KeyCode::Up => {
                 if self.is_jobs_view() {
-                    self.jobs_data.table_state.scroll_up_by(1);
+                    self.jobs_data.scroll_up();
                     self.update_selected_job_details().await;
                 } else if self.is_metrics_view() {
                     self.metrics_data.table_state.scroll_up_by(1);
