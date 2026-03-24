@@ -22,20 +22,21 @@ use std::collections::BTreeMap;
 pub fn parse_dot(job_id: &str, content: &str) -> StagesGraph {
     let events = dot::parse(content);
 
-    let other_key = u32::MAX;
+    let unknown_key = u32::MAX;
     let mut stages: BTreeMap<u32, Vec<GraphNode>> = BTreeMap::new();
     let mut edges: Vec<(String, String)> = Vec::new();
 
     for event in events {
         match event {
             GraphEvent::AddNode { id, label, .. } => {
+                tracing::debug!("Adding node: {id} -> {label:?}");
                 let stage_num = if id.starts_with("stage_") {
                     id.split('_')
                         .nth(1)
                         .and_then(|s| s.parse::<u32>().ok())
-                        .unwrap_or(other_key)
+                        .unwrap_or(unknown_key)
                 } else {
-                    other_key
+                    unknown_key
                 };
                 let node = GraphNode {
                     label: label.unwrap_or_else(|| id.clone()),
@@ -52,13 +53,15 @@ pub fn parse_dot(job_id: &str, content: &str) -> StagesGraph {
 
     let stages = stages
         .into_iter()
-        .map(|(k, nodes)| {
-            let label = if k == other_key {
-                "Other".to_string()
+        .filter_map(|(k, nodes)| {
+            if k == unknown_key {
+                None
             } else {
-                format!("Stage {k}")
-            };
-            GraphStage { label, nodes }
+                Some(GraphStage {
+                    label: format!("Stage {k}"),
+                    nodes,
+                })
+            }
         })
         .collect();
 
