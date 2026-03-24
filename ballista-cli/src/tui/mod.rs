@@ -87,6 +87,10 @@ pub async fn tui_main() -> TuiResult<()> {
                     UiData::JobDetails(details) => {
                         app.job_details = Some(details);
                     }
+                    UiData::JobDot(graph) => {
+                        app.job_dot_popup = Some(graph);
+                        app.job_dot_scroll = 0;
+                    }
                   }
                 }
             }

@@ -21,7 +21,7 @@ use ratatui::prelude::{Color, Line, Modifier, Span, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 pub(crate) fn render_help_overlay(f: &mut Frame, app: &App) {
-    let area = crate::tui::ui::centered_rect(25, 40, f.area());
+    let area = crate::tui::ui::centered_rect(25, 50, f.area());
 
     f.render_widget(Clear, area);
 
@@ -48,19 +48,18 @@ pub(crate) fn render_help_overlay(f: &mut Frame, app: &App) {
         Line::from(Span::styled("  j       Show Jobs", style)),
         Line::from(Span::styled("  m       Show Metrics", style)),
         Line::from(Span::styled("  /       Search in Jobs or Metrics", style)),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            " Jobs view:",
+            Style::default().fg(Color::Yellow),
+        )]),
+        Line::from(Span::styled("  s       Sort by Status", style)),
+        Line::from(Span::styled("  p       Sort by % Completed", style)),
+        Line::from(Span::styled("  t       Sort by Start time", style)),
         Line::from(Span::styled(
-            "  s       Sort by Status (in Jobs view)",
+            "  g       Dot graph if a completed job is selected",
             style,
         )),
-        Line::from(Span::styled(
-            "  p       Sort by % Completed (in Jobs view)",
-            style,
-        )),
-        Line::from(Span::styled(
-            "  t       Sort by Start time (in Jobs view)",
-            style,
-        )),
-        Line::from(Span::styled("  i       Show Scheduler Info", style)),
         Line::from(Span::styled(
             "  c       Cancel selected Running/Queued job",
             style,
@@ -70,9 +69,9 @@ pub(crate) fn render_help_overlay(f: &mut Frame, app: &App) {
             " General",
             Style::default().fg(Color::Yellow),
         )]),
-        Line::from("  ?/h       Show this help"),
-        Line::from("  q/Esc     Quit"),
-        Line::from(""),
+        Line::from(Span::styled("  i       Show Scheduler Info", style)),
+        Line::from("  ?/h     Show this help"),
+        Line::from("  q/Esc   Quit"),
     ];
 
     let block = Block::default()

@@ -35,11 +35,14 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
             key_bindings.push(Span::from("[j] Jobs, "));
             key_bindings.push(Span::from("[m] Metrics, "));
             if app.is_jobs_view() {
-                key_bindings.push(Span::from("[/] Search jobs, "));
-                key_bindings.push(Span::from("[s] Sort by Status, "));
-                key_bindings.push(Span::from("[p] Sort by % Completed, "));
-                key_bindings.push(Span::from("[t] Sort by Start time, "));
+                if app.has_more_than_one_job() {
+                    key_bindings.push(Span::from("[/] Search jobs, "));
+                    key_bindings.push(Span::from("[s] Sort by Status, "));
+                    key_bindings.push(Span::from("[p] Sort by % Completed, "));
+                    key_bindings.push(Span::from("[t] Sort by Start time, "));
+                }
                 if app.has_selected_job() {
+                    key_bindings.push(Span::from("[g] View job stages, "));
                     key_bindings.push(Span::from("[c] Cancel job, "));
                 }
             } else if app.is_metrics_view() {

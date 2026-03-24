@@ -82,6 +82,25 @@ pub struct JobDetails {
     pub stage_plan: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct GraphNode {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct GraphStage {
+    pub label: String,
+    pub nodes: Vec<GraphNode>,
+}
+
+#[derive(Clone, Debug)]
+pub struct StagesGraph {
+    pub job_id: String,
+    pub stages: Vec<GraphStage>,
+    pub edges: Vec<(String, String)>,
+}
+
 impl JobsData {
     pub fn sort_jobs(&self, jobs: &mut Vec<&Job>) {
         match self.sort_column {
@@ -127,7 +146,7 @@ impl JobsData {
                 .collect()
         };
         self.sort_jobs(&mut filtered);
-        let idx = self.table_state.selected()?;
+        let idx = self.table_state.selected()?.saturating_sub(1);
         filtered.get(idx).copied()
     }
 }

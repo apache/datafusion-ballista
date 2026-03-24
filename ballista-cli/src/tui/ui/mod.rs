@@ -19,6 +19,7 @@ mod cancel_result_popup;
 mod footer;
 mod header;
 mod help_overlay;
+mod job_dot_popup;
 mod main;
 mod scheduler_info_popup;
 mod search_box;
@@ -27,7 +28,8 @@ use crate::tui::app::App;
 use crate::tui::ui::header::render_header;
 use footer::render_footer;
 pub use main::{
-    load_dashboard_data, load_job_details, load_jobs_data, load_metrics_data,
+    load_dashboard_data, load_job_details, load_job_dot, load_jobs_data,
+    load_metrics_data,
 };
 use main::{render_dashboard, render_jobs, render_metrics};
 use ratatui::{
@@ -56,6 +58,8 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
         scheduler_info_popup::render_scheduler_info(f, app);
     } else if app.cancel_job_result.is_some() {
         cancel_result_popup::render_cancel_result_popup(f, app);
+    } else if app.job_dot_popup.is_some() {
+        job_dot_popup::render_job_dot_popup(f, app);
     }
 }
 

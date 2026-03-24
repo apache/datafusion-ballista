@@ -110,6 +110,11 @@ impl HttpClient {
         })
     }
 
+    pub async fn get_job_dot(&self, job_id: &str) -> TuiResult<String> {
+        let url = format!("{}/api/job/{}/dot", self.scheduler_url, job_id);
+        self.text(&url).await
+    }
+
     pub async fn get_metrics(&self) -> TuiResult<Vec<Metric>> {
         let url = self.url("metrics");
         let body: String = self.text(&url).await?;

@@ -16,6 +16,7 @@
 // under the License.
 
 mod details;
+mod dot_parser;
 
 use crate::tui::{
     TuiResult,
@@ -50,6 +51,23 @@ pub async fn load_jobs_data(app: &App) -> TuiResult<()> {
         data: UiData::Jobs(jobs),
     })
     .await
+}
+
+pub async fn load_job_dot(app: &App, job_id: &str) -> TuiResult<()> {
+    match app.http_client.get_job_dot(job_id).await {
+        Ok(dot_content) => {
+            tracing::debug!("Loaded job dot for {job_id}: {dot_content:?}");
+            let graph = dot_parser::parse_dot(job_id, &dot_content);
+            app.send_event(Event::DataLoaded {
+                data: UiData::JobDot(graph),
+            })
+            .await
+        }
+        Err(e) => {
+            tracing::error!("Failed to load job dot for {job_id}: {e:?}");
+            Ok(())
+        }
+    }
 }
 
 pub async fn load_job_details(app: &App, job_id: &str) -> TuiResult<()> {

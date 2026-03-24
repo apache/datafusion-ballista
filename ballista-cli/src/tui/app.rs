@@ -20,7 +20,7 @@ use crate::tui::{
     TuiError,
     domain::{
         CancelJobResult, DashboardData, JobDetails, JobsData, MetricsData, SortColumn,
-        SortOrder,
+        SortOrder, StagesGraph,
     },
     event::Event,
     infrastructure::Settings,
@@ -66,6 +66,9 @@ pub(crate) struct App {
 
     pub job_details: Option<JobDetails>,
 
+    pub job_dot_popup: Option<StagesGraph>,
+    pub job_dot_scroll: u16,
+
     pub http_client: Arc<HttpClient>,
 }
 
@@ -81,6 +84,8 @@ impl App {
             show_scheduler_info: false,
             cancel_job_result: None,
             job_details: None,
+            job_dot_popup: None,
+            job_dot_scroll: 0,
             dashboard_data: DashboardData::new(),
             jobs_data: JobsData::new(),
             metrics_data: MetricsData::new(),
@@ -173,6 +178,22 @@ impl App {
             return Ok(());
         }
 
+        if self.job_dot_popup.is_some() {
+            match key.code {
+                KeyCode::Up => {
+                    self.job_dot_scroll = self.job_dot_scroll.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    self.job_dot_scroll += 1;
+                }
+                _ => {
+                    self.job_dot_popup = None;
+                    self.job_dot_scroll = 0;
+                }
+            }
+            return Ok(());
+        }
+
         if self.show_help || self.show_scheduler_info {
             self.show_help = false;
             self.show_scheduler_info = false;
@@ -188,6 +209,9 @@ impl App {
             }
             KeyCode::Char('i') => {
                 self.show_scheduler_info = true;
+            }
+            KeyCode::Char('g') if self.is_jobs_view() => {
+                self.load_job_dot_data().await;
             }
             KeyCode::Char('d') if self.is_scheduler_up() => {
                 self.current_view = Views::Dashboard;
@@ -256,6 +280,23 @@ impl App {
         }
     }
 
+    async fn load_job_dot_data(&self) {
+        tracing::debug!("Loading job dot data: {:?}", self.jobs_data);
+        if let Some(selected_job) = self.jobs_data.selected_job(&self.search_term) {
+            if selected_job.status == "Completed" {
+                if let Err(e) =
+                    crate::tui::ui::load_job_dot(self, &selected_job.job_id).await
+                {
+                    tracing::error!("Failed to load job dot: {e:?}");
+                }
+            } else {
+                tracing::debug!("Job not completed: {selected_job:?}");
+            }
+        } else {
+            tracing::debug!("No job selected");
+        }
+    }
+
     async fn load_dashboard_data(&mut self) {
         if let Err(e) = crate::tui::ui::load_dashboard_data(self).await {
             tracing::error!("Failed to load dashboard data on tick: {e:?}");
@@ -309,5 +350,9 @@ impl App {
 
     pub fn has_selected_job(&self) -> bool {
         self.jobs_data.selected_job(&self.search_term).is_some()
+    }
+
+    pub fn has_more_than_one_job(&self) -> bool {
+        self.jobs_data.jobs.len() > 1
     }
 }
