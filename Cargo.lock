@@ -936,7 +936,7 @@ dependencies = [
 
 [[package]]
 name = "ballista"
-version = "52.0.0"
+version = "53.0.0"
 dependencies = [
  "async-trait",
  "ballista-core",
@@ -956,7 +956,7 @@ dependencies = [
 
 [[package]]
 name = "ballista-benchmarks"
-version = "52.0.0"
+version = "53.0.0"
 dependencies = [
  "ballista",
  "ballista-core",
@@ -976,7 +976,7 @@ dependencies = [
 
 [[package]]
 name = "ballista-cli"
-version = "52.0.0"
+version = "53.0.0"
 dependencies = [
  "ballista",
  "clap 4.6.0",
@@ -991,7 +991,7 @@ dependencies = [
 
 [[package]]
 name = "ballista-core"
-version = "52.0.0"
+version = "53.0.0"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -1027,7 +1027,7 @@ dependencies = [
 
 [[package]]
 name = "ballista-examples"
-version = "52.0.0"
+version = "53.0.0"
 dependencies = [
  "arrow-flight",
  "ballista",
@@ -1053,7 +1053,7 @@ dependencies = [
 
 [[package]]
 name = "ballista-executor"
-version = "52.0.0"
+version = "53.0.0"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -1081,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "ballista-scheduler"
-version = "52.0.0"
+version = "53.0.0"
 dependencies = [
  "arrow-flight",
  "async-trait",
