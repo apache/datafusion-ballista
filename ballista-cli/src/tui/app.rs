@@ -251,7 +251,7 @@ impl App {
                     self.jobs_data.scroll_down();
                     self.update_selected_job_details().await;
                 } else if self.is_metrics_view() {
-                    self.metrics_data.table_state.scroll_down_by(1);
+                    self.metrics_data.scroll_down();
                 }
             }
             KeyCode::Up => {
@@ -259,7 +259,7 @@ impl App {
                     self.jobs_data.scroll_up();
                     self.update_selected_job_details().await;
                 } else if self.is_metrics_view() {
-                    self.metrics_data.table_state.scroll_up_by(1);
+                    self.metrics_data.scroll_up();
                 }
             }
             _ => {}

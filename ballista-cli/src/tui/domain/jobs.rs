@@ -151,7 +151,7 @@ impl JobsData {
     }
 
     fn get_selected_job_index(&self) -> Option<usize> {
-        self.table_state.selected() //.map(|idx| idx.saturating_sub(1))
+        self.table_state.selected()
     }
 
     pub fn scroll_down(&mut self) {
