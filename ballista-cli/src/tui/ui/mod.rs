@@ -19,7 +19,6 @@ mod cancel_result_popup;
 mod footer;
 mod header;
 mod help_overlay;
-mod job_dot_popup;
 mod main;
 mod scheduler_info_popup;
 mod search_box;
@@ -28,7 +27,7 @@ use crate::tui::app::App;
 use crate::tui::ui::header::render_header;
 use footer::render_footer;
 pub use main::{
-    load_dashboard_data, load_job_details, load_job_dot, load_jobs_data,
+    job_dot_popup, load_dashboard_data, load_job_details, load_job_dot, load_jobs_data,
     load_metrics_data,
 };
 use main::{render_dashboard, render_jobs, render_metrics};

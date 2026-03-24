@@ -20,5 +20,7 @@ mod jobs;
 mod metrics;
 
 pub use dashboard::{load_dashboard_data, render_dashboard};
-pub use jobs::{load_job_details, load_job_dot, load_jobs_data, render_jobs};
+pub use jobs::{
+    job_dot_popup, load_job_details, load_job_dot, load_jobs_data, render_jobs,
+};
 pub use metrics::{load_metrics_data, render_metrics};

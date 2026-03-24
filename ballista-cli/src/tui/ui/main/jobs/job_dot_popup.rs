@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::tui::app::App;
+use crate::tui::domain::GraphNode;
 use ratatui::Frame;
 use ratatui::prelude::{Color, Line, Modifier, Span, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
@@ -126,7 +127,7 @@ pub(crate) fn render_job_dot_popup(f: &mut Frame, app: &App) {
             }
         }
 
-        let node_map: HashMap<&str, &crate::tui::domain::GraphNode> =
+        let node_map: HashMap<&str, &GraphNode> =
             stage.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         let edge_set: HashSet<(&str, &str)> = intra_edges.into_iter().collect();
 

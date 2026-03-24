@@ -17,6 +17,7 @@
 
 mod details;
 mod dot_parser;
+pub mod job_dot_popup;
 
 use crate::tui::{
     TuiResult,
