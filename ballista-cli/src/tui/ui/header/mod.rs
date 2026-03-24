@@ -34,11 +34,17 @@ const MENU_CONSTRAINTS: [Constraint; MENU_ITEMS.len()] =
     [Constraint::Percentage(PERCENTAGE); MENU_ITEMS.len()];
 
 pub(super) fn render_header(f: &mut Frame, area: Rect, app: &App) {
+    tracing::debug!("render_header: {area:?}");
+    let banner_percentage = match area.width {
+        0..200 => 30,
+        220..230 => 35,
+        _ => 40,
+    };
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(40), // banner
-            Constraint::Percentage(60), // scheduler info and menu
+            Constraint::Percentage(banner_percentage), // banner
+            Constraint::Percentage(100 - banner_percentage), // scheduler info and menu
         ])
         .split(area);
 
@@ -48,8 +54,15 @@ pub(super) fn render_header(f: &mut Frame, area: Rect, app: &App) {
 
 fn render_banner(f: &mut Frame, area: Rect) {
     use tui_big_text::{BigText, PixelSize};
+
+    let banner_size = match area.width {
+        0..70 => PixelSize::Octant,
+        70..80 => PixelSize::QuarterHeight,
+        _ => PixelSize::ThirdHeight,
+    };
+    tracing::debug!("render_header: {area:?}, banner_size: {banner_size:?},");
     let big_text = BigText::builder()
-        .pixel_size(PixelSize::ThirdHeight)
+        .pixel_size(banner_size)
         .style(Style::new().yellow())
         .lines(vec!["Apache".into(), "DataFusion".into()])
         .build();
