@@ -111,8 +111,7 @@ fn build_exec_plan_diagram(
     {
         "UnresolvedShuffleExec"
     } else if plan
-        .as_any()
-        
+        .as_any() 
         .downcast_ref::<CoalesceBatchesExec>()
         .is_some()
     {
