@@ -435,11 +435,6 @@ pub enum TaskDistribution {
     /// Distribute tasks evenly across executors. This will try and iterate through available executors
     /// and assign one task to each executor until all tasks are assigned.
     RoundRobin,
-    /// 1. Firstly, try to bind tasks without scanning source files by `RoundRobin` policy.
-    /// 2. Then for a task for scanning source files, firstly calculate a hash value based on input files.
-    ///    And then bind it with an execute according to consistent hashing policy.
-    /// 3. If needed, work stealing can be enabled based on the tolerance of the consistent hashing.
-    ConsistentHash,
 }
 
 impl Display for TaskDistribution {
@@ -447,7 +442,6 @@ impl Display for TaskDistribution {
         match self {
             TaskDistribution::Bias => f.write_str("bias"),
             TaskDistribution::RoundRobin => f.write_str("round-robin"),
-            TaskDistribution::ConsistentHash => f.write_str("consistent-hash"),
         }
     }
 }
@@ -471,16 +465,6 @@ pub enum TaskDistributionPolicy {
     /// Distribute tasks evenly across executors. This will try and iterate through available executors
     /// and assign one task to each executor until all tasks are assigned.
     RoundRobin,
-    /// 1. Firstly, try to bind tasks without scanning source files by `RoundRobin` policy.
-    /// 2. Then for a task for scanning source files, firstly calculate a hash value based on input files.
-    ///    And then bind it with an execute according to consistent hashing policy.
-    /// 3. If needed, work stealing can be enabled based on the tolerance of the consistent hashing.
-    ConsistentHash {
-        /// Number of virtual nodes per executor on the consistent hash ring.
-        num_replicas: usize,
-        /// Tolerance for work stealing when slots are imbalanced.
-        tolerance: usize,
-    },
     /// User provided task distribution policy
     Custom(Arc<dyn DistributionPolicy>),
 }
@@ -493,14 +477,6 @@ impl TryFrom<Config> for SchedulerConfig {
         let task_distribution = match opt.task_distribution {
             TaskDistribution::Bias => TaskDistributionPolicy::Bias,
             TaskDistribution::RoundRobin => TaskDistributionPolicy::RoundRobin,
-            TaskDistribution::ConsistentHash => {
-                let num_replicas = opt.consistent_hash_num_replicas as usize;
-                let tolerance = opt.consistent_hash_tolerance as usize;
-                TaskDistributionPolicy::ConsistentHash {
-                    num_replicas,
-                    tolerance,
-                }
-            }
         };
 
         let config = SchedulerConfig {

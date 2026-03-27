@@ -35,8 +35,6 @@ pub fn print_version() {
 pub mod client;
 /// Configuration options and settings for Ballista components.
 pub mod config;
-/// Consistent hashing implementation for data distribution.
-pub mod consistent_hash;
 /// Utilities for generating execution plan diagrams.
 pub mod diagram;
 /// Error types and result definitions for Ballista operations.
