@@ -37,7 +37,7 @@ datafusion-proto-common = "53"
 datafusion-spark = "53"
 datafusion-substrait = "53"
 
-insta = "1.46"
+insta = "1.47"
 object_store = "0.13"
 prost = "0.14"
 prost-types = "0.14"
