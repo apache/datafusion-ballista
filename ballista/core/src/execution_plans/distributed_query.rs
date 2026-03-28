@@ -715,9 +715,10 @@ async fn fetch_partition(
         .fetch_partition_proxied(
             &metadata.id,
             &partition_id.into(),
+            location.file_id,
+            location.is_sort_shuffle,
             host,
             port,
-            &location.path,
             flight_transport,
         )
         .await

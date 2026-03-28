@@ -40,17 +40,19 @@ impl TryInto<protobuf::Action> for Action {
                 job_id,
                 stage_id,
                 partition_id,
-                path,
+                file_id,
                 host,
                 port,
+                is_sort_shuffle,
             } => Ok(protobuf::Action {
                 action_type: Some(ActionType::FetchPartition(protobuf::FetchPartition {
                     job_id,
                     stage_id: stage_id as u32,
                     partition_id: partition_id as u32,
-                    path,
                     host,
                     port: port as u32,
+                    file_id,
+                    is_sort_shuffle,
                 })),
                 settings: vec![],
             }),
@@ -78,7 +80,8 @@ impl TryInto<protobuf::PartitionLocation> for PartitionLocation {
             partition_id: Some(self.partition_id.into()),
             executor_meta: Some(self.executor_meta.into()),
             partition_stats: Some(self.partition_stats.into()),
-            path: self.path,
+            file_id: self.file_id,
+            is_sort_shuffle: self.is_sort_shuffle,
         })
     }
 }

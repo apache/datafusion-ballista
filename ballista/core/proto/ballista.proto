@@ -230,9 +230,14 @@ message FetchPartition {
   string job_id = 1;
   uint32 stage_id = 2;
   uint32 partition_id = 3;
-  string path = 4;
   string host = 5;
   uint32 port = 6;
+  optional uint64 file_id = 7;
+  bool is_sort_shuffle = 8 ;
+  
+  // reserved after removing deprecated `path`.
+  reserved 4;
+  reserved "path"; 
 }
 
 message PartitionLocation {
@@ -242,7 +247,12 @@ message PartitionLocation {
   PartitionId partition_id = 2;
   ExecutorMetadata executor_meta = 3;
   PartitionStats partition_stats = 4;
-  string path = 5;
+  optional uint64 file_id = 6;
+  bool is_sort_shuffle = 7;
+
+  // reserved after removing deprecated `path`.
+  reserved 5;
+  reserved "path";
 }
 
 // Unique identifier for a materialized partition of data
@@ -448,10 +458,15 @@ message TaskKilled {
 
 message ShuffleWritePartition {
   uint64 partition_id = 1;
-  string path = 2;
   uint64 num_batches = 3;
   uint64 num_rows = 4;
   uint64 num_bytes = 5;
+  optional uint64 file_id = 6;
+  bool is_sort_shuffle = 7;
+
+  // reserved after removing path
+  reserved 2;
+  reserved "path";
 }
 
 message TaskStatus {

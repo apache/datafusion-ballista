@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::error::BallistaError;
+use crate::execution_plans::create_shuffle_path;
 use crate::registry::BallistaFunctionRegistry;
 use datafusion::arrow::array::{
     ArrayBuilder, StructArray, StructBuilder, UInt64Array, UInt64Builder,
@@ -26,6 +27,7 @@ use datafusion::physical_plan::Partitioning;
 use datafusion::prelude::SessionConfig;
 use serde::Serialize;
 use std::fmt::Debug;
+use std::path::PathBuf;
 use std::{collections::HashMap, fmt, sync::Arc};
 
 /// Conversions from protobuf types to Ballista types.
@@ -44,12 +46,16 @@ pub enum Action {
         stage_id: usize,
         /// The partition identifier within the stage.
         partition_id: usize,
-        /// File path to the partition data.
-        path: String,
+        // /// File path to the partition data.
+        // path: String,
         /// Hostname or IP address of the executor hosting this partition.
         host: String,
         /// Port number for data transfer.
         port: u16,
+        /// shuffle file block id
+        file_id: Option<u64>,
+        /// is shuffle partition sort partition
+        is_sort_shuffle: bool,
     },
 }
 
@@ -86,8 +92,24 @@ pub struct PartitionLocation {
     pub executor_meta: ExecutorMetadata,
     /// Statistics about the partition data.
     pub partition_stats: PartitionStats,
-    /// File path to the partition data.
-    pub path: String,
+    /// shuffle file id
+    pub file_id: Option<u64>,
+    /// is shuffle partition sort partition
+    pub is_sort_shuffle: bool,
+}
+
+impl PartitionLocation {
+    /// creates file actuall file location
+    pub fn path(&self, work_dir: &str) -> datafusion::error::Result<PathBuf> {
+        create_shuffle_path(
+            work_dir,
+            &self.partition_id.job_id,
+            self.partition_id.stage_id,
+            self.partition_id.partition_id,
+            self.file_id,
+            self.is_sort_shuffle,
+        )
+    }
 }
 
 /// Meta-data for an executor, used when fetching shuffle partitions from other executors.

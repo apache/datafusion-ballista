@@ -35,6 +35,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::execution_plans::create_shuffle_path;
 use crate::utils;
 
 use crate::serde::protobuf::ShuffleWritePartition;
@@ -200,10 +201,6 @@ impl ShuffleWriterExec {
         input_partition: usize,
         context: Arc<TaskContext>,
     ) -> impl Future<Output = Result<Vec<ShuffleWritePartition>>> {
-        let mut path = PathBuf::from(&self.work_dir);
-        path.push(&self.job_id);
-        path.push(format!("{}", self.stage_id));
-
         let write_metrics = ShuffleWriteMetrics::new(input_partition, &self.metrics);
         let output_partitioning = self.shuffle_output_partitioning.clone();
         let plan = self.plan.clone();
@@ -215,16 +212,26 @@ impl ShuffleWriterExec {
             match output_partitioning {
                 None => {
                     let timer = write_metrics.write_time.timer();
-                    path.push(format!("{input_partition}"));
-                    std::fs::create_dir_all(&path)?;
-                    path.push("data.arrow");
-                    let path = path.to_str().unwrap();
-                    debug!("Writing results to {path}");
+
+                    let path = create_shuffle_path(
+                        &self.work_dir,
+                        &self.job_id,
+                        self.stage_id,
+                        input_partition,
+                        None,
+                        false,
+                    )?;
+
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+
+                    debug!("Writing results to {path:?}");
 
                     // stream results to disk
                     let stats = utils::write_stream_to_disk(
                         &mut stream,
-                        path,
+                        path.as_path(),
                         &write_metrics.write_time,
                     )
                     .await
@@ -247,10 +254,11 @@ impl ShuffleWriterExec {
 
                     Ok(vec![ShuffleWritePartition {
                         partition_id: input_partition as u64,
-                        path: path.to_owned(),
                         num_batches: stats.num_batches.unwrap_or(0),
                         num_rows: stats.num_rows.unwrap_or(0),
                         num_bytes: stats.num_bytes.unwrap_or(0),
+                        file_id: None,
+                        is_sort_shuffle: false,
                     }])
                 }
 
@@ -285,13 +293,19 @@ impl ShuffleWriterExec {
                                         w.writer.write(&output_batch)?;
                                     }
                                     None => {
-                                        let mut path = path.clone();
-                                        path.push(format!("{output_partition}"));
-                                        std::fs::create_dir_all(&path)?;
+                                        let path = create_shuffle_path(
+                                            &self.work_dir,
+                                            &self.job_id,
+                                            self.stage_id,
+                                            output_partition,
+                                            Some(input_partition as u64),
+                                            false,
+                                        )?;
 
-                                        path.push(format!(
-                                            "data-{input_partition}.arrow"
-                                        ));
+                                        if let Some(parent) = path.parent() {
+                                            std::fs::create_dir_all(parent)?;
+                                        }
+
                                         debug!("Writing results to {path:?}");
 
                                         let options = IpcWriteOptions::default()
@@ -337,10 +351,11 @@ impl ShuffleWriterExec {
 
                             part_locs.push(ShuffleWritePartition {
                                 partition_id: i as u64,
-                                path: w.path.to_string_lossy().to_string(),
                                 num_batches: w.num_batches as u64,
                                 num_rows: w.num_rows as u64,
                                 num_bytes,
+                                file_id: Some(input_partition as u64),
+                                is_sort_shuffle: false,
                             });
                         }
                     }
@@ -440,10 +455,13 @@ impl ExecutionPlan for ShuffleWriterExec {
         let schema = result_schema();
 
         let schema_captured = schema.clone();
+        let job_id = self.job_id.to_string();
+        let work_dir = self.work_dir.to_string();
+        let stage_id = self.stage_id;
         let fut_stream = self
             .clone()
             .execute_shuffle_write(partition, context)
-            .and_then(|part_loc| async move {
+            .and_then(move |part_loc| async move {
                 // build metadata result batch
                 let num_writers = part_loc.len();
                 let mut partition_builder = UInt32Builder::with_capacity(num_writers);
@@ -454,7 +472,18 @@ impl ExecutionPlan for ShuffleWriterExec {
                 let mut num_bytes_builder = UInt64Builder::with_capacity(num_writers);
 
                 for loc in &part_loc {
-                    path_builder.append_value(loc.path.clone());
+                    let path = create_shuffle_path(
+                        &work_dir,
+                        &job_id,
+                        stage_id,
+                        loc.partition_id as usize,
+                        loc.file_id,
+                        false,
+                    )?
+                    .to_string_lossy()
+                    .to_string();
+
+                    path_builder.append_value(path);
                     partition_builder.append_value(loc.partition_id as u32);
                     num_rows_builder.append_value(loc.num_rows);
                     num_batches_builder.append_value(loc.num_batches);
@@ -586,6 +615,7 @@ mod tests {
                 || file0.ends_with("\\jobOne\\1\\0\\data-0.arrow")
         );
         let file1 = path.value(1);
+
         assert!(
             file1.ends_with("/jobOne/1/1/data-0.arrow")
                 || file1.ends_with("\\jobOne\\1\\1\\data-0.arrow")
