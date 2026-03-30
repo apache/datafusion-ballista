@@ -298,8 +298,8 @@ async fn run_scheduler() -> Result<(), Box<dyn std::error::Error>> {
 
     // Configure scheduler with TLS for outbound connections to executors
     let client_tls = tls.client_tls.clone();
-    let endpoint_override: ballista_scheduler::config::EndpointOverrideFn =
-        Arc::new(move |endpoint: Endpoint| endpoint.tls_config(client_tls.clone()));
+    let endpoint_override: ballista_core::extension::EndpointOverrideFn =
+        Arc::new(move |endpoint: Endpoint| Ok(endpoint.tls_config(client_tls.clone())?));
 
     let config = SchedulerConfig {
         bind_host: "0.0.0.0".to_string(),

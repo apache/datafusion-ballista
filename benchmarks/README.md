@@ -86,10 +86,10 @@ The benchmark can then be run (assuming the data created from `dbgen` is in `./d
 cargo run --release --bin tpch -- benchmark datafusion --iterations 3 --path ./data --format tbl --query 1 --batch-size 4096
 ```
 
-You can enable the features `simd` (to use SIMD instructions) and/or `mimalloc` or `snmalloc` (to use either the mimalloc or snmalloc allocator) as features by passing them in as `--features`:
+You can enable the feature `mimalloc` (to use the mimalloc allocator) as features by passing them in as `--features`:
 
 ```
-cargo run --release --features "simd mimalloc" --bin tpch -- benchmark datafusion --iterations 3 --path ./data --format tbl --query 1 --batch-size 4096
+cargo run --release --features "mimalloc" --bin tpch -- benchmark datafusion --iterations 3 --path ./data --format tbl --query 1 --batch-size 4096
 ```
 
 The benchmark program also supports CSV and Parquet input file formats and a utility is provided to convert from `tbl`
@@ -152,10 +152,10 @@ RUST_LOG=info cargo run --release
 
 By default the executor will bind to `0.0.0.0` and listen on port 50051.
 
-You can add SIMD/snmalloc/LTO flags to improve speed (with longer build times):
+You can add mimalloc/LTO flags to improve speed (with longer build times):
 
 ```
-RUST_LOG=info RUSTFLAGS='-C target-cpu=native -C lto -C codegen-units=1 -C embed-bitcode' cargo run --release --bin executor --features "simd snmalloc" --target x86_64-unknown-linux-gnu
+RUST_LOG=info RUSTFLAGS='-C target-cpu=native -C lto -C codegen-units=1 -C embed-bitcode' cargo run --release --bin executor --features "mimalloc" --target x86_64-unknown-linux-gnu
 ```
 
 To run the benchmarks:

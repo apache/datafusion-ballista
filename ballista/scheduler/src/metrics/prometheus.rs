@@ -49,6 +49,7 @@ pub struct PrometheusMetricsCollector {
 }
 
 impl PrometheusMetricsCollector {
+    /// Creates a new PrometheusMetricsCollector instance.
     pub fn new(registry: &Registry) -> Result<Self> {
         let execution_time = register_histogram_with_registry!(
             "job_exec_time_seconds",
@@ -126,6 +127,7 @@ impl PrometheusMetricsCollector {
         })
     }
 
+    /// Returns the current global prometheus collector.
     pub fn current() -> Result<Arc<dyn SchedulerMetricsCollector>> {
         COLLECTOR
             .get_or_try_init(|| {
@@ -133,7 +135,7 @@ impl PrometheusMetricsCollector {
 
                 Ok(Arc::new(collector) as Arc<dyn SchedulerMetricsCollector>)
             })
-            .map(|arc| arc.clone())
+            .cloned()
     }
 }
 

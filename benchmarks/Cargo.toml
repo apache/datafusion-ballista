@@ -18,7 +18,7 @@
 [package]
 name = "ballista-benchmarks"
 description = "Ballista Benchmarks"
-version = "52.0.0"
+version = "53.0.0"
 edition = "2024"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
 homepage = "https://datafusion.apache.org/ballista/"
@@ -29,11 +29,10 @@ publish = false
 [features]
 ci = []
 default = ["mimalloc"]
-snmalloc = ["snmalloc-rs"]
 
 [dependencies]
-ballista = { path = "../ballista/client", version = "52.0.0" }
-ballista-core = { path = "../ballista/core", version = "52.0.0" }
+ballista = { path = "../ballista/client", version = "53.0.0" }
+ballista-core = { path = "../ballista/core", version = "53.0.0" }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 env_logger = { workspace = true }
@@ -42,10 +41,9 @@ mimalloc = { workspace = true, optional = true }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = "1.0.78"
-snmalloc-rs = { version = "0.3", optional = true }
 structopt = { version = "0.3", default-features = false }
 tempfile = { workspace = true }
-tokio = { version = "^1.44", features = [
+tokio = { version = "^1.50", features = [
     "macros",
     "rt",
     "rt-multi-thread",
@@ -53,3 +51,8 @@ tokio = { version = "^1.44", features = [
 ] }
 
 [dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
+
+[[bench]]
+harness = false
+name = "sort_shuffle"

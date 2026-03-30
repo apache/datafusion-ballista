@@ -48,7 +48,7 @@ pub fn print_stage_metrics(
         );
 
         info!(
-            "=== [{}/{}] Stage finished, physical plan with metrics ===\n{}\n",
+            "\n=== [{}/{}] Stage finished, physical plan with metrics ===\n{}",
             job_id,
             stage_id,
             DisplayableBallistaExecutionPlan::new(plan, &plan_metrics).indent()

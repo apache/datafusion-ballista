@@ -28,6 +28,20 @@ import "datafusion.proto";
 import "datafusion_common.proto";
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
+// Ballista Logical Plan
+///////////////////////////////////////////////////////////////////////////////////////////////////
+message BallistaLogicalPlanNode {
+  oneof LogicalPlanType {
+    LogicalPlanCacheNode cache_node = 1;
+  }
+}
+
+message LogicalPlanCacheNode {
+  string cache_id = 1;
+  string session_id = 2;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
 // Ballista Physical Plan
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 message BallistaPhysicalPlanNode {
@@ -58,6 +72,7 @@ message SortShuffleWriterExecNode {
   uint64 buffer_size = 5;
   uint64 memory_limit = 6;
   double spill_threshold = 7;
+  uint64 batch_size = 8;
 }
 
 message UnresolvedShuffleExecNode {
@@ -743,6 +758,8 @@ service SchedulerGrpc {
   rpc CreateUpdateSession (CreateUpdateSessionParams) returns (CreateUpdateSessionResult) {}
 
   rpc RemoveSession (RemoveSessionParams) returns (RemoveSessionResult) {}
+
+  rpc ExecuteQueryPush (ExecuteQueryParams) returns (stream GetJobStatusResult) {}
 
   rpc ExecuteQuery (ExecuteQueryParams) returns (ExecuteQueryResult) {}
 

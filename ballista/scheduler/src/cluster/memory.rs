@@ -17,35 +17,32 @@
 
 use crate::cluster::{
     BoundTask, ClusterState, ExecutorSlot, JobState, JobStateEvent, JobStateEventStream,
-    JobStatus, TaskDistributionPolicy, TopologyNode, bind_task_bias,
-    bind_task_consistent_hash, bind_task_round_robin, get_scan_files,
-    is_skip_consistent_hash,
+    JobStatus, TaskDistributionPolicy, bind_task_bias, bind_task_round_robin,
 };
-use crate::state::execution_graph::ExecutionGraph;
+use crate::state::execution_graph::ExecutionGraphBox;
 use async_trait::async_trait;
-use ballista_core::ConfigProducer;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::serde::protobuf::{
     AvailableTaskSlots, ExecutorHeartbeat, ExecutorStatus, FailedJob, QueuedJob,
     executor_status,
 };
 use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata};
+use ballista_core::{ConfigProducer, JobStatusSubscriber};
 use dashmap::DashMap;
 use datafusion::prelude::{SessionConfig, SessionContext};
+use tokio::sync::mpsc::error::TrySendError;
 
 use crate::cluster::event::ClusterEventSender;
 use crate::scheduler_server::{SessionBuilder, timestamp_millis, timestamp_secs};
 use crate::state::session_manager::create_datafusion_context;
 use crate::state::task_manager::JobInfoCache;
 use ballista_core::serde::protobuf::job_status::Status;
-use log::{debug, error, info, warn};
+use log::{error, warn};
 use std::collections::{HashMap, HashSet};
 use std::ops::DerefMut;
 
-use ballista_core::consistent_hash::node::Node;
-use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
-use tokio::sync::{Mutex, MutexGuard};
+use tokio::sync::Mutex;
 
 use super::{ClusterStateEvent, ClusterStateEventStream};
 
@@ -64,44 +61,6 @@ pub struct InMemoryClusterState {
     heartbeats: DashMap<String, ExecutorHeartbeat>,
     /// Broadcast sender for cluster state change events.
     cluster_event_sender: ClusterEventSender<ClusterStateEvent>,
-}
-
-impl InMemoryClusterState {
-    /// Get the topology nodes of the cluster for consistent hashing
-    fn get_topology_nodes(
-        &self,
-        guard: &MutexGuard<HashMap<String, AvailableTaskSlots>>,
-        executors: Option<HashSet<String>>,
-    ) -> HashMap<String, TopologyNode> {
-        let mut nodes: HashMap<String, TopologyNode> = HashMap::new();
-        for (executor_id, slots) in guard.iter() {
-            if let Some(executors) = executors.as_ref()
-                && !executors.contains(executor_id)
-            {
-                continue;
-            }
-            if let Some(executor) = self.executors.get(&slots.executor_id) {
-                let node = TopologyNode::new(
-                    &executor.host,
-                    executor.port,
-                    &slots.executor_id,
-                    self.heartbeats
-                        .get(&executor.id)
-                        .map(|heartbeat| heartbeat.timestamp)
-                        .unwrap_or(0),
-                    slots.slots,
-                );
-                if let Some(existing_node) = nodes.get(node.name()) {
-                    if existing_node.last_seen_ts < node.last_seen_ts {
-                        nodes.insert(node.name().to_string(), node);
-                    }
-                } else {
-                    nodes.insert(node.name().to_string(), node);
-                }
-            }
-        }
-        nodes
-    }
 }
 
 #[async_trait]
@@ -132,51 +91,6 @@ impl ClusterState for InMemoryClusterState {
             }
             TaskDistributionPolicy::RoundRobin => {
                 bind_task_round_robin(available_slots, active_jobs, |_| false).await
-            }
-            TaskDistributionPolicy::ConsistentHash {
-                num_replicas,
-                tolerance,
-            } => {
-                let mut bound_tasks = bind_task_round_robin(
-                    available_slots,
-                    active_jobs.clone(),
-                    |stage_plan: Arc<dyn ExecutionPlan>| {
-                        if let Ok(scan_files) = get_scan_files(stage_plan) {
-                            // Should be opposite to consistent hash ones.
-                            !is_skip_consistent_hash(&scan_files)
-                        } else {
-                            false
-                        }
-                    },
-                )
-                .await;
-                info!("{} tasks bound by round robin policy", bound_tasks.len());
-                let (bound_tasks_consistent_hash, ch_topology) =
-                    bind_task_consistent_hash(
-                        self.get_topology_nodes(&guard, executors),
-                        num_replicas,
-                        tolerance,
-                        active_jobs,
-                        |_, plan| get_scan_files(plan),
-                    )
-                    .await?;
-                info!(
-                    "{} tasks bound by consistent hashing policy",
-                    bound_tasks_consistent_hash.len()
-                );
-                if !bound_tasks_consistent_hash.is_empty() {
-                    bound_tasks.extend(bound_tasks_consistent_hash);
-                    // Update the available slots
-                    let ch_topology = ch_topology.unwrap();
-                    for node in ch_topology.nodes() {
-                        if let Some(data) = guard.get_mut(&node.id) {
-                            data.slots = node.available_slots;
-                        } else {
-                            error!("Fail to find executor data for {}", &node.id);
-                        }
-                    }
-                }
-                bound_tasks
             }
             TaskDistributionPolicy::Custom(ref policy) => {
                 policy.bind_tasks(available_slots, active_jobs).await?
@@ -347,11 +261,11 @@ impl ClusterState for InMemoryClusterState {
 pub struct InMemoryJobState {
     scheduler: String,
     /// Jobs which have either completed successfully or failed
-    completed_jobs: DashMap<String, (JobStatus, Option<ExecutionGraph>)>,
+    completed_jobs: DashMap<String, (JobStatus, Option<ExecutionGraphBox>)>,
     /// In-memory store of queued jobs. Map from Job ID -> (Job Name, queued_at timestamp)
     queued_jobs: DashMap<String, (String, u64)>,
     /// In-memory store of running job statuses. Map from Job ID -> JobStatus
-    running_jobs: DashMap<String, JobStatus>,
+    running_jobs: DashMap<String, ExtendedJobStatus>,
     /// `SessionBuilder` for building DataFusion `SessionContext` from `BallistaConfig`
     session_builder: SessionBuilder,
     /// Sender of job events
@@ -380,12 +294,42 @@ impl InMemoryJobState {
     }
 }
 
+#[derive(Clone)]
+struct ExtendedJobStatus {
+    status: JobStatus,
+    subscriber: Option<JobStatusSubscriber>,
+}
+
+impl ExtendedJobStatus {
+    fn update_subscribers(&self, status: JobStatus) {
+        let job_id = status.job_id.clone();
+        if let Some(subscriber) = &self.subscriber
+            && matches!(subscriber.try_send(status), Err(TrySendError::Full(_)))
+        {
+            // to be considered if we need another task to try to push this notification
+            // at the moment, it does not look as necessary as, buffer should be big enough for all cases
+            error!(
+                "jobs notification subscriber for job {} is blocked, can't deliver status update, job notification will be missed",
+                job_id
+            )
+        }
+    }
+}
+
 #[async_trait]
 impl JobState for InMemoryJobState {
-    async fn submit_job(&self, job_id: String, graph: &ExecutionGraph) -> Result<()> {
+    async fn submit_job(
+        &self,
+        job_id: String,
+        graph: &ExecutionGraphBox,
+        subscriber: Option<JobStatusSubscriber>,
+    ) -> Result<()> {
         if self.queued_jobs.get(&job_id).is_some() {
-            self.running_jobs
-                .insert(job_id.clone(), graph.status().clone());
+            let status = ExtendedJobStatus {
+                status: graph.status().clone(),
+                subscriber,
+            };
+            self.running_jobs.insert(job_id.clone(), status);
             self.queued_jobs.remove(&job_id);
 
             self.job_event_sender.send(&JobStateEvent::JobAcquired {
@@ -413,7 +357,7 @@ impl JobState for InMemoryJobState {
         }
 
         if let Some(status) = self.running_jobs.get(job_id).as_deref().cloned() {
-            return Ok(Some(status));
+            return Ok(Some(status.status));
         }
 
         if let Some((status, _)) = self.completed_jobs.get(job_id).as_deref() {
@@ -423,36 +367,48 @@ impl JobState for InMemoryJobState {
         Ok(None)
     }
 
-    async fn get_execution_graph(&self, job_id: &str) -> Result<Option<ExecutionGraph>> {
+    async fn get_execution_graph(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<ExecutionGraphBox>> {
         Ok(self
             .completed_jobs
             .get(job_id)
             .as_deref()
-            .and_then(|(_, graph)| graph.clone()))
+            .and_then(|(_, graph)| graph.as_ref().map(|e| e.cloned())))
     }
 
-    async fn try_acquire_job(&self, _job_id: &str) -> Result<Option<ExecutionGraph>> {
+    async fn try_acquire_job(&self, _job_id: &str) -> Result<Option<ExecutionGraphBox>> {
         // Always return None. The only state stored here are for completed jobs
         // which cannot be acquired
         Ok(None)
     }
 
-    async fn save_job(&self, job_id: &str, graph: &ExecutionGraph) -> Result<()> {
+    async fn save_job(&self, job_id: &str, graph: &ExecutionGraphBox) -> Result<()> {
         let status = graph.status().clone();
-
-        debug!("saving state for job {job_id} with status {:?}", status);
-
         // If job is either successful or failed, save to completed jobs
         if matches!(
             status.status,
             Some(Status::Successful(_)) | Some(Status::Failed(_))
         ) {
+            if let Some((_, job_info)) = self.running_jobs.remove(job_id) {
+                job_info.update_subscribers(status.clone());
+            }
+
             self.completed_jobs
-                .insert(job_id.to_string(), (status.clone(), Some(graph.clone())));
-            self.running_jobs.remove(job_id);
+                .insert(job_id.to_string(), (status.clone(), Some(graph.cloned())));
         } else {
             // otherwise update running job
-            self.running_jobs.insert(job_id.to_string(), status.clone());
+            if let Some(mut job_info) = self.running_jobs.get_mut(job_id) {
+                job_info.status = status.clone();
+                // we're cloning subscriber not to await in lock
+                job_info.update_subscribers(status.clone());
+            } else {
+                Err(BallistaError::Internal(format!(
+                    "scheduler state can't find job: {}",
+                    job_id
+                )))?
+            };
         }
 
         // job change event emitted
@@ -576,7 +532,7 @@ mod test {
                 Arc::new(default_session_builder),
                 Arc::new(default_config_producer),
             ),
-            test_aggregation_plan(4).await,
+            Box::new(test_aggregation_plan(4).await),
         )
         .await?;
         test_job_lifecycle(
@@ -585,7 +541,7 @@ mod test {
                 Arc::new(default_session_builder),
                 Arc::new(default_config_producer),
             ),
-            test_two_aggregations_plan(4).await,
+            Box::new(test_two_aggregations_plan(4).await),
         )
         .await?;
         test_job_lifecycle(
@@ -594,7 +550,7 @@ mod test {
                 Arc::new(default_session_builder),
                 Arc::new(default_config_producer),
             ),
-            test_join_plan(4).await,
+            Box::new(test_join_plan(4).await),
         )
         .await?;
 
@@ -609,7 +565,7 @@ mod test {
                 Arc::new(default_session_builder),
                 Arc::new(default_config_producer),
             ),
-            test_aggregation_plan(4).await,
+            Box::new(test_aggregation_plan(4).await),
         )
         .await?;
         test_job_planning_failure(
@@ -618,7 +574,7 @@ mod test {
                 Arc::new(default_session_builder),
                 Arc::new(default_config_producer),
             ),
-            test_two_aggregations_plan(4).await,
+            Box::new(test_two_aggregations_plan(4).await),
         )
         .await?;
         test_job_planning_failure(
@@ -627,7 +583,7 @@ mod test {
                 Arc::new(default_session_builder),
                 Arc::new(default_config_producer),
             ),
-            test_join_plan(4).await,
+            Box::new(test_join_plan(4).await),
         )
         .await?;
 
@@ -654,7 +610,7 @@ mod test {
         });
 
         barrier.wait().await;
-        test_job_lifecycle(state, test_aggregation_plan(4).await).await?;
+        test_job_lifecycle(state, Box::new(test_aggregation_plan(4).await)).await?;
         let result = events.await?;
         assert_eq!(2, result.len());
         match result.last().unwrap() {

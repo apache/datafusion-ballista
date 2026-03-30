@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use ballista_core::JobStatusSubscriber;
 use ballista_core::error::{BallistaError, Result};
 use ballista_core::extension::SessionConfigExt;
 use datafusion::catalog::Session;
@@ -57,7 +58,9 @@ use datafusion::test_util::scan_empty_with_partitions;
 use crate::cluster::BallistaCluster;
 use crate::scheduler_server::event::QueryStageSchedulerEvent;
 
-use crate::state::execution_graph::{ExecutionGraph, ExecutionStage, TaskDescription};
+use crate::state::execution_graph::{
+    ExecutionGraph, ExecutionStage, StaticExecutionGraph, TaskDescription,
+};
 use ballista_core::utils::{default_config_producer, default_session_builder};
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use parking_lot::Mutex;
@@ -505,7 +508,7 @@ impl SchedulerTest {
             .create_or_update_session("session_id", &self.session_config)
             .await?;
 
-        let job_id = self.scheduler.submit_job(job_name, ctx, plan).await?;
+        let job_id = self.scheduler.submit_job(job_name, ctx, plan, None).await?;
 
         Ok(job_id)
     }
@@ -626,6 +629,15 @@ impl SchedulerTest {
         job_name: &str,
         plan: &LogicalPlan,
     ) -> Result<(JobStatus, String)> {
+        self.run_with_subscriber(job_name, plan, None).await
+    }
+    /// Returns job status and job_id, with provided subscriber
+    pub async fn run_with_subscriber(
+        &mut self,
+        job_name: &str,
+        plan: &LogicalPlan,
+        subscriber: Option<JobStatusSubscriber>,
+    ) -> Result<(JobStatus, String)> {
         let ctx = self
             .scheduler
             .state
@@ -633,7 +645,10 @@ impl SchedulerTest {
             .create_or_update_session("session_id", &self.session_config)
             .await?;
 
-        let job_id = self.scheduler.submit_job(job_name, ctx, plan).await?;
+        let job_id = self
+            .scheduler
+            .submit_job(job_name, ctx, plan, subscriber)
+            .await?;
 
         let mut receiver = self.status_receiver.take().unwrap();
 
@@ -812,14 +827,16 @@ pub fn assert_failed_event(job_id: &str, collector: &TestMetricsCollector) {
 }
 
 /// Revives the execution graph and completes all tasks in the next stage.
-pub fn revive_graph_and_complete_next_stage(graph: &mut ExecutionGraph) -> Result<usize> {
+pub fn revive_graph_and_complete_next_stage(
+    graph: &mut dyn ExecutionGraph,
+) -> Result<usize> {
     let executor = mock_executor("executor-id1".to_string());
     revive_graph_and_complete_next_stage_with_executor(graph, &executor)
 }
 
 /// Revives the execution graph and completes all tasks in the next stage using the given executor.
 pub fn revive_graph_and_complete_next_stage_with_executor(
-    graph: &mut ExecutionGraph,
+    graph: &mut dyn ExecutionGraph,
     executor: &ExecutorMetadata,
 ) -> Result<usize> {
     graph.revive();
@@ -855,7 +872,7 @@ pub fn revive_graph_and_complete_next_stage_with_executor(
 }
 
 /// Creates a test execution graph with a simple aggregation plan.
-pub async fn test_aggregation_plan(partition: usize) -> ExecutionGraph {
+pub async fn test_aggregation_plan(partition: usize) -> StaticExecutionGraph {
     test_aggregation_plan_with_job_id(partition, "job").await
 }
 
@@ -863,7 +880,7 @@ pub async fn test_aggregation_plan(partition: usize) -> ExecutionGraph {
 pub async fn test_aggregation_plan_with_job_id(
     partition: usize,
     job_id: &str,
-) -> ExecutionGraph {
+) -> StaticExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::new_with_config(config));
     let session_state = ctx.state();
@@ -893,7 +910,8 @@ pub async fn test_aggregation_plan_with_job_id(
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
     let mut planner = DefaultDistributedPlanner::new();
-    ExecutionGraph::new(
+
+    StaticExecutionGraph::new(
         "localhost:50050",
         job_id,
         "",
@@ -902,12 +920,14 @@ pub async fn test_aggregation_plan_with_job_id(
         0,
         Arc::new(SessionConfig::new_with_ballista()),
         &mut planner,
+        None,
+        None,
     )
     .unwrap()
 }
 
 /// Creates a test execution graph with two nested aggregations.
-pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
+pub async fn test_two_aggregations_plan(partition: usize) -> StaticExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::new_with_config(config));
     let session_state = ctx.state();
@@ -940,7 +960,8 @@ pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
     let mut planner = DefaultDistributedPlanner::new();
-    ExecutionGraph::new(
+
+    StaticExecutionGraph::new(
         "localhost:50050",
         "job",
         "",
@@ -949,12 +970,14 @@ pub async fn test_two_aggregations_plan(partition: usize) -> ExecutionGraph {
         0,
         Arc::new(SessionConfig::new_with_ballista()),
         &mut planner,
+        None,
+        None,
     )
     .unwrap()
 }
 
 /// Creates a test execution graph with a coalesce (limit) operation.
-pub async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
+pub async fn test_coalesce_plan(partition: usize) -> StaticExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::new_with_config(config));
     let session_state = ctx.state();
@@ -979,7 +1002,8 @@ pub async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
         .await
         .unwrap();
     let mut planner = DefaultDistributedPlanner::new();
-    ExecutionGraph::new(
+
+    StaticExecutionGraph::new(
         "localhost:50050",
         "job",
         "",
@@ -988,12 +1012,14 @@ pub async fn test_coalesce_plan(partition: usize) -> ExecutionGraph {
         0,
         Arc::new(SessionConfig::new_with_ballista()),
         &mut planner,
+        None,
+        None,
     )
     .unwrap()
 }
 
 /// Creates a test execution graph with a join operation.
-pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
+pub async fn test_join_plan(partition: usize) -> StaticExecutionGraph {
     let mut config = SessionConfig::new().with_target_partitions(partition);
     config
         .options_mut()
@@ -1039,7 +1065,7 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
     let mut planner = DefaultDistributedPlanner::new();
-    let graph = ExecutionGraph::new(
+    let graph = StaticExecutionGraph::new(
         "localhost:50050",
         "job",
         "",
@@ -1048,6 +1074,8 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
         0,
         Arc::new(SessionConfig::new_with_ballista()),
         &mut planner,
+        None,
+        None,
     )
     .unwrap();
 
@@ -1057,7 +1085,7 @@ pub async fn test_join_plan(partition: usize) -> ExecutionGraph {
 }
 
 /// Creates a test execution graph with a UNION ALL operation.
-pub async fn test_union_all_plan(partition: usize) -> ExecutionGraph {
+pub async fn test_union_all_plan(partition: usize) -> StaticExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::new_with_config(config));
     let session_state = ctx.state();
@@ -1081,7 +1109,7 @@ pub async fn test_union_all_plan(partition: usize) -> ExecutionGraph {
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
     let mut planner = DefaultDistributedPlanner::new();
-    let graph = ExecutionGraph::new(
+    let graph = StaticExecutionGraph::new(
         "localhost:50050",
         "job",
         "",
@@ -1090,6 +1118,8 @@ pub async fn test_union_all_plan(partition: usize) -> ExecutionGraph {
         0,
         Arc::new(SessionConfig::new_with_ballista()),
         &mut planner,
+        None,
+        None,
     )
     .unwrap();
 
@@ -1099,7 +1129,7 @@ pub async fn test_union_all_plan(partition: usize) -> ExecutionGraph {
 }
 
 /// Creates a test execution graph with a UNION (distinct) operation.
-pub async fn test_union_plan(partition: usize) -> ExecutionGraph {
+pub async fn test_union_plan(partition: usize) -> StaticExecutionGraph {
     let config = SessionConfig::new().with_target_partitions(partition);
     let ctx = Arc::new(SessionContext::new_with_config(config));
     let session_state = ctx.state();
@@ -1123,7 +1153,7 @@ pub async fn test_union_plan(partition: usize) -> ExecutionGraph {
         DisplayableExecutionPlan::new(plan.as_ref()).indent(false)
     );
     let mut planner = DefaultDistributedPlanner::new();
-    let graph = ExecutionGraph::new(
+    let graph = StaticExecutionGraph::new(
         "localhost:50050",
         "job",
         "",
@@ -1132,6 +1162,8 @@ pub async fn test_union_plan(partition: usize) -> ExecutionGraph {
         0,
         Arc::new(SessionConfig::new_with_ballista()),
         &mut planner,
+        None,
+        None,
     )
     .unwrap();
 

@@ -47,3 +47,28 @@ manually specifying a bind port. For example:
 ```bash
 RUST_LOG=info ballista-executor --bind-port 50052
 ```
+
+## Installing with Optional Features
+
+Ballista supports optional features that can be enabled during installation using the `--features` flag.
+
+### Spark-Compatible Functions
+
+To enable Spark-compatible scalar, aggregate, and window functions from the `datafusion-spark` crate:
+
+```bash
+# Install scheduler with spark-compat feature
+cargo install --locked --features spark-compat ballista-scheduler
+
+# Install executor with spark-compat feature
+cargo install --locked --features spark-compat ballista-executor
+
+# Install CLI with spark-compat feature
+cargo install --locked --features spark-compat ballista-cli
+```
+
+When the `spark-compat` feature is enabled, additional functions like `sha1`, `expm1`, `sha2`, and others become available in SQL queries.
+
+> **Note:** The `spark-compat` feature provides Spark-compatible expressions and functions only, not full Apache Spark API compatibility.
+
+For more details about Spark-compatible functions, see [Spark-Compatible Functions](../spark-compatible-functions.md).

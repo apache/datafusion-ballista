@@ -18,22 +18,19 @@
 
 //! Ballista configuration
 
-use std::result;
-use std::{collections::HashMap, fmt::Display};
-
 use crate::error::{BallistaError, Result};
-
 use datafusion::{
     arrow::datatypes::DataType, common::config_err, config::ConfigExtension,
 };
+use std::result;
+use std::{collections::HashMap, fmt::Display};
 
 /// Configuration key for setting the job name displayed in the web UI.
 pub const BALLISTA_JOB_NAME: &str = "ballista.job.name";
 /// Configuration key for standalone processing parallelism.
 pub const BALLISTA_STANDALONE_PARALLELISM: &str = "ballista.standalone.parallelism";
-/// max message size for gRPC clients
-pub const BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE: &str =
-    "ballista.grpc_client_max_message_size";
+/// Configuration key for disabling default cache extension node.
+pub const BALLISTA_CACHE_NOOP: &str = "ballista.cache.noop";
 /// Configuration key for maximum concurrent shuffle read requests.
 pub const BALLISTA_SHUFFLE_READER_MAX_REQUESTS: &str =
     "ballista.shuffle.max_concurrent_read_requests";
@@ -43,7 +40,9 @@ pub const BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ: &str =
 /// Configuration key to prefer Flight protocol for remote shuffle reads.
 pub const BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT: &str =
     "ballista.shuffle.remote_read_prefer_flight";
-
+/// max message size for gRPC clients
+pub const BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE: &str =
+    "ballista.grpc_client_max_message_size";
 /// Configuration key for gRPC client connection timeout in seconds.
 pub const BALLISTA_GRPC_CLIENT_CONNECT_TIMEOUT_SECONDS: &str =
     "ballista.grpc.client.connect_timeout_seconds";
@@ -56,7 +55,11 @@ pub const BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS: &str =
 /// Configuration key for HTTP/2 keep-alive interval for gRPC clients in seconds.
 pub const BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS: &str =
     "ballista.grpc.client.http2_keepalive_interval_seconds";
-
+/// Enables adaptive query planning
+pub const BALLISTA_ADAPTIVE_PLANNER_ENABLED: &str = "ballista.planner.adaptive.enabled";
+/// Number of times that the optimizer will attempt to optimize the plan
+pub const BALLISTA_ADAPTIVE_PLANNER_MAX_PASSES: &str =
+    "ballista.planner.adaptive.planner_pass";
 /// Configuration key for enabling sort-based shuffle.
 pub const BALLISTA_SHUFFLE_SORT_BASED_ENABLED: &str =
     "ballista.shuffle.sort_based.enabled";
@@ -69,6 +72,13 @@ pub const BALLISTA_SHUFFLE_SORT_BASED_MEMORY_LIMIT: &str =
 /// Configuration key for sort shuffle spill threshold (0.0-1.0).
 pub const BALLISTA_SHUFFLE_SORT_BASED_SPILL_THRESHOLD: &str =
     "ballista.shuffle.sort_based.spill_threshold";
+/// Configuration key for sort shuffle target batch size in rows.
+pub const BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE: &str =
+    "ballista.shuffle.sort_based.batch_size";
+/// Should client employ pull or push job tracking strategy
+pub const BALLISTA_CLIENT_PULL: &str = "ballista.client.pull";
+/// Should client use tls connection
+pub const BALLISTA_CLIENT_USE_TLS: &str = "ballista.client.use_tls";
 
 /// Result type for configuration parsing operations.
 pub type ParseResult<T> = result::Result<T, String>;
@@ -82,10 +92,10 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_STANDALONE_PARALLELISM.to_string(),
                          "Standalone processing parallelism ".to_string(),
                          DataType::UInt16, Some(std::thread::available_parallelism().map(|v| v.get()).unwrap_or(1).to_string())),
-        ConfigEntry::new(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE.to_string(),
-                         "Configuration for max message size in gRPC clients".to_string(),
-                         DataType::UInt64,
-                         Some((16 * 1024 * 1024).to_string())),
+        ConfigEntry::new(BALLISTA_CACHE_NOOP.to_string(),
+                         "Disable default cache node extension".to_string(),
+                         DataType::Boolean,
+                         Some((true).to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_READER_MAX_REQUESTS.to_string(),
                          "Maximum concurrent requests shuffle reader can process".to_string(),
                          DataType::UInt64,
@@ -98,6 +108,10 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "Forces the shuffle reader to use flight reader instead of block reader for remote read. Block reader usually has better performance and resource utilization".to_string(),
                          DataType::Boolean,
                          Some((false).to_string())),
+        ConfigEntry::new(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE.to_string(),
+                         "Configuration for max message size in gRPC clients".to_string(),
+                         DataType::UInt64,
+                         Some((16 * 1024 * 1024).to_string())),
         ConfigEntry::new(BALLISTA_GRPC_CLIENT_CONNECT_TIMEOUT_SECONDS.to_string(),
                          "Connection timeout for gRPC client in seconds".to_string(),
                          DataType::UInt64,
@@ -114,10 +128,18 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
                          "HTTP/2 keep-alive interval for gRPC client in seconds".to_string(),
                          DataType::UInt64,
                          Some((300).to_string())),
+        ConfigEntry::new(BALLISTA_ADAPTIVE_PLANNER_ENABLED.to_string(),
+                         "Enables Adaptive Query Planning (EXPERIMENTAL)".to_string(),
+                         DataType::Boolean,
+                         Some(false.to_string())),
+        ConfigEntry::new(BALLISTA_ADAPTIVE_PLANNER_MAX_PASSES.to_string(),
+                         "Number of times that the adaptive optimizer will attempt to optimize the plan".to_string(),
+                         DataType::UInt64,
+                         Some(3.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_ENABLED.to_string(),
                          "Enable sort-based shuffle which writes consolidated files with index".to_string(),
                          DataType::Boolean,
-                         Some((false).to_string())),
+                         Some(false.to_string())),
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BUFFER_SIZE.to_string(),
                          "Per-partition buffer size in bytes for sort shuffle".to_string(),
                          DataType::UInt64,
@@ -129,7 +151,19 @@ static CONFIG_ENTRIES: LazyLock<HashMap<String, ConfigEntry>> = LazyLock::new(||
         ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_SPILL_THRESHOLD.to_string(),
                          "Spill threshold as decimal fraction (0.0-1.0) of memory limit".to_string(),
                          DataType::Utf8,
-                         Some("0.8".to_string()))
+                         Some("0.8".to_string())),
+        ConfigEntry::new(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE.to_string(),
+                         "Target batch size in rows for coalescing small batches in sort shuffle".to_string(),
+                         DataType::UInt64,
+                         Some((8192).to_string())),
+        ConfigEntry::new(BALLISTA_CLIENT_PULL.to_string(),
+                         "Should client employ pull or push job tracking. In pull mode client will make a request to server in the loop, until job finishes. Pull mode is kept for legacy clients.".to_string(),
+                         DataType::Boolean,
+                         Some(false.to_string())),
+        ConfigEntry::new(BALLISTA_CLIENT_USE_TLS.to_string(),
+                         "Should connection between client, scheduler, and executors use TLS.".to_string(),
+                         DataType::Boolean,
+                         Some(false.to_string()))
     ];
     entries
         .into_iter()
@@ -241,11 +275,6 @@ impl BallistaConfig {
         &self.settings
     }
 
-    /// Returns the maximum message size for gRPC clients in bytes.
-    pub fn default_grpc_client_max_message_size(&self) -> usize {
-        self.get_usize_setting(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE)
-    }
-
     /// Returns the standalone processing parallelism level.
     pub fn default_standalone_parallelism(&self) -> usize {
         self.get_usize_setting(BALLISTA_STANDALONE_PARALLELISM)
@@ -257,23 +286,33 @@ impl BallistaConfig {
     }
 
     /// Returns the gRPC client connection timeout in seconds.
-    pub fn default_grpc_client_connect_timeout_seconds(&self) -> usize {
+    pub fn grpc_client_connect_timeout_seconds(&self) -> usize {
         self.get_usize_setting(BALLISTA_GRPC_CLIENT_CONNECT_TIMEOUT_SECONDS)
     }
 
     /// Returns the gRPC client request timeout in seconds.
-    pub fn default_grpc_client_timeout_seconds(&self) -> usize {
+    pub fn grpc_client_timeout_seconds(&self) -> usize {
         self.get_usize_setting(BALLISTA_GRPC_CLIENT_TIMEOUT_SECONDS)
     }
 
     /// Returns the TCP keep-alive interval for gRPC clients in seconds.
-    pub fn default_grpc_client_tcp_keepalive_seconds(&self) -> usize {
+    pub fn grpc_client_tcp_keepalive_seconds(&self) -> usize {
         self.get_usize_setting(BALLISTA_GRPC_CLIENT_TCP_KEEPALIVE_SECONDS)
     }
 
     /// Returns the HTTP/2 keep-alive interval for gRPC clients in seconds.
-    pub fn default_grpc_client_http2_keepalive_interval_seconds(&self) -> usize {
+    pub fn grpc_client_http2_keepalive_interval_seconds(&self) -> usize {
         self.get_usize_setting(BALLISTA_GRPC_CLIENT_HTTP2_KEEPALIVE_INTERVAL_SECONDS)
+    }
+
+    /// Returns the maximum message size for gRPC clients in bytes.
+    pub fn grpc_client_max_message_size(&self) -> usize {
+        self.get_usize_setting(BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE)
+    }
+
+    /// Returns whether the default cache node extension is disabled.
+    pub fn cache_noop(&self) -> bool {
+        self.get_bool_setting(BALLISTA_CACHE_NOOP)
     }
 
     /// Forces the shuffle reader to always read partitions via the Arrow Flight client,
@@ -291,6 +330,15 @@ impl BallistaConfig {
     /// Block protocol is usually more performant than flight protocol
     pub fn shuffle_reader_remote_prefer_flight(&self) -> bool {
         self.get_bool_setting(BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT)
+    }
+
+    /// Is Adaptive Query Planner enabled
+    pub fn adaptive_query_planner_enabled(&self) -> bool {
+        self.get_bool_setting(BALLISTA_ADAPTIVE_PLANNER_ENABLED)
+    }
+    /// Number of times that the adaptive optimizer will attempt to optimize the plan
+    pub fn adaptive_query_planner_max_passes(&self) -> usize {
+        self.get_usize_setting(BALLISTA_ADAPTIVE_PLANNER_MAX_PASSES)
     }
 
     /// Returns whether sort-based shuffle is enabled.
@@ -314,6 +362,21 @@ impl BallistaConfig {
     /// Returns the spill threshold for sort-based shuffle (0.0-1.0).
     pub fn shuffle_sort_based_spill_threshold(&self) -> f64 {
         self.get_f64_setting(BALLISTA_SHUFFLE_SORT_BASED_SPILL_THRESHOLD)
+    }
+
+    /// Returns the target batch size for sort-based shuffle.
+    pub fn shuffle_sort_based_batch_size(&self) -> usize {
+        self.get_usize_setting(BALLISTA_SHUFFLE_SORT_BASED_BATCH_SIZE)
+    }
+
+    /// Should client employ pull or push job tracking strategy
+    pub fn client_pull(&self) -> bool {
+        self.get_bool_setting(BALLISTA_CLIENT_PULL)
+    }
+
+    /// should client use TLS to communicate with ballista cluster
+    pub fn client_use_tls(&self) -> bool {
+        self.get_bool_setting(BALLISTA_CLIENT_USE_TLS)
     }
 
     fn get_usize_setting(&self, key: &str) -> usize {
@@ -417,9 +480,9 @@ impl datafusion::config::ConfigExtension for BallistaConfig {
 #[cfg_attr(feature = "build-binary", derive(clap::ValueEnum))]
 pub enum TaskSchedulingPolicy {
     /// Pull-based scheduling works in a similar way to Apache Spark
-    #[default]
     PullStaged,
     /// push-based scheduling can result in lower latency.
+    #[default]
     PushStaged,
 }
 impl Display for TaskSchedulingPolicy {
@@ -482,7 +545,7 @@ mod tests {
     #[test]
     fn default_config() -> Result<()> {
         let config = BallistaConfig::default();
-        assert_eq!(16777216, config.default_grpc_client_max_message_size());
+        assert_eq!(16777216, config.grpc_client_max_message_size());
         Ok(())
     }
 }

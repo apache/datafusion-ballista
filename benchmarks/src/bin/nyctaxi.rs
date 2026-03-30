@@ -32,9 +32,9 @@ use datafusion::physical_plan::collect;
 use datafusion::prelude::{CsvReadOptions, ParquetReadOptions};
 use structopt::StructOpt;
 
-#[cfg(feature = "snmalloc")]
+#[cfg(feature = "mimalloc")]
 #[global_allocator]
-static ALLOC: snmalloc_rs::SnMalloc = snmalloc_rs::SnMalloc;
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "Benchmarks", about = "Apache Arrow Rust Benchmarks.")]

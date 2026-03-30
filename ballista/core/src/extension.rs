@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::config::{
-    BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, BALLISTA_JOB_NAME,
+    BALLISTA_CLIENT_USE_TLS, BALLISTA_GRPC_CLIENT_MAX_MESSAGE_SIZE, BALLISTA_JOB_NAME,
     BALLISTA_SHUFFLE_READER_FORCE_REMOTE_READ, BALLISTA_SHUFFLE_READER_MAX_REQUESTS,
     BALLISTA_SHUFFLE_READER_REMOTE_PREFER_FLIGHT, BALLISTA_STANDALONE_PARALLELISM,
     BallistaConfig,
@@ -24,9 +24,17 @@ use crate::config::{
 use crate::planner::BallistaQueryPlanner;
 use crate::serde::protobuf::KeyValuePair;
 use crate::serde::{BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec};
+use datafusion::common::DFSchemaRef;
 use datafusion::execution::context::{QueryPlanner, SessionConfig, SessionState};
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use datafusion::execution::session_state::SessionStateBuilder;
+use datafusion::execution::session_state::{CacheFactory, SessionStateBuilder};
+use datafusion::functions::all_default_functions;
+use datafusion::functions_aggregate::all_default_aggregate_functions;
+use datafusion::functions_nested::all_default_nested_functions;
+use datafusion::functions_window::all_default_window_functions;
+use datafusion::logical_expr::{AggregateUDF, ScalarUDF, WindowUDF};
+use datafusion::logical_expr::{Extension, LogicalPlan, UserDefinedLogicalNodeCore};
+use datafusion::prelude::Expr;
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use datafusion_proto::protobuf::LogicalPlanNode;
@@ -38,10 +46,52 @@ use tonic::metadata::MetadataMap;
 use tonic::service::Interceptor;
 use tonic::transport::Endpoint;
 use tonic::{Request, Status};
+use uuid::Uuid;
 
 /// Type alias for the endpoint override function used in gRPC client configuration
 pub type EndpointOverrideFn =
     Arc<dyn Fn(Endpoint) -> Result<Endpoint, Box<dyn Error + Send + Sync>> + Send + Sync>;
+
+#[cfg(feature = "spark-compat")]
+use datafusion_spark::{
+    all_default_aggregate_functions as spark_aggregate_functions,
+    all_default_scalar_functions as spark_scalar_functions,
+    all_default_window_functions as spark_window_functions,
+};
+
+/// Returns scalar functions for Ballista (DataFusion defaults + Spark when enabled)
+pub fn ballista_scalar_functions() -> Vec<Arc<ScalarUDF>> {
+    #[allow(unused_mut)]
+    let mut functions = all_default_functions();
+    functions.append(&mut all_default_nested_functions());
+
+    #[cfg(feature = "spark-compat")]
+    functions.extend(spark_scalar_functions());
+
+    functions
+}
+
+/// Returns aggregate functions for Ballista (DataFusion defaults + Spark when enabled)
+pub fn ballista_aggregate_functions() -> Vec<Arc<AggregateUDF>> {
+    #[allow(unused_mut)]
+    let mut functions = all_default_aggregate_functions();
+
+    #[cfg(feature = "spark-compat")]
+    functions.extend(spark_aggregate_functions());
+
+    functions
+}
+
+/// Returns window functions for Ballista (DataFusion defaults + Spark when enabled)
+pub fn ballista_window_functions() -> Vec<Arc<WindowUDF>> {
+    #[allow(unused_mut)]
+    let mut functions = all_default_window_functions();
+
+    #[cfg(feature = "spark-compat")]
+    functions.extend(spark_window_functions());
+
+    functions
+}
 
 /// Provides methods which adapt [SessionState]
 /// for Ballista usage
@@ -155,6 +205,12 @@ pub trait SessionConfigExt {
         prefer_flight: bool,
     ) -> Self;
 
+    /// Is adaptive query planner enabled
+    fn ballista_adaptive_query_planner_enabled(&self) -> bool;
+
+    /// Number of times that the adaptive optimizer will attempt to optimize the plan
+    fn adaptive_query_planner_max_passes(&self) -> usize;
+
     /// Set user defined metadata keys in Ballista gRPC requests
     fn with_ballista_grpc_metadata(self, metadata: HashMap<String, String>) -> Self;
 
@@ -177,6 +233,9 @@ pub trait SessionConfigExt {
 
     /// Get whether to use TLS for executor connections
     fn ballista_use_tls(&self) -> bool;
+
+    /// Is short shuffle used
+    fn ballista_sort_shuffle_enabled(&self) -> bool;
 }
 
 /// [SessionConfigHelperExt] is set of [SessionConfig] extension methods
@@ -207,8 +266,12 @@ impl SessionStateExt for SessionState {
         let session_state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(session_config)
+            .with_cache_factory(Some(Arc::new(BallistaCacheFactory::new())))
             .with_runtime_env(Arc::new(runtime_env))
             .with_query_planner(Arc::new(planner))
+            .with_scalar_functions(ballista_scalar_functions())
+            .with_aggregate_functions(ballista_aggregate_functions())
+            .with_window_functions(ballista_window_functions())
             .build();
 
         Ok(session_state)
@@ -225,8 +288,9 @@ impl SessionStateExt for SessionState {
 
         let ballista_config = session_config.ballista_config();
 
-        let builder =
-            SessionStateBuilder::new_from_existing(self).with_config(session_config);
+        let builder = SessionStateBuilder::new_from_existing(self)
+            .with_config(session_config)
+            .with_cache_factory(Some(Arc::new(BallistaCacheFactory::new())));
 
         let builder = match planner_override {
             Some(planner) => builder.with_query_planner(planner),
@@ -240,7 +304,13 @@ impl SessionStateExt for SessionState {
             }
         };
 
-        Ok(builder.build())
+        let session_state = builder
+            .with_scalar_functions(ballista_scalar_functions())
+            .with_aggregate_functions(ballista_aggregate_functions())
+            .with_window_functions(ballista_window_functions())
+            .build();
+
+        Ok(session_state)
     }
 }
 
@@ -325,10 +395,8 @@ impl SessionConfigExt for SessionConfig {
         self.options()
             .extensions
             .get::<BallistaConfig>()
-            .map(|c| c.default_grpc_client_max_message_size())
-            .unwrap_or_else(|| {
-                BallistaConfig::default().default_grpc_client_max_message_size()
-            })
+            .map(|c| c.grpc_client_max_message_size())
+            .unwrap_or_else(|| BallistaConfig::default().grpc_client_max_message_size())
     }
 
     fn with_ballista_job_name(self, job_name: &str) -> Self {
@@ -366,6 +434,14 @@ impl SessionConfigExt for SessionConfig {
             .unwrap_or_else(|| {
                 BallistaConfig::default().shuffle_reader_maximum_concurrent_requests()
             })
+    }
+
+    fn ballista_sort_shuffle_enabled(&self) -> bool {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.shuffle_sort_based_enabled())
+            .unwrap_or_else(|| BallistaConfig::default().shuffle_sort_based_enabled())
     }
 
     fn with_ballista_shuffle_reader_maximum_concurrent_requests(
@@ -424,6 +500,24 @@ impl SessionConfigExt for SessionConfig {
         }
     }
 
+    fn ballista_adaptive_query_planner_enabled(&self) -> bool {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.adaptive_query_planner_enabled())
+            .unwrap_or_else(|| BallistaConfig::default().adaptive_query_planner_enabled())
+    }
+
+    fn adaptive_query_planner_max_passes(&self) -> usize {
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.adaptive_query_planner_max_passes())
+            .unwrap_or_else(|| {
+                BallistaConfig::default().adaptive_query_planner_max_passes()
+            })
+    }
+
     fn with_ballista_grpc_metadata(self, metadata: HashMap<String, String>) -> Self {
         let extension = BallistaGrpcMetadataInterceptor::new(metadata);
         self.with_extension(Arc::new(extension))
@@ -453,13 +547,20 @@ impl SessionConfigExt for SessionConfig {
     }
 
     fn with_ballista_use_tls(self, use_tls: bool) -> Self {
-        self.with_extension(Arc::new(BallistaUseTls(use_tls)))
+        if self.options().extensions.get::<BallistaConfig>().is_some() {
+            self.set_bool(BALLISTA_CLIENT_USE_TLS, use_tls)
+        } else {
+            self.with_option_extension(BallistaConfig::default())
+                .set_bool(BALLISTA_CLIENT_USE_TLS, use_tls)
+        }
     }
 
     fn ballista_use_tls(&self) -> bool {
-        self.get_extension::<BallistaUseTls>()
-            .map(|ext| ext.0)
-            .unwrap_or(false)
+        self.options()
+            .extensions
+            .get::<BallistaConfig>()
+            .map(|c| c.client_use_tls())
+            .unwrap_or_else(|| BallistaConfig::default().client_use_tls())
     }
 }
 
@@ -661,10 +762,104 @@ impl BallistaConfigGrpcEndpoint {
     }
 }
 
-/// Wrapper for cluster-wide TLS configuration
-#[derive(Clone, Copy)]
-pub struct BallistaUseTls(pub bool);
+#[derive(Debug)]
+struct BallistaCacheFactory;
 
+impl BallistaCacheFactory {
+    fn new() -> Self {
+        Self {}
+    }
+}
+
+impl CacheFactory for BallistaCacheFactory {
+    fn create(
+        &self,
+        plan: LogicalPlan,
+        session_state: &SessionState,
+    ) -> datafusion::error::Result<LogicalPlan> {
+        if session_state.config().ballista_config().cache_noop() {
+            Ok(plan)
+        } else {
+            Ok(LogicalPlan::Extension(Extension {
+                node: Arc::new(BallistaCacheNode::new(
+                    Uuid::new_v4().to_string(),
+                    session_state.session_id().to_string(),
+                    plan,
+                )),
+            }))
+        }
+    }
+}
+
+/// Ballista logical Extension for caching.
+#[derive(PartialEq, Eq, PartialOrd, Hash, Debug)]
+pub struct BallistaCacheNode {
+    cache_id: String,
+    session_id: String,
+    input: LogicalPlan,
+    exprs: Vec<Expr>,
+}
+
+impl BallistaCacheNode {
+    /// Create a new cache node from provided logical input plan and cache infos.
+    pub fn new(cache_id: String, session_id: String, input: LogicalPlan) -> Self {
+        Self {
+            cache_id,
+            session_id,
+            input,
+            exprs: vec![],
+        }
+    }
+
+    /// Returns cache id.
+    pub fn cache_id(&self) -> &str {
+        self.cache_id.as_str()
+    }
+
+    /// Returns session id.
+    pub fn session_id(&self) -> &str {
+        self.session_id.as_str()
+    }
+}
+
+impl UserDefinedLogicalNodeCore for BallistaCacheNode {
+    fn name(&self) -> &str {
+        "BallistaCacheNode"
+    }
+
+    fn inputs(&self) -> Vec<&LogicalPlan> {
+        vec![&self.input]
+    }
+
+    fn schema(&self) -> &DFSchemaRef {
+        self.input.schema()
+    }
+
+    fn expressions(&self) -> Vec<Expr> {
+        self.exprs.clone()
+    }
+
+    fn fmt_for_explain(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+
+    fn with_exprs_and_inputs(
+        &self,
+        exprs: Vec<datafusion::prelude::Expr>,
+        inputs: Vec<LogicalPlan>,
+    ) -> datafusion::error::Result<Self> {
+        let [input] = <[LogicalPlan; 1]>::try_from(inputs).map_err(|_| {
+            datafusion::error::DataFusionError::Plan("input size must be one".to_string())
+        })?;
+
+        Ok(Self {
+            cache_id: self.cache_id.clone(),
+            session_id: self.session_id.clone(),
+            input,
+            exprs,
+        })
+    }
+}
 #[cfg(test)]
 mod test {
     use datafusion::{
@@ -805,5 +1000,109 @@ mod test {
                 .to_string()
                 .contains("TLS configuration failed")
         );
+    }
+
+    // Tests for helper functions that register DataFusion + Spark functions
+
+    #[test]
+    fn test_ballista_functions_include_datafusion() {
+        use super::{
+            ballista_aggregate_functions, ballista_scalar_functions,
+            ballista_window_functions,
+        };
+
+        // Test scalar functions
+        let scalar_funcs = ballista_scalar_functions();
+        assert!(scalar_funcs.iter().any(|f| f.name() == "abs"));
+        assert!(scalar_funcs.iter().any(|f| f.name() == "ceil"));
+        assert!(scalar_funcs.iter().any(|f| f.name() == "array_length")); // nested function
+
+        // Test aggregate functions
+        let agg_funcs = ballista_aggregate_functions();
+        assert!(agg_funcs.iter().any(|f| f.name() == "count"));
+        assert!(agg_funcs.iter().any(|f| f.name() == "sum"));
+        assert!(agg_funcs.iter().any(|f| f.name() == "avg"));
+
+        // Test window functions
+        let window_funcs = ballista_window_functions();
+        assert!(window_funcs.iter().any(|f| f.name() == "row_number"));
+        assert!(window_funcs.iter().any(|f| f.name() == "rank"));
+        assert!(window_funcs.iter().any(|f| f.name() == "dense_rank"));
+    }
+
+    #[test]
+    #[cfg(not(feature = "spark-compat"))]
+    fn test_ballista_functions_without_spark() {
+        use super::{
+            ballista_aggregate_functions, ballista_scalar_functions,
+            ballista_window_functions,
+        };
+
+        // Scalar functions should NOT include Spark functions
+        let scalar_funcs = ballista_scalar_functions();
+        assert!(!scalar_funcs.iter().any(|f| f.name() == "sha1"));
+        assert!(!scalar_funcs.iter().any(|f| f.name() == "expm1"));
+
+        // All function types should have baseline DataFusion functions
+        assert!(!ballista_aggregate_functions().is_empty());
+        assert!(!ballista_window_functions().is_empty());
+    }
+
+    #[test]
+    #[cfg(feature = "spark-compat")]
+    fn test_ballista_functions_with_spark() {
+        use super::{
+            ballista_aggregate_functions, ballista_scalar_functions,
+            ballista_window_functions,
+        };
+
+        // Scalar functions should include Spark functions
+        let scalar_funcs = ballista_scalar_functions();
+        assert!(scalar_funcs.iter().any(|f| f.name() == "sha1"));
+        assert!(scalar_funcs.iter().any(|f| f.name() == "expm1"));
+
+        // All function types should have functions available
+        assert!(!ballista_aggregate_functions().is_empty());
+        assert!(!ballista_window_functions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_ballista_functions_with_session_state() {
+        use super::{
+            ballista_aggregate_functions, ballista_scalar_functions,
+            ballista_window_functions,
+        };
+
+        let state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_scalar_functions(ballista_scalar_functions())
+            .with_aggregate_functions(ballista_aggregate_functions())
+            .with_window_functions(ballista_window_functions())
+            .build();
+
+        // Verify all function types are registered in SessionState
+        assert!(state.scalar_functions().contains_key("abs"));
+        assert!(state.aggregate_functions().contains_key("count"));
+        assert!(state.window_functions().contains_key("row_number"));
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "spark-compat")]
+    async fn test_ballista_spark_functions_with_session_state() {
+        use super::{
+            ballista_aggregate_functions, ballista_scalar_functions,
+            ballista_window_functions,
+        };
+
+        let state = SessionStateBuilder::new()
+            .with_default_features()
+            .with_scalar_functions(ballista_scalar_functions())
+            .with_aggregate_functions(ballista_aggregate_functions())
+            .with_window_functions(ballista_window_functions())
+            .build();
+
+        // Verify Spark functions are registered in SessionState
+        assert!(state.scalar_functions().contains_key("sha1"));
+        assert!(state.scalar_functions().contains_key("expm1"));
     }
 }

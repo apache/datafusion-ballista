@@ -21,6 +21,8 @@
 use std::sync::Arc;
 
 use datafusion::{execution::runtime_env::RuntimeEnv, prelude::SessionConfig};
+
+use crate::serde::protobuf::JobStatus;
 /// The current version of Ballista, derived from the Cargo package version.
 pub const BALLISTA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -33,8 +35,6 @@ pub fn print_version() {
 pub mod client;
 /// Configuration options and settings for Ballista components.
 pub mod config;
-/// Consistent hashing implementation for data distribution.
-pub mod consistent_hash;
 /// Utilities for generating execution plan diagrams.
 pub mod diagram;
 /// Error types and result definitions for Ballista operations.
@@ -76,3 +76,6 @@ pub type RuntimeProducer = Arc<
 /// It is intended to be used with executor configuration
 ///
 pub type ConfigProducer = Arc<dyn Fn() -> SessionConfig + Send + Sync>;
+
+/// Job Notification Subscriber
+pub type JobStatusSubscriber = tokio::sync::mpsc::Sender<JobStatus>;

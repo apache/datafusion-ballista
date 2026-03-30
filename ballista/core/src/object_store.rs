@@ -89,12 +89,20 @@ pub fn runtime_env_with_s3_support(
 pub fn session_state_with_s3_support(
     session_config: SessionConfig,
 ) -> datafusion::common::Result<SessionState> {
+    use crate::extension::{
+        ballista_aggregate_functions, ballista_scalar_functions,
+        ballista_window_functions,
+    };
+
     let runtime_env = runtime_env_with_s3_support(&session_config)?;
 
     Ok(SessionStateBuilder::new()
         .with_runtime_env(runtime_env)
         .with_config(session_config)
         .with_default_features()
+        .with_scalar_functions(ballista_scalar_functions())
+        .with_aggregate_functions(ballista_aggregate_functions())
+        .with_window_functions(ballista_window_functions())
         .build())
 }
 

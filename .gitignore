@@ -87,6 +87,8 @@ cpp/Brewfile.lock.json
 # docker volumes used for caching
 .docker
 
+.pending-snap
+
 # Rust
 target
 # Cargo.lock
@@ -107,3 +109,4 @@ logs/
 
 # Claude Code guidance file (local only)
 CLAUDE.md
+.claude/

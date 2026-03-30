@@ -18,21 +18,25 @@
 //! This crate contains code generated from the Ballista Protocol Buffer Definition as well
 //! as convenience code for interacting with the generated code.
 
+use crate::extension::BallistaCacheNode;
 use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 
 use arrow_flight::sql::ProstMessageExt;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
+use datafusion::logical_expr::Extension;
 use datafusion::physical_plan::{ExecutionPlan, Partitioning};
 use datafusion_proto::logical_plan::file_formats::{
     ArrowLogicalExtensionCodec, AvroLogicalExtensionCodec, CsvLogicalExtensionCodec,
     JsonLogicalExtensionCodec, ParquetLogicalExtensionCodec,
 };
-use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_hash_partitioning;
 use datafusion_proto::physical_plan::from_proto::parse_protobuf_partitioning;
 use datafusion_proto::physical_plan::to_proto::serialize_partitioning;
+use datafusion_proto::physical_plan::{
+    DefaultPhysicalExtensionCodec, DefaultPhysicalProtoConverter,
+};
 use datafusion_proto::protobuf::proto_error;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use datafusion_proto::{
@@ -51,7 +55,10 @@ use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
     ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
 };
-use crate::serde::protobuf::ballista_physical_plan_node::PhysicalPlanType;
+use crate::serde::protobuf::{
+    ballista_logical_plan_node::LogicalPlanType,
+    ballista_physical_plan_node::PhysicalPlanType,
+};
 use crate::serde::scheduler::PartitionLocation;
 pub use generated::ballista as protobuf;
 
@@ -188,7 +195,28 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         inputs: &[datafusion::logical_expr::LogicalPlan],
         ctx: &TaskContext,
     ) -> Result<datafusion::logical_expr::Extension> {
-        self.default_codec.try_decode(buf, inputs, ctx)
+        let plan = protobuf::BallistaLogicalPlanNode::decode(buf)
+            .ok()
+            .and_then(|node| node.logical_plan_type);
+
+        let Some(plan) = plan else {
+            return self.default_codec.try_decode(buf, inputs, ctx);
+        };
+
+        match plan {
+            LogicalPlanType::CacheNode(plan_cache) => Ok(Extension {
+                node: Arc::new(BallistaCacheNode::new(
+                    plan_cache.cache_id,
+                    plan_cache.session_id,
+                    inputs
+                        .first()
+                        .ok_or(DataFusionError::Plan(
+                            "expected input size of 1".to_string(),
+                        ))?
+                        .clone(),
+                )),
+            }),
+        }
     }
 
     fn try_encode(
@@ -196,7 +224,26 @@ impl LogicalExtensionCodec for BallistaLogicalExtensionCodec {
         node: &datafusion::logical_expr::Extension,
         buf: &mut Vec<u8>,
     ) -> Result<()> {
-        self.default_codec.try_encode(node, buf)
+        if let Some(node) = node.node.as_any().downcast_ref::<BallistaCacheNode>() {
+            let proto = protobuf::BallistaLogicalPlanNode {
+                logical_plan_type: Some(LogicalPlanType::CacheNode(
+                    protobuf::LogicalPlanCacheNode {
+                        cache_id: node.cache_id().to_owned(),
+                        session_id: node.session_id().to_owned(),
+                    },
+                )),
+            };
+
+            proto.encode(buf).map_err(|e| {
+                DataFusionError::Internal(format!(
+                    "failed to encode cache node logical plan: {e:?}"
+                ))
+            })?;
+
+            Ok(())
+        } else {
+            self.default_codec.try_encode(node, buf)
+        }
     }
 
     fn try_decode_table_provider(
@@ -291,7 +338,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     "Could not deserialize BallistaPhysicalPlanNode because it's physical_plan_type is none".to_string()
                 )
             })?;
-
+        let converter = DefaultPhysicalProtoConverter {};
         match ballista_plan {
             PhysicalPlanType::ShuffleWriter(shuffle_writer) => {
                 let input = inputs[0].clone();
@@ -301,6 +348,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     ctx,
                     input.schema().as_ref(),
                     self.default_codec.as_ref(),
+                    &converter,
                 )?;
 
                 Ok(Arc::new(ShuffleWriterExec::try_new(
@@ -319,6 +367,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     ctx,
                     input.schema().as_ref(),
                     self.default_codec.as_ref(),
+                    &converter,
                 )?;
 
                 let partitioning = shuffle_output_partitioning.ok_or_else(|| {
@@ -327,12 +376,18 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     )
                 })?;
 
+                let batch_size = if sort_shuffle_writer.batch_size > 0 {
+                    sort_shuffle_writer.batch_size as usize
+                } else {
+                    8192 // default for backwards compatibility
+                };
                 let config = SortShuffleConfig::new(
                     true,
                     sort_shuffle_writer.buffer_size as usize,
                     sort_shuffle_writer.memory_limit as usize,
                     sort_shuffle_writer.spill_threshold,
                     datafusion::arrow::ipc::CompressionType::LZ4_FRAME,
+                    batch_size,
                 );
 
                 Ok(Arc::new(SortShuffleWriterExec::try_new(
@@ -369,6 +424,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     ctx,
                     schema.as_ref(),
                     self.default_codec.as_ref(),
+                    &converter,
                 )?;
                 let partitioning = partitioning
                     .ok_or_else(|| proto_error("missing required partitioning field"))?;
@@ -388,6 +444,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     ctx,
                     schema.as_ref(),
                     self.default_codec.as_ref(),
+                    &converter,
                 )?;
                 let partitioning = partitioning
                     .ok_or_else(|| proto_error("missing required partitioning field"))?;
@@ -478,6 +535,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         buffer_size: config.buffer_size as u64,
                         memory_limit: config.memory_limit as u64,
                         spill_threshold: config.spill_threshold,
+                        batch_size: config.batch_size as u64,
                     },
                 )),
             };
@@ -506,9 +564,11 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         .collect::<Result<Vec<_>, _>>()?,
                 });
             }
+            let converter = DefaultPhysicalProtoConverter {};
             let partitioning = serialize_partitioning(
                 &exec.properties().partitioning,
                 self.default_codec.as_ref(),
+                &converter,
             )?;
             let proto = protobuf::BallistaPhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::ShuffleReader(
@@ -528,9 +588,11 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
 
             Ok(())
         } else if let Some(exec) = node.as_any().downcast_ref::<UnresolvedShuffleExec>() {
+            let converter = DefaultPhysicalProtoConverter {};
             let partitioning = serialize_partitioning(
                 &exec.properties().partitioning,
                 self.default_codec.as_ref(),
+                &converter,
             )?;
             let proto = protobuf::BallistaPhysicalPlanNode {
                 physical_plan_type: Some(PhysicalPlanType::UnresolvedShuffle(

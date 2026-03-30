@@ -15,13 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Node trait for consistent hashing.
+pub mod datafusion_patch;
+pub mod distributed_exchange;
+pub mod eliminate_empty;
+pub mod propagate_empty;
 
-/// A trait representing a node in a consistent hash ring.
-pub trait Node {
-    /// Returns the unique name identifier for this node.
-    fn name(&self) -> &str;
-
-    /// Returns whether this node is currently valid and can receive requests.
-    fn is_valid(&self) -> bool;
-}
+pub use datafusion_patch::*;
+pub use distributed_exchange::*;
+pub use eliminate_empty::*;
+pub use propagate_empty::*;
