@@ -202,7 +202,7 @@ class BallistaMagics(Magics):
                 return f"You should provide table name for this .{file_type} file"
             table_name = args[1]
             if len(args) < 3:
-                return f"You should provide path to your file"
+                return "You should provide path to your file"
             file_name = args[2]
 
             if file_type == "parquet":

@@ -201,20 +201,20 @@ class TestBallistaSessionContextTables:
         """Test listing tables when none registered."""
         # Should return empty list or at least not crash
         tables = ctx.tables()
-        assert isinstance(tables, list)
+        assert isinstance(tables, set)
 
     def test_tables_after_register_parquet(self, ctx):
         """Test listing tables after registering a Parquet file."""
         ctx.register_parquet("test_parquet", "testdata/test.parquet")
         tables = ctx.tables()
         # The table might be in the list depending on catalog implementation
-        assert isinstance(tables, list)
+        assert isinstance(tables, set)
 
     def test_tables_after_register_csv(self, ctx):
         """Test listing tables after registering a CSV file."""
         ctx.register_csv("test_csv", "testdata/test.csv", has_header=True)
         tables = ctx.tables()
-        assert isinstance(tables, list)
+        assert isinstance(tables, set)
 
 
 class TestHTMLRendering:

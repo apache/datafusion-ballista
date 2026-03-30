@@ -19,7 +19,7 @@
 
 import pytest
 from unittest.mock import patch, MagicMock
-from ballista import BallistaSessionContext, setup_test_cluster
+from ballista import setup_test_cluster
 from ballista.jupyter import (
     BallistaMagics,
     BallistaConnectionError,
