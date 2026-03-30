@@ -83,7 +83,7 @@ pub struct SortShuffleWriterExec {
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
     /// Plan properties
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
 }
 
 #[derive(Debug, Clone)]
@@ -139,12 +139,12 @@ impl SortShuffleWriterExec {
             }
         }
 
-        let properties = PlanProperties::new(
+        let properties = Arc::new(PlanProperties::new(
             datafusion::physical_expr::EquivalenceProperties::new(plan.schema()),
             shuffle_output_partitioning.clone(),
             datafusion::physical_plan::execution_plan::EmissionType::Incremental,
             datafusion::physical_plan::execution_plan::Boundedness::Bounded,
-        );
+        ));
 
         Ok(Self {
             job_id,
@@ -493,7 +493,7 @@ impl ExecutionPlan for SortShuffleWriterExec {
         self.plan.schema()
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 

@@ -19,7 +19,7 @@
 name = "ballista-core"
 description = "Ballista Distributed Compute"
 license = "Apache-2.0"
-version = "52.0.0"
+version = "53.0.0"
 homepage = "https://datafusion.apache.org/ballista/"
 repository = "https://github.com/apache/datafusion-ballista"
 readme = "README.md"
@@ -53,11 +53,11 @@ clap = { workspace = true, optional = true }
 datafusion = { workspace = true }
 datafusion-proto = { workspace = true }
 datafusion-proto-common = { workspace = true }
-datafusion-spark = { workspace = true, optional = true }
+datafusion-spark = { workspace = true, optional = true, features = ["datafusion"] }
 futures = { workspace = true }
 itertools = "0.14"
 log = { workspace = true }
-md-5 = { version = "^0.10.0" }
+md-5 = { version = "^0.11.0" }
 object_store = { workspace = true, features = ["aws", "http"], optional = true }
 parking_lot = { workspace = true }
 prost = { workspace = true }

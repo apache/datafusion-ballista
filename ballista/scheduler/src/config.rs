@@ -48,20 +48,20 @@ pub struct Config {
     )]
     pub advertise_flight_sql_endpoint: Option<String>,
     /// Namespace for the ballista cluster.
-    #[arg(short = 'n', long, default_value_t = String::from("ballista"), help = "Namespace for the ballista cluster that this executor will join. Default: ballista")]
+    #[arg(short = 'n', long, default_value_t = String::from("ballista"), help = "Namespace for the ballista cluster that this executor will join.")]
     pub namespace: String,
     /// Local host name or IP address to bind to.
-    #[arg(long, default_value_t = String::from("0.0.0.0"), help = "Local host name or IP address to bind to. Default: 0.0.0.0")]
+    #[arg(long, default_value_t = String::from("0.0.0.0"), help = "Local host name or IP address to bind to.")]
     pub bind_host: String,
     /// External host name for executors to connect to.
-    #[arg(long, default_value_t = String::from("localhost"), help = "Host name or IP address so that executors can connect to this scheduler. Default: localhost")]
+    #[arg(long, default_value_t = String::from("localhost"), help = "Host name or IP address so that executors can connect to this scheduler.")]
     pub external_host: String,
     /// Port to bind the scheduler gRPC service.
     #[arg(
         short = 'p',
         long,
         default_value_t = 50050,
-        help = "bind port. Default: 50050"
+        help = "Scheduler bind port."
     )]
     pub bind_port: u16,
     /// Task scheduling policy (pull-staged or push-staged).
@@ -73,47 +73,30 @@ pub struct Config {
     )]
     pub scheduler_policy: ballista_core::config::TaskSchedulingPolicy,
     /// Event loop buffer size for high throughput systems.
-    #[arg(
-        long,
-        default_value_t = 1000,
-        help = "Event loop buffer size. Default: 10000"
-    )]
+    #[arg(long, default_value_t = 1000, help = "Event loop buffer size. ")]
     pub event_loop_buffer_size: u32,
     /// Interval in seconds for cleaning up finished job data.
     #[arg(
         long,
         default_value_t = 300,
-        help = "Delayed interval for cleaning up finished job data. Default: 300"
+        help = "Delayed interval for cleaning up finished job data."
     )]
     pub finished_job_data_clean_up_interval_seconds: u64,
     /// Interval in seconds for cleaning up finished job state.
     #[arg(
         long,
         default_value_t = 3600,
-        help = "Delayed interval for cleaning up finished job state. Default: 3600"
+        help = "Delayed interval for cleaning up finished job state."
     )]
     pub finished_job_state_clean_up_interval_seconds: u64,
     /// Task distribution policy (bias, round-robin, consistent-hash).
     #[arg(
         long,
-        default_value_t = crate::config::TaskDistribution::Bias,
-        help = "The policy of distributing tasks to available executor slots, possible values: bias, round-robin, consistent-hash. Default: bias"
+        default_value_t = crate::config::TaskDistribution::default(),
+        help = "The policy of distributing tasks to available executor slots."
     )]
     pub task_distribution: crate::config::TaskDistribution,
-    /// Replica count per node for consistent hashing.
-    #[arg(
-        long,
-        default_value_t = 31,
-        help = "Replica number of each node for the consistent hashing. Default: 31"
-    )]
-    pub consistent_hash_num_replicas: u32,
-    /// Tolerance for consistent hashing task scheduling.
-    #[arg(
-        long,
-        default_value_t = 0,
-        help = "Tolerance of the consistent hashing policy for task scheduling. Default: 0"
-    )]
-    pub consistent_hash_tolerance: u32,
+
     /// Directory path for log files.
     #[arg(
         long,
@@ -131,28 +114,28 @@ pub struct Config {
     #[arg(
         long,
         default_value_t = String::from("INFO,datafusion=INFO"),
-        help = "special log level for sub mod. link: https://docs.rs/env_logger/latest/env_logger/#enabling-logging. For example we want whole level is INFO but datafusion mode is DEBUG"
+        help = "special log level for sub mod. link: https://docs.rs/env_logger/latest/env_logger/#enabling-logging. For example we want whole level is INFO but datafusion mode is DEBUG."
     )]
     pub log_level_setting: String,
     /// Log rotation policy (minutely, hourly, daily, never).
     #[arg(
         long,
         default_value_t = ballista_core::config::LogRotationPolicy::Daily,
-        help = "Tracing log rotation policy, possible values: minutely, hourly, daily, never. Default: daily"
+        help = "Tracing log rotation policy"
     )]
     pub log_rotation_policy: ballista_core::config::LogRotationPolicy,
     /// Interval in ms to wait before resubmitting unscheduled jobs.
     #[arg(
         long,
         default_value_t = 0,
-        help = "If job is not able to be scheduled on submission, wait for this interval and resubmit. Default value of 0 indicates that job should not be resubmitted"
+        help = "If job is not able to be scheduled on submission, wait for this interval and resubmit. Default value of 0 indicates that job should not be resubmitted."
     )]
     pub job_resubmit_interval_ms: u64,
     /// Grace period in seconds for executor termination.
     #[arg(
         long,
         default_value_t = 30,
-        help = "Time in seconds an executor should be considered lost after it enters terminating status"
+        help = "Time in seconds an executor should be considered lost after it enters terminating status."
     )]
     pub executor_termination_grace_period: u64,
     /// Expected processing time for scheduler events in microseconds.
@@ -166,28 +149,28 @@ pub struct Config {
     #[arg(
         long,
         default_value_t = 16777216,
-        help = "The maximum size of a decoded message at the grpc server side. Default: 16MB"
+        help = "The maximum size of a decoded message at the grpc server side."
     )]
     pub grpc_server_max_decoding_message_size: u32,
     /// Maximum size of encoded gRPC messages.
     #[arg(
         long,
         default_value_t = 16777216,
-        help = "The maximum size of an encoded message at the grpc server side. Default: 16MB"
+        help = "The maximum size of an encoded message at the grpc server side."
     )]
     pub grpc_server_max_encoding_message_size: u32,
     /// Timeout in seconds before marking an executor as dead.
     #[arg(
         long,
         default_value_t = 180,
-        help = "The executor timeout in seconds. It should be longer than executor's heartbeat intervals. Only after missing two or tree consecutive heartbeats from a executor, the executor is mark to be dead"
+        help = "The executor timeout in seconds. It should be longer than executor's heartbeat intervals. Only after missing two or tree consecutive heartbeats from a executor, the executor is mark to be dead."
     )]
     pub executor_timeout_seconds: u64,
     /// Interval in seconds to check for dead executors.
     #[arg(
         long,
         default_value_t = 15,
-        help = "The interval to check expired or dead executors"
+        help = "Interval, in seconds, to check expired or dead executors (."
     )]
     pub expire_dead_executor_interval_seconds: u64,
 
@@ -426,20 +409,16 @@ impl SchedulerConfig {
 
 /// Policy of distributing tasks to available executor slots
 ///
-#[derive(Clone, Copy, Debug, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, serde::Deserialize, Default)]
 #[cfg_attr(feature = "build-binary", derive(clap::ValueEnum))]
 pub enum TaskDistribution {
     /// Eagerly assign tasks to executor slots. This will assign as many task slots per executor
     /// as are currently available
+    #[default]
     Bias,
     /// Distribute tasks evenly across executors. This will try and iterate through available executors
     /// and assign one task to each executor until all tasks are assigned.
     RoundRobin,
-    /// 1. Firstly, try to bind tasks without scanning source files by `RoundRobin` policy.
-    /// 2. Then for a task for scanning source files, firstly calculate a hash value based on input files.
-    ///    And then bind it with an execute according to consistent hashing policy.
-    /// 3. If needed, work stealing can be enabled based on the tolerance of the consistent hashing.
-    ConsistentHash,
 }
 
 impl Display for TaskDistribution {
@@ -447,7 +426,6 @@ impl Display for TaskDistribution {
         match self {
             TaskDistribution::Bias => f.write_str("bias"),
             TaskDistribution::RoundRobin => f.write_str("round-robin"),
-            TaskDistribution::ConsistentHash => f.write_str("consistent-hash"),
         }
     }
 }
@@ -471,16 +449,6 @@ pub enum TaskDistributionPolicy {
     /// Distribute tasks evenly across executors. This will try and iterate through available executors
     /// and assign one task to each executor until all tasks are assigned.
     RoundRobin,
-    /// 1. Firstly, try to bind tasks without scanning source files by `RoundRobin` policy.
-    /// 2. Then for a task for scanning source files, firstly calculate a hash value based on input files.
-    ///    And then bind it with an execute according to consistent hashing policy.
-    /// 3. If needed, work stealing can be enabled based on the tolerance of the consistent hashing.
-    ConsistentHash {
-        /// Number of virtual nodes per executor on the consistent hash ring.
-        num_replicas: usize,
-        /// Tolerance for work stealing when slots are imbalanced.
-        tolerance: usize,
-    },
     /// User provided task distribution policy
     Custom(Arc<dyn DistributionPolicy>),
 }
@@ -493,14 +461,6 @@ impl TryFrom<Config> for SchedulerConfig {
         let task_distribution = match opt.task_distribution {
             TaskDistribution::Bias => TaskDistributionPolicy::Bias,
             TaskDistribution::RoundRobin => TaskDistributionPolicy::RoundRobin,
-            TaskDistribution::ConsistentHash => {
-                let num_replicas = opt.consistent_hash_num_replicas as usize;
-                let tolerance = opt.consistent_hash_tolerance as usize;
-                TaskDistributionPolicy::ConsistentHash {
-                    num_replicas,
-                    tolerance,
-                }
-            }
         };
 
         let config = SchedulerConfig {

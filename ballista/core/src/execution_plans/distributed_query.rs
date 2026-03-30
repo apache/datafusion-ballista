@@ -39,7 +39,7 @@ use datafusion::physical_plan::metrics::{
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-    SendableRecordBatchStream, Statistics,
+    SendableRecordBatchStream,
 };
 use datafusion::prelude::SessionConfig;
 use datafusion_proto::logical_plan::{
@@ -73,7 +73,7 @@ pub struct DistributedQueryExec<T: 'static + AsLogicalPlan> {
     /// Session id
     session_id: String,
     /// Plan properties
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
     /// Execution metrics, currently exposes:
     /// - output_rows: Total number of rows returned
     /// - transferred_bytes: Total bytes transferred from executors
@@ -92,8 +92,9 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
         plan: LogicalPlan,
         session_id: String,
     ) -> Self {
-        let properties =
-            Self::compute_properties(plan.schema().as_arrow().clone().into());
+        let properties = Arc::new(Self::compute_properties(
+            plan.schema().as_arrow().clone().into(),
+        ));
         Self {
             scheduler_url,
             config,
@@ -114,8 +115,9 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
         extension_codec: Arc<dyn LogicalExtensionCodec>,
         session_id: String,
     ) -> Self {
-        let properties =
-            Self::compute_properties(plan.schema().as_arrow().clone().into());
+        let properties = Arc::new(Self::compute_properties(
+            plan.schema().as_arrow().clone().into(),
+        ));
         Self {
             scheduler_url,
             config,
@@ -172,7 +174,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         self.plan.schema().as_arrow().clone().into()
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 
@@ -191,9 +193,9 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             extension_codec: self.extension_codec.clone(),
             plan_repr: self.plan_repr,
             session_id: self.session_id.clone(),
-            properties: Self::compute_properties(
+            properties: Arc::new(Self::compute_properties(
                 self.plan.schema().as_arrow().clone().into(),
-            ),
+            )),
             metrics: ExecutionPlanMetricsSet::new(),
         }))
     }
@@ -303,13 +305,6 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             let schema = self.schema();
             Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
         }
-    }
-
-    fn statistics(&self) -> Result<Statistics> {
-        // This execution plan sends the logical plan to the scheduler without
-        // performing the node by node conversion to a full physical plan.
-        // This implies that we cannot infer the statistics at this stage.
-        Ok(Statistics::new_unknown(&self.schema()))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {

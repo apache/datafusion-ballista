@@ -15,38 +15,27 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::collections::{HashMap, HashSet};
-use std::pin::Pin;
-use std::sync::Arc;
-
-use datafusion::common::tree_node::TreeNode;
-use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::datasource::listing::PartitionedFile;
-use datafusion::datasource::physical_plan::FileScanConfig;
-use datafusion::datasource::source::DataSourceExec;
-use datafusion::error::DataFusionError;
-use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::{SessionConfig, SessionContext};
-use futures::Stream;
-use log::debug;
-
-use ballista_core::consistent_hash::ConsistentHash;
-use ballista_core::error::Result;
-use ballista_core::serde::protobuf::{
-    AvailableTaskSlots, ExecutorHeartbeat, JobStatus, job_status,
-};
-use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata, PartitionId};
-use ballista_core::utils::{default_config_producer, default_session_builder};
-use ballista_core::{ConfigProducer, JobStatusSubscriber, consistent_hash};
-
 use crate::cluster::memory::{InMemoryClusterState, InMemoryJobState};
-
 use crate::config::{SchedulerConfig, TaskDistributionPolicy};
 use crate::scheduler_server::SessionBuilder;
 use crate::state::execution_graph::{
     ExecutionGraphBox, TaskDescription, create_task_info,
 };
 use crate::state::task_manager::JobInfoCache;
+use ballista_core::error::Result;
+use ballista_core::serde::protobuf::{
+    AvailableTaskSlots, ExecutorHeartbeat, JobStatus, job_status,
+};
+use ballista_core::serde::scheduler::{ExecutorData, ExecutorMetadata, PartitionId};
+use ballista_core::utils::{default_config_producer, default_session_builder};
+use ballista_core::{ConfigProducer, JobStatusSubscriber};
+use datafusion::physical_plan::ExecutionPlan;
+use datafusion::prelude::{SessionConfig, SessionContext};
+use futures::Stream;
+use log::debug;
+use std::collections::{HashMap, HashSet};
+use std::pin::Pin;
+use std::sync::Arc;
 
 /// Event broadcasting and subscription for cluster state changes.
 pub mod event;
@@ -534,12 +523,6 @@ pub(crate) async fn bind_task_round_robin(
     schedulable_tasks
 }
 
-/// Maps execution plan to list of files it scans
-type GetScanFilesFunc = fn(
-    &str,
-    Arc<dyn ExecutionPlan>,
-) -> datafusion::common::Result<Vec<Vec<Vec<PartitionedFile>>>>;
-
 /// User provided task distribution policy
 #[async_trait::async_trait]
 pub trait DistributionPolicy: std::fmt::Debug + Send + Sync {
@@ -572,208 +555,16 @@ pub trait DistributionPolicy: std::fmt::Debug + Send + Sync {
     fn name(&self) -> &str;
 }
 
-pub(crate) async fn bind_task_consistent_hash(
-    topology_nodes: HashMap<String, TopologyNode>,
-    num_replicas: usize,
-    tolerance: usize,
-    running_jobs: Arc<HashMap<String, JobInfoCache>>,
-    get_scan_files: GetScanFilesFunc,
-) -> Result<(Vec<BoundTask>, Option<ConsistentHash<TopologyNode>>)> {
-    let mut total_slots = 0usize;
-    for (_, node) in topology_nodes.iter() {
-        total_slots += node.available_slots as usize;
-    }
-    if total_slots == 0 {
-        debug!(
-            "Not enough available executor slots for binding tasks with consistent hashing policy!!!"
-        );
-        return Ok((vec![], None));
-    }
-    debug!("Total slot number for consistent hash binding is {total_slots}");
-
-    let node_replicas = topology_nodes
-        .into_values()
-        .map(|node| (node, num_replicas))
-        .collect::<Vec<_>>();
-    let mut ch_topology: ConsistentHash<TopologyNode> =
-        ConsistentHash::new(node_replicas);
-
-    let mut schedulable_tasks: Vec<BoundTask> = vec![];
-    for (job_id, job_info) in running_jobs.iter() {
-        if !matches!(job_info.status, Some(job_status::Status::Running(_))) {
-            debug!("Job {job_id} is not in running status and will be skipped");
-            continue;
-        }
-        let mut graph = job_info.execution_graph.write().await;
-        let session_id = graph.session_id().to_string();
-        let mut black_list = vec![];
-        while let Some((running_stage, task_id_gen)) =
-            graph.fetch_running_stage(&black_list)
-        {
-            let scan_files = get_scan_files(job_id, running_stage.plan.clone())?;
-            if is_skip_consistent_hash(&scan_files) {
-                debug!(
-                    "Will skip stage {}/{} for consistent hashing task binding",
-                    job_id, running_stage.stage_id
-                );
-                black_list.push(running_stage.stage_id);
-                continue;
-            }
-            let pre_total_slots = total_slots;
-            let scan_files = &scan_files[0];
-            let tolerance_list = vec![0, tolerance];
-            // First round with 0 tolerance consistent hashing policy
-            // Second round with [`tolerance`] tolerance consistent hashing policy
-            for tolerance in tolerance_list {
-                let runnable_tasks = running_stage
-                    .task_infos
-                    .iter_mut()
-                    .enumerate()
-                    .filter(|(_partition, info)| info.is_none())
-                    .take(total_slots)
-                    .collect::<Vec<_>>();
-                for (partition_id, task_info) in runnable_tasks {
-                    let partition_files = &scan_files[partition_id];
-                    assert!(!partition_files.is_empty());
-                    // Currently we choose the first file for a task for consistent hash.
-                    // Later when splitting files for tasks in datafusion, it's better to
-                    // introduce this hash based policy besides the file number policy or file size policy.
-                    let file_for_hash = &partition_files[0];
-                    if let Some(node) = ch_topology.get_mut_with_tolerance(
-                        file_for_hash.object_meta.location.as_ref().as_bytes(),
-                        tolerance,
-                    ) {
-                        let executor_id = node.id.clone();
-                        let task_id = *task_id_gen;
-                        *task_id_gen += 1;
-                        *task_info = Some(create_task_info(executor_id.clone(), task_id));
-
-                        let partition = PartitionId {
-                            job_id: job_id.clone(),
-                            stage_id: running_stage.stage_id,
-                            partition_id,
-                        };
-                        let task_desc = TaskDescription {
-                            session_id: session_id.clone(),
-                            partition,
-                            stage_attempt_num: running_stage.stage_attempt_num,
-                            task_id,
-                            task_attempt: running_stage.task_failure_numbers
-                                [partition_id],
-                            plan: running_stage.plan.clone(),
-                            session_config: running_stage.session_config.clone(),
-                        };
-                        schedulable_tasks.push((executor_id, task_desc));
-
-                        node.available_slots -= 1;
-                        total_slots -= 1;
-                        if total_slots == 0 {
-                            return Ok((schedulable_tasks, Some(ch_topology)));
-                        }
-                    }
-                }
-            }
-            // Since there's no more tasks from this stage which can be bound,
-            // we should skip this stage at the next round.
-            if pre_total_slots == total_slots {
-                black_list.push(running_stage.stage_id);
-            }
-        }
-    }
-
-    Ok((schedulable_tasks, Some(ch_topology)))
-}
-
-// If if there's no plan which needs to scan files, skip it.
-// Or there are multiple plans which need to scan files for a stage, skip it.
-pub(crate) fn is_skip_consistent_hash(scan_files: &[Vec<Vec<PartitionedFile>>]) -> bool {
-    scan_files.is_empty() || scan_files.len() > 1
-}
-
-/// Get all of the [`PartitionedFile`] to be scanned for an [`ExecutionPlan`]
-pub(crate) fn get_scan_files(
-    plan: Arc<dyn ExecutionPlan>,
-) -> std::result::Result<Vec<Vec<Vec<PartitionedFile>>>, DataFusionError> {
-    let mut collector: Vec<Vec<Vec<PartitionedFile>>> = vec![];
-    plan.apply(&mut |plan: &Arc<dyn ExecutionPlan>| {
-        let plan_any = plan.as_any();
-
-        if let Some(config) = plan_any
-            .downcast_ref::<DataSourceExec>()
-            .and_then(|c| c.data_source().as_any().downcast_ref::<FileScanConfig>())
-        {
-            collector.push(
-                config
-                    .file_groups
-                    .iter()
-                    .map(|f| f.clone().into_inner())
-                    .collect(),
-            );
-            Ok(TreeNodeRecursion::Jump)
-        } else {
-            Ok(TreeNodeRecursion::Continue)
-        }
-    })?;
-    Ok(collector)
-}
-
-/// Represents a node in the cluster topology for consistent hashing.
-#[derive(Clone)]
-pub struct TopologyNode {
-    /// Unique executor ID.
-    pub id: String,
-    /// Host:port name for the node.
-    pub name: String,
-    /// Timestamp of last heartbeat received.
-    pub last_seen_ts: u64,
-    /// Number of available task slots on this node.
-    pub available_slots: u32,
-}
-
-impl TopologyNode {
-    fn new(
-        host: &str,
-        port: u16,
-        id: &str,
-        last_seen_ts: u64,
-        available_slots: u32,
-    ) -> Self {
-        Self {
-            id: id.to_string(),
-            name: format!("{host}:{port}"),
-            last_seen_ts,
-            available_slots,
-        }
-    }
-}
-
-impl consistent_hash::node::Node for TopologyNode {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn is_valid(&self) -> bool {
-        self.available_slots > 0
-    }
-}
-
 #[cfg(test)]
 mod test {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use datafusion::datasource::listing::PartitionedFile;
-    use object_store::ObjectMeta;
-    use object_store::path::Path;
-
     use ballista_core::error::Result;
     use ballista_core::serde::protobuf::AvailableTaskSlots;
     use ballista_core::serde::scheduler::{ExecutorMetadata, ExecutorSpecification};
 
-    use crate::cluster::{
-        BoundTask, TopologyNode, bind_task_bias, bind_task_consistent_hash,
-        bind_task_round_robin,
-    };
+    use crate::cluster::{BoundTask, bind_task_bias, bind_task_round_robin};
     use crate::state::execution_graph::{ExecutionGraph, StaticExecutionGraph};
     use crate::state::task_manager::JobInfoCache;
     use crate::test_utils::{
@@ -887,100 +678,6 @@ mod test {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn test_bind_task_consistent_hash() -> Result<()> {
-        let num_partition = 8usize;
-        let active_jobs = mock_active_jobs(num_partition).await?;
-        let active_jobs = Arc::new(active_jobs);
-        let topology_nodes = mock_topology_nodes();
-        let num_replicas = 31;
-        let tolerance = 0;
-
-        // Check none scan files case
-        {
-            let (bound_tasks, _) = bind_task_consistent_hash(
-                topology_nodes.clone(),
-                num_replicas,
-                tolerance,
-                active_jobs.clone(),
-                |_, _| Ok(vec![]),
-            )
-            .await?;
-            assert_eq!(0, bound_tasks.len());
-        }
-
-        // Check job_b with scan files
-        {
-            let (bound_tasks, _) = bind_task_consistent_hash(
-                topology_nodes,
-                num_replicas,
-                tolerance,
-                active_jobs,
-                |job_id, _| mock_get_scan_files("job_b", job_id, 8),
-            )
-            .await?;
-            assert_eq!(6, bound_tasks.len());
-
-            let result = get_result(bound_tasks);
-
-            let mut expected = HashMap::new();
-            {
-                let mut entry_b = HashMap::new();
-                entry_b.insert("executor_3".to_string(), 2);
-                entry_b.insert("executor_2".to_string(), 3);
-                entry_b.insert("executor_1".to_string(), 1);
-
-                expected.insert("job_b".to_string(), entry_b);
-            }
-            assert!(
-                expected.eq(&result),
-                "The result {result:?} is not as expected {expected:?}"
-            );
-        }
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_bind_task_consistent_hash_with_tolerance() -> Result<()> {
-        let num_partition = 8usize;
-        let active_jobs = mock_active_jobs(num_partition).await?;
-        let active_jobs = Arc::new(active_jobs);
-        let topology_nodes = mock_topology_nodes();
-        let num_replicas = 31;
-        let tolerance = 1;
-
-        {
-            let (bound_tasks, _) = bind_task_consistent_hash(
-                topology_nodes,
-                num_replicas,
-                tolerance,
-                active_jobs,
-                |job_id, _| mock_get_scan_files("job_b", job_id, 8),
-            )
-            .await?;
-            assert_eq!(7, bound_tasks.len());
-
-            let result = get_result(bound_tasks);
-
-            let mut expected = HashMap::new();
-            {
-                let mut entry_b = HashMap::new();
-                entry_b.insert("executor_3".to_string(), 3);
-                entry_b.insert("executor_2".to_string(), 3);
-                entry_b.insert("executor_1".to_string(), 1);
-
-                expected.insert("job_b".to_string(), entry_b);
-            }
-            assert!(
-                expected.eq(&result),
-                "The result {result:?} is not as expected {expected:?}"
-            );
-        }
-
-        Ok(())
-    }
-
     fn get_result(
         bound_tasks: Vec<BoundTask>,
     ) -> HashMap<String, HashMap<String, usize>> {
@@ -1060,55 +757,5 @@ mod test {
                 slots: 7,
             },
         ]
-    }
-
-    fn mock_topology_nodes() -> HashMap<String, TopologyNode> {
-        let mut topology_nodes = HashMap::new();
-        topology_nodes.insert(
-            "executor_1".to_string(),
-            TopologyNode::new("localhost", 8081, "executor_1", 0, 1),
-        );
-        topology_nodes.insert(
-            "executor_2".to_string(),
-            TopologyNode::new("localhost", 8082, "executor_2", 0, 3),
-        );
-        topology_nodes.insert(
-            "executor_3".to_string(),
-            TopologyNode::new("localhost", 8083, "executor_3", 0, 5),
-        );
-        topology_nodes
-    }
-
-    fn mock_get_scan_files(
-        expected_job_id: &str,
-        job_id: &str,
-        num_partition: usize,
-    ) -> datafusion::common::Result<Vec<Vec<Vec<PartitionedFile>>>> {
-        Ok(if expected_job_id.eq(job_id) {
-            mock_scan_files(num_partition)
-        } else {
-            vec![]
-        })
-    }
-
-    fn mock_scan_files(num_partition: usize) -> Vec<Vec<Vec<PartitionedFile>>> {
-        let mut scan_files = vec![];
-        for i in 0..num_partition {
-            scan_files.push(vec![PartitionedFile {
-                object_meta: ObjectMeta {
-                    location: Path::from(format!("file--{i}")),
-                    last_modified: Default::default(),
-                    size: 1,
-                    e_tag: None,
-                    version: None,
-                },
-                partition_values: vec![],
-                range: None,
-                extensions: None,
-                statistics: None,
-                metadata_size_hint: None,
-            }]);
-        }
-        vec![scan_files]
     }
 }
