@@ -65,6 +65,7 @@ python/examples/.ipynb_checkpoints
 .vscode
 .idea/
 .pytest_cache/
+.ruff_cache/
 pkgs
 docker_cache
 .gdb_history
