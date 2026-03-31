@@ -345,7 +345,9 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             extension_codec: self.extension_codec.clone(),
             plan_repr: self.plan_repr,
             session_id: self.session_id.clone(),
-            properties: Self::compute_properties(self.schema()),
+            properties: Self::compute_properties(
+                self.plan.schema().as_arrow().clone().into(),
+            ),
             metrics: ExecutionPlanMetricsSet::new(),
             action: self.action.clone(),
         }))
@@ -658,7 +660,7 @@ async fn execute_query_push(
         let job_id = status
             .as_ref()
             .map(|s| s.job_id.to_owned())
-            .unwrap_or("unknown_job_id".to_string());  // should not happen
+            .unwrap_or("unknown_job_id".to_string());// should not happen
         let status = status.and_then(|s| s.status);
         let has_status_change = prev_status != status;
         match status {
