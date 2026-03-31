@@ -15,18 +15,23 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use async_trait::async_trait;
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
+use crate::extension::{
+    BallistaConfigGrpcEndpoint, BallistaGrpcMetadataInterceptor, SessionConfigExt,
+};
 use crate::serde::protobuf::get_job_status_result::FlightProxy;
 use crate::serde::protobuf::{
-    ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
-    PartitionLocation, execute_query_params::Query, execute_query_result, job_status,
-    scheduler_grpc_client::SchedulerGrpcClient,
+    ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult,
+    KeyValuePair, PartitionLocation, execute_query_params::Query, execute_query_result,
+    job_status, scheduler_grpc_client::SchedulerGrpcClient,
 };
 use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
 use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError, Result};
@@ -45,26 +50,187 @@ use datafusion::prelude::SessionConfig;
 use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
-use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use log::{debug, error, info};
 use std::any::Any;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tonic::codegen::InterceptedService;
+use tonic::transport::Channel;
 use url::Url;
+
+// ── Type alias ────────────────────────────────────────────────────────────────
+
+/// Concrete scheduler gRPC client used throughout this module.
+///
+/// Capturing this type alias in handler structs lets us keep trait method
+/// signatures free of generic parameters (i.e. no `<T: GrpcService<...>>`
+/// pollution on [`JobCompletionHandler`]).
+pub(crate) type SchedulerClient =
+    SchedulerGrpcClient<InterceptedService<Channel, BallistaGrpcMetadataInterceptor>>;
+
+// ── CompletedJob ──────────────────────────────────────────────────────────────
+
+/// All metadata available after a distributed job finishes successfully.
+///
+/// Every [`JobCompletionHandler`] receives this on completion and can use
+/// whichever fields it needs (e.g. `FetchResultsHandler` uses
+/// `partition_location`; `ExplainAnalyzeHandler` only uses `job_id`).
+pub struct CompletedJob {
+    pub job_id: String,
+    pub partition_location: Vec<PartitionLocation>,
+    pub flight_proxy: Option<FlightProxy>,
+    pub queued_at: u64,
+    pub started_at: u64,
+    pub ended_at: u64,
+    /// Wall-clock instant at which the job was submitted to the scheduler.
+    pub query_start_time: Instant,
+}
+
+// ── JobCompletionHandler trait ────────────────────────────────────────────────
+
+/// Determines what happens on the *client side* after a distributed job
+/// finishes.  The scheduler is completely unaware of this logic.
+///
+/// Implement this trait to add new post-job behaviors.  Handlers are
+/// constructed inside [`DistributedQueryExec::execute`] after the
+/// [`SchedulerClient`] already exists, so they can cheaply clone and hold it
+/// without generic type parameters appearing in the trait signature.
+#[async_trait]
+pub(crate) trait JobCompletionHandler: Send {
+    async fn handle(
+        self: Box<Self>,
+        completed: CompletedJob,
+    ) -> Result<SendableRecordBatchStream>;
+}
+
+// ── FetchResultsHandler ───────────────────────────────────────────────────────
+
+/// Fetches result partitions from executors via Arrow Flight and streams them
+/// back to the caller. This is the default handler for normal queries.
+pub(crate) struct FetchResultsHandler {
+    scheduler_url: String,
+    schema: SchemaRef,
+    max_message_size: usize,
+    session_config: SessionConfig,
+    metrics: Arc<ExecutionPlanMetricsSet>,
+    partition: usize,
+}
+
+#[async_trait]
+impl JobCompletionHandler for FetchResultsHandler {
+    async fn handle(
+        self: Box<Self>,
+        completed: CompletedJob,
+    ) -> Result<SendableRecordBatchStream> {
+        let FetchResultsHandler {
+            scheduler_url,
+            schema,
+            max_message_size,
+            session_config,
+            metrics,
+            partition,
+        } = *self;
+
+        let customize_endpoint =
+            session_config.ballista_override_create_grpc_client_endpoint();
+        let use_tls = session_config.ballista_use_tls();
+
+        // ── Timing metrics ────────────────────────────────────────────────────
+        let job_execution_ms = completed.ended_at.saturating_sub(completed.started_at);
+        let scheduling_ms = completed.started_at.saturating_sub(completed.queued_at);
+        let total_ms = completed.query_start_time.elapsed().as_millis();
+
+        info!(
+            "Job {} finished executing in {:?}",
+            completed.job_id,
+            Duration::from_millis(job_execution_ms)
+        );
+
+        MetricBuilder::new(&metrics)
+            .gauge("job_execution_time_ms", partition)
+            .set(job_execution_ms as usize);
+        MetricBuilder::new(&metrics)
+            .gauge("job_scheduling_in_ms", partition)
+            .set(scheduling_ms as usize);
+        MetricBuilder::new(&metrics)
+            .gauge("total_query_time_ms", partition)
+            .set(total_ms as usize);
+
+        let metric_row_count = MetricBuilder::new(&metrics).output_rows(partition);
+        let metric_total_bytes =
+            MetricBuilder::new(&metrics).counter("transferred_bytes", partition);
+
+        // ── Partition streams ─────────────────────────────────────────────────
+        let flight_proxy = completed.flight_proxy;
+        let streams = completed.partition_location.into_iter().map(move |loc| {
+            let f = fetch_partition(
+                loc,
+                max_message_size,
+                true,
+                scheduler_url.clone(),
+                flight_proxy.clone(),
+                customize_endpoint.clone(),
+                use_tls,
+            )
+            .map_err(|e| ArrowError::ExternalError(Box::new(e)));
+
+            futures::stream::once(f).try_flatten()
+        });
+
+        let stream = futures::stream::iter(streams)
+            .flatten()
+            .inspect(move |batch| {
+                metric_total_bytes.add(
+                    batch
+                        .as_ref()
+                        .map(|b| b.get_array_memory_size())
+                        .unwrap_or(0),
+                );
+                metric_row_count.add(batch.as_ref().map(|b| b.num_rows()).unwrap_or(0));
+            });
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+    }
+}
 
 /// This operator sends a logical plan to a Ballista scheduler for execution and
 /// polls the scheduler until the query is complete and then fetches the resulting
 /// batches directly from the executors that hold the results from the final
 /// query stage.
+
+// ── JobCompletionAction (public config) ───────────────────────────────────────
+
+/// Specifies which [`JobCompletionHandler`] to use after a distributed job
+/// finishes.
+///
+/// Stored in [`DistributedQueryExec`] so the struct can remain `Clone` and
+/// still produce the output schema before `execute()` is called.  Inside
+/// `execute()` the enum is matched to construct the concrete handler.
+///
+/// This keeps the scheduler unaware of callback logic: it always executes a
+/// plain job; the client decides how to interpret the result.
+#[derive(Debug, Clone)]
+pub enum JobCompletionAction {
+    /// Fetch result partitions from executors and stream them back (normal query).
+    FetchResults,
+}
+
+
+// ── DistributedQueryExec ──────────────────────────────────────────────────────
+
+/// Sends a logical plan to a Ballista scheduler for execution, waits for
+/// completion, then dispatches to a [`JobCompletionHandler`] that produces the
+/// final result stream.
 #[derive(Debug, Clone)]
 pub struct DistributedQueryExec<T: 'static + AsLogicalPlan> {
     /// Ballista scheduler URL
     scheduler_url: String,
     /// Ballista configuration
     config: BallistaConfig,
-    /// Logical plan to execute
+    /// Logical plan to execute (the inner plan, without any wrapping Analyze node)
     plan: LogicalPlan,
     /// Codec for LogicalPlan extensions
     extension_codec: Arc<dyn LogicalExtensionCodec>,
@@ -74,14 +240,10 @@ pub struct DistributedQueryExec<T: 'static + AsLogicalPlan> {
     session_id: String,
     /// Plan properties
     properties: PlanProperties,
-    /// Execution metrics, currently exposes:
-    /// - output_rows: Total number of rows returned
-    /// - transferred_bytes: Total bytes transferred from executors
-    /// - job_execution_time_ms: Time spent executing on the cluster (server-side)
-    /// - job_scheduling_in_ms: Time from query submission to job start (includes queue time)
-    /// - job_execution_time_ms: Time spent executing on the cluster (ended_at - started_at)
-    /// - job_scheduling_in_ms: Time job waited in scheduler queue (started_at - queued_at)
+    /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
+    /// Which handler to invoke after the remote job completes.
+    action: JobCompletionAction,
 }
 
 impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
@@ -92,8 +254,8 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
         plan: LogicalPlan,
         session_id: String,
     ) -> Self {
-        let properties =
-            Self::compute_properties(plan.schema().as_arrow().clone().into());
+        let schema: SchemaRef = plan.schema().as_arrow().clone().into();
+        let properties = Self::compute_properties(schema);
         Self {
             scheduler_url,
             config,
@@ -103,6 +265,7 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
             session_id,
             properties,
             metrics: ExecutionPlanMetricsSet::new(),
+            action: JobCompletionAction::FetchResults,
         }
     }
 
@@ -114,8 +277,8 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
         extension_codec: Arc<dyn LogicalExtensionCodec>,
         session_id: String,
     ) -> Self {
-        let properties =
-            Self::compute_properties(plan.schema().as_arrow().clone().into());
+        let schema: SchemaRef = plan.schema().as_arrow().clone().into();
+        let properties = Self::compute_properties(schema);
         Self {
             scheduler_url,
             config,
@@ -125,6 +288,41 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
             session_id,
             properties,
             metrics: ExecutionPlanMetricsSet::new(),
+            action: JobCompletionAction::FetchResults,
+        }
+    }
+
+    /// Creates a new distributed query execution plan with a custom completion
+    /// action. Use this to implement EXPLAIN ANALYZE and future callback-style
+    /// patterns.
+    ///
+    /// For [`JobCompletionAction::ExplainAnalyze`], the output schema is the
+    /// standard `(plan_type: Utf8, plan: Utf8)` table, not the inner plan's
+    /// schema.
+    pub fn with_action(
+        scheduler_url: String,
+        config: BallistaConfig,
+        plan: LogicalPlan,
+        extension_codec: Arc<dyn LogicalExtensionCodec>,
+        session_id: String,
+        action: JobCompletionAction,
+    ) -> Self {
+        let schema: SchemaRef = match &action {
+            JobCompletionAction::FetchResults => plan.schema().as_arrow().clone().into(),
+        let properties =
+            Self::compute_properties(plan.schema().as_arrow().clone().into());
+        };
+        let properties = Self::compute_properties(schema);
+        Self {
+            scheduler_url,
+            config,
+            plan,
+            extension_codec,
+            plan_repr: PhantomData,
+            session_id,
+            properties,
+            metrics: ExecutionPlanMetricsSet::new(),
+            action,
         }
     }
 
@@ -169,7 +367,11 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     }
 
     fn schema(&self) -> SchemaRef {
-        self.plan.schema().as_arrow().clone().into()
+        match &self.action {
+            JobCompletionAction::FetchResults => {
+                self.plan.schema().as_arrow().clone().into()
+            }
+        }
     }
 
     fn properties(&self) -> &PlanProperties {
@@ -191,13 +393,29 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             extension_codec: self.extension_codec.clone(),
             plan_repr: self.plan_repr,
             session_id: self.session_id.clone(),
-            properties: Self::compute_properties(
-                self.plan.schema().as_arrow().clone().into(),
-            ),
+            properties: Self::compute_properties(self.schema()),
             metrics: ExecutionPlanMetricsSet::new(),
+            action: self.action.clone(),
         }))
     }
 
+    /// Submits the logical plan to the scheduler, waits for completion, and
+    /// dispatches to the appropriate [`JobCompletionHandler`].
+    ///
+    /// Stream type chain in the happy path:
+    ///
+    /// ```text
+    /// once(async {
+    ///     scheduler = build_scheduler_client(...)
+    ///     completed = submit_and_wait(scheduler, ...)   // CompletedJob
+    ///     handler   = FetchResultsHandler | ExplainAnalyzeHandler
+    ///     handler.handle(completed)                     // SendableRecordBatchStream
+    /// })
+    /// // Stream<Item = Result<SendableRecordBatchStream, DataFusionError>>
+    /// .try_flatten()
+    /// // Stream<Item = Result<RecordBatch, DataFusionError>>  (inner stream's error type)
+    /// // Req: DataFusionError: From<DataFusionError> ✓
+    /// ```
     fn execute(
         &self,
         partition: usize,
@@ -205,6 +423,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     ) -> Result<SendableRecordBatchStream> {
         assert_eq!(0, partition);
 
+        // ── Serialize logical plan ────────────────────────────────────────────
         let mut buf: Vec<u8> = vec![];
         let plan_message = T::try_from_logical_plan(
             &self.plan,
@@ -229,11 +448,13 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                 },
             )
             .collect();
+
         let operation_id = uuid::Uuid::now_v7().to_string();
         debug!(
             "Distributed query with session_id: {}, execution operation_id: {}",
             self.session_id, operation_id
         );
+
         let query = ExecuteQueryParams {
             query: Some(Query::LogicalPlan(buf)),
             settings,
@@ -241,49 +462,45 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             operation_id,
         };
 
-        let metric_row_count = MetricBuilder::new(&self.metrics).output_rows(partition);
-        let metric_total_bytes =
-            MetricBuilder::new(&self.metrics).counter("transferred_bytes", partition);
-
+        // ── Capture fields for the async block ────────────────────────────────
         let session_config = context.session_config().clone();
+        let max_message_size = self.config.grpc_client_max_message_size();
+        let grpc_config = GrpcClientConfig::from(&self.config);
+        let scheduler_url = self.scheduler_url.clone();
+        let session_id = self.session_id.clone();
+        let action = self.action.clone();
+        let metrics = Arc::new(self.metrics.clone());
+        let schema = self.schema();
+        let client_pull = session_config.ballista_config().client_pull();
 
-        if session_config.ballista_config().client_pull() {
-            let stream = futures::stream::once(
-                execute_query_pull(
-                    self.scheduler_url.clone(),
-                    self.session_id.clone(),
-                    query,
-                    self.config.grpc_client_max_message_size(),
-                    GrpcClientConfig::from(&self.config),
-                    Arc::new(self.metrics.clone()),
-                    partition,
-                    session_config,
-                )
-                .map_err(|e| ArrowError::ExternalError(Box::new(e))),
+        // Clone schema for the outer RecordBatchStreamAdapter; the inner clone
+        // is moved into the FetchResultsHandler.
+        let schema_for_adapter = schema.clone();
+
+        // ── Core loop ─────────────────────────────────────────────────────────
+        //
+        // The stream type chain is documented on this method's doc comment.
+        let stream = futures::stream::once(async move {
+            let mut scheduler = build_scheduler_client(
+                scheduler_url.clone(),
+                max_message_size,
+                &grpc_config,
+                &session_config,
             )
-            .try_flatten()
-            .inspect(move |batch| {
-                metric_total_bytes.add(
-                    batch
-                        .as_ref()
-                        .map(|b| b.get_array_memory_size())
-                        .unwrap_or(0),
-                );
+            .await?;
 
-                metric_row_count.add(batch.as_ref().map(|b| b.num_rows()).unwrap_or(0));
-            });
+            let completed =
+                submit_and_wait(&mut scheduler, query, client_pull, &session_id).await?;
 
-            let schema = self.schema();
-            Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
-        } else {
-            let stream = futures::stream::once(
-                execute_query_push(
-                    self.scheduler_url.clone(),
-                    query,
-                    self.config.grpc_client_max_message_size(),
-                    GrpcClientConfig::from(&self.config),
-                    Arc::new(self.metrics.clone()),
+            let handler: Box<dyn JobCompletionHandler> = match action {
+                JobCompletionAction::FetchResults => Box::new(FetchResultsHandler {
+                    scheduler_url,
+                    schema,
+                    max_message_size,
+                    session_config,
+                    metrics,
                     partition,
+                }),
                     session_config,
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
@@ -303,12 +520,19 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             let schema = self.schema();
             Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
         }
+            };
+
+            handler.handle(completed).await
+        })
+        .try_flatten();
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            schema_for_adapter,
+            stream,
+        )))
     }
 
     fn statistics(&self) -> Result<Statistics> {
-        // This execution plan sends the logical plan to the scheduler without
-        // performing the node by node conversion to a full physical plan.
-        // This implies that we cannot infer the statistics at this stage.
         Ok(Statistics::new_unknown(&self.schema()))
     }
 
@@ -317,33 +541,27 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     }
 }
 
-/// Client will periodically invoke scheduler to check
-/// job status. There is preconfigured wait period between
-/// pulls, which increases query latency.
-#[allow(clippy::too_many_arguments)]
-async fn execute_query_pull(
+// ── build_scheduler_client ────────────────────────────────────────────────────
+
+/// Connects to the Ballista scheduler and returns a ready-to-use gRPC client.
+///
+/// Extracted from the three former functions (`execute_query_pull`,
+/// `execute_query_push`, `execute_explain_analyze`) which all contained
+/// identical connection-establishment code.
+async fn build_scheduler_client(
     scheduler_url: String,
-    session_id: String,
-    query: ExecuteQueryParams,
     max_message_size: usize,
-    grpc_config: GrpcClientConfig,
-    metrics: Arc<ExecutionPlanMetricsSet>,
-    partition: usize,
-    session_config: SessionConfig,
-) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
+    grpc_config: &GrpcClientConfig,
+    session_config: &SessionConfig,
+) -> Result<SchedulerClient> {
     let grpc_interceptor = session_config.ballista_grpc_interceptor();
     let customize_endpoint =
         session_config.ballista_override_create_grpc_client_endpoint();
-    let use_tls = session_config.ballista_use_tls();
-
-    // Capture query submission time for total_query_time_ms
-    let query_start_time = std::time::Instant::now();
 
     info!("Connecting to Ballista scheduler at {scheduler_url}");
-    // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
-    let mut endpoint =
-        create_grpc_client_endpoint(scheduler_url.clone(), Some(&grpc_config))
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+
+    let mut endpoint = create_grpc_client_endpoint(scheduler_url, Some(grpc_config))
+        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
     if let Some(ref customize) = customize_endpoint {
         endpoint = customize
@@ -356,289 +574,198 @@ async fn execute_query_pull(
         .await
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
-    let mut scheduler = SchedulerGrpcClient::with_interceptor(
-        connection,
-        grpc_interceptor.as_ref().clone(),
+    Ok(
+        SchedulerGrpcClient::with_interceptor(connection, grpc_interceptor.as_ref().clone())
+            .max_encoding_message_size(max_message_size)
+            .max_decoding_message_size(max_message_size),
     )
-    .max_encoding_message_size(max_message_size)
-    .max_decoding_message_size(max_message_size);
+}
 
-    let query_result = scheduler
-        .execute_query(query)
-        .await
-        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
-        .into_inner();
+// ── submit_and_wait ───────────────────────────────────────────────────────────
 
-    let query_result = match query_result.result.unwrap() {
-        execute_query_result::Result::Success(success_result) => success_result,
-        execute_query_result::Result::Failure(failure_result) => {
-            return Err(DataFusionError::Execution(format!(
-                "Fail to execute query due to {failure_result:?}"
-            )));
-        }
-    };
+/// Submits a query to the scheduler and blocks until the job reaches a
+/// terminal state, returning [`CompletedJob`] on success.
+///
+/// Supports both *pull* mode (client polls `GetJobStatus` in a loop) and
+/// *push* mode (server streams `GetJobStatusResult` messages).
+///
+/// Extracts the duplicated submit+poll logic that previously appeared
+/// separately in `execute_query_pull`, `execute_query_push`, and
+/// `execute_explain_analyze`.
+async fn submit_and_wait(
+    scheduler: &mut SchedulerClient,
+    query: ExecuteQueryParams,
+    client_pull: bool,
+    session_id: &str,
+) -> Result<CompletedJob> {
+    let query_start_time = Instant::now();
 
-    assert_eq!(
-        session_id, query_result.session_id,
-        "Session id inconsistent between Client and Server side in DistributedQueryExec."
-    );
-
-    let job_id = query_result.job_id;
-    let mut prev_status: Option<job_status::Status> = None;
-
-    loop {
-        let GetJobStatusResult {
-            status,
-            flight_proxy,
-        } = scheduler
-            .get_job_status(GetJobStatusParams {
-                job_id: job_id.clone(),
-            })
+    if client_pull {
+        // ── Pull: submit then poll ────────────────────────────────────────────
+        let query_result = scheduler
+            .execute_query(query)
             .await
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
             .into_inner();
-        let status = status.and_then(|s| s.status);
-        let wait_future = tokio::time::sleep(Duration::from_millis(50));
-        let has_status_change = prev_status != status;
-        match status {
-            None => {
-                if has_status_change {
-                    info!("Job {job_id} is in initialization ...");
-                }
-                wait_future.await;
-                prev_status = status;
-            }
-            Some(job_status::Status::Queued(_)) => {
-                if has_status_change {
-                    info!("Job {job_id} is queued...");
-                }
-                wait_future.await;
-                prev_status = status;
-            }
-            Some(job_status::Status::Running(_)) => {
-                if has_status_change {
-                    info!("Job {job_id} is running...");
-                }
-                wait_future.await;
-                prev_status = status;
-            }
-            Some(job_status::Status::Failed(err)) => {
-                let msg = format!("Job {} failed: {}", job_id, err.error);
-                error!("{msg}");
-                break Err(DataFusionError::Execution(msg));
-            }
-            Some(job_status::Status::Successful(SuccessfulJob {
-                queued_at,
-                started_at,
-                ended_at,
-                partition_location,
-                ..
-            })) => {
-                // Calculate job execution time (server-side execution)
-                let job_execution_ms = ended_at.saturating_sub(started_at);
-                let duration = Duration::from_millis(job_execution_ms);
 
-                info!("Job {job_id} finished executing in {duration:?} ");
-
-                // Calculate scheduling time (server-side queue time)
-                // This includes network latency and actual queue time
-                let scheduling_ms = started_at.saturating_sub(queued_at);
-
-                // Calculate total query time (end-to-end from client perspective)
-                let total_elapsed = query_start_time.elapsed();
-                let total_ms = total_elapsed.as_millis();
-
-                // Set timing metrics
-                let metric_job_execution = MetricBuilder::new(&metrics)
-                    .gauge("job_execution_time_ms", partition);
-                metric_job_execution.set(job_execution_ms as usize);
-
-                let metric_scheduling =
-                    MetricBuilder::new(&metrics).gauge("job_scheduling_in_ms", partition);
-                metric_scheduling.set(scheduling_ms as usize);
-
-                let metric_total_time =
-                    MetricBuilder::new(&metrics).gauge("total_query_time_ms", partition);
-                metric_total_time.set(total_ms as usize);
-
-                // Note: data_transfer_time_ms is not set here because partition fetching
-                // happens lazily when the stream is consumed, not during execute_query.
-                // This could be added in a future enhancement by wrapping the stream.
-
-                let streams = partition_location.into_iter().map(move |partition| {
-                    let f = fetch_partition(
-                        partition,
-                        max_message_size,
-                        true,
-                        scheduler_url.clone(),
-                        flight_proxy.clone(),
-                        customize_endpoint.clone(),
-                        use_tls,
-                    )
-                    .map_err(|e| ArrowError::ExternalError(Box::new(e)));
-
-                    futures::stream::once(f).try_flatten()
-                });
-
-                break Ok(futures::stream::iter(streams).flatten());
+        let success = match query_result.result.unwrap() {
+            execute_query_result::Result::Success(s) => s,
+            execute_query_result::Result::Failure(f) => {
+                return Err(DataFusionError::Execution(format!(
+                    "Fail to execute query due to {f:?}"
+                )));
             }
         };
-    }
-}
-/// After job is scheduled client waits
-/// for job updates, which are streamed back
-/// from server to client
-#[allow(clippy::too_many_arguments)]
-async fn execute_query_push(
-    scheduler_url: String,
-    query: ExecuteQueryParams,
-    max_message_size: usize,
-    grpc_config: GrpcClientConfig,
-    metrics: Arc<ExecutionPlanMetricsSet>,
-    partition: usize,
-    session_config: SessionConfig,
-) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
-    let grpc_interceptor = session_config.ballista_grpc_interceptor();
-    let customize_endpoint =
-        session_config.ballista_override_create_grpc_client_endpoint();
-    let use_tls = session_config.ballista_use_tls();
 
-    // Capture query submission time for total_query_time_ms
-    let query_start_time = std::time::Instant::now();
+        assert_eq!(
+            session_id, success.session_id,
+            "Session id inconsistent between Client and Server side in DistributedQueryExec."
+        );
 
-    info!("Connecting to Ballista scheduler at {scheduler_url}");
-    // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
-    let mut endpoint =
-        create_grpc_client_endpoint(scheduler_url.clone(), Some(&grpc_config))
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+        let job_id = success.job_id;
+        let mut prev_status: Option<job_status::Status> = None;
 
-    if let Some(ref customize) = customize_endpoint {
-        endpoint = customize
-            .configure_endpoint(endpoint)
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-    }
+        loop {
+            let GetJobStatusResult {
+                status,
+                flight_proxy,
+            } = scheduler
+                .get_job_status(GetJobStatusParams {
+                    job_id: job_id.clone(),
+                })
+                .await
+                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
+                .into_inner();
 
-    let connection = endpoint
-        .connect()
-        .await
-        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+            let status = status.and_then(|s| s.status);
+            let has_status_change = prev_status != status;
+            let wait_future = tokio::time::sleep(Duration::from_millis(50));
 
-    let mut scheduler = SchedulerGrpcClient::with_interceptor(
-        connection,
-        grpc_interceptor.as_ref().clone(),
-    )
-    .max_encoding_message_size(max_message_size)
-    .max_decoding_message_size(max_message_size);
-
-    let mut query_status_stream = scheduler
-        .execute_query_push(query)
-        .await
-        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
-        .into_inner();
-
-    let mut prev_status: Option<job_status::Status> = None;
-
-    loop {
-        let item = query_status_stream
-            .next()
+            match status {
+                None => {
+                    if has_status_change {
+                        info!("Job {job_id} is in initialization...");
+                    }
+                    wait_future.await;
+                    prev_status = status;
+                }
+                Some(job_status::Status::Queued(_)) => {
+                    if has_status_change {
+                        info!("Job {job_id} is queued...");
+                    }
+                    wait_future.await;
+                    prev_status = status;
+                }
+                Some(job_status::Status::Running(_)) => {
+                    if has_status_change {
+                        info!("Job {job_id} is running...");
+                    }
+                    wait_future.await;
+                    prev_status = status;
+                }
+                Some(job_status::Status::Failed(err)) => {
+                    let msg = format!("Job {} failed: {}", job_id, err.error);
+                    error!("{msg}");
+                    return Err(DataFusionError::Execution(msg));
+                }
+                Some(job_status::Status::Successful(SuccessfulJob {
+                    queued_at,
+                    started_at,
+                    ended_at,
+                    partition_location,
+                    ..
+                })) => {
+                    return Ok(CompletedJob {
+                        job_id,
+                        partition_location,
+                        flight_proxy,
+                        queued_at,
+                        started_at,
+                        ended_at,
+                        query_start_time,
+                    });
+                }
+            }
+        }
+    } else {
+        // ── Push: server-streams status updates ───────────────────────────────
+        let mut stream = scheduler
+            .execute_query_push(query)
             .await
-            .ok_or(DataFusionError::Execution(
-                "Stream closed without job completing".to_string(),
-            ))?
-            .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
+            .into_inner();
 
-        let GetJobStatusResult {
-            status,
-            flight_proxy,
-        } = item;
-        let job_id = status
-            .as_ref()
-            .map(|s| s.job_id.to_owned())
-            .unwrap_or("unknown_job_id".to_string()); // should not happen
-        let status = status.and_then(|s| s.status);
-        let has_status_change = prev_status != status;
-        match status {
-            None => {
-                if has_status_change {
-                    info!("Job {job_id} is in initialization ...");
-                }
-                prev_status = status;
-            }
-            Some(job_status::Status::Queued(_)) => {
-                if has_status_change {
-                    info!("Job {job_id} is queued...");
-                }
-                prev_status = status;
-            }
-            Some(job_status::Status::Running(_)) => {
-                if has_status_change {
-                    info!("Job {job_id} is running...");
-                }
-                prev_status = status;
-            }
-            Some(job_status::Status::Failed(err)) => {
-                let msg = format!("Job {} failed: {}", job_id, err.error);
-                error!("{msg}");
-                break Err(DataFusionError::Execution(msg));
-            }
-            Some(job_status::Status::Successful(SuccessfulJob {
-                queued_at,
-                started_at,
-                ended_at,
-                partition_location,
-                ..
-            })) => {
-                // Calculate job execution time (server-side execution)
-                let job_execution_ms = ended_at.saturating_sub(started_at);
-                let duration = Duration::from_millis(job_execution_ms);
+        let mut prev_status: Option<job_status::Status> = None;
 
-                info!("Job {job_id} finished executing in {duration:?} ");
-
-                // Calculate scheduling time (server-side queue time)
-                // This includes network latency and actual queue time
-                let scheduling_ms = started_at.saturating_sub(queued_at);
-
-                // Calculate total query time (end-to-end from client perspective)
-                let total_elapsed = query_start_time.elapsed();
-                let total_ms = total_elapsed.as_millis();
-
-                // Set timing metrics
-                let metric_job_execution = MetricBuilder::new(&metrics)
-                    .gauge("job_execution_time_ms", partition);
-                metric_job_execution.set(job_execution_ms as usize);
-
-                let metric_scheduling =
-                    MetricBuilder::new(&metrics).gauge("job_scheduling_in_ms", partition);
-                metric_scheduling.set(scheduling_ms as usize);
-
-                let metric_total_time =
-                    MetricBuilder::new(&metrics).gauge("total_query_time_ms", partition);
-                metric_total_time.set(total_ms as usize);
-
-                // Note: data_transfer_time_ms is not set here because partition fetching
-                // happens lazily when the stream is consumed, not during execute_query.
-                // This could be added in a future enhancement by wrapping the stream.
-
-                let streams = partition_location.into_iter().map(move |partition| {
-                    let f = fetch_partition(
-                        partition,
-                        max_message_size,
-                        true,
-                        scheduler_url.clone(),
-                        flight_proxy.clone(),
-                        customize_endpoint.clone(),
-                        use_tls,
+        loop {
+            let item = stream
+                .next()
+                .await
+                .ok_or_else(|| {
+                    DataFusionError::Execution(
+                        "Stream closed without job completing".to_string(),
                     )
-                    .map_err(|e| ArrowError::ExternalError(Box::new(e)));
+                })?
+                .map_err(|e| DataFusionError::Execution(e.to_string()))?;
 
-                    futures::stream::once(f).try_flatten()
-                });
+            let GetJobStatusResult {
+                status,
+                flight_proxy,
+            } = item;
+            let job_id = status
+                .as_ref()
+                .map(|s| s.job_id.to_owned())
+                .unwrap_or_else(|| "unknown_job_id".to_string());
+            let status = status.and_then(|s| s.status);
+            let has_status_change = prev_status != status;
 
-                break Ok(futures::stream::iter(streams).flatten());
+            match status {
+                None => {
+                    if has_status_change {
+                        info!("Job {job_id} is in initialization...");
+                    }
+                    prev_status = status;
+                }
+                Some(job_status::Status::Queued(_)) => {
+                    if has_status_change {
+                        info!("Job {job_id} is queued...");
+                    }
+                    prev_status = status;
+                }
+                Some(job_status::Status::Running(_)) => {
+                    if has_status_change {
+                        info!("Job {job_id} is running...");
+                    }
+                    prev_status = status;
+                }
+                Some(job_status::Status::Failed(err)) => {
+                    let msg = format!("Job {} failed: {}", job_id, err.error);
+                    error!("{msg}");
+                    return Err(DataFusionError::Execution(msg));
+                }
+                Some(job_status::Status::Successful(SuccessfulJob {
+                    queued_at,
+                    started_at,
+                    ended_at,
+                    partition_location,
+                    ..
+                })) => {
+                    return Ok(CompletedJob {
+                        job_id,
+                        partition_location,
+                        flight_proxy,
+                        queued_at,
+                        started_at,
+                        ended_at,
+                        query_start_time,
+                    });
+                }
             }
-        };
+        }
     }
 }
+
+// ── Internal utilities (unchanged) ────────────────────────────────────────────
 
 fn get_client_host_port(
     executor_metadata: &ExecutorMetadata,
