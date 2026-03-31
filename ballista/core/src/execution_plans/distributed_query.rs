@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use async_trait::async_trait;
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
@@ -27,6 +26,7 @@ use crate::serde::protobuf::{
 };
 use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
 use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
+use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
 use datafusion::error::{DataFusionError, Result};
@@ -54,13 +54,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use url::Url;
 
-// ── CompletedJob ──────────────────────────────────────────────────────────────
-
 /// All metadata available after a distributed job finishes successfully.
-///
-/// Every [`JobCompletionHandler`] receives this on completion and can use
-/// whichever fields it needs (e.g. `FetchResultsHandler` uses
-/// `partition_location`).
 pub struct CompletedJob {
     /// Scheduler-assigned job identifier.
     pub job_id: String,
@@ -78,13 +72,7 @@ pub struct CompletedJob {
     pub query_start_time: Instant,
 }
 
-// ── JobCompletionHandler trait ────────────────────────────────────────────────
-
-/// Determines what happens on the *client side* after a distributed job
-/// finishes.  The scheduler is completely unaware of this logic.
-///
-/// Implement this trait to add new post-job behaviors without touching the
-/// scheduler or the poll/push wait loops.
+/// Determines what happens on the client side after a distributed job finishes
 #[async_trait]
 pub(crate) trait JobCompletionHandler: Send {
     async fn handle(
@@ -93,10 +81,6 @@ pub(crate) trait JobCompletionHandler: Send {
     ) -> Result<SendableRecordBatchStream>;
 }
 
-// ── FetchResultsHandler ───────────────────────────────────────────────────────
-
-/// Fetches result partitions from executors via Arrow Flight and streams them
-/// back to the caller. This is the default handler for normal queries.
 pub(crate) struct FetchResultsHandler {
     scheduler_url: String,
     schema: SchemaRef,
@@ -125,9 +109,12 @@ impl JobCompletionHandler for FetchResultsHandler {
             session_config.ballista_override_create_grpc_client_endpoint();
         let use_tls = session_config.ballista_use_tls();
 
-        // ── Timing metrics ────────────────────────────────────────────────────
+        // Calculate job execution time (server-side execution)
         let job_execution_ms = completed.ended_at.saturating_sub(completed.started_at);
+        // Calculate scheduling time (server-side queue time)
+        // This includes network latency and actual queue time
         let scheduling_ms = completed.started_at.saturating_sub(completed.queued_at);
+        // Calculate total query time (end-to-end from client perspective)
         let total_ms = completed.query_start_time.elapsed().as_millis();
 
         info!(
@@ -150,7 +137,9 @@ impl JobCompletionHandler for FetchResultsHandler {
         let metric_total_bytes =
             MetricBuilder::new(&metrics).counter("transferred_bytes", partition);
 
-        // ── Partition streams ─────────────────────────────────────────────────
+        // Note: data_transfer_time_ms is not set here because partition fetching
+        // happens lazily when the stream is consumed, not during execute_query.
+        // This could be added in a future enhancement by wrapping the stream.
         let flight_proxy = completed.flight_proxy;
         let streams = completed.partition_location.into_iter().map(move |loc| {
             let f = fetch_partition(
@@ -183,24 +172,13 @@ impl JobCompletionHandler for FetchResultsHandler {
     }
 }
 
-// ── JobCompletionAction (public config) ───────────────────────────────────────
-
 /// Specifies which [`JobCompletionHandler`] to use after a distributed job
 /// finishes.
-///
-/// Stored in [`DistributedQueryExec`] so the struct can remain `Clone` and
-/// still produce the output schema before `execute()` is called.  Inside
-/// `execute()` the enum is matched to construct the concrete handler.
-///
-/// This keeps the scheduler unaware of callback logic: it always executes a
-/// plain job; the client decides how to interpret the result.
 #[derive(Debug, Clone)]
 pub enum JobCompletionAction {
     /// Fetch result partitions from executors and stream them back (normal query).
     FetchResults,
 }
-
-// ── DistributedQueryExec ──────────────────────────────────────────────────────
 
 /// This operator sends a logical plan to a Ballista scheduler for execution and
 /// polls the scheduler until the query is complete, then dispatches to a
@@ -221,7 +199,13 @@ pub struct DistributedQueryExec<T: 'static + AsLogicalPlan> {
     session_id: String,
     /// Plan properties
     properties: PlanProperties,
-    /// Execution metrics
+    /// Execution metrics, currently exposes:
+    /// - output_rows: Total number of rows returned
+    /// - transferred_bytes: Total bytes transferred from executors
+    /// - job_execution_time_ms: Time spent executing on the cluster (server-side)
+    /// - job_scheduling_in_ms: Time from query submission to job start (includes queue time)
+    /// - job_execution_time_ms: Time spent executing on the cluster (ended_at - started_at)
+    /// - job_scheduling_in_ms: Time job waited in scheduler queue (started_at - queued_at)
     metrics: ExecutionPlanMetricsSet,
     /// Which handler to invoke after the remote job completes.
     action: JobCompletionAction,
@@ -732,8 +716,6 @@ async fn execute_query_push(
         };
     }
 }
-
-// ── Internal utilities (unchanged) ────────────────────────────────────────────
 
 fn get_client_host_port(
     executor_metadata: &ExecutorMetadata,
