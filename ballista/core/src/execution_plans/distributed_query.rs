@@ -19,21 +19,16 @@ use async_trait::async_trait;
 use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
 use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
-use crate::extension::{
-    BallistaConfigGrpcEndpoint, BallistaGrpcMetadataInterceptor, SessionConfigExt,
-};
 use crate::serde::protobuf::get_job_status_result::FlightProxy;
 use crate::serde::protobuf::{
-    ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult,
-    KeyValuePair, PartitionLocation, execute_query_params::Query, execute_query_result,
-    job_status, scheduler_grpc_client::SchedulerGrpcClient,
+    ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
+    PartitionLocation, execute_query_params::Query, execute_query_result, job_status,
+    scheduler_grpc_client::SchedulerGrpcClient,
 };
 use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
 use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::error::ArrowError;
-use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
 use datafusion::logical_expr::LogicalPlan;
@@ -57,19 +52,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tonic::codegen::InterceptedService;
-use tonic::transport::Channel;
 use url::Url;
-
-// ── Type alias ────────────────────────────────────────────────────────────────
-
-/// Concrete scheduler gRPC client used throughout this module.
-///
-/// Capturing this type alias in handler structs lets us keep trait method
-/// signatures free of generic parameters (i.e. no `<T: GrpcService<...>>`
-/// pollution on [`JobCompletionHandler`]).
-pub(crate) type SchedulerClient =
-    SchedulerGrpcClient<InterceptedService<Channel, BallistaGrpcMetadataInterceptor>>;
 
 // ── CompletedJob ──────────────────────────────────────────────────────────────
 
@@ -77,13 +60,19 @@ pub(crate) type SchedulerClient =
 ///
 /// Every [`JobCompletionHandler`] receives this on completion and can use
 /// whichever fields it needs (e.g. `FetchResultsHandler` uses
-/// `partition_location`; `ExplainAnalyzeHandler` only uses `job_id`).
+/// `partition_location`).
 pub struct CompletedJob {
+    /// Scheduler-assigned job identifier.
     pub job_id: String,
+    /// Locations of all output partitions produced by the job.
     pub partition_location: Vec<PartitionLocation>,
+    /// Optional Flight proxy routing override returned by the scheduler.
     pub flight_proxy: Option<FlightProxy>,
+    /// Epoch-ms timestamp at which the job entered the scheduler queue.
     pub queued_at: u64,
+    /// Epoch-ms timestamp at which the job began executing on executors.
     pub started_at: u64,
+    /// Epoch-ms timestamp at which the job finished executing.
     pub ended_at: u64,
     /// Wall-clock instant at which the job was submitted to the scheduler.
     pub query_start_time: Instant,
@@ -94,10 +83,8 @@ pub struct CompletedJob {
 /// Determines what happens on the *client side* after a distributed job
 /// finishes.  The scheduler is completely unaware of this logic.
 ///
-/// Implement this trait to add new post-job behaviors.  Handlers are
-/// constructed inside [`DistributedQueryExec::execute`] after the
-/// [`SchedulerClient`] already exists, so they can cheaply clone and hold it
-/// without generic type parameters appearing in the trait signature.
+/// Implement this trait to add new post-job behaviors without touching the
+/// scheduler or the poll/push wait loops.
 #[async_trait]
 pub(crate) trait JobCompletionHandler: Send {
     async fn handle(
@@ -196,11 +183,6 @@ impl JobCompletionHandler for FetchResultsHandler {
     }
 }
 
-/// This operator sends a logical plan to a Ballista scheduler for execution and
-/// polls the scheduler until the query is complete and then fetches the resulting
-/// batches directly from the executors that hold the results from the final
-/// query stage.
-
 // ── JobCompletionAction (public config) ───────────────────────────────────────
 
 /// Specifies which [`JobCompletionHandler`] to use after a distributed job
@@ -218,12 +200,11 @@ pub enum JobCompletionAction {
     FetchResults,
 }
 
-
 // ── DistributedQueryExec ──────────────────────────────────────────────────────
 
-/// Sends a logical plan to a Ballista scheduler for execution, waits for
-/// completion, then dispatches to a [`JobCompletionHandler`] that produces the
-/// final result stream.
+/// This operator sends a logical plan to a Ballista scheduler for execution and
+/// polls the scheduler until the query is complete, then dispatches to a
+/// [`JobCompletionHandler`] that produces the final result stream.
 #[derive(Debug, Clone)]
 pub struct DistributedQueryExec<T: 'static + AsLogicalPlan> {
     /// Ballista scheduler URL
@@ -295,10 +276,6 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
     /// Creates a new distributed query execution plan with a custom completion
     /// action. Use this to implement EXPLAIN ANALYZE and future callback-style
     /// patterns.
-    ///
-    /// For [`JobCompletionAction::ExplainAnalyze`], the output schema is the
-    /// standard `(plan_type: Utf8, plan: Utf8)` table, not the inner plan's
-    /// schema.
     pub fn with_action(
         scheduler_url: String,
         config: BallistaConfig,
@@ -309,8 +286,6 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
     ) -> Self {
         let schema: SchemaRef = match &action {
             JobCompletionAction::FetchResults => plan.schema().as_arrow().clone().into(),
-        let properties =
-            Self::compute_properties(plan.schema().as_arrow().clone().into());
         };
         let properties = Self::compute_properties(schema);
         Self {
@@ -399,23 +374,6 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         }))
     }
 
-    /// Submits the logical plan to the scheduler, waits for completion, and
-    /// dispatches to the appropriate [`JobCompletionHandler`].
-    ///
-    /// Stream type chain in the happy path:
-    ///
-    /// ```text
-    /// once(async {
-    ///     scheduler = build_scheduler_client(...)
-    ///     completed = submit_and_wait(scheduler, ...)   // CompletedJob
-    ///     handler   = FetchResultsHandler | ExplainAnalyzeHandler
-    ///     handler.handle(completed)                     // SendableRecordBatchStream
-    /// })
-    /// // Stream<Item = Result<SendableRecordBatchStream, DataFusionError>>
-    /// .try_flatten()
-    /// // Stream<Item = Result<RecordBatch, DataFusionError>>  (inner stream's error type)
-    /// // Req: DataFusionError: From<DataFusionError> ✓
-    /// ```
     fn execute(
         &self,
         partition: usize,
@@ -423,7 +381,6 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     ) -> Result<SendableRecordBatchStream> {
         assert_eq!(0, partition);
 
-        // ── Serialize logical plan ────────────────────────────────────────────
         let mut buf: Vec<u8> = vec![];
         let plan_message = T::try_from_logical_plan(
             &self.plan,
@@ -462,7 +419,6 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             operation_id,
         };
 
-        // ── Capture fields for the async block ────────────────────────────────
         let session_config = context.session_config().clone();
         let max_message_size = self.config.grpc_client_max_message_size();
         let grpc_config = GrpcClientConfig::from(&self.config);
@@ -477,20 +433,33 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         // is moved into the FetchResultsHandler.
         let schema_for_adapter = schema.clone();
 
-        // ── Core loop ─────────────────────────────────────────────────────────
+        // ── Core dispatch ─────────────────────────────────────────────────────
         //
-        // The stream type chain is documented on this method's doc comment.
+        // 1. Wait for the remote job to complete (pull or push), yielding a
+        //    CompletedJob receipt.
+        // 2. Construct the appropriate JobCompletionHandler based on `action`.
+        // 3. Hand the receipt to the handler and return its stream.
         let stream = futures::stream::once(async move {
-            let mut scheduler = build_scheduler_client(
-                scheduler_url.clone(),
-                max_message_size,
-                &grpc_config,
-                &session_config,
-            )
-            .await?;
-
-            let completed =
-                submit_and_wait(&mut scheduler, query, client_pull, &session_id).await?;
+            let completed = if client_pull {
+                execute_query_pull(
+                    scheduler_url.clone(),
+                    session_id,
+                    query,
+                    max_message_size,
+                    grpc_config,
+                    session_config.clone(),
+                )
+                .await?
+            } else {
+                execute_query_push(
+                    scheduler_url.clone(),
+                    query,
+                    max_message_size,
+                    grpc_config,
+                    session_config.clone(),
+                )
+                .await?
+            };
 
             let handler: Box<dyn JobCompletionHandler> = match action {
                 JobCompletionAction::FetchResults => Box::new(FetchResultsHandler {
@@ -501,25 +470,6 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                     metrics,
                     partition,
                 }),
-                    session_config,
-                )
-                .map_err(|e| ArrowError::ExternalError(Box::new(e))),
-            )
-            .try_flatten()
-            .inspect(move |batch| {
-                metric_total_bytes.add(
-                    batch
-                        .as_ref()
-                        .map(|b| b.get_array_memory_size())
-                        .unwrap_or(0),
-                );
-
-                metric_row_count.add(batch.as_ref().map(|b| b.num_rows()).unwrap_or(0));
-            });
-
-            let schema = self.schema();
-            Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
-        }
             };
 
             handler.handle(completed).await
@@ -541,27 +491,30 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     }
 }
 
-// ── build_scheduler_client ────────────────────────────────────────────────────
+// ── execute_query_pull ────────────────────────────────────────────────────────
 
-/// Connects to the Ballista scheduler and returns a ready-to-use gRPC client.
-///
-/// Extracted from the three former functions (`execute_query_pull`,
-/// `execute_query_push`, `execute_explain_analyze`) which all contained
-/// identical connection-establishment code.
-async fn build_scheduler_client(
+/// Client periodically polls the scheduler to check job status.
+/// Returns a [`CompletedJob`] receipt once the job reaches a terminal state.
+#[allow(clippy::too_many_arguments)]
+async fn execute_query_pull(
     scheduler_url: String,
+    session_id: String,
+    query: ExecuteQueryParams,
     max_message_size: usize,
-    grpc_config: &GrpcClientConfig,
-    session_config: &SessionConfig,
-) -> Result<SchedulerClient> {
+    grpc_config: GrpcClientConfig,
+    session_config: SessionConfig,
+) -> Result<CompletedJob> {
     let grpc_interceptor = session_config.ballista_grpc_interceptor();
     let customize_endpoint =
         session_config.ballista_override_create_grpc_client_endpoint();
 
-    info!("Connecting to Ballista scheduler at {scheduler_url}");
+    let query_start_time = Instant::now();
 
-    let mut endpoint = create_grpc_client_endpoint(scheduler_url, Some(grpc_config))
-        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+    info!("Connecting to Ballista scheduler at {scheduler_url}");
+    // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
+    let mut endpoint =
+        create_grpc_client_endpoint(scheduler_url.clone(), Some(&grpc_config))
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
     if let Some(ref customize) = customize_endpoint {
         endpoint = customize
@@ -574,194 +527,209 @@ async fn build_scheduler_client(
         .await
         .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
-    Ok(
-        SchedulerGrpcClient::with_interceptor(connection, grpc_interceptor.as_ref().clone())
-            .max_encoding_message_size(max_message_size)
-            .max_decoding_message_size(max_message_size),
+    let mut scheduler = SchedulerGrpcClient::with_interceptor(
+        connection,
+        grpc_interceptor.as_ref().clone(),
     )
-}
+    .max_encoding_message_size(max_message_size)
+    .max_decoding_message_size(max_message_size);
 
-// ── submit_and_wait ───────────────────────────────────────────────────────────
+    let query_result = scheduler
+        .execute_query(query)
+        .await
+        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
+        .into_inner();
 
-/// Submits a query to the scheduler and blocks until the job reaches a
-/// terminal state, returning [`CompletedJob`] on success.
-///
-/// Supports both *pull* mode (client polls `GetJobStatus` in a loop) and
-/// *push* mode (server streams `GetJobStatusResult` messages).
-///
-/// Extracts the duplicated submit+poll logic that previously appeared
-/// separately in `execute_query_pull`, `execute_query_push`, and
-/// `execute_explain_analyze`.
-async fn submit_and_wait(
-    scheduler: &mut SchedulerClient,
-    query: ExecuteQueryParams,
-    client_pull: bool,
-    session_id: &str,
-) -> Result<CompletedJob> {
-    let query_start_time = Instant::now();
+    let query_result = match query_result.result.unwrap() {
+        execute_query_result::Result::Success(success_result) => success_result,
+        execute_query_result::Result::Failure(failure_result) => {
+            return Err(DataFusionError::Execution(format!(
+                "Fail to execute query due to {failure_result:?}"
+            )));
+        }
+    };
 
-    if client_pull {
-        // ── Pull: submit then poll ────────────────────────────────────────────
-        let query_result = scheduler
-            .execute_query(query)
+    assert_eq!(
+        session_id, query_result.session_id,
+        "Session id inconsistent between Client and Server side in DistributedQueryExec."
+    );
+
+    let job_id = query_result.job_id;
+    let mut prev_status: Option<job_status::Status> = None;
+
+    loop {
+        let GetJobStatusResult {
+            status,
+            flight_proxy,
+        } = scheduler
+            .get_job_status(GetJobStatusParams {
+                job_id: job_id.clone(),
+            })
             .await
             .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
             .into_inner();
-
-        let success = match query_result.result.unwrap() {
-            execute_query_result::Result::Success(s) => s,
-            execute_query_result::Result::Failure(f) => {
-                return Err(DataFusionError::Execution(format!(
-                    "Fail to execute query due to {f:?}"
-                )));
+        let status = status.and_then(|s| s.status);
+        let wait_future = tokio::time::sleep(Duration::from_millis(50));
+        let has_status_change = prev_status != status;
+        match status {
+            None => {
+                if has_status_change {
+                    info!("Job {job_id} is in initialization ...");
+                }
+                wait_future.await;
+                prev_status = status;
+            }
+            Some(job_status::Status::Queued(_)) => {
+                if has_status_change {
+                    info!("Job {job_id} is queued...");
+                }
+                wait_future.await;
+                prev_status = status;
+            }
+            Some(job_status::Status::Running(_)) => {
+                if has_status_change {
+                    info!("Job {job_id} is running...");
+                }
+                wait_future.await;
+                prev_status = status;
+            }
+            Some(job_status::Status::Failed(err)) => {
+                let msg = format!("Job {} failed: {}", job_id, err.error);
+                error!("{msg}");
+                break Err(DataFusionError::Execution(msg));
+            }
+            Some(job_status::Status::Successful(SuccessfulJob {
+                queued_at,
+                started_at,
+                ended_at,
+                partition_location,
+                ..
+            })) => {
+                break Ok(CompletedJob {
+                    job_id,
+                    partition_location,
+                    flight_proxy,
+                    queued_at,
+                    started_at,
+                    ended_at,
+                    query_start_time,
+                });
             }
         };
+    }
+}
 
-        assert_eq!(
-            session_id, success.session_id,
-            "Session id inconsistent between Client and Server side in DistributedQueryExec."
-        );
+// ── execute_query_push ────────────────────────────────────────────────────────
 
-        let job_id = success.job_id;
-        let mut prev_status: Option<job_status::Status> = None;
+/// After job is scheduled, client waits for job updates streamed from server.
+/// Returns a [`CompletedJob`] receipt once the job reaches a terminal state.
+#[allow(clippy::too_many_arguments)]
+async fn execute_query_push(
+    scheduler_url: String,
+    query: ExecuteQueryParams,
+    max_message_size: usize,
+    grpc_config: GrpcClientConfig,
+    session_config: SessionConfig,
+) -> Result<CompletedJob> {
+    let grpc_interceptor = session_config.ballista_grpc_interceptor();
+    let customize_endpoint =
+        session_config.ballista_override_create_grpc_client_endpoint();
 
-        loop {
-            let GetJobStatusResult {
-                status,
-                flight_proxy,
-            } = scheduler
-                .get_job_status(GetJobStatusParams {
-                    job_id: job_id.clone(),
-                })
-                .await
-                .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
-                .into_inner();
+    let query_start_time = Instant::now();
 
-            let status = status.and_then(|s| s.status);
-            let has_status_change = prev_status != status;
-            let wait_future = tokio::time::sleep(Duration::from_millis(50));
+    info!("Connecting to Ballista scheduler at {scheduler_url}");
+    // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
+    let mut endpoint =
+        create_grpc_client_endpoint(scheduler_url.clone(), Some(&grpc_config))
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
 
-            match status {
-                None => {
-                    if has_status_change {
-                        info!("Job {job_id} is in initialization...");
-                    }
-                    wait_future.await;
-                    prev_status = status;
-                }
-                Some(job_status::Status::Queued(_)) => {
-                    if has_status_change {
-                        info!("Job {job_id} is queued...");
-                    }
-                    wait_future.await;
-                    prev_status = status;
-                }
-                Some(job_status::Status::Running(_)) => {
-                    if has_status_change {
-                        info!("Job {job_id} is running...");
-                    }
-                    wait_future.await;
-                    prev_status = status;
-                }
-                Some(job_status::Status::Failed(err)) => {
-                    let msg = format!("Job {} failed: {}", job_id, err.error);
-                    error!("{msg}");
-                    return Err(DataFusionError::Execution(msg));
-                }
-                Some(job_status::Status::Successful(SuccessfulJob {
-                    queued_at,
-                    started_at,
-                    ended_at,
-                    partition_location,
-                    ..
-                })) => {
-                    return Ok(CompletedJob {
-                        job_id,
-                        partition_location,
-                        flight_proxy,
-                        queued_at,
-                        started_at,
-                        ended_at,
-                        query_start_time,
-                    });
-                }
-            }
-        }
-    } else {
-        // ── Push: server-streams status updates ───────────────────────────────
-        let mut stream = scheduler
-            .execute_query_push(query)
+    if let Some(ref customize) = customize_endpoint {
+        endpoint = customize
+            .configure_endpoint(endpoint)
+            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+    }
+
+    let connection = endpoint
+        .connect()
+        .await
+        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
+
+    let mut scheduler = SchedulerGrpcClient::with_interceptor(
+        connection,
+        grpc_interceptor.as_ref().clone(),
+    )
+    .max_encoding_message_size(max_message_size)
+    .max_decoding_message_size(max_message_size);
+
+    let mut query_status_stream = scheduler
+        .execute_query_push(query)
+        .await
+        .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
+        .into_inner();
+
+    let mut prev_status: Option<job_status::Status> = None;
+
+    loop {
+        let item = query_status_stream
+            .next()
             .await
-            .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?
-            .into_inner();
+            .ok_or(DataFusionError::Execution(
+                "Stream closed without job completing".to_string(),
+            ))?
+            .map_err(|e| DataFusionError::Execution(e.to_string()))?;
 
-        let mut prev_status: Option<job_status::Status> = None;
-
-        loop {
-            let item = stream
-                .next()
-                .await
-                .ok_or_else(|| {
-                    DataFusionError::Execution(
-                        "Stream closed without job completing".to_string(),
-                    )
-                })?
-                .map_err(|e| DataFusionError::Execution(e.to_string()))?;
-
-            let GetJobStatusResult {
-                status,
-                flight_proxy,
-            } = item;
-            let job_id = status
-                .as_ref()
-                .map(|s| s.job_id.to_owned())
-                .unwrap_or_else(|| "unknown_job_id".to_string());
-            let status = status.and_then(|s| s.status);
-            let has_status_change = prev_status != status;
-
-            match status {
-                None => {
-                    if has_status_change {
-                        info!("Job {job_id} is in initialization...");
-                    }
-                    prev_status = status;
+        let GetJobStatusResult {
+            status,
+            flight_proxy,
+        } = item;
+        let job_id = status
+            .as_ref()
+            .map(|s| s.job_id.to_owned())
+            .unwrap_or("unknown_job_id".to_string());
+        let status = status.and_then(|s| s.status);
+        let has_status_change = prev_status != status;
+        match status {
+            None => {
+                if has_status_change {
+                    info!("Job {job_id} is in initialization ...");
                 }
-                Some(job_status::Status::Queued(_)) => {
-                    if has_status_change {
-                        info!("Job {job_id} is queued...");
-                    }
-                    prev_status = status;
+                prev_status = status;
+            }
+            Some(job_status::Status::Queued(_)) => {
+                if has_status_change {
+                    info!("Job {job_id} is queued...");
                 }
-                Some(job_status::Status::Running(_)) => {
-                    if has_status_change {
-                        info!("Job {job_id} is running...");
-                    }
-                    prev_status = status;
+                prev_status = status;
+            }
+            Some(job_status::Status::Running(_)) => {
+                if has_status_change {
+                    info!("Job {job_id} is running...");
                 }
-                Some(job_status::Status::Failed(err)) => {
-                    let msg = format!("Job {} failed: {}", job_id, err.error);
-                    error!("{msg}");
-                    return Err(DataFusionError::Execution(msg));
-                }
-                Some(job_status::Status::Successful(SuccessfulJob {
+                prev_status = status;
+            }
+            Some(job_status::Status::Failed(err)) => {
+                let msg = format!("Job {} failed: {}", job_id, err.error);
+                error!("{msg}");
+                break Err(DataFusionError::Execution(msg));
+            }
+            Some(job_status::Status::Successful(SuccessfulJob {
+                queued_at,
+                started_at,
+                ended_at,
+                partition_location,
+                ..
+            })) => {
+                break Ok(CompletedJob {
+                    job_id,
+                    partition_location,
+                    flight_proxy,
                     queued_at,
                     started_at,
                     ended_at,
-                    partition_location,
-                    ..
-                })) => {
-                    return Ok(CompletedJob {
-                        job_id,
-                        partition_location,
-                        flight_proxy,
-                        queued_at,
-                        started_at,
-                        ended_at,
-                        query_start_time,
-                    });
-                }
+                    query_start_time,
+                });
             }
-        }
+        };
     }
 }
 
