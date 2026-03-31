@@ -189,7 +189,7 @@ pub struct DistributedQueryExec<T: 'static + AsLogicalPlan> {
     scheduler_url: String,
     /// Ballista configuration
     config: BallistaConfig,
-    /// Logical plan to execute (the inner plan, without any wrapping Analyze node)
+    /// Logical plan to execute
     plan: LogicalPlan,
     /// Codec for LogicalPlan extensions
     extension_codec: Arc<dyn LogicalExtensionCodec>,
@@ -219,8 +219,8 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
         plan: LogicalPlan,
         session_id: String,
     ) -> Self {
-        let schema: SchemaRef = plan.schema().as_arrow().clone().into();
-        let properties = Self::compute_properties(schema);
+        let properties =
+            Self::compute_properties(plan.schema().as_arrow().clone().into());
         Self {
             scheduler_url,
             config,
@@ -242,8 +242,8 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
         extension_codec: Arc<dyn LogicalExtensionCodec>,
         session_id: String,
     ) -> Self {
-        let schema: SchemaRef = plan.schema().as_arrow().clone().into();
-        let properties = Self::compute_properties(schema);
+        let properties =
+            Self::compute_properties(plan.schema().as_arrow().clone().into());
         Self {
             scheduler_url,
             config,
@@ -258,8 +258,7 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
     }
 
     /// Creates a new distributed query execution plan with a custom completion
-    /// action. Use this to implement EXPLAIN ANALYZE and future callback-style
-    /// patterns.
+    /// action
     pub fn with_action(
         scheduler_url: String,
         config: BallistaConfig,
@@ -268,10 +267,8 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
         session_id: String,
         action: JobCompletionAction,
     ) -> Self {
-        let schema: SchemaRef = match &action {
-            JobCompletionAction::FetchResults => plan.schema().as_arrow().clone().into(),
-        };
-        let properties = Self::compute_properties(schema);
+        let properties =
+            Self::compute_properties(plan.schema().as_arrow().clone().into());
         Self {
             scheduler_url,
             config,
@@ -326,11 +323,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     }
 
     fn schema(&self) -> SchemaRef {
-        match &self.action {
-            JobCompletionAction::FetchResults => {
-                self.plan.schema().as_arrow().clone().into()
-            }
-        }
+        self.plan.schema().as_arrow().clone().into()
     }
 
     fn properties(&self) -> &PlanProperties {
@@ -389,13 +382,11 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                 },
             )
             .collect();
-
         let operation_id = uuid::Uuid::now_v7().to_string();
         debug!(
             "Distributed query with session_id: {}, execution operation_id: {}",
             self.session_id, operation_id
         );
-
         let query = ExecuteQueryParams {
             query: Some(Query::LogicalPlan(buf)),
             settings,
@@ -412,17 +403,9 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         let metrics = Arc::new(self.metrics.clone());
         let schema = self.schema();
         let client_pull = session_config.ballista_config().client_pull();
-
-        // Clone schema for the outer RecordBatchStreamAdapter; the inner clone
-        // is moved into the FetchResultsHandler.
         let schema_for_adapter = schema.clone();
 
-        // ── Core dispatch ─────────────────────────────────────────────────────
-        //
-        // 1. Wait for the remote job to complete (pull or push), yielding a
-        //    CompletedJob receipt.
-        // 2. Construct the appropriate JobCompletionHandler based on `action`.
-        // 3. Hand the receipt to the handler and return its stream.
+        // Wait for the remote job to complete (pull or push), yielding a CompletedJob receipt
         let stream = futures::stream::once(async move {
             let completed = if client_pull {
                 execute_query_pull(
@@ -445,6 +428,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                 .await?
             };
 
+            // Construct the appropriate JobCompletionHandler based on action
             let handler: Box<dyn JobCompletionHandler> = match action {
                 JobCompletionAction::FetchResults => Box::new(FetchResultsHandler {
                     scheduler_url,
@@ -467,6 +451,9 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     }
 
     fn statistics(&self) -> Result<Statistics> {
+        // This execution plan sends the logical plan to the scheduler without
+        // performing the node by node conversion to a full physical plan.
+        // This implies that we cannot infer the statistics at this stage.
         Ok(Statistics::new_unknown(&self.schema()))
     }
 
@@ -474,8 +461,6 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
         Some(self.metrics.clone_inner())
     }
 }
-
-// ── execute_query_pull ────────────────────────────────────────────────────────
 
 /// Client periodically polls the scheduler to check job status.
 /// Returns a [`CompletedJob`] receipt once the job reaches a terminal state.
@@ -486,13 +471,16 @@ async fn execute_query_pull(
     query: ExecuteQueryParams,
     max_message_size: usize,
     grpc_config: GrpcClientConfig,
+    metrics: Arc<ExecutionPlanMetricsSet>,
+    partition: usize,
     session_config: SessionConfig,
 ) -> Result<CompletedJob> {
     let grpc_interceptor = session_config.ballista_grpc_interceptor();
     let customize_endpoint =
         session_config.ballista_override_create_grpc_client_endpoint();
 
-    let query_start_time = Instant::now();
+    // Capture query submission time for total_query_time_ms
+    let query_start_time = std::time::Instant::now();
 
     info!("Connecting to Ballista scheduler at {scheduler_url}");
     // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
@@ -603,8 +591,6 @@ async fn execute_query_pull(
     }
 }
 
-// ── execute_query_push ────────────────────────────────────────────────────────
-
 /// After job is scheduled, client waits for job updates streamed from server.
 /// Returns a [`CompletedJob`] receipt once the job reaches a terminal state.
 #[allow(clippy::too_many_arguments)]
@@ -613,13 +599,16 @@ async fn execute_query_push(
     query: ExecuteQueryParams,
     max_message_size: usize,
     grpc_config: GrpcClientConfig,
+    metrics: Arc<ExecutionPlanMetricsSet>,
+    partition: usize,
     session_config: SessionConfig,
 ) -> Result<CompletedJob> {
     let grpc_interceptor = session_config.ballista_grpc_interceptor();
     let customize_endpoint =
         session_config.ballista_override_create_grpc_client_endpoint();
 
-    let query_start_time = Instant::now();
+    // Capture query submission time for total_query_time_ms
+    let query_start_time = std::time::Instant::now();
 
     info!("Connecting to Ballista scheduler at {scheduler_url}");
     // TODO reuse the scheduler to avoid connecting to the Ballista scheduler again and again
@@ -669,7 +658,7 @@ async fn execute_query_push(
         let job_id = status
             .as_ref()
             .map(|s| s.job_id.to_owned())
-            .unwrap_or("unknown_job_id".to_string());
+            .unwrap_or("unknown_job_id".to_string());  // should not happen
         let status = status.and_then(|s| s.status);
         let has_status_change = prev_status != status;
         match status {
