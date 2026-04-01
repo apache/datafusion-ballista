@@ -15,22 +15,27 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! This module contains execution plans that are needed to distribute DataFusion's execution plans into
-//! several Ballista executors.
+use crate::execution_plans::distributed_query::CompletedJob;
+use async_trait::async_trait;
+use datafusion::error::Result;
+use datafusion::physical_plan::SendableRecordBatchStream;
 
-mod distributed_query;
-mod job_callback_handler;
-mod shuffle_reader;
-mod shuffle_writer;
-mod shuffle_writer_trait;
-pub mod sort_shuffle;
-mod unresolved_shuffle;
+mod fetch_results;
+pub(crate) use fetch_results::FetchResultsHandler;
 
-pub use distributed_query::{CompletedJob, DistributedQueryExec};
-pub use job_callback_handler::JobCompletionAction;
-pub use shuffle_reader::ShuffleReaderExec;
-pub use shuffle_reader::{stats_for_partition, stats_for_partitions};
-pub use shuffle_writer::ShuffleWriterExec;
-pub use shuffle_writer_trait::ShuffleWriter;
-pub use sort_shuffle::SortShuffleWriterExec;
-pub use unresolved_shuffle::UnresolvedShuffleExec;
+/// Determines what happens on the client side after a distributed job finishes.
+#[async_trait]
+pub(crate) trait JobCompletionHandler: Send {
+    async fn handle(
+        self: Box<Self>,
+        completed: CompletedJob,
+    ) -> Result<SendableRecordBatchStream>;
+}
+
+/// Specifies which [`JobCompletionHandler`] to use after a distributed job
+/// finishes.
+#[derive(Debug, Clone)]
+pub enum JobCompletionAction {
+    /// Fetch result partitions from executors and stream them back (normal query).
+    FetchResults,
+}
