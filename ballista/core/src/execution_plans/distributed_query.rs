@@ -473,8 +473,6 @@ async fn execute_query_pull(
     query: ExecuteQueryParams,
     max_message_size: usize,
     grpc_config: GrpcClientConfig,
-    metrics: Arc<ExecutionPlanMetricsSet>,
-    partition: usize,
     session_config: SessionConfig,
 ) -> Result<CompletedJob> {
     let grpc_interceptor = session_config.ballista_grpc_interceptor();
@@ -601,8 +599,6 @@ async fn execute_query_push(
     query: ExecuteQueryParams,
     max_message_size: usize,
     grpc_config: GrpcClientConfig,
-    metrics: Arc<ExecutionPlanMetricsSet>,
-    partition: usize,
     session_config: SessionConfig,
 ) -> Result<CompletedJob> {
     let grpc_interceptor = session_config.ballista_grpc_interceptor();
@@ -660,7 +656,7 @@ async fn execute_query_push(
         let job_id = status
             .as_ref()
             .map(|s| s.job_id.to_owned())
-            .unwrap_or("unknown_job_id".to_string());// should not happen
+            .unwrap_or("unknown_job_id".to_string()); // should not happen
         let status = status.and_then(|s| s.status);
         let has_status_change = prev_status != status;
         match status {
