@@ -27,15 +27,15 @@
 //!   cargo run --release --bin shuffle_bench -- --help
 //!   cargo run --release --bin shuffle_bench -- --rows 1000000 --partitions 16
 
+use ballista_core::utils;
 use datafusion::arrow::array::{Int64Array, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
-use datafusion::physical_expr::expressions::Column;
-use ballista_core::utils;
 use datafusion::execution::context::TaskContext;
+use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::Partitioning;
 use datafusion::prelude::SessionContext;
@@ -293,9 +293,9 @@ async fn run_concurrent(
         let ctx = task_ctx.clone();
         handles.push(tokio::spawn(async move {
             let mut stream = writer.execute(partition, ctx)?;
-            let batches = utils::collect_stream(&mut stream).await.map_err(|e| {
-                datafusion::error::DataFusionError::External(Box::new(e))
-            })?;
+            let batches = utils::collect_stream(&mut stream)
+                .await
+                .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
             let files = batches.first().map_or(0, |b| b.num_rows());
             drop(permit);
             Ok::<_, datafusion::error::DataFusionError>(files)
