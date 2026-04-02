@@ -34,6 +34,7 @@ use log::error;
 use std::io::BufWriter;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::path::Path;
 use std::{fs::File, pin::Pin};
 use tonic::codegen::StdError;
 use tonic::transport::{Channel, Endpoint, Error, Server};
@@ -166,7 +167,7 @@ pub fn default_config_producer() -> SessionConfig {
 /// keeping the tokio worker thread unblocked.
 pub async fn write_stream_to_disk(
     stream: &mut Pin<Box<dyn RecordBatchStream + Send>>,
-    path: &str,
+    path: &Path,
     disk_write_metric: &metrics::Time,
 ) -> Result<PartitionStats> {
     let schema = stream.schema();
@@ -177,7 +178,7 @@ pub async fn write_stream_to_disk(
 
     let handle = tokio::task::spawn_blocking(move || -> Result<()> {
         let file = BufWriter::new(File::create(&path_owned).map_err(|e| {
-            error!("Failed to create partition file at {path_owned}: {e:?}");
+            error!("Failed to create partition file at {}: {e:?}", path_owned.display());
             BallistaError::IoError(e)
         })?);
 
@@ -223,6 +224,9 @@ pub async fn write_stream_to_disk(
         .map_err(|e| BallistaError::General(format!("Disk writer task failed: {e}")))?;
 
     if let Some(e) = stream_err {
+        if let Err(write_err) = &write_result {
+            error!("Disk writer also failed: {write_err}");
+        }
         return Err(e.into());
     }
     write_result?;

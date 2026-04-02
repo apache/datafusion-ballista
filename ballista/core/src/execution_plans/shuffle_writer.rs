@@ -61,7 +61,7 @@ use datafusion::arrow::error::ArrowError;
 use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::repartition::BatchPartitioner;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use log::{debug, info};
+use log::{debug, error, info};
 
 use super::shuffle_writer_trait::ShuffleWriter;
 
@@ -217,12 +217,11 @@ impl ShuffleWriterExec {
                     path.push(format!("{input_partition}"));
                     tokio::fs::create_dir_all(&path).await?;
                     path.push("data.arrow");
-                    let path = path.to_str().unwrap();
-                    debug!("Writing results to {path}");
+                    debug!("Writing results to {:?}", path);
 
                     let stats = utils::write_stream_to_disk(
                         &mut stream,
-                        path,
+                        &path,
                         &write_metrics.write_time,
                     )
                     .await
@@ -244,7 +243,7 @@ impl ShuffleWriterExec {
 
                     Ok(vec![ShuffleWritePartition {
                         partition_id: input_partition as u64,
-                        path: path.to_owned(),
+                        path: path.to_string_lossy().into_owned(),
                         num_batches: stats.num_batches.unwrap_or(0),
                         num_rows: stats.num_rows.unwrap_or(0),
                         num_bytes: stats.num_bytes.unwrap_or(0),
@@ -356,6 +355,9 @@ impl ShuffleWriterExec {
                         ))
                     })?;
                     if let Some(e) = stream_err {
+                        if let Err(write_err) = &write_result {
+                            error!("Shuffle writer also failed: {write_err}");
+                        }
                         return Err(e);
                     }
                     write_result

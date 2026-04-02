@@ -34,6 +34,8 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_expr::expressions::Column;
+use ballista_core::utils;
+use datafusion::execution::context::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::Partitioning;
 use datafusion::prelude::SessionContext;
@@ -163,7 +165,6 @@ async fn benchmark_hash_shuffle(
     concurrency: usize,
 ) -> Result<(Duration, usize), Box<dyn std::error::Error>> {
     use ballista_core::execution_plans::ShuffleWriterExec;
-    use ballista_core::utils;
 
     let session_ctx = SessionContext::new();
     let task_ctx = session_ctx.task_ctx();
@@ -197,38 +198,13 @@ async fn benchmark_hash_shuffle(
             }
         }
     } else {
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
-        let mut handles = Vec::new();
-        for partition in 0..input_partition_count {
-            let permit = semaphore.clone().acquire_owned().await?;
-            let writer = shuffle_writer.clone();
-            let ctx = task_ctx.clone();
-            handles.push(tokio::spawn(async move {
-                let mut stream = writer.execute(partition, ctx)?;
-                let batches = utils::collect_stream(&mut stream).await.map_err(|e| {
-                    datafusion::error::DataFusionError::External(Box::new(e))
-                })?;
-                let files = batches.first().map_or(0, |b| b.num_rows());
-                drop(permit);
-                Ok::<_, datafusion::error::DataFusionError>(files)
-            }));
-        }
-        let mut first_err: Option<Box<dyn std::error::Error>> = None;
-        for handle in handles {
-            match handle.await {
-                Ok(Ok(files)) => total_files += files,
-                Ok(Err(e)) if first_err.is_none() => {
-                    first_err = Some(Box::new(e));
-                }
-                Err(e) if first_err.is_none() => {
-                    first_err = Some(e.into());
-                }
-                _ => {}
-            }
-        }
-        if let Some(e) = first_err {
-            return Err(e);
-        }
+        total_files += run_concurrent(
+            shuffle_writer.clone(),
+            task_ctx.clone(),
+            input_partition_count,
+            concurrency,
+        )
+        .await?;
     }
 
     let elapsed = start.elapsed();
@@ -247,7 +223,6 @@ async fn benchmark_sort_shuffle(
     use ballista_core::execution_plans::sort_shuffle::{
         SortShuffleConfig, SortShuffleWriterExec,
     };
-    use ballista_core::utils;
 
     let session_ctx = SessionContext::new();
     let task_ctx = session_ctx.task_ctx();
@@ -291,42 +266,59 @@ async fn benchmark_sort_shuffle(
             }
         }
     } else {
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
-        let mut handles = Vec::new();
-        for partition in 0..input_partition_count {
-            let permit = semaphore.clone().acquire_owned().await?;
-            let writer = shuffle_writer.clone();
-            let ctx = task_ctx.clone();
-            handles.push(tokio::spawn(async move {
-                let mut stream = writer.execute(partition, ctx)?;
-                let batches = utils::collect_stream(&mut stream).await.map_err(|e| {
-                    datafusion::error::DataFusionError::External(Box::new(e))
-                })?;
-                let files = batches.first().map_or(0, |b| b.num_rows());
-                drop(permit);
-                Ok::<_, datafusion::error::DataFusionError>(files)
-            }));
-        }
-        let mut first_err: Option<Box<dyn std::error::Error>> = None;
-        for handle in handles {
-            match handle.await {
-                Ok(Ok(files)) => total_files += files,
-                Ok(Err(e)) if first_err.is_none() => {
-                    first_err = Some(Box::new(e));
-                }
-                Err(e) if first_err.is_none() => {
-                    first_err = Some(e.into());
-                }
-                _ => {}
-            }
-        }
-        if let Some(e) = first_err {
-            return Err(e);
-        }
+        total_files += run_concurrent(
+            shuffle_writer.clone(),
+            task_ctx.clone(),
+            input_partition_count,
+            concurrency,
+        )
+        .await?;
     }
 
     let elapsed = start.elapsed();
     Ok((elapsed, total_files))
+}
+
+async fn run_concurrent(
+    plan: Arc<dyn ExecutionPlan>,
+    task_ctx: Arc<TaskContext>,
+    input_partition_count: usize,
+    concurrency: usize,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    let mut handles = Vec::new();
+    for partition in 0..input_partition_count {
+        let permit = semaphore.clone().acquire_owned().await?;
+        let writer = plan.clone();
+        let ctx = task_ctx.clone();
+        handles.push(tokio::spawn(async move {
+            let mut stream = writer.execute(partition, ctx)?;
+            let batches = utils::collect_stream(&mut stream).await.map_err(|e| {
+                datafusion::error::DataFusionError::External(Box::new(e))
+            })?;
+            let files = batches.first().map_or(0, |b| b.num_rows());
+            drop(permit);
+            Ok::<_, datafusion::error::DataFusionError>(files)
+        }));
+    }
+    let mut total_files = 0;
+    let mut first_err: Option<Box<dyn std::error::Error>> = None;
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(files)) => total_files += files,
+            Ok(Err(e)) if first_err.is_none() => {
+                first_err = Some(Box::new(e));
+            }
+            Err(e) if first_err.is_none() => {
+                first_err = Some(e.into());
+            }
+            _ => {}
+        }
+    }
+    if let Some(e) = first_err {
+        return Err(e);
+    }
+    Ok(total_files)
 }
 
 fn count_files_in_dir(dir: &str) -> usize {
