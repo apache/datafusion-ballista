@@ -214,14 +214,12 @@ impl ShuffleWriterExec {
 
             match output_partitioning {
                 None => {
-                    let timer = write_metrics.write_time.timer();
                     path.push(format!("{input_partition}"));
-                    std::fs::create_dir_all(&path)?;
+                    tokio::fs::create_dir_all(&path).await?;
                     path.push("data.arrow");
                     let path = path.to_str().unwrap();
                     debug!("Writing results to {path}");
 
-                    // stream results to disk
                     let stats = utils::write_stream_to_disk(
                         &mut stream,
                         path,
@@ -236,7 +234,6 @@ impl ShuffleWriterExec {
                     write_metrics
                         .output_rows
                         .add(stats.num_rows.unwrap_or(0) as usize);
-                    timer.done();
 
                     info!(
                         "Executed partition {} in {} seconds. Statistics: {}",
@@ -255,96 +252,114 @@ impl ShuffleWriterExec {
                 }
 
                 Some(Partitioning::Hash(exprs, num_output_partitions)) => {
-                    // we won't necessary produce output for every possible partition, so we
-                    // create writers on demand
-                    let mut writers: Vec<Option<WriteTracker>> = vec![];
-                    for _ in 0..num_output_partitions {
-                        writers.push(None);
-                    }
+                    let schema = stream.schema();
+                    let (tx, mut rx) = tokio::sync::mpsc::channel::<RecordBatch>(2);
+                    let write_time = write_metrics.write_time.clone();
+                    let repart_time = write_metrics.repart_time.clone();
+                    let output_rows = write_metrics.output_rows.clone();
 
-                    let mut partitioner = BatchPartitioner::new_hash_partitioner(
-                        exprs,
-                        num_output_partitions,
-                        write_metrics.repart_time.clone(),
-                    );
+                    let handle = tokio::task::spawn_blocking(move || {
+                        let mut writers: Vec<Option<WriteTracker>> =
+                            (0..num_output_partitions).map(|_| None).collect();
+                        let mut partitioner = BatchPartitioner::new_hash_partitioner(
+                            exprs,
+                            num_output_partitions,
+                            repart_time,
+                        );
 
-                    while let Some(result) = stream.next().await {
-                        let input_batch = result?;
+                        while let Some(input_batch) = rx.blocking_recv() {
+                            partitioner.partition(
+                                input_batch,
+                                |output_partition, output_batch| {
+                                    let timer = write_time.timer();
+                                    match &mut writers[output_partition] {
+                                        Some(w) => {
+                                            w.num_batches += 1;
+                                            w.num_rows += output_batch.num_rows();
+                                            w.writer.write(&output_batch)?;
+                                        }
+                                        None => {
+                                            let mut p = path.clone();
+                                            p.push(format!("{output_partition}"));
+                                            std::fs::create_dir_all(&p)?;
+                                            p.push(format!(
+                                                "data-{input_partition}.arrow"
+                                            ));
+                                            debug!("Writing results to {p:?}");
 
-                        write_metrics.input_rows.add(input_batch.num_rows());
-
-                        partitioner.partition(
-                            input_batch,
-                            |output_partition, output_batch| {
-                                // partition func in datafusion make sure not write empty output_batch.
-                                let timer = write_metrics.write_time.timer();
-                                match &mut writers[output_partition] {
-                                    Some(w) => {
-                                        w.num_batches += 1;
-                                        w.num_rows += output_batch.num_rows();
-                                        w.writer.write(&output_batch)?;
+                                            let options = IpcWriteOptions::default()
+                                                .try_with_compression(Some(
+                                                    CompressionType::LZ4_FRAME,
+                                                ))?;
+                                            let file =
+                                                BufWriter::new(File::create(p.clone())?);
+                                            let mut writer =
+                                                StreamWriter::try_new_with_options(
+                                                    file,
+                                                    schema.as_ref(),
+                                                    options,
+                                                )?;
+                                            writer.write(&output_batch)?;
+                                            writers[output_partition] =
+                                                Some(WriteTracker {
+                                                    num_batches: 1,
+                                                    num_rows: output_batch.num_rows(),
+                                                    writer,
+                                                    path: p,
+                                                });
+                                        }
                                     }
-                                    None => {
-                                        let mut path = path.clone();
-                                        path.push(format!("{output_partition}"));
-                                        std::fs::create_dir_all(&path)?;
-
-                                        path.push(format!(
-                                            "data-{input_partition}.arrow"
-                                        ));
-                                        debug!("Writing results to {path:?}");
-
-                                        let options = IpcWriteOptions::default()
-                                            .try_with_compression(Some(
-                                                CompressionType::LZ4_FRAME,
-                                            ))?;
-
-                                        let file =
-                                            BufWriter::new(File::create(path.clone())?);
-                                        let mut writer =
-                                            StreamWriter::try_new_with_options(
-                                                file,
-                                                stream.schema().as_ref(),
-                                                options,
-                                            )?;
-
-                                        writer.write(&output_batch)?;
-                                        writers[output_partition] = Some(WriteTracker {
-                                            num_batches: 1,
-                                            num_rows: output_batch.num_rows(),
-                                            writer,
-                                            path,
-                                        });
-                                    }
-                                }
-                                write_metrics.output_rows.add(output_batch.num_rows());
-                                timer.done();
-                                Ok(())
-                            },
-                        )?;
-                    }
-
-                    let mut part_locs = vec![];
-
-                    for (i, w) in writers.iter_mut().enumerate() {
-                        if let Some(w) = w {
-                            w.writer.finish()?;
-                            let num_bytes = fs::metadata(&w.path)?.len();
-                            debug!(
-                                "Finished writing shuffle partition {} at {:?}. Batches: {}. Rows: {}. Bytes: {}.",
-                                i, w.path, w.num_batches, w.num_rows, num_bytes
-                            );
-
-                            part_locs.push(ShuffleWritePartition {
-                                partition_id: i as u64,
-                                path: w.path.to_string_lossy().to_string(),
-                                num_batches: w.num_batches as u64,
-                                num_rows: w.num_rows as u64,
-                                num_bytes,
-                            });
+                                    output_rows.add(output_batch.num_rows());
+                                    timer.done();
+                                    Ok(())
+                                },
+                            )?;
                         }
+
+                        let mut part_locs = vec![];
+                        for (i, w) in writers.iter_mut().enumerate() {
+                            if let Some(w) = w {
+                                w.writer.finish()?;
+                                let num_bytes = fs::metadata(&w.path)?.len();
+                                debug!(
+                                    "Finished writing shuffle partition {} at {:?}. Batches: {}. Rows: {}. Bytes: {}.",
+                                    i, w.path, w.num_batches, w.num_rows, num_bytes
+                                );
+                                part_locs.push(ShuffleWritePartition {
+                                    partition_id: i as u64,
+                                    path: w.path.to_string_lossy().to_string(),
+                                    num_batches: w.num_batches as u64,
+                                    num_rows: w.num_rows as u64,
+                                    num_bytes,
+                                });
+                            }
+                        }
+                        Ok(part_locs)
+                    });
+
+                    let stream_err = loop {
+                        match stream.next().await {
+                            Some(Ok(batch)) => {
+                                write_metrics.input_rows.add(batch.num_rows());
+                                if tx.send(batch).await.is_err() {
+                                    break None;
+                                }
+                            }
+                            Some(Err(e)) => break Some(e),
+                            None => break None,
+                        }
+                    };
+                    drop(tx);
+
+                    let write_result = handle.await.map_err(|e| {
+                        DataFusionError::Execution(format!(
+                            "Shuffle writer task failed: {e}"
+                        ))
+                    })?;
+                    if let Some(e) = stream_err {
+                        return Err(e);
                     }
-                    Ok(part_locs)
+                    write_result
                 }
 
                 _ => Err(DataFusionError::Execution(
@@ -645,6 +660,74 @@ mod tests {
         assert_eq!(2, num_rows.value(0));
         assert_eq!(2, num_rows.value(1));
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_no_repart_write_failure_propagates() -> Result<()> {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+
+        // Place a directory at the data.arrow path so File::create fails
+        // inside write_stream_to_disk, not at create_dir_all.
+        // Path structure: work_dir / job_id / stage_id / partition / data.arrow
+        let tmp = tempfile::TempDir::new().unwrap();
+        let data_arrow_dir = tmp
+            .path()
+            .join("jobOne")
+            .join("1")
+            .join("0")
+            .join("data.arrow");
+        std::fs::create_dir_all(&data_arrow_dir).unwrap();
+        let work_dir = tmp.path().to_str().unwrap().to_owned();
+
+        let input_plan = Arc::new(CoalescePartitionsExec::new(create_input_plan()?));
+        let query_stage = ShuffleWriterExec::try_new(
+            "jobOne".to_owned(),
+            1,
+            input_plan,
+            work_dir,
+            None,
+        )?;
+        let mut stream = query_stage.execute(0, task_ctx)?;
+        let result = utils::collect_stream(&mut stream).await;
+        assert!(
+            result.is_err(),
+            "expected File::create failure in write_stream_to_disk to propagate"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_hash_repart_write_failure_propagates() -> Result<()> {
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+
+        // Place a regular file at the stage_id path component so
+        // create_dir_all fails when the writer tries to create
+        // output partition subdirectories underneath it.
+        // Path structure: work_dir / job_id / stage_id / ...
+        let tmp = tempfile::TempDir::new().unwrap();
+        let job_dir = tmp.path().join("jobOne");
+        std::fs::create_dir_all(&job_dir).unwrap();
+        let stage_id_as_file = job_dir.join("1");
+        std::fs::File::create(&stage_id_as_file).unwrap();
+        let work_dir = tmp.path().to_str().unwrap().to_owned();
+
+        let input_plan = Arc::new(CoalescePartitionsExec::new(create_input_plan()?));
+        let query_stage = ShuffleWriterExec::try_new(
+            "jobOne".to_owned(),
+            1,
+            input_plan,
+            work_dir,
+            Some(Partitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2)),
+        )?;
+        let mut stream = query_stage.execute(0, task_ctx)?;
+        let result = utils::collect_stream(&mut stream).await;
+        assert!(
+            result.is_err(),
+            "expected create_dir_all failure in hash writer to propagate"
+        );
         Ok(())
     }
 
