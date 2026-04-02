@@ -94,6 +94,10 @@ struct ShuffleBenchOpt {
     /// Number of input partitions to execute concurrently
     #[structopt(short = "c", long = "concurrency", default_value = "1")]
     concurrency: usize,
+
+    /// Bounded channel capacity for hash shuffle I/O offload
+    #[structopt(long = "channel-capacity", default_value = "8")]
+    channel_capacity: usize,
 }
 
 fn create_test_schema() -> SchemaRef {
@@ -163,6 +167,7 @@ async fn benchmark_hash_shuffle(
     output_partitions: usize,
     work_dir: &str,
     concurrency: usize,
+    channel_capacity: usize,
 ) -> Result<(Duration, usize), Box<dyn std::error::Error>> {
     use ballista_core::execution_plans::ShuffleWriterExec;
 
@@ -173,16 +178,19 @@ async fn benchmark_hash_shuffle(
         Arc::new(MemorySourceConfig::try_new(data, schema.clone(), None)?);
     let input = Arc::new(DataSourceExec::new(memory_source));
 
-    let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
-        "bench_job".to_owned(),
-        1,
-        input,
-        work_dir.to_owned(),
-        Some(Partitioning::Hash(
-            vec![Arc::new(Column::new("partition_key", 1))],
-            output_partitions,
-        )),
-    )?);
+    let shuffle_writer = Arc::new(
+        ShuffleWriterExec::try_new(
+            "bench_job".to_owned(),
+            1,
+            input,
+            work_dir.to_owned(),
+            Some(Partitioning::Hash(
+                vec![Arc::new(Column::new("partition_key", 1))],
+                output_partitions,
+            )),
+        )?
+        .with_channel_capacity(channel_capacity),
+    );
 
     let start = Instant::now();
 
@@ -365,6 +373,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Sort shuffle memory limit: {} MB", opt.memory_limit_mb);
     println!("  Sort shuffle buffer size: {} MB", opt.buffer_size_mb);
     println!("  Concurrency: {}", opt.concurrency);
+    println!("  Channel capacity: {}", opt.channel_capacity);
     println!();
 
     let schema = create_test_schema();
@@ -405,6 +414,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 opt.partitions,
                 work_dir,
                 opt.concurrency,
+                opt.channel_capacity,
             )
             .await?;
 

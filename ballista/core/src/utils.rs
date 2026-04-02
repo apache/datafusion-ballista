@@ -169,12 +169,13 @@ pub async fn write_stream_to_disk(
     stream: &mut Pin<Box<dyn RecordBatchStream + Send>>,
     path: &Path,
     disk_write_metric: &metrics::Time,
+    channel_capacity: usize,
 ) -> Result<PartitionStats> {
     let schema = stream.schema();
     let path_owned = path.to_owned();
     let write_metric = disk_write_metric.clone();
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<RecordBatch>(2);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<RecordBatch>(channel_capacity);
 
     let handle = tokio::task::spawn_blocking(move || -> Result<u64> {
         let file = BufWriter::new(File::create(&path_owned).map_err(|e| {
