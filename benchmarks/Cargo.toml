@@ -48,6 +48,7 @@ tokio = { version = "^1.50", features = [
     "rt",
     "rt-multi-thread",
     "parking_lot",
+    "sync",
 ] }
 
 [dev-dependencies]
