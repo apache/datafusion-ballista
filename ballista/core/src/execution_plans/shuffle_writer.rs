@@ -258,7 +258,8 @@ impl ShuffleWriterExec {
                     let output_rows = write_metrics.output_rows.clone();
 
                     let handle = tokio::task::spawn_blocking(move || {
-                        let mut writers: Vec<Option<WriteTracker>> = vec![None; num_output_partitions];
+                        let mut writers: Vec<Option<WriteTracker>> =
+                            (0..num_output_partitions).map(|_| None).collect();
                         let mut partitioner = BatchPartitioner::new_hash_partitioner(
                             exprs,
                             num_output_partitions,

@@ -32,9 +32,9 @@ use datafusion::physical_plan::{ExecutionPlan, RecordBatchStream, metrics};
 use futures::StreamExt;
 use log::error;
 use std::io::BufWriter;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::path::Path;
 use std::{fs::File, pin::Pin};
 use tonic::codegen::StdError;
 use tonic::transport::{Channel, Endpoint, Error, Server};
@@ -176,9 +176,12 @@ pub async fn write_stream_to_disk(
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<RecordBatch>(2);
 
-    let handle = tokio::task::spawn_blocking(move || -> Result<()> {
+    let handle = tokio::task::spawn_blocking(move || -> Result<u64> {
         let file = BufWriter::new(File::create(&path_owned).map_err(|e| {
-            error!("Failed to create partition file at {}: {e:?}", path_owned.display());
+            error!(
+                "Failed to create partition file at {}: {e:?}",
+                path_owned.display()
+            );
             BallistaError::IoError(e)
         })?);
 
@@ -196,19 +199,17 @@ pub async fn write_stream_to_disk(
         let timer = write_metric.timer();
         writer.finish()?;
         timer.done();
-        Ok(())
+        Ok(std::fs::metadata(&path_owned).map(|m| m.len()).unwrap_or(0))
     });
 
     let mut num_rows = 0;
     let mut num_batches = 0;
-    let mut num_bytes = 0;
 
     let stream_err = loop {
         match stream.next().await {
             Some(Ok(batch)) => {
                 num_batches += 1;
                 num_rows += batch.num_rows();
-                num_bytes += batch.get_array_memory_size();
                 if tx.send(batch).await.is_err() {
                     break None;
                 }
@@ -229,12 +230,12 @@ pub async fn write_stream_to_disk(
         }
         return Err(e.into());
     }
-    write_result?;
+    let num_bytes = write_result?;
 
     Ok(PartitionStats::new(
         Some(num_rows as u64),
         Some(num_batches),
-        Some(num_bytes as u64),
+        Some(num_bytes),
     ))
 }
 
