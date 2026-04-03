@@ -369,19 +369,17 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             partition_id,
         };
 
-        match self
-            .executor
-            .execution_engine
-            .create_query_stage_exec(
-                job_id.clone(),
-                stage_id,
-                plan,
-                &self.executor.work_dir,
-            ) {
+        match self.executor.execution_engine.create_query_stage_exec(
+            job_id.clone(),
+            stage_id,
+            plan,
+            &self.executor.work_dir,
+        ) {
             Ok(exec) => {
                 let task_context = {
                     let function_registry = task.function_registry;
-                    let runtime = self.executor.produce_runtime(&task.session_config).unwrap();
+                    let runtime =
+                        self.executor.produce_runtime(&task.session_config).unwrap();
 
                     Arc::new(TaskContext::new(
                         Some(task_identity.clone()),
@@ -435,8 +433,10 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     operator_metrics,
                     task_execution_times,
                 );
-                
-                let _ = self.executor_env.tx_task_status
+
+                let _ = self
+                    .executor_env
+                    .tx_task_status
                     .send(CuratorTaskStatus {
                         scheduler_id: curator_task.scheduler_id,
                         task_status,
