@@ -164,7 +164,6 @@ impl BallistaClient {
             job_id: partition_id.job_id.clone(),
             stage_id: partition_id.stage_id,
             partition_id: partition_id.partition_id,
-            // path: path.to_owned(),
             host: host.to_owned(),
             port,
             file_id,
