@@ -16,54 +16,82 @@
 // under the License.
 
 use crate::tui::app::App;
-use ratatui::layout::Rect;
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
-use ratatui::Frame;
 
 pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
-    let mut key_bindings = Vec::with_capacity(10);
+    let mut page_key_bindings = Vec::with_capacity(10);
+    let mut global_key_bindings = Vec::with_capacity(10);
 
     if app.is_edit_mode() {
-        key_bindings.push(Span::from("[Esc] Quit edit mode, "));
+        page_key_bindings.push(Span::from("[Esc] Quit edit mode, "));
     } else {
-        key_bindings.push(Span::from("Key bindings: "));
+        global_key_bindings.push(Span::from("Global key bindings: "));
 
         if app.is_scheduler_up() {
-            key_bindings.push(Span::from("[d] Dashboard, "));
-            key_bindings.push(Span::from("[j] Jobs, "));
-            key_bindings.push(Span::from("[m] Metrics, "));
+            global_key_bindings.push(Span::from("[d] Dashboard, "));
+            global_key_bindings.push(Span::from("[j] Jobs, "));
+            global_key_bindings.push(Span::from("[m] Metrics, "));
             if app.is_jobs_view() {
                 if app.has_more_than_one_job() {
-                    key_bindings.push(Span::from("[/] Search jobs, "));
-                    key_bindings.push(Span::from("[s] Sort by Status, "));
-                    key_bindings.push(Span::from("[p] Sort by % Completed, "));
-                    key_bindings.push(Span::from("[t] Sort by Start time, "));
+                    page_key_bindings.push(Span::from("[/] Search jobs, "));
+                    page_key_bindings.push(Span::from("[s] Sort by Status, "));
+                    page_key_bindings.push(Span::from("[p] Sort by % Completed, "));
+                    page_key_bindings.push(Span::from("[t] Sort by Start time, "));
                 }
                 if app.has_selected_job() {
-                    key_bindings.push(Span::from("[g] View job stages, "));
-                    key_bindings.push(Span::from("[c] Cancel job, "));
+                    page_key_bindings.push(Span::from("[g] View job stages, "));
+                    page_key_bindings.push(Span::from("[c] Cancel job, "));
                 }
                 if app.has_selected_completed_job() {
-                    key_bindings.push(Span::from("[D] View job plans, "));
+                    page_key_bindings.push(Span::from("[D] View job plans, "));
+                }
+                if !page_key_bindings.is_empty() {
+                    page_key_bindings.insert(0, Span::from("Jobs key bindings: "));
                 }
             } else if app.is_metrics_view() {
-                key_bindings.push(Span::from("[/] Search metrics, "));
+                page_key_bindings.push(Span::from("Metrics key bindings: "));
+                page_key_bindings.push(Span::from("[/] Search metrics, "));
             }
-            key_bindings.push(Span::from("[i] Scheduler info, "));
+            global_key_bindings.push(Span::from("[i] Scheduler info, "));
         }
 
-        key_bindings.push(Span::from("[?/h] Help, "));
-        key_bindings.push(Span::from("[q/Esc] Quit"));
+        global_key_bindings.push(Span::from("[?/h] Help, "));
+        global_key_bindings.push(Span::from("[q/Esc] Quit"));
     }
 
-    let line = Line::from(key_bindings);
+    let global_area = if !page_key_bindings.is_empty() {
+        let areas = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(1), // page keybindings
+                Constraint::Min(1), // global keybindings
+            ])
+            .split(area);
+
+        let line = Line::from(page_key_bindings);
+
+        let block = Block::default();
+        let paragraph = Paragraph::new(line)
+            .style(Style::default().bold())
+            .block(block)
+            .centered();
+        f.render_widget(paragraph, areas[0]);
+
+        areas[1]
+    } else {
+        area
+    };
+
+    let line = Line::from(global_key_bindings);
 
     let block = Block::default();
     let paragraph = Paragraph::new(line)
         .style(Style::default().bold())
         .block(block)
         .centered();
-    f.render_widget(paragraph, area);
+    f.render_widget(paragraph, global_area);
 }

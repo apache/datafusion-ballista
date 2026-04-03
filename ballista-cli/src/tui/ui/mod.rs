@@ -42,7 +42,7 @@ pub(crate) fn render(f: &mut Frame, app: &App) {
         .constraints([
             Constraint::Length(6), // Header
             Constraint::Min(0),    // Main view
-            Constraint::Length(1), // Footer
+            Constraint::Length(2), // Footer
         ])
         .split(f.area());
 

@@ -417,11 +417,9 @@ impl App {
             .jobs_data
             .selected_job(&self.search_term)
             .is_some_and(|j| j.status == "Completed");
-        if is_completed {
-            if let Some(details) = &self.job_details {
-                self.job_plan_popup = Some((details.clone(), PlanTab::Stage));
-                self.job_plan_popup_scroll = 0;
-            }
+        if is_completed && let Some(details) = &self.job_details {
+            self.job_plan_popup = Some((details.clone(), PlanTab::Stage));
+            self.job_plan_popup_scroll = 0;
         }
     }
 }
