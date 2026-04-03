@@ -46,8 +46,6 @@ pub enum Action {
         stage_id: usize,
         /// The partition identifier within the stage.
         partition_id: usize,
-        // /// File path to the partition data.
-        // path: String,
         /// Hostname or IP address of the executor hosting this partition.
         host: String,
         /// Port number for data transfer.
