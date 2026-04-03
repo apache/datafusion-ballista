@@ -71,7 +71,7 @@ pub struct ShuffleReaderExec {
     /// Execution metrics
     metrics: ExecutionPlanMetricsSet,
     properties: Arc<PlanProperties>,
-    work_dir: String,
+    work_dir: Option<String>,
 }
 
 impl ShuffleReaderExec {
@@ -94,7 +94,7 @@ impl ShuffleReaderExec {
             partition,
             metrics: ExecutionPlanMetricsSet::new(),
             properties,
-            work_dir: "".to_string(), // to be updated at the executor side
+            work_dir: None, // to be updated at the executor side
         })
     }
 
@@ -106,7 +106,7 @@ impl ShuffleReaderExec {
             partition: self.partition.clone(),
             metrics: self.metrics.clone(),
             properties: self.properties.clone(),
-            work_dir,
+            work_dir: Some(work_dir),
         }
     }
 }
@@ -204,8 +204,16 @@ impl ExecutionPlan for ShuffleReaderExec {
             .collect();
         // Shuffle partitions for evenly send fetching partition requests to avoid hot executors within multiple tasks
         partition_locations.shuffle(&mut rng());
+
+        let work_dir = self
+            .work_dir
+            .as_ref()
+            .ok_or(DataFusionError::Configuration(
+                "ShuffleReader work dir should have been set by executor".to_owned(),
+            ))?;
+
         let response_receiver =
-            send_fetch_partitions(&self.work_dir, partition_locations, config);
+            send_fetch_partitions(work_dir, partition_locations, config);
 
         let input_stream = Box::pin(RecordBatchStreamAdapter::new(
             self.schema.clone(),
@@ -965,13 +973,16 @@ mod tests {
                 is_sort_shuffle: false,
             })
         }
+        let work_dir = TempDir::new().unwrap();
 
+        let work_dir = work_dir.path().to_str().unwrap().to_owned();
         let shuffle_reader_exec = ShuffleReaderExec::try_new(
             input_stage_id,
             vec![partitions],
             Arc::new(schema),
             Partitioning::UnknownPartitioning(4),
-        )?;
+        )?
+        .change_work_dir(work_dir);
         let mut stream = shuffle_reader_exec.execute(0, task_ctx)?;
         let batches = utils::collect_stream(&mut stream).await;
 
