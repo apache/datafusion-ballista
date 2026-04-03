@@ -237,7 +237,7 @@ message FetchPartition {
   
   // reserved after removing deprecated `path`.
   reserved 4;
-  reserved "path"; 
+  reserved "path";
 }
 
 message PartitionLocation {
