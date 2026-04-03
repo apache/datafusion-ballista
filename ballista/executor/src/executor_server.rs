@@ -345,7 +345,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             }
         }
     }
-
     /// This method should not return Err. If task fails, a failure task status should be sent
     /// to the channel to notify the scheduler.
     async fn run_task(&self, task_identity: String, curator_task: CuratorTaskDefinition) {
@@ -369,83 +368,111 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             partition_id,
         };
 
-        let query_stage_exec = self
-            .executor
-            .execution_engine
-            .create_query_stage_exec(
-                job_id.clone(),
-                stage_id,
-                plan,
-                &self.executor.work_dir,
-            )
-            .unwrap();
-
-        let task_context = {
-            let function_registry = task.function_registry;
-            let runtime = self.executor.produce_runtime(&task.session_config).unwrap();
-
-            Arc::new(TaskContext::new(
-                Some(task_identity.clone()),
-                task.session_id,
-                task.session_config,
-                function_registry.scalar_functions.clone(),
-                function_registry.aggregate_functions.clone(),
-                function_registry.window_functions.clone(),
-                runtime,
-            ))
-        };
-
-        info!("Start to execute shuffle write for task {task_identity}");
-
-        let execution_result = self
-            .executor
-            .execute_query_stage(
-                task_id,
-                part.clone(),
-                query_stage_exec.clone(),
-                task_context,
-            )
-            .await;
-        info!("Done with task {task_identity}");
-        debug!("Statistics: {execution_result:?}");
-
-        let plan_metrics = query_stage_exec.collect_plan_metrics();
-        let operator_metrics = plan_metrics
-            .into_iter()
-            .map(|m| m.try_into())
-            .collect::<Result<Vec<_>, BallistaError>>()
-            .ok();
-        let executor_id = &self.executor.metadata.id;
-
-        let end_exec_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-        let task_execution_times = TaskExecutionTimes {
-            launch_time: task.launch_time,
-            start_exec_time,
-            end_exec_time,
-        };
-
-        let task_status = as_task_status(
-            execution_result,
-            executor_id.clone(),
-            task_id,
-            stage_attempt_num,
-            part,
-            operator_metrics,
-            task_execution_times,
+        let exec = self.executor.execution_engine.create_query_stage_exec(
+            job_id.clone(),
+            stage_id,
+            plan,
+            &self.executor.work_dir,
         );
 
-        let scheduler_id = curator_task.scheduler_id;
-        let task_status_sender = self.executor_env.tx_task_status.clone();
-        task_status_sender
-            .send(CuratorTaskStatus {
-                scheduler_id,
-                task_status,
-            })
-            .await
-            .unwrap();
+        let runtime = self.executor.produce_runtime(&task.session_config);
+
+        match (exec, runtime) {
+            (Ok(exec), Ok(runtime)) => {
+                let task_context = {
+                    let function_registry = task.function_registry;
+
+                    Arc::new(TaskContext::new(
+                        Some(task_identity.clone()),
+                        task.session_id,
+                        task.session_config,
+                        function_registry.scalar_functions.clone(),
+                        function_registry.aggregate_functions.clone(),
+                        function_registry.window_functions.clone(),
+                        runtime,
+                    ))
+                };
+
+                info!("Execute task: {task_identity}");
+
+                let execution_result = self
+                    .executor
+                    .execute_query_stage(
+                        task_id,
+                        part.clone(),
+                        exec.clone(),
+                        task_context,
+                    )
+                    .await;
+                info!("Done with task {task_identity}");
+                debug!("Task {task_identity} statistics: {execution_result:?}");
+
+                let plan_metrics = exec.collect_plan_metrics();
+                let operator_metrics = plan_metrics
+                    .into_iter()
+                    .map(|m| m.try_into())
+                    .collect::<Result<Vec<_>, BallistaError>>()
+                    .ok();
+                let executor_id = &self.executor.metadata.id;
+
+                let end_exec_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+                let task_execution_times = TaskExecutionTimes {
+                    launch_time: task.launch_time,
+                    start_exec_time,
+                    end_exec_time,
+                };
+
+                let task_status = as_task_status(
+                    execution_result,
+                    executor_id.clone(),
+                    task_id,
+                    stage_attempt_num,
+                    part,
+                    operator_metrics,
+                    task_execution_times,
+                );
+
+                let _ = self
+                    .executor_env
+                    .tx_task_status
+                    .send(CuratorTaskStatus {
+                        scheduler_id: curator_task.scheduler_id,
+                        task_status,
+                    })
+                    .await;
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                let e = BallistaError::from(e);
+                let end_exec_time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+                let task_status = as_task_status(
+                    Err(e),
+                    self.executor.metadata.id.clone(),
+                    task_id,
+                    stage_attempt_num,
+                    part,
+                    None,
+                    TaskExecutionTimes {
+                        launch_time: task.launch_time,
+                        start_exec_time,
+                        end_exec_time,
+                    },
+                );
+                let _ = self
+                    .executor_env
+                    .tx_task_status
+                    .send(CuratorTaskStatus {
+                        scheduler_id: curator_task.scheduler_id,
+                        task_status,
+                    })
+                    .await;
+            }
+        };
     }
 
     // TODO populate with real metrics
