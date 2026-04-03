@@ -88,7 +88,7 @@ pub fn create_shuffle_path<P: AsRef<Path>>(
             path.push("data.arrow");
         }
         (None, true) => {
-            exec_err!("cant create path for sort shuffle without file_id provided")?
+            exec_err!("can't create path for sort shuffle without file_id provided")?
         }
     }
 
