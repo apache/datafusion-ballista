@@ -27,12 +27,14 @@
 //!   cargo run --release --bin shuffle_bench -- --help
 //!   cargo run --release --bin shuffle_bench -- --rows 1000000 --partitions 16
 
+use ballista_core::utils;
 use datafusion::arrow::array::{Int64Array, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
+use datafusion::execution::context::TaskContext;
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::Partitioning;
@@ -88,6 +90,14 @@ struct ShuffleBenchOpt {
     /// Only run sort shuffle
     #[structopt(long = "sort-only")]
     sort_only: bool,
+
+    /// Number of input partitions to execute concurrently
+    #[structopt(short = "c", long = "concurrency", default_value = "1")]
+    concurrency: usize,
+
+    /// Bounded channel capacity for hash shuffle I/O offload
+    #[structopt(long = "channel-capacity", default_value = "8")]
+    channel_capacity: usize,
 }
 
 fn create_test_schema() -> SchemaRef {
@@ -156,42 +166,53 @@ async fn benchmark_hash_shuffle(
     schema: SchemaRef,
     output_partitions: usize,
     work_dir: &str,
+    concurrency: usize,
+    channel_capacity: usize,
 ) -> Result<(Duration, usize), Box<dyn std::error::Error>> {
     use ballista_core::execution_plans::ShuffleWriterExec;
-    use ballista_core::utils;
 
     let session_ctx = SessionContext::new();
     let task_ctx = session_ctx.task_ctx();
 
-    // Create input plan from data
     let memory_source =
         Arc::new(MemorySourceConfig::try_new(data, schema.clone(), None)?);
     let input = Arc::new(DataSourceExec::new(memory_source));
 
-    // Create shuffle writer
-    let shuffle_writer = ShuffleWriterExec::try_new(
-        "bench_job".to_owned(),
-        1,
-        input,
-        work_dir.to_owned(),
-        Some(Partitioning::Hash(
-            vec![Arc::new(Column::new("partition_key", 1))],
-            output_partitions,
-        )),
-    )?;
+    let shuffle_writer = Arc::new(
+        ShuffleWriterExec::try_new(
+            "bench_job".to_owned(),
+            1,
+            input,
+            work_dir.to_owned(),
+            Some(Partitioning::Hash(
+                vec![Arc::new(Column::new("partition_key", 1))],
+                output_partitions,
+            )),
+        )?
+        .with_channel_capacity(channel_capacity),
+    );
 
     let start = Instant::now();
 
-    // Execute all input partitions (not output partitions)
     let input_partition_count = data.len();
     let mut total_files = 0;
-    for partition in 0..input_partition_count {
-        let mut stream = shuffle_writer.execute(partition, task_ctx.clone())?;
-        let batches = utils::collect_stream(&mut stream).await?;
-        // Count output files from the result
-        if let Some(batch) = batches.first() {
-            total_files += batch.num_rows();
+
+    if concurrency <= 1 {
+        for partition in 0..input_partition_count {
+            let mut stream = shuffle_writer.execute(partition, task_ctx.clone())?;
+            let batches = utils::collect_stream(&mut stream).await?;
+            if let Some(batch) = batches.first() {
+                total_files += batch.num_rows();
+            }
         }
+    } else {
+        total_files += run_concurrent(
+            shuffle_writer.clone(),
+            task_ctx.clone(),
+            input_partition_count,
+            concurrency,
+        )
+        .await?;
     }
 
     let elapsed = start.elapsed();
@@ -205,21 +226,19 @@ async fn benchmark_sort_shuffle(
     work_dir: &str,
     buffer_size: usize,
     memory_limit: usize,
+    concurrency: usize,
 ) -> Result<(Duration, usize), Box<dyn std::error::Error>> {
     use ballista_core::execution_plans::sort_shuffle::{
         SortShuffleConfig, SortShuffleWriterExec,
     };
-    use ballista_core::utils;
 
     let session_ctx = SessionContext::new();
     let task_ctx = session_ctx.task_ctx();
 
-    // Create input plan from data
     let memory_source =
         Arc::new(MemorySourceConfig::try_new(data, schema.clone(), None)?);
     let input = Arc::new(DataSourceExec::new(memory_source));
 
-    // Create sort shuffle config
     let config = SortShuffleConfig::new(
         true,
         buffer_size,
@@ -229,8 +248,7 @@ async fn benchmark_sort_shuffle(
         8192,
     );
 
-    // Create sort shuffle writer
-    let shuffle_writer = SortShuffleWriterExec::try_new(
+    let shuffle_writer = Arc::new(SortShuffleWriterExec::try_new(
         "bench_job".to_owned(),
         1,
         input,
@@ -240,24 +258,75 @@ async fn benchmark_sort_shuffle(
             output_partitions,
         ),
         config,
-    )?;
+    )?);
 
     let start = Instant::now();
 
-    // Execute all input partitions (not output partitions)
     let input_partition_count = data.len();
     let mut total_files = 0;
-    for partition in 0..input_partition_count {
-        let mut stream = shuffle_writer.execute(partition, task_ctx.clone())?;
-        let batches = utils::collect_stream(&mut stream).await?;
-        // Count output files from the result
-        if let Some(batch) = batches.first() {
-            total_files += batch.num_rows();
+
+    if concurrency <= 1 {
+        for partition in 0..input_partition_count {
+            let mut stream = shuffle_writer.execute(partition, task_ctx.clone())?;
+            let batches = utils::collect_stream(&mut stream).await?;
+            if let Some(batch) = batches.first() {
+                total_files += batch.num_rows();
+            }
         }
+    } else {
+        total_files += run_concurrent(
+            shuffle_writer.clone(),
+            task_ctx.clone(),
+            input_partition_count,
+            concurrency,
+        )
+        .await?;
     }
 
     let elapsed = start.elapsed();
     Ok((elapsed, total_files))
+}
+
+async fn run_concurrent(
+    plan: Arc<dyn ExecutionPlan>,
+    task_ctx: Arc<TaskContext>,
+    input_partition_count: usize,
+    concurrency: usize,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    let mut handles = Vec::new();
+    for partition in 0..input_partition_count {
+        let permit = semaphore.clone().acquire_owned().await?;
+        let writer = plan.clone();
+        let ctx = task_ctx.clone();
+        handles.push(tokio::spawn(async move {
+            let mut stream = writer.execute(partition, ctx)?;
+            let batches = utils::collect_stream(&mut stream)
+                .await
+                .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+            let files = batches.first().map_or(0, |b| b.num_rows());
+            drop(permit);
+            Ok::<_, datafusion::error::DataFusionError>(files)
+        }));
+    }
+    let mut total_files = 0;
+    let mut first_err: Option<Box<dyn std::error::Error>> = None;
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(files)) => total_files += files,
+            Ok(Err(e)) if first_err.is_none() => {
+                first_err = Some(Box::new(e));
+            }
+            Err(e) if first_err.is_none() => {
+                first_err = Some(e.into());
+            }
+            _ => {}
+        }
+    }
+    if let Some(e) = first_err {
+        return Err(e);
+    }
+    Ok(total_files)
 }
 
 fn count_files_in_dir(dir: &str) -> usize {
@@ -303,6 +372,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Iterations: {}", opt.iterations);
     println!("  Sort shuffle memory limit: {} MB", opt.memory_limit_mb);
     println!("  Sort shuffle buffer size: {} MB", opt.buffer_size_mb);
+    println!("  Concurrency: {}", opt.concurrency);
+    println!("  Channel capacity: {}", opt.channel_capacity);
     println!();
 
     let schema = create_test_schema();
@@ -337,9 +408,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let temp_dir = TempDir::new()?;
             let work_dir = temp_dir.path().to_str().unwrap();
 
-            let (elapsed, _files) =
-                benchmark_hash_shuffle(&data, schema.clone(), opt.partitions, work_dir)
-                    .await?;
+            let (elapsed, _files) = benchmark_hash_shuffle(
+                &data,
+                schema.clone(),
+                opt.partitions,
+                work_dir,
+                opt.concurrency,
+                opt.channel_capacity,
+            )
+            .await?;
 
             hash_file_count = count_files_in_dir(work_dir);
             hash_total_size = dir_size(work_dir);
@@ -391,6 +468,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 work_dir,
                 buffer_size,
                 memory_limit,
+                opt.concurrency,
             )
             .await?;
 

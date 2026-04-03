@@ -99,7 +99,8 @@ impl ExecutionEngine for DefaultExecutionEngine {
                 plan.children()[0].clone(),
                 work_dir.to_string(),
                 shuffle_writer.shuffle_output_partitioning().cloned(),
-            )?;
+            )?
+            .with_channel_capacity(shuffle_writer.channel_capacity());
             Ok(Arc::new(DefaultQueryStageExec::new(
                 ShuffleWriterVariant::Hash(exec),
             )))
