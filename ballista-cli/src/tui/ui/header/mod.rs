@@ -37,8 +37,8 @@ pub(super) fn render_header(f: &mut Frame, area: Rect, app: &App) {
     tracing::debug!("render_header: {area:?}");
     let banner_percentage = match area.width {
         0..200 => 30,
-        220..230 => 35,
-        _ => 40,
+        220..230 => 40,
+        _ => 45,
     };
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -64,7 +64,7 @@ fn render_banner(f: &mut Frame, area: Rect) {
     let big_text = BigText::builder()
         .pixel_size(banner_size)
         .style(Style::new().yellow())
-        .lines(vec!["Apache".into(), "DataFusion".into()])
+        .lines(vec![" Apache".into(), " DataFusion".into()])
         .build();
     f.render_widget(big_text, area);
 }
