@@ -345,7 +345,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             }
         }
     }
-
+    /// This method should not return Err. If task fails, a failure task status should be sent
+    /// to the channel to notify the scheduler.
     async fn run_task(&self, task_identity: String, curator_task: CuratorTaskDefinition) {
         let start_exec_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
