@@ -19,6 +19,7 @@ use crate::tui::app::{App, PlanTab};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::prelude::{Color, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 pub(crate) fn render_job_plan_popup(f: &mut Frame, app: &App) {
@@ -41,24 +42,28 @@ pub(crate) fn render_job_plan_popup(f: &mut Frame, app: &App) {
 
 fn render_navigation(f: &mut Frame, area: Rect, tab: &PlanTab) {
     let stage_label = if *tab == PlanTab::Stage {
-        "[s] Stage*"
+        Span::styled(" [s] Stage", Style::default().bold())
     } else {
-        "[s] Stage"
+        Span::from(" [s] Stage")
     };
     let physical_label = if *tab == PlanTab::Physical {
-        "[p] Physical*"
+        Span::styled("[p] Physical", Style::default().bold())
     } else {
-        "[p] Physical"
+        Span::from("[p] Physical")
     };
     let logical_label = if *tab == PlanTab::Logical {
-        "[l] Logical*"
+        Span::styled("[l] Logical", Style::default().bold())
     } else {
-        "[l] Logical"
+        Span::from("[l] Logical")
     };
-    let navigation = format!(
-        " {} | {} | {} | ↑↓ scroll | Esc close ",
-        stage_label, physical_label, logical_label,
-    );
+    let navigation = Line::from(vec![
+        stage_label,
+        Span::from(" | "),
+        physical_label,
+        Span::from(" | "),
+        logical_label,
+        Span::from(" | ↑↓ scroll | Esc close "),
+    ]);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
