@@ -277,7 +277,7 @@ impl FlightService for BallistaFlightService {
                         )
                         .map_err(|e| {
                             Status::internal(format!(
-                                "I/O error, cant create shuffle path: {e}"
+                                "I/O error, can't create shuffle path: {e}"
                             ))
                         })?;
 
