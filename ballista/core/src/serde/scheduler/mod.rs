@@ -54,7 +54,7 @@ pub enum Action {
         port: u16,
         /// shuffle file block id
         file_id: Option<u64>,
-        /// is shuffle partition sort partition
+        /// whether this partition uses sort shuffle
         is_sort_shuffle: bool,
     },
 }
