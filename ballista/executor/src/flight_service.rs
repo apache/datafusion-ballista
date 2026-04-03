@@ -144,7 +144,7 @@ impl FlightService for BallistaFlightService {
                 }
 
                 // Standard hash-based shuffle - read the entire file
-                let file = File::open(path.clone())
+                let file = File::open(&path)
                     .map_err(|e| {
                         BallistaError::General(format!(
                             "Failed to open partition file at {path:?}: {e:?}"
