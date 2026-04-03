@@ -53,7 +53,8 @@ use std::{convert::TryInto, io::Cursor};
 
 use crate::execution_plans::sort_shuffle::SortShuffleConfig;
 use crate::execution_plans::{
-    ShuffleReaderExec, ShuffleWriterExec, SortShuffleWriterExec, UnresolvedShuffleExec,
+    DEFAULT_SHUFFLE_CHANNEL_CAPACITY, ShuffleReaderExec, ShuffleWriterExec,
+    SortShuffleWriterExec, UnresolvedShuffleExec,
 };
 use crate::serde::protobuf::{
     ballista_logical_plan_node::LogicalPlanType,
@@ -351,13 +352,23 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     &converter,
                 )?;
 
-                Ok(Arc::new(ShuffleWriterExec::try_new(
-                    shuffle_writer.job_id.clone(),
-                    shuffle_writer.stage_id as usize,
-                    input,
-                    "".to_string(), // this is intentional but hacky - the executor will fill this in
-                    shuffle_output_partitioning,
-                )?))
+                let channel_capacity = shuffle_writer.channel_capacity as usize;
+                let channel_capacity = if channel_capacity == 0 {
+                    DEFAULT_SHUFFLE_CHANNEL_CAPACITY
+                } else {
+                    channel_capacity
+                };
+
+                Ok(Arc::new(
+                    ShuffleWriterExec::try_new(
+                        shuffle_writer.job_id.clone(),
+                        shuffle_writer.stage_id as usize,
+                        input,
+                        "".to_string(), // this is intentional but hacky - the executor will fill this in
+                        shuffle_output_partitioning,
+                    )?
+                    .with_channel_capacity(channel_capacity),
+                ))
             }
             PhysicalPlanType::SortShuffleWriter(sort_shuffle_writer) => {
                 let input = inputs[0].clone();
@@ -490,6 +501,7 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         stage_id: exec.stage_id() as u32,
                         input: None,
                         output_partitioning,
+                        channel_capacity: exec.channel_capacity() as u32,
                     },
                 )),
             };

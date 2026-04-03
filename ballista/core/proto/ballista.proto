@@ -60,6 +60,7 @@ message ShuffleWriterExecNode {
   uint32 stage_id = 2;
   datafusion.PhysicalPlanNode input = 3;
   datafusion.PhysicalHashRepartition output_partitioning = 4;
+  uint32 channel_capacity = 5;
 }
 
 // Sort-based shuffle writer that produces consolidated files with index

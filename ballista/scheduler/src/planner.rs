@@ -374,13 +374,16 @@ fn create_shuffle_writer_with_config(
     }
 
     // Fall back to standard shuffle writer
-    Ok(Arc::new(ShuffleWriterExec::try_new(
-        job_id.to_owned(),
-        stage_id,
-        plan,
-        "".to_owned(),
-        partitioning,
-    )?))
+    Ok(Arc::new(
+        ShuffleWriterExec::try_new(
+            job_id.to_owned(),
+            stage_id,
+            plan,
+            "".to_owned(),
+            partitioning,
+        )?
+        .with_channel_capacity(ballista_config.shuffle_writer_channel_capacity()),
+    ))
 }
 
 #[cfg(test)]
