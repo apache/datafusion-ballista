@@ -437,7 +437,7 @@ fn send_fetch_partitions(
     spawned_tasks.push(SpawnedTask::spawn_blocking({
         move || {
             for p in local_locations {
-                let r = fetch_partition_local(work_dir.clone(), &p, sort_shuffle_enabled);
+                let r = fetch_partition_local(&work_dir, &p, sort_shuffle_enabled);
                 if let Err(e) = response_sender_c.blocking_send(r) {
                     error!("Fail to send response event to the channel due to {e}");
                 }
@@ -536,11 +536,11 @@ async fn fetch_partition_remote(
 }
 
 fn fetch_partition_local(
-    work_dir: String,
+    work_dir: &str,
     location: &PartitionLocation,
     sort_shuffle_enabled: bool,
 ) -> result::Result<SendableRecordBatchStream, BallistaError> {
-    let path = &location.path(&work_dir)?;
+    let path = &location.path(work_dir)?;
     let metadata = &location.executor_meta;
     let partition_id = &location.partition_id;
     let data_path = std::path::Path::new(path);
