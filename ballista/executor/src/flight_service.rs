@@ -112,7 +112,7 @@ impl FlightService for BallistaFlightService {
                     *is_sort_shuffle,
                 )
                 .map_err(|e| {
-                    Status::internal(format!("I/O error, cant create shuffle path: {e}"))
+                    Status::internal(format!("I/O error, can't create shuffle path: {e}"))
                 })?;
                 debug!("FetchPartition reading partition {partition_id} from {path:?}");
 
