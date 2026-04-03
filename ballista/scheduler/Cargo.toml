@@ -42,6 +42,7 @@ graphviz-support = ["dep:graphviz-rust"]
 keda-scaler = ["dep:tonic-prost-build", "dep:tonic-prost"]
 prometheus-metrics = ["prometheus", "once_cell"]
 rest-api = []
+riffle = ["dep:ballista-riffle", "ballista-core/riffle"]
 spark-compat = ["ballista-core/spark-compat"]
 substrait = ["dep:datafusion-substrait"]
 
@@ -50,6 +51,7 @@ arrow-flight = { workspace = true }
 async-trait = { workspace = true }
 axum = "0.8.4"
 ballista-core = { path = "../core", version = "53.0.0" }
+ballista-riffle = { path = "../riffle", optional = true }
 clap = { workspace = true, optional = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }

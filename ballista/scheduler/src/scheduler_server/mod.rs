@@ -509,6 +509,10 @@ mod test {
                         num_batches: 1,
                         num_rows: 1,
                         num_bytes: 1,
+                        riffle_app_id: String::new(),
+                        riffle_shuffle_id: 0,
+                        riffle_server_host: String::new(),
+                        riffle_server_port: 0,
                     })
                 }
 

@@ -397,15 +397,22 @@ fn send_fetch_partitions(
     let semaphore = Arc::new(Semaphore::new(max_request_num));
     let mut spawned_tasks: Vec<SpawnedTask<()>> = vec![];
 
+    // Separate riffle locations from local/remote locations
+    let (riffle_locations, non_riffle_locations): (Vec<_>, Vec<_>) =
+        partition_locations
+            .into_iter()
+            .partition(|l| l.riffle_app_id.is_some());
+
     let (local_locations, remote_locations): (Vec<_>, Vec<_>) = local_remote_read_split(
-        partition_locations,
+        non_riffle_locations,
         config.ballista_shuffle_reader_force_remote_read(),
     );
 
     debug!(
-        "local shuffle file counts:{}, remote shuffle file count:{}.",
+        "local shuffle file counts:{}, remote shuffle file count:{}, riffle shuffle count:{}.",
         local_locations.len(),
-        remote_locations.len()
+        remote_locations.len(),
+        riffle_locations.len()
     );
 
     // keep local shuffle files reading in serial order for memory control.
@@ -460,11 +467,261 @@ fn send_fetch_partitions(
         }));
     }
 
+    //
+    // fetching riffle partitions (uses Riffle gRPC client with shared connection pool)
+    //
+    #[cfg(feature = "riffle")]
+    if !riffle_locations.is_empty() {
+        // Create a single shared client — all partition fetches reuse connections
+        let first = &riffle_locations[0];
+        let riffle_app_id = first.riffle_app_id.clone().unwrap_or_default();
+        let server_host = first
+            .riffle_server_host
+            .clone()
+            .unwrap_or_else(|| "localhost".to_string());
+        let server_port = first.riffle_server_port.unwrap_or(21100);
+
+        let shared_config = ballista_riffle::config::RiffleConfig {
+            coordinator_host: server_host,
+            coordinator_port: server_port as u16,
+            app_id: riffle_app_id,
+            ..Default::default()
+        };
+
+        // Spawn client creation + all fetches
+        let response_sender_riffle = response_sender.clone();
+        let semaphore_riffle = semaphore.clone();
+        spawned_tasks.push(SpawnedTask::spawn(async move {
+            let client = match ballista_riffle::client::RiffleClient::connect(shared_config).await {
+                Ok(c) => Arc::new(c),
+                Err(e) => {
+                    error!("Failed to connect to Riffle: {e}");
+                    return;
+                }
+            };
+
+            for p in riffle_locations {
+                let permit = semaphore_riffle.acquire().await.unwrap();
+                let r = fetch_partition_riffle_with_client(&client, &p).await;
+                if let Err(e) = response_sender_riffle.send(r).await {
+                    error!("Fail to send response event to the channel due to {e}");
+                }
+                drop(permit);
+            }
+        }));
+    }
+
+    #[cfg(not(feature = "riffle"))]
+    if !riffle_locations.is_empty() {
+        error!(
+            "Received {} riffle partition locations but riffle feature is not enabled",
+            riffle_locations.len()
+        );
+    }
+
     AbortableReceiverStream::create(response_receiver, spawned_tasks)
 }
 
 fn check_is_local_location(location: &PartitionLocation) -> bool {
+    // Riffle locations are never local
+    if location.riffle_app_id.is_some() {
+        return false;
+    }
     std::path::Path::new(location.path.as_str()).exists()
+}
+
+/// Fetches a partition from a Riffle remote shuffle service.
+///
+/// Uses server host/port from the partition location metadata (set by the
+/// writer at shuffle time), avoiding an extra coordinator RPC.
+#[cfg(feature = "riffle")]
+async fn fetch_partition_riffle(
+    location: &PartitionLocation,
+) -> result::Result<SendableRecordBatchStream, BallistaError> {
+    use ballista_riffle::config::RiffleConfig;
+    use ballista_riffle::serde::shuffle_read_to_record_batches;
+
+    let riffle_app_id = location.riffle_app_id.as_deref().ok_or_else(|| {
+        BallistaError::General("Missing riffle_app_id in partition location".to_string())
+    })?;
+    let riffle_shuffle_id = location.riffle_shuffle_id.ok_or_else(|| {
+        BallistaError::General(
+            "Missing riffle_shuffle_id in partition location".to_string(),
+        )
+    })?;
+    let server_host = location.riffle_server_host.as_deref().ok_or_else(|| {
+        BallistaError::General(
+            "Missing riffle_server_host in partition location".to_string(),
+        )
+    })?;
+    let server_port = location.riffle_server_port.ok_or_else(|| {
+        BallistaError::General(
+            "Missing riffle_server_port in partition location".to_string(),
+        )
+    })?;
+
+    let partition_id = &location.partition_id;
+
+    // Connect directly to the shuffle server (no coordinator needed)
+    let config = RiffleConfig {
+        coordinator_host: server_host.to_string(),
+        coordinator_port: server_port as u16,
+        app_id: riffle_app_id.to_string(),
+        ..Default::default()
+    };
+
+    let client = ballista_riffle::client::RiffleClient::connect(config)
+        .await
+        .map_err(|e| {
+            BallistaError::FetchFailed(
+                server_host.to_string(),
+                partition_id.stage_id,
+                partition_id.partition_id,
+                format!("Riffle connect error: {e}"),
+            )
+        })?;
+
+    debug!(
+        "Fetching partition {} from Riffle server {}:{}",
+        partition_id.partition_id, server_host, server_port
+    );
+
+    // Fetch the data directly from the server that holds this partition
+    let read_result = client
+        .get_shuffle_data(
+            riffle_shuffle_id,
+            partition_id.partition_id as i32,
+            server_host,
+            server_port,
+        )
+        .await
+        .map_err(|e| {
+            BallistaError::FetchFailed(
+                server_host.to_string(),
+                partition_id.stage_id,
+                partition_id.partition_id,
+                format!("Riffle fetch error: {e}"),
+            )
+        })?;
+
+    if read_result.data.is_empty() {
+        let schema = datafusion::arrow::datatypes::Schema::empty();
+        let stream = datafusion::physical_plan::memory::MemoryStream::try_new(
+            vec![],
+            std::sync::Arc::new(schema),
+            None,
+        )
+        .map_err(|e| {
+            BallistaError::General(format!("Failed to create empty stream: {e}"))
+        })?;
+        return Ok(Box::pin(stream));
+    }
+
+    // Deserialize multi-block IPC data: each block is from a different mapper
+    let batches =
+        shuffle_read_to_record_batches(&read_result.data, &read_result.segments)
+            .map_err(|e| {
+                BallistaError::FetchFailed(
+                    server_host.to_string(),
+                    partition_id.stage_id,
+                    partition_id.partition_id,
+                    format!("IPC deserialization error: {e}"),
+                )
+            })?;
+
+    let schema = if let Some(batch) = batches.first() {
+        batch.schema()
+    } else {
+        std::sync::Arc::new(datafusion::arrow::datatypes::Schema::empty())
+    };
+
+    let stream =
+        datafusion::physical_plan::memory::MemoryStream::try_new(batches, schema, None)
+            .map_err(|e| {
+            BallistaError::General(format!("Failed to create memory stream: {e}"))
+        })?;
+
+    Ok(Box::pin(stream))
+}
+
+/// Fetches a partition using a shared RiffleClient (avoids creating new connections per partition).
+#[cfg(feature = "riffle")]
+async fn fetch_partition_riffle_with_client(
+    client: &ballista_riffle::client::RiffleClient,
+    location: &PartitionLocation,
+) -> result::Result<SendableRecordBatchStream, BallistaError> {
+    use ballista_riffle::serde::shuffle_read_to_record_batches;
+
+    let riffle_shuffle_id = location.riffle_shuffle_id.ok_or_else(|| {
+        BallistaError::General("Missing riffle_shuffle_id".to_string())
+    })?;
+    let server_host = location.riffle_server_host.as_deref().ok_or_else(|| {
+        BallistaError::General("Missing riffle_server_host".to_string())
+    })?;
+    let server_port = location.riffle_server_port.ok_or_else(|| {
+        BallistaError::General("Missing riffle_server_port".to_string())
+    })?;
+    let partition_id = &location.partition_id;
+
+    debug!(
+        "Fetching partition {} from Riffle server {}:{} (shared client)",
+        partition_id.partition_id, server_host, server_port
+    );
+
+    let read_result = client
+        .get_shuffle_data(
+            riffle_shuffle_id,
+            partition_id.partition_id as i32,
+            server_host,
+            server_port,
+        )
+        .await
+        .map_err(|e| {
+            BallistaError::FetchFailed(
+                server_host.to_string(),
+                partition_id.stage_id,
+                partition_id.partition_id,
+                format!("Riffle fetch error: {e}"),
+            )
+        })?;
+
+    if read_result.data.is_empty() {
+        let schema = datafusion::arrow::datatypes::Schema::empty();
+        let stream = datafusion::physical_plan::memory::MemoryStream::try_new(
+            vec![],
+            Arc::new(schema),
+            None,
+        )
+        .map_err(|e| {
+            BallistaError::General(format!("Failed to create empty stream: {e}"))
+        })?;
+        return Ok(Box::pin(stream));
+    }
+
+    let batches =
+        shuffle_read_to_record_batches(&read_result.data, &read_result.segments)
+            .map_err(|e| {
+                BallistaError::FetchFailed(
+                    server_host.to_string(),
+                    partition_id.stage_id,
+                    partition_id.partition_id,
+                    format!("IPC deserialization error: {e}"),
+                )
+            })?;
+
+    let schema = if let Some(batch) = batches.first() {
+        batch.schema()
+    } else {
+        Arc::new(datafusion::arrow::datatypes::Schema::empty())
+    };
+
+    let stream =
+        datafusion::physical_plan::memory::MemoryStream::try_new(batches, schema, None)
+            .map_err(|e| {
+                BallistaError::General(format!("Failed to create memory stream: {e}"))
+            })?;
+
+    Ok(Box::pin(stream))
 }
 
 async fn new_ballista_client(
@@ -789,6 +1046,10 @@ mod tests {
                     num_bytes: Some(10),
                 },
                 path: "test_path".to_string(),
+                riffle_app_id: None,
+                riffle_shuffle_id: None,
+                riffle_server_host: None,
+                riffle_server_port: None,
             })
         }
 
@@ -838,6 +1099,10 @@ mod tests {
                     num_bytes: Some(10),
                 },
                 path: "test_path".to_string(),
+                riffle_app_id: None,
+                riffle_shuffle_id: None,
+                riffle_server_host: None,
+                riffle_server_port: None,
             })
         }
 
@@ -888,6 +1153,10 @@ mod tests {
                     num_bytes: Some(10),
                 },
                 path: "test_path".to_string(),
+                riffle_app_id: None,
+                riffle_shuffle_id: None,
+                riffle_server_host: None,
+                riffle_server_port: None,
             })
         }
 
@@ -934,6 +1203,10 @@ mod tests {
                 },
                 partition_stats: Default::default(),
                 path: "test_path".to_string(),
+                riffle_app_id: None,
+                riffle_shuffle_id: None,
+                riffle_server_host: None,
+                riffle_server_port: None,
             })
         }
 
@@ -1091,6 +1364,10 @@ mod tests {
                 },
                 partition_stats: Default::default(),
                 path: path.clone(),
+                riffle_app_id: None,
+                riffle_shuffle_id: None,
+                riffle_server_host: None,
+                riffle_server_port: None,
             })
             .collect()
     }
