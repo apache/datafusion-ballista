@@ -1053,7 +1053,7 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let work_dir = tmp_dir.path();
 
-        // job name and stage id are hard-codded
+        // job name and stage id are hard-coded
         let file_path = create_shuffle_path(work_dir, "job", 1, 0, None, false).unwrap();
 
         std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
