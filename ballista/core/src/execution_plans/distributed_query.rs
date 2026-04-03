@@ -15,27 +15,25 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::client::BallistaClient;
 use crate::config::BallistaConfig;
-use crate::extension::{BallistaConfigGrpcEndpoint, SessionConfigExt};
+use crate::execution_plans::job_callback_handler::{
+    FetchResultsHandler, JobCompletionAction, JobCompletionHandler,
+};
+use crate::extension::SessionConfigExt;
+use crate::serde::protobuf::SuccessfulJob;
 use crate::serde::protobuf::get_job_status_result::FlightProxy;
 use crate::serde::protobuf::{
     ExecuteQueryParams, GetJobStatusParams, GetJobStatusResult, KeyValuePair,
     PartitionLocation, execute_query_params::Query, execute_query_result, job_status,
     scheduler_grpc_client::SchedulerGrpcClient,
 };
-use crate::serde::protobuf::{ExecutorMetadata, SuccessfulJob};
 use crate::utils::{GrpcClientConfig, create_grpc_client_endpoint};
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::error::ArrowError;
-use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::context::TaskContext;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_expr::EquivalenceProperties;
-use datafusion::physical_plan::metrics::{
-    ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
-};
+use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
@@ -45,19 +43,35 @@ use datafusion::prelude::SessionConfig;
 use datafusion_proto::logical_plan::{
     AsLogicalPlan, DefaultLogicalExtensionCodec, LogicalExtensionCodec,
 };
-use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt};
 use log::{debug, error, info};
 use std::any::Any;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::time::Duration;
-use url::Url;
+use std::time::{Duration, Instant};
+
+/// All metadata available after a distributed job finishes successfully.
+pub struct CompletedJob {
+    /// Scheduler-assigned job identifier.
+    pub job_id: String,
+    /// Locations of all output partitions produced by the job.
+    pub partition_location: Vec<PartitionLocation>,
+    /// Optional Flight proxy routing override returned by the scheduler.
+    pub flight_proxy: Option<FlightProxy>,
+    /// Epoch-ms timestamp at which the job entered the scheduler queue.
+    pub queued_at: u64,
+    /// Epoch-ms timestamp at which the job began executing on executors.
+    pub started_at: u64,
+    /// Epoch-ms timestamp at which the job finished executing.
+    pub ended_at: u64,
+    /// Wall-clock instant at which the job was submitted to the scheduler.
+    pub query_start_time: Instant,
+}
 
 /// This operator sends a logical plan to a Ballista scheduler for execution and
-/// polls the scheduler until the query is complete and then fetches the resulting
-/// batches directly from the executors that hold the results from the final
-/// query stage.
+/// polls the scheduler until the query is complete, then dispatches to a
+/// [`JobCompletionHandler`] that produces the final result stream.
 #[derive(Debug, Clone)]
 pub struct DistributedQueryExec<T: 'static + AsLogicalPlan> {
     /// Ballista scheduler URL
@@ -82,6 +96,8 @@ pub struct DistributedQueryExec<T: 'static + AsLogicalPlan> {
     /// - job_execution_time_ms: Time spent executing on the cluster (ended_at - started_at)
     /// - job_scheduling_in_ms: Time job waited in scheduler queue (started_at - queued_at)
     metrics: ExecutionPlanMetricsSet,
+    /// Which handler to invoke after the remote job completes.
+    action: JobCompletionAction,
 }
 
 impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
@@ -104,6 +120,7 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
             session_id,
             properties,
             metrics: ExecutionPlanMetricsSet::new(),
+            action: JobCompletionAction::FetchResults,
         }
     }
 
@@ -127,6 +144,32 @@ impl<T: 'static + AsLogicalPlan> DistributedQueryExec<T> {
             session_id,
             properties,
             metrics: ExecutionPlanMetricsSet::new(),
+            action: JobCompletionAction::FetchResults,
+        }
+    }
+
+    /// Creates a new distributed query execution plan with a custom completion
+    /// action
+    pub fn with_action(
+        scheduler_url: String,
+        config: BallistaConfig,
+        plan: LogicalPlan,
+        extension_codec: Arc<dyn LogicalExtensionCodec>,
+        session_id: String,
+        action: JobCompletionAction,
+    ) -> Self {
+        let properties =
+            Self::compute_properties(plan.schema().as_arrow().clone().into());
+        Self {
+            scheduler_url,
+            config,
+            plan,
+            extension_codec,
+            plan_repr: PhantomData,
+            session_id,
+            properties,
+            metrics: ExecutionPlanMetricsSet::new(),
+            action,
         }
     }
 
@@ -197,6 +240,7 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
                 self.plan.schema().as_arrow().clone().into(),
             )),
             metrics: ExecutionPlanMetricsSet::new(),
+            action: self.action.clone(),
         }))
     }
 
@@ -243,68 +287,60 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
             operation_id,
         };
 
-        let metric_row_count = MetricBuilder::new(&self.metrics).output_rows(partition);
-        let metric_total_bytes =
-            MetricBuilder::new(&self.metrics).counter("transferred_bytes", partition);
-
         let session_config = context.session_config().clone();
+        let max_message_size = self.config.grpc_client_max_message_size();
+        let grpc_config = GrpcClientConfig::from(&self.config);
+        let scheduler_url = self.scheduler_url.clone();
+        let session_id = self.session_id.clone();
+        let action = self.action.clone();
+        let metrics = Arc::new(self.metrics.clone());
+        let schema = self.schema();
+        let client_pull = session_config.ballista_config().client_pull();
+        let schema_for_adapter = schema.clone();
 
-        if session_config.ballista_config().client_pull() {
-            let stream = futures::stream::once(
+        // Wait for the remote job to complete (pull or push), yielding a CompletedJob receipt
+        let stream = futures::stream::once(async move {
+            let completed = if client_pull {
                 execute_query_pull(
-                    self.scheduler_url.clone(),
-                    self.session_id.clone(),
+                    scheduler_url.clone(),
+                    session_id,
                     query,
-                    self.config.grpc_client_max_message_size(),
-                    GrpcClientConfig::from(&self.config),
-                    Arc::new(self.metrics.clone()),
-                    partition,
-                    session_config,
+                    max_message_size,
+                    grpc_config,
+                    session_config.clone(),
                 )
-                .map_err(|e| ArrowError::ExternalError(Box::new(e))),
-            )
-            .try_flatten()
-            .inspect(move |batch| {
-                metric_total_bytes.add(
-                    batch
-                        .as_ref()
-                        .map(|b| b.get_array_memory_size())
-                        .unwrap_or(0),
-                );
-
-                metric_row_count.add(batch.as_ref().map(|b| b.num_rows()).unwrap_or(0));
-            });
-
-            let schema = self.schema();
-            Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
-        } else {
-            let stream = futures::stream::once(
+                .await?
+            } else {
                 execute_query_push(
-                    self.scheduler_url.clone(),
+                    scheduler_url.clone(),
                     query,
-                    self.config.grpc_client_max_message_size(),
-                    GrpcClientConfig::from(&self.config),
-                    Arc::new(self.metrics.clone()),
-                    partition,
-                    session_config,
+                    max_message_size,
+                    grpc_config,
+                    session_config.clone(),
                 )
-                .map_err(|e| ArrowError::ExternalError(Box::new(e))),
-            )
-            .try_flatten()
-            .inspect(move |batch| {
-                metric_total_bytes.add(
-                    batch
-                        .as_ref()
-                        .map(|b| b.get_array_memory_size())
-                        .unwrap_or(0),
-                );
+                .await?
+            };
 
-                metric_row_count.add(batch.as_ref().map(|b| b.num_rows()).unwrap_or(0));
-            });
+            // Construct the appropriate JobCompletionHandler based on action
+            let handler: Box<dyn JobCompletionHandler> = match action {
+                JobCompletionAction::FetchResults => Box::new(FetchResultsHandler {
+                    scheduler_url,
+                    schema,
+                    max_message_size,
+                    session_config,
+                    metrics,
+                    partition,
+                }),
+            };
 
-            let schema = self.schema();
-            Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
-        }
+            handler.handle(completed).await
+        })
+        .try_flatten();
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            schema_for_adapter,
+            stream,
+        )))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -312,9 +348,8 @@ impl<T: 'static + AsLogicalPlan> ExecutionPlan for DistributedQueryExec<T> {
     }
 }
 
-/// Client will periodically invoke scheduler to check
-/// job status. There is preconfigured wait period between
-/// pulls, which increases query latency.
+/// Client periodically polls the scheduler to check job status.
+/// Returns a [`CompletedJob`] receipt once the job reaches a terminal state.
 #[allow(clippy::too_many_arguments)]
 async fn execute_query_pull(
     scheduler_url: String,
@@ -322,14 +357,11 @@ async fn execute_query_pull(
     query: ExecuteQueryParams,
     max_message_size: usize,
     grpc_config: GrpcClientConfig,
-    metrics: Arc<ExecutionPlanMetricsSet>,
-    partition: usize,
     session_config: SessionConfig,
-) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
+) -> Result<CompletedJob> {
     let grpc_interceptor = session_config.ballista_grpc_interceptor();
     let customize_endpoint =
         session_config.ballista_override_create_grpc_client_endpoint();
-    let use_tls = session_config.ballista_use_tls();
 
     // Capture query submission time for total_query_time_ms
     let query_start_time = std::time::Instant::now();
@@ -429,74 +461,33 @@ async fn execute_query_pull(
                 partition_location,
                 ..
             })) => {
-                // Calculate job execution time (server-side execution)
-                let job_execution_ms = ended_at.saturating_sub(started_at);
-                let duration = Duration::from_millis(job_execution_ms);
-
-                info!("Job {job_id} finished executing in {duration:?} ");
-
-                // Calculate scheduling time (server-side queue time)
-                // This includes network latency and actual queue time
-                let scheduling_ms = started_at.saturating_sub(queued_at);
-
-                // Calculate total query time (end-to-end from client perspective)
-                let total_elapsed = query_start_time.elapsed();
-                let total_ms = total_elapsed.as_millis();
-
-                // Set timing metrics
-                let metric_job_execution = MetricBuilder::new(&metrics)
-                    .gauge("job_execution_time_ms", partition);
-                metric_job_execution.set(job_execution_ms as usize);
-
-                let metric_scheduling =
-                    MetricBuilder::new(&metrics).gauge("job_scheduling_in_ms", partition);
-                metric_scheduling.set(scheduling_ms as usize);
-
-                let metric_total_time =
-                    MetricBuilder::new(&metrics).gauge("total_query_time_ms", partition);
-                metric_total_time.set(total_ms as usize);
-
-                // Note: data_transfer_time_ms is not set here because partition fetching
-                // happens lazily when the stream is consumed, not during execute_query.
-                // This could be added in a future enhancement by wrapping the stream.
-
-                let streams = partition_location.into_iter().map(move |partition| {
-                    let f = fetch_partition(
-                        partition,
-                        max_message_size,
-                        true,
-                        scheduler_url.clone(),
-                        flight_proxy.clone(),
-                        customize_endpoint.clone(),
-                        use_tls,
-                    )
-                    .map_err(|e| ArrowError::ExternalError(Box::new(e)));
-
-                    futures::stream::once(f).try_flatten()
+                break Ok(CompletedJob {
+                    job_id,
+                    partition_location,
+                    flight_proxy,
+                    queued_at,
+                    started_at,
+                    ended_at,
+                    query_start_time,
                 });
-
-                break Ok(futures::stream::iter(streams).flatten());
             }
         };
     }
 }
-/// After job is scheduled client waits
-/// for job updates, which are streamed back
-/// from server to client
+
+/// After job is scheduled, client waits for job updates streamed from server.
+/// Returns a [`CompletedJob`] receipt once the job reaches a terminal state.
 #[allow(clippy::too_many_arguments)]
 async fn execute_query_push(
     scheduler_url: String,
     query: ExecuteQueryParams,
     max_message_size: usize,
     grpc_config: GrpcClientConfig,
-    metrics: Arc<ExecutionPlanMetricsSet>,
-    partition: usize,
     session_config: SessionConfig,
-) -> Result<impl Stream<Item = Result<RecordBatch>> + Send> {
+) -> Result<CompletedJob> {
     let grpc_interceptor = session_config.ballista_grpc_interceptor();
     let customize_endpoint =
         session_config.ballista_override_create_grpc_client_endpoint();
-    let use_tls = session_config.ballista_use_tls();
 
     // Capture query submission time for total_query_time_ms
     let query_start_time = std::time::Instant::now();
@@ -583,204 +574,16 @@ async fn execute_query_push(
                 partition_location,
                 ..
             })) => {
-                // Calculate job execution time (server-side execution)
-                let job_execution_ms = ended_at.saturating_sub(started_at);
-                let duration = Duration::from_millis(job_execution_ms);
-
-                info!("Job {job_id} finished executing in {duration:?} ");
-
-                // Calculate scheduling time (server-side queue time)
-                // This includes network latency and actual queue time
-                let scheduling_ms = started_at.saturating_sub(queued_at);
-
-                // Calculate total query time (end-to-end from client perspective)
-                let total_elapsed = query_start_time.elapsed();
-                let total_ms = total_elapsed.as_millis();
-
-                // Set timing metrics
-                let metric_job_execution = MetricBuilder::new(&metrics)
-                    .gauge("job_execution_time_ms", partition);
-                metric_job_execution.set(job_execution_ms as usize);
-
-                let metric_scheduling =
-                    MetricBuilder::new(&metrics).gauge("job_scheduling_in_ms", partition);
-                metric_scheduling.set(scheduling_ms as usize);
-
-                let metric_total_time =
-                    MetricBuilder::new(&metrics).gauge("total_query_time_ms", partition);
-                metric_total_time.set(total_ms as usize);
-
-                // Note: data_transfer_time_ms is not set here because partition fetching
-                // happens lazily when the stream is consumed, not during execute_query.
-                // This could be added in a future enhancement by wrapping the stream.
-
-                let streams = partition_location.into_iter().map(move |partition| {
-                    let f = fetch_partition(
-                        partition,
-                        max_message_size,
-                        true,
-                        scheduler_url.clone(),
-                        flight_proxy.clone(),
-                        customize_endpoint.clone(),
-                        use_tls,
-                    )
-                    .map_err(|e| ArrowError::ExternalError(Box::new(e)));
-
-                    futures::stream::once(f).try_flatten()
+                break Ok(CompletedJob {
+                    job_id,
+                    partition_location,
+                    flight_proxy,
+                    queued_at,
+                    started_at,
+                    ended_at,
+                    query_start_time,
                 });
-
-                break Ok(futures::stream::iter(streams).flatten());
             }
         };
-    }
-}
-
-fn get_client_host_port(
-    executor_metadata: &ExecutorMetadata,
-    scheduler_url: &str,
-    flight_proxy: &Option<FlightProxy>,
-) -> Result<(String, u16)> {
-    fn split_host_port(address: &str) -> Result<(String, u16)> {
-        let url: Url = address.parse().map_err(|e| {
-            DataFusionError::Execution(format!(
-                "Cannot parse host:port in {address:?}: {e}"
-            ))
-        })?;
-        let host = url
-            .host_str()
-            .ok_or(DataFusionError::Execution(format!(
-                "No host in {address:?}"
-            )))?
-            .to_string();
-        let port: u16 = url.port().ok_or(DataFusionError::Execution(format!(
-            "No port in {address:?}"
-        )))?;
-        Ok((host, port))
-    }
-
-    match flight_proxy {
-        Some(FlightProxy::External(address)) => {
-            debug!("Fetching results from external flight proxy: {}", address);
-            split_host_port(format!("http://{address}").as_str())
-        }
-        Some(FlightProxy::Local(true)) => {
-            debug!("Fetching results from scheduler: {}", scheduler_url);
-            split_host_port(scheduler_url)
-        }
-        Some(FlightProxy::Local(false)) | None => {
-            debug!(
-                "Fetching results from executor: {}:{}",
-                executor_metadata.host, executor_metadata.port
-            );
-            Ok((
-                executor_metadata.host.clone(),
-                executor_metadata.port as u16,
-            ))
-        }
-    }
-}
-
-async fn fetch_partition(
-    location: PartitionLocation,
-    max_message_size: usize,
-    flight_transport: bool,
-    scheduler_url: String,
-    flight_proxy: Option<FlightProxy>,
-    customize_endpoint: Option<Arc<BallistaConfigGrpcEndpoint>>,
-    use_tls: bool,
-) -> Result<SendableRecordBatchStream> {
-    let metadata = location.executor_meta.ok_or_else(|| {
-        DataFusionError::Internal("Received empty executor metadata".to_owned())
-    })?;
-
-    let partition_id = location.partition_id.ok_or_else(|| {
-        DataFusionError::Internal("Received empty partition id".to_owned())
-    })?;
-    let host = metadata.host.as_str();
-    let port = metadata.port as u16;
-
-    let (client_host, client_port) =
-        get_client_host_port(&metadata, &scheduler_url, &flight_proxy)?;
-
-    let mut ballista_client = BallistaClient::try_new(
-        client_host.as_str(),
-        client_port,
-        max_message_size,
-        use_tls,
-        customize_endpoint,
-    )
-    .await
-    .map_err(|e| DataFusionError::Execution(format!("{e:?}")))?;
-    ballista_client
-        .fetch_partition_proxied(
-            &metadata.id,
-            &partition_id.into(),
-            host,
-            port,
-            &location.path,
-            flight_transport,
-        )
-        .await
-        .map_err(|e| DataFusionError::External(Box::new(e)))
-}
-
-#[cfg(test)]
-mod test {
-    use crate::execution_plans::distributed_query::get_client_host_port;
-    use crate::serde::protobuf::ExecutorMetadata;
-    use crate::serde::protobuf::get_job_status_result::FlightProxy;
-
-    #[test]
-    fn test_client_host_port() {
-        let scheduler_host = "scheduler";
-        let scheduler_port: u16 = 5000;
-
-        let scheduler_url = format!("http://{scheduler_host}:{scheduler_port}");
-        let executor = ExecutorMetadata {
-            id: "test".to_string(),
-            host: "executor".to_string(),
-            port: 12345,
-            grpc_port: 1,
-            specification: None,
-        };
-
-        // no flight proxy -> client should fetch results from executor
-        assert_eq!(
-            get_client_host_port(&executor, &scheduler_url, &None).unwrap(),
-            (executor.host.clone(), executor.port as u16)
-        );
-
-        // same, no flight proxy
-        assert_eq!(
-            get_client_host_port(
-                &executor,
-                &scheduler_url,
-                &Some(FlightProxy::Local(false))
-            )
-            .unwrap(),
-            (executor.host.clone(), executor.port as u16)
-        );
-
-        // embedded flight proxy on scheduler
-        assert_eq!(
-            get_client_host_port(
-                &executor,
-                &scheduler_url,
-                &Some(FlightProxy::Local(true))
-            )
-            .unwrap(),
-            (scheduler_host.to_string(), scheduler_port)
-        );
-
-        // external proxy
-        assert_eq!(
-            get_client_host_port(
-                &executor,
-                &scheduler_url,
-                &Some(FlightProxy::External("proxy:1234".to_string()))
-            )
-            .unwrap(),
-            ("proxy".to_string(), 1234_u16)
-        );
     }
 }
