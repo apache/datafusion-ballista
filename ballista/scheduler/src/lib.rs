@@ -42,6 +42,10 @@ pub mod state;
 
 mod flight_proxy_service;
 
+/// Riffle remote shuffle service lifecycle management.
+#[cfg(feature = "riffle")]
+pub mod riffle_lifecycle;
+
 /// Test utilities for scheduler testing.
 #[cfg(test)]
 pub mod test_utils;

@@ -88,6 +88,14 @@ pub struct PartitionLocation {
     pub partition_stats: PartitionStats,
     /// File path to the partition data.
     pub path: String,
+    /// Riffle app ID (set when using Riffle remote shuffle).
+    pub riffle_app_id: Option<String>,
+    /// Riffle shuffle ID (set when using Riffle remote shuffle).
+    pub riffle_shuffle_id: Option<i32>,
+    /// Riffle server host that holds this partition's data.
+    pub riffle_server_host: Option<String>,
+    /// Riffle server gRPC port.
+    pub riffle_server_port: Option<i32>,
 }
 
 /// Meta-data for an executor, used when fetching shuffle partitions from other executors.
