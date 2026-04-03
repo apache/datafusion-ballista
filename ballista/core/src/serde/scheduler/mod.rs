@@ -94,7 +94,7 @@ pub struct PartitionLocation {
     pub partition_stats: PartitionStats,
     /// shuffle file id
     pub file_id: Option<u64>,
-    /// is shuffle partition sort partition
+    /// whether this partition uses sort shuffle
     pub is_sort_shuffle: bool,
 }
 
