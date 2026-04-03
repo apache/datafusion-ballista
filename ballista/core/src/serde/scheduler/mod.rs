@@ -99,7 +99,7 @@ pub struct PartitionLocation {
 }
 
 impl PartitionLocation {
-    /// creates file actuall file location
+    /// creates file actual file location
     pub fn path(&self, work_dir: &str) -> datafusion::error::Result<PathBuf> {
         create_shuffle_path(
             work_dir,
