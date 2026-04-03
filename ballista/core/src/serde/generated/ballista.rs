@@ -65,8 +65,6 @@ pub struct ShuffleWriterExecNode {
     pub output_partitioning: ::core::option::Option<
         ::datafusion_proto::protobuf::PhysicalHashRepartition,
     >,
-    #[prost(uint32, tag = "5")]
-    pub channel_capacity: u32,
 }
 /// Sort-based shuffle writer that produces consolidated files with index
 #[derive(Clone, PartialEq, ::prost::Message)]

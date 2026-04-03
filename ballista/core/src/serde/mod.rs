@@ -18,6 +18,7 @@
 //! This crate contains code generated from the Ballista Protocol Buffer Definition as well
 //! as convenience code for interacting with the generated code.
 
+use crate::config::BallistaConfig;
 use crate::extension::BallistaCacheNode;
 use crate::{error::BallistaError, serde::scheduler::Action as BallistaAction};
 
@@ -352,12 +353,13 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                     &converter,
                 )?;
 
-                let channel_capacity = shuffle_writer.channel_capacity as usize;
-                let channel_capacity = if channel_capacity == 0 {
-                    DEFAULT_SHUFFLE_CHANNEL_CAPACITY
-                } else {
-                    channel_capacity
-                };
+                let channel_capacity = ctx
+                    .session_config()
+                    .options()
+                    .extensions
+                    .get::<BallistaConfig>()
+                    .map(|c| c.shuffle_writer_channel_capacity())
+                    .unwrap_or(DEFAULT_SHUFFLE_CHANNEL_CAPACITY);
 
                 Ok(Arc::new(
                     ShuffleWriterExec::try_new(
@@ -501,7 +503,6 @@ impl PhysicalExtensionCodec for BallistaPhysicalExtensionCodec {
                         stage_id: exec.stage_id() as u32,
                         input: None,
                         output_partitioning,
-                        channel_capacity: exec.channel_capacity() as u32,
                     },
                 )),
             };
