@@ -61,6 +61,10 @@ pub(crate) fn render_help_overlay(f: &mut Frame, app: &App) {
             style,
         )),
         Line::from(Span::styled(
+            "  D View plans if a completed job is selected",
+            style,
+        )),
+        Line::from(Span::styled(
             "  c       Cancel selected Running/Queued job",
             style,
         )),

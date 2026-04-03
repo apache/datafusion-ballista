@@ -16,11 +16,11 @@
 // under the License.
 
 use crate::tui::app::App;
-use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::prelude::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
+use ratatui::Frame;
 
 pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let mut key_bindings = Vec::with_capacity(10);
@@ -44,6 +44,9 @@ pub(super) fn render_footer(f: &mut Frame, area: Rect, app: &App) {
                 if app.has_selected_job() {
                     key_bindings.push(Span::from("[g] View job stages, "));
                     key_bindings.push(Span::from("[c] Cancel job, "));
+                }
+                if app.has_selected_completed_job() {
+                    key_bindings.push(Span::from("[D] View job plans, "));
                 }
             } else if app.is_metrics_view() {
                 key_bindings.push(Span::from("[/] Search metrics, "));

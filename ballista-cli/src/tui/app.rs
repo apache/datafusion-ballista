@@ -48,6 +48,13 @@ enum InputMode {
     Edit,
 }
 
+#[derive(Debug, PartialEq)]
+pub(crate) enum PlanTab {
+    Stage,
+    Physical,
+    Logical,
+}
+
 pub(crate) struct App {
     should_quit: bool,
 
@@ -73,6 +80,9 @@ pub(crate) struct App {
     pub job_dot_popup: Option<StagesGraph>,
     pub job_dot_scroll: u16,
 
+    pub job_plan_popup: Option<(JobDetails, PlanTab)>,
+    pub job_plan_popup_scroll: u16,
+
     pub http_client: Arc<HttpClient>,
 }
 
@@ -90,6 +100,8 @@ impl App {
             job_details: None,
             job_dot_popup: None,
             job_dot_scroll: 0,
+            job_plan_popup: None,
+            job_plan_popup_scroll: 0,
             dashboard_data: DashboardData::new(),
             jobs_data: JobsData::new(),
             metrics_data: MetricsData::new(),
@@ -198,6 +210,42 @@ impl App {
             return Ok(());
         }
 
+        if self.job_plan_popup.is_some() {
+            match key.code {
+                KeyCode::Up => {
+                    self.job_plan_popup_scroll =
+                        self.job_plan_popup_scroll.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    self.job_plan_popup_scroll += 1;
+                }
+                KeyCode::Char('s') => {
+                    if let Some((_, tab)) = &mut self.job_plan_popup {
+                        *tab = PlanTab::Stage;
+                        self.job_plan_popup_scroll = 0;
+                    }
+                }
+                KeyCode::Char('p') => {
+                    if let Some((_, tab)) = &mut self.job_plan_popup {
+                        *tab = PlanTab::Physical;
+                        self.job_plan_popup_scroll = 0;
+                    }
+                }
+                KeyCode::Char('l') => {
+                    if let Some((_, tab)) = &mut self.job_plan_popup {
+                        *tab = PlanTab::Logical;
+                        self.job_plan_popup_scroll = 0;
+                    }
+                }
+                KeyCode::Esc => {
+                    self.job_plan_popup = None;
+                    self.job_plan_popup_scroll = 0;
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
         if self.show_help || self.show_scheduler_info {
             self.show_help = false;
             self.show_scheduler_info = false;
@@ -216,6 +264,9 @@ impl App {
             }
             KeyCode::Char('g') if self.is_jobs_view() => {
                 self.load_job_dot_data().await;
+            }
+            KeyCode::Char('D') if self.is_jobs_view() => {
+                self.open_job_plan_popup();
             }
             KeyCode::Char('d') if self.is_scheduler_up() => {
                 self.current_view = Views::Dashboard;
@@ -351,7 +402,26 @@ impl App {
         self.jobs_data.selected_job(&self.search_term).is_some()
     }
 
+    pub fn has_selected_completed_job(&self) -> bool {
+        self.jobs_data
+            .selected_job(&self.search_term)
+            .is_some_and(|j| j.status == "Completed")
+    }
+
     pub fn has_more_than_one_job(&self) -> bool {
         self.jobs_data.jobs.len() > 1
+    }
+
+    fn open_job_plan_popup(&mut self) {
+        let is_completed = self
+            .jobs_data
+            .selected_job(&self.search_term)
+            .is_some_and(|j| j.status == "Completed");
+        if is_completed {
+            if let Some(details) = &self.job_details {
+                self.job_plan_popup = Some((details.clone(), PlanTab::Stage));
+                self.job_plan_popup_scroll = 0;
+            }
+        }
     }
 }

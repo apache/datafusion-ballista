@@ -24,46 +24,46 @@ use ratatui::{
 
 pub fn render_job_details(f: &mut Frame, area: Rect, details: &JobDetails) {
     let vertical = Layout::vertical([
-        Constraint::Percentage(50), // Logical + Physical plans
-        Constraint::Percentage(50), // Stage plan
+        // Constraint::Percentage(50), // Logical + Physical plans
+        Constraint::Percentage(100), // Stage plan
     ]);
     let rows = vertical.split(area);
 
-    let horizontal = Layout::horizontal([
-        Constraint::Percentage(50), // Logical plan
-        Constraint::Percentage(50), // Physical plan
-    ]);
-    let top_cols = horizontal.split(rows[0]);
+    // let horizontal = Layout::horizontal([
+    //     Constraint::Percentage(50), // Logical plan
+    //     Constraint::Percentage(50), // Physical plan
+    // ]);
+    // let top_cols = horizontal.split(rows[0]);
 
-    let logical_text = details.logical_plan.as_deref().unwrap_or("N/A").to_string();
-    let physical_text = details
-        .physical_plan
-        .as_deref()
-        .unwrap_or("N/A")
-        .to_string();
+    // let logical_text = details.logical_plan.as_deref().unwrap_or("N/A").to_string();
+    // let physical_text = details
+    //     .physical_plan
+    //     .as_deref()
+    //     .unwrap_or("N/A")
+    //     .to_string();
     let stage_text = details.stage_plan.as_deref().unwrap_or("N/A").to_string();
 
-    let logical_panel = Paragraph::new(logical_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Logical Plan "),
-        )
-        .wrap(Wrap { trim: false });
-
-    let physical_panel = Paragraph::new(physical_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Physical Plan "),
-        )
-        .wrap(Wrap { trim: false });
+    // let logical_panel = Paragraph::new(logical_text)
+    //     .block(
+    //         Block::default()
+    //             .borders(Borders::ALL)
+    //             .title(" Logical Plan "),
+    //     )
+    //     .wrap(Wrap { trim: false });
+    //
+    // let physical_panel = Paragraph::new(physical_text)
+    //     .block(
+    //         Block::default()
+    //             .borders(Borders::ALL)
+    //             .title(" Physical Plan "),
+    //     )
+    //     .wrap(Wrap { trim: false });
 
     let stage_panel = Paragraph::new(stage_text)
         .block(Block::default().borders(Borders::ALL).title(" Stage Plan "))
         .wrap(Wrap { trim: false });
 
-    f.render_widget(logical_panel, top_cols[0]);
-    f.render_widget(physical_panel, top_cols[1]);
-    f.render_widget(stage_panel, rows[1]);
+    // f.render_widget(logical_panel, top_cols[0]);
+    // f.render_widget(physical_panel, top_cols[1]);
+    f.render_widget(stage_panel, rows[0]);
 }
