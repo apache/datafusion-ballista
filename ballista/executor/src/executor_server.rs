@@ -346,8 +346,6 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
         }
     }
 
-    /// This method should not return Err. If task fails, a failure task status should be sent
-    /// to the channel to notify the scheduler.
     async fn run_task(&self, task_identity: String, curator_task: CuratorTaskDefinition) {
         let start_exec_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -369,17 +367,19 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
             partition_id,
         };
 
-        match self.executor.execution_engine.create_query_stage_exec(
+        let exec = self.executor.execution_engine.create_query_stage_exec(
             job_id.clone(),
             stage_id,
             plan,
             &self.executor.work_dir,
-        ) {
-            Ok(exec) => {
+        );
+
+        let runtime = self.executor.produce_runtime(&task.session_config);
+
+        match (exec, runtime) {
+            (Ok(exec), Ok(runtime)) => {
                 let task_context = {
                     let function_registry = task.function_registry;
-                    let runtime =
-                        self.executor.produce_runtime(&task.session_config).unwrap();
 
                     Arc::new(TaskContext::new(
                         Some(task_identity.clone()),
@@ -443,8 +443,8 @@ impl<T: 'static + AsLogicalPlan, U: 'static + AsExecutionPlan> ExecutorServer<T,
                     })
                     .await;
             }
-            Err(e) => {
-                let e = ballista_core::error::BallistaError::from(e);
+            (Err(e), _) | (_, Err(e)) => {
+                let e = BallistaError::from(e);
                 let end_exec_time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
