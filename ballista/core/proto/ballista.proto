@@ -233,7 +233,7 @@ message FetchPartition {
   string host = 5;
   uint32 port = 6;
   optional uint64 file_id = 7;
-  bool is_sort_shuffle = 8 ;
+  bool is_sort_shuffle = 8;
   
   // reserved after removing deprecated `path`.
   reserved 4;
