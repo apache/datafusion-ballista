@@ -106,9 +106,11 @@ pub struct TaskSummary {
     /// The time the Executor finish the task
     pub end_exec_time: u64,
     /// total execution time
-    pub total_exec_time: u64,
+    pub exec_duration: u64,
     /// Scheduler side finish time
     pub finish_time: u64,
+    /// Number of input rows
+    pub input_rows: usize,
     /// Number of output rows
     pub output_rows: usize,
 }
@@ -394,10 +396,19 @@ pub async fn get_query_stages<
                             .enumerate()
                             .map(|(partition_id, task_info)| {
                                 task_info.as_ref().map(|info| {
-                                    let output_rows = running_stage
+                                    let partition_metrics = running_stage
                                         .stage_metrics
                                         .as_deref()
-                                        .and_then(|m| m.get(partition_id))
+                                        .and_then(|m| m.get(partition_id));
+                                    let input_rows = partition_metrics
+                                        .map(|m| {
+                                            get_combined_count(
+                                                std::slice::from_ref(m),
+                                                "input_rows",
+                                            )
+                                        })
+                                        .unwrap_or(0);
+                                    let output_rows = partition_metrics
                                         .map(|m| {
                                             get_combined_count(
                                                 std::slice::from_ref(m),
@@ -415,8 +426,9 @@ pub async fn get_query_stages<
                                         launch_time: info.launch_time as u64,
                                         start_exec_time,
                                         end_exec_time,
-                                        total_exec_time: end_exec_time.saturating_sub(start_exec_time),
+                                        exec_duration: end_exec_time.saturating_sub(start_exec_time),
                                         finish_time: info.finish_time as u64,
+                                        input_rows,
                                         output_rows,
                                     }
                                 })
@@ -440,9 +452,17 @@ pub async fn get_query_stages<
                             .iter()
                             .enumerate()
                             .map(|(partition_id, task_info)| {
-                                let output_rows = completed_stage
-                                    .stage_metrics
-                                    .get(partition_id)
+                                let partition_metrics =
+                                    completed_stage.stage_metrics.get(partition_id);
+                                let input_rows = partition_metrics
+                                    .map(|m| {
+                                        get_combined_count(
+                                            std::slice::from_ref(m),
+                                            "input_rows",
+                                        )
+                                    })
+                                    .unwrap_or(0);
+                                let output_rows = partition_metrics
                                     .map(|m| {
                                         get_combined_count(
                                             std::slice::from_ref(m),
@@ -459,8 +479,9 @@ pub async fn get_query_stages<
                                     launch_time: task_info.launch_time as u64,
                                     start_exec_time,
                                     end_exec_time,
-                                    total_exec_time: end_exec_time.saturating_sub(start_exec_time),
+                                    exec_duration: end_exec_time.saturating_sub(start_exec_time),
                                     finish_time: task_info.finish_time as u64,
+                                    input_rows,
                                     output_rows,
                                 })
                             })
